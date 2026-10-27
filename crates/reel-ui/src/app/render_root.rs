@@ -50,6 +50,10 @@ const INVALID_IME_AREA: Rect = Rect::new(f64::NAN, f64::NAN, f64::NAN, f64::NAN)
 ///
 /// This is also the type that owns the widget tree.
 pub struct RenderRoot {
+    pub(crate) geometry_cache: std::cell::RefCell<(
+        u64,
+        std::sync::Weak<super::presented_geometry::GeometryStorage>,
+    )>,
     /// `WidgetPod` handle for the layer stack, which holds the root widget of each layer.
     pub(crate) layer_stack: WidgetPod<LayerStack>,
 
@@ -65,6 +69,7 @@ pub struct RenderRoot {
 
 /// State shared between passes.
 pub(crate) struct RenderRootState {
+    pub(crate) geometry_revision: u64,
     /// Sink for signals to be processed by the event loop.
     pub(crate) signal_sink: Box<dyn FnMut(RenderRootSignal)>,
 
@@ -350,8 +355,10 @@ impl RenderRoot {
             .to_pod();
 
         let mut root = Self {
+            geometry_cache: Default::default(),
             layer_stack,
             global_state: RenderRootState {
+                geometry_revision: 0,
                 signal_sink: Box::new(signal_sink),
                 window_node_id: AccessCtx::next_node_id(),
                 size_policy,
@@ -548,6 +555,7 @@ impl RenderRoot {
         match event {
             WindowEvent::Rescale(scale_factor) => {
                 self.global_state.scale_factor = scale_factor;
+                self.global_state.invalidate_geometry();
                 self.request_render_all();
                 Handled::Yes
             }
@@ -1214,6 +1222,9 @@ impl std::fmt::Debug for RenderRootState {
 }
 
 impl RenderRootState {
+    pub(crate) fn invalidate_geometry(&mut self) {
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+    }
     /// Sends a signal to the runner of this app, which allows global actions to be triggered by a widget.
     pub(crate) fn emit_signal(&mut self, signal: RenderRootSignal) {
         (self.signal_sink)(signal);

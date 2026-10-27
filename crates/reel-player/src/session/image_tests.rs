@@ -529,13 +529,13 @@ fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
             .iter()
             .find(|layer| {
                 layer
-                    .groups
+                    .groups()
                     .iter()
                     .any(|group| group.effect.is_some() || group.mask_effect.is_some())
             })
             .unwrap();
         let group = layer
-            .groups
+            .groups()
             .iter()
             .find(|group| group.effect.is_some() || group.mask_effect.is_some())
             .unwrap();
@@ -565,7 +565,7 @@ fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
         let requests = ui.images.stage_requests;
         for index in 0..100 {
             let mut props = stage.node(node).unwrap().props.clone();
-            let amount = f64::from(index) / 99.;
+            let amount = index as f64 / 99.;
             props.opacity = amount;
             props.mask_progress = amount;
             props.reveal = Some(index as usize);
@@ -595,7 +595,7 @@ fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
             .plan()
             .layers
             .iter()
-            .flat_map(|layer| &layer.groups)
+            .flat_map(|layer| layer.groups())
             .find_map(|group| group.effect.as_ref().or(group.mask_effect.as_ref()))
             .unwrap();
         assert_eq!(

@@ -26,8 +26,8 @@ pub struct BridgeLimits {
     pub max_candidates: u32,
     /// Route arrays and pending identity registry, reserved before allocation.
     pub max_bridge_bytes: u64,
-    /// Each external/accepted geometry lease keeps the maximum export reservation
-    /// plus host overhead until its final drop. Aggregate capacity is conservative.
+    /// Each distinct geometry storage keeps its maximum export reservation until
+    /// the final view drops. Every candidate also retains its own identity charge.
     pub max_snapshot_bytes: u64,
 }
 /// Opaque identity minted for exactly one actual record operation.
@@ -35,7 +35,7 @@ pub struct BridgeLimits {
 pub struct CandidateKey {
     frame: FrameId,
     epoch: SurfaceEpoch,
-    // One allocation is both exact identity and the key/view budget lease.
+    // Exact acceptance identity and its key/view header reservation.
     identity: Arc<CandidateIdentity>,
 }
 impl PartialEq for CandidateKey {
@@ -285,7 +285,7 @@ impl PresentationBridge {
         let snapshots = BudgetPool::new(
             BudgetCategory::Snapshot,
             QueueLimits {
-                max_requests: limits.max_candidates.saturating_add(1),
+                max_requests: limits.max_candidates.saturating_add(1).saturating_mul(2),
                 max_bytes: limits.max_snapshot_bytes,
             },
         );
@@ -436,24 +436,49 @@ impl PresentationBridge {
         if self.pending.len() >= self.limits.max_candidates as usize {
             return Err(RecordError::CandidateCapacity);
         }
-        // Reserve the permitted geometry maximum before record/export. Scene and widget
-        // runtime storage have separate owners. Keep this same ticket until the view's
-        // last lease drops, conservatively retaining the released scratch allowance too.
+        let (plan, _accessibility) = self.root.redraw();
+        let cached = self
+            .root
+            .cached_presented_geometry(self.limits.geometry)
+            .map_err(RecordError::Geometry)?;
+        // Immutable geometry and candidate eligibility have separate lifetimes.
+        // Reused storage keeps one export reservation across all of its views.
         let overhead = (size_of::<CandidateIdentity>()
             + size_of::<CandidateKey>()
+            + size_of::<PresentedGeometryView>()
             + 4 * size_of::<usize>()) as u64;
         let reservation = self
             .snapshots
-            .reserve(
-                (self.limits.geometry.max_bytes as u64)
-                    .checked_add(overhead)
-                    .ok_or(RecordError::SnapshotBudget)?,
-            )
+            .reserve(overhead)
             .map_err(|_| RecordError::SnapshotBudget)?;
-        let (plan, geometry) = self
-            .root
-            .record_presented_geometry(self.limits.geometry)
-            .map_err(RecordError::Geometry)?;
+        let storage_ticket = if cached
+            .as_ref()
+            .is_some_and(PresentedGeometryView::storage_is_accounted)
+        {
+            None
+        } else {
+            Some(
+                self.snapshots
+                    .reserve(
+                        (self.limits.geometry.max_bytes as u64)
+                            .checked_add(
+                                (size_of::<BudgetTicket>() + 2 * size_of::<usize>()) as u64,
+                            )
+                            .ok_or(RecordError::SnapshotBudget)?,
+                    )
+                    .map_err(|_| RecordError::SnapshotBudget)?,
+            )
+        };
+        let geometry = match cached {
+            Some(geometry) => geometry,
+            None => self
+                .root
+                .capture_presented_geometry(self.limits.geometry)
+                .map_err(RecordError::Geometry)?,
+        };
+        if let Some(ticket) = storage_ticket {
+            geometry.account_storage(Arc::new(ticket));
+        }
         if geometry.max_depth() > self.route_depth {
             let route_bytes = self
                 .root

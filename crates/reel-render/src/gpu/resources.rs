@@ -59,6 +59,7 @@ pub(super) fn image_rows(
     at: RecordLocation,
     target: &Image,
     rows: std::ops::Range<u32>,
+    staging: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
     let ResourceData::Image { image, encoding } = lease.data() else {
         return Err(GpuError::Unsupported {
@@ -72,7 +73,7 @@ pub(super) fn image_rows(
             record: "image format",
         });
     }
-    upload_rows_with(gpu, encoder, target, rows, |index| {
+    upload_rows_with(gpu, encoder, target, rows, staging, |index| {
         let rgba = &image.data.data()[index * 4..index * 4 + 4];
         rgba8_linear_f16(rgba, *encoding, image.alpha_type)
     })
@@ -121,7 +122,7 @@ fn upload_with(
     }
     let image = create_image(gpu, size)?;
     let bits = |index| pixel(index).map(|value| half::f16::from_f32(value).to_bits());
-    upload_rows_with(gpu, encoder, &image, 0..size[1], bits)?;
+    upload_rows_with(gpu, encoder, &image, 0..size[1], None, bits)?;
     Ok((image, cost))
 }
 
@@ -240,6 +241,7 @@ pub(super) fn texture_rows(
     target: &Image,
     upload: TextureUploadLayout,
     rows: std::ops::Range<u32>,
+    reusable: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
     let ResourceData::Texture { descriptor, bytes } = source.data() else {
         return Err(GpuError::InvalidSize);
@@ -248,15 +250,23 @@ pub(super) fn texture_rows(
     let packed = upload.row_bytes;
     let count = rows.end - rows.start;
     #[cfg(test)]
-    gpu.upload_creations
-        .staging
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("bounded texture block upload"),
-        size: row * u64::from(count),
-        usage: wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: true,
-    });
+    if reusable.is_none() {
+        gpu.upload_creations
+            .staging
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let owned;
+    let staging = if let Some(buffer) = reusable {
+        &buffer.buffer
+    } else {
+        owned = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bounded texture block upload"),
+            size: row * u64::from(count),
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        &owned
+    };
     gpu.check()?;
     {
         let mut mapping = staging
@@ -303,6 +313,9 @@ pub(super) fn texture_rows(
             depth_or_array_layers: 1,
         },
     );
+    if let Some(reusable) = reusable {
+        reusable.remap(encoder);
+    }
     gpu.check()
 }
 
@@ -311,6 +324,7 @@ fn upload_rows_with(
     encoder: &mut wgpu::CommandEncoder,
     image: &Image,
     rows: std::ops::Range<u32>,
+    reusable: Option<&super::upload::Buffer>,
     mut pixel: impl FnMut(usize) -> [u16; 4],
 ) -> Result<(), GpuError> {
     gpu.check()?;
@@ -318,15 +332,23 @@ fn upload_rows_with(
     let row = row_bytes(size[0]) as u32;
     let height = rows.end - rows.start;
     #[cfg(test)]
-    gpu.upload_creations
-        .staging
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("bounded image upload"),
-        size: u64::from(row) * u64::from(height),
-        usage: wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: true,
-    });
+    if reusable.is_none() {
+        gpu.upload_creations
+            .staging
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let owned;
+    let staging = if let Some(buffer) = reusable {
+        &buffer.buffer
+    } else {
+        owned = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bounded image upload"),
+            size: u64::from(row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        &owned
+    };
     gpu.check()?;
     {
         let mut mapped = staging.slice(..).get_mapped_range_mut().map_err(|error| {
@@ -381,6 +403,9 @@ fn upload_rows_with(
             depth_or_array_layers: 1,
         },
     );
+    if let Some(reusable) = reusable {
+        reusable.remap(encoder);
+    }
     Ok(())
 }
 

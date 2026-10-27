@@ -525,7 +525,7 @@ fn source_and_asb_popups_float_outside_parent_clip_and_route_actual_callbacks() 
                     .plan()
                     .layers
                     .iter()
-                    .flat_map(|layer| &layer.command_owners)
+                    .flat_map(|layer| layer.command_owners())
                     .filter(|commands| commands.owner == root)
                     .all(|commands| commands.commands.end <= whole.start
                         || commands.commands.start >= whole.end),
@@ -537,7 +537,7 @@ fn source_and_asb_popups_float_outside_parent_clip_and_route_actual_callbacks() 
                         return false;
                     };
                     layer
-                        .groups
+                        .groups()
                         .iter()
                         .filter(|group| group.owner == widget)
                         .any(|group| {

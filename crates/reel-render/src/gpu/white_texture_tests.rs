@@ -706,6 +706,7 @@ fn usage(renderer: &Renderer) -> [u64; 3] {
 fn empty(renderer: &Renderer) {
     renderer.targets.clear();
     renderer.geometry.clear();
+    renderer.images.clear_idle_uploads();
     assert_eq!(usage(renderer), [0; 3]);
     assert_eq!(renderer.admission.usage().tickets, 0);
     assert_eq!(renderer.budgets.resources.usage().tickets, 0);
@@ -1234,12 +1235,13 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
         assert!(attempts <= 97);
     }
     assert_eq!(attempts, 97); // 96 slices followed by the admitted ready frame.
-    assert_eq!(renderer.gpu.upload_creations.snapshot(), [3, 96, 96]);
+    assert_eq!(renderer.gpu.upload_creations.snapshot(), [3, 1, 96]);
     for handle in handles {
         assert!(registry.retire(handle));
     }
     drop(frame);
     renderer.poll().unwrap();
+    renderer.images.clear_idle_uploads();
     assert_eq!(renderer.usage().resources, 0);
     assert_eq!(renderer.usage().transient, 0);
 
@@ -1263,6 +1265,7 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
+    renderer.images.clear_idle_uploads();
     assert_eq!(renderer.usage().resources, 0);
     assert_eq!(renderer.usage().transient, 0);
 }

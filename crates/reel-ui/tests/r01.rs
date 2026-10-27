@@ -155,7 +155,7 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
         .plan()
         .layers
         .iter()
-        .flat_map(|layer| &layer.command_owners)
+        .flat_map(|layer| layer.command_owners())
         .filter_map(|range| range.image_resource)
         .collect();
     assert_eq!(
@@ -176,6 +176,31 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
         "unsupported replay must fail before emitting the solid geometry record"
     );
     let second = bridge.record(FrameId(2)).unwrap();
+    let metadata = |source: &RecordedSource| {
+        source
+            .plan()
+            .layers
+            .iter()
+            .find_map(|layer| {
+                let Some(reel_ui::app::VisualLayerMetadata::Shared(metadata)) = &layer.metadata
+                else {
+                    return None;
+                };
+                Some(metadata)
+                    .filter(|metadata| {
+                        metadata
+                            .command_owners
+                            .iter()
+                            .any(|range| range.image_resource.is_some())
+                    })
+                    .cloned()
+            })
+            .unwrap()
+    };
+    assert!(
+        Arc::ptr_eq(&metadata(&first), &metadata(&second)),
+        "warm image records reuse their command metadata"
+    );
     let scene = |source: &RecordedSource| {
         source
             .plan()
@@ -183,7 +208,7 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
             .iter()
             .find_map(|layer| {
                 if layer
-                    .command_owners
+                    .command_owners()
                     .iter()
                     .any(|range| range.image_resource.is_some())
                     && let reel_ui::app::VisualLayerKind::Scene(scene) = &layer.kind
@@ -204,7 +229,7 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
             .plan()
             .layers
             .iter()
-            .flat_map(|layer| &layer.command_owners)
+            .flat_map(|layer| layer.command_owners())
             .filter_map(|range| range.image_resource)
             .map(|b| b.resource)
             .collect::<Vec<_>>(),
@@ -218,6 +243,10 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
         widget.ctx.request_render();
     });
     let changed = bridge.record(FrameId(3)).unwrap();
+    assert!(
+        !Arc::ptr_eq(&metadata(&first), &metadata(&changed)),
+        "repaint publishes new bindings without replacing old candidates"
+    );
     assert!(
         !Arc::ptr_eq(&scene(&first), &scene(&changed)),
         "repaint preserves older candidates"
@@ -914,8 +943,18 @@ fn portable_profile_rejects_crossed_lifetimes_with_location_and_releases() {
 }
 #[test]
 fn mask_definitions_reuse_local_id_and_independent_transform_and_stack() {
-    let mut scene = Scene::new();
-    let mask = scene.define_mask(Mask::new(MaskMode::Luminance, fill(Color::WHITE)));
+    let mut scene = fill(Color::BLACK);
+    let mut coverage = fill(Color::WHITE);
+    let nested = coverage.define_mask(Mask::new(MaskMode::Alpha, fill(Color::WHITE)));
+    coverage.push_group(Group {
+        mask: Some(AppliedMask {
+            mask: nested,
+            transform: Affine::IDENTITY,
+        }),
+        ..Group::default()
+    });
+    coverage.pop_group();
+    let mask = scene.define_mask(Mask::new(MaskMode::Luminance, coverage));
     for x in [2., 30.] {
         scene.push_group(Group {
             mask: Some(AppliedMask {
@@ -940,7 +979,7 @@ fn mask_definitions_reuse_local_id_and_independent_transform_and_stack() {
         empty_snapshot(&pool),
         &pool,
     );
-    assert_eq!(frame.masks().len(), 1);
+    assert_eq!(frame.masks().len(), 2);
     let uses: Vec<_> = frame
         .commands()
         .iter()
@@ -963,6 +1002,47 @@ fn mask_definitions_reuse_local_id_and_independent_transform_and_stack() {
             ..
         })
     ));
+    let origin = frame
+        .commands()
+        .iter()
+        .find(|command| matches!(command.op, FrameOp::Draw(_)))
+        .unwrap()
+        .origin;
+    let (root, root_local) = frame.drawing().recording(origin).unwrap();
+    let (mask, mask_local) = frame
+        .drawing()
+        .recording(frame.masks()[&0].commands[0].origin)
+        .unwrap();
+    let (nested, nested_local) = frame
+        .drawing()
+        .recording(frame.masks()[&1].commands[0].origin)
+        .unwrap();
+    assert_eq!(root_local, mask_local);
+    assert_eq!(mask_local, nested_local);
+    assert_eq!(root.mask_path().len(), 0);
+    assert_eq!(mask.mask_path().len(), 1);
+    assert_eq!(nested.mask_path().len(), 2);
+    assert_ne!(root, mask);
+    assert_ne!(mask, nested);
+    assert!(std::sync::Weak::ptr_eq(root.root(), nested.root()));
+    let next = build(
+        bridge.record(FrameId(2)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    assert_eq!(
+        frame.drawing().recording(origin),
+        next.drawing().recording(origin)
+    );
+    for id in [0, 1] {
+        let origin = frame.masks()[&id].commands[0].origin;
+        assert_eq!(
+            frame.drawing().recording(origin),
+            next.drawing().recording(origin)
+        );
+    }
+    drop(bridge);
+    assert!(frame.drawing().recording(origin).is_none());
 }
 #[test]
 fn large_path_gradient_glyph_variation_dash_and_utf8_resume_then_retire() {
@@ -1507,8 +1587,37 @@ fn retained_subtree_is_balanced_independent_of_candidate_and_sibling_resources()
     assert_eq!(retained.to_parent(), Affine::scale(1. / 1.5));
     let saved = retained.snapshot(|_| None).unwrap();
     let mut restoring = saved.restore_begin(limits(), &pool).unwrap();
-    while !restoring.step(step_budget()).unwrap().build.complete {}
+    let mut budget = step_budget();
+    loop {
+        let progress = restoring.step(budget).unwrap().build;
+        assert!(progress.units <= budget.max_units && progress.bytes <= budget.max_bytes);
+        if progress.complete {
+            break;
+        }
+        assert!(
+            progress.units != 0
+                || progress.bytes != 0
+                || progress.minimum_units > budget.max_units
+                || progress.minimum_bytes > budget.max_bytes,
+            "restore must advance or report the required slice"
+        );
+        if progress.minimum_bytes > budget.max_bytes {
+            println!(
+                "retained restore minimum allocation slice: {} bytes",
+                progress.minimum_bytes
+            );
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
     let restored = restoring.finish().unwrap();
+    assert!(
+        restored
+            .drawing()
+            .commands()
+            .iter()
+            .all(|command| restored.drawing().recording(command.origin).is_none())
+    );
     let FrameOp::PushGroup(group) = &restored.drawing().commands()[0].op else {
         panic!("retained subtree must keep its group");
     };

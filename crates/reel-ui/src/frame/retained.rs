@@ -151,6 +151,7 @@ pub struct RetainBuild {
     to_parent: Affine,
     next: usize,
     commands: Vec<FrameCommand>,
+    recordings: Vec<Option<RecordingSource>>,
     capture_exclusions: Vec<Range<usize>>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     mask_queue: Vec<u32>,
@@ -209,6 +210,14 @@ impl RetainBuild {
             + size_of::<FrameDrawing>() as u64
             + 2 * size_of::<usize>() as u64
             + (range.len() * size_of::<FrameCommand>()) as u64
+            + (frame.drawing().recordings.len() * size_of::<Option<RecordingSource>>()) as u64
+            + frame
+                .drawing()
+                .recordings
+                .iter()
+                .flatten()
+                .map(|source| (source.mask_path.len() * size_of::<record::MaskId>()) as u64)
+                .sum::<u64>()
             + frame.inner.transition_roots.len() as u64
             + (exclusion_count * size_of::<Range<usize>>()) as u64;
         if bytes > limits.max_bytes {
@@ -246,6 +255,7 @@ impl RetainBuild {
             range,
             to_parent,
             commands,
+            recordings: frame.drawing().recordings.clone(),
             capture_exclusions,
             masks: BTreeMap::new(),
             mask_queue: Vec::new(),
@@ -508,6 +518,7 @@ impl RetainBuild {
             pool: self.pool.clone(),
             drawing: Arc::new(FrameDrawing {
                 commands: self.commands,
+                recordings: self.recordings,
                 capture_exclusions: self.capture_exclusions,
                 masks: self.masks,
                 resources,

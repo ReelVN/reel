@@ -1625,6 +1625,7 @@ impl_context_method!(
         /// Invalidate interactions recorded with an earlier control configuration.
         /// Value and layout updates must not call this.
         pub fn invalidate_input_configuration(&mut self) {
+            self.global_state.invalidate_geometry();
             self.widget_state.input_revision = self.widget_state.input_revision.wrapping_add(1);
             self.global_state.needs_pointer_pass = true;
             self.request_render();
@@ -1909,6 +1910,7 @@ impl_context_method!(
         /// Disabling the subtree keeps the modal barrier; stashing releases it.
         pub fn set_modal(&mut self, modal: bool) {
             if self.widget_state.is_modal != modal {
+                self.global_state.invalidate_geometry();
                 self.widget_state.is_modal = modal;
                 self.global_state.modal_dirty = true;
                 self.request_render();

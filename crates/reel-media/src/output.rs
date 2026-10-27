@@ -73,9 +73,11 @@ impl Shared {
     }
     fn close_and_wait(&self) {
         self.gate.fetch_or(CLOSED, Ordering::AcqRel);
-        // Control side only. The callback releases ACTIVE and never waits for us.
+        // Control side only. Sleep makes the core available even to a lower-
+        // priority callback; yielding cannot do that on fixed-priority schedulers.
+        // The callback releases ACTIVE using one atomic and never waits for us.
         while self.gate.load(Ordering::Acquire) & ACTIVE != 0 {
-            thread::yield_now();
+            thread::sleep(Duration::from_millis(1));
         }
     }
     fn open(&self) {

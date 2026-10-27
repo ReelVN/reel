@@ -278,6 +278,7 @@ fn retained(
     RetainedScene {
         drawing: Arc::new(FrameDrawing {
             capture_exclusions: Vec::new(),
+            recordings: Vec::new(),
             commands: Vec::new(),
             masks: BTreeMap::new(),
             resources: ResourceSnapshot::capture(leases.into_iter().map(Ok), pool).unwrap(),
@@ -525,6 +526,7 @@ fn image_color_appearance_restores_with_one_shared_resource() {
     let scene = RetainedScene {
         drawing: Arc::new(FrameDrawing {
             commands,
+            recordings: Vec::new(),
             capture_exclusions: Vec::new(),
             masks: BTreeMap::new(),
             transitions: Vec::new(),

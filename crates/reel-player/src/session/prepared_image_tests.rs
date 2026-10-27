@@ -208,7 +208,7 @@ fn bc_tiles_load_as_blocks_and_bind_each_visible_draw() {
         .plan()
         .layers
         .iter()
-        .flat_map(|layer| &layer.command_owners)
+        .flat_map(|layer| layer.command_owners())
         .filter_map(|range| range.image_resource)
         .map(|b| b.resource)
         .collect();

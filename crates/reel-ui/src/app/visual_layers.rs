@@ -48,6 +48,25 @@ pub struct GroupMetadata {
     pub blend: Option<crate::frame::BlendMode>,
 }
 
+/// Immutable local command metadata shared while a widget's recording is unchanged.
+#[derive(Debug)]
+pub struct LayerMetadata {
+    /// Local group positions and their producing widget.
+    pub groups: Vec<GroupMetadata>,
+    /// Local image paint and producer leases for each contiguous command range.
+    pub command_owners: Vec<CommandOwnerRange>,
+    pub(crate) image: crate::frame::ImagePaint,
+}
+/// Dynamic scope metadata stays inline; cached widget metadata shares its owner.
+#[derive(Debug)]
+pub enum VisualLayerMetadata {
+    Inline {
+        groups: Vec<GroupMetadata>,
+        command_owners: Vec<CommandOwnerRange>,
+    },
+    Shared(Arc<LayerMetadata>),
+}
+
 /// A balanced widget paint range; coordinates identify gaps between commands.
 #[derive(Clone, Debug)]
 pub struct SubtreePaint {
@@ -81,7 +100,7 @@ impl VisualLayerPlan {
     {
         for (fragment, layer) in self.layers.iter().enumerate() {
             if let Some(range) = layer
-                .command_owners
+                .command_owners()
                 .iter()
                 .find(|range| range.image_resource.is_some())
             {
@@ -95,7 +114,7 @@ impl VisualLayerPlan {
                     },
                 });
             }
-            if let Some(group) = layer.groups.iter().find(|group| {
+            if let Some(group) = layer.groups().iter().find(|group| {
                 group.effect.is_some()
                     || group.mask_effect.is_some()
                     || group.blend.is_some_and(|blend| blend.imaging().is_none())
@@ -132,11 +151,26 @@ pub struct VisualLayer {
     pub transform: Affine,
     /// Default painter identity for this fragment; explicit ranges may name other painters.
     pub widget_id: WidgetId,
-    /// Group provenance; independent of optional context annotations or child draws.
-    pub groups: Vec<GroupMetadata>,
-    /// Sorted, nonoverlapping command ownership captured at paint/append boundaries.
-    /// An empty list assigns the whole fragment to `widget_id` with default image paint.
-    pub command_owners: Vec<CommandOwnerRange>,
+    /// Shared local group and command ownership; absent for ordinary unadorned paint.
+    pub metadata: Option<VisualLayerMetadata>,
+}
+impl VisualLayer {
+    /// Group provenance, independent of context annotations and child draws.
+    pub fn groups(&self) -> &[GroupMetadata] {
+        match &self.metadata {
+            Some(VisualLayerMetadata::Inline { groups, .. }) => groups,
+            Some(VisualLayerMetadata::Shared(metadata)) => &metadata.groups,
+            None => &[],
+        }
+    }
+    /// Sorted command ownership; empty assigns this fragment to `widget_id`.
+    pub fn command_owners(&self) -> &[CommandOwnerRange] {
+        match &self.metadata {
+            Some(VisualLayerMetadata::Inline { command_owners, .. }) => command_owners,
+            Some(VisualLayerMetadata::Shared(metadata)) => &metadata.command_owners,
+            None => &[],
+        }
+    }
 }
 
 /// The content represented by a visual layer.
@@ -188,8 +222,7 @@ mod tests {
                     kind: VisualLayerKind::Scene(root_scene.clone().into()),
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
-                    groups: Vec::new(),
-                    command_owners: Vec::new(),
+                    metadata: None,
                 },
                 VisualLayer {
                     kind: VisualLayerKind::External {
@@ -199,15 +232,13 @@ mod tests {
                     },
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
-                    groups: Vec::new(),
-                    command_owners: Vec::new(),
+                    metadata: None,
                 },
                 VisualLayer {
                     kind: VisualLayerKind::Scene(overlay_scene.clone().into()),
                     transform: Affine::translate((20.0, 5.0)),
                     widget_id: WidgetId::next(),
-                    groups: Vec::new(),
-                    command_owners: Vec::new(),
+                    metadata: None,
                 },
             ],
         };

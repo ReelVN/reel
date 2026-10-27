@@ -357,6 +357,7 @@ impl GlesBackend {
         let ready = match upload {
             Ok(ready) => ready,
             Err(error) => {
+                self.images.release_scratch();
                 if !self.drain_error() {
                     self.failed_images.extend(touched);
                 }
@@ -414,6 +415,7 @@ impl GlesBackend {
         ) {
             Ok(prepared) => Ok(prepared),
             Err((error, work)) => {
+                self.images.release_scratch();
                 if !self.drain_error() {
                     self.failed_work.push(work);
                 }

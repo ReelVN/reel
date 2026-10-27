@@ -227,6 +227,7 @@ pub trait Widget: AsDynWidget + Any {
     }
 
     /// Internal logical navigation boundary for containers with unmounted children.
+    /// Request layout when the child projection or its revision changes.
     fn virtual_children(&self) -> Option<VirtualChildren<'_>> {
         None
     }
@@ -577,6 +578,8 @@ pub trait Widget: AsDynWidget + Any {
     }
 
     /// Shared selection identity and current value, independent of decoration.
+    /// Changing the group identity requires `invalidate_input_configuration`;
+    /// changing only the selected value preserves the accepted geometry.
     fn selection_group(&self) -> Option<SelectionGroup> {
         None
     }
