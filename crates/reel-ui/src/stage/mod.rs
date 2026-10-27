@@ -288,8 +288,10 @@ pub enum NodeKind {
         label: Option<String>,
         listening: bool,
         /// Request keyboard focus on pointer press; false preserves its current owner.
-        /// Tab and controller focus navigation remain enabled.
+        /// Navigation and explicit focus participation follow focusable.
         focus_on_pointer: bool,
+        /// Participate in navigation and explicit focus; pointer input remains enabled.
+        focusable: bool,
     },
     Slider {
         value: f64,

@@ -53,6 +53,7 @@ fn fixture() -> (Fixture, NodeId, NodeId, NodeId, Rc<RefCell<Vec<bool>>>) {
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 width: Some(70.),
@@ -86,6 +87,7 @@ fn fixture() -> (Fixture, NodeId, NodeId, NodeId, Rc<RefCell<Vec<bool>>>) {
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 x: 100.,

@@ -141,7 +141,11 @@ pub(in crate::aside) enum ButtonField {
     OnClick,
     /// Request keyboard focus on a primary pointer press; defaults to true.
     /// Set false for HUD or toolbar clicks that preserve the current focus.
-    /// Tab, controller navigation and focused confirmation remain available.
+    /// Navigation and explicit focus participation follow focusable.
     #[aside(name="focus_on_pointer",ty=Bool,default=true)]
     FocusOnPointer,
+    /// Participate in Tab, directional navigation and explicit stage.focus requests.
+    /// Defaults to true. False keeps pointer hover, press and click interaction.
+    #[aside(name="focusable",ty=Bool,default=true)]
+    Focusable,
 }

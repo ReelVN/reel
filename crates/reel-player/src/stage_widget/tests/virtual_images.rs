@@ -19,6 +19,7 @@ fn fixture_with_overflow(descendant: Option<bool>) -> (Fixture, NodeId, NodeId, 
                     label: (index == 5 && descendant == Some(false)).then(|| "old".into()),
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 },
                 NodeProps {
                     height: Some(40.),
@@ -40,6 +41,7 @@ fn fixture_with_overflow(descendant: Option<bool>) -> (Fixture, NodeId, NodeId, 
                         label: Some("old".into()),
                         listening: true,
                         focus_on_pointer: true,
+                        focusable: true,
                     },
                     NodeProps {
                         y: -210.,
@@ -179,6 +181,7 @@ fn current_candidate_checks_old_new_transformed_and_overflowing_rows() {
                             label: Some("new".into()),
                             listening: true,
                             focus_on_pointer: true,
+                            focusable: true,
                         },
                         props.clone(),
                     )

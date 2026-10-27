@@ -973,6 +973,8 @@ The default handoff displays navigation focus. Use `visibility: "preserve"` to k
 let focused = await stage.focus(next, visibility: "preserve");
 ```
 
+Use `button(focusable: false, focus_on_pointer: false)` for side actions that accept pointer hover and clicks while retaining focus on the current control. `focusable: false` excludes the button from directional navigation, Tab and `stage.focus`; explicit handoff returns false. The property supports bindings and updates with the current stage state.
+
 `text_input` edits a single line and `text_area` edits multiple lines. Bind them to business fields so control writeback and other views share one state.
 
 ```aside

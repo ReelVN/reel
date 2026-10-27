@@ -36,6 +36,7 @@ fn font_weight_selects_faces_for_labels_and_input_without_rebuilding_widgets() {
             label: Some("AAA".into()),
             listening: false,
             focus_on_pointer: true,
+            focusable: true,
         },
         NodeKind::TextInput {
             multiline: false,

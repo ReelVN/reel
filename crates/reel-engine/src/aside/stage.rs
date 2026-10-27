@@ -50,7 +50,9 @@ aside_host::native_documentation! {
         /// Create a button with optional label and on_click callback. Authored children
         /// can supply its appearance; decorated:false disables built-in decoration.
         /// focus_on_pointer:false preserves keyboard focus on pointer presses;
-        /// Tab, controller navigation and focused confirmation remain available.
+        /// Navigation and explicit focus participation follow focusable.
+        /// focusable:false excludes Tab, directional and explicit focus while
+        /// preserving pointer hover, press and click interaction.
         /// The callback receives an event with this node as target.
         "reel::button";
         /// Create a numeric control with min, max and step. Bind value to a writable
@@ -1000,6 +1002,7 @@ impl StageBinding {
                         heap.table_entry(fields, 0)?.1,
                         heap.table_entry(fields, 1)?.1,
                         heap.table_entry(fields, 2)?.1,
+                        heap.table_entry(fields, 3)?.1,
                         read_limit,
                     )?,
                     appearance::ButtonField::PROPERTIES.len(),
@@ -1944,6 +1947,7 @@ fn button_kind(
     label: Value,
     callback: Value,
     focus_on_pointer: Value,
+    focusable: Value,
     read_limit: usize,
 ) -> Result<NodeKind, AdapterError> {
     validate_button_property(heap, 1, callback)?;
@@ -1957,6 +1961,9 @@ fn button_kind(
         focus_on_pointer: focus_on_pointer
             .as_bool()
             .ok_or(AdapterError::Input("focus_on_pointer must be boolean"))?,
+        focusable: focusable
+            .as_bool()
+            .ok_or(AdapterError::Input("focusable must be boolean"))?,
     })
 }
 fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
@@ -1965,7 +1972,7 @@ fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(),
         0 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::String, value)? => Ok(()),
         1 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::Closure, value)? => Ok(()),
         0 | 1 => Err(HeapError::TypeMismatch),
-        2 => value.as_bool().map(|_| ()).ok_or(HeapError::TypeMismatch),
+        2 | 3 => value.as_bool().map(|_| ()).ok_or(HeapError::TypeMismatch),
         _ => validate_layout_property(
             heap,
             index - appearance::ButtonField::PROPERTIES.len() as u32,

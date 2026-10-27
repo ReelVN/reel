@@ -59,6 +59,7 @@ fn virtual_fixture_with_font(
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 height: Some(40.),
@@ -308,6 +309,7 @@ fn virtual_list_navigation_waits_for_accepted_rows_and_cancels_old_confirmation(
                     label: None,
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 },
                 NodeProps {
                     height: Some(40.),
@@ -477,6 +479,7 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
                     label: None,
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 }
             };
             let child = f
@@ -1919,6 +1922,7 @@ fn text_wrap_keeps_control_labels_on_their_existing_overflow_path() {
                 label: Some("A control label keeps its existing layout".into()),
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 width: Some(120.),
@@ -2475,6 +2479,7 @@ fn same_parent_reorder_preserves_widgets_focus_and_presented_hit_order() {
                     label: Some(label.into()),
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 },
                 NodeProps {
                     width: Some(160.),
@@ -2786,6 +2791,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             f.stage.node(f.root).unwrap().props.clone(),
         )

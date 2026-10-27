@@ -71,6 +71,7 @@ fn setup() -> (Fixture, NodeId) {
                     label: None,
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 },
                 NodeProps {
                     y,

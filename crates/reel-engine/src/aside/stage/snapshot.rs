@@ -86,7 +86,7 @@ impl Shape {
             Self::TextInput | Self::TextArea => {
                 text_input::kind(heap, fields, limit, self == Self::TextArea)?
             }
-            Self::Button => button_kind(heap, get(0)?, get(1)?, get(2)?, limit)?,
+            Self::Button => button_kind(heap, get(0)?, get(1)?, get(2)?, get(3)?, limit)?,
             Self::Slider => controls::slider_kind(heap, fields)?,
             Self::Switch | Self::Checkbox => controls::toggle_kind(
                 heap,

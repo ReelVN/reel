@@ -159,6 +159,7 @@ fn cell(f: &mut Fixture, width: Option<f64>, height: f64, flex: f64) -> NodeId {
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 width,

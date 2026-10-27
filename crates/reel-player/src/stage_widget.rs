@@ -2110,7 +2110,14 @@ impl SceneWidget {
             if matches!(view.node.kind, NodeKind::Camera(_)) {
                 this.ctx.request_compose();
             }
+            let accepted_focus = this.widget.accepts_focus();
             this.widget.node = view.node.clone();
+            if accepted_focus != this.widget.accepts_focus() {
+                this.ctx.set_interactive(
+                    this.widget.accepts_pointer_interaction(),
+                    this.widget.accepts_focus(),
+                );
+            }
             this.ctx.request_render();
         }
         if content_changed && !feedback && this.widget.is_button() {
@@ -2308,13 +2315,14 @@ impl Widget for SceneWidget {
         if self.is_button() {
             let consumes = matches!(event, PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary))
                 || matches!(event, PointerEvent::Up(_)) && ctx.is_active();
-            let focus_on_pointer = !matches!(
-                self.node.kind,
-                NodeKind::Button {
-                    focus_on_pointer: false,
-                    ..
-                }
-            );
+            let focus_on_pointer = self.accepts_focus()
+                && !matches!(
+                    self.node.kind,
+                    NodeKind::Button {
+                        focus_on_pointer: false,
+                        ..
+                    }
+                );
             if ButtonBehavior::pointer(ctx, event, focus_on_pointer).is_some() {
                 ctx.submit_action::<Self::Action>(self.activate());
                 ctx.request_render();
@@ -3205,7 +3213,10 @@ impl Widget for SceneWidget {
         matches!(self.node.kind, NodeKind::Cursor)
     }
     fn accepts_focus(&self) -> bool {
-        self.is_button() || self.input.as_ref().is_some_and(NodeInput::accepts_focus)
+        match self.node.kind {
+            NodeKind::Button { focusable, .. } => focusable,
+            _ => self.is_button() || self.input.as_ref().is_some_and(NodeInput::accepts_focus),
+        }
     }
     fn selection_group(&self) -> Option<reel_ui::core::SelectionGroup> {
         match self.node.kind {

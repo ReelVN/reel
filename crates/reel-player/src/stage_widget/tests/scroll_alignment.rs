@@ -61,6 +61,7 @@ fn scroll_cross_axis_keeps_explicit_caps_alignment_and_hit_geometry() {
                     label: None,
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 },
                 NodeProps {
                     width: Some(if vertical {
