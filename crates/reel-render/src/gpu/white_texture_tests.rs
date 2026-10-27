@@ -96,6 +96,236 @@ fn counts(renderer: &Renderer, uploads: usize) {
 }
 
 #[test]
+fn recording_geometry_borrows_stable_data_and_bounds_changing_candidates() {
+    use crate::common::{
+        mesh,
+        recording_cache::{Cache, Scope, ShapeDependency},
+    };
+    let pool = pool();
+    let mut widget = RecordWidget::new(workload(1, 0, Color::WHITE));
+    widget.clip = false;
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let command = frame
+        .commands()
+        .iter()
+        .find(|command| matches!(command.op, reel_ui::frame::FrameOp::Draw(_)))
+        .unwrap();
+    let reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::Fill { shape, .. }) = &command.op
+    else {
+        panic!("fill fixture")
+    };
+    let limits = super::super::GpuLimits::default();
+    let shared = Budgets::new(limits);
+    let local = Budgets::new(limits);
+    let mut cache = Cache::default();
+    let dependency = |x| ShapeDependency {
+        transform: Affine::translate((x, 0.)),
+        size: [400, 300],
+        uv: Affine::IDENTITY,
+        color: [1.; 4],
+        sampling: Default::default(),
+    };
+    let allocation = || mesh::Allocation::new(&shared, &local, limits.transient_bytes, 1 << 26);
+    let generate = |cache: &mut Cache<_, _>, x, enabled| {
+        cache
+            .shape(
+                frame.drawing(),
+                command.origin,
+                (shape, Default::default(), None),
+                dependency(x),
+                allocation(),
+                Scope {
+                    budgets: &shared,
+                    limit: limits.transient_bytes,
+                    enabled,
+                },
+            )
+            .unwrap()
+    };
+    assert!(generate(&mut cache, 0., true).identity.is_none());
+    let admitted = generate(&mut cache, 0., true);
+    assert!(admitted.identity.is_some());
+    drop(admitted);
+    let first = generate(&mut cache, 0., false);
+    let second = generate(&mut cache, 0., false);
+    assert_eq!(first.vertices.as_ptr(), second.vertices.as_ptr());
+    assert_eq!(first.indices.as_ptr(), second.indices.as_ptr());
+    drop((first, second));
+    drop(generate(&mut cache, 1., true));
+    let candidate_bytes = cache.bytes();
+    for step in 2..242 {
+        let mesh = generate(&mut cache, f64::from(step), true);
+        assert!(
+            mesh.identity.is_none(),
+            "changing transforms never copy into residency"
+        );
+        drop(mesh);
+        assert_eq!(cache.bytes(), candidate_bytes);
+    }
+    eprintln!("moving_frames=240 cached_mesh_copies=0 candidate_bytes={candidate_bytes}");
+    drop(bridge);
+    assert!(
+        cache
+            .get(frame.drawing(), command.origin, &dependency(241.))
+            .is_none()
+    );
+    assert_eq!(cache.bytes(), 0);
+    assert_eq!(shared.transient.usage().bytes, 0);
+    assert_eq!(local.transient.usage().bytes, 0);
+}
+
+fn moving_triangle_fixture() -> (
+    reel_ui::bridge::PresentationBridge,
+    reel_ui::core::WidgetId,
+    BudgetPool,
+) {
+    use reel_ui::{
+        core::Widget,
+        kurbo::{BezPath, Point, Size},
+    };
+    let mut parent = RecordWidget::new(Scene::new());
+    parent.clip = false;
+    let mut middle = None;
+    for index in 0..3 {
+        let mut path = BezPath::new();
+        path.move_to((0., 0.));
+        path.line_to((20., 0.));
+        path.line_to((0., 20.));
+        path.close_path();
+        let mut scene = Scene::new();
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(Color::WHITE),
+            brush_transform: None,
+            shape: Geometry::Path(path),
+            composite: Default::default(),
+        });
+        let mut child = RecordWidget::new(scene);
+        child.clip = false;
+        let id = parent.inner.add(
+            child.prepare(),
+            Point::new(f64::from(index * 30), 0.),
+            Size::new(20., 20.),
+        );
+        if index == 1 {
+            middle = Some(id);
+        }
+    }
+    (
+        widget_bridge(parent, Affine::IDENTITY),
+        middle.unwrap(),
+        pool(),
+    )
+}
+
+#[test]
+#[ignore = "requires native WGPU; no pixel readback"]
+fn one_moving_triangle_updates_one_aligned_range_without_splitting_the_draw() {
+    use std::sync::atomic::Ordering;
+    let (mut bridge, middle, pool) = moving_triangle_fixture();
+    let mut renderer = renderer(Default::default());
+    for id in 1..=3 {
+        let frame = build(
+            bridge.record(FrameId(id)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        renderer.submit(renderer.prepare(&frame).unwrap()).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    bridge.edit_widget(middle, |mut widget| {
+        widget.ctx.set_transform(Affine::translate((1., 0.)))
+    });
+    let frame = build(
+        bridge.record(FrameId(4)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let bytes = renderer.geometry.uploaded_bytes.load(Ordering::Relaxed);
+    let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
+    renderer.submit(renderer.prepare(&frame).unwrap()).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(
+        renderer.geometry.uploaded_bytes.load(Ordering::Relaxed) - bytes,
+        3 * 48 + 8
+    );
+    assert_eq!(
+        renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - draws,
+        1
+    );
+}
+
+#[cfg(all(feature = "gles2", feature = "profiling"))]
+#[test]
+#[ignore = "requires native GLES; no pixel readback"]
+fn one_moving_triangle_gles_updates_one_native_range() {
+    use crate::{
+        RenderBackend,
+        gles2::{GlesBackend, GlesLimits},
+    };
+    use reel_core::profile::GeometryUploads;
+    let (mut bridge, middle, pool) = moving_triangle_fixture();
+    let mut renderer = GlesBackend::headless([400, 300], GlesLimits::default()).unwrap();
+    renderer
+        .configure(crate::SurfaceInfo {
+            physical_size: [400, 300],
+            scale_factor: 1.,
+            surface_epoch: reel_core::identity::SurfaceEpoch(1),
+            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
+            alpha_mode: crate::AlphaMode::Opaque,
+        })
+        .unwrap();
+    let complete = |renderer: &mut GlesBackend| {
+        let start = Instant::now();
+        while renderer.has_pending() {
+            renderer.poll(&mut Vec::new(), 32).unwrap();
+            assert!(start.elapsed().as_secs() < 10);
+            std::thread::yield_now();
+        }
+    };
+    for id in 1..=3 {
+        let frame = build(
+            bridge.record(FrameId(id)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        renderer.render_present(&frame, || {}).unwrap();
+        complete(&mut renderer);
+    }
+    bridge.edit_widget(middle, |mut widget| {
+        widget.ctx.set_transform(Affine::translate((1., 0.)))
+    });
+    let frame = build(
+        bridge.record(FrameId(4)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let before = GeometryUploads::snapshot();
+    renderer.render_present(&frame, || {}).unwrap();
+    complete(&mut renderer);
+    let upload = GeometryUploads::snapshot().delta(before);
+    assert_eq!(upload.bytes, 3 * 48 + 6);
+    assert_eq!(upload.calls, 2);
+    renderer.close().unwrap();
+}
+
+#[test]
 #[ignore = "requires actual graphics adapter; submits without pixel readback"]
 fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
     use std::sync::atomic::Ordering;
@@ -461,6 +691,7 @@ fn long_text_fixture() -> (
     reel_ui::resources::ResourceRegistry,
     reel_ui::resources::ResourceHandle,
     RenderFrame,
+    reel_ui::bridge::PresentationBridge,
 ) {
     use reel_ui::{
         app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
@@ -519,14 +750,15 @@ fn long_text_fixture() -> (
         registry.freeze(&[handle], &pool).unwrap(),
         &pool,
     );
-    (pool, registry, handle, frame)
+    (pool, registry, handle, frame, bridge)
 }
 
 #[test]
 #[ignore = "requires actual graphics adapter and REEL_R01_TEST_FONT"]
 fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparations() {
     use std::sync::atomic::Ordering;
-    let (pool, mut registry, handle, frame) = long_text_fixture();
+    let (pool, mut registry, handle, frame, _bridge) = long_text_fixture();
+    drop(_bridge);
     let glyph_count: usize = frame
         .commands()
         .iter()
@@ -676,7 +908,7 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
 #[ignore = "requires native WGPU and REEL_R01_TEST_FONT; no pixel readback"]
 fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
     use std::sync::atomic::Ordering;
-    let (_pool, _registry, _handle, frame) = long_text_fixture();
+    let (_pool, _registry, _handle, frame, _bridge) = long_text_fixture();
     let glyph_count: usize = frame
         .commands()
         .iter()
@@ -712,9 +944,14 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
     let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize]
         .load(Ordering::Relaxed);
     let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
+    let geometry_upload = renderer.geometry.uploaded_bytes.load(Ordering::Relaxed);
     let start = Instant::now();
+    let mut prepare_us = 0;
     for _ in 0..8 {
-        renderer.submit(renderer.prepare(&frame).unwrap()).unwrap();
+        let prepare = Instant::now();
+        let prepared = renderer.prepare(&frame).unwrap();
+        prepare_us += prepare.elapsed().as_micros();
+        renderer.submit(prepared).unwrap();
         renderer
             .gpu
             .device
@@ -724,6 +961,11 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         assert_eq!(renderer.usage().resources, resident);
     }
     assert_eq!(renderer.gpu.upload_creations.snapshot(), uploads);
+    assert_eq!(
+        renderer.geometry.uploaded_bytes.load(Ordering::Relaxed),
+        geometry_upload,
+        "stable source recordings skip all geometry uploads"
+    );
     let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize]
         .load(Ordering::Relaxed)
         - coverage;
@@ -740,14 +982,104 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
             .all(|count| count.load(Ordering::Relaxed) == 0)
     );
     eprintln!(
-        "glyphs={glyph_count} atlas_bytes={resident} cold_resource_peak={cold_resource_peak} warm_frames=8 uploads=0 coverage_draws={coverage} submit_complete_us={}",
+        "glyphs={glyph_count} atlas_bytes={resident} cold_resource_peak={cold_resource_peak} warm_frames=8 uploads=0 geometry_upload_bytes=0 coverage_draws={coverage} prepare_us={prepare_us} submit_complete_us={}",
         start.elapsed().as_micros()
+    );
+    // The identical immutable frame remains renderable after its recording dies;
+    // this is also the uncached reference workload without copying source code.
+    drop(_bridge);
+    renderer.geometry.shapes.lock().unwrap().clear();
+    renderer.geometry.glyphs.lock().unwrap().clear();
+    let before = renderer.geometry.uploaded_bytes.load(Ordering::Relaxed);
+    let mut prepare_us = 0;
+    for _ in 0..8 {
+        let start = Instant::now();
+        let prepared = renderer.prepare(&frame).unwrap();
+        prepare_us += start.elapsed().as_micros();
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    let bytes = renderer.geometry.uploaded_bytes.load(Ordering::Relaxed) - before;
+    assert!(bytes > 0);
+    eprintln!(
+        "same_frame_without_live_recording frames=8 geometry_upload_bytes={bytes} prepare_us={prepare_us}"
     );
 }
 
 fn usage(renderer: &Renderer) -> [u64; 3] {
     let u = renderer.usage();
     [u.targets, u.resources, u.transient]
+}
+
+#[cfg(all(feature = "gles2", feature = "profiling"))]
+#[test]
+#[ignore = "requires native GLES and REEL_R01_TEST_FONT; no pixel readback"]
+fn long_text_gles_reuses_recorded_geometry_without_uploads() {
+    use crate::{
+        RenderBackend,
+        gles2::{GlesBackend, GlesLimits},
+    };
+    use reel_core::profile::GeometryUploads;
+    let (_pool, _registry, _handle, frame, bridge) = long_text_fixture();
+    let mut renderer =
+        GlesBackend::headless(frame.info().physical_size, GlesLimits::default()).unwrap();
+    renderer
+        .configure(crate::SurfaceInfo {
+            physical_size: frame.info().physical_size,
+            scale_factor: 1.,
+            surface_epoch: frame.surface_epoch(),
+            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
+            alpha_mode: crate::AlphaMode::Opaque,
+        })
+        .unwrap();
+    let complete = |renderer: &mut GlesBackend| {
+        let start = Instant::now();
+        while renderer.has_pending() {
+            renderer.poll(&mut Vec::new(), 32).unwrap();
+            assert!(start.elapsed().as_secs() < 10);
+            std::thread::yield_now();
+        }
+    };
+    for _ in 0..3 {
+        renderer.render_present(&frame, || {}).unwrap();
+        complete(&mut renderer);
+    }
+    let before = GeometryUploads::snapshot();
+    let mut prepare_us = 0;
+    for _ in 0..8 {
+        let start = Instant::now();
+        renderer.render_present(&frame, || {}).unwrap();
+        prepare_us += start.elapsed().as_micros();
+        complete(&mut renderer);
+    }
+    let upload = GeometryUploads::snapshot().delta(before);
+    assert_eq!(upload.bytes, 0);
+    assert_eq!(upload.calls, 0);
+    eprintln!(
+        "GLES warm_frames=8 geometry_upload_bytes={} calls={} render_present_cpu_us={prepare_us}",
+        upload.bytes, upload.calls
+    );
+    drop(bridge);
+    let before = GeometryUploads::snapshot();
+    let mut prepare_us = 0;
+    for _ in 0..8 {
+        let start = Instant::now();
+        renderer.render_present(&frame, || {}).unwrap();
+        prepare_us += start.elapsed().as_micros();
+        complete(&mut renderer);
+    }
+    let upload = GeometryUploads::snapshot().delta(before);
+    assert!(upload.bytes > 0);
+    eprintln!(
+        "GLES same_frame_without_live_recording frames=8 geometry_upload_bytes={} calls={} render_present_cpu_us={prepare_us}",
+        upload.bytes, upload.calls
+    );
+    renderer.close().unwrap();
 }
 fn empty(renderer: &Renderer) {
     renderer.targets.clear();
@@ -1017,17 +1349,30 @@ fn retired_decoded_images_reuse_completed_storage_across_resource_versions() {
             assert_eq!(image.residency.as_ref().unwrap().bytes(), 8 * 8 * 8);
         }
         assert_eq!(renderer.gpu.upload_creations.snapshot()[0], 3);
-        let versions: Vec<_> = frame.resources().leases().iter().map(|lease| lease.version().clone()).collect();
+        let versions: Vec<_> = frame
+            .resources()
+            .leases()
+            .iter()
+            .map(|lease| lease.version().clone())
+            .collect();
         renderer.submit(prepared).unwrap();
-        for handle in handles { registry.retire(handle); }
+        for handle in handles {
+            registry.retire(handle);
+        }
         renderer.retire(&versions);
         drop(frame);
         drop(registry);
-        renderer.gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         renderer.poll().unwrap();
     }
     empty(&renderer);
-    eprintln!("decoded RGBA: 8 three-image sets create3 working F16 textures instead of24; cleared GPU/CPU reservations");
+    eprintln!(
+        "decoded RGBA: 8 three-image sets create3 working F16 textures instead of24; cleared GPU/CPU reservations"
+    );
 }
 
 fn image_restore_fixture(

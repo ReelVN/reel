@@ -13,7 +13,7 @@ pub use decode::ImageExecutor;
 pub use io::{DirectoryIo, PackIo};
 use reel_core::texture::{TextureCodec, TextureDescriptor, TextureHeader, TexturePayload};
 use reel_core::{
-    budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
+    budget::{BudgetCategory, BudgetGroup, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetKey, AssetSource, IoId, Priority, ResourceVersion, Scope, WorkId},
     io::{AssetIo, DescribeRequest, IoError, IoEvent, IoPayload, ReadRequest},
     result::Terminal,
@@ -37,6 +37,8 @@ use std::{
 pub struct AssetOptions {
     pub root: PathBuf,
     pub resident_bytes: u64,
+    /// Total encoded input ceiling. Streaming reserves min(128 KiB, one quarter)
+    /// within this ceiling; ordinary resources must fit the remaining capacity.
     pub input_bytes: u64,
     /// Temporary allowance shared by the archive reader and active image decoder.
     /// Compressed archives retain a fixed workspace; the decoder uses the remainder.
@@ -53,6 +55,12 @@ impl Default for AssetOptions {
     }
 }
 impl AssetOptions {
+    fn stream_input_bytes(&self) -> u64 {
+        (128 << 10).min(self.input_bytes / 4)
+    }
+    fn ordinary_input_bytes(&self) -> u64 {
+        self.input_bytes - self.stream_input_bytes()
+    }
     fn queue_limits(&self) -> QueueLimits {
         QueueLimits {
             max_requests: 32,
@@ -109,6 +117,7 @@ struct Service {
     wake: WakeSignal,
     notify: Notify,
     input: BudgetPool,
+    stream_input: BudgetPool,
     output: BudgetPool,
     temporary: BudgetPool,
     io_workspace_bytes: u64,
@@ -250,12 +259,23 @@ impl Assets {
                 },
             )
         };
+        let input_group = BudgetGroup::new(options.input_bytes);
+        let input_pool = |bytes| {
+            input_group.pool(
+                BudgetCategory::CpuInput,
+                QueueLimits {
+                    max_requests: u32::MAX,
+                    max_bytes: bytes,
+                },
+            )
+        };
         Self(Rc::new(RefCell::new(Service {
             io: Some(io),
             executor: Some(executor),
             wake,
             notify,
-            input: pool(BudgetCategory::CpuInput, options.input_bytes),
+            input: input_pool(options.ordinary_input_bytes()),
+            stream_input: input_pool(options.stream_input_bytes()),
             output: pool(BudgetCategory::CpuOutput, options.resident_bytes),
             io_workspace_bytes: temporary.usage().bytes,
             temporary,
@@ -312,9 +332,13 @@ impl Assets {
             return Err("asset service closed".into());
         }
         let wake = service.wake.clone();
-        let chunk = service.options.input_bytes.min(64 << 10) as u32;
+        let chunk = service
+            .options
+            .stream_input_bytes()
+            .div_ceil(2)
+            .min(64 << 10) as u32;
         if chunk == 0 {
-            return Err("streaming requires a nonempty resource input budget".into());
+            return Err("streaming requires a nonempty reserved input allowance".into());
         }
         service.streams.create(source.into(), wake, chunk)
     }
@@ -388,11 +412,12 @@ impl Assets {
         if service.executor.is_none() {
             return Err("asset service closed".into());
         }
-        if bytes.len() as u64 > service.options.input_bytes {
+        if bytes.len() as u64 > service.options.ordinary_input_bytes() {
             return Err(format!(
-                "image {key:?} requires {} input bytes; configured capacity is {}",
+                "image {key:?} requires {} input bytes; ordinary input capacity is {} ({} reserved for streaming)",
                 bytes.len(),
-                service.options.input_bytes
+                service.options.ordinary_input_bytes(),
+                service.options.stream_input_bytes()
             ));
         }
         let Ok(ticket) = service.input.reserve(bytes.len() as u64) else {
@@ -490,7 +515,9 @@ impl Assets {
     /// Includes cancelled IO whose owned buffers/completions have not returned yet.
     pub fn pending_io(&self) -> bool {
         let service = self.0.borrow();
-        service.completion.usage().tickets != 0 || service.input.usage().tickets != 0
+        service.completion.usage().tickets != 0
+            || service.input.usage().tickets != 0
+            || service.stream_input.usage().tickets != 0
     }
     pub fn cancel(&self, id: LoadId) {
         let mut service = self.0.borrow_mut();
@@ -680,7 +707,7 @@ impl Service {
         self.loads = loads;
         self.streams.submit(
             self.io.as_mut().unwrap().as_mut(),
-            &self.input,
+            &self.stream_input,
             &self.completion,
         );
         if progress.has_work || more_completions {
@@ -701,10 +728,12 @@ impl Service {
                 Err(error) => return Err(error.reason.message),
             },
             Phase::Read(len) => {
-                if u64::from(len) > self.options.input_bytes {
+                if u64::from(len) > self.options.ordinary_input_bytes() {
                     return Err(format!(
-                        "asset {:?} requires {len} input bytes; configured capacity is {}",
-                        load.source.key.0, self.options.input_bytes
+                        "asset {:?} requires {len} input bytes; ordinary input capacity is {} ({} reserved for streaming)",
+                        load.source.key.0,
+                        self.options.ordinary_input_bytes(),
+                        self.options.stream_input_bytes()
                     ));
                 }
                 let Ok(output) = self.input.reserve(u64::from(len)) else {

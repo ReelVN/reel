@@ -234,16 +234,29 @@ impl GlesBackend {
         if capture {
             self.images.release_idle();
         }
+        self.geometry.cpu_disabled = false;
+        self.geometry.optional_used = false;
         let result = self.prepare_cached(frame, size, capture);
-        if matches!(result, Err(GlesError::Pressure { .. })) && !self.drain_failed {
+        let fallback = self.geometry.optional_used
+            && matches!(
+                result,
+                Err(GlesError::Budget {
+                    domain: "transient" | "mesh scratch" | "geometry" | "index packing",
+                    ..
+                })
+            );
+        if (fallback || matches!(result, Err(GlesError::Pressure { .. }))) && !self.drain_failed {
             let resident = self._group.usage().bytes;
             self.targets.clear();
             self.geometry.clear();
             // Glyph and geometry demand is discovered during replay. Retry once
             // when evicting the unused scratch pool actually released capacity.
             // In-flight owners keep their allocations until completion.
-            if self._group.usage().bytes < resident {
-                return self.prepare_cached(frame, size, capture);
+            if fallback || self._group.usage().bytes < resident {
+                self.geometry.cpu_disabled = true;
+                let result = self.prepare_cached(frame, size, capture);
+                self.geometry.cpu_disabled = false;
+                return result;
             }
         }
         result

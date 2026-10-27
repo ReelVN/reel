@@ -21,6 +21,13 @@ pub(super) struct Files {
     workspace: Option<Workspace>,
 }
 impl Files {
+    #[cfg(test)]
+    pub(super) fn seek_calls(&self) -> usize {
+        self.archives
+            .iter()
+            .map(|archive| archive.file.seek_calls())
+            .sum()
+    }
     pub(super) fn open(
         paths: impl IntoIterator<Item = PathBuf>,
         overlay: Option<directory::Files>,

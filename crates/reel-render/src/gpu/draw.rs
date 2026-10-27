@@ -133,7 +133,11 @@ impl Context<'_> {
         )?;
         self.paint_solid(target, mesh)
     }
-    fn paint_solid(&mut self, target: &Target, mesh: mesh::Mesh) -> Result<(), GpuError> {
+    fn paint_solid(
+        &mut self,
+        target: &Target,
+        mesh: impl Into<crate::common::recording_cache::Reference>,
+    ) -> Result<(), GpuError> {
         let white = self.white()?;
         self.paint_mesh(
             target,
@@ -189,8 +193,12 @@ impl Context<'_> {
         target: &Target,
         draw: &FrameDraw,
         outer: Affine,
-        at: RecordLocation,
+        origin: reel_ui::frame::CommandOrigin,
     ) -> Result<(), GpuError> {
+        let at = origin.at;
+        if !self.capture && self.geometry_policy.reuse && frame.recording(origin).is_some() {
+            self.geometry_policy.optional.set(true);
+        }
         let (transform, shape, fill, stroke, brush, brush_transform, composite) = match draw {
             FrameDraw::Fill {
                 transform,
@@ -224,7 +232,7 @@ impl Context<'_> {
                 *brush_transform,
                 *composite,
             ),
-            FrameDraw::GlyphRun(run) => return self.glyphs(frame, target, run, outer, at),
+            FrameDraw::GlyphRun(run) => return self.glyphs(frame, target, run, outer, origin),
             FrameDraw::BlurredRoundedRect(_) => {
                 return Err(GpuError::Unsupported {
                     at,
@@ -233,7 +241,6 @@ impl Context<'_> {
             }
         };
         self.composite_supported(composite, at)?;
-        let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
         let (image, uv, color, repeat, appearance, quality) = match brush {
             Brush::Solid(c) => {
                 let color = c
@@ -241,13 +248,24 @@ impl Context<'_> {
                     .premultiply()
                     .components
                     .map(|v| v * composite.alpha);
-                mesh::transform(
-                    &mut mesh,
-                    outer * transform,
-                    self.size,
-                    Affine::IDENTITY,
-                    color,
-                    at,
+                let allocation = self.mesh_allocation();
+                let mesh = self.geometry_cache.shapes.lock().unwrap().shape(
+                    frame,
+                    origin,
+                    (shape, fill, stroke),
+                    crate::common::recording_cache::ShapeDependency {
+                        transform: outer * transform,
+                        size: self.size,
+                        uv: Affine::IDENTITY,
+                        color,
+                        sampling: Default::default(),
+                    },
+                    allocation,
+                    crate::common::recording_cache::Scope {
+                        budgets: self.budgets,
+                        limit: self.gpu.limits.transient_bytes,
+                        enabled: !self.capture && self.geometry_policy.reuse,
+                    },
                 )?;
                 return self.paint_solid(target, mesh);
             }
@@ -294,13 +312,24 @@ impl Context<'_> {
                 else {
                     return Ok(());
                 };
-                mesh::transform(
-                    &mut mesh,
-                    outer * transform,
-                    self.size,
-                    Affine::IDENTITY,
-                    [composite.alpha; 4],
-                    at,
+                let allocation = self.mesh_allocation();
+                let mesh = self.geometry_cache.shapes.lock().unwrap().shape(
+                    frame,
+                    origin,
+                    (shape, fill, stroke),
+                    crate::common::recording_cache::ShapeDependency {
+                        transform: outer * transform,
+                        size: self.size,
+                        uv: Affine::IDENTITY,
+                        color: [composite.alpha; 4],
+                        sampling: Default::default(),
+                    },
+                    allocation,
+                    crate::common::recording_cache::Scope {
+                        budgets: self.budgets,
+                        limit: self.gpu.limits.transient_bytes,
+                        enabled: !self.capture && self.geometry_policy.reuse,
+                    },
                 )?;
                 let white = self.white()?;
                 return self.paint_mesh(
@@ -312,14 +341,30 @@ impl Context<'_> {
                 );
             }
         };
-        if let Brush::Image(brush) = brush {
-            mesh.set_image_sampling(mesh::ImageSampling::with_layout(
-                brush.image.source_rect,
-                image.layout,
-                repeat,
-            ));
-        }
-        mesh::transform(&mut mesh, outer * transform, self.size, uv, color, at)?;
+        let sampling = if let Brush::Image(brush) = brush {
+            mesh::ImageSampling::with_layout(brush.image.source_rect, image.layout, repeat)
+        } else {
+            Default::default()
+        };
+        let allocation = self.mesh_allocation();
+        let mesh = self.geometry_cache.shapes.lock().unwrap().shape(
+            frame,
+            origin,
+            (shape, fill, stroke),
+            crate::common::recording_cache::ShapeDependency {
+                transform: outer * transform,
+                size: self.size,
+                uv,
+                color,
+                sampling,
+            },
+            allocation,
+            crate::common::recording_cache::Scope {
+                budgets: self.budgets,
+                limit: self.gpu.limits.transient_bytes,
+                enabled: !self.capture && self.geometry_policy.reuse,
+            },
+        )?;
         self.paint_resource(target, mesh, &image, repeat, appearance, quality)
     }
     pub(super) fn image_resource(
@@ -337,12 +382,16 @@ impl Context<'_> {
     }
     fn glyphs(
         &mut self,
-        _frame: &FrameDrawing,
+        frame: &FrameDrawing,
         target: &Target,
         run: &reel_ui::frame::FrameGlyphRun,
         outer: Affine,
-        at: RecordLocation,
+        origin: reel_ui::frame::CommandOrigin,
     ) -> Result<(), GpuError> {
+        let at = origin.at;
+        if !self.capture && self.geometry_policy.reuse && frame.recording(origin).is_some() {
+            self.geometry_policy.optional.set(true);
+        }
         self.composite_supported(run.composite, at)?;
         let (color, paint) = match &run.brush {
             Brush::Solid(color) => (
@@ -375,6 +424,55 @@ impl Context<'_> {
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         let density = super::glyph::raster_density(outer * run.transform);
         let run_key = Arc::new(super::glyph_cache::RunKey::new(run, density));
+        let dependency = crate::common::recording_cache::GlyphDependency {
+            transform: outer * run.transform,
+            size: self.size,
+            color,
+            font: run.font,
+        };
+        let cached = self
+            .geometry_cache
+            .glyphs
+            .lock()
+            .unwrap()
+            .get(frame, origin, &dependency);
+        if let Some(cached) = cached
+            && cached.value().leases.iter().all(|(id, lease)| {
+                self.glyphs
+                    .entries
+                    .get(&super::glyph_cache::Key::new(run_key.clone(), *id))
+                    .is_some_and(|current| Arc::ptr_eq(current, lease))
+            })
+        {
+            for (mesh, page) in &cached.value().segments {
+                let mesh = mesh.borrow(self.mesh_allocation())?;
+                self.paint_mesh(
+                    target,
+                    mesh,
+                    SampledImage::coverage(&page.view),
+                    [false; 2],
+                    paint,
+                )?;
+            }
+            return Ok(());
+        }
+        let mut captured = if !self.capture
+            && self.geometry_policy.reuse
+            && self.geometry_cache.glyphs.lock().unwrap().observe(
+                frame,
+                origin,
+                &dependency,
+                self.budgets,
+                self.gpu.limits.transient_bytes,
+            ) {
+            crate::common::recording_cache::Glyphs::new(
+                self.budgets,
+                self.gpu.limits.transient_bytes,
+            )
+        } else {
+            None
+        };
+
         for index in 0..run.glyphs.len() {
             let key = super::glyph_cache::Key::new(run_key.clone(), run.glyphs[index].id);
             let glyph = self
@@ -386,6 +484,13 @@ impl Context<'_> {
                     at,
                     record: "glyph missing from preparation",
                 })?;
+            crate::common::recording_cache::Glyphs::lease(
+                &mut captured,
+                run.glyphs[index].id,
+                glyph.clone(),
+                self.budgets,
+                self.gpu.limits.transient_bytes,
+            );
             let super::glyph_cache::Glyph::Image {
                 page: glyph_page,
                 origin,
@@ -400,6 +505,13 @@ impl Context<'_> {
                 && !Arc::ptr_eq(previous, glyph_page)
             {
                 mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
+                crate::common::recording_cache::Glyphs::capture(
+                    &mut captured,
+                    &mut batch,
+                    previous.clone(),
+                    self.budgets,
+                    self.gpu.limits.transient_bytes,
+                );
                 self.paint_mesh(
                     target,
                     batch,
@@ -438,6 +550,13 @@ impl Context<'_> {
         }
         if let Some(page) = page {
             mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
+            crate::common::recording_cache::Glyphs::capture(
+                &mut captured,
+                &mut batch,
+                page.clone(),
+                self.budgets,
+                self.gpu.limits.transient_bytes,
+            );
             self.paint_mesh(
                 target,
                 batch,
@@ -446,12 +565,22 @@ impl Context<'_> {
                 paint,
             )?;
         }
+        if let Some(captured) = captured {
+            self.geometry_cache.glyphs.lock().unwrap().insert(
+                frame,
+                origin,
+                dependency,
+                captured,
+                self.budgets,
+                self.gpu.limits.transient_bytes,
+            );
+        }
         Ok(())
     }
     pub(super) fn paint_resource(
         &mut self,
         target: &Target,
-        mesh: mesh::Mesh,
+        mesh: impl Into<crate::common::recording_cache::Reference>,
         image: &super::resources::Image,
         repeat: [bool; 2],
         appearance: Option<ImageAppearance>,
@@ -501,11 +630,12 @@ impl Context<'_> {
     fn paint_mesh(
         &mut self,
         target: &Target,
-        mesh: mesh::Mesh,
+        mesh: impl Into<crate::common::recording_cache::Reference>,
         image: SampledImage<'_>,
         repeat: [bool; 2],
         appearance: Option<super::gradient::Uniform>,
     ) -> Result<(), GpuError> {
+        let mesh = mesh.into();
         let SampledImage {
             view: image,
             coverage,
@@ -522,7 +652,9 @@ impl Context<'_> {
             .map(|clip| mesh.clipped(clip, self.mesh_allocation()))
             .transpose()?
             .flatten();
-        let mesh = clipped.unwrap_or(mesh);
+        let mesh = clipped
+            .map(crate::common::recording_cache::Reference::from)
+            .unwrap_or(mesh);
         if mesh.indices.is_empty() {
             return Ok(());
         }
@@ -572,8 +704,7 @@ impl Context<'_> {
         let Some(batch) = self.paint_batch.take() else {
             return Ok(());
         };
-        let mesh = &batch.geometry.mesh;
-        if mesh.indices.is_empty() {
+        if batch.geometry.capacity().indices == 0 {
             return Ok(());
         }
         self.transient(
@@ -587,31 +718,30 @@ impl Context<'_> {
                     * 144) as u64,
         )?;
         let device = &self.gpu.device;
-        let indices = crate::common::indices::Upload::new(mesh, |bytes| {
-            reserve(&self.budgets.transient, &self.budget_scope.transient, bytes,
-                self.gpu.limits.transient_bytes, "index packing")
-        })?;
-        let index_format = match indices.format() {
+        let index_format = match batch.geometry.capacity().index_format {
             crate::common::indices::Format::U16 => wgpu::IndexFormat::Uint16,
             crate::common::indices::Format::U32 => wgpu::IndexFormat::Uint32,
         };
-        let (storage, local) = self.geometry_cache.acquire(
+        let (storage, local, metadata) = self.geometry_cache.upload_batch(
             self.gpu,
             self.budgets,
             &self.budget_scope,
-            mesh,
-            &indices,
+            &batch.geometry,
             self.geometry_policy,
+            &mut self.encoder,
         )?;
         self.tickets.push(super::renderer::Reservation {
             _shared: None,
             _local: local,
         });
-        storage
-            .storage
-            .upload(&mut self.encoder, storage.capacity, mesh, indices.bytes())?;
+        if let Some(local) = metadata {
+            self.tickets.push(super::renderer::Reservation {
+                _shared: None,
+                _local: local,
+            });
+        }
         if storage.storage.has_staging() {
-            self.geometry_policy.staged.set(true);
+            self.geometry_policy.optional.set(true);
         }
         self.geometry.push(storage);
         let storage = &self.geometry.last().expect("retained geometry").storage;

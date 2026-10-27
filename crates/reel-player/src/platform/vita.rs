@@ -586,7 +586,12 @@ impl NativeLoop {
                 #[cfg(feature = "profiling")]
                 {
                     let gpu = player.backend.usage().bytes;
-                    recording.record(probe_started, player.story_mut().as_deref(), gpu);
+                    recording.record(
+                        probe_started,
+                        player.story_mut().as_deref(),
+                        gpu,
+                        &host.signals.title.borrow(),
+                    );
                 }
                 let now = host.monotonic_now();
                 let deadline = player

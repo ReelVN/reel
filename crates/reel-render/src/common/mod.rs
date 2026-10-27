@@ -25,5 +25,6 @@ pub(crate) mod target_writes;
 
 pub(crate) mod draw_batch;
 pub(crate) mod geometry;
+pub(crate) mod recording_cache;
 pub(crate) mod indices;
 pub(crate) mod glyph_key;

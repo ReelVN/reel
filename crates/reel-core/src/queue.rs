@@ -19,6 +19,7 @@ pub struct QueueUsage {
 pub struct CompletionSlot {
     pub id: u64,
     pub bytes: u64,
+    ordinary: bool,
 }
 pub struct Entry<R> {
     pub slot: CompletionSlot,
@@ -28,14 +29,18 @@ pub struct Entry<R> {
 struct Finished<E> {
     event: E,
     bytes: u64,
+    ordinary: bool,
 }
 
 /// Settlement follows removal of the owning Entry; no growing tombstone set.
 pub struct Queue<R, E> {
     limits: QueueLimits,
-    pending: [VecDeque<Entry<R>>; 3],
+    pending: [VecDeque<Entry<R>>; 4],
     events: VecDeque<Finished<E>>,
     usage: QueueUsage,
+    realtime_slots: u32,
+    realtime_burst: u8,
+    ordinary_requests: u32,
 }
 
 impl<R, E> Queue<R, E> {
@@ -45,7 +50,19 @@ impl<R, E> Queue<R, E> {
             pending: std::array::from_fn(|_| VecDeque::new()),
             events: VecDeque::new(),
             usage: QueueUsage::default(),
+            realtime_slots: 0,
+            realtime_burst: 0,
+            ordinary_requests: 0,
         }
+    }
+    /// Reserve part of the existing request ceiling for streaming IO, including
+    /// active requests and undrained completions. Ordinary queues stay unchanged.
+    /// With both classes ready, four realtime quanta alternate with one ordinary
+    /// quantum. A one-slot queue reserves no slot, preserving ordinary progress.
+    pub fn with_realtime_reserve(limits: QueueLimits, slots: u32) -> Self {
+        let mut queue = Self::new(limits);
+        queue.realtime_slots = slots.min(limits.max_requests.saturating_sub(1));
+        queue
     }
     pub fn accept(
         &mut self,
@@ -58,39 +75,48 @@ impl<R, E> Queue<R, E> {
             Priority::Prefetch => 0,
             Priority::Normal => 1,
             Priority::Visible => 2,
+            Priority::Realtime => 3,
         };
         let next = self
             .usage
             .bytes
             .checked_add(bytes)
             .filter(|n| *n <= self.limits.max_bytes);
-        let failure = if self.usage.requests >= self.limits.max_requests || next.is_none() {
-            Some(RejectReason::new(
-                RejectCode::Busy,
-                "request/completion queue full",
-            ))
-        } else if self.pending[priority].try_reserve(1).is_err()
-            || self
-                .events
-                .try_reserve(self.usage.requests as usize + 1 - self.events.len())
-                .is_err()
-        {
-            Some(RejectReason::new(
-                RejectCode::OutOfMemory,
-                "cannot reserve request and terminal slots",
-            ))
-        } else {
-            None
-        };
+        let reserved = priority != 3
+            && self.ordinary_requests >= self.limits.max_requests - self.realtime_slots;
+        let failure =
+            if self.usage.requests >= self.limits.max_requests || reserved || next.is_none() {
+                Some(RejectReason::new(
+                    RejectCode::Busy,
+                    "request/completion queue full",
+                ))
+            } else if self.pending[priority].try_reserve(1).is_err()
+                || self
+                    .events
+                    .try_reserve(self.usage.requests as usize + 1 - self.events.len())
+                    .is_err()
+            {
+                Some(RejectReason::new(
+                    RejectCode::OutOfMemory,
+                    "cannot reserve request and terminal slots",
+                ))
+            } else {
+                None
+            };
         if let Some(reason) = failure {
             return Err(Rejected { request, reason });
         }
         self.pending[priority].push_back(Entry {
-            slot: CompletionSlot { id, bytes },
+            slot: CompletionSlot {
+                id,
+                bytes,
+                ordinary: priority != 3,
+            },
             request,
             priority,
         });
         self.usage.requests += 1;
+        self.ordinary_requests += u32::from(priority != 3);
         self.usage.bytes = next.expect("checked above");
         self.usage.peak_bytes = self.usage.peak_bytes.max(self.usage.bytes);
         Ok(())
@@ -114,7 +140,23 @@ impl<R, E> Queue<R, E> {
         Ok(())
     }
     pub fn pop(&mut self) -> Option<Entry<R>> {
-        // Exactly three head checks, independent of queued request count.
+        // Default queues retain strict priority; only configured IO queues apply
+        // the bounded urgent burst before choosing the next ordinary quantum.
+        if self.realtime_slots != 0 && !self.pending[3].is_empty() {
+            if self.realtime_burst >= 4 {
+                if let Some(entry) = self.pending[..3]
+                    .iter_mut()
+                    .rev()
+                    .find_map(|q| q.pop_front())
+                {
+                    self.realtime_burst = 0;
+                    return Some(entry);
+                }
+            }
+            self.realtime_burst = self.realtime_burst.saturating_add(1).min(4);
+            return self.pending[3].pop_front();
+        }
+        self.realtime_burst = 0;
         self.pending.iter_mut().rev().find_map(|q| q.pop_front())
     }
     pub fn take(&mut self, id: u64) -> Option<Entry<R>> {
@@ -133,6 +175,7 @@ impl<R, E> Queue<R, E> {
         self.events.push_back(Finished {
             event,
             bytes: slot.bytes,
+            ordinary: slot.ordinary,
         });
     }
     pub fn drain(&mut self, out: &mut Vec<E>, limit: usize) {
@@ -141,6 +184,7 @@ impl<R, E> Queue<R, E> {
                 break;
             };
             self.usage.requests -= 1;
+            self.ordinary_requests -= u32::from(f.ordinary);
             self.usage.bytes -= f.bytes;
             out.push(f.event);
         }

@@ -6,7 +6,10 @@ use reel_core::{
     test_support::{MemoryAsset, MemoryAssetIo},
 };
 use reel_ui::resources::ResourceData;
-use std::{sync::mpsc, time::Duration};
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
@@ -646,5 +649,51 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
             assert_eq!(assets.0.borrow().input.usage().bytes, 0);
             assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
         }
+    }
+}
+
+#[test]
+fn stream_input_headroom_survives_full_ordinary_admission_and_tiny_budgets() {
+    use std::io::Read;
+    for bytes in 0..=8u64 {
+        let (assets, _fixture) = packed::packaged_assets(bytes);
+        let ordinary = assets.0.borrow().options.ordinary_input_bytes();
+        let held = assets.0.borrow().input.reserve(ordinary).unwrap();
+        assert!(
+            assets
+                .try_request_encoded("too-large".into(), &vec![0; ordinary as usize + 1])
+                .unwrap_err()
+                .contains("capacity")
+        );
+        if bytes < 4 {
+            assert!(assets.stream("assets/panels.png").is_err());
+            continue;
+        }
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let (_, mut reader) = assets.stream("assets/panels.png").unwrap();
+            workers.push(std::thread::spawn(move || {
+                let mut prefix = [0; 8];
+                reader.read_exact(&mut prefix).unwrap();
+                assert_eq!(&prefix, &PNG[..8]);
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while workers.iter().any(|worker| !worker.is_finished()) {
+            assert!(Instant::now() < deadline);
+            assets.maintain();
+            std::thread::yield_now();
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assets.maintain();
+        let service = assets.0.borrow();
+        assert_eq!(service.input.usage().bytes, ordinary);
+        assert_eq!(service.stream_input.usage().bytes, 0);
+        assert!(service.stream_input.usage().peak_bytes <= bytes / 4);
+        assert_eq!(service.completion.usage().bytes, 0);
+        drop(service);
+        drop(held);
     }
 }

@@ -1,4 +1,4 @@
-use super::worker::{Worker, check_completion};
+use super::worker::{Step, Worker, check_completion};
 mod directory;
 pub(crate) mod file;
 mod pack;
@@ -25,11 +25,80 @@ use std::{
 
 enum Request {
     Describe(DescribeRequest),
-    Read(ReadRequest),
+    Read(Reading),
+}
+struct Reading {
+    request: ReadRequest,
+    data: Vec<u8>,
+    length: Option<usize>,
+    version: Option<ContentVersion>,
+    eof: bool,
+    cursor: Option<Box<reel_package::archive::ReadCursor>>,
+}
+impl Reading {
+    fn new(request: ReadRequest) -> Self {
+        Self {
+            request,
+            data: Vec::new(),
+            length: None,
+            version: None,
+            eof: false,
+            cursor: None,
+        }
+    }
+    fn step(&mut self, files: &mut Files, cancelled: &AtomicBool) -> Result<bool, IoError> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(failure("read cancelled"));
+        }
+        let mut file = files.open(&self.request.resource, cancelled)?;
+        let length = if let Some(length) = self.length {
+            length
+        } else {
+            let request = &mut self.request;
+            if request.offset > file.length {
+                return Err(failure("asset read starts after EOF"));
+            }
+            let length = u64::from(request.len).min(file.length - request.offset) as usize;
+            self.data
+                .try_reserve_exact(length)
+                .map_err(|error| failure(error.to_string()))?;
+            self.eof = request.offset + length as u64 == file.length;
+            self.version = Some(file.version);
+            request.resource.version = Some(file.version);
+            if length > reel_package::archive::BLOCK_BYTES
+                && let Some((entry, _)) = &file.compressed
+            {
+                self.cursor = Some(Box::new(
+                    entry
+                        .read_cursor(request.offset, length)
+                        .map_err(io_error)?,
+                ));
+            }
+            self.length = Some(length);
+            length
+        };
+        let start = self.data.len();
+        let offset = self.request.offset + start as u64;
+        let quantum = reel_package::archive::BLOCK_BYTES
+            - offset as usize % reel_package::archive::BLOCK_BYTES;
+        let end = length.min(start + quantum);
+        // Capacity is reserved once, but only the next quantum is initialized.
+        self.data.resize(end, 0);
+        file.read_at(
+            offset,
+            &mut self.data[start..end],
+            self.cursor.as_deref_mut(),
+            cancelled,
+        )?;
+        file.verify()?;
+        Ok(end == length)
+    }
 }
 pub struct DirectoryIo(FileIo);
 /// Indexed archives, mounted in declaration order (last matching entry wins).
 pub struct PackIo(FileIo);
+#[cfg(test)]
+type ReadObserver = std::sync::Arc<dyn Fn(IoId, usize, usize, usize) + Send + Sync>;
 struct FileIo {
     worker: Worker<(IoId, Request), IoEvent>,
     ids: RequestIds<IoId>,
@@ -71,6 +140,21 @@ impl DirectoryIo {
     }
 }
 impl PackIo {
+    #[cfg(test)]
+    pub(super) fn observed(
+        paths: impl IntoIterator<Item = PathBuf>,
+        temporary: &BudgetPool,
+        limits: QueueLimits,
+        wake: WakeSignal,
+        observer: ReadObserver,
+    ) -> Result<Self, IoError> {
+        Ok(Self(FileIo::build(
+            Files::Pack(pack::Files::open(paths, None, temporary)?),
+            limits,
+            wake,
+            Some(observer),
+        )))
+    }
     /// Mounts only archive indexes. An optional development overlay takes precedence;
     /// only missing loose files fall through to the selected archive entry.
     /// Compressed entries share one fixed workspace charged to `temporary` until
@@ -153,9 +237,17 @@ impl<'a> ReadFile<'a> {
         &mut self,
         offset: u64,
         output: &mut [u8],
+        cursor: Option<&mut reel_package::archive::ReadCursor>,
         cancelled: &AtomicBool,
     ) -> Result<(), IoError> {
         if let Some((entry, scratch)) = &mut self.compressed {
+            if let Some(cursor) = cursor {
+                return entry
+                    .read_range_with_cursor(self.file, offset, output, scratch, cursor, || {
+                        cancelled.load(Ordering::Acquire)
+                    })
+                    .map_err(io_error);
+            }
             return entry
                 .read_range(self.file, offset, output, scratch, || {
                     cancelled.load(Ordering::Acquire)
@@ -188,60 +280,80 @@ impl<'a> ReadFile<'a> {
 }
 impl FileIo {
     fn new(files: Files, limits: QueueLimits, wake: WakeSignal) -> Self {
+        Self::build(
+            files,
+            limits,
+            wake,
+            #[cfg(test)]
+            None,
+        )
+    }
+    fn build(
+        files: Files,
+        limits: QueueLimits,
+        wake: WakeSignal,
+        #[cfg(test)] observer: Option<ReadObserver>,
+    ) -> Self {
         let files = Mutex::new(files);
         Self {
-            worker: Worker::new(
+            worker: Worker::stepped(
                 limits,
                 wake,
+                2,
                 move |(id, request), cancelled| {
                     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Read);
-                    let (scope, completion, result) =
-                        match request {
-                            Request::Describe(r) => {
-                                let result =
-                                    files.lock().unwrap().open(&r.resource, cancelled).map(
-                                        |file| {
-                                            IoPayload::Described(AssetInfo {
-                                                length: Some(file.length),
-                                                range_read: true,
-                                                seekable: true,
-                                                version: Some(file.version),
-                                                media_type: None,
-                                            })
-                                        },
-                                    );
-                                (r.scope, r.completion, result)
+                    let (scope, completion, result) = match request {
+                        Request::Describe(r) => {
+                            let result =
+                                files
+                                    .lock()
+                                    .unwrap()
+                                    .open(&r.resource, cancelled)
+                                    .map(|file| {
+                                        IoPayload::Described(AssetInfo {
+                                            length: Some(file.length),
+                                            range_read: true,
+                                            seekable: true,
+                                            version: Some(file.version),
+                                            media_type: None,
+                                        })
+                                    });
+                            (r.scope, r.completion, result)
+                        }
+                        Request::Read(mut reading) => {
+                            let result = reading.step(&mut files.lock().unwrap(), cancelled);
+                            #[cfg(test)]
+                            if let Some(observer) = &observer {
+                                let seeks = match &*files.lock().unwrap() {
+                                    Files::Pack(files) => files.seek_calls(),
+                                    Files::Directory(_) => 0,
+                                };
+                                observer(
+                                    id,
+                                    reading.data.len(),
+                                    reading.data.as_ptr() as usize,
+                                    seeks,
+                                );
                             }
-                            Request::Read(r) => {
-                                let scope = r.scope;
-                                let completion = r.completion;
-                                let result = (|| {
-                                    let mut files = files.lock().unwrap();
-                                    let mut file = files.open(&r.resource, cancelled)?;
-                                    if r.offset > file.length {
-                                        return Err(failure("asset read starts after EOF"));
-                                    }
-                                    let len = u64::from(r.len).min(file.length - r.offset) as usize;
-                                    let mut data = Vec::new();
-                                    data.try_reserve_exact(len)
-                                        .map_err(|e| failure(e.to_string()))?;
-                                    data.resize(len, 0);
-                                    file.read_at(r.offset, &mut data, cancelled)?;
-                                    file.verify()?;
-                                    let version = file.version;
-                                    let eof = r.offset + len as u64 == file.length;
-                                    let bytes = OwnedBytes::new(data, r.output)
-                                        .map_err(|e| failure(e.reason.message))?;
-                                    Ok(IoPayload::Read(ReadResult {
-                                        bytes,
-                                        eof,
-                                        version,
-                                    }))
-                                })();
-                                (scope, completion, result)
+                            if matches!(result, Ok(false)) {
+                                return Step::Continue((id, Request::Read(reading)));
                             }
-                        };
-                    IoEvent {
+                            let r = reading.request;
+                            let scope = r.scope;
+                            let completion = r.completion;
+                            let result = result.and_then(|_| {
+                                let bytes = OwnedBytes::new(reading.data, r.output)
+                                    .map_err(|e| failure(e.reason.message))?;
+                                Ok(IoPayload::Read(ReadResult {
+                                    bytes,
+                                    eof: reading.eof,
+                                    version: reading.version.expect("completed read has a version"),
+                                }))
+                            });
+                            (scope, completion, result)
+                        }
+                    };
+                    Step::Complete(IoEvent {
                         id,
                         scope,
                         process_request: None,
@@ -250,7 +362,7 @@ impl FileIo {
                             Err(e) => Terminal::Failed(e),
                         },
                         completion,
-                    }
+                    })
                 },
                 |event| event.result = Terminal::Cancelled,
             ),
@@ -296,7 +408,7 @@ impl AssetIo for FileIo {
             charge(&[
                 request.completion.bytes(),
                 request.resource.key.0.capacity() as u64,
-                size_of::<DescribeRequest>() as u64,
+                size_of::<Request>() as u64,
             ])
         });
         let bytes = match checks {
@@ -331,7 +443,12 @@ impl AssetIo for FileIo {
                 request.output.bytes(),
                 request.completion.bytes(),
                 request.resource.key.0.capacity() as u64,
-                size_of::<ReadRequest>() as u64,
+                size_of::<Request>() as u64,
+                if request.len as usize > reel_package::archive::BLOCK_BYTES {
+                    size_of::<reel_package::archive::ReadCursor>() as u64
+                } else {
+                    0
+                },
             ])
         });
         let bytes = match checks {
@@ -341,13 +458,18 @@ impl AssetIo for FileIo {
         self.ids.accept(request, |id, request| {
             let priority = request.priority;
             self.worker
-                .accept(id.0, (id, Request::Read(request)), bytes, priority)
+                .accept(
+                    id.0,
+                    (id, Request::Read(Reading::new(request))),
+                    bytes,
+                    priority,
+                )
                 .map_err(|error| {
                     let (_, Request::Read(request)) = error.request else {
                         unreachable!()
                     };
                     Rejected {
-                        request,
+                        request: request.request,
                         reason: error.reason,
                     }
                 })

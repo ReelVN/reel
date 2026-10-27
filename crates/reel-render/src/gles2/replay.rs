@@ -559,7 +559,11 @@ impl Context<'_> {
                             &current.scopes.last().target,
                             &fill.draw,
                             transform,
-                            fill.at,
+                            reel_ui::frame::CommandOrigin {
+                                source: 0,
+                                local: reel_ui::frame::LocalId::None,
+                                at: fill.at,
+                            },
                         )?;
                         current.next += fill.consumed;
                         continue;
@@ -650,7 +654,12 @@ impl Context<'_> {
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
                             target: if batch.is_some_and(|entry| entry.shared && !entry.first) {
-                                current.deferred.last().expect("active source atlas").source.clone()
+                                current
+                                    .deferred
+                                    .last()
+                                    .expect("active source atlas")
+                                    .source
+                                    .clone()
                             } else if isolated {
                                 self.target()?
                             } else {
@@ -669,10 +678,12 @@ impl Context<'_> {
                                 .mask_effect
                                 .as_ref()
                                 .map(|effect| (effect, transform * group.effect_to_target)),
-                            direct_mask_projection: crate::common::effect_plan::direct_mask_projection(
-                                group,
-                                current.transitions_enabled && !current.drawing.transitions().is_empty(),
-                            ),
+                            direct_mask_projection:
+                                crate::common::effect_plan::direct_mask_projection(
+                                    group,
+                                    current.transitions_enabled
+                                        && !current.drawing.transitions().is_empty(),
+                                ),
                             image_mask: group
                                 .image_mask
                                 .as_ref()
@@ -793,7 +804,13 @@ impl Context<'_> {
                             continue;
                         }
                         let projected = self.target()?;
-                        self.project_source(&projected, &source, view.parent_to_source, 1., entry.at)?;
+                        self.project_source(
+                            &projected,
+                            &source,
+                            view.parent_to_source,
+                            1.,
+                            entry.at,
+                        )?;
                         self.recycle_target(source)?;
                         source = projected;
                     } else if let Some((effect, transform)) = group.effect {
@@ -917,7 +934,7 @@ impl Context<'_> {
                             &current.scopes.last().target,
                             draw,
                             transform,
-                            at,
+                            command.origin,
                         )?;
                     } else {
                         current.next += consumed - 1;
