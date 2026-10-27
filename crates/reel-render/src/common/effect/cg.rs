@@ -23,7 +23,7 @@ float4 reel_source_sample(float2 uv) {
     float2 q = float2(dot(reel_context[2].xyz, p), dot(reel_context[3].xyz, p));
     float2 half_texel = 0.5 / reel_context[5].zw;
     q = clamp(q, reel_context[6].xy + half_texel, reel_context[6].xy + reel_context[6].zw - half_texel);
-    return tex2D(reel_source, q);
+    return tex2Dlod(reel_source, float4(q, 0.0, 0.0));
 }
 "#);
     }
@@ -104,7 +104,7 @@ fn texture_functions(
             binding + usize::from(source_sampler)
         )
         .unwrap();
-        writeln!(source, "float4 reel_texture_{binding}_read(float2 uv){{float4 t=reel_texture_meta[{}];float2 h=reel_texture_meta[{}].xy;float4 s=tex2D(reel_texture_{binding},clamp(uv*t.xy,h,t.xy-h));if(t.w==1.0)s.a=1.0;if(t.w==2.0)s.rgb=min(s.rgb,float3(s.a));return s;}}", binding*2,binding*2+1).unwrap();
+        writeln!(source, "float4 reel_texture_{binding}_read(float2 uv){{float4 t=reel_texture_meta[{}];float2 h=reel_texture_meta[{}].xy;float4 s=tex2Dlod(reel_texture_{binding},float4(clamp(uv*t.xy,h,t.xy-h),0.0,0.0));if(t.w==1.0)s.a=1.0;if(t.w==2.0)s.rgb=min(s.rgb,float3(s.a));return s;}}", binding*2,binding*2+1).unwrap();
         if usage & 1 != 0 {
             writeln!(source,"float4 reel_texture_{binding}_color(float2 uv){{return reel_texture_{binding}_read(uv);}}").unwrap();
         }

@@ -107,6 +107,176 @@ fn sampled_program() -> Arc<EffectProgram> {
     g.finish(output)
 }
 
+/// Independent RGBA accumulators share each fetched vector. Scheduling one
+/// output channel at a time would keep all 61 vectors live across the others.
+fn sampling_program(radius: i32) -> Arc<EffectProgram> {
+    let mut g = Graph::default();
+    let uv = g.node(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
+    let x = g.node(EffectType::Float, EffectOp::Extract { value: uv, lane: 0 });
+    let y = g.node(EffectType::Float, EffectOp::Extract { value: uv, lane: 1 });
+    let size = g.node(EffectType::Vec2, EffectOp::Input(EffectInput::Size));
+    let height = g.node(
+        EffectType::Float,
+        EffectOp::Extract {
+            value: size,
+            lane: 1,
+        },
+    );
+    let zero = g.float(0.0);
+    let mut channels = [zero; 4];
+    for tap in -radius..=radius {
+        let offset = g.float(tap as f32);
+        let offset = g.node(
+            EffectType::Float,
+            EffectOp::Binary {
+                op: EffectBinary::Divide,
+                left: offset,
+                right: height,
+            },
+        );
+        let local_y = g.node(
+            EffectType::Float,
+            EffectOp::Binary {
+                op: EffectBinary::Add,
+                left: y,
+                right: offset,
+            },
+        );
+        let at = g.node(EffectType::Vec2, EffectOp::Vec2([x, local_y]));
+        let sample = g.node(EffectType::Vec4, EffectOp::SourceSample { uv: at });
+        for (lane, channel) in channels.iter_mut().enumerate() {
+            let value = g.node(
+                EffectType::Float,
+                EffectOp::Extract {
+                    value: sample,
+                    lane: lane as u8,
+                },
+            );
+            *channel = g.node(
+                EffectType::Float,
+                EffectOp::Binary {
+                    op: EffectBinary::Add,
+                    left: *channel,
+                    right: value,
+                },
+            );
+        }
+    }
+    let divisor = g.float((radius * 2 + 1) as f32);
+    for channel in &mut channels {
+        *channel = g.node(
+            EffectType::Float,
+            EffectOp::Binary {
+                op: EffectBinary::Divide,
+                left: *channel,
+                right: divisor,
+            },
+        );
+    }
+    let output = g.node(EffectType::Vec4, EffectOp::Vec4(channels));
+    g.finish(output)
+}
+
+#[test]
+fn parallel_channels_consume_each_sample_before_the_next_fetch() {
+    for language in [Language::Wgsl, Language::Cg] {
+        let generated = generate(&sampling_program(5), language, 1 << 20).unwrap();
+        let mut taps = generated.function.split(" = reel_source_sample(");
+        taps.next().unwrap();
+        let taps = taps.collect::<Vec<_>>();
+        assert_eq!(taps.len(), 11);
+        for tap in taps {
+            for lane in [".x;", ".y;", ".z;", ".w;"] {
+                assert!(
+                    tap.contains(lane),
+                    "all channels consume the current sample in {language:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn large_proved_reduction_keeps_integer_constants_and_final_scaling() {
+    let program = sampling_program(30);
+    let plan = reduction::Reduction::find(&program, program.output()).unwrap();
+    assert_eq!((plan.first, plan.end, plan.step), (-30, 31, 1));
+    for language in [Language::Wgsl, Language::Cg] {
+        let fragment = compile_fragment(&program, language, 1 << 20).unwrap();
+        let function = generate(&program, language, 1 << 20).unwrap().function;
+        assert_eq!(function.matches(" = reel_source_sample(").count(), 1);
+        assert!(function.contains("!= 31;"));
+        assert!(function.contains("+= 1)"));
+        assert!(function.contains("= -30;"));
+        assert!(function.find(" / ").unwrap() < function.rfind(" / ").unwrap());
+        #[cfg(feature = "wgpu")]
+        if language == Language::Wgsl {
+            let module = wgpu::naga::front::wgsl::parse_str(&fragment.source).unwrap();
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
+        }
+        if language == Language::Cg {
+            assert!(fragment.source.contains("#pragma loop (unroll: never)"));
+            assert!(fragment.source.contains("tex2Dlod(reel_source"));
+        }
+    }
+}
+
+#[test]
+fn sampling_reduction_rejects_noninteger_sequences_and_conflicting_literal_aliases() {
+    let program = sampling_program(30);
+    let rebuild = |nodes| EffectProgram::new(vec![], nodes, program.output()).unwrap();
+    let mut nodes = program.nodes().to_vec();
+    let varying = nodes.iter_mut().find(|node| matches!(node.op, EffectOp::Constant(EffectValue::Float(bits)) if bits == (-29f32).to_bits())).unwrap();
+    varying.op = EffectOp::Constant(EffectValue::Float((-29.25f32).to_bits()));
+    let changed = rebuild(nodes);
+    assert!(reduction::Reduction::find(&changed, changed.output()).is_none());
+
+    // The first tap's -30 literal is also the fixed X coordinate. Replacing all
+    // references to that ID with the loop counter would incorrectly move X.
+    let mut nodes = program.nodes().to_vec();
+    let fixed = EffectNodeId(nodes.iter().position(|node| matches!(node.op, EffectOp::Constant(EffectValue::Float(bits)) if bits == (-30f32).to_bits())).unwrap() as u32);
+    for node in &mut nodes {
+        if let EffectOp::Vec2([_, y]) = node.op {
+            node.op = EffectOp::Vec2([fixed, y]);
+        }
+    }
+    let aliased = rebuild(nodes);
+    assert!(reduction::Reduction::find(&aliased, aliased.output()).is_none());
+}
+
+#[test]
+fn reduction_iteration_recomputes_a_first_tap_also_used_outside_the_loop() {
+    let program = sampling_program(30);
+    let mut nodes = program.nodes().to_vec();
+    let first = EffectNodeId(
+        nodes
+            .iter()
+            .position(|node| matches!(node.op, EffectOp::SourceSample { .. }))
+            .unwrap() as u32,
+    );
+    let output = EffectNodeId(nodes.len() as u32);
+    nodes.push(EffectNode {
+        ty: EffectType::Vec4,
+        op: EffectOp::Binary {
+            op: EffectBinary::Add,
+            left: program.output(),
+            right: first,
+        },
+    });
+    let program = EffectProgram::new(vec![], nodes, output).unwrap();
+    for language in [Language::Wgsl, Language::Cg] {
+        let generated = generate(&program, language, 1 << 20).unwrap();
+        let (before, body) = generated.function.split_once("for (").unwrap();
+        assert_eq!(before.matches(" = reel_source_sample(").count(), 1);
+        assert_eq!(body.matches(" = reel_source_sample(").count(), 1);
+    }
+}
+
 #[test]
 fn parameter_layout_matches_all_uniform_abis() {
     let mut g = Graph::default();
@@ -257,7 +427,11 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
         match language {
             Language::Cg => {
                 assert!(output.source.contains("uniform float4 reel_context[9]"));
-                assert!(output.source.contains("tex2D(reel_source, q)"));
+                assert!(
+                    output
+                        .source
+                        .contains("tex2Dlod(reel_source, float4(q, 0.0, 0.0))")
+                );
                 assert!(output.source.contains("fragment_position : WPOS"));
                 assert!(!output.source.contains("1.0 - q.y"));
             }
@@ -305,6 +479,7 @@ fn cg_fragments_compile_all_typed_operations() {
     let programs = operation_programs()
         .into_iter()
         .chain(external_texture_programs())
+        .chain([("wide_sampling".into(), sampling_program(30))])
         .collect::<Vec<_>>();
     for (name, program) in &programs {
         let fragment = compile_fragment(program, Language::Cg, 65536).unwrap();

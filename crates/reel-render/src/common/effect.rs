@@ -14,12 +14,14 @@ use reel_ui::stage::effect::{
     EffectBinary, EffectInput, EffectNodeId, EffectOp, EffectProgram, EffectTernary,
     EffectTextureChannel, EffectType, EffectUnary, EffectValue,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[path = "effect/cg.rs"]
 mod cg;
 #[path = "effect/gxp_compiler.rs"]
 pub mod gxp_compiler;
+#[path = "effect/reduction.rs"]
+mod reduction;
 #[path = "effect/wgsl.rs"]
 mod wgsl;
 
@@ -53,6 +55,8 @@ pub struct EffectFragment {
 /// parameters have no numeric uniform slots. Each image has content scale,
 /// encoding/format flags and half-texel bounds; generated channel helpers access
 /// only the metadata required by their declared sample operations.
+/// Effect subtree and prepared-image inputs contain only base level zero. Both
+/// targets select that level explicitly, including samples in branches or loops.
 /// Sony Cg exposes `reel_context`, `reel_parameter_N` and `reel_texture_meta`
 /// as float4 uniforms and uses the `main` fragment entry. GXP retains symbols
 /// for parameter reflection. `v_uv` and the implicit source
@@ -196,6 +200,9 @@ impl std::error::Error for GenerateError {}
 ///
 /// Nodes shared within a dominating scope are evaluated once. Branch-local nodes
 /// stay inside their selected branch, including source reads and undefined math.
+/// Each scope emits its reachable nodes in backward-reference order, so parallel
+/// channel accumulations consume a sample together instead of retaining all
+/// sampled vectors until a depth-first channel traversal finishes.
 /// Traversal uses an explicit CPU work stack so graph depth cannot overflow it.
 /// The byte limit covers the returned declarations and function, including helpers;
 /// backend-owned entry points and source hooks have their own admission budget.
@@ -258,6 +265,7 @@ pub fn generate(
         scopes: vec![Scope::default()],
         next_name: 0,
         samples_source: false,
+        reductions: HashMap::new(),
     };
     emitter.run()?;
     let output_type = program.nodes()[program.output().0 as usize].ty;
@@ -327,12 +335,22 @@ struct Scope {
     parent: Option<usize>,
     depth: usize,
     values: HashMap<EffectNodeId, usize>,
+    /// A reduction iteration substitutes its induction literal. Values that
+    /// depend on it must be recomputed even if the original first tap was also
+    /// demanded by an outer expression.
+    blocked: BTreeSet<u32>,
 }
 
 enum Task {
-    Need(usize, EffectNodeId),
-    Finish(usize, EffectNodeId),
-    Branch(usize, EffectNodeId),
+    Scope(usize, EffectNodeId),
+    Emit(usize, EffectNodeId),
+    ReductionEnd {
+        parent: usize,
+        scope: usize,
+        id: EffectNodeId,
+        name: usize,
+        reduction: reduction::Reduction,
+    },
     Otherwise {
         parent: usize,
         scope: usize,
@@ -358,14 +376,25 @@ struct Emitter<'a> {
     scopes: Vec<Scope>,
     next_name: usize,
     samples_source: bool,
+    reductions: HashMap<EffectNodeId, Option<reduction::Reduction>>,
 }
 
 impl Emitter<'_> {
+    fn reduction(&mut self, id: EffectNodeId) -> Option<reduction::Reduction> {
+        let program = self.program;
+        self.reductions
+            .entry(id)
+            .or_insert_with(|| reduction::Reduction::find(program, id))
+            .clone()
+    }
     fn lookup(&self, mut scope: usize, id: EffectNodeId) -> Option<usize> {
         loop {
             let current = &self.scopes[scope];
             if let Some(value) = current.values.get(&id) {
                 return Some(*value);
+            }
+            if current.blocked.contains(&id.0) {
+                return None;
             }
             scope = current.parent?;
         }
@@ -399,31 +428,117 @@ impl Emitter<'_> {
             parent: Some(parent),
             depth: self.scopes[parent].depth + 1,
             values: HashMap::new(),
+            blocked: BTreeSet::new(),
         });
         index
     }
 
     fn run(&mut self) -> Result<(), GenerateError> {
-        let mut tasks = vec![Task::Need(0, self.program.output())];
+        let mut tasks = vec![Task::Scope(0, self.program.output())];
         while let Some(task) = tasks.pop() {
             match task {
-                Task::Need(scope, id) => {
+                Task::Scope(scope, output) => {
+                    // A Select's arms belong to their selected child scope.
+                    // Only its condition is an unconditional dependency here.
+                    // Validated IR references point backwards, so sorted IDs
+                    // form a topological schedule without moving branch-only
+                    // samples or undefined arithmetic into their parent.
+                    let mut reachable = BTreeSet::new();
+                    let mut pending = vec![output];
+                    while let Some(id) = pending.pop() {
+                        if self.lookup(scope, id).is_some() || !reachable.insert(id.0) {
+                            continue;
+                        }
+                        if let Some(reduction) = self.reduction(id) {
+                            pending.extend(reduction.dependencies());
+                            continue;
+                        }
+                        let op = &self.program.nodes()[id.0 as usize].op;
+                        if let EffectOp::Select { condition, .. } = *op {
+                            pending.push(condition);
+                        } else {
+                            pending.extend(dependencies(op));
+                        }
+                    }
+                    tasks.extend(
+                        reachable
+                            .into_iter()
+                            .rev()
+                            .map(|id| Task::Emit(scope, EffectNodeId(id))),
+                    );
+                }
+                Task::Emit(scope, id) => {
                     if self.lookup(scope, id).is_some() {
                         continue;
                     }
-                    let op = &self.program.nodes()[id.0 as usize].op;
-                    if let EffectOp::Select { condition, .. } = *op {
-                        tasks.push(Task::Branch(scope, id));
-                        tasks.push(Task::Need(scope, condition));
-                    } else {
-                        tasks.push(Task::Finish(scope, id));
-                        for dependency in dependencies(op).into_iter().rev() {
-                            tasks.push(Task::Need(scope, dependency));
+                    if let Some(reduction) = self.reduction(id) {
+                        let name = self.next_name;
+                        self.next_name += 1;
+                        self.line(scope, &self.language.mutable(EffectType::Vec4, name))?;
+                        let initial = reduction.initial.map(|id| self.value(scope, id));
+                        self.line(
+                            scope,
+                            &format!(
+                                "reel_n{name} = {};",
+                                construct(self.language, EffectType::Vec4, &initial)
+                            ),
+                        )?;
+                        if self.language == Language::Cg {
+                            self.line(scope, "#pragma loop (unroll: never)")?;
                         }
+                        let declaration = if self.language == Language::Cg {
+                            format!("int reel_i{name}")
+                        } else {
+                            format!("var reel_i{name}: i32")
+                        };
+                        self.line(scope, &format!("for ({declaration} = {}; reel_i{name} != {}; reel_i{name} += {}) {{", reduction.first, reduction.end, reduction.step))?;
+                        let child = self.child(scope);
+                        self.scopes[child].blocked = reduction.dependent.clone();
+                        let counter = self.next_name;
+                        self.next_name += 1;
+                        self.line(
+                            child,
+                            &self.language.declaration(
+                                EffectType::Float,
+                                counter,
+                                &format!("{}(reel_i{name})", self.language.ty(EffectType::Float)),
+                            ),
+                        )?;
+                        self.scopes[child]
+                            .values
+                            .insert(reduction.constant, counter);
+                        let sample = reduction.sample;
+                        tasks.push(Task::ReductionEnd {
+                            parent: scope,
+                            scope: child,
+                            id,
+                            name,
+                            reduction,
+                        });
+                        tasks.push(Task::Scope(child, sample));
+                        continue;
                     }
-                }
-                Task::Finish(scope, id) => {
                     let node = self.program.nodes()[id.0 as usize].clone();
+                    if let EffectOp::Select {
+                        condition,
+                        when_true,
+                        ..
+                    } = node.op
+                    {
+                        let name = self.next_name;
+                        self.next_name += 1;
+                        self.line(scope, &self.language.mutable(node.ty, name))?;
+                        self.line(scope, &format!("if ({}) {{", self.value(scope, condition)))?;
+                        let child = self.child(scope);
+                        tasks.push(Task::Otherwise {
+                            parent: scope,
+                            scope: child,
+                            id,
+                            name,
+                        });
+                        tasks.push(Task::Scope(child, when_true));
+                        continue;
+                    }
                     let expression = self.expression(scope, node.ty, &node.op)?;
                     let name = self.next_name;
                     self.next_name += 1;
@@ -433,31 +548,33 @@ impl Emitter<'_> {
                     )?;
                     self.scopes[scope].values.insert(id, name);
                 }
-                Task::Branch(parent, id) => {
-                    let node = &self.program.nodes()[id.0 as usize];
-                    let EffectOp::Select {
-                        condition,
-                        when_true,
-                        ..
-                    } = node.op
-                    else {
-                        unreachable!()
-                    };
-                    let name = self.next_name;
-                    self.next_name += 1;
-                    self.line(parent, &self.language.mutable(node.ty, name))?;
+                Task::ReductionEnd {
+                    parent,
+                    scope,
+                    id,
+                    name,
+                    reduction,
+                } => {
                     self.line(
-                        parent,
-                        &format!("if ({}) {{", self.value(parent, condition)),
-                    )?;
-                    let scope = self.child(parent);
-                    tasks.push(Task::Otherwise {
-                        parent,
                         scope,
-                        id,
-                        name,
-                    });
-                    tasks.push(Task::Need(scope, when_true));
+                        &format!(
+                            "reel_n{name} = reel_n{name} + {};",
+                            self.value(scope, reduction.sample)
+                        ),
+                    )?;
+                    self.line(parent, "}")?;
+                    for (op, right) in reduction.scale {
+                        self.line(
+                            parent,
+                            &format!(
+                                "reel_n{name} = reel_n{name} {} {}({});",
+                                binary_name(op),
+                                self.language.ty(EffectType::Vec4),
+                                self.value(parent, right)
+                            ),
+                        )?;
+                    }
+                    self.scopes[parent].values.insert(id, name);
                 }
                 Task::Otherwise {
                     parent,
@@ -485,7 +602,7 @@ impl Emitter<'_> {
                         id,
                         name,
                     });
-                    tasks.push(Task::Need(scope, when_false));
+                    tasks.push(Task::Scope(scope, when_false));
                 }
                 Task::Join {
                     parent,
