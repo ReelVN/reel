@@ -29,6 +29,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct NavigationSelection(pub NodeChange);
 mod flow;
+mod image_demand;
 mod input;
 pub(crate) mod popup;
 #[cfg(test)]
@@ -48,7 +49,7 @@ pub(crate) struct StageView {
     pub(crate) identity: Option<StageIdentity>,
     root: Option<Arc<SceneNode>>,
     popups: Option<Arc<[popup::PopupSource]>>,
-    pub resources: Vec<ResourceLease>,
+    pub resources: Arc<[ResourceLease]>,
 }
 #[derive(Clone, PartialEq)]
 struct SceneProperties {
@@ -391,7 +392,7 @@ impl StageView {
             feedback: false,
             root,
             popups,
-            resources: Vec::new(),
+            resources: previous.map_or_else(|| Arc::from([]), |view| view.resources.clone()),
         }
     }
     pub fn input_scope(&self) -> (Option<NodeId>, Option<NodeId>) {
@@ -650,7 +651,7 @@ impl StageView {
         images: &BTreeMap<String, ResourceLease>,
         format: EffectShaderFormat,
     ) -> Result<(), String> {
-        self.resources.clear();
+        let mut leases = Vec::new();
         let mut handles = std::collections::BTreeSet::new();
         resolve_image_nodes(&mut self.root, |node, visible| {
             let mut resolved = SceneImages::default();
@@ -666,7 +667,7 @@ impl StageView {
                     .and_then(|effect| ResolvedEffect::resolve(effect, images, format));
                 for lease in destination.iter().flat_map(ResolvedEffect::leases) {
                     if handles.insert(lease.handle()) {
-                        self.resources.push(lease.clone());
+                        leases.push(lease.clone());
                     }
                 }
             }
@@ -680,13 +681,13 @@ impl StageView {
                     resolved.image_resource = Some(lease.clone());
                 }
                 if handles.insert(lease.handle()) {
-                    self.resources.push(lease.clone());
+                    leases.push(lease.clone());
                 }
             }
             if let Some(lease) = image_resource(&node.node.kind) {
                 resolved.image_resource = Some(lease.clone());
                 if handles.insert(lease.handle()) {
-                    self.resources.push(lease.clone());
+                    leases.push(lease.clone());
                 }
             }
             if let Some(mask) = &node.node.props.mask {
@@ -696,7 +697,7 @@ impl StageView {
                     .map(|source| {
                         let lease = &images[source.as_ref()];
                         if handles.insert(lease.handle()) {
-                            self.resources.push(lease.clone());
+                            leases.push(lease.clone());
                         }
                         lease.clone()
                     })
@@ -704,6 +705,7 @@ impl StageView {
             }
             resolved
         });
+        self.resources = leases.into();
         self.refresh_popups();
         Ok(())
     }
@@ -721,7 +723,7 @@ impl StageView {
         images: &crate::images::Images,
         required_only: bool,
     ) -> Result<(), String> {
-        self.resources.clear();
+        let mut leases = Vec::new();
         let mut resources = std::collections::BTreeSet::new();
         let mut failure = None;
         resolve_image_nodes(&mut self.root, |node, visible| {
@@ -753,7 +755,7 @@ impl StageView {
                     ResolvedEffect::resolve(effect, &images.loaded, images.shader_format);
                 for lease in destination.iter().flat_map(ResolvedEffect::leases) {
                     if resources.insert(lease.handle()) {
-                        self.resources.push(lease.clone());
+                        leases.push(lease.clone());
                     }
                 }
             }
@@ -763,7 +765,7 @@ impl StageView {
             if let Some(lease) = image_resource(&node.node.kind) {
                 resolved.image_resource = Some(lease.clone());
                 if resources.insert(lease.handle()) {
-                    self.resources.push(lease.clone());
+                    leases.push(lease.clone());
                 }
             }
             if let Some((source, origin)) = image_source(&node.node.kind)
@@ -806,7 +808,7 @@ impl StageView {
                         resolved.image_resource = Some(lease.clone());
                     }
                     if resources.insert(lease.handle()) {
-                        self.resources.push(lease.clone());
+                        leases.push(lease.clone());
                     }
                 }
             }
@@ -832,7 +834,7 @@ impl StageView {
                     .filter_map(|source| {
                         let lease = images.loaded.get(source.as_ref())?;
                         if resources.insert(lease.handle()) {
-                            self.resources.push(lease.clone());
+                            leases.push(lease.clone());
                         }
                         Some(lease.clone())
                     })
@@ -843,6 +845,7 @@ impl StageView {
         if let Some(error) = failure {
             return Err(error);
         }
+        self.resources = leases.into();
         self.refresh_popups();
         Ok(())
     }
@@ -866,13 +869,18 @@ impl StageView {
         self.refresh_popups();
         let mut handles: std::collections::BTreeSet<_> =
             self.resources.iter().map(ResourceLease::handle).collect();
-        self.resources.extend(
-            resources
-                .iter()
-                .filter_map(|key| images.loaded.get(key))
-                .filter(|lease| handles.insert(lease.handle()))
-                .cloned(),
-        );
+        self.resources = self
+            .resources
+            .iter()
+            .cloned()
+            .chain(
+                resources
+                    .iter()
+                    .filter_map(|key| images.loaded.get(key))
+                    .filter(|lease| handles.insert(lease.handle()))
+                    .cloned(),
+            )
+            .collect();
     }
 }
 

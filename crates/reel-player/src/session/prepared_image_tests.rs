@@ -422,6 +422,48 @@ fn huge_image_cold_warm_pan_zoom_and_retirement_use_visible_residency() {
     );
     assert!(ui.images.loaded.len() <= 8);
     assert!(!ui.image_resources().is_empty());
+    {
+        let requests = (ui.images.stage_requests, ui.images.tile_requests);
+        let resources = ui.stage.as_ref().unwrap().resources.clone();
+        for index in 0..100 {
+            let node = stage.node(image).unwrap();
+            let mut props = node.props.clone();
+            props.opacity = f64::from(index) / 99.;
+            props.color = [index as u8, 128, 255, 255];
+            let mut kind = node.kind.clone();
+            let NodeKind::Image { sampling, .. } = &mut kind else {
+                unreachable!()
+            };
+            *sampling = if index % 2 == 0 {
+                reel_ui::peniko::ImageQuality::Low
+            } else {
+                reel_ui::peniko::ImageQuality::Medium
+            };
+            stage.update(image, kind, props).unwrap();
+            ui.set_stage(&stage);
+            ui.sync(&mut bridge, widget).unwrap();
+            assert!(!ui.images_pending());
+            assert_eq!(
+                (ui.images.stage_requests, ui.images.tile_requests),
+                requests
+            );
+            assert!(Arc::ptr_eq(
+                &ui.stage.as_ref().unwrap().resources,
+                &resources
+            ));
+        }
+        ui.clear_presented();
+        settle(&mut ui, &mut bridge, widget, &wake);
+        assert!(ui.images.stage_requests > requests.0);
+        assert!(ui.images.tile_requests > requests.1);
+        assert!(Arc::ptr_eq(
+            &ui.stage.as_ref().unwrap().resources,
+            &resources
+        ));
+        eprintln!(
+            "paint_updates=100 additional_stage_requests=0 additional_tile_requests=0 shared_leases=true"
+        );
+    }
     let first = ui.image_resources()[0].clone();
     let bytes = ui.images.pool.usage().bytes;
     assert!(

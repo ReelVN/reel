@@ -831,6 +831,7 @@ pub struct SessionUi {
     stage: Option<StageView>,
     stage_dirty: bool,
     pending_stage: Option<StageView>,
+    pending_images_ready: bool,
     image_demand_dirty: bool,
     image_layout_pending: bool,
     virtual_images_ready: bool,
@@ -880,6 +881,7 @@ impl SessionUi {
             stage: None,
             stage_dirty: false,
             pending_stage: None,
+            pending_images_ready: false,
             image_demand_dirty: false,
             image_layout_pending: false,
             virtual_images_ready: false,
@@ -976,8 +978,17 @@ impl SessionUi {
                 self.pause_dialogue();
                 self.reading_modal = modal;
             }
-            self.image_demand_dirty = true;
-            self.image_layout_pending = false;
+            let demand_changed = self
+                .pending_stage
+                .as_ref()
+                .or(self.stage.as_ref())
+                .is_none_or(|previous| !view.same_image_demand(previous));
+            if demand_changed {
+                self.image_demand_dirty = true;
+                self.image_layout_pending = false;
+            }
+            self.pending_images_ready = !self.image_demand_dirty
+                && (self.pending_stage.is_none() || self.pending_images_ready);
             let mut binding = self.binding.borrow_mut();
             if scope_changed {
                 self.stamp.advance_revision = self.stamp.advance_revision.wrapping_add(1);
@@ -1079,6 +1090,7 @@ impl SessionUi {
     }
     pub(crate) fn close_resources(&mut self) {
         self.pending_stage = None;
+        self.pending_images_ready = false;
         self.image_demand_dirty = false;
         self.image_layout_pending = false;
         self.virtual_images_ready = false;
@@ -1125,6 +1137,9 @@ impl SessionUi {
     ) -> Result<(), Error> {
         bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
         self.virtual_images_ready = false;
+        let demand_changed = self.image_demand_dirty;
+        let reuse_images = std::mem::take(&mut self.pending_images_ready) && !demand_changed;
+        let content_revision = self.images.content_revision;
         if !self.prepare_image_requests(bridge, root_id)? {
             self.images_waiting_presentation = true;
             self.pause_dialogue();
@@ -1132,8 +1147,17 @@ impl SessionUi {
             return Ok(());
         }
         let images_ready = self.images.poll()?;
-        if self.images.metadata_ready() && !self.images.manifests.is_empty() {
-            if !self.prepare_tiles(bridge, root_id)? {
+        let content_changed = content_revision != self.images.content_revision;
+        if reuse_images && images_ready && !content_changed {
+            // Keep authored/feedback handoff queued while sharing prepared content.
+            if let Some(view) = self.pending_stage.take() {
+                self.stage = Some(view);
+                self.stage_dirty = true;
+            }
+        } else if self.images.metadata_ready() && !self.images.manifests.is_empty() {
+            if (demand_changed || content_changed || self.pending_stage.is_some())
+                && !self.prepare_tiles(bridge, root_id, content_changed)?
+            {
                 self.pause_dialogue();
                 self.binding.borrow_mut().accepted = None;
                 return Ok(());
@@ -1301,8 +1325,12 @@ impl SessionUi {
         &mut self,
         bridge: &mut PresentationBridge,
         root_id: WidgetId,
+        content_changed: bool,
     ) -> Result<bool, Error> {
         let mut candidate = self.pending_stage.take();
+        if candidate.is_none() && content_changed {
+            candidate = self.stage.clone();
+        }
         if let Some(view) = &mut candidate {
             view.resolve_metadata(&self.images)?;
         }

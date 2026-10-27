@@ -37,12 +37,18 @@ pub(crate) struct Images {
     encoded: BTreeMap<String, Arc<[u8]>>,
     shader_sources: BTreeSet<String>,
     pub(crate) shader_format: EffectShaderFormat,
+    /// Advances when newly prepared content becomes available to projections.
+    pub(crate) content_revision: u64,
     displayed: BTreeSet<String>,
     pending: Vec<Pending>,
     failure: Option<String>,
     closed: bool,
     #[cfg(test)]
     pub(crate) loads: u64,
+    #[cfg(test)]
+    pub(crate) stage_requests: u64,
+    #[cfg(test)]
+    pub(crate) tile_requests: u64,
 }
 impl Images {
     pub fn new(assets: Assets) -> Self {
@@ -66,11 +72,16 @@ impl Images {
                 EffectShaderFormat::Wgsl
             },
             displayed: BTreeSet::new(),
+            content_revision: 0,
             pending: Vec::new(),
             failure: None,
             closed: false,
             #[cfg(test)]
             loads: 0,
+            #[cfg(test)]
+            stage_requests: 0,
+            #[cfg(test)]
+            tile_requests: 0,
         }
     }
     pub fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
@@ -87,6 +98,10 @@ impl Images {
         &mut self,
         requests: Result<crate::stage_widget::ImageRequests, String>,
     ) {
+        #[cfg(test)]
+        {
+            self.stage_requests += 1;
+        }
         match requests {
             Ok(requests) => {
                 self.encoded = requests.encoded;
@@ -191,6 +206,7 @@ impl Images {
                 Ok(None) => index += 1,
                 Ok(Some(())) => {
                     self.pending.remove(index);
+                    self.content_revision = self.content_revision.wrapping_add(1);
                 }
                 Err(error) => {
                     let pending = self.pending.remove(index);
@@ -285,6 +301,10 @@ impl Images {
         format!("{origin}: {kind} {source:?}: {error}")
     }
     pub(crate) fn request_tiles(&mut self, tiles: BTreeMap<String, TileDemand>) -> bool {
+        #[cfg(test)]
+        {
+            self.tile_requests += 1;
+        }
         let changed = self.tiles != tiles;
         self.pending.retain(|pending| {
             let retain =
