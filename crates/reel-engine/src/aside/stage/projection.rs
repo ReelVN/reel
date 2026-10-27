@@ -342,10 +342,8 @@ impl StageBinding {
         // root therefore means the whole component has lost script ownership.
         let lost = self
             .scene
-            .nodes()
-            .filter(|node| node.parent.is_none() && Some(node.id) != self.scene.root())
-            .filter(|node| heap.import_handle(self.handles[&node.id].handle).is_err())
-            .map(|node| node.id)
+            .detached_roots()
+            .filter(|id| heap.import_handle(self.handles[id].handle).is_err())
             .collect::<Vec<_>>();
         for root in lost {
             let retired = self.scene.discard(root)?;
