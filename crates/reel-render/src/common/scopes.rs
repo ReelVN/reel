@@ -1,4 +1,6 @@
+mod cache;
 use super::GpuError;
+pub(crate) use cache::{Cache, Cached, Proof};
 use reel_ui::frame::{FrameCommand, FrameDraw, FrameGroup, FrameOp, RecordLocation};
 use std::ops::Range;
 
@@ -65,19 +67,13 @@ impl GroupPlan {
                             child: None,
                             other_content: false,
                             source_over: !boundary
-                                && (group.composite.alpha == 1.
-                                    || matches!(
+                                && source_over(
+                                    group,
+                                    matches!(
                                         commands.get(index + 1).map(|c| &c.op),
                                         Some(FrameOp::PopGroup)
-                                    ))
-                                && group.composite.blend == Default::default()
-                                && group.clip.is_none()
-                                && group.mask.is_none()
-                                && group.image_mask.is_none()
-                                && group.effect.is_none()
-                                && group.mask_effect.is_none()
-                                && group.filters.is_empty()
-                                && group.invert == 0.,
+                                    ),
+                                ),
                         },
                         &mut reserve,
                     )?;
@@ -145,6 +141,18 @@ impl GroupPlan {
             .get(push / 8)
             .is_some_and(|bits| bits & (1 << (push % 8)) != 0)
     }
+}
+
+fn source_over(group: &FrameGroup, empty: bool) -> bool {
+    (group.composite.alpha == 1. || empty)
+        && group.composite.blend == Default::default()
+        && group.clip.is_none()
+        && group.mask.is_none()
+        && group.image_mask.is_none()
+        && group.effect.is_none()
+        && group.mask_effect.is_none()
+        && group.filters.is_empty()
+        && group.invert == 0.
 }
 
 fn touches_boundary(

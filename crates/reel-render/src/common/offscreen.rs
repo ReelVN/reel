@@ -24,11 +24,26 @@ pub(crate) struct Entry {
 #[derive(Default)]
 pub(crate) struct Plan {
     entries: Vec<Entry>,
+    groups: Option<(usize, usize, std::sync::Arc<super::scopes::Cached>)>,
     storage: super::target_storage::Plan,
     requirements: super::target_plan::Requirements,
 }
 
 impl Plan {
+    pub(crate) fn groups(
+        &self,
+        commands: &[reel_ui::frame::FrameCommand],
+        transitions_enabled: bool,
+    ) -> Option<super::scopes::Proof> {
+        self.groups
+            .as_ref()
+            .filter(|(identity, length, _)| {
+                transitions_enabled
+                    && *identity == commands.as_ptr() as usize
+                    && *length == commands.len()
+            })
+            .map(|(_, _, proof)| super::scopes::Proof::Shared(proof.clone()))
+    }
     pub(crate) fn requirements(&self) -> &super::target_plan::Requirements {
         if self.storage.bytes() != 0 {
             self.storage.requirements()
@@ -64,6 +79,7 @@ impl Plan {
         clippy::too_many_arguments,
         reason = "one physical frame and its target admission policy"
     )]
+    #[cfg(test)]
     pub(crate) fn choose<R>(
         frame: &RenderFrame,
         second: Option<&RenderFrame>,
@@ -76,6 +92,42 @@ impl Plan {
         cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         masks: super::target_plan::MaskExecution,
         selection: &super::retained::Plan,
+        reserve: impl FnMut(u64) -> Result<R, GpuError>,
+    ) -> Result<(Self, u64, Vec<R>), GpuError> {
+        Self::choose_with_groups(
+            frame,
+            second,
+            size,
+            capture,
+            samples,
+            max_dimension,
+            glyphs,
+            byte_limit,
+            cost,
+            masks,
+            selection,
+            None,
+            reserve,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one physical frame and its target admission policy"
+    )]
+    pub(crate) fn choose_with_groups<R>(
+        frame: &RenderFrame,
+        second: Option<&RenderFrame>,
+        size: [u32; 2],
+        capture: bool,
+        samples: u32,
+        max_dimension: u32,
+        glyphs: &glyph_plan::Plan,
+        byte_limit: u64,
+        cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+        masks: super::target_plan::MaskExecution,
+        selection: &super::retained::Plan,
+        groups: Option<std::sync::Arc<super::scopes::Cached>>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, u64, Vec<R>), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::OffscreenPlan);
@@ -93,6 +145,7 @@ impl Plan {
                 glyphs,
                 8,
                 capture,
+                groups.as_ref(),
                 &mut reserve,
             )?
         } else {
@@ -105,6 +158,13 @@ impl Plan {
                 plan = Self::default();
                 retained.clear();
             }
+            plan.groups = groups.as_ref().map(|groups| {
+                (
+                    frame.commands().as_ptr() as usize,
+                    frame.commands().len(),
+                    groups.clone(),
+                )
+            });
             plan.pack(max_dimension, shared);
             let mut traversal = Vec::new();
             let input = super::target_plan::Input {
@@ -157,6 +217,13 @@ impl Plan {
                     }
                 }
                 retained.extend(storage_tickets);
+                plan.groups = groups.map(|groups| {
+                    (
+                        frame.commands().as_ptr() as usize,
+                        frame.commands().len(),
+                        groups,
+                    )
+                });
                 return Ok((plan, bytes, retained));
             }
             plan.storage = super::target_storage::Plan::default();
@@ -233,6 +300,7 @@ impl Plan {
         glyphs: &glyph_plan::Plan,
         width: usize,
         capture: bool,
+        proof: Option<&std::sync::Arc<super::scopes::Cached>>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, Vec<R>), GpuError> {
         if width < 2
@@ -244,16 +312,20 @@ impl Plan {
         let mut retained = Vec::new();
         let mut traversal = Vec::new();
         let commands = drawing.commands();
-        let groups = GroupPlan::new(
-            commands,
-            Some(0),
-            std::iter::empty(),
-            std::iter::empty(),
-            |bytes| {
-                traversal.push(reserve(bytes)?);
-                Ok(())
-            },
-        )?;
+        let groups = if let Some(proof) = proof {
+            super::scopes::Proof::Shared(proof.clone())
+        } else {
+            super::scopes::Proof::Owned(GroupPlan::new(
+                commands,
+                Some(0),
+                std::iter::empty(),
+                std::iter::empty(),
+                |bytes| {
+                    traversal.push(reserve(bytes)?);
+                    Ok(())
+                },
+            )?)
+        };
         let mut entries = Vec::new();
         let mut scissors = Vec::new();
         let mut scissor = Scissor::full(size);

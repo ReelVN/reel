@@ -229,7 +229,7 @@ struct Stream<'a> {
     transition_next: usize,
     pending: Option<Pending<'a>>,
     next: usize,
-    groups: crate::common::scopes::GroupPlan,
+    groups: crate::common::scopes::Proof,
     scopes: Vec<Scope<'a>>,
     transform: Affine,
     size: [u32; 2],
@@ -248,24 +248,29 @@ fn stream<'a>(
     size: [u32; 2],
     scissor: Scissor,
     capture: bool,
+    schedule: &offscreen::Plan,
     scratch: &mut Scratch,
     reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<Stream<'a>, GpuError> {
-    let groups = crate::common::scopes::GroupPlan::new(
-        commands,
-        offset,
-        drawing
-            .transitions()
-            .iter()
-            .filter(|_| transitions_enabled)
-            .map(|t| t.commands.clone()),
-        drawing
-            .capture_exclusions()
-            .iter()
-            .filter(|_| capture)
-            .cloned(),
-        &mut *reserve,
-    )?;
+    let groups = if let Some(groups) = schedule.groups(commands, transitions_enabled) {
+        groups
+    } else {
+        super::scopes::Proof::Owned(crate::common::scopes::GroupPlan::new(
+            commands,
+            offset,
+            drawing
+                .transitions()
+                .iter()
+                .filter(|_| transitions_enabled)
+                .map(|t| t.commands.clone()),
+            drawing
+                .capture_exclusions()
+                .iter()
+                .filter(|_| capture)
+                .cloned(),
+            &mut *reserve,
+        )?)
+    };
     scratch.acquire(size, reserve)?;
     Ok(Stream {
         retained_context: 0,
@@ -445,6 +450,7 @@ impl Input<'_> {
                 size,
                 Scissor::full(size),
                 capture,
+                schedule,
                 &mut scratch,
                 &mut reserve,
             )?;
@@ -484,6 +490,7 @@ impl Input<'_> {
                             current.size,
                             current.scissor,
                             capture,
+                            schedule,
                             &mut scratch,
                             &mut reserve,
                         )?;
@@ -503,6 +510,7 @@ impl Input<'_> {
                         current.size,
                         current.scissor,
                         capture,
+                        schedule,
                         &mut scratch,
                         &mut reserve,
                     )?;
@@ -549,6 +557,7 @@ impl Input<'_> {
                                 parent.size,
                                 parent.scissor,
                                 capture,
+                                schedule,
                                 &mut scratch,
                                 &mut reserve,
                             )?;
@@ -852,6 +861,7 @@ impl Input<'_> {
                                 current.size,
                                 current.scissor,
                                 capture,
+                                schedule,
                                 &mut scratch,
                                 &mut reserve,
                             )?;

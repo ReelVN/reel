@@ -102,7 +102,7 @@ struct Stream<'a> {
     transition_next: usize,
     transitions_enabled: bool,
     commands: &'a [FrameCommand],
-    groups: crate::common::scopes::GroupPlan,
+    groups: crate::common::scopes::Proof,
     next: usize,
     size: [u32; 2],
     transform: Affine,
@@ -924,21 +924,25 @@ impl Context<'_> {
         scissor: Scissor,
     ) -> Result<Stream<'a>, GpuError> {
         let capture = self.capture;
-        let groups = crate::common::scopes::GroupPlan::new(
-            commands,
-            offset,
-            drawing
-                .transitions()
-                .iter()
-                .filter(|_| transitions_enabled)
-                .map(|t| t.commands.clone()),
-            drawing
-                .capture_exclusions()
-                .iter()
-                .filter(|_| capture)
-                .cloned(),
-            |bytes| self.transient(bytes),
-        )?;
+        let groups = if let Some(groups) = self.offscreen.groups(commands, transitions_enabled) {
+            groups
+        } else {
+            crate::common::scopes::Proof::Owned(crate::common::scopes::GroupPlan::new(
+                commands,
+                offset,
+                drawing
+                    .transitions()
+                    .iter()
+                    .filter(|_| transitions_enabled)
+                    .map(|t| t.commands.clone()),
+                drawing
+                    .capture_exclusions()
+                    .iter()
+                    .filter(|_| capture)
+                    .cloned(),
+                |bytes| self.transient(bytes),
+            )?)
+        };
         Ok(Stream {
             retained_context: 0,
             scheduled: false,

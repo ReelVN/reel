@@ -6,6 +6,7 @@ use reel_core::budget::BudgetPool;
 #[derive(Default)]
 pub(super) struct Cache {
     size: Option<[u32; 2]>,
+    pub(super) groups: crate::common::scopes::Cache,
     owners: target_cache::Cache<Target>,
 }
 impl Cache {
@@ -41,6 +42,7 @@ impl Cache {
         self.owners.prune_cold(Target::cache_only);
     }
     pub fn release_idle(&mut self) {
+        self.groups.disable();
         self.owners.release_idle(Target::cache_only);
     }
     pub fn clear(&mut self) {

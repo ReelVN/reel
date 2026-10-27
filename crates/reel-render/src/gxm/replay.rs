@@ -189,7 +189,11 @@ pub(super) fn prepare(
     )
     .and_then(|plan| {
         context.glyph_plan = plan;
-        let (schedule, bytes, retained) = crate::common::offscreen::Plan::choose(
+        let groups = context
+            .target_cache
+            .groups
+            .get(frame.drawing(), capture, &budgets.transient);
+        let (schedule, bytes, retained) = crate::common::offscreen::Plan::choose_with_groups(
             frame,
             None,
             size,
@@ -201,6 +205,7 @@ pub(super) fn prepare(
             &|extent| Ok(gpu.target_layout(extent)?.texture_bytes),
             crate::common::target_plan::MaskExecution::Sampled,
             &selection,
+            groups,
             |bytes| {
                 reserve(
                     &budgets.transient,
@@ -303,7 +308,7 @@ struct Stream<'a> {
     transition_next: usize,
     transitions_enabled: bool,
     commands: &'a [FrameCommand],
-    groups: crate::common::scopes::GroupPlan,
+    groups: crate::common::scopes::Proof,
     next: usize,
     size: [u32; 2],
     transform: Affine,
@@ -1049,21 +1054,25 @@ impl Context<'_> {
         scissor: Scissor,
     ) -> Result<Stream<'a>, GpuError> {
         let capture = self.capture;
-        let groups = crate::common::scopes::GroupPlan::new(
-            commands,
-            offset,
-            drawing
-                .transitions()
-                .iter()
-                .filter(|_| transitions_enabled)
-                .map(|t| t.commands.clone()),
-            drawing
-                .capture_exclusions()
-                .iter()
-                .filter(|_| capture)
-                .cloned(),
-            |bytes| self.transient(bytes),
-        )?;
+        let groups = if let Some(groups) = self.offscreen.groups(commands, transitions_enabled) {
+            groups
+        } else {
+            crate::common::scopes::Proof::Owned(crate::common::scopes::GroupPlan::new(
+                commands,
+                offset,
+                drawing
+                    .transitions()
+                    .iter()
+                    .filter(|_| transitions_enabled)
+                    .map(|t| t.commands.clone()),
+                drawing
+                    .capture_exclusions()
+                    .iter()
+                    .filter(|_| capture)
+                    .cloned(),
+                |bytes| self.transient(bytes),
+            )?)
+        };
         Ok(Stream {
             retained_context: 0,
             scheduled: false,

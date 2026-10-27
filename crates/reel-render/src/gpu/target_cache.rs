@@ -185,7 +185,10 @@ struct Entries {
     slots: crate::common::target_cache::Cache<Arc<Allocation>>,
 }
 #[derive(Default)]
-pub(super) struct TargetCache(Mutex<Option<Entries>>);
+pub(super) struct TargetCache(
+    Mutex<Option<Entries>>,
+    pub(super) Mutex<crate::common::scopes::Cache>,
+);
 
 impl TargetCache {
     #[cfg(test)]
@@ -330,6 +333,7 @@ impl TargetCache {
     }
 
     pub(super) fn release_idle(&self) {
+        self.1.lock().unwrap().disable();
         if let Some(entries) = self.0.lock().unwrap().as_mut() {
             entries
                 .slots
@@ -338,6 +342,7 @@ impl TargetCache {
     }
 
     pub(super) fn clear(&self) {
+        self.1.lock().unwrap().clear();
         *self.0.lock().unwrap() = None;
     }
 }
