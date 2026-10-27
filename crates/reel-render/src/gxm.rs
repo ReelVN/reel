@@ -61,6 +61,7 @@ fn create_program(
     fragment: native::ShaderCode<'_>,
     bindings: &[native::AttributeBinding<'_>],
     attributes: &[native::VertexAttribute],
+    clipped: bool,
 ) -> Result<native::Program, native::Error> {
     context.create_program(native::ProgramDescriptor {
         vertex,
@@ -68,7 +69,7 @@ fn create_program(
         bindings,
         stride: 12,
         attributes,
-        clip_uniform: Some("reel_clip_rect"),
+        clip_uniform: clipped.then_some("reel_clip_rect"),
     })
 }
 

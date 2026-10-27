@@ -51,7 +51,7 @@ struct PaintState {
     coverage: bool,
     direct: Option<mesh::DirectPaint>,
     opaque: Option<mesh::OpaquePaint>,
-    scissor: Option<[u32; 4]>,
+    scissor: crate::common::scissor::Scissor,
 }
 
 pub(super) struct Page {
@@ -994,7 +994,7 @@ impl Context<'_> {
             repeat,
             quality,
             coverage,
-            scissor: self.native_scissor(),
+            scissor: self.scissor.for_vertices(&mesh.vertices, self.size),
         };
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);
@@ -1055,29 +1055,35 @@ impl Context<'_> {
                 scissor,
             } = entry.state;
             let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
-            let shader = if let Some(direct) = direct {
-                &self.programs.direct[direct as usize]
+            use super::programs::PaintKind;
+            let program = if let Some(direct) = direct {
+                PaintKind::Direct(direct)
             } else if kind > 0. {
                 if styled {
-                    &self.programs.video_appearance
+                    PaintKind::VideoAppearance
                 } else {
-                    &self.programs.video
+                    PaintKind::Video
                 }
             } else if coverage {
                 if appearance[4][3] == 2. {
-                    &self.programs.glyph_gradient
+                    PaintKind::GlyphGradient
                 } else {
-                    &self.programs.coverage
+                    PaintKind::Coverage
                 }
             } else if appearance[4][3] >= 3. {
-                &self.programs.packed
+                PaintKind::Packed
             } else if appearance[4][3] == 2. {
-                &self.programs.gradient
+                PaintKind::Gradient
             } else if styled {
-                &self.programs.appearance
+                PaintKind::Appearance
             } else {
-                &self.programs.rgba
+                PaintKind::Rgba
             };
+            let shader = self.programs.paint.get(
+                self.gpu,
+                program,
+                !scissor.tile_exact(32, batch.target.view.size()),
+            )?;
             let mut values = Values::new();
             for (name, unit) in [("u_image", 0), ("u_chroma_u", 1), ("u_chroma_v", 2)] {
                 values.extend(shader.int(name, unit));
@@ -1117,7 +1123,7 @@ impl Context<'_> {
                     } else {
                         native::Blend::Premultiplied
                     },
-                    scissor,
+                    scissor: Some([scissor.x, scissor.y, scissor.width, scissor.height]),
                 },
                 if quality == ImageQuality::Low {
                     native::TextureFilter::Nearest

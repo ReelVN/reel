@@ -23,6 +23,36 @@ impl Scissor {
     pub fn empty(self) -> bool {
         self.width == 0 || self.height == 0
     }
+    /// Geometry wholly inside an inner clip can use the viewport's clip. Keep
+    /// a subpixel margin so vertex quantization cannot expose an adjacent sample.
+    pub fn for_vertices(self, vertices: &[super::mesh::Vertex], size: [u32; 2]) -> Self {
+        let full = Self::full(size);
+        if self == full {
+            return full;
+        }
+        let x0 = f64::from(self.x) + 1. / 16.;
+        let y0 = f64::from(self.y) + 1. / 16.;
+        let x1 = f64::from(self.x + self.width) - 1. / 16.;
+        let y1 = f64::from(self.y + self.height) - 1. / 16.;
+        if vertices.iter().all(|v| {
+            let x = (f64::from(v.position[0]) + 1.) * f64::from(size[0]) * 0.5;
+            let y = (1. - f64::from(v.position[1])) * f64::from(size[1]) * 0.5;
+            x >= x0 && x <= x1 && y >= y0 && y <= y1
+        }) {
+            full
+        } else {
+            self
+        }
+    }
+
+    /// Tile scissors are exact at aligned edges and at physical surface edges.
+    #[cfg(any(feature = "gxm", test))]
+    pub fn tile_exact(self, tile: u32, storage: [u32; 2]) -> bool {
+        self.x.is_multiple_of(tile)
+            && self.y.is_multiple_of(tile)
+            && (self.x + self.width == storage[0] || (self.x + self.width).is_multiple_of(tile))
+            && (self.y + self.height == storage[1] || (self.y + self.height).is_multiple_of(tile))
+    }
     pub fn intersect(self, other: Self) -> Self {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
@@ -157,6 +187,50 @@ impl Scissor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geometry_clips_only_disappear_with_coverage_inside_the_integer_edges() {
+        let size = [960, 544];
+        let clip = Scissor {
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 80,
+        };
+        let vertex = |x: f64, y: f64| super::super::mesh::Vertex {
+            position: [(x * 2. / 960. - 1.) as f32, (1. - y * 2. / 544.) as f32],
+            uv: [0.; 2],
+            color: [1.; 4],
+            source_window: [0.; 4],
+        };
+        assert_eq!(
+            clip.for_vertices(&[vertex(10.1, 20.1), vertex(109.9, 99.9)], size),
+            Scissor::full(size)
+        );
+        for point in [
+            (9., 50.),
+            (111., 50.),
+            (50., 19.),
+            (50., 101.),
+            (10., 20.),
+            (f64::NAN, 50.),
+        ] {
+            assert_eq!(clip.for_vertices(&[vertex(point.0, point.1)], size), clip);
+        }
+        assert!(Scissor::full(size).tile_exact(32, size));
+        assert!(Scissor::full([513, 273]).tile_exact(32, [513, 273]));
+        assert!(!Scissor::full([513, 273]).tile_exact(32, [1024, 512]));
+        assert!(!clip.tile_exact(32, size));
+        assert!(
+            Scissor {
+                x: 32,
+                y: 64,
+                width: 512,
+                height: 256
+            }
+            .tile_exact(32, size)
+        );
+    }
 
     fn group(ink_bounds: InkBounds) -> FrameGroup {
         FrameGroup {

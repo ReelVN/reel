@@ -153,18 +153,20 @@ pub fn sources() -> Vec<Shader> {
         ("paint_direct_coverage", 3, false),
         ("paint_solid", 4, false),
     ] {
+        let defines = format!(
+            "#define REEL_DIRECT {alpha}\n{}",
+            if regional {
+                "#define REEL_REGIONAL"
+            } else {
+                ""
+            }
+        );
+        add(name, false, &paint, &defines);
         add(
-            name,
+            &format!("{name}_unclipped"),
             false,
             &paint,
-            &format!(
-                "#define REEL_DIRECT {alpha}\n{}",
-                if regional {
-                    "#define REEL_REGIONAL"
-                } else {
-                    ""
-                }
-            ),
+            &format!("{defines}\n#define REEL_UNCLIPPED"),
         );
     }
     for (name, kind, style) in [
@@ -177,11 +179,13 @@ pub fn sources() -> Vec<Shader> {
         ("paint_video", 2, 0),
         ("paint_video_appearance", 2, 1),
     ] {
+        let defines = format!("#define REEL_SOURCE_KIND {kind}\n#define REEL_STYLE {style}");
+        add(name, false, &paint, &defines);
         add(
-            name,
+            &format!("{name}_unclipped"),
             false,
             &paint,
-            &format!("#define REEL_SOURCE_KIND {kind}\n#define REEL_STYLE {style}"),
+            &format!("{defines}\n#define REEL_UNCLIPPED"),
         );
     }
     add("present", false, &read("present"), "");

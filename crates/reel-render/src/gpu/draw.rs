@@ -686,7 +686,7 @@ impl Context<'_> {
             repeat,
             quality,
             appearance,
-            scissor: self.scissor,
+            scissor: self.scissor.for_vertices(&mesh.vertices, self.size),
         };
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);

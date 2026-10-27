@@ -67,6 +67,9 @@ const NAMES: &[&str] = &[
     "u_seed1",
 ];
 pub(super) type Values<'a> = SmallVec<[UniformValue<'a>; 24]>;
+#[path = "programs/paint.rs"]
+mod paint;
+pub(super) use paint::Kind as PaintKind;
 pub(super) struct Shader {
     pub program: Program,
     uniforms: [Option<Uniform>; NAMES.len()],
@@ -80,7 +83,7 @@ impl Shader {
         vertex: ShaderCode<'_>,
         fragment: ShaderCode<'_>,
     ) -> Result<Self, GpuError> {
-        let program = create_program_with_vertex(context, vertex, fragment)?;
+        let program = create_program_with_vertex(context, vertex, fragment, true)?;
         let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
         Ok(Self { program, uniforms })
     }
@@ -124,12 +127,14 @@ pub(super) fn create_program(
             shader_code!("vertex")
         },
         fragment,
+        true,
     )
 }
 fn create_program_with_vertex(
     context: &super::ownership::Device,
     vertex: ShaderCode<'_>,
     fragment: ShaderCode<'_>,
+    clipped: bool,
 ) -> Result<Program, GpuError> {
     let program = super::super::create_program(
         context,
@@ -154,19 +159,12 @@ fn create_program_with_vertex(
             },
         ],
         &attributes(),
+        clipped,
     )?;
     Ok(program)
 }
 pub(super) struct Programs {
-    pub rgba: Shader,
-    pub direct: [Shader; 8],
-    pub coverage: Shader,
-    pub gradient: Shader,
-    pub glyph_gradient: Shader,
-    pub appearance: Shader,
-    pub packed: Shader,
-    pub video: Shader,
-    pub video_appearance: Shader,
+    pub paint: paint::PaintPrograms,
     pub composite: Shader,
     pub extended_blend: Shader,
     pub source_over: Shader,
@@ -212,24 +210,7 @@ impl Programs {
             source_window: [0.; 4],
         });
         Ok(Self {
-            rgba: Shader::new(context, shader_code!("paint_rgba"))?,
-            direct: [
-                Shader::new(context, shader_code!("paint_direct"))?,
-                Shader::new(context, shader_code!("paint_direct_bc1"))?,
-                Shader::new(context, shader_code!("paint_direct_bc3"))?,
-                Shader::new(context, shader_code!("paint_regional"))?,
-                Shader::new(context, shader_code!("paint_regional_bc1"))?,
-                Shader::new(context, shader_code!("paint_regional_bc3"))?,
-                Shader::new(context, shader_code!("paint_direct_coverage"))?,
-                Shader::new(context, shader_code!("paint_solid"))?,
-            ],
-            coverage: Shader::new(context, shader_code!("paint_coverage"))?,
-            gradient: Shader::new(context, shader_code!("paint_gradient"))?,
-            glyph_gradient: Shader::new(context, shader_code!("paint_glyph_gradient"))?,
-            appearance: Shader::new(context, shader_code!("paint_appearance"))?,
-            packed: Shader::new(context, shader_code!("paint_packed"))?,
-            video: Shader::new(context, shader_code!("paint_video"))?,
-            video_appearance: Shader::new(context, shader_code!("paint_video_appearance"))?,
+            paint: paint::PaintPrograms::new(budget),
             composite: Shader::with_vertex(
                 context,
                 shader_code!("composite_vertex"),

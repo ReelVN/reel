@@ -1,9 +1,13 @@
 // Native GXM counterpart of the shared renderer algorithm.
 // Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
-varying float4 fragment_position : WPOS;
 varying out float4 reel_output : COLOR;
+varying float4 fragment_position : WPOS;
+#ifdef REEL_UNCLIPPED
+void reel_clip(){}
+#else
 uniform float4 reel_clip_rect;
 void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
+#endif
 #ifndef REEL_SOURCE_KIND
 #define REEL_SOURCE_KIND 0
 #endif
