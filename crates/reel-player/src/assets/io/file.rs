@@ -4,11 +4,15 @@
 #[cfg(target_os = "vita")]
 use pvr_psp2_sys::platform::fs::File as PlatformFile;
 #[cfg(target_os = "vita")]
-pub(crate) use pvr_psp2_sys::platform::fs::{Metadata, metadata};
+pub(crate) use pvr_psp2_sys::platform::fs::Metadata;
+#[cfg(all(target_os = "vita", any(feature = "vita", test)))]
+pub(crate) use pvr_psp2_sys::platform::fs::metadata;
 #[cfg(not(target_os = "vita"))]
 use std::fs::File as PlatformFile;
 #[cfg(not(target_os = "vita"))]
-pub(crate) use std::fs::{Metadata, metadata};
+pub(crate) use std::fs::Metadata;
+#[cfg(all(not(target_os = "vita"), any(feature = "vita", test)))]
+pub(crate) use std::fs::metadata;
 use std::{
     io::{self, Read, Seek, SeekFrom},
     path::Path,

@@ -399,7 +399,7 @@ fn prepared_versions_share_only_live_matching_kinds_and_respect_explicit_retirem
 }
 
 #[test]
-fn loose_resource_reuse_resolves_the_current_content_before_sharing() {
+fn loose_resources_share_within_a_launch_and_reopen_on_the_next_launch() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/reel-artifacts/asset-version-tests")
         .join(format!(
@@ -420,13 +420,24 @@ fn loose_resource_reuse_resolves_the_current_content_before_sharing() {
     let first = load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
     let shared = load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
     assert_eq!(first.handle(), shared.handle());
+    let identity = first.version().clone();
+    drop((first, shared));
+    assert_eq!(assets.output_pool().usage().bytes, 0);
+    assets.close();
+    drop(assets);
     std::fs::write(&path, JPEG).unwrap();
-    let changed =
-        load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
-    assert_ne!(first.version(), changed.version());
+    let assets = Assets::directory(AssetOptions {
+        root: root.clone(),
+        ..Default::default()
+    });
+    let changed = load_until_done(
+        &assets,
+        assets.request_version(identity.clone(), AssetKind::Image),
+    )
+    .unwrap();
+    assert_eq!(*changed.version(), identity);
     assert_eq!(changed.data().image_size(), Some([96, 96]));
-    assert_eq!(first.data().image_size(), Some([160, 90]));
-    drop((first, shared, changed));
+    drop(changed);
     assert_eq!(assets.output_pool().usage().bytes, 0);
     drop(assets);
     std::fs::remove_file(path).unwrap();
@@ -505,7 +516,7 @@ fn memory_assets_with_description(version: Option<Option<ContentVersion>>) -> As
 }
 
 #[test]
-fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters() {
+fn concurrent_images_share_decode_capacity_and_source_identities() {
     let mut versions = Vec::new();
     let (packaged, _fixture) = packed::packaged_assets(64 << 20);
     for assets in [
@@ -574,10 +585,13 @@ fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters
         assert_eq!(assets.poll(late).unwrap_err(), "asset service closed");
     }
     assert_eq!(
-        versions[0], versions[1],
-        "resource identity must not include storage location"
+        versions[1], versions[2],
+        "published digests agree across memory and archives"
     );
-    assert_eq!(versions[0], versions[2]);
+    assert_eq!(
+        versions[0].iter().map(|v| &v.key).collect::<Vec<_>>(),
+        versions[1].iter().map(|v| &v.key).collect::<Vec<_>>()
+    );
 }
 
 #[test]

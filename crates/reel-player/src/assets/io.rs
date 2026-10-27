@@ -20,7 +20,6 @@ use std::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 
 enum Request {
@@ -47,9 +46,6 @@ impl Reading {
         }
     }
     fn step(&mut self, files: &mut Files, cancelled: &AtomicBool) -> Result<bool, IoError> {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(failure("read cancelled"));
-        }
         let mut file = files.open(&self.request.resource, cancelled)?;
         let length = if let Some(length) = self.length {
             length
@@ -90,7 +86,6 @@ impl Reading {
             self.cursor.as_deref_mut(),
             cancelled,
         )?;
-        file.verify()?;
         Ok(end == length)
     }
 }
@@ -203,10 +198,13 @@ impl Files {
         source: &AssetSource,
         cancelled: &AtomicBool,
     ) -> Result<ReadFile<'_>, IoError> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(failure("read cancelled"));
+        }
         reel_package::archive::validate_path(&source.key.0).map_err(io_error)?;
         let file = match self {
-            Self::Directory(files) => ReadFile::directory(files.open(source, cancelled)?),
-            Self::Pack(files) => files.entry(source, cancelled)?,
+            Self::Directory(files) => ReadFile::directory(files.open(source)?),
+            Self::Pack(files) => files.entry(source)?,
         };
         if source
             .version
@@ -222,7 +220,6 @@ struct ReadFile<'a> {
     offset: u64,
     length: u64,
     version: ContentVersion,
-    stamp: Option<SystemTime>,
     compressed: Option<(
         reel_package::archive::Entry<'a>,
         &'a mut reel_package::archive::ReadScratch,
@@ -235,7 +232,6 @@ impl<'a> ReadFile<'a> {
             offset: 0,
             length: file.length,
             version: file.version,
-            stamp: Some(file.modified),
             compressed: None,
         }
     }
@@ -268,18 +264,6 @@ impl<'a> ReadFile<'a> {
                 return Err(failure("read cancelled"));
             }
             self.file.read_exact(chunk).map_err(io_error)?;
-        }
-        Ok(())
-    }
-    fn verify(&self) -> Result<(), IoError> {
-        if let Some(modified) = self.stamp
-            && !directory::same(
-                &self.file.metadata().map_err(io_error)?,
-                self.length,
-                modified,
-            )?
-        {
-            return Err(directory::changed());
         }
         Ok(())
     }

@@ -5,7 +5,7 @@ use reel_core::{
     io::{IoError, IoErrorCode},
 };
 use reel_package::archive::{self, ArchiveIndex, EntryStorage, ReadScratch};
-use std::{path::PathBuf, sync::atomic::AtomicBool};
+use std::path::PathBuf;
 
 struct Archive {
     file: File,
@@ -109,13 +109,9 @@ impl Files {
             _storage: storage,
         })
     }
-    pub(super) fn entry(
-        &mut self,
-        source: &AssetSource,
-        cancelled: &AtomicBool,
-    ) -> Result<ReadFile<'_>, IoError> {
+    pub(super) fn entry(&mut self, source: &AssetSource) -> Result<ReadFile<'_>, IoError> {
         if let Some(overlay) = &mut self.overlay {
-            match overlay.open(source, cancelled) {
+            match overlay.open(source) {
                 Ok(file) => return Ok(ReadFile::directory(file)),
                 Err(error) if error.code == IoErrorCode::NotFound => {}
                 Err(error) => return Err(error),
@@ -146,7 +142,6 @@ impl Files {
             offset: descriptor.offset,
             length: descriptor.length,
             version: ContentVersion(descriptor.version),
-            stamp: None,
             compressed,
         })
     }

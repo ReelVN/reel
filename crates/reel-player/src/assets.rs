@@ -140,6 +140,8 @@ struct Service {
 #[derive(Clone)]
 pub struct Assets(Rc<RefCell<Service>>);
 impl Assets {
+    /// Open fixed loose resources for this run. File identities use source paths;
+    /// preparation reads only requested data. Restart after changing assets.
     pub fn directory(options: AssetOptions) -> Self {
         let limits = options.queue_limits();
         let root = options.root.clone();
@@ -368,7 +370,7 @@ impl Assets {
             kind,
         )
     }
-    /// Restore exactly the asset version retained by an accepted drawing.
+    /// Restore a retained asset from the selected fixed source.
     pub fn request_version(&self, version: ResourceVersion, kind: AssetKind) -> LoadId {
         self.request_source(
             AssetSource {

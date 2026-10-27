@@ -18,7 +18,7 @@ reel export --release
 
 `check` compiles and locates errors; `dev` runs source. `build` produces `build/debug/game.asb`, or `build/release/game.asb` with `--release`. Use `reel run build/debug/game.asb` to run compiled code.
 
-`dev` stores its compilation cache in `build/dev/` and reuses it while the tool and source contents remain unchanged. Editing source triggers recompilation.
+`dev` stores its compilation cache in `build/dev/` and reuses it while the tool and source contents remain unchanged. Editing source triggers recompilation. After editing assets, restart the game to load them.
 
 Source commands in an interactive terminal show the current phase, module progress and elapsed time. `dev` reports when it reuses cached code.
 

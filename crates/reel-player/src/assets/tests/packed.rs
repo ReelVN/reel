@@ -278,13 +278,15 @@ fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
         } else {
             b"patched"
         };
-        let version = ContentVersion(*blake3::hash(expected).as_bytes());
         io.describe(requests.describe("asset")).unwrap();
         let described = events(&mut io, &wake, &receiver, 1);
         let Terminal::Completed(IoPayload::Described(info)) = &described[0].result else {
             panic!()
         };
-        assert_eq!(info.version, Some(version));
+        let version = info.version.expect("selected fixed source has an identity");
+        if overlay.is_none() {
+            assert_eq!(version, ContentVersion(*blake3::hash(expected).as_bytes()));
+        }
         assert_eq!(info.length, Some(expected.len() as u64));
         assert!(info.range_read && info.seekable);
         drop(described);
