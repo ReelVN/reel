@@ -486,10 +486,11 @@ impl Emitter<'_> {
                         if self.language == Language::Cg {
                             self.line(scope, "#pragma loop (unroll: never)")?;
                         }
-                        let declaration = if self.language == Language::Cg {
-                            format!("int reel_i{name}")
-                        } else {
-                            format!("var reel_i{name}: i32")
+                        let declaration = match (self.language, reduction.float_counter) {
+                            (Language::Cg, true) => format!("float reel_i{name}"),
+                            (Language::Cg, false) => format!("int reel_i{name}"),
+                            (Language::Wgsl, true) => format!("var reel_i{name}: f32"),
+                            (Language::Wgsl, false) => format!("var reel_i{name}: i32"),
                         };
                         self.line(scope, &format!("for ({declaration} = {}; reel_i{name} != {}; reel_i{name} += {}) {{", reduction.first, reduction.end, reduction.step))?;
                         let child = self.child(scope);

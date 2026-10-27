@@ -1,7 +1,7 @@
 //! Recover bounded sampling reductions from the expanded typed graph. Every lane
 //! retains its initial value and left-to-right additions. A loop is admitted only
 //! when the sampled subgraphs differ by one exactly representable integer float
-//! constant whose complete original sequence matches the integer loop counter.
+//! constant whose complete original sequence matches the loop counter.
 
 use super::*;
 
@@ -17,6 +17,10 @@ pub(super) struct Reduction {
     pub first: i32,
     pub end: i32,
     pub step: i32,
+    /// All induction values, including the terminal value and increment, are
+    /// exactly representable as f32. Each addition then reproduces the next
+    /// literal without a float/integer conversion in the sampling loop.
+    pub float_counter: bool,
     pub scale: Vec<(EffectBinary, EffectNodeId)>,
     invariant: Vec<EffectNodeId>,
     pub dependent: BTreeSet<u32>,
@@ -171,6 +175,9 @@ impl Reduction {
             first,
             end,
             step,
+            float_counter: [step, end]
+                .into_iter()
+                .all(|value| f64::from(value as f32) == f64::from(value)),
             scale,
             invariant,
             dependent,

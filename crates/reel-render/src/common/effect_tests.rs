@@ -110,6 +110,10 @@ fn sampled_program() -> Arc<EffectProgram> {
 /// Independent RGBA accumulators share each fetched vector. Scheduling one
 /// output channel at a time would keep all 61 vectors live across the others.
 fn sampling_program(radius: i32) -> Arc<EffectProgram> {
+    sampling_offsets(&(-radius..=radius).map(|n| n as f32).collect::<Vec<_>>())
+}
+
+fn sampling_offsets(offsets: &[f32]) -> Arc<EffectProgram> {
     let mut g = Graph::default();
     let uv = g.node(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
     let x = g.node(EffectType::Float, EffectOp::Extract { value: uv, lane: 0 });
@@ -124,8 +128,8 @@ fn sampling_program(radius: i32) -> Arc<EffectProgram> {
     );
     let zero = g.float(0.0);
     let mut channels = [zero; 4];
-    for tap in -radius..=radius {
-        let offset = g.float(tap as f32);
+    for &tap in offsets {
+        let offset = g.float(tap);
         let offset = g.node(
             EffectType::Float,
             EffectOp::Binary {
@@ -162,7 +166,7 @@ fn sampling_program(radius: i32) -> Arc<EffectProgram> {
             );
         }
     }
-    let divisor = g.float((radius * 2 + 1) as f32);
+    let divisor = g.float(offsets.len() as f32);
     for channel in &mut channels {
         *channel = g.node(
             EffectType::Float,
@@ -222,6 +226,51 @@ fn large_proved_reduction_keeps_integer_constants_and_final_scaling() {
         if language == Language::Cg {
             assert!(fragment.source.contains("#pragma loop (unroll: never)"));
             assert!(fragment.source.contains("tex2Dlod(reel_source"));
+        }
+    }
+}
+
+#[test]
+fn sampling_counter_preserves_literals_at_float_precision_boundaries() {
+    for (first, step, count, float_counter) in [
+        (-30, 1, 61, true),
+        (30, -1, 61, true),
+        (16_777_200, 1, 17, false),
+        (-16_777_200, -1, 17, false),
+        (-16_777_216, 2, 17, true),
+    ] {
+        let offsets: Vec<_> = (0..count).map(|i| (first + step * i) as f32).collect();
+        let program = sampling_offsets(&offsets);
+        let plan = reduction::Reduction::find(&program, program.output()).unwrap();
+        assert_eq!(plan.float_counter, float_counter);
+        if float_counter {
+            let mut counter = plan.first as f32;
+            for offset in offsets {
+                assert_ne!(counter, plan.end as f32);
+                assert_eq!(counter.to_bits(), offset.to_bits());
+                counter += plan.step as f32;
+            }
+            assert_eq!(counter, plan.end as f32);
+        }
+        for language in [Language::Wgsl, Language::Cg] {
+            let fragment = compile_fragment(&program, language, 1 << 20).unwrap();
+            let expected = match (language, float_counter) {
+                (Language::Cg, true) => "for (float reel_i",
+                (Language::Cg, false) => "for (int reel_i",
+                (Language::Wgsl, true) => ": f32 =",
+                (Language::Wgsl, false) => ": i32 =",
+            };
+            assert!(fragment.source.contains(expected));
+            #[cfg(feature = "wgpu")]
+            if language == Language::Wgsl {
+                let module = wgpu::naga::front::wgsl::parse_str(&fragment.source).unwrap();
+                wgpu::naga::valid::Validator::new(
+                    wgpu::naga::valid::ValidationFlags::all(),
+                    wgpu::naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap();
+            }
         }
     }
 }
@@ -828,23 +877,28 @@ fn export_anonymous_effect_fragments() {
             .expect("set REEL_EFFECT_SHADER_DIR to an ignored artifact directory"),
     );
     std::fs::create_dir_all(&directory).unwrap();
-    for language in [Language::Wgsl, Language::Cg] {
-        let generated = compile_fragment(&sampled_program(), language, 16384).unwrap();
-        let extension = if language == Language::Wgsl {
-            "wgsl"
-        } else {
-            "cg"
-        };
-        std::fs::write(
-            directory.join(format!("sampled.{extension}")),
-            &generated.source,
-        )
-        .unwrap();
-        println!(
-            "{language:?}: generated_bytes={}, parameters={}B",
-            generated.source.len(),
-            generated.parameters.byte_len()
-        );
+    for (name, program) in [
+        ("sampled", sampled_program()),
+        ("sampling61", sampling_program(30)),
+    ] {
+        for language in [Language::Wgsl, Language::Cg] {
+            let generated = compile_fragment(&program, language, 16384).unwrap();
+            let extension = if language == Language::Wgsl {
+                "wgsl"
+            } else {
+                "cg"
+            };
+            std::fs::write(
+                directory.join(format!("{name}.{extension}")),
+                &generated.source,
+            )
+            .unwrap();
+            println!(
+                "{name} {language:?}: generated_bytes={}, parameters={}B",
+                generated.source.len(),
+                generated.parameters.byte_len()
+            );
+        }
     }
 }
 
