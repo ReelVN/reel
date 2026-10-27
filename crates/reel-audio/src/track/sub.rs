@@ -231,13 +231,12 @@ impl Track {
 		}
 
 		// apply volume fade
+		let volume = self.volume.amplitude_block();
+		let fade = self.playback_state_manager.fade_amplitudes();
 		for (i, frame) in out.iter_mut().enumerate() {
 			let time_in_chunk = (i + 1) as f64 / num_frames as f64;
-			let volume = self.volume.interpolated_value(time_in_chunk).as_amplitude();
-			let fade_volume = self
-				.playback_state_manager
-				.interpolated_fade_volume(time_in_chunk)
-				.as_amplitude();
+			let volume = volume.at(time_in_chunk);
+			let fade_volume = fade.at(time_in_chunk);
 			*frame *= volume * fade_volume;
 		}
 

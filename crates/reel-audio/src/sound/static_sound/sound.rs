@@ -601,6 +601,9 @@ impl Sound for StaticSound {
 
 		// play back audio
 		let num_frames = out.len();
+		let volume = self.volume.amplitude_block();
+		let fade = self.playback_state_manager.fade_amplitudes();
+		let panning = self.panning.panning_block();
 		for (i, frame) in out.iter_mut().enumerate() {
 			while self.preroll_remaining > 0 {
 				if !self.advance_frame() {
@@ -646,12 +649,8 @@ impl Sound for StaticSound {
 				}
 			}
 			let time_in_chunk = (i + 1) as f64 / num_frames as f64;
-			let volume = self.volume.interpolated_value(time_in_chunk).as_amplitude();
-			let fade_volume = self
-				.playback_state_manager
-				.interpolated_fade_volume(time_in_chunk)
-				.as_amplitude();
-			let panning = self.panning.interpolated_value(time_in_chunk);
+			let volume = volume.at(time_in_chunk);
+			let fade_volume = fade.at(time_in_chunk);
 			let playback_rate = self.playback_rate.interpolated_value(time_in_chunk);
 			let resampler_out = self.resampler.get(self.fractional_position as f32);
 			self.fractional_position +=
@@ -665,7 +664,7 @@ impl Sound for StaticSound {
 				self.fractional_position *=
 					self.resampler.current_sample_rate() as f64 / previous_rate as f64;
 			}
-			*frame = (resampler_out * fade_volume * volume).panned(panning);
+			*frame = panning.apply(resampler_out * fade_volume * volume, time_in_chunk);
 		}
 	}
 

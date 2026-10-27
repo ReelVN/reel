@@ -1,5 +1,7 @@
+mod block;
 #[cfg(test)]
 mod test;
+pub(crate) use block::Amplitude;
 
 use std::time::Duration;
 

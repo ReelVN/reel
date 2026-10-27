@@ -43,18 +43,26 @@ impl Frame {
 	#[allow(clippy::float_cmp)]
 	#[must_use = "This method returns a new Frame and does not mutate the original value"]
 	pub fn panned(self, panning: Panning) -> Self {
+		self.panned_with_weights(Self::panning_weights(panning))
+	}
+
+	pub(crate) fn panning_weights(panning: Panning) -> Option<[f32; 2]> {
 		// adding a special case for center panning improves
 		// performance in the sound playback benchmarks by
 		// about 3%
 		if panning == Panning::CENTER {
-			return self;
+			return None;
 		}
 		let panning = panning.0.clamp(-1.0, 1.0);
 		let left_right_mix = (panning + 1.0) * 0.5;
-		Self::new(
-			self.left * (1.0 - left_right_mix).sqrt(),
-			self.right * left_right_mix.sqrt(),
-		) * SQRT_2
+		Some([(1.0 - left_right_mix).sqrt(), left_right_mix.sqrt()])
+	}
+
+	pub(crate) fn panned_with_weights(self, weights: Option<[f32; 2]>) -> Self {
+		let Some([left, right]) = weights else {
+			return self;
+		};
+		Self::new(self.left * left, self.right * right) * SQRT_2
 	}
 
 	/// Returns the frame mixed down to mono.
