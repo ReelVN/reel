@@ -527,13 +527,15 @@ impl SessionVm {
         self.projected_stage_revision = revision;
         Ok(())
     }
-    /// Reactive factories must settle before a host acknowledges their narrative frame.
+    /// Author execution has reached a commit boundary and the stage's complete
+    /// activity/reactive batch has settled. Synchronous construction and writes
+    /// retain their transaction until await, return or another ordinary boundary.
     pub fn stage_ready(&self) -> bool {
-        !self.activities.pending()
+        self.reactive_ready
+            && self.reactive_settled()
+            && !self.activities.pending()
             && !self.transitions.pending(self.activities.time())
             && !self.particles.needs_work(self.stage.retirement_revision)
-            && self.derived_task.is_none()
-            && !self.vm.heap().derived_pending()
     }
     pub fn cleanup_pending(&self) -> bool {
         self.revoked

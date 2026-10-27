@@ -330,7 +330,7 @@ fn author_scene_renders_edits_original_nodes_and_keeps_final_picture() {
     fn run_to_wait(driver: &mut AsideSessionUi) {
         for _ in 0..10_000 {
             match driver.tick(SliceBudget::default(), 256, || 0).unwrap() {
-                StoryProgress::Interaction(_) | StoryProgress::Finished => return,
+                StoryProgress::Finished => return,
                 StoryProgress::HostFailed(stage) => {
                     panic!("host failed: {stage:?}: {:?}", driver.host_failure())
                 }
@@ -338,6 +338,9 @@ fn author_scene_renders_edits_original_nodes_and_keeps_final_picture() {
                     panic!("script fault: {:?}", driver.fault().unwrap())
                 }
                 _ => {}
+            }
+            if driver.adapter().stage_ready() && !driver.has_runnable_tasks() {
+                return;
             }
         }
         panic!("author example did not yield");

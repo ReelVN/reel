@@ -39,6 +39,8 @@ pub struct StoryRuntime {
     clock_turn_pending: bool,
     #[cfg(feature = "profiling")]
     clock_profile: Option<ClockProfile>,
+    #[cfg(feature = "profiling")]
+    progress_profile: Option<ClockProfile>,
     time_offset_ns: u64,
     suspended_at: Option<u64>,
     suspended_ns: u64,
@@ -66,6 +68,8 @@ impl StoryRuntime {
             clock_turn_pending: false,
             #[cfg(feature = "profiling")]
             clock_profile: None,
+            #[cfg(feature = "profiling")]
+            progress_profile: None,
             time_offset_ns: 0,
             suspended_at: None,
             suspended_ns: 0,
@@ -306,6 +310,8 @@ impl StoryRuntime {
             return Ok(());
         }
         let now_ns = now();
+        #[cfg(feature = "profiling")]
+        self.profile_progress();
         if let Some(retiring) = &mut self.retiring {
             retiring.cleanup_step(256, budget, || now_ns)?;
             if !retiring.cleanup_pending() {
@@ -376,6 +382,7 @@ impl StoryRuntime {
             if budget.deadline_ns.is_some_and(|deadline| now() >= deadline) {
                 return Ok(());
             }
+            let publication_ready = self.driver().adapter().stage_ready();
             self.step(budget, &mut now)?;
             if self.driver().adapter().virtual_feedback_boundary() {
                 return Ok(());
@@ -384,6 +391,11 @@ impl StoryRuntime {
                 self.clock_turn_pending = false;
                 #[cfg(feature = "profiling")]
                 self.finish_clock_profile();
+                return Ok(());
+            }
+            if !self.closing && !publication_ready && self.driver().adapter().stage_ready() {
+                // Publish this complete batch before another script segment can
+                // invalidate it. Its clock turn still owes ready script work.
                 return Ok(());
             }
             if self.starting.is_some() || budget.deadline_ns.is_none() {
@@ -560,6 +572,59 @@ impl StoryRuntime {
             self.collecting = true;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "profiling")]
+    fn profile_progress(&mut self) {
+        let now = std::time::Instant::now();
+        if self.progress_profile.as_ref().is_some_and(|profile| {
+            now.duration_since(profile.started) < std::time::Duration::from_secs(1)
+        }) {
+            return;
+        }
+        let identity = self.driver().ui().session().identity();
+        let stats = self.driver().adapter().vm().stats();
+        if let Some(before) = self
+            .progress_profile
+            .take()
+            .filter(|before| before.identity == identity)
+        {
+            let location = self
+                .driver()
+                .adapter()
+                .vm()
+                .task_id()
+                .and_then(|task| {
+                    self.driver()
+                        .adapter()
+                        .vm()
+                        .task_location(task)
+                        .ok()
+                        .flatten()
+                })
+                .map(|location| self.location_text(location));
+            eprintln!(
+                "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} location={location:?}",
+                self.logical_ns,
+                self.driver().adapter().stage_ready(),
+                self.driver().adapter().vm().heap().derived_pending(),
+                self.runnable,
+                stats.native_entries - before.stats.native_entries,
+                stats.native_resumes - before.stats.native_resumes,
+                stats.slices - before.stats.slices,
+                stats.heap.collections - before.stats.heap.collections,
+                stats.heap.gc_units - before.stats.heap.gc_units,
+                stats.heap.chunk_allocations - before.stats.heap.chunk_allocations,
+                stats.heap.live_objects,
+                stats.heap.pending_objects,
+                stats.heap.charged_bytes
+            );
+        }
+        self.progress_profile = Some(ClockProfile {
+            started: now,
+            identity,
+            stats,
+        });
     }
 
     #[cfg(feature = "profiling")]
@@ -758,6 +823,64 @@ mod tests {
         story.wake_input();
         assert!(story.needs_tick());
         drain(&mut story);
+        assert_eq!(story.driver().state(), StoryState::Finished);
+    }
+
+    #[test]
+    fn native_derived_batches_publish_before_the_next_synchronous_transaction() {
+        use reel_ui::stage::NodeKind;
+        let mut story = runtime(
+            r#"use reel::prelude::*;use std::math::sin;
+            fn sample(value) {let mut result=0.0;for i in 0..32 {result+=sin(i);} value+result*0.0}
+            fn main() {
+                let data=model({x:0,y:0});
+                stage.replace(text("progress",x:derive(||sample(data.x)),y:derive(||sample(data.y))));
+                let gate=completion();
+                let worker=spawn(|| {for i in 1..=12 {data.x=i;data.y=i;await gate;}});
+                gate.resolve();
+                await worker;
+            }"#,
+        );
+        let mut clock = 0_u64;
+        let mut seen = Vec::new();
+        for _ in 0..10_000 {
+            let deadline = clock + 1_000_000;
+            story
+                .tick(
+                    SliceBudget {
+                        instructions: 64,
+                        deadline_ns: Some(deadline),
+                        ..Default::default()
+                    },
+                    || {
+                        clock += 10_000;
+                        clock
+                    },
+                )
+                .unwrap();
+            if story.driver().adapter().stage_ready()
+                && let Some(node) = story.driver().adapter().stage().nodes().find(
+                    |node| matches!(&node.kind,NodeKind::Text(text) if text.as_ref()=="progress"),
+                )
+            {
+                assert_eq!(
+                    node.props.x, node.props.y,
+                    "one synchronous assignment segment stays coherent"
+                );
+                let value = node.props.x as u32;
+                if value != 0 && seen.last() != Some(&value) {
+                    seen.push(value);
+                }
+            }
+            if story.driver().state() == StoryState::Finished && !story.needs_tick() {
+                break;
+            }
+        }
+        assert_eq!(
+            seen,
+            (1..=12).collect::<Vec<_>>(),
+            "each settled batch must reach its host before more script work"
+        );
         assert_eq!(story.driver().state(), StoryState::Finished);
     }
 

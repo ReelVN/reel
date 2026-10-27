@@ -77,10 +77,13 @@ fn fixture_with_source(
 fn drive(driver: &mut AsideSessionUi) {
     for _ in 0..10000 {
         match driver.tick(SliceBudget::default(), 256, || 0).unwrap() {
-            StoryProgress::Interaction(_) | StoryProgress::Finished => return,
+            StoryProgress::Finished => return,
             StoryProgress::Faulted(_) => panic!("{:?}", driver.fault().unwrap()),
             StoryProgress::HostFailed(_) => panic!("{:?}", driver.host_failure()),
             _ => {}
+        }
+        if driver.adapter().stage_ready() && !driver.has_runnable_tasks() {
+            return;
         }
     }
     panic!("story failed to yield")
