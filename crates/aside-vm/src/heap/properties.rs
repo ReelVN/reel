@@ -682,16 +682,18 @@ mod tests {
         let reference = heap.alloc_property_ref(source, true).unwrap();
         let pair = host(&mut heap, &[Value::int(1), Value::int(1)], true);
         let key = heap.key(pair).unwrap();
-        heap.objects.get_mut(key).unwrap().host_validator = Some(|heap, host, _, _| {
-            let fields = heap.host_fields(host)?;
-            let a = heap.table_entry(fields, 0)?.1.as_int().unwrap();
-            let b = heap.table_entry(fields, 1)?.1.as_int().unwrap();
-            if a != b {
-                Err(HeapError::TypeMismatch)
-            } else {
-                Ok(())
-            }
-        });
+        static PAIR: HostPropertyValidator =
+            HostPropertyValidator::new("test.pair", 1, |heap, host, _, _| {
+                let fields = heap.host_fields(host)?;
+                let a = heap.table_entry(fields, 0)?.1.as_int().unwrap();
+                let b = heap.table_entry(fields, 1)?.1.as_int().unwrap();
+                if a != b {
+                    Err(HeapError::TypeMismatch)
+                } else {
+                    Ok(())
+                }
+            });
+        heap.objects.get_mut(key).unwrap().host_validator = Some(&PAIR);
         for field in 0..2 {
             heap.bind_host_property(PropertyId { host: pair, field }, reference)
                 .unwrap();

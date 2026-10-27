@@ -139,32 +139,57 @@ impl Shape {
             Self::VirtualList => unreachable!("virtual list projects its VM-owned state"),
         })
     }
-    pub(super) fn validator(self) -> aside_vm::HostPropertyValidator {
+    pub(super) fn validator(self) -> &'static aside_vm::HostPropertyValidator {
+        macro_rules! descriptor {
+            ($name:literal, $callback:expr) => {{
+                static VALIDATOR: aside_vm::HostPropertyValidator =
+                    aside_vm::HostPropertyValidator::new($name, 1, $callback);
+                &VALIDATOR
+            }};
+        }
         match self {
-            Self::Text => |h, _, i, v| validate_text_property(h, i, v),
-            Self::TextInput => |h, _, i, v| text_input::validate(h, i, v, false),
-            Self::TextArea => |h, _, i, v| text_input::validate(h, i, v, true),
-            Self::Button => |h, _, i, v| validate_button_property(h, i, v),
-            Self::Slider => controls::validate_slider,
-            Self::Switch | Self::Checkbox => |h, _, i, v| controls::validate_toggle(h, i, v),
-            Self::Radio => |h, _, i, v| controls::validate_radio(h, i, v),
-            Self::Input => |h, _, i, v| input::validate(h, i, v),
-            Self::Image => |h, _, i, v| validate_image_property(h, i, v),
-            Self::Video => |h, _, i, v| {
+            Self::Text => descriptor!("reel.text", |h, _, i, v| validate_text_property(h, i, v)),
+            Self::TextInput => descriptor!("reel.text_input", |h, _, i, v| text_input::validate(
+                h, i, v, false
+            )),
+            Self::TextArea => descriptor!("reel.text_area", |h, _, i, v| text_input::validate(
+                h, i, v, true
+            )),
+            Self::Button => descriptor!("reel.button", |h, _, i, v| validate_button_property(
+                h, i, v
+            )),
+            Self::Slider => descriptor!("reel.slider", controls::validate_slider),
+            Self::Switch | Self::Checkbox => {
+                descriptor!("reel.toggle", |h, _, i, v| controls::validate_toggle(
+                    h, i, v
+                ))
+            }
+            Self::Radio => {
+                descriptor!("reel.radio", |h, _, i, v| controls::validate_radio(h, i, v))
+            }
+            Self::Input => descriptor!("reel.input", |h, _, i, v| input::validate(h, i, v)),
+            Self::Image => descriptor!("reel.image", |h, _, i, v| validate_image_property(h, i, v)),
+            Self::Video => descriptor!("reel.video", |h, _, i, v| {
                 if i == 0 {
                     Err(HeapError::ReadOnly)
                 } else {
                     validate_image_property(h, i, v)
                 }
-            },
-            Self::Particles => |h, host, i, v| super::super::particles::validate(h, host, i, v),
-            Self::Camera => |h, _, i, v| camera::validate(h, i, v),
-            Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
-            Self::Popup => |h, _, i, v| popup::validate(h, i, v),
-            Self::Row | Self::Column => |h, _, i, v| flow::validate_flow(h, i, v),
-            Self::Grid => |h, _, i, v| flow::validate_grid(h, i, v),
+            }),
+            Self::Particles => descriptor!("reel.particles", |h, host, i, v| {
+                super::super::particles::validate(h, host, i, v)
+            }),
+            Self::Camera => descriptor!("reel.camera", |h, _, i, v| camera::validate(h, i, v)),
+            Self::Scroll => descriptor!("reel.scroll", |h, _, i, v| scroll::validate(h, i, v)),
+            Self::Popup => descriptor!("reel.popup", |h, _, i, v| popup::validate(h, i, v)),
+            Self::Row | Self::Column => {
+                descriptor!("reel.flow", |h, _, i, v| flow::validate_flow(h, i, v))
+            }
+            Self::Grid => descriptor!("reel.grid", |h, _, i, v| flow::validate_grid(h, i, v)),
             Self::Stack | Self::VirtualList | Self::Cursor => {
-                |h, _, i, v| validate_layout_property(h, i, v)
+                descriptor!("reel.layout", |h, _, i, v| validate_layout_property(
+                    h, i, v
+                ))
             }
         }
     }
@@ -182,28 +207,28 @@ impl StageBinding {
     pub(in crate::aside) fn register_snapshots(
         registry: &mut SnapshotRegistry,
     ) -> Result<(), SnapshotError> {
-        for (name, shape) in [
-            ("reel.text", Shape::Text),
-            ("reel.text_input", Shape::TextInput),
-            ("reel.text_area", Shape::TextArea),
-            ("reel.button", Shape::Button),
-            ("reel.slider", Shape::Slider),
-            ("reel.toggle", Shape::Switch),
-            ("reel.radio", Shape::Radio),
-            ("reel.input", Shape::Input),
-            ("reel.image", Shape::Image),
-            ("reel.video", Shape::Video),
-            ("reel.particles", Shape::Particles),
-            ("reel.camera", Shape::Camera),
-            ("reel.scroll", Shape::Scroll),
-            ("reel.popup", Shape::Popup),
-            ("reel.flow", Shape::Row),
-            ("reel.grid", Shape::Grid),
-            ("reel.layout", Shape::Stack),
+        for shape in [
+            Shape::Text,
+            Shape::TextInput,
+            Shape::TextArea,
+            Shape::Button,
+            Shape::Slider,
+            Shape::Switch,
+            Shape::Radio,
+            Shape::Input,
+            Shape::Image,
+            Shape::Video,
+            Shape::Particles,
+            Shape::Camera,
+            Shape::Scroll,
+            Shape::Popup,
+            Shape::Row,
+            Shape::Grid,
+            Shape::Stack,
         ] {
-            registry.register_validator(name, 1, shape.validator())?;
+            registry.register_validator(shape.validator())?;
         }
-        registry.register_validator("reel.override", 1, overrides::validate)?;
+        registry.register_validator(&overrides::VALIDATOR)?;
         Ok(())
     }
     pub(in crate::aside) fn snapshot_root(&self) -> Option<RootToken> {

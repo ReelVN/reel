@@ -56,6 +56,8 @@ enum Field {
 
 #[native(symbol = "sample::gauge")]
 fn gauge(#[aside(context)] context: &mut CallContext<'_, Host>) -> Result<Value, Error> {
+    static VALIDATOR: aside_vm::HostPropertyValidator =
+        aside_vm::HostPropertyValidator::new("test.gauge", 1, Field::validate_host);
     let heap = context.vm.heap_mut();
     let fields = heap.alloc_table()?;
     for (index, property) in Field::PROPERTIES.iter().enumerate() {
@@ -68,7 +70,7 @@ fn gauge(#[aside(context)] context: &mut CallContext<'_, Host>) -> Result<Value,
         };
         heap.table_store(fields, index as u32, key, value)?;
     }
-    Ok(heap.alloc_host(fields, &[], Some(Field::validate_host))?)
+    Ok(heap.alloc_host(fields, &[], Some(&VALIDATOR))?)
 }
 
 #[native(symbol = "sample::collect")]

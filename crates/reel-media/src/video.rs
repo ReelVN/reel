@@ -11,7 +11,10 @@ use reel_core::budget::BudgetPool;
 pub use software::{MovieDecoder, SoftwareVideoDecoderFactory};
 #[cfg(all(feature = "vita", target_os = "vita"))]
 mod vita;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    task::Poll,
+};
 #[cfg(all(feature = "vita", target_os = "vita"))]
 pub use vita::VitaVideoDecoderFactory;
 
@@ -41,6 +44,19 @@ pub enum DecodedPacket {
     Video(VideoFrame),
     Audio(AudioFrames),
 }
+/// Tracks whose next owned packet fits the caller's bounded publication queues.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodeDemand {
+    pub video: bool,
+    pub audio: bool,
+}
+impl DecodeDemand {
+    /// Request either track, retaining the decoder's packet ordering policy.
+    pub const ALL: Self = Self {
+        video: true,
+        audio: true,
+    };
+}
 #[derive(Clone, Debug)]
 pub struct VideoInfo {
     pub width: u32,
@@ -68,10 +84,11 @@ pub trait VideoDecoder {
     /// Native adapters may internally drain codec output. Updates info to
     /// report no audio sample rate, so restoration creates no PCM stream.
     fn prepare_poster(&mut self, seconds: f64) -> Result<(), String>;
-    /// Decode the next owned picture or PCM packet. None means all output has
-    /// ended; transient native readiness is waited for on this worker. Long
-    /// decode/wait work observes the factory's shared stop flag.
-    fn next_packet(&mut self) -> Result<Option<DecodedPacket>, String>;
+    /// Poll only the requested tracks, allowing one track to advance while the
+    /// other publication queue is full. Pending means the requested tracks have
+    /// no packet ready; Ready(None) means all tracks have ended. The worker owns
+    /// readiness waits. Codec work observes the factory's shared stop flag.
+    fn poll_packet(&mut self, demand: DecodeDemand) -> Result<Poll<Option<DecodedPacket>>, String>;
     /// Seek on the source timeline, retaining picture preroll and trimming PCM
     /// before the requested position. No previous packet storage is mutated.
     fn seek(&mut self, seconds: f64) -> Result<(), String>;

@@ -361,6 +361,9 @@ impl Vm {
                 return Ok(false);
             }
         }
+        if !self.grow_commit_roots(ret, error)? {
+            return Ok(false);
+        }
         match ret {
             ReturnTo::Generator { .. } => {
                 return self.generator_commit_error(ret, value, cause, error);
@@ -433,12 +436,14 @@ impl Vm {
                 self.put(n.roots, 0, value)?;
                 let cause_slot =
                     2 + self.limits.max_continuation_values + self.limits.max_arguments;
-                self.put(n.roots, cause_slot, cause.unwrap_or(Value::NULL))?;
+                if let Some(cause) = cause {
+                    self.put(n.roots, cause_slot, cause)?;
+                }
                 n.callback_fault = error.and_then(|s| s.fault);
                 if let Some(id) = n.callback_fault {
                     self.push_native_fault(&mut n, id)?;
                 }
-                self.clear(n.roots, self.native_pending_slot())?;
+                self.clear_native_pending(n.roots)?;
                 n.phase = NativePhase::Resume(if error.is_some() {
                     NativeInput::CallbackFault
                 } else {
@@ -563,7 +568,7 @@ impl Vm {
                     return Ok(None);
                 }
                 let serial = self.serial()?;
-                let ticket = self.make_ticket(n, self.active.task_id.unwrap(), serial, input);
+                let ticket = self.make_ticket(&n, self.active.task_id.unwrap(), serial, input);
                 if input == NativeInput::Entry {
                     self.native_entries += 1;
                 } else {
@@ -575,7 +580,7 @@ impl Vm {
             }
             NativePhase::Issued { serial, input } => {
                 return Ok(Some(RunOutcome::HostCall(self.make_ticket(
-                    n,
+                    &n,
                     self.active.task_id.unwrap(),
                     serial,
                     input,
@@ -627,20 +632,24 @@ impl Vm {
                 }
             }
             NativePhase::CallbackFaultBuild | NativePhase::WaitingFaultBuild => {
-                if !m.take(
-                    0,
-                    2 * (n.fault_count as u64 + n.continuation_len as u64) + 8,
-                    0,
-                ) {
-                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
-                }
                 let id = n
                     .pending_fault
                     .and_then(|f| f.fault)
                     .ok_or(VmError::Contract("unbuilt callback fault"))?;
-                if !self.native_fault_slot_holds(n, id)?
-                    && n.fault_count == self.limits.max_native_faults
-                {
+                let retained = self.native_fault_slot_holds(n, id)?;
+                let required = self.native_fault_base()
+                    + (n.fault_count + u32::from(!retained)).min(self.limits.max_native_faults);
+                let Some(growth) = self.native_root_admission(n.roots, required)? else {
+                    return Ok(None);
+                };
+                if !m.take(
+                    0,
+                    2 * (n.fault_count as u64 + n.continuation_len as u64) + 8 + growth.work,
+                    growth.allocation_bytes,
+                ) {
+                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                if !retained && n.fault_count == self.limits.max_native_faults {
                     self.block(
                         BlockedResource::NativeFaultSlots { frame: n.id },
                         n.fault_count as u64,
@@ -648,10 +657,14 @@ impl Vm {
                     );
                     return Ok(None);
                 }
+                if let Err(error) = self.slots.grow(&mut self.heap, n.roots, required) {
+                    self.block_heap(error)?;
+                    return Ok(None);
+                }
                 self.push_native_fault(&mut n, id)?;
                 n.callback_fault = Some(id);
                 n.pending_fault = None;
-                self.clear(n.roots, self.native_pending_slot())?;
+                self.clear_native_pending(n.roots)?;
                 n.phase =
                     NativePhase::Resume(if matches!(n.phase, NativePhase::WaitingFaultBuild) {
                         NativeInput::WaitingFault
@@ -679,7 +692,7 @@ impl Vm {
                         .is_err()
                 {
                     self.put(n.roots, 0, Value::NULL)?;
-                    self.clear(n.roots, self.native_pending_slot())?;
+                    self.clear_native_pending(n.roots)?;
                     n.pending_fault = Some(FaultSeed {
                         fault: None,
                         explicit: None,
@@ -694,26 +707,27 @@ impl Vm {
                 }
             }
             NativePhase::Release(error) => {
-                if !m.take(
-                    0,
-                    self.release_cost(n.root_count()) + self.commit_work(n.ret),
-                    0,
-                ) {
-                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
-                }
-                let value = self.value(n.roots, 0)?;
-                let info = if error {
-                    Some(n.pending_fault.unwrap_or(FaultSeed {
+                let info = error.then(|| {
+                    n.pending_fault.unwrap_or(FaultSeed {
                         fault: None,
                         explicit: None,
                         author_value: false,
                         awaited: None,
                         kind: FaultKind::Thrown,
                         location: n.location,
-                    }))
-                } else {
-                    None
+                    })
+                });
+                let Some(growth) = self.commit_root_admission(n.ret, info)? else {
+                    return Ok(None);
                 };
+                if !m.take(
+                    0,
+                    self.release_cost(n.root_count()) + self.commit_work(n.ret) + growth.0,
+                    growth.1,
+                ) {
+                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                let value = self.value(n.roots, 0)?;
                 let cause = info.and_then(|seed| seed.fault).map(FaultId::as_value);
                 if !self.commit(n.ret, value, cause, info)? {
                     self.active.frames.data[top] = Frame::Native(n);

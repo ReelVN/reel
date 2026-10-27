@@ -40,6 +40,9 @@ const NAMES: &[&str] = &[
     "u_coverage",
     "u_source",
     "u_source_uv",
+    "u_mask_uv",
+    "u_backdrop_uv",
+    "u_expression_uv",
     "u_mask",
     "u_backdrop",
     "u_expression",
@@ -81,11 +84,14 @@ pub(super) struct Shader {
     uniforms: [Option<Uniform>; NAMES.len()],
 }
 impl Shader {
-    fn new(context: &native::Context, fragment: ShaderCode<'_>) -> Result<Self, GlesError> {
+    fn new(
+        context: &super::ownership::Device,
+        fragment: ShaderCode<'_>,
+    ) -> Result<Self, GlesError> {
         Self::with_vertex(context, shader_code!("vertex"), fragment)
     }
     fn with_vertex(
-        context: &native::Context,
+        context: &super::ownership::Device,
         vertex: ShaderCode<'_>,
         fragment: ShaderCode<'_>,
     ) -> Result<Self, GlesError> {
@@ -118,13 +124,16 @@ impl Shader {
     }
 }
 pub(super) fn create_program(
-    context: &native::Context,
+    context: &super::ownership::Device,
     fragment: ShaderCode<'_>,
     implicit_source: bool,
+    padded: bool,
 ) -> Result<Program, GlesError> {
     create_program_with_vertex(
         context,
-        if implicit_source {
+        if padded {
+            shader_code!("effect_padded_vertex")
+        } else if implicit_source {
             shader_code!("effect_vertex")
         } else {
             shader_code!("vertex")
@@ -133,7 +142,7 @@ pub(super) fn create_program(
     )
 }
 fn create_program_with_vertex(
-    context: &native::Context,
+    context: &super::ownership::Device,
     vertex: ShaderCode<'_>,
     fragment: ShaderCode<'_>,
 ) -> Result<Program, GlesError> {
@@ -192,15 +201,16 @@ pub(super) struct Programs {
     pub present: Shader,
     pub vertices: VertexBuffer,
     pub indices: IndexBuffer,
-    _storage: BudgetTicket,
+    _storage: super::ownership::NativeTicket,
 }
 impl Programs {
-    pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
+    pub fn new(context: &super::ownership::Device, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes =
             (size_of::<Self>() + 4 * size_of::<crate::common::mesh::Vertex>() + 6 * 2) as u64;
         let storage = budget
             .reserve(bytes)
             .map_err(|e| GlesError::Device(e.message))?;
+        let storage = context.ticket(storage);
         let attributes = attributes();
         let data = [
             [-1., 1., 0., 0.],
@@ -263,12 +273,14 @@ impl Programs {
             mask: Shader::new(context, shader_code!("mask"))?,
             mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,
             mask_threshold: Shader::new(context, shader_code!("mask_threshold"))?,
-            mask_sample_chain_composite: Shader::new(
+            mask_sample_chain_composite: Shader::with_vertex(
                 context,
+                shader_code!("composite_vertex"),
                 shader_code!("mask_sample_chain_composite"),
             )?,
-            mask_threshold_composite: Shader::new(
+            mask_threshold_composite: Shader::with_vertex(
                 context,
+                shader_code!("composite_vertex"),
                 shader_code!("mask_threshold_composite"),
             )?,
             mask_paired: [
@@ -278,10 +290,26 @@ impl Programs {
                 Shader::new(context, shader_code!("mask_paired_gg"))?,
             ],
             mask_paired_composite: [
-                Shader::new(context, shader_code!("mask_paired_aa_composite"))?,
-                Shader::new(context, shader_code!("mask_paired_ag_composite"))?,
-                Shader::new(context, shader_code!("mask_paired_ga_composite"))?,
-                Shader::new(context, shader_code!("mask_paired_gg_composite"))?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_aa_composite"),
+                )?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_ag_composite"),
+                )?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_ga_composite"),
+                )?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_gg_composite"),
+                )?,
             ],
             present: Shader::new(context, shader_code!("present"))?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
@@ -289,7 +317,11 @@ impl Programs {
             _storage: storage,
         })
     }
-    pub fn quad(&self, context: &native::Context, quad: Quad<'_>) -> Result<(), GlesError> {
+    pub fn quad(
+        &self,
+        context: &super::ownership::Device,
+        quad: Quad<'_>,
+    ) -> Result<(), GlesError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         let Quad {
             target,
@@ -316,7 +348,7 @@ impl Programs {
     }
     pub fn present(
         &self,
-        context: &native::Context,
+        context: &super::ownership::Device,
         target: &resources::Target,
         size: [u32; 2],
     ) -> Result<(), GlesError> {
@@ -373,20 +405,35 @@ pub(super) struct Target {
     pub size: [u32; 2],
     pub view: Texture,
     pub framebuffer: Framebuffer,
-    _storage: Rc<BudgetTicket>,
+    _storage: Rc<super::ownership::NativeTicket>,
 }
 impl Target {
+    pub fn source_uv(&self, parent: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
+        let storage = self.view.size();
+        let mut uv = crate::common::source_view::uv_mapping(parent, storage, origin);
+        uv[3] += 1. - self.size[1] as f32 / storage[1] as f32;
+        uv
+    }
+    pub fn frame_uv(&self, parent: [u32; 2]) -> [f32; 4] {
+        crate::common::source_view::uv_mapping(parent, self.view.size(), [0; 2])
+    }
     pub fn same_allocation(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self._storage, &other._storage)
     }
+    pub(super) fn cache_only(&self) -> bool {
+        Rc::strong_count(&self._storage) == 1
+    }
     pub fn new(
-        context: &native::Context,
+        context: &super::ownership::Device,
         size: [u32; 2],
         budget: &BudgetPool,
         limit: u64,
-    ) -> Result<Self, (GlesError, Option<BudgetTicket>)> {
+    ) -> Result<Self, (GlesError, Option<super::ownership::NativeTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
-        let bytes = u64::from(size[0]) * u64::from(size[1]) * 4;
+        let bytes = context
+            .target_layout(size)
+            .map_err(|error| (error.into(), None))?
+            .texture_bytes;
         let storage = budget.reserve(bytes).map_err(|_| {
             (
                 GlesError::Pressure {
@@ -397,6 +444,7 @@ impl Target {
                 None,
             )
         })?;
+        let storage = context.ticket(storage);
         let built = (|| {
             let view = context.create_texture(size, native::TextureFormat::Rgba8)?;
             let framebuffer = context.framebuffer(&view)?;

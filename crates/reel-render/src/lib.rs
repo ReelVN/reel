@@ -5,6 +5,8 @@
 )]
 #[cfg(any(feature = "wgpu", feature = "gles2"))]
 mod common;
+#[cfg(any(feature = "wgpu", feature = "gles2"))]
+pub use common::usage::Usage;
 /// CPU-only generation of complete prepared stage-effect fragments.
 #[path = "common/effect.rs"]
 pub mod effect;
@@ -158,6 +160,10 @@ pub enum SkipReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PresentOutcome {
     PresentAccepted(FrameId),
+    /// Internal GPU work continues preparation of this exact candidate.
+    /// Keep its acceptance and geometry pending, then retry it after
+    /// `ResourcesAvailable`. Scripts and input may continue meanwhile.
+    Preparing,
     Skipped(SkipReason),
     SurfaceUnavailable,
 }
@@ -202,6 +208,9 @@ pub trait RenderBackend {
         frame: &RenderFrame,
         before_present: impl FnOnce(),
     ) -> Result<PresentOutcome, Self::Error>;
+    /// Cancel continuation of this exact candidate. Submitted GPU owners remain
+    /// retained until completion; this never accepts a frame or changes input.
+    fn cancel_preparation(&mut self, _frame: &RenderFrame) {}
     fn retire(&mut self, resources: &[ResourceVersion]);
     fn poll(
         &mut self,
@@ -239,6 +248,9 @@ impl<B: RenderBackend + ?Sized> RenderBackend for &mut B {
     fn retire(&mut self, resources: &[ResourceVersion]) {
         (**self).retire(resources);
     }
+    fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        (**self).cancel_preparation(frame);
+    }
     fn poll(
         &mut self,
         out: &mut Vec<RenderEvent<Self::Error>>,
@@ -254,22 +266,27 @@ impl<B: RenderBackend + ?Sized> RenderBackend for &mut B {
     }
 }
 /// The coordinator supplies the current surface epoch and the exact borrowed frame key.
-/// Upload/build completion never calls this acceptance gate.
+/// Upload/build completion never calls this acceptance gate. `Preparing` has no
+/// terminal notice: its candidate and geometry remain pending for continuation.
 pub fn presentation_notice<E>(
     frame: &RenderFrame,
     epoch: SurfaceEpoch,
     result: Result<PresentOutcome, E>,
-) -> PresentationNotice {
-    PresentationNotice::new(
+) -> Option<PresentationNotice> {
+    if matches!(result, Ok(PresentOutcome::Preparing)) {
+        return None;
+    }
+    Some(PresentationNotice::new(
         frame.key(),
         epoch,
         match result {
             Ok(PresentOutcome::PresentAccepted(id)) => PresentationOutcome::Accepted(id),
+            Ok(PresentOutcome::Preparing) => unreachable!("continuation has no terminal notice"),
             Ok(PresentOutcome::Skipped(_)) => PresentationOutcome::Skipped,
             Ok(PresentOutcome::SurfaceUnavailable) => PresentationOutcome::SurfaceUnavailable,
             Err(_) => PresentationOutcome::Error,
         },
-    )
+    ))
 }
 #[derive(Clone, Copy, Debug)]
 pub struct ConsumerLimits {

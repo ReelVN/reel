@@ -138,6 +138,9 @@ fn transition_starts_at_acceptance_after_preparation_and_suspension() {
                     .transition_views()
                     .next()
                     .map(|view| view.phase);
+                if !story.driver().adapter().stage_ready() {
+                    continue;
+                }
                 if phase == Some(TransitionPhase::NewPending) {
                     break;
                 }

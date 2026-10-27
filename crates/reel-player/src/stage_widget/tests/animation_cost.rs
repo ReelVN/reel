@@ -1,10 +1,10 @@
 //! CPU-only stage projection, shaping reuse, geometry and portable-frame cost.
 use super::*;
+use crate::test_cost::measure;
 use reel_ui::{
     frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget},
     resources::{ResourceRegistry, ResourceSnapshot},
 };
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region};
 use std::time::Instant;
 
 #[test]
@@ -126,14 +126,14 @@ fn animated_scene_projection_and_frame_cost() {
         drop(first);
         let initial_layouts = f.layouts();
 
-        let region = Region::new(&INSTRUMENTED_SYSTEM);
         let started = Instant::now();
-        for index in 0..1_200 {
-            f.edit(moving, |props| props.x = (index % 120) as f64);
-            f.ui.set_stage(&f.stage);
-        }
+        let projection = allocation_counter::measure(|| {
+            for index in 0..1_200 {
+                f.edit(moving, |props| props.x = (index % 120) as f64);
+                f.ui.set_stage(&f.stage);
+            }
+        });
         let projection_time = started.elapsed();
-        let projection = region.change();
         let settle = f.record();
         f.accept(&settle);
         drop(settle);
@@ -146,7 +146,6 @@ fn animated_scene_projection_and_frame_cost() {
                 max_bytes: 32 << 20,
             },
         );
-        let region = Region::new(&INSTRUMENTED_SYSTEM);
         let started = Instant::now();
         let mut command_count = 0;
         let mut glyph_count = 0;
@@ -156,61 +155,67 @@ fn animated_scene_projection_and_frame_cost() {
         let mut build_time = std::time::Duration::ZERO;
         let mut record_allocations = 0;
         let mut build_allocations = 0;
-        for index in 0..240 {
-            f.edit(moving, |props| props.x = (index % 120) as f64);
-            let phase = Instant::now();
-            let allocations = Region::new(&INSTRUMENTED_SYSTEM);
-            f.ui.set_stage(&f.stage);
-            f.ui.sync(&mut f.bridge, f.widget).unwrap();
-            sync_time += phase.elapsed();
-            let phase = Instant::now();
-            f.frame += 1;
-            let (source, receipt) =
-                f.ui.record(&mut f.bridge, f.widget, FrameId(f.frame))
+        let frame = allocation_counter::measure(|| {
+            for index in 0..240 {
+                f.edit(moving, |props| props.x = (index % 120) as f64);
+                let phase = Instant::now();
+                let (recorded, allocations) = measure(|| {
+                    f.ui.set_stage(&f.stage);
+                    f.ui.sync(&mut f.bridge, f.widget).unwrap();
+                    sync_time += phase.elapsed();
+                    let phase = Instant::now();
+                    f.frame += 1;
+                    let (source, receipt) =
+                        f.ui.record(&mut f.bridge, f.widget, FrameId(f.frame))
+                            .unwrap();
+                    let recorded = TestFrame { source, receipt };
+                    record_time += phase.elapsed();
+                    recorded
+                });
+                record_allocations += allocations.count_total;
+                let phase = Instant::now();
+                f.accept(&recorded);
+                accept_time += phase.elapsed();
+                let phase = Instant::now();
+                let (frame, allocations) = measure(|| {
+                    let mut build = FrameBuild::new(
+                        recorded.source,
+                        ResourceSnapshot::capture([Ok(font_lease.clone())].into_iter(), &pool)
+                            .unwrap(),
+                        FrameInfo {
+                            logical_size: [640., 420.],
+                            physical_size: [960, 544],
+                        },
+                        BuildLimits { max_bytes: 8 << 20 },
+                        &pool,
+                    )
                     .unwrap();
-            let recorded = TestFrame { source, receipt };
-            record_time += phase.elapsed();
-            record_allocations += allocations.change().allocations;
-            let phase = Instant::now();
-            f.accept(&recorded);
-            accept_time += phase.elapsed();
-            let phase = Instant::now();
-            let allocations = Region::new(&INSTRUMENTED_SYSTEM);
-            let mut build = FrameBuild::new(
-                recorded.source,
-                ResourceSnapshot::capture([Ok(font_lease.clone())].into_iter(), &pool).unwrap(),
-                FrameInfo {
-                    logical_size: [640., 420.],
-                    physical_size: [960, 544],
-                },
-                BuildLimits { max_bytes: 8 << 20 },
-                &pool,
-            )
-            .unwrap();
-            while !build
-                .step(StepBudget {
-                    max_commands: 512,
-                    max_units: 65536,
-                    max_bytes: 1 << 20,
-                })
-                .unwrap()
-                .complete
-            {}
-            let frame = build.finish().unwrap();
-            build_time += phase.elapsed();
-            build_allocations += allocations.change().allocations;
-            command_count = frame.commands().len();
-            glyph_count = frame
-                .commands()
-                .iter()
-                .map(|command| match &command.op {
-                    FrameOp::Draw(FrameDraw::GlyphRun(run)) => run.glyphs.len(),
-                    _ => 0,
-                })
-                .sum::<usize>();
-        }
+                    while !build
+                        .step(StepBudget {
+                            max_commands: 512,
+                            max_units: 65536,
+                            max_bytes: 1 << 20,
+                        })
+                        .unwrap()
+                        .complete
+                    {}
+                    let frame = build.finish().unwrap();
+                    build_time += phase.elapsed();
+                    frame
+                });
+                build_allocations += allocations.count_total;
+                command_count = frame.commands().len();
+                glyph_count = frame
+                    .commands()
+                    .iter()
+                    .map(|command| match &command.op {
+                        FrameOp::Draw(FrameDraw::GlyphRun(run)) => run.glyphs.len(),
+                        _ => 0,
+                    })
+                    .sum::<usize>();
+            }
+        });
         let frame_time = started.elapsed();
-        let frame = region.change();
         let work =
             std::array::from_fn::<_, 3, _>(|index| f.paint_work()[index] - initial_work[index]);
         assert_eq!(
@@ -218,18 +223,18 @@ fn animated_scene_projection_and_frame_cost() {
             &[0, 0],
             "moving scenery preserves local recordings"
         );
-        let geometry_region = Region::new(&INSTRUMENTED_SYSTEM);
         let geometry_started = Instant::now();
-        for _ in 0..240 {
-            let geometry = f
-                .bridge
-                .root()
-                .capture_presented_geometry(GeometryLimits { max_bytes: 1 << 20 })
-                .unwrap();
-            assert!(geometry.get(f.widget).is_some());
-        }
+        let geometry = allocation_counter::measure(|| {
+            for _ in 0..240 {
+                let geometry = f
+                    .bridge
+                    .root()
+                    .capture_presented_geometry(GeometryLimits { max_bytes: 1 << 20 })
+                    .unwrap();
+                assert!(geometry.get(f.widget).is_some());
+            }
+        });
         let geometry_time = geometry_started.elapsed();
-        let geometry = geometry_region.change();
         assert_eq!(
             f.layouts(),
             initial_layouts,
@@ -244,11 +249,11 @@ fn animated_scene_projection_and_frame_cost() {
             "animation_cost buttons={button_count} nodes={} commands={command_count} glyphs={glyph_count} projection_frames=1200 projection_us={} projection_allocations={} projection_bytes={} complete_frames=240 complete_us={} complete_allocations={} complete_bytes={}",
             initial_layouts.len(),
             projection_time.as_micros(),
-            projection.allocations,
-            projection.bytes_allocated,
+            projection.count_total,
+            projection.bytes_total,
             frame_time.as_micros(),
-            frame.allocations,
-            frame.bytes_allocated
+            frame.count_total,
+            frame.bytes_total
         );
         println!(
             "animation_phases sync_us={} record_us={} accept_us={} build_us={} record_allocations={record_allocations} build_allocations={build_allocations}",
@@ -260,8 +265,8 @@ fn animated_scene_projection_and_frame_cost() {
         println!(
             "animation_geometry frames=240 us={} allocations={} bytes={}",
             geometry_time.as_micros(),
-            geometry.allocations,
-            geometry.bytes_allocated
+            geometry.count_total,
+            geometry.bytes_total
         );
         println!(
             "animation_recording composes={} pre_paints={} paints={}",
@@ -271,18 +276,18 @@ fn animated_scene_projection_and_frame_cost() {
         f.accept(&stable);
         let records = stable.geometry().records().as_ptr();
         let initial_work = f.paint_work();
-        let opacity_region = Region::new(&INSTRUMENTED_SYSTEM);
         let opacity_started = Instant::now();
-        for index in 0..240 {
-            f.edit(moving, |props| {
-                props.opacity = 0.5 + (index % 40) as f64 * 0.01
-            });
-            let frame = f.record();
-            assert_eq!(frame.geometry().records().as_ptr(), records);
-            f.accept(&frame);
-        }
+        let opacity_allocations = allocation_counter::measure(|| {
+            for index in 0..240 {
+                f.edit(moving, |props| {
+                    props.opacity = 0.5 + (index % 40) as f64 * 0.01
+                });
+                let frame = f.record();
+                assert_eq!(frame.geometry().records().as_ptr(), records);
+                f.accept(&frame);
+            }
+        });
         let opacity_time = opacity_started.elapsed();
-        let opacity_allocations = opacity_region.change();
         let work =
             std::array::from_fn::<_, 3, _>(|index| f.paint_work()[index] - initial_work[index]);
         assert_eq!(
@@ -293,8 +298,8 @@ fn animated_scene_projection_and_frame_cost() {
         println!(
             "animation_opacity frames=240 us={} allocations={} bytes={} geometry_reuses=240 composes={} pre_paints={} paints={}",
             opacity_time.as_micros(),
-            opacity_allocations.allocations,
-            opacity_allocations.bytes_allocated,
+            opacity_allocations.count_total,
+            opacity_allocations.bytes_total,
             work[0],
             work[1],
             work[2]

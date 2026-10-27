@@ -51,6 +51,13 @@ struct Copy {
 }
 
 impl ImageCache {
+    pub(super) fn retain_demand(&self, required: &[image_plan::Required<'_>]) {
+        self.images.lock().unwrap().retain(|handle, image| {
+            Arc::strong_count(image) > 1
+                || required.iter().any(|item| item.source.handle() == *handle)
+        });
+        self.retired.lock().unwrap().clear();
+    }
     pub(super) fn clear_idle(&self) -> bool {
         let mut cache = self.staging.lock().unwrap();
         let mut retired = self.retired.lock().unwrap();

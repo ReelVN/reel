@@ -73,7 +73,14 @@ fn demand_omits_unused_snapshot_images_and_preserves_each_command_location() {
         &pool,
     );
     assert_eq!(frame.resources().leases().len(), 3);
-    let plan = collect(std::iter::once(&frame), 4096, false, |_| Ok(())).unwrap();
+    let plan = collect(
+        std::iter::once(&frame),
+        4096,
+        false,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert_eq!(plan.images.len(), 2);
     assert_eq!(plan.masks.len(), 1);
     for required in &plan.images {
@@ -116,10 +123,24 @@ fn capture_demand_omits_excluded_commands_and_their_masks() {
         ResourceSnapshot::capture([Ok(source)].into_iter(), &pool).unwrap(),
         &pool,
     );
-    let normal = collect(std::iter::once(&frame), 4096, false, |_| Ok(())).unwrap();
+    let normal = collect(
+        std::iter::once(&frame),
+        4096,
+        false,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert_eq!(normal.images.len(), 1);
     assert_eq!(normal.masks.len(), 1);
-    let capture = collect(std::iter::once(&frame), 4096, true, |_| Ok(())).unwrap();
+    let capture = collect(
+        std::iter::once(&frame),
+        4096,
+        true,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert!(capture.images.is_empty());
     assert!(capture.masks.is_empty());
 }
@@ -167,7 +188,14 @@ fn transition_zero_demand_includes_previous_target_and_mask_without_unused_lease
         .unwrap();
     while !build.step(step_budget()).unwrap().complete {}
     let frame = build.finish().unwrap();
-    let plan = collect(std::iter::once(&frame), 4096, false, |_| Ok(())).unwrap();
+    let plan = collect(
+        std::iter::once(&frame),
+        4096,
+        false,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     let handles = plan
         .images
         .iter()

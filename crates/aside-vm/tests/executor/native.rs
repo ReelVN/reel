@@ -550,7 +550,10 @@ fn inherited_context_flags_accumulate_and_derived_write_fails_under_nowait_or_in
 #[test]
 fn reused_task_admission_reserves_execution_windows_and_respects_the_host_ceiling() {
     for maximum in [1024, u32::MAX] {
-        let package = fixtures::helper_native();
+        let mut package = fixtures::helper_native();
+        // Keep a real caller working set: a leaf now needs only three native
+        // continuation roots, so the former empty frame no longer fills this cap.
+        package.functions[0].register_count = 492;
         let mut limits = VmLimits::default();
         limits.slots.initial_capacity = 1024;
         limits.slots.max_capacity = maximum;
@@ -563,7 +566,7 @@ fn reused_task_admission_reserves_execution_windows_and_respects_the_host_ceilin
         )
         .unwrap();
         // The initial pooled task and every subsequent activation reuse the
-        // same slot. Its permanent roots leave less than one native window.
+        // same slot. Caller registers and permanent roots exercise the ceiling.
         let capacity = vm.stats().slots.capacity;
         let pooled = vm.pooled_root_ranges();
         for _ in 0..3 {
@@ -612,7 +615,9 @@ fn reused_task_admission_reserves_execution_windows_and_respects_the_host_ceilin
 #[test]
 fn admitted_tasks_can_enter_native_calls_after_other_tasks_consume_the_pool() {
     use aside_vm::snapshot::{SnapshotBudget, SnapshotRegistry};
-    let package = fixtures::helper_native();
+    let mut package = fixtures::helper_native();
+    // Exercise actual callee storage instead of the retired 523-slot leaf cost.
+    package.functions[1].register_count = 256;
     let mut limits = VmLimits::default();
     limits.slots.initial_capacity = 1024;
     limits.slots.max_window_len = 1024;

@@ -92,6 +92,76 @@ fn numeric_hot_loop_has_zero_allocator_calls_and_reports_real_work() {
         Some(100_000)
     );
 }
+
+#[test]
+fn soft_deadline_batches_clock_reads_without_relaxing_instruction_quota() {
+    let mut v = vm(loop_program(10_000));
+    warm_code(&v);
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut clock_reads = 0;
+    let outcome = v
+        .run_slice(
+            task,
+            SliceBudget {
+                instructions: 2048,
+                deadline_ns: Some(10),
+                ..Default::default()
+            },
+            || {
+                clock_reads += 1;
+                0
+            },
+        )
+        .unwrap();
+    let RunOutcome::BudgetYield(usage) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(usage.instructions, 2048);
+    assert!(
+        clock_reads > 1 && clock_reads < 256,
+        "clock reads: {clock_reads}"
+    );
+}
+
+#[test]
+fn soft_deadline_expiry_retains_the_next_instruction_for_resumption() {
+    let mut v = vm(loop_program(1000));
+    warm_code(&v);
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut clock_reads = 0;
+    let outcome = v
+        .run_slice(
+            task,
+            SliceBudget {
+                deadline_ns: Some(10),
+                ..Default::default()
+            },
+            || {
+                clock_reads += 1;
+                if clock_reads == 1 { 0 } else { 10 }
+            },
+        )
+        .unwrap();
+    let RunOutcome::BudgetYield(usage) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(clock_reads, 2);
+    assert!(usage.instructions <= 32);
+    loop {
+        match v.run_slice(task, SliceBudget::default(), || 0).unwrap() {
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::Returned(delivery) => {
+                assert_eq!(v.delivery_value(delivery).unwrap().as_int(), Some(1000));
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
 #[test]
 fn slice_deadline_allocation_and_work_limits_preserve_unexecuted_operation() {
     let mut package = fixtures::cell_closures();

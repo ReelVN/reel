@@ -137,6 +137,7 @@ fn fixture_with_encoding(
         .with_asset_options(AssetOptions {
             root: directory.clone(),
             resident_bytes: 230_000,
+            metadata_bytes: 32 << 20,
             decode_bytes: 2 << 20,
             input_bytes: 1 << 20,
         });

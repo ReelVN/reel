@@ -17,7 +17,7 @@ pub(super) struct Image {
     pub encoding: ColorEncoding,
     pub coverage: bool,
     pub source: Option<ResourceSource>,
-    _storage: BudgetTicket,
+    _storage: super::ownership::NativeTicket,
 }
 impl Image {
     pub fn uv_transform(&self) -> reel_ui::kurbo::Affine {
@@ -37,11 +37,18 @@ pub(super) struct Images {
     pub entries: HashMap<ResourceHandle, Rc<Image>>,
     pending: HashMap<ResourceHandle, Pending>,
     white: Option<Rc<Image>>,
-    failures: Vec<BudgetTicket>,
+    failures: Vec<super::ownership::NativeTicket>,
     scratch: crate::common::resources::UploadScratch,
     retired: crate::common::resources::RetiredImages<Rc<Image>>,
 }
 impl Images {
+    pub fn retain_demand(&mut self, required: &[crate::common::image_plan::Required<'_>]) {
+        self.entries.retain(|handle, image| {
+            Rc::strong_count(image) > 1
+                || required.iter().any(|item| item.source.handle() == *handle)
+        });
+        self.retired.clear();
+    }
     pub fn release_idle(&mut self) {
         self.scratch.clear();
         self.retired.clear();
@@ -175,7 +182,7 @@ impl Images {
     }
     pub fn white(
         &mut self,
-        gpu: &native::Context,
+        gpu: &super::ownership::Device,
         budgets: &Budgets,
         limit: u64,
     ) -> Result<Rc<Image>, GlesError> {
@@ -183,6 +190,7 @@ impl Images {
             return Ok(image.clone());
         }
         let storage = reserve(&budgets.resources, 4, limit, "white texture")?;
+        let storage = gpu.ticket(storage);
         let built = (|| {
             let texture = gpu.create_texture([1, 1], native::TextureFormat::Rgba8)?;
             gpu.upload(&texture, [0, 0], [1, 1], &[255; 4], 4)?;
@@ -214,7 +222,7 @@ impl Images {
     }
     fn allocate(
         &mut self,
-        gpu: &native::Context,
+        gpu: &super::ownership::Device,
         budgets: &Budgets,
         limits: crate::common::GpuLimits,
         item: &crate::common::image_plan::Required<'_>,
@@ -276,12 +284,12 @@ impl Images {
         } else {
             self.make_room(&budgets.resources, bytes, limits.resource_bytes);
             (
-                reserve(
+                gpu.ticket(reserve(
                     &budgets.resources,
                     bytes,
                     limits.resource_bytes,
                     "image residency",
-                )?,
+                )?),
                 None,
             )
         };
@@ -462,7 +470,7 @@ fn recyclable(image: &Rc<Image>, item: &crate::common::image_plan::Required<'_>)
 }
 
 fn progress(
-    gpu: &native::Context,
+    gpu: &super::ownership::Device,
     budgets: &Budgets,
     limits: crate::common::GpuLimits,
     pending: &mut Pending,
@@ -606,7 +614,8 @@ mod retirement_tests {
     #[test]
     #[ignore = "requires host EGL and BC support; uploads without pixel readback"]
     fn retired_native_texture_storage_reuses_exact_footprints_and_budget() {
-        let gpu = native::Context::headless([8, 8], false).unwrap();
+        let gpu =
+            super::super::ownership::Device::new(native::Context::headless([8, 8], false).unwrap());
         assert!(gpu.capabilities().bc);
         let limits = crate::common::GpuLimits::default();
         let budgets = Budgets::new(limits);

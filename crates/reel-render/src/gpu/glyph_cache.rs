@@ -145,6 +145,12 @@ impl crate::common::glyph_plan::Prepare for Preparation<'_> {
 }
 
 impl GlyphCache {
+    pub(super) fn prune_idle(&self) {
+        self.entries
+            .lock()
+            .unwrap()
+            .retain(|_, glyph| Arc::strong_count(glyph) > 1);
+    }
     pub fn get(&self, key: &Key) -> Option<Arc<Glyph>> {
         self.entries.lock().unwrap().get(key).cloned()
     }

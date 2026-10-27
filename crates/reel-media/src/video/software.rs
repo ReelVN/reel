@@ -1,7 +1,7 @@
 //! Software MP4 H.264 Baseline and AAC-LC decoder, owned by one worker.
 use super::{
-    AudioFrames, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory, VideoFrame,
-    VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
+    AudioFrames, DecodeDemand, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory,
+    VideoFrame, VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
 };
 use mp4::{Mp4Reader, Mp4Track, TrackType};
 use openh264::{decoder::Decoder, formats::YUVSource};
@@ -12,6 +12,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    task::Poll,
 };
 use symphonia::core::{
     audio::{Audio, AudioBuffer, GenericAudioBufferRef, conv::FromSample, sample::Sample},
@@ -362,7 +363,11 @@ impl MovieDecoder {
         let position = seconds.min((self.cursor.end - 1. / self.cursor.scale).max(0.));
         self.seek(position)
     }
-    pub fn next_packet(&mut self) -> Result<Option<DecodedPacket>, String> {
+    /// Decode an available requested track using its independent sample cursor.
+    pub fn poll_packet(
+        &mut self,
+        demand: DecodeDemand,
+    ) -> Result<Poll<Option<DecodedPacket>>, String> {
         loop {
             check_stopped(&self.stopped)?;
             if self.cursor.time(&self.format.tracks()[&self.cursor.id]) >= self.cursor.end {
@@ -378,9 +383,14 @@ impl MovieDecoder {
                 a.cursor.time(&self.format.tracks()[&a.cursor.id])
             });
             if vt.is_infinite() && at.is_infinite() {
-                return Ok(None);
+                return Ok(Poll::Ready(None));
             }
-            if vt <= at {
+            let video_ready = demand.video && vt.is_finite();
+            let audio_ready = demand.audio && at.is_finite();
+            if !video_ready && !audio_ready {
+                return Ok(Poll::Pending);
+            }
+            if video_ready && (!audio_ready || vt <= at) {
                 let _sample_storage = reserve_sample(
                     &self.budget,
                     &self.format.tracks()[&self.cursor.id],
@@ -418,7 +428,7 @@ impl MovieDecoder {
                     }
                     data
                 };
-                return Ok(Some(DecodedPacket::Video(VideoFrame {
+                return Ok(Poll::Ready(Some(DecodedPacket::Video(VideoFrame {
                     pts: vt.max(self.cursor.start),
                     duration,
                     width: width as u32,
@@ -435,7 +445,7 @@ impl MovieDecoder {
                         copy(frame.u(), us, width.div_ceil(2), height.div_ceil(2)),
                         copy(frame.v(), vs, width.div_ceil(2), height.div_ceil(2)),
                     ],
-                })));
+                }))));
             }
             let audio = self.audio.as_mut().unwrap();
             let _sample_storage = reserve_sample(
@@ -476,11 +486,11 @@ impl MovieDecoder {
             }
             frames.truncate(end);
             frames.drain(..first);
-            return Ok(Some(DecodedPacket::Audio(AudioFrames {
+            return Ok(Poll::Ready(Some(DecodedPacket::Audio(AudioFrames {
                 pts: at + first as f64 / rate,
                 sample_rate: audio.rate,
                 frames,
-            })));
+            }))));
         }
     }
     /// Seek to the preceding IDR, decode reference frames and trim AAC preroll.
@@ -621,8 +631,8 @@ impl VideoDecoder for MovieDecoder {
     fn prepare_poster(&mut self, seconds: f64) -> Result<(), String> {
         MovieDecoder::prepare_poster(self, seconds)
     }
-    fn next_packet(&mut self) -> Result<Option<DecodedPacket>, String> {
-        MovieDecoder::next_packet(self)
+    fn poll_packet(&mut self, demand: DecodeDemand) -> Result<Poll<Option<DecodedPacket>>, String> {
+        MovieDecoder::poll_packet(self, demand)
     }
     fn seek(&mut self, seconds: f64) -> Result<(), String> {
         MovieDecoder::seek(self, seconds)

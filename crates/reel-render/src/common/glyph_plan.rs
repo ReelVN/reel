@@ -51,6 +51,7 @@ impl Plan {
         outer: Affine,
         max_dimension: u32,
         capture: bool,
+        selection: &super::retained::Plan,
         prepare: &mut impl Prepare,
     ) -> Result<Self, GpuError> {
         let mut plan = Self::default();
@@ -84,7 +85,9 @@ impl Plan {
                     {
                         transition += 1;
                         next = definition.commands.end - offset;
-                        if capture && !definition.capture_included {
+                        if !selection.transition_needed(definition)
+                            || capture && !definition.capture_included
+                        {
                             continue;
                         }
                         // The parent's retained ink includes an older drawing;
@@ -92,30 +95,35 @@ impl Plan {
                         for scope in &mut scopes {
                             scope.ink = InkBounds::Unbounded;
                         }
-                        push_stack(
-                            &mut streams,
-                            Stream {
-                                drawing: definition.previous.drawing(),
-                                commands: definition.previous.drawing().commands(),
-                                outer: outer
-                                    * definition.parent_to_window
-                                    * definition.previous.to_parent(),
-                                offset: Some(0),
-                                transitions: true,
-                            },
-                            |bytes| prepare.reserve(bytes),
-                        )?;
-                        push_stack(
-                            &mut streams,
-                            Stream {
-                                drawing: stream.drawing,
-                                commands: &stream.drawing.commands()[definition.commands.clone()],
-                                outer,
-                                offset: Some(definition.commands.start),
-                                transitions: false,
-                            },
-                            |bytes| prepare.reserve(bytes),
-                        )?;
+                        if selection.old_needed(definition) {
+                            push_stack(
+                                &mut streams,
+                                Stream {
+                                    drawing: definition.previous.drawing(),
+                                    commands: definition.previous.drawing().commands(),
+                                    outer: outer
+                                        * definition.parent_to_window
+                                        * definition.previous.to_parent(),
+                                    offset: Some(0),
+                                    transitions: true,
+                                },
+                                |bytes| prepare.reserve(bytes),
+                            )?;
+                        }
+                        if selection.selected(stream.drawing, definition.commands.start) {
+                            push_stack(
+                                &mut streams,
+                                Stream {
+                                    drawing: stream.drawing,
+                                    commands: &stream.drawing.commands()
+                                        [definition.commands.clone()],
+                                    outer,
+                                    offset: Some(definition.commands.start),
+                                    transitions: false,
+                                },
+                                |bytes| prepare.reserve(bytes),
+                            )?;
+                        }
                         continue;
                     }
                     if capture
@@ -134,6 +142,11 @@ impl Plan {
                     break;
                 };
                 next += 1;
+                if let Some(offset) = stream.offset
+                    && !selection.selected(stream.drawing, offset + next - 1)
+                {
+                    continue;
+                }
                 match &command.op {
                     FrameOp::PushClip(_) => {
                         let measure = scopes.last().is_some_and(|scope| scope.measure);
@@ -149,6 +162,10 @@ impl Plan {
                         )?;
                     }
                     FrameOp::PushGroup(group) => {
+                        let inherited = super::effect_plan::same_source_domain(
+                            group,
+                            scopes.last().and_then(|scope| scope.group),
+                        );
                         push_stack(
                             &mut scopes,
                             Scope {
@@ -159,7 +176,10 @@ impl Plan {
                             },
                             |bytes| prepare.reserve(bytes),
                         )?;
-                        if let Some(effect) = group.effect.as_ref().or(group.mask_effect.as_ref()) {
+                        if !inherited
+                            && let Some(effect) =
+                                group.effect.as_ref().or(group.mask_effect.as_ref())
+                        {
                             outer = super::effect_plan::source_layout(
                                 effect,
                                 group.effect_to_target,

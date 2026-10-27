@@ -434,10 +434,14 @@ fn snapshot_restores_shared_graph_cells_classes_faults_waits_and_rejects_stale_c
     ) -> Result<(), aside_vm::HeapError> {
         Err(aside_vm::HeapError::ReadOnly)
     }
+    static READONLY: aside_vm::HostPropertyValidator =
+        aside_vm::HostPropertyValidator::new("test.readonly", 1, readonly);
+    static READONLY_V2: aside_vm::HostPropertyValidator =
+        aside_vm::HostPropertyValidator::new("test.readonly", 2, readonly);
     let fields = vm.heap_mut().alloc_table().unwrap();
     let host = vm
         .heap_mut()
-        .alloc_host(fields, &[], Some(readonly))
+        .alloc_host(fields, &[], Some(&READONLY))
         .unwrap();
     vm.heap_mut()
         .add_root(RootOwner(99), RootKind::Host, host)
@@ -455,9 +459,7 @@ fn snapshot_restores_shared_graph_cells_classes_faults_waits_and_rejects_stale_c
         }
     }
     drop(unsupported);
-    registry
-        .register_validator("test.readonly", 1, readonly)
-        .unwrap();
+    registry.register_validator(&READONLY).unwrap();
     let mut capture = vm.snapshot_begin(&registry).unwrap();
     let mut slices = 0;
     loop {
@@ -509,9 +511,7 @@ fn snapshot_restores_shared_graph_cells_classes_faults_waits_and_rejects_stale_c
         Err(SnapshotError::CodeMismatch)
     ));
     let mut wrong_registry = SnapshotRegistry::default();
-    wrong_registry
-        .register_validator("test.readonly", 2, readonly)
-        .unwrap();
+    wrong_registry.register_validator(&READONLY_V2).unwrap();
     let mut candidate = Vm::restore_begin(
         &image,
         bc::verify(program.package().clone(), bc::Limits::default()).unwrap(),

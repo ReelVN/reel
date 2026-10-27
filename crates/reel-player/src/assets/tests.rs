@@ -1,7 +1,6 @@
 use super::*;
 use reel_core::{
     identity::ContentVersion,
-    io::{IoCaps, SaveWrite},
     result::Rejected,
     test_support::{MemoryAsset, MemoryAssetIo},
 };
@@ -13,7 +12,11 @@ use std::{
 
 const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
+mod cost;
+pub(crate) mod memory_reader;
 mod packed;
+mod streaming;
+use memory_reader::MemoryReader;
 
 /// Supply compiled source/ASB definitions through the ordinary asset IO and
 /// shader-envelope admission path used by the exported player.
@@ -71,7 +74,7 @@ pub(crate) fn prepared_effect_assets(
             }
         }
         (
-            Box::new(MemoryHost(io, None)),
+            Box::new(MemoryReader::new(io, wake.clone(), true, None)),
             Box::new(ImageExecutor::new(limits, wake)),
         )
     })
@@ -218,8 +221,10 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
                     max_bytes: 1 << 20,
                 };
                 (
-                    Box::new(MemoryHost(
+                    Box::new(MemoryReader::new(
                         MemoryAssetIo::new(limits, limits, wake.clone()),
+                        wake.clone(),
+                        true,
                         None,
                     )),
                     Box::new(Counted(ImageExecutor::new(limits, wake), jobs.clone())),
@@ -398,7 +403,7 @@ fn prepared_versions_share_only_live_matching_kinds_and_respect_explicit_retirem
 }
 
 #[test]
-fn loose_resource_reuse_resolves_the_current_content_before_sharing() {
+fn loose_resources_share_within_a_launch_and_reopen_on_the_next_launch() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/reel-artifacts/asset-version-tests")
         .join(format!(
@@ -419,53 +424,28 @@ fn loose_resource_reuse_resolves_the_current_content_before_sharing() {
     let first = load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
     let shared = load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
     assert_eq!(first.handle(), shared.handle());
+    let identity = first.version().clone();
+    drop((first, shared));
+    assert_eq!(assets.output_pool().usage().bytes, 0);
+    assets.close();
+    drop(assets);
     std::fs::write(&path, JPEG).unwrap();
-    let changed =
-        load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
-    assert_ne!(first.version(), changed.version());
+    let assets = Assets::directory(AssetOptions {
+        root: root.clone(),
+        ..Default::default()
+    });
+    let changed = load_until_done(
+        &assets,
+        assets.request_version(identity.clone(), AssetKind::Image),
+    )
+    .unwrap();
+    assert_eq!(*changed.version(), identity);
     assert_eq!(changed.data().image_size(), Some([96, 96]));
-    assert_eq!(first.data().image_size(), Some([160, 90]));
-    drop((first, shared, changed));
+    drop(changed);
     assert_eq!(assets.output_pool().usage().bytes, 0);
     drop(assets);
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(root).unwrap();
-}
-
-// A deterministic in-memory host drives the contract fixture at admission.
-// Image work still uses the production codec adapter, without a filesystem.
-struct MemoryHost(MemoryAssetIo, Option<Option<ContentVersion>>);
-impl AssetIo for MemoryHost {
-    fn capabilities(&self) -> IoCaps {
-        self.0.capabilities()
-    }
-    fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>> {
-        let id = self.0.describe(request)?;
-        assert!(self.0.complete_next_read());
-        Ok(id)
-    }
-    fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
-        let id = self.0.read(request)?;
-        assert!(self.0.complete_next_read());
-        Ok(id)
-    }
-    fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
-        self.0.replace_save(request)
-    }
-    fn cancel(&mut self, id: IoId) {
-        self.0.cancel(id);
-    }
-    fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
-        let first = out.len();
-        self.0.poll(out, limit);
-        if let Some(version) = self.1 {
-            for event in &mut out[first..] {
-                if let Terminal::Completed(IoPayload::Described(info)) = &mut event.result {
-                    info.version = version;
-                }
-            }
-        }
-    }
 }
 
 pub(crate) fn memory_assets() -> Assets {
@@ -497,14 +477,14 @@ fn memory_assets_with_description(version: Option<Option<ContentVersion>>) -> As
             .unwrap();
         }
         (
-            Box::new(MemoryHost(io, version)),
+            Box::new(MemoryReader::new(io, wake.clone(), true, version)),
             Box::new(ImageExecutor::new(limits, wake)),
         )
     })
 }
 
 #[test]
-fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters() {
+fn concurrent_images_share_decode_capacity_and_source_identities() {
     let mut versions = Vec::new();
     let (packaged, _fixture) = packed::packaged_assets(64 << 20);
     for assets in [
@@ -573,10 +553,13 @@ fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters
         assert_eq!(assets.poll(late).unwrap_err(), "asset service closed");
     }
     assert_eq!(
-        versions[0], versions[1],
-        "resource identity must not include storage location"
+        versions[1], versions[2],
+        "published digests agree across memory and archives"
     );
-    assert_eq!(versions[0], versions[2]);
+    assert_eq!(
+        versions[0].iter().map(|v| &v.key).collect::<Vec<_>>(),
+        versions[1].iter().map(|v| &v.key).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -611,7 +594,6 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !worker.is_finished() {
             assert!(std::time::Instant::now() < deadline);
-            assets.maintain();
             std::thread::sleep(Duration::from_millis(1));
         }
         worker.join().unwrap();
@@ -628,27 +610,12 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
         drop(reader);
         drop(control);
         assets.maintain();
-        for close_service in [false, true] {
-            let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
-            let waiter = std::thread::spawn(move || reader.open());
-            while !assets.needs_poll() {
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::yield_now();
-            }
-            if close_service {
-                assets.close();
-            } else {
-                control.cancel();
-            }
-            assert_eq!(
-                waiter.join().unwrap().unwrap_err().kind(),
-                std::io::ErrorKind::BrokenPipe
-            );
-            drop(control);
-            assets.maintain();
-            assert_eq!(assets.0.borrow().input.usage().bytes, 0);
-            assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
-        }
+        let (_, mut reader) = assets.stream("assets/panels.png").unwrap();
+        assets.close();
+        assert_eq!(
+            reader.open().unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
     }
 }
 
@@ -670,7 +637,7 @@ fn stream_input_headroom_survives_full_ordinary_admission_and_tiny_budgets() {
             continue;
         }
         let mut workers = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..4 {
             let (_, mut reader) = assets.stream("assets/panels.png").unwrap();
             workers.push(std::thread::spawn(move || {
                 let mut prefix = [0; 8];
@@ -681,7 +648,6 @@ fn stream_input_headroom_survives_full_ordinary_admission_and_tiny_budgets() {
         let deadline = Instant::now() + Duration::from_secs(3);
         while workers.iter().any(|worker| !worker.is_finished()) {
             assert!(Instant::now() < deadline);
-            assets.maintain();
             std::thread::yield_now();
         }
         for worker in workers {

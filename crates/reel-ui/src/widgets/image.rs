@@ -710,53 +710,37 @@ impl Widget for Image {
             return;
         }
 
-        if let Some(rect) = source_rect {
-            // Object-fit is axis-aligned in the image's local coordinates.
-            // Trim geometry there instead of opening a per-image clip layer;
-            // consecutive regions of one texture remain consecutive quads.
-            if transform.determinant() == 0. {
-                return;
-            }
-            let bounds = transform
-                .inverse()
-                .transform_rect_bbox(content_box)
-                .intersect(image_size.to_rect());
-            if bounds.width() <= 0. || bounds.height() <= 0. {
-                return;
-            }
-            let sampling = Affine::translate(rect.origin().to_vec2());
-            if let Some(image) = &self.image_data {
-                painter
-                    .fill(bounds, image)
-                    .transform(transform)
-                    .brush_transform(Some(sampling))
-                    .draw();
-            } else if let Some(resource) = &self.resource {
-                ctx.draw_resource_image(
-                    painter,
-                    resource,
-                    bounds,
-                    transform,
-                    sampling,
-                    self.sampler(),
-                );
-            }
+        // Object-fit is axis-aligned before the widget's transform. Crop the
+        // quad in that local space so rotation and opacity need no clip target.
+        if transform.determinant() == 0. {
             return;
         }
-        painter.with_fill_clip(content_box, |painter| {
-            if let Some(image) = &self.image_data {
-                painter.draw_image(image, transform);
-            } else if let Some(resource) = &self.resource {
-                ctx.draw_resource_image(
-                    painter,
-                    resource,
-                    image_size.to_rect(),
-                    transform,
-                    Affine::IDENTITY,
-                    self.sampler(),
-                );
-            }
+        let bounds = transform
+            .inverse()
+            .transform_rect_bbox(content_box)
+            .intersect(image_size.to_rect());
+        if bounds.width() <= 0. || bounds.height() <= 0. {
+            return;
+        }
+        let sampling = source_rect.map_or(Affine::IDENTITY, |rect| {
+            Affine::translate(rect.origin().to_vec2())
         });
+        if let Some(image) = &self.image_data {
+            painter
+                .fill(bounds, image)
+                .transform(transform)
+                .brush_transform(Some(sampling))
+                .draw();
+        } else if let Some(resource) = &self.resource {
+            ctx.draw_resource_image(
+                painter,
+                resource,
+                bounds,
+                transform,
+                sampling,
+                self.sampler(),
+            );
+        }
     }
 
     fn accessibility_role(&self) -> Role {

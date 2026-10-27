@@ -235,12 +235,17 @@ pub struct SessionVm {
     main_minimum: SliceMinimum,
     main_wait: Option<WaitId>,
     tasks: Vec<callbacks::ScriptTask>,
+    checked_callback_lifetimes: Option<(u64, u64, u64)>,
+    blocked_tasks_revision: Option<u64>,
+    #[cfg(test)]
+    callback_lifetime_checks: u64,
     scopes: scopes::Scopes,
     transitions: transitions::Transitions,
     schedule_cursor: usize,
     derived_task: Option<TaskId>,
     derived_minimum: SliceMinimum,
     reactive_ready: bool,
+    ordinary_step_executed: bool,
     feedback_only: bool,
     // Source of the projected version survives subsequent task scheduling.
     projected_stage_revision: u64,
@@ -345,12 +350,17 @@ impl SessionVm {
             main_minimum: SliceMinimum::default(),
             main_wait: None,
             tasks: Vec::new(),
+            checked_callback_lifetimes: None,
+            blocked_tasks_revision: None,
+            #[cfg(test)]
+            callback_lifetime_checks: 0,
             scopes: scopes::Scopes::default(),
             transitions: transitions::Transitions::default(),
             schedule_cursor: 0,
             derived_task: None,
             derived_minimum: SliceMinimum::default(),
             reactive_ready: true,
+            ordinary_step_executed: false,
             feedback_only: false,
             projected_stage_revision: 0,
             authored_stage_revision: 0,
@@ -519,13 +529,22 @@ impl SessionVm {
         self.projected_stage_revision = revision;
         Ok(())
     }
-    /// Reactive factories must settle before a host acknowledges their narrative frame.
+    /// Author execution has reached a commit boundary and the stage's complete
+    /// activity/reactive batch has settled. Synchronous construction and writes
+    /// retain their transaction until await, return or another ordinary boundary.
     pub fn stage_ready(&self) -> bool {
-        !self.activities.pending()
+        self.reactive_ready
+            && self.reactive_settled()
+            && !self.activities.pending()
             && !self.transitions.pending(self.activities.time())
             && !self.particles.needs_work(self.stage.retirement_revision)
-            && self.derived_task.is_none()
-            && !self.vm.heap().derived_pending()
+    }
+    /// Whether the latest scheduler step executed ordinary task VM instructions.
+    /// Reactive evaluation, maintenance and host-only continuation dispatch return
+    /// false. Both [`Self::step`] and [`Self::step_reactive`] clear this transient
+    /// result on entry; restoration starts false.
+    pub fn ordinary_step_executed(&self) -> bool {
+        self.ordinary_step_executed
     }
     pub fn cleanup_pending(&self) -> bool {
         self.revoked
@@ -595,6 +614,16 @@ impl SessionVm {
                 || self.transitions.needs_time())
     }
 
+    /// Whether active clocks, tweens, particles or transitions require repeated
+    /// time sampling. This constant-time query excludes pure delay deadlines;
+    /// [`Self::activities_poll_after`] still reports those deadlines normally.
+    pub fn continuous_time_pending(&self) -> bool {
+        !self.revoked
+            && (self.activities.continuous_time_pending()
+                || self.particles.needs_time()
+                || self.transitions.needs_time())
+    }
+
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         if self.revoked {
             return None;
@@ -616,6 +645,7 @@ impl SessionVm {
             .vm
             .start(entry, &[], self.root_owner, Context::Ordinary)?;
         self.task = Some(task);
+        self.blocked_tasks_revision = None;
         self.main_minimum = SliceMinimum::default();
         self.main_wait = None;
         Ok(task)
@@ -623,12 +653,16 @@ impl SessionVm {
 
     /// Preserve BudgetYield and ResourceBlocked verbatim; neither is terminal.
     /// Pending input is routed before the next slice, never to vm.task_id().
+    /// The host polls media, localization and asset reads through their explicit
+    /// maintenance methods at each host turn and after external wakeups. Native
+    /// and derived reentry within that turn only advances local execution work.
     pub fn step(
         &mut self,
         session: &mut Session,
         budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
+        self.ordinary_step_executed = false;
         if self.exit_requested || self.start_requested.is_some() {
             self.live(session)?;
             return Ok(SessionStep::Idle);

@@ -57,7 +57,12 @@ impl StoryRuntime {
         self.retiring = self.driver.replace(next);
         self.starting = None;
         self.logical_ns = 0;
+        self.clock_sample_requested = true;
         self.clock_turn_pending = false;
+        #[cfg(feature = "profiling")]
+        {
+            self.stage_profile = None;
+        }
         self.time_offset_ns = 0;
         self.suspended_ns = now_ns;
         self.runnable = true;

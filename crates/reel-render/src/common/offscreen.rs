@@ -24,9 +24,29 @@ pub(crate) struct Entry {
 #[derive(Default)]
 pub(crate) struct Plan {
     entries: Vec<Entry>,
+    storage: super::target_storage::Plan,
+    requirements: super::target_plan::Requirements,
 }
 
 impl Plan {
+    pub(crate) fn requirements(&self) -> &super::target_plan::Requirements {
+        if self.storage.bytes() != 0 {
+            self.storage.requirements()
+        } else {
+            &self.requirements
+        }
+    }
+    pub(crate) fn storage_size(&self, logical: [u32; 2]) -> [u32; 2] {
+        self.storage.storage_size(logical)
+    }
+
+    /// The second output of a whole-frame crossfade shares storage lifetimes,
+    /// while its command indices belong to a different drawing.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn disable_batches(&mut self) {
+        self.entries.clear();
+    }
+
     pub(crate) fn entry(&self, push: usize) -> Option<&Entry> {
         self.entries
             .binary_search_by_key(&push, |entry| entry.push)
@@ -52,8 +72,10 @@ impl Plan {
         samples: u32,
         max_dimension: u32,
         glyphs: &glyph_plan::Plan,
-        pixel_limit: u64,
+        byte_limit: u64,
+        cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         masks: super::target_plan::MaskExecution,
+        selection: &super::retained::Plan,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, u64, Vec<R>), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::OffscreenPlan);
@@ -85,7 +107,7 @@ impl Plan {
             }
             plan.pack(max_dimension, shared);
             let mut traversal = Vec::new();
-            let pixels = super::target_plan::target_pixels(
+            let input = super::target_plan::Input {
                 frame,
                 second,
                 size,
@@ -93,17 +115,36 @@ impl Plan {
                 samples,
                 max_dimension,
                 glyphs,
-                &plan,
+                schedule: &plan,
                 masks,
-                |bytes| {
-                    traversal.push(reserve(bytes)?);
-                    Ok(())
-                },
-            )?;
-            drop(traversal);
-            if pixels <= pixel_limit || plan.is_empty() {
-                return Ok((plan, pixels, retained));
+                selection,
+                cost,
+            };
+            let mut measured = Some(input.measure(|bytes| {
+                traversal.push(reserve(bytes)?);
+                Ok(())
+            })?);
+            let mut bytes = measured.as_ref().unwrap().bytes;
+            let mut storage_tickets = Vec::new();
+            if bytes > byte_limit && measured.as_ref().unwrap().reusable {
+                drop(measured.take());
+                traversal.clear();
+                let (storage, shared_bytes, tickets) = input.storage(&mut reserve)?;
+                bytes = shared_bytes;
+                plan.storage = storage;
+                storage_tickets = tickets;
             }
+            if bytes <= byte_limit || plan.is_empty() {
+                if plan.storage.bytes() == 0 {
+                    plan.requirements = measured.as_ref().unwrap().requirements(|bytes| {
+                        storage_tickets.push(reserve(bytes)?);
+                        Ok(())
+                    })?;
+                }
+                retained.extend(storage_tickets);
+                return Ok((plan, bytes, retained));
+            }
+            plan.storage = super::target_storage::Plan::default();
             if shared && plan.entries.iter().any(|entry| entry.shared) {
                 shared = false;
                 continue;
@@ -254,7 +295,7 @@ impl Plan {
                         }
                         end += 1;
                     }
-                    let view = leaf
+                    let view = (leaf && group.composite.blend == Default::default())
                         .then(|| {
                             SourceView::group(
                                 group,
@@ -320,7 +361,13 @@ impl Plan {
             }
         }
         finish_run(&mut entries, &mut run_start);
-        Ok((Self { entries }, retained))
+        Ok((
+            Self {
+                entries,
+                ..Self::default()
+            },
+            retained,
+        ))
     }
 }
 

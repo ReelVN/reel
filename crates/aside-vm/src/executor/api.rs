@@ -168,6 +168,11 @@ pub struct SliceBudget {
     pub instructions: u32,
     pub work: u64,
     pub allocation_bytes: u64,
+    /// Optional soft deadline in the host's monotonic nanosecond clock. Check on
+    /// slice entry and host resumption, then at most every 32 internal execution
+    /// steps. An allocation or an operation charged at least 32 work units forces
+    /// the next boundary to check again. One indivisible operation can overrun
+    /// this deadline; instruction, work and allocation quotas remain exact.
     pub deadline_ns: Option<u64>,
 }
 impl Default for SliceBudget {
@@ -287,6 +292,8 @@ pub struct VmLimits {
     pub max_frames: u32,
     pub max_unwinds: u32,
     pub max_arguments: u32,
+    /// Maximum values accepted in a native continuation. Its root storage grows
+    /// with actual responses; an ordinary leaf call does not reserve this limit.
     pub max_continuation_values: u32,
     pub max_native_faults: u32,
 }
@@ -314,6 +321,10 @@ pub struct VmStats {
     pub unwinds: u32,
     pub comparison_depth: u32,
     pub native_entries: u64,
+    /// Live weak method bindings reused by this VM; reset on restore.
+    pub native_binding_hits: u64,
+    /// Binding cache misses or values rejected by the GC cutoff; reset on restore.
+    pub native_binding_misses: u64,
     pub native_resumes: u64,
     /// Redundant whole-native-window initialization writes (removed in V03).
     pub native_null_publications: u64,

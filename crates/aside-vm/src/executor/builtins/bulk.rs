@@ -160,12 +160,11 @@ impl Vm {
         } else if work.index == work.len {
             let result = if removing_table {
                 let removed = self.heap.table_entry(receiver, work.offset)?.1;
+                // Single removals use normal allocation pressure; bulk clear
+                // explicitly requests reclamation in the branch below.
                 self.heap
                     .commit_table_remove(receiver, buffer, work.offset)
-                    .map(|()| {
-                        self.heap.request_collection();
-                        removed
-                    })
+                    .map(|()| removed)
                     .map_err(heap_fault)
             } else if work.call.method.mutates() {
                 let result = if matches!(work.call.method, Builtin::Remove) {

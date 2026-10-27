@@ -16,13 +16,17 @@ pub(crate) mod mask;
 pub(crate) mod mesh;
 pub(crate) mod renderer;
 pub(crate) mod resources;
+pub(crate) mod retained;
 pub(crate) mod scopes;
 
 pub(crate) mod offscreen;
 pub(crate) mod scissor;
 pub(crate) mod source_view;
+pub(crate) mod target_cache;
 pub(crate) mod target_plan;
+pub(crate) mod target_storage;
 pub(crate) mod target_writes;
+pub(crate) mod usage;
 
 pub(crate) mod draw_batch;
 pub(crate) mod geometry;

@@ -24,6 +24,7 @@ pub(super) fn prepared(code: &str, encoded: bool) -> (Session, SessionVm) {
 pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: bool) -> usize {
     let mut copies = 0;
     for _ in 0..100_000 {
+        poll_services(vm);
         match vm
             .step(
                 session,

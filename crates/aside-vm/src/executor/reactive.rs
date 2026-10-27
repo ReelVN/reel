@@ -46,7 +46,7 @@ impl Vm {
             .as_int()
             .unwrap() as u32);
         let push = self.native_push_cost(native, count);
-        cost.0 += push.0 + u64::from(count) + self.heap.derived_claim_work() + 2;
+        cost.0 += push.0 + 3 * u64::from(count) + self.heap.derived_claim_work() + 2;
         cost.1 += push.1;
         Ok(Some(ReactiveRead {
             output,
@@ -79,8 +79,8 @@ impl Vm {
                 call: s.pc,
             },
         };
-        // Reuse the native frame's existing callback-argument root region as its
-        // copy source. No temporary argument graph or separate task is needed.
+        // These arguments already belong to the observer. Copy them directly
+        // into its admitted argument window instead of reserving callback slots.
         self.push_native(read.native, ArgSource::None, read.count, site)?;
         let index = self.active.frames.data.len() - 1;
         let Frame::Native(mut frame) = self.active.frames.data[index] else {
@@ -91,18 +91,12 @@ impl Vm {
             .heap
             .host_payload(read.output, DerivedSlot::Arguments as u32)?;
         for i in 0..read.count {
-            self.put(
-                frame.roots,
-                2 + self.limits.max_continuation_values + i,
-                self.heap.sequence_get(arguments, i)?,
-            )?;
+            self.put(frame.args, i * 2, Value::int(-1))?;
+            self.put(frame.args, i * 2 + 1, self.heap.sequence_get(arguments, i)?)?;
         }
         frame.derived_output = Some(read.output);
         frame.continuation_len = 1;
-        frame.phase = NativePhase::Copy {
-            source: ArgSource::Native { frame: frame.id },
-            index: 0,
-        };
+        frame.phase = NativePhase::Bind(ArgumentBinding::new(0));
         self.active.frames.data[index] = Frame::Native(frame);
         self.heap.claim_derived(read.output)?;
         Ok(())

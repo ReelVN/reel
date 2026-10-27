@@ -40,39 +40,139 @@ fn version(n: u8) -> ResourceVersion {
 }
 
 #[test]
-fn transparent_subtrees_keep_geometry_and_resume_painting_when_visible() {
-    let mut root = RecordWidget::new(fill(Color::WHITE));
-    root.opacity = 0.;
-    let widget = root.prepare();
-    let root = widget.id();
-    let mut bridge = r01_fixture::bridge(fixture::root(widget).0);
+fn rotated_images_crop_object_fit_in_geometry_without_clip_layers() {
+    use reel_core::{budget::OwnedBytes, texture::*};
+    use reel_ui::{properties::ObjectFit, widgets::Image};
     let pool = pool();
-    let source = bridge.record(FrameId(1)).unwrap();
-    let frame = build(source, empty_snapshot(&pool), &pool);
-    assert!(frame.commands().is_empty());
-    assert!(bridge.root().get_widget(root).is_some());
-    let mut retained = RetainBuild::new(&frame, Some(root), limits(), &pool).unwrap();
-    while !retained.step(step_budget()).unwrap().complete {}
-    assert!(retained.finish().unwrap().drawing().commands().is_empty());
-    drop(frame);
-    bridge.edit_widget(root, |mut widget| {
-        let mut widget = widget.downcast::<RecordWidget>();
-        widget.widget.opacity = 0.5;
-        widget.ctx.request_pre_paint();
-    });
-    let frame = build(
-        bridge.record(FrameId(2)).unwrap(),
-        empty_snapshot(&pool),
-        &pool,
-    );
-    assert!(frame.commands().iter().any(|c| matches!(&c.op,
+    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let descriptor = TextureDescriptor {
+        format: TextureFormat::Bc1Rgb,
+        source_encoding: ColorEncoding::Srgb,
+        layout: TextureLayout::identity([64, 32]),
+    };
+    let bytes = descriptor.byte_len().unwrap();
+    let handle = registry
+        .register_texture(
+            version(79),
+            TexturePayload::new(
+                descriptor,
+                OwnedBytes::new(vec![0; bytes as usize], pool.reserve(bytes).unwrap()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    for source in [None, Some(Rect::new(8., 4., 40., 20.))] {
+        let scale = if source.is_some() { 0.5 } else { 1. };
+        for (fit, expected) in [
+            (ObjectFit::Cover, Rect::new(16., 0., 48., 32.)),
+            (ObjectFit::Contain, Rect::new(0., 0., 64., 32.)),
+            (ObjectFit::Stretch, Rect::new(0., 0., 64., 32.)),
+        ] {
+            let mut widget = RecordWidget::new(Scene::new());
+            widget.clip = false;
+            widget.opacity = 0.5;
+            widget.inner.add(
+                Image::from_resource(registry.acquire(handle).unwrap())
+                    .with_source_rect(source)
+                    .prepare()
+                    .with_props(PropertySet::new().with(fit))
+                    .with_transform(Affine::rotate(0.2)),
+                Point::new(20., 30.),
+                Size::new(100., 100.),
+            );
+            let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+            let frame = build(
+                bridge.record(FrameId(1)).unwrap(),
+                registry.freeze(&[handle], &pool).unwrap(),
+                &pool,
+            );
+            assert!(
+                !frame
+                    .commands()
+                    .iter()
+                    .any(|c| matches!(c.op, FrameOp::PushClip(_)))
+            );
+            let draws: Vec<_> = frame
+                .commands()
+                .iter()
+                .filter_map(|c| match &c.op {
+                    FrameOp::Draw(FrameDraw::Fill {
+                        shape: Geometry::Rect(rect),
+                        brush: Brush::Image(_),
+                        brush_transform,
+                        ..
+                    }) => Some((rect, brush_transform)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(draws.len(), 1);
+            assert_eq!(
+                *draws[0].0,
+                Affine::scale(scale).transform_rect_bbox(expected)
+            );
+            assert_eq!(
+                *draws[0].1,
+                Some(source.map_or(Affine::IDENTITY, |rect| Affine::translate(
+                    rect.origin().to_vec2()
+                )))
+            );
+        }
+    }
+}
+
+#[test]
+fn transparent_subtrees_keep_geometry_and_resume_painting_when_visible() {
+    for (blend, omitted) in [
+        (BlendMode::default(), true),
+        (peniko::Mix::Multiply.into(), true),
+        (peniko::Mix::Overlay.into(), true),
+        (peniko::Mix::ColorDodge.into(), true),
+        (peniko::Mix::Screen.into(), true),
+        (
+            peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::PlusLighter).into(),
+            false,
+        ),
+        (BlendMode::Subtract, false),
+        (BlendMode::LinearBurn, true),
+    ] {
+        let mut root = RecordWidget::new(fill(Color::WHITE));
+        root.opacity = 0.;
+        root.blend = blend;
+        let widget = root.prepare();
+        let root = widget.id();
+        let mut bridge = r01_fixture::bridge(fixture::root(widget).0);
+        let pool = pool();
+        let source = bridge.record(FrameId(1)).unwrap();
+        let frame = build(source, empty_snapshot(&pool), &pool);
+        assert_eq!(frame.commands().is_empty(), omitted, "{blend:?}");
+        assert!(bridge.root().get_widget(root).is_some());
+        let mut retained = RetainBuild::new(&frame, Some(root), limits(), &pool).unwrap();
+        while !retained.step(step_budget()).unwrap().complete {}
+        assert_eq!(
+            retained.finish().unwrap().drawing().commands().is_empty(),
+            omitted,
+            "{blend:?}"
+        );
+        drop(frame);
+        bridge.edit_widget(root, |mut widget| {
+            let mut widget = widget.downcast::<RecordWidget>();
+            widget.widget.opacity = 0.5;
+            widget.ctx.request_pre_paint();
+        });
+        let frame = build(
+            bridge.record(FrameId(2)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        assert!(frame.commands().iter().any(|c| matches!(&c.op,
         FrameOp::PushGroup(group) if group.composite.alpha == 0.5)));
-    assert!(
-        frame
-            .commands()
-            .iter()
-            .any(|c| matches!(c.op, FrameOp::Draw(_)))
-    );
+        assert!(
+            frame
+                .commands()
+                .iter()
+                .any(|c| matches!(c.op, FrameOp::Draw(_)))
+        );
+    }
 }
 
 #[test]

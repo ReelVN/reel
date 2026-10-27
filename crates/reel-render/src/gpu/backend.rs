@@ -125,6 +125,7 @@ impl RenderBackend for WgpuBackend {
         }
     }
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), GpuError> {
+        self.renderer.cancel_preparations();
         self.info = None;
         self.output = None;
         self.config = None;
@@ -168,7 +169,10 @@ impl RenderBackend for WgpuBackend {
         if info.physical_size.contains(&0) {
             return Ok(PresentOutcome::SurfaceUnavailable);
         }
-        let mut prepared = self.renderer.prepare(frame)?;
+        let mut prepared = match self.renderer.prepare(frame) {
+            Err(GpuError::Preparing) => return Ok(PresentOutcome::Preparing),
+            result => result?,
+        };
         let texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -211,6 +215,9 @@ impl RenderBackend for WgpuBackend {
     fn retire(&mut self, resources: &[ResourceVersion]) {
         self.renderer.retire(resources);
     }
+    fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        self.renderer.cancel_preparation(frame);
+    }
     fn poll(&mut self, out: &mut Vec<RenderEvent<GpuError>>, limit: usize) -> Result<(), GpuError> {
         let resources_available = self.renderer.poll_completed(limit, |id, frame| {
             out.push(RenderEvent::RenderFinished {
@@ -227,6 +234,7 @@ impl RenderBackend for WgpuBackend {
         self.renderer.has_pending()
     }
     fn suspend(&mut self) {
+        self.renderer.cancel_preparations();
         // Native surface lifetime ends before the host releases its window. Submitted
         // frame leases stay in Renderer until completion is polled or device retirement.
         let _ = self

@@ -171,7 +171,7 @@ fn borrowed_present_retains_old_versions_until_last_lease_and_completion() {
     assert_eq!(result, Ok(PresentOutcome::PresentAccepted(FrameId(1))));
     let submit = backend.last_submission().unwrap();
     assert_eq!(
-        bridge.resolve(presentation_notice(&frame, SurfaceEpoch(1), result)),
+        bridge.resolve(presentation_notice(&frame, SurfaceEpoch(1), result).unwrap()),
         NoticeResult::Accepted
     );
     // A new content version can coexist while the retired old slot remains leased.
@@ -303,7 +303,7 @@ fn invalid_upload_returns_original_busy_terminal_capacity_and_null_skip() {
     );
     let result = null.render_present(&frame, || {});
     assert_eq!(
-        bridge.resolve(presentation_notice(&frame, SurfaceEpoch(1), result)),
+        bridge.resolve(presentation_notice(&frame, SurfaceEpoch(1), result).unwrap()),
         NoticeResult::NotPresented
     );
     assert!(bridge.accepted_key().is_none());
@@ -405,8 +405,17 @@ fn accepted_notice_survives_frame_drop_and_render_completion() {
             &pool,
         );
         let expected_transform = frame.geometry().records()[0].window_transform;
+        assert!(
+            presentation_notice::<RenderError>(
+                &frame,
+                SurfaceEpoch(1),
+                Ok(PresentOutcome::Preparing),
+            )
+            .is_none()
+        );
+        assert_eq!(bridge.pending_count(), 1);
         let result = backend.render_present(&frame, || {});
-        let notice = presentation_notice(&frame, SurfaceEpoch(1), result);
+        let notice = presentation_notice(&frame, SurfaceEpoch(1), result).unwrap();
         let submission = backend.last_submission().unwrap();
         let duplicate = notice.clone();
         drop(frame);

@@ -102,6 +102,36 @@ impl MemoryAssetIo {
     pub fn save_usage(&self) -> QueueUsage {
         self.writes.usage()
     }
+    /// Installs the notifier used by a fixture's independently polled readers.
+    pub fn set_waker(&mut self, wake: WakeSignal) {
+        self.wake = wake;
+    }
+    /// Drains only a reader's terminal records, preserving all other consumers'
+    /// queue reservations. Manual completion remains under the fixture driver.
+    pub fn poll_selected(
+        &mut self,
+        out: &mut Vec<IoEvent>,
+        limit: usize,
+        owns: impl Fn(IoId) -> bool,
+    ) {
+        self.wake.acknowledge();
+        for _ in 0..limit {
+            let event = if self.poll_save_next {
+                self.writes
+                    .take_finished(|event| owns(event.id))
+                    .or_else(|| self.reads.take_finished(|event| owns(event.id)))
+            } else {
+                self.reads
+                    .take_finished(|event| owns(event.id))
+                    .or_else(|| self.writes.take_finished(|event| owns(event.id)))
+            };
+            let Some(event) = event else {
+                break;
+            };
+            self.poll_save_next = !self.poll_save_next;
+            out.push(event);
+        }
+    }
 
     pub fn complete_next_read(&mut self) -> bool {
         let Some(entry) = self.reads.pop() else {

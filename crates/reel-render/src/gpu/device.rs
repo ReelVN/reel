@@ -107,32 +107,29 @@ impl Gpu {
     }
     /// Capability probe for one target. Renderer negotiates the complete frame's peak.
     pub fn quality(&self, size: [u32; 2]) -> Result<Quality, GpuError> {
-        self.quality_for_targets(size, |_| Ok(u64::from(size[0]) * u64::from(size[1])))
+        self.quality_for_targets(size, |quality| super::targets::target_bytes(size, quality))
             .map(|(quality, _)| quality)
     }
     pub(super) fn quality_for_targets(
         &self,
         size: [u32; 2],
-        mut target_pixels: impl FnMut(Quality) -> Result<u64, GpuError>,
+        mut target_cost: impl FnMut(Quality) -> Result<u64, GpuError>,
     ) -> Result<(Quality, u64), GpuError> {
         self.check()?;
         let max = self.device.limits().max_texture_dimension_2d;
         if size.contains(&0) || size.iter().any(|&v| v > max) {
             return Err(GpuError::InvalidSize);
         }
-        let mut pixels = 0;
+        let mut bytes = 0;
         for q in self.supported_qualities() {
-            pixels = target_pixels(q)?;
-            if super::targets::target_bytes([1, 1], q)?
-                .checked_mul(pixels)
-                .is_some_and(|bytes| bytes <= self.limits.target_bytes)
-            {
-                return Ok((q, pixels));
+            bytes = target_cost(q)?;
+            if bytes <= self.limits.target_bytes {
+                return Ok((q, bytes));
             }
         }
         Err(GpuError::Budget {
             domain: "targets",
-            requested: pixels.saturating_mul(4),
+            requested: bytes,
             available: self.limits.target_bytes,
         })
     }

@@ -12,6 +12,8 @@ pub use camera::CameraView;
 pub use image::ImageSource;
 pub use mask::{MaskChannel, MaskOp, MaskProgram};
 pub mod particles;
+#[cfg(test)]
+mod tests;
 
 use crate::input::{ActionPhase, Binding};
 use crate::kurbo::{Affine, Insets, Point, Size, Vec2};
@@ -619,6 +621,8 @@ impl From<StageNode> for StoredNode {
 pub struct Stage {
     root: Option<NodeId>,
     nodes: BTreeMap<NodeId, StoredNode>,
+    // Sorted identities; adoption retains capacity for later component construction.
+    detached_roots: Vec<NodeId>,
     next_id: u64,
     revision: u64,
     identity: StageIdentity,
@@ -646,6 +650,37 @@ impl Stage {
     }
     pub fn nodes(&self) -> impl Iterator<Item = &StageNode> {
         self.nodes.values().map(|node| &node.node)
+    }
+    /// Unmounted component roots in increasing identity order, without scanning nodes.
+    pub fn detached_roots(
+        &self,
+    ) -> impl ExactSizeIterator<Item = NodeId> + DoubleEndedIterator + '_ {
+        self.detached_roots.iter().copied()
+    }
+    fn remove_detached_root(&mut self, id: NodeId) {
+        if let Ok(index) = self.detached_roots.binary_search(&id) {
+            self.detached_roots.remove(index);
+        }
+    }
+    fn adopt_roots(&mut self, children: &BTreeSet<NodeId>) {
+        if children.len() == 1 {
+            self.remove_detached_root(*children.first().unwrap());
+        } else if !children.is_empty() {
+            // Merge sorted identities once instead of shifting the vector for
+            // every child in a large component construction.
+            let mut children = children.iter().peekable();
+            self.detached_roots.retain(|root| {
+                while children.peek().is_some_and(|child| **child < *root) {
+                    children.next();
+                }
+                if children.peek().copied() == Some(root) {
+                    children.next();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
     }
     fn changed(&mut self, id: NodeId, children: bool) {
         self.revision = self.revision.wrapping_add(1);
@@ -720,6 +755,7 @@ impl Stage {
             }
             .into(),
         );
+        self.detached_roots.push(id);
         Ok(())
     }
 
@@ -788,6 +824,7 @@ impl Stage {
         }
         let id = self.next_identity()?;
         self.next_id = id.0;
+        self.adopt_roots(&seen);
         for child in &children {
             self.nodes.get_mut(child).unwrap().parent = Some(id);
         }
@@ -803,6 +840,7 @@ impl Stage {
             }
             .into(),
         );
+        self.detached_roots.push(id);
         Ok(id)
     }
 
@@ -865,6 +903,7 @@ impl Stage {
             .children
             .insert(index, child);
         self.nodes.get_mut(&child).unwrap().parent = Some(parent);
+        self.remove_detached_root(child);
         self.changed(parent, true);
         self.nodes.get_mut(&child).unwrap().revision.properties = self.revision;
         Ok(())
@@ -925,6 +964,7 @@ impl Stage {
             return Ok(Vec::new());
         }
         let retained: BTreeSet<_> = children.iter().copied().collect();
+        self.adopt_roots(&retained);
         for &child in &children {
             let node = self.nodes.get_mut(&child).unwrap();
             if node.parent != Some(parent) {
@@ -1009,6 +1049,7 @@ impl Stage {
         }
         let retired = self.clear();
         self.root = Some(root);
+        self.remove_detached_root(root);
         self.revision = self.revision.wrapping_add(1);
         Ok(retired)
     }
@@ -1028,6 +1069,7 @@ impl Stage {
         Ok(self.remove_tree(root))
     }
     fn remove_tree(&mut self, root: NodeId) -> Vec<NodeId> {
+        self.remove_detached_root(root);
         let mut pending = vec![root];
         let mut retired = Vec::new();
         while let Some(id) = pending.pop() {

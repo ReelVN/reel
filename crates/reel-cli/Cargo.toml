@@ -10,6 +10,8 @@ default-run = "reel"
 [features]
 default = []
 window = ["reel-player/window"]
+scenario-gles = ["reel-render/gles2"]
+scenario-profile = ["reel-render/profiling"]
 
 [[bin]]
 name = "reel"
@@ -46,7 +48,6 @@ pvr-compiler = { git = "https://github.com/jhq223/pvr-compiler.git", rev = "21f3
 reel-core = { path = "../reel-core" }
 image = { workspace = true, features = ["png", "jpeg"] }
 rgbcx = "=0.1.2"
-bc-crunch = "=0.1.2"
 reel-player = { path = "../reel-player" }
 reel-storage = { path = "../reel-storage" }
 reel-media = { path = "../reel-media", default-features = false, features = ["encode"] }

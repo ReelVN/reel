@@ -2,10 +2,12 @@
 //! Run alone: `REEL_COST_ROWS=1000,10000 cargo test --locked --release -p
 //! reel-player --lib save_flow_cost -- --ignored --nocapture --test-threads=1`.
 //! Stage timings include the named tick's work; capture finish includes its final
-//! step and queue submission. Allocator samples can miss within-tick transients.
+//! step and queue submission. Host tick and storage worker allocations are
+//! measured independently on their executing threads, including transient peaks.
 //! The host drains work without frame pacing; no GPU or image/audio preparation.
 use super::*;
 use crate::saves::{DirectorySaves, RuntimeSaves, SaveService, SaveStorage, StorageError};
+use crate::test_cost::measure;
 use reel_core::{
     budget::QueueLimits,
     identity::{FrameId, SurfaceEpoch},
@@ -27,7 +29,6 @@ use reel_ui::{
     dpi::{PhysicalPosition, PhysicalSize},
     stage::NodeKind,
 };
-use stats_alloc::INSTRUMENTED_SYSTEM;
 use std::{
     path::PathBuf,
     sync::{
@@ -37,18 +38,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn live_bytes() -> i128 {
-    let stats = INSTRUMENTED_SYSTEM.stats();
-    stats.bytes_allocated as i128 - stats.bytes_deallocated as i128
-}
-
 #[derive(Clone, Copy)]
 struct StorageSpan {
     operation: &'static str,
     start: Instant,
     end: Instant,
-    live_start: i128,
-    live_end: i128,
+    live_delta: i64,
+    peak_bytes: u64,
 }
 
 struct MeasuredStorage {
@@ -59,16 +55,14 @@ struct MeasuredStorage {
 impl MeasuredStorage {
     fn measure<T>(&self, operation: &'static str, f: impl FnOnce() -> T) -> T {
         let start = Instant::now();
-        let live_start = live_bytes();
-        let result = f();
+        let (result, allocation) = measure(f);
         let end = Instant::now();
-        let live_end = live_bytes();
         self.spans.lock().unwrap().push(StorageSpan {
             operation,
             start,
             end,
-            live_start,
-            live_end,
+            live_delta: allocation.bytes_current,
+            peak_bytes: allocation.bytes_max,
         });
         result
     }
@@ -136,22 +130,19 @@ impl Samples {
 }
 
 struct Flow {
-    started: Instant,
     ticks: [Samples; 7],
-    base_live: i128,
-    peak_live: i128,
+    live: i64,
+    peak_live: i64,
     frozen_at: Option<Instant>,
     frozen: Duration,
     switched_at: Option<Instant>,
 }
 impl Flow {
     fn new() -> Self {
-        let live = live_bytes();
         Self {
-            started: Instant::now(),
             ticks: Default::default(),
-            base_live: live,
-            peak_live: live,
+            live: 0,
+            peak_live: 0,
             frozen_at: None,
             frozen: Duration::ZERO,
             switched_at: None,
@@ -166,7 +157,9 @@ impl Flow {
             .is_some_and(|s| s.candidate.is_some());
         let identity = runtime.driver().ui().session().identity();
         let start = Instant::now();
-        runtime.tick(SliceBudget::default(), || 0).unwrap();
+        let (_, allocation) = measure(|| runtime.tick(SliceBudget::default(), || 0).unwrap());
+        self.peak_live = self.peak_live.max(self.live + allocation.bytes_max as i64);
+        self.live += allocation.bytes_current;
         let elapsed = start.elapsed();
         let switched = runtime.driver().ui().session().identity() != identity;
         let phase = if switched {
@@ -188,9 +181,8 @@ impl Flow {
             self.frozen += self.frozen_at.take().unwrap().elapsed();
         }
         self.ticks[phase].add(elapsed);
-        self.peak_live = self.peak_live.max(live_bytes());
     }
-    fn report(&self, rows: usize, operation: &str, elapsed: Duration, storage: &MeasuredStorage) {
+    fn report(&self, rows: usize, operation: &str, elapsed: Duration) {
         for (name, sample) in [
             "capture_begin",
             "capture_step",
@@ -205,18 +197,12 @@ impl Flow {
         {
             sample.report(rows, name);
         }
-        let spans = storage.spans.lock().unwrap();
-        let peak = spans
-            .iter()
-            .filter(|s| s.start >= self.started)
-            .fold(self.peak_live, |p, s| p.max(s.live_start).max(s.live_end));
         eprintln!(
-            "save_flow,rows={rows},operation={operation},wall_ns={},frozen_ns={},live_start_bytes={},live_end_bytes={},observed_peak_delta_bytes={}",
+            "save_flow,rows={rows},operation={operation},wall_ns={},frozen_ns={},host_tick_live_delta_bytes={},host_tick_peak_delta_bytes={}",
             elapsed.as_nanos(),
             self.frozen.as_nanos(),
-            self.base_live,
-            live_bytes(),
-            peak - self.base_live
+            self.live,
+            self.peak_live
         );
     }
 }
@@ -438,7 +424,7 @@ fn save_flow(rows: usize, report: bool) {
         .unwrap()
         .len();
     if report {
-        save.report(rows, "save", save_elapsed, &storage);
+        save.report(rows, "save", save_elapsed);
     }
     assert!(screen.present(&mut runtime));
 
@@ -464,7 +450,7 @@ fn save_flow(rows: usize, report: bool) {
         "external write replayed"
     );
     if report {
-        load.report(rows, "load_until_resumed", load_start.elapsed(), &storage);
+        load.report(rows, "load_until_resumed", load_start.elapsed());
         eprintln!(
             "save_flow,rows={rows},slot_bytes={slot_bytes},load_to_first_accepted_ns={},first_sync_record_accept_ns={}",
             accepted_elapsed.as_nanos(),
@@ -472,11 +458,11 @@ fn save_flow(rows: usize, report: bool) {
         );
         for span in storage.spans.lock().unwrap().iter() {
             eprintln!(
-                "save_flow,rows={rows},worker={},wall_ns={},live_start_bytes={},live_end_bytes={}",
+                "save_flow,rows={rows},worker={},wall_ns={},thread_live_delta_bytes={},thread_peak_delta_bytes={}",
                 span.operation,
                 span.end.duration_since(span.start).as_nanos(),
-                span.live_start,
-                span.live_end
+                span.live_delta,
+                span.peak_bytes
             );
         }
     }

@@ -48,6 +48,9 @@ pub(in crate::aside) fn is_token(heap: &Heap, value: Value) -> bool {
         .is_ok_and(|v| v.as_int() == Some(TAG))
 }
 
+pub(super) static VALIDATOR: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.override", 1, validate);
+
 pub(super) fn validate(
     heap: &aside_vm::PropertyRead<'_>,
     host: Value,
@@ -331,7 +334,7 @@ impl StageBinding {
                 references,
                 Value::int(kind as i64),
             ],
-            Some(validate),
+            Some(&VALIDATOR),
         )?;
         self.types.mark(heap, token, "reel::types::Override")?;
         heap.observe_host_properties(token, count, 0)?;

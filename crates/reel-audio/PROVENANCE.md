@@ -17,6 +17,10 @@ contains the current rate, fixed target and remaining ramp for restoration. Thes
 add fixed-size command/atomic state and reuse the existing resampler and parameter
 interpolation, with no callback allocation or extra PCM storage.
 
+Mixing reuses constant gain and pan coefficients within each processing block.
+Changing parameters retain their original per-sample interpolation, and pan
+application preserves the original multiplication order.
+
 The host reader contract is codec-independent. Shared source timelines, decoder
 factories and the static/window preparation policy are maintained in `reel-media`;
 the Symphonia packet decoder keeps its reservation and cancellation checkpoints.

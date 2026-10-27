@@ -1,11 +1,6 @@
-//! Open descriptors pin the selected file while range reads share its digest.
-//! Hashing happens once on the IO worker, using fixed scratch space. Packaged
-//! sources can supply the release digest directly without this directory cost.
-use super::{
-    failure,
-    file::{self, File, Metadata},
-    io_error,
-};
+//! Fixed loose resources share open descriptors and source-path identities.
+//! Content preparation and changes belong to the next game launch.
+use super::{file::File, io_error};
 use reel_core::{
     identity::{AssetSource, ContentVersion},
     io::{IoError, IoErrorCode},
@@ -14,32 +9,14 @@ use reel_package::resource_target::ResourceTarget;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
-    io::Read,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
-    time::SystemTime,
 };
 
 pub(super) struct OpenFile {
     pub file: File,
     pub length: u64,
     pub version: ContentVersion,
-    pub(super) modified: SystemTime,
     used: u64,
-    path: PathBuf,
-}
-impl OpenFile {
-    pub(super) fn verify(&self) -> Result<(), IoError> {
-        if same(
-            &self.file.metadata().map_err(io_error)?,
-            self.length,
-            self.modified,
-        )? {
-            Ok(())
-        } else {
-            Err(changed())
-        }
-    }
 }
 
 pub(super) struct Files {
@@ -101,46 +78,24 @@ impl Files {
             open: HashMap::new(),
         }
     }
-    pub(super) fn open(
-        &mut self,
-        source: &AssetSource,
-        cancelled: &AtomicBool,
-    ) -> Result<&mut OpenFile, IoError> {
+    pub(super) fn open(&mut self, source: &AssetSource) -> Result<&mut OpenFile, IoError> {
         self.sequence += 1;
-        let path = self.source.resolve(&source.key.0)?;
-        let metadata = file::metadata(&path).map_err(io_error)?;
-        let cached = self.open.get(&source.key.0).is_some_and(|file| {
-            file.path.as_path() == path.as_ref()
-                && same(&metadata, file.length, file.modified).unwrap_or(false)
-        });
-        if !cached {
-            let mut file = File::open(&path).map_err(io_error)?;
+        if !self.open.contains_key(&source.key.0) {
+            let path = self.source.resolve(&source.key.0)?;
+            let file = File::open(&path).map_err(io_error)?;
             let metadata = file.metadata().map_err(io_error)?;
             let length = metadata.len();
-            let modified = metadata.modified().map_err(io_error)?;
+            // Only the path is hashed. Opening a stream reads no payload bytes.
             let mut hash = blake3::Hasher::new();
-            let mut scratch = [0u8; 64 << 10];
-            loop {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(failure("read cancelled"));
-                }
-                let read = file.read(&mut scratch).map_err(io_error)?;
-                if read == 0 {
-                    break;
-                }
-                hash.update(&scratch[..read]);
-            }
+            hash.update(b"reel/fixed-file/v1\0");
+            hash.update(path.as_os_str().as_encoded_bytes());
             let file = OpenFile {
                 file,
                 length,
-                modified,
                 version: ContentVersion(*hash.finalize().as_bytes()),
                 used: self.sequence,
-                path: path.into_owned(),
             };
-            file.verify()?;
             if self.open.len() >= self.capacity
-                && !self.open.contains_key(&source.key.0)
                 && let Some(oldest) = self
                     .open
                     .iter()
@@ -156,13 +111,6 @@ impl Files {
         Ok(file)
     }
 }
-pub(super) fn same(
-    metadata: &Metadata,
-    length: u64,
-    modified: SystemTime,
-) -> Result<bool, IoError> {
-    Ok(metadata.len() == length && metadata.modified().map_err(io_error)? == modified)
-}
 pub(super) fn changed() -> IoError {
     IoError {
         code: IoErrorCode::VersionUnavailable,
@@ -176,48 +124,48 @@ mod tests {
     use reel_core::identity::AssetKey;
     use std::{
         fs,
-        io::{Seek, SeekFrom},
+        io::{Read, Seek, SeekFrom},
     };
 
     #[test]
-    fn target_reads_follow_live_source_paths_and_reselect_cached_files() {
+    fn fixed_target_selection_opens_without_reading_content_and_survives_eviction() {
         let root =
             std::env::temp_dir().join(format!("reel-target-directory-{}", std::process::id()));
         fs::create_dir_all(root.join("bg")).unwrap();
         fs::create_dir_all(root.join("@vita/bg")).unwrap();
         fs::create_dir_all(root.join("@other")).unwrap();
         fs::write(root.join("bg/room.bin"), b"common").unwrap();
+        fs::write(root.join("@vita/bg/room.bin"), b"target").unwrap();
         fs::write(root.join("@vita/only.bin"), b"target only").unwrap();
         fs::write(root.join("@other/secret.bin"), b"excluded").unwrap();
-        let modified = fs::metadata(root.join("bg/room.bin"))
+        fs::File::create(root.join("large.bin"))
             .unwrap()
-            .modified()
+            .set_len(8 << 20)
             .unwrap();
-        let mut files = Files::for_target(root.clone(), 4, "vita".into()).unwrap();
+        let mut files = Files::for_target(root.clone(), 1, "vita".into()).unwrap();
+        let source = |key: &str| AssetSource {
+            key: AssetKey(key.into()),
+            version: None,
+        };
+        let large = files.open(&source("large.bin")).unwrap();
+        assert_eq!(large.length, 8 << 20);
+        assert_eq!(
+            large.file.stream_position().unwrap(),
+            0,
+            "describe reads no payload"
+        );
         let read = |files: &mut Files, key: &str| {
-            let source = AssetSource {
-                key: AssetKey(key.into()),
-                version: None,
-            };
-            let opened = files.open(&source, &AtomicBool::new(false))?;
+            let opened = files.open(&source(key))?;
+            assert_eq!(opened.file.stream_position().map_err(io_error)?, 0);
             opened.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
             let mut bytes = Vec::new();
             opened.file.read_to_end(&mut bytes).map_err(io_error)?;
-            Ok::<_, IoError>(bytes)
+            Ok::<_, IoError>((bytes, opened.version))
         };
-        assert_eq!(read(&mut files, "bg/room.bin").unwrap(), b"common");
-        let variant = root.join("@vita/bg/room.bin");
-        fs::write(&variant, b"target").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&variant)
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(modified))
-            .unwrap();
-        assert_eq!(read(&mut files, "bg/room.bin").unwrap(), b"target");
-        fs::remove_file(variant).unwrap();
-        assert_eq!(read(&mut files, "bg/room.bin").unwrap(), b"common");
-        assert_eq!(read(&mut files, "only.bin").unwrap(), b"target only");
+        let (room, identity) = read(&mut files, "bg/room.bin").unwrap();
+        assert_eq!(room, b"target");
+        assert_eq!(read(&mut files, "only.bin").unwrap().0, b"target only");
+        assert_eq!(read(&mut files, "bg/room.bin").unwrap(), (room, identity));
         assert_eq!(
             read(&mut files, "secret.bin").unwrap_err().code,
             IoErrorCode::NotFound
@@ -227,6 +175,11 @@ mod tests {
             IoErrorCode::NotFound
         );
         drop(files);
+        let mut common = Files::for_target(root.clone(), 1, "windows".into()).unwrap();
+        let (room, common_identity) = read(&mut common, "bg/room.bin").unwrap();
+        assert_eq!(room, b"common");
+        assert_ne!(identity, common_identity);
+        drop(common);
         fs::remove_dir_all(root).unwrap();
     }
 }

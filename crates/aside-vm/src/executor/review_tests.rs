@@ -4,6 +4,19 @@ use super::*;
 
 const OWNER: RootOwner = RootOwner(17);
 
+#[test]
+#[ignore = "execution frame layout measurement for native CPU profiles"]
+fn execution_frame_layout_cost() {
+    println!(
+        "execution-layout frame={} script={} native={} phase={} register_window={}",
+        size_of::<Frame>(),
+        size_of::<ScriptFrame>(),
+        size_of::<NativeFrame>(),
+        size_of::<ScriptPhase>(),
+        size_of::<RootRangeToken>(),
+    );
+}
+
 pub(super) fn echo_registry() -> RuntimeSupport {
     RuntimeSupport {
         host_types: Vec::new(),
@@ -206,10 +219,61 @@ fn release_rejects_insufficient_work_before_any_catch_predicate_then_exact_retry
 }
 
 #[test]
+fn parameter_preparation_work_is_independent_of_local_bindings() {
+    let mut package = fixtures::parameter_cell_default();
+    let owner = &mut package.functions[1];
+    for register in owner.register_count..owner.register_count + 256 {
+        owner.bindings.push(BindingDef {
+            name: SymbolId(4),
+            ty: TypeId(1),
+            mutable: true,
+            storage: BindingStorage::Value(Reg(register)),
+            initialization: BindingInitialization::Explicit,
+        });
+    }
+    owner.register_count += 256;
+    let mut vm = load(package, RuntimeSupport::default());
+    let task = vm
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    reach(&mut vm, task, |v| {
+        matches!(v.active.frames.data.last(), Some(Frame::Script(s))
+            if s.code.function == FunctionId(1)
+                && matches!(s.phase, ScriptPhase::Defaults { parameter: 0 }))
+    });
+    let RunOutcome::BudgetYield(required) = vm.run_slice(task, tiny(), || 0).unwrap() else {
+        panic!("parameter preparation needs more than one work unit")
+    };
+    assert_eq!(required.required_work, 4);
+    vm.run_slice(
+        task,
+        SliceBudget {
+            work: required.required_work,
+            ..tiny()
+        },
+        || 0,
+    )
+    .unwrap();
+    assert!(matches!(
+        vm.active.frames.data.last(),
+        Some(Frame::Script(s)) if matches!(s.phase, ScriptPhase::Parameter {
+            parameter: 0,
+            storage: BindingStorage::Cell(Reg(0)),
+        })
+    ));
+}
+
+#[test]
 fn native_call_admission_uses_charged_cache_and_parameter_queries_wait_for_work() {
     let mut vm = load(fixtures::native_parameter_defaults(), default_registry());
-    assert_eq!(vm.native_cells.data, [true]);
-    assert_eq!(vm.native_cells.bytes(), 1);
+    assert_eq!(
+        vm.native_parameters.data,
+        [NativeParameters {
+            needs_cells: true,
+            has_defaults: true,
+        }]
+    );
+    assert_eq!(vm.native_parameters.bytes(), 2);
     let task = vm
         .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();
@@ -323,7 +387,7 @@ fn cross_module_value_default_fault_has_lexical_code_source_and_stack_module_bef
         span: source,
     }];
     let mut vm = load(p, registry);
-    assert_eq!(vm.native_cells.data, [false]);
+    assert!(!vm.native_parameters.data[0].needs_cells);
     let task = vm
         .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();

@@ -1193,7 +1193,7 @@ fn verified_native_cache_capacity_matches_actual_retained_allocation() {
         stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()
             + program.shared_header_bytes()
     );
-    assert_eq!(parameter_layout_bytes(&program), 16 + 2 * 4);
+    assert_eq!(parameter_layout_bytes(&program), 5 * 8 + 2 * 4);
     assert!(
         allocation.bytes_max as usize
             <= stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()

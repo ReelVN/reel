@@ -524,10 +524,22 @@ fn image_restore_fixture(
 #[test]
 fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
     let (frame, _, handles) = image_restore_fixture([4, 4], false);
-    let normal =
-        crate::gpu::image_plan::collect([&frame].into_iter(), 4096, false, |_| Ok(())).unwrap();
-    let captured =
-        crate::gpu::image_plan::collect([&frame].into_iter(), 4096, true, |_| Ok(())).unwrap();
+    let normal = crate::gpu::image_plan::collect(
+        [&frame].into_iter(),
+        4096,
+        false,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let captured = crate::gpu::image_plan::collect(
+        [&frame].into_iter(),
+        4096,
+        true,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert_eq!(normal.images.len(), handles.len());
     assert!(captured.images.is_empty());
     assert!(!frame.commands().is_empty());
@@ -548,6 +560,7 @@ fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
             &crate::common::glyph_plan::Plan::default(),
             &crate::common::offscreen::Plan::default(),
             crate::common::target_plan::MaskExecution::Inline,
+            &Default::default(),
             |_| Ok(())
         )
         .unwrap()
@@ -564,6 +577,7 @@ fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
             &crate::common::glyph_plan::Plan::default(),
             &crate::common::offscreen::Plan::default(),
             crate::common::target_plan::MaskExecution::Inline,
+            &Default::default(),
             |_| Ok(())
         )
         .unwrap(),
@@ -885,8 +899,14 @@ fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
         .unwrap();
     while !build.step(step_budget()).unwrap().complete {}
     let frame = build.finish().unwrap();
-    let images =
-        crate::gpu::image_plan::collect(std::iter::once(&frame), 8192, true, |_| Ok(())).unwrap();
+    let images = crate::gpu::image_plan::collect(
+        std::iter::once(&frame),
+        8192,
+        true,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert_eq!(
         images.images.len(),
         3,
@@ -903,6 +923,7 @@ fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
             &crate::common::glyph_plan::Plan::default(),
             &crate::common::offscreen::Plan::default(),
             crate::common::target_plan::MaskExecution::Inline,
+            &Default::default(),
             |_| Ok(())
         )
         .unwrap()

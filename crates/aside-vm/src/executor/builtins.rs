@@ -123,7 +123,7 @@ impl Vm {
         call: BuiltinCall,
         result: Result<Value, FaultKind>,
     ) -> Result<(), VmError> {
-        match result.and_then(|value| self.write(*s, call.dest, value)) {
+        match result.and_then(|value| self.write(s.regs, call.dest, value)) {
             Ok(()) => {
                 self.clear(s.env, 1)?;
                 self.clear(s.env, 2)?;

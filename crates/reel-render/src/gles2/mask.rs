@@ -67,7 +67,7 @@ impl Context<'_> {
     pub fn composite_sample_mask(
         &mut self,
         target: &Target,
-        source: &native::Texture,
+        source: &Target,
         definition: &FrameImageMask,
         transform: Affine,
         alpha: f32,
@@ -88,7 +88,7 @@ impl Context<'_> {
         let Some(uv) = mask_uv(definition, transform) else {
             return Ok(true);
         };
-        self.ensure_sampled(source)?;
+        self.ensure_sampled(&source.view)?;
         self.ensure_target(target)?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         let _kind = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
@@ -243,7 +243,7 @@ impl Context<'_> {
         uv: Affine,
         plan: &crate::common::mask::paired::Plan,
         input: &crate::common::mask::paired::Values,
-        composite: Option<(&native::Texture, f32)>,
+        composite: Option<(&Target, f32)>,
     ) -> Result<(), GlesError> {
         let channels = usize::from(plan.samples[0].channel == MaskChannel::Gray) * 2
             + usize::from(plan.samples[1].channel == MaskChannel::Gray);
@@ -278,9 +278,10 @@ impl Context<'_> {
         values.extend(shader.int("u_image0", 0));
         values.extend(shader.int("u_image1", 1));
         if let Some((source, alpha)) = composite {
-            textures.push(source);
+            textures.push(&source.view);
             values.extend(shader.int("u_source", 2));
             values.extend(shader.vec4("u_params", [alpha, 0., 0., 0.]));
+            values.extend(shader.vec4("u_source_uv", source.source_uv(self.size, [0; 2])));
         }
         values.extend(shader.array("u_coordinates[0]", &input.coordinates));
         values.extend(shader.array("u_texels[0]", &texels));
@@ -407,7 +408,7 @@ impl Context<'_> {
         definition: &FrameImageMask,
         uv: Affine,
         simple: crate::common::mask::Evaluated,
-        composite: Option<(&native::Texture, f32)>,
+        composite: Option<(&Target, f32)>,
     ) -> Result<(), GlesError> {
         let image = self
             .images
@@ -430,9 +431,10 @@ impl Context<'_> {
         let [a, b, c, d, e, f] = uv.as_coeffs().map(|v| v as f32);
         let mut values = Values::new();
         values.extend(shader.int("u_image", 0));
-        if let Some((_, alpha)) = composite {
+        if let Some((source, alpha)) = composite {
             values.extend(shader.int("u_source", 1));
             values.extend(shader.vec4("u_params", [alpha, 0., 0., 0.]));
+            values.extend(shader.vec4("u_source_uv", source.source_uv(self.size, [0; 2])));
         }
         values.extend(shader.vec4("u_uv0", [a, c, e, 0.]));
         values.extend(shader.vec4("u_uv1", [b, d, f, 0.]));
@@ -471,7 +473,7 @@ impl Context<'_> {
         }
         let textures = [
             &image.texture,
-            composite.map_or(&image.texture, |(source, _)| source),
+            composite.map_or(&image.texture, |(source, _)| &source.view),
         ];
         self.programs.quad(
             self.gpu,

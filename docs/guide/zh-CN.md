@@ -18,7 +18,7 @@ reel export --release
 
 `check` 编译并定位错误；`dev` 运行源码。`build` 默认生成 `build/debug/game.asb`，`--release` 使用 `build/release/game.asb`。`reel run build/debug/game.asb` 运行已编译代码。
 
-`dev` 将编译缓存保存在 `build/dev/`，工具与源码内容未变时直接复用；修改源码后重新编译。
+`dev` 将编译缓存保存在 `build/dev/`，工具与源码内容未变时直接复用；修改源码后重新编译。修改素材后重新启动游戏以加载新内容。
 
 交互终端中的源码命令显示当前阶段、模块进度和耗时；`dev` 复用缓存时显示缓存状态。
 

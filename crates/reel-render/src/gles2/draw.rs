@@ -58,7 +58,7 @@ pub(super) struct Page {
     texture: native::Texture,
     allocator: RefCell<AtlasAllocator>,
     size: [u32; 2],
-    _storage: BudgetTicket,
+    _storage: super::ownership::NativeTicket,
 }
 struct GlyphImage {
     page: Rc<Page>,
@@ -88,9 +88,13 @@ pub(super) struct GlyphCache {
     pages: Vec<Weak<Page>>,
     raster: glyph::Rasterizer,
     pending_glyphs: Vec<Rc<Glyph>>,
-    failures: Vec<BudgetTicket>,
+    failures: Vec<super::ownership::NativeTicket>,
 }
 impl GlyphCache {
+    pub fn prune_idle(&mut self) {
+        self.entries.retain(|_, glyph| Rc::strong_count(glyph) > 1);
+        self.pages.retain(|page| page.strong_count() != 0);
+    }
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
         self.entries
             .retain(|_, glyph| glyph.source.retained(versions));
@@ -182,6 +186,7 @@ impl GlyphCache {
                 limits.resource_bytes,
                 "glyph atlas",
             )?;
+            let storage = gpu.ticket(storage);
             let texture = match gpu.create_texture(size, native::TextureFormat::Luma8) {
                 Ok(texture) => texture,
                 Err(error) => {
@@ -322,9 +327,11 @@ impl Context<'_> {
         self.flush_draws()?;
         self.ensure_sampled(&source.view)?;
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
-        mesh.quad(
-            Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
-            Rect::new(0., 1., 1., 0.),
+        crate::common::effect_plan::projected_source(
+            &mut mesh,
+            source.size,
+            source.view.size(),
+            true,
         )?;
         mesh::transform_glyphs(
             &mut mesh,
@@ -341,7 +348,7 @@ impl Context<'_> {
                 planes: &[],
                 kind: 0.,
                 video: &[[0.; 4]; 4],
-                dimensions: source.size,
+                dimensions: source.view.size(),
                 appearance: [[0.; 4]; 9],
                 repeat: [false; 2],
                 coverage: false,

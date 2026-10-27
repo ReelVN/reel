@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
 #[derive(Default)]
-pub(super) struct Cache(Mutex<effect_cache::Cache<Arc<Compiled>>>);
+pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 2]>);
 pub(super) struct Compiled {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -19,12 +19,15 @@ pub(super) struct Compiled {
 }
 impl Cache {
     pub(super) fn prune(&self) {
-        self.0.lock().unwrap().prune();
+        for cache in &mut *self.0.lock().unwrap() {
+            cache.prune();
+        }
     }
     fn get(
         &self,
         gpu: &Gpu,
         quality: Quality,
+        padded: bool,
         shader: &effect_plan::Shader<'_>,
         budget: &BudgetPool,
         at: RecordLocation,
@@ -59,7 +62,8 @@ impl Cache {
                 record: "effect textures exceed the device capacity",
             });
         }
-        let mut cache = self.0.lock().unwrap();
+        let mut caches = self.0.lock().unwrap();
+        let cache = &mut caches[usize::from(padded)];
         if let Some(compiled) = cache.get(
             descriptor.shader_key,
             lease,
@@ -109,12 +113,12 @@ impl Cache {
                     label: Some("prepared effect"),
                     entries: &entries,
                 });
-            let pipeline = pipeline::pipeline_entry(
+            let pipeline = pipeline::pipeline_vertex(
                 &gpu.device,
                 quality,
                 &layout,
                 source,
-                false,
+                (padded, if padded { "vertex_padded" } else { "vertex" }),
                 pipeline::FragmentOutput {
                     entry: "fragment",
                     blend: None,
@@ -184,9 +188,12 @@ impl Context<'_> {
     ) -> Result<Target, GpuError> {
         self.flush_draws()?;
         let shader = effect_plan::shader(drawing, effect, at)?;
+        let padded = shader.descriptor.output == reel_ui::stage::effect::EffectType::Float
+            && source.size != source.storage_size();
         let compiled = self.pipelines.effects.get(
             self.gpu,
             self.quality,
+            padded,
             &shader,
             &self.budgets.resources,
             at,
@@ -200,6 +207,7 @@ impl Context<'_> {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
+        effect_plan::map_storage(&mut context, source.size, source.storage_size(), false);
         if self.scissor.empty() {
             return Ok(output);
         }
@@ -238,7 +246,8 @@ impl Context<'_> {
                     usage: wgpu::BufferUsages::UNIFORM,
                 })
         };
-        let context = uniform("effect coordinates", bytemuck::cast_slice(&context));
+        let context_slots = context;
+        let context = uniform("effect coordinates", bytemuck::cast_slice(&context_slots));
         let parameters = uniform("effect parameters", bytemuck::cast_slice(&parameters));
         let mut entries = Vec::with_capacity(entry_capacity);
         entries.extend([
@@ -299,6 +308,40 @@ impl Context<'_> {
         });
         self.effects = held;
         retained?;
+        let mesh = if padded {
+            let vertices = effect_plan::implicit_mesh::vertices(&context_slots)
+                .ok_or(GpuError::InvalidSize)?;
+            let mut mesh = crate::common::mesh::Mesh::new(self.mesh_allocation());
+            mesh.triangles(&vertices)?;
+            let batch = crate::common::draw_batch::Batch::new(mesh, ())?;
+            let (storage, local, metadata) = self.geometry_cache.upload_batch(
+                self.gpu,
+                self.budgets,
+                &self.budget_scope,
+                &batch,
+                self.geometry_policy,
+                &mut self.encoder,
+            )?;
+            self.tickets.push(super::renderer::Reservation {
+                _shared: None,
+                _local: local,
+            });
+            if let Some(local) = metadata {
+                self.tickets.push(super::renderer::Reservation {
+                    _shared: None,
+                    _local: local,
+                });
+            }
+            let mut held = std::mem::take(&mut self.geometry);
+            let result = crate::common::scopes::push_stack(&mut held, storage, |bytes| {
+                self.transient(bytes)
+            });
+            self.geometry = held;
+            result?;
+            Some(&self.geometry.last().unwrap().storage)
+        } else {
+            None
+        };
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("prepared effect"),
@@ -310,6 +353,7 @@ impl Context<'_> {
             multiview_mask: None,
             occlusion_query_set: None,
         });
+        pass.set_viewport(0., 0., output.size[0] as f32, output.size[1] as f32, 0., 1.);
         pass.set_pipeline(&compiled.pipeline);
         pass.set_bind_group(0, &bindings, &[]);
         pass.set_scissor_rect(
@@ -318,7 +362,13 @@ impl Context<'_> {
             self.scissor.width,
             self.scissor.height,
         );
-        pass.draw(0..3, 0..1);
+        if let Some(mesh) = mesh {
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..54, 0, 0..1);
+        } else {
+            pass.draw(0..3, 0..1);
+        }
         drop(pass);
         Ok(output)
     }

@@ -31,6 +31,10 @@ pub struct Target {
     pub multisample: Option<wgpu::TextureView>,
 }
 impl Target {
+    pub fn storage_size(&self) -> [u32; 2] {
+        let size = self.texture.size();
+        [size.width, size.height]
+    }
     pub fn new(device: &wgpu::Device, size: [u32; 2], quality: Quality) -> Self {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
         let descriptor = wgpu::TextureDescriptor {

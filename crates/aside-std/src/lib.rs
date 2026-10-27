@@ -90,7 +90,7 @@ pub fn types() -> &'static [aside_host::HostTypeSupport] {
 pub fn register_snapshots(
     registry: &mut aside_host::aside_vm::snapshot::SnapshotRegistry,
 ) -> Result<(), aside_host::aside_vm::snapshot::SnapshotError> {
-    registry.register_validator("std.random", 1, random::readonly)
+    registry.register_validator(&random::READONLY)
 }
 
 /// Public names only; bound method implementations are not free functions.

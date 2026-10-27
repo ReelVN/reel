@@ -40,7 +40,8 @@ pub enum Scope {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AssetKey(pub String);
 
-/// Opaque fixed content digest selected by the release, never the current version.
+/// Opaque identity supplied by a fixed resource source. Release archives use their
+/// packaged content digest; loose resources identify their source path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContentVersion(pub [u8; 32]);
 
@@ -50,7 +51,7 @@ pub struct ResourceVersion {
     pub version: ContentVersion,
 }
 
-/// Resolve a named asset, optionally pinning an exact published content version.
+/// Resolve a named asset, optionally selecting its retained source identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetSource {
     pub key: AssetKey,

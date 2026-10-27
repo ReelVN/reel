@@ -307,6 +307,9 @@ fn tagged(heap: &Heap, value: Value, tag: i64) -> Result<(), AdapterError> {
     }
     Ok(())
 }
+pub(super) static READONLY: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.activity", 1, readonly);
+
 pub(super) fn readonly(
     _: &aside_vm::PropertyRead<'_>,
     _: Value,
@@ -377,6 +380,8 @@ pub(super) struct Activities {
     events: BTreeMap<EventKey, Value>,
     sampling: usize,
     #[serde(skip)]
+    clock_events: usize,
+    #[serde(skip)]
     native: Option<NativeWork>,
     #[serde(skip)]
     cleanup: Option<Cleanup>,
@@ -391,6 +396,13 @@ pub(super) struct Activities {
     serial: u64,
     #[serde(skip)]
     waits: Vec<(WaitId, Value, Option<i64>)>,
+    #[serde(skip)]
+    waits_dirty: bool,
+    #[serde(skip)]
+    checked_wait_revision: u64,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub wait_checks: u64,
 }
 
 impl Activities {
@@ -417,6 +429,7 @@ impl Activities {
         &mut self,
         record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
+        heap: &Heap,
     ) -> Result<(), AdapterError> {
         use super::snapshot::Part;
         match record.part {
@@ -426,11 +439,17 @@ impl Activities {
             }
             Part::ActivityEvent => {
                 let (key, value): (EventKey, Value) = record.read()?;
-                self.events.insert(key, map.value(value)?);
+                let value = map.value(value)?;
+                self.clock_events += usize::from(graph::kind(heap, value)? == action::Kind::Clock);
+                if let Some(previous) = self.events.insert(key, value) {
+                    self.clock_events -=
+                        usize::from(graph::kind(heap, previous)? == action::Kind::Clock);
+                }
             }
             Part::ActivityWait => {
                 let (wait, value, tick): (WaitId, Value, Option<i64>) = record.read()?;
                 self.waits.push((map.wait(wait)?, map.value(value)?, tick));
+                self.waits_dirty = true;
             }
             _ => unreachable!(),
         }

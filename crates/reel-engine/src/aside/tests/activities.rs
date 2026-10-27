@@ -145,6 +145,7 @@ fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
         };
         assert_eq!(position(&vm), (0., 0.));
         assert_eq!(vm.activities_poll_after(), Some(Duration::from_secs(60)));
+        assert!(vm.continuous_time_pending());
         let allocations = vm.vm.heap().stats().chunk_allocations;
         advance_clock(&mut vm, &session, 59., 1);
         assert_eq!(vm.vm.heap().stats().chunk_allocations, allocations);
@@ -159,9 +160,14 @@ fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
         assert_eq!(position(&vm), (1_000_000., 60_000_000.));
         advance_dialogue(&mut vm, &mut session);
         assert_eq!(vm.activities_poll_after(), None);
+        assert!(
+            !vm.continuous_time_pending(),
+            "paused clocks have no sampling event"
+        );
         advance_clock(&mut vm, &session, 60_000_030., 1);
         advance_dialogue(&mut vm, &mut session);
         assert_eq!(vm.activities_poll_after(), Some(Duration::from_secs(60)));
+        assert!(vm.continuous_time_pending());
         advance_clock(&mut vm, &session, 60_000_090., 1);
         models::drive(&mut vm, &mut session, false);
         assert_eq!(position(&vm), (1_000_001., 60_000_060.));
@@ -174,6 +180,7 @@ fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
         models::drive(&mut vm, &mut session, false);
         assert!(!vm.activities_need_time());
         assert!(!vm.activities.has_active());
+        assert!(!vm.continuous_time_pending());
     }
 }
 
@@ -359,6 +366,10 @@ fn delays_share_composition_controls_and_sleep_until_their_deadline() {
         RunOutcome::Waiting(_)
     ));
     assert_eq!(vm.activities_poll_after(), Some(Duration::from_secs(1)));
+    assert!(
+        !vm.continuous_time_pending(),
+        "the initial delay is a pure deadline"
+    );
     let chunks = vm.vm.heap().stats().chunk_allocations;
     assert!(!advance_clock(&mut vm, &session, 0.5, 1).woke);
     assert_eq!(vm.vm.heap().stats().chunk_allocations, chunks);
@@ -370,6 +381,10 @@ fn delays_share_composition_controls_and_sleep_until_their_deadline() {
         "projection stays explicit"
     );
     assert_eq!(vm.activities_poll_after(), Some(Duration::from_millis(16)));
+    assert!(
+        vm.continuous_time_pending(),
+        "the following tween samples continuously"
+    );
     advance_clock(&mut vm, &session, 1.5, 1);
     assert!(matches!(
         drive(&mut vm, &mut session),

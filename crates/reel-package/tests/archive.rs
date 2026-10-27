@@ -35,7 +35,7 @@ fn resource_and_text_archives_share_streaming_format_and_exact_content_versions(
             entry
                 .read_range(&mut input, 0, &mut payload, &mut scratch, || false)
                 .unwrap();
-            let expected = match entry.path.as_ref() {
+            let expected = match entry.path {
                 "video/intro.mp4" => &b"video payload"[..],
                 "locales/zh-CN/第一章.ftl" => &b"chapter = hello"[..],
                 "empty" => &b""[..],
@@ -305,11 +305,8 @@ fn raw_fallback_and_explicit_bypass_preserve_direct_storage() {
 #[test]
 fn corrupt_block_metadata_and_codec_output_fail_at_the_addressed_read() {
     let (bytes, _) = compressed_fixture();
-    let entry = ArchiveIndex::read(&mut Cursor::new(&bytes))
-        .unwrap()
-        .get("mixed")
-        .unwrap()
-        .clone();
+    let index = ArchiveIndex::read(&mut Cursor::new(&bytes)).unwrap();
+    let entry = index.get("mixed").unwrap();
     let EntryStorage::Blocks { directory_offset } = entry.storage else {
         unreachable!()
     };
@@ -318,11 +315,8 @@ fn corrupt_block_metadata_and_codec_output_fail_at_the_addressed_read() {
         let mut bad = bytes.clone();
         bad[at..at + change.len()].copy_from_slice(change);
         // Mount leaves directory and payload IO to the actual range request.
-        let entry = ArchiveIndex::read(&mut Cursor::new(&bad))
-            .unwrap()
-            .get("mixed")
-            .unwrap()
-            .clone();
+        let index = ArchiveIndex::read(&mut Cursor::new(&bad)).unwrap();
+        let entry = index.get("mixed").unwrap();
         let error = entry
             .read_range(
                 &mut Cursor::new(bad),
@@ -560,8 +554,8 @@ fn compressed_sparse_mount_and_ranges_only_read_addressed_records_and_payloads()
         input.reads.is_empty(),
         "successive small requests reuse the decoded block"
     );
-    let mut alias = entry.clone();
-    alias.path = "same-content-under-another-name".into();
+    let mut alias = entry;
+    alias.path = "same-content-under-another-name";
     alias
         .read_range(&mut input, 79, &mut result, &mut scratch, || false)
         .unwrap();
@@ -592,11 +586,8 @@ fn compressed_sparse_mount_and_ranges_only_read_addressed_records_and_payloads()
 #[test]
 fn decoded_cache_tracks_content_and_retires_identity_before_failed_decodes() {
     let (bytes, payload) = compressed_fixture();
-    let entry = ArchiveIndex::read(&mut Cursor::new(&bytes))
-        .unwrap()
-        .get("mixed")
-        .unwrap()
-        .clone();
+    let index = ArchiveIndex::read(&mut Cursor::new(&bytes)).unwrap();
+    let entry = index.get("mixed").unwrap();
     let EntryStorage::Blocks { directory_offset } = entry.storage else {
         unreachable!()
     };
@@ -611,11 +602,8 @@ fn decoded_cache_tracks_content_and_retires_identity_before_failed_decodes() {
     let mut writer = ArchiveWriter::new(Cursor::new(Vec::new()), ArchiveKind::Resources).unwrap();
     writer.add("other", &mut other_payload.as_slice()).unwrap();
     let other_bytes = writer.finish().unwrap().into_inner();
-    let other_entry = ArchiveIndex::read(&mut Cursor::new(&other_bytes))
-        .unwrap()
-        .get("other")
-        .unwrap()
-        .clone();
+    let other_index = ArchiveIndex::read(&mut Cursor::new(&other_bytes)).unwrap();
+    let other_entry = other_index.get("other").unwrap();
     assert_ne!(entry.version, other_entry.version);
     assert_eq!(entry.length, other_entry.length);
     let mut input = SparseArchive {
@@ -681,7 +669,7 @@ fn decoded_cache_tracks_content_and_retires_identity_before_failed_decodes() {
         );
         assert_eq!(input.reads.len(), 2);
     }
-    let mut wrong_length = entry.clone();
+    let mut wrong_length = entry;
     wrong_length.length += 1;
     assert_eq!(
         wrong_length
@@ -718,11 +706,8 @@ fn sequential_blocks_batch_directory_reads_and_preserve_small_range_cache() {
     let mut writer = ArchiveWriter::new(Cursor::new(Vec::new()), ArchiveKind::Resources).unwrap();
     writer.add("large", &mut payload.as_slice()).unwrap();
     let bytes = writer.finish().unwrap().into_inner();
-    let entry = ArchiveIndex::read(&mut Cursor::new(&bytes))
-        .unwrap()
-        .get("large")
-        .unwrap()
-        .clone();
+    let index = ArchiveIndex::read(&mut Cursor::new(&bytes)).unwrap();
+    let entry = index.get("large").unwrap();
     let mut input = SparseArchive {
         bytes,
         position: 0,

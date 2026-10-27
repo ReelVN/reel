@@ -719,6 +719,8 @@ pub struct Session {
     identity: SessionIdentity,
     status: SessionStatus,
     owners: Vec<OwnerEntry>,
+    #[serde(skip)]
+    owner_revocation_revision: u64,
     next_owner: Option<u64>,
     next_interaction: Option<u64>,
     last_input_sequence: Option<InputSequence>,
@@ -759,6 +761,7 @@ impl Session {
             identity,
             status: SessionStatus::Running,
             owners,
+            owner_revocation_revision: 0,
             next_owner: Some(2),
             next_interaction: Some(1),
             last_input_sequence: None,
@@ -773,6 +776,12 @@ impl Session {
 
     pub fn identity(&self) -> SessionIdentity {
         self.identity
+    }
+
+    /// Runtime version of owner permission revocation. Restoring a session
+    /// starts a new version sequence; lifetime observers must rebuild checks.
+    pub fn owner_revocation_revision(&self) -> u64 {
+        self.owner_revocation_revision
     }
 
     pub fn status(&self) -> SessionStatus {
@@ -1082,6 +1091,7 @@ impl Session {
             return Err(SessionError::PeerOwnerRequirementsMissing);
         }
         self.owners[index].revoke(requirements);
+        self.owner_revocation_revision = self.owner_revocation_revision.wrapping_add(1);
         if root {
             self.status = SessionStatus::Cancelled;
             if !require_peer_declarations {
@@ -1175,10 +1185,15 @@ impl Session {
     }
 
     fn retire_live_owners_without_obligations(&mut self) {
+        let mut changed = false;
         for entry in &mut self.owners {
             if entry.lifecycle == OwnerLifecycle::Live {
                 entry.revoke(OwnerRetirementRequirements::default());
+                changed = true;
             }
+        }
+        if changed {
+            self.owner_revocation_revision = self.owner_revocation_revision.wrapping_add(1);
         }
     }
 

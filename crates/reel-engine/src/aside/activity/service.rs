@@ -29,6 +29,7 @@ impl Activities {
             let wait = ticket.wait_id();
             vm.respond(ticket, HostResponse::Pending(wait))?;
             self.waits.push((wait, clock, Some(ticks)));
+            self.waits_dirty = true;
         }
         Ok(())
     }
@@ -132,7 +133,7 @@ impl Activities {
             slots[RootSlot::PausedAt as usize] = Value::float(self.time);
             slots[RootSlot::Forcing as usize] = Value::bool(false);
             let activity =
-                heap.alloc_host(fields, &slots, if clock { None } else { Some(readonly) })?;
+                heap.alloc_host(fields, &slots, if clock { None } else { Some(&READONLY) })?;
             stage.types.mark(
                 heap,
                 activity,
@@ -389,6 +390,7 @@ impl Activities {
                 .map_err(|_| AdapterError::Allocation)?;
             vm.respond(ticket, HostResponse::Pending(wait))?;
             self.waits.push((wait, activity, None));
+            self.waits_dirty = true;
         }
         Ok(())
     }
@@ -399,8 +401,15 @@ impl Activities {
         if self.round.is_some() {
             return Ok(false);
         }
+        if !self.waits_dirty && self.checked_wait_revision == vm.wait_revision() {
+            return Ok(false);
+        }
         let mut woke = false;
         let mut failure = None;
+        #[cfg(test)]
+        {
+            self.wait_checks += self.waits.len() as u64;
+        }
         self.waits.retain(|&(wait, activity, tick)| {
             if failure.is_some() {
                 return true;
@@ -447,6 +456,8 @@ impl Activities {
         if let Some(error) = failure {
             return Err(error);
         }
+        self.waits_dirty = false;
+        self.checked_wait_revision = vm.wait_revision();
         Ok(woke)
     }
 
@@ -460,6 +471,7 @@ impl Activities {
         self.job_tail = None;
         self.events.clear();
         self.sampling = 0;
+        self.clock_events = 0;
         self.cleanup = None;
         self.control = None;
         self.round = None;

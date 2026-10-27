@@ -155,6 +155,7 @@ impl AsideSessionUi {
         }
         self.vm.maintain_media()?;
         self.vm.maintain_localization()?;
+        self.vm.maintain_asset_reads(64)?;
         if self.vm.localization_pending() {
             return Ok(false);
         }
@@ -321,6 +322,10 @@ impl AsideSessionUi {
     pub fn ui(&self) -> &SessionUi {
         &self.ui
     }
+    /// Select the prepared effect shader representation consumed by this host's renderer.
+    pub fn set_effect_shader_format(&mut self, format: reel_ui::resources::EffectShaderFormat) {
+        self.ui.set_effect_shader_format(format);
+    }
     pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
         &mut self.ui
     }
@@ -332,6 +337,9 @@ impl AsideSessionUi {
     }
     pub fn activities_need_time(&self) -> bool {
         self.state == StoryState::Running && self.vm.activities_need_time()
+    }
+    pub(crate) fn continuous_time_pending(&self) -> bool {
+        self.state == StoryState::Running && self.vm.continuous_time_pending()
     }
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         (self.state == StoryState::Running)

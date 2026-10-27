@@ -45,6 +45,7 @@ fn main() -> io::Result<()> {
         "crates/reel-cli/src/prepare_effects.rs",
         "crates/reel-render/src/common/effect.rs",
         "crates/reel-render/src/gles2/shaders/effect_vertex.glsl",
+        "crates/reel-render/src/gles2/shaders/effect_padded_vertex.glsl",
         "crates/reel-ui/src/resources/effect.rs",
         "crates/reel-ui/src/stage/effect.rs",
     ];
@@ -54,16 +55,8 @@ fn main() -> io::Result<()> {
     watched.insert(lock_path);
     let dependencies = locked_dependencies::LockedDependencies::parse(&lock)?;
     for (kind, sources, dependency_roots) in [
-        (
-            "TEXTURE",
-            texture.as_slice(),
-            ["image", "rgbcx", "bc-crunch"].as_slice(),
-        ),
-        (
-            "TILES",
-            tiles.as_slice(),
-            ["image", "rgbcx", "bc-crunch"].as_slice(),
-        ),
+        ("TEXTURE", texture.as_slice(), ["image", "rgbcx"].as_slice()),
+        ("TILES", tiles.as_slice(), ["image", "rgbcx"].as_slice()),
         (
             "OPUS",
             opus.as_slice(),

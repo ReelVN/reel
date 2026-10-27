@@ -3,9 +3,12 @@ mod draw;
 mod effect;
 mod geometry;
 mod mask;
+mod ownership;
 mod programs;
 mod replay;
 mod resources;
+mod target_cache;
+mod targets;
 pub use crate::common::GpuError as GlesError;
 use crate::common::renderer::Budgets;
 use crate::*;
@@ -17,10 +20,15 @@ use std::{
     rc::Rc,
 };
 
+struct CacheRetry {
+    cause: GlesError,
+    released: bool,
+}
+
 /// Device references and their shared resource admission limits.
 #[derive(Clone, Copy)]
 struct DeviceResources<'a> {
-    gpu: &'a native::Context,
+    gpu: &'a ownership::Device,
     budgets: &'a Budgets,
     limits: crate::common::GpuLimits,
 }
@@ -89,11 +97,12 @@ struct Flight {
     _prepared: Option<Rc<replay::Prepared>>,
     _images: Vec<Rc<Image>>,
     upload: bool,
+    retained: Option<usize>,
 }
 /// The renderer owns its native context; the host supplies only portable lifecycle
 /// and presentation callbacks. Submitted resources survive until their GPU fence.
 pub struct GlesBackend {
-    context: native::Context,
+    context: ownership::Device,
     programs: Rc<programs::Programs>,
     options: GlesOptions,
     budgets: Budgets,
@@ -102,7 +111,8 @@ pub struct GlesBackend {
     glyphs: draw::GlyphCache,
     effects: effect::Cache,
     masks: crate::common::mask::split::Cache,
-    targets: Vec<resources::Target>,
+    targets: target_cache::Cache,
+    retained: crate::common::retained::Cache<resources::Target, u8>,
     geometry: geometry::Cache,
     info: Option<SurfaceInfo>,
     suspended: bool,
@@ -141,6 +151,7 @@ impl GlesBackend {
         if options.limits.max_inflight == 0 || options.limits.image_upload_bytes_per_prepare == 0 {
             return Err(GlesError::InvalidSize);
         }
+        let context = ownership::Device::new(context);
         let group = BudgetGroup::new(options.limits.total_bytes);
         let pool = |category, bytes| {
             group.pool(
@@ -167,7 +178,8 @@ impl GlesBackend {
             glyphs: Default::default(),
             effects: Default::default(),
             masks: Default::default(),
-            targets: Vec::new(),
+            targets: Default::default(),
+            retained: Default::default(),
             geometry: Default::default(),
             info: None,
             suspended: false,
@@ -180,16 +192,33 @@ impl GlesBackend {
             drain_failed: false,
         })
     }
+    fn check_native(&self) -> Result<(), GlesError> {
+        self.context.check()
+    }
     /// Physical output dimensions used when configuring the common surface.
     pub fn output_size(&self) -> [u32; 2] {
         self.context.output_size()
     }
-    /// Observed simultaneous accounted bytes; driver-private overhead is separate.
-    pub fn usage(&self) -> reel_core::budget::BudgetUsage {
-        self._group.usage()
+    /// Renderer-owned domains and their shared simultaneous budget peak.
+    /// Native driver allocations have separate ownership from these budgets.
+    pub fn usage(&self) -> crate::Usage {
+        crate::Usage {
+            targets: self.budgets.targets.usage().bytes,
+            resources: self.budgets.resources.usage().bytes,
+            transient: self.budgets.transient.usage().bytes,
+            cached_geometry: self.geometry.bytes(),
+            shared: Some(self._group.usage()),
+        }
+    }
+    /// Explicitly sample native allocator domains, separately from renderer budgets.
+    /// Heap snapshots are adjacent observations; registered storage, its device
+    /// suballocations and independent historical peaks must not be added together.
+    /// Host EGL has no matching native allocator query and returns `None`.
+    pub fn native_memory_usage(&self) -> Result<Option<native::DriverMemoryUsage>, GlesError> {
+        self.context.memory_usage().map_err(native_error)
     }
     /// Completed geometry capacity, including allocation metadata, retained as
-    /// an evictable subset of `usage().bytes` in the transient budget.
+    /// an evictable subset of `usage().transient` in the transient budget.
     pub fn cached_geometry_bytes(&self) -> u64 {
         self.geometry.bytes()
     }
@@ -198,19 +227,31 @@ impl GlesBackend {
     /// device and offline programs remain owned by this backend for the next player.
     /// A failed drain retains all owners and prevents mounting another session.
     pub fn reset_session(&mut self) -> Result<(), GlesError> {
+        self.context.refresh();
+        self.check_native()?;
         self.suspended = true;
         self.info = None;
         self.context.finish().map_err(native_error)?;
         self.flights.clear();
+        self.check_native()?;
         self.failed_work.clear();
+        self.check_native()?;
         self.failed_prepared.clear();
+        self.check_native()?;
         self.failed_images.clear();
+        self.check_native()?;
         self.events.clear();
         self.images = Images::default();
+        self.check_native()?;
         self.glyphs = draw::GlyphCache::default();
+        self.check_native()?;
         self.masks = Default::default();
         self.targets.clear();
+        self.check_native()?;
+        self.retained.clear();
+        self.check_native()?;
         self.geometry.clear();
+        self.check_native()?;
         self.drain_failed = false;
         Ok(())
     }
@@ -226,13 +267,13 @@ impl GlesBackend {
     // A failed command can already have reached the device. Retire its owners
     // only after a successful drain; a failed drain makes this backend terminal.
     fn drain_error(&mut self) -> bool {
-        if self.context.finish().is_err() {
+        if self.context.refresh() || self.context.finish().is_err() {
             self.drain_failed = true;
             return false;
         }
         self.images.after_drain();
         self.glyphs.after_drain();
-        true
+        self.check_native().is_ok()
     }
     fn prepare(
         &mut self,
@@ -242,10 +283,11 @@ impl GlesBackend {
     ) -> Result<replay::Prepared, GlesError> {
         if capture {
             self.images.release_idle();
+            self.check_native()?;
         }
         self.geometry.cpu_disabled = false;
         self.geometry.optional_used = false;
-        let result = self.prepare_cached(frame, size, capture);
+        let result = self.prepare_cached(frame, size, capture, None);
         let fallback = self.geometry.optional_used
             && matches!(
                 result,
@@ -255,18 +297,28 @@ impl GlesBackend {
                 })
             );
         if (fallback || matches!(result, Err(GlesError::Pressure { .. }))) && !self.drain_failed {
+            let cause = result.err().unwrap();
             let resident = self._group.usage().bytes;
-            self.targets.clear();
+            self.targets.release_idle();
+            self.check_native()?;
             self.geometry.clear();
-            // Glyph and geometry demand is discovered during replay. Retry once
-            // when evicting the unused scratch pool actually released capacity.
-            // In-flight owners keep their allocations until completion.
-            if fallback || self._group.usage().bytes < resident {
-                self.geometry.cpu_disabled = true;
-                let result = self.prepare_cached(frame, size, capture);
-                self.geometry.cpu_disabled = false;
-                return result;
-            }
+            self.check_native()?;
+            self.images.release_idle();
+            self.check_native()?;
+            // Rebuild image demand once before replay. A shared-pressure retry
+            // must release real capacity; flights keep all active owners alive.
+            self.geometry.cpu_disabled = true;
+            let result = self.prepare_cached(
+                frame,
+                size,
+                capture,
+                Some(CacheRetry {
+                    cause,
+                    released: fallback || self._group.usage().bytes < resident,
+                }),
+            );
+            self.geometry.cpu_disabled = false;
+            return result;
         }
         result
     }
@@ -275,7 +327,9 @@ impl GlesBackend {
         frame: &RenderFrame,
         size: [u32; 2],
         capture: bool,
+        retry: Option<CacheRetry>,
     ) -> Result<replay::Prepared, GlesError> {
+        self.check_native()?;
         self.masks.prune();
         if self.drain_failed {
             return Err(GlesError::NativeDeviceLost(
@@ -283,20 +337,57 @@ impl GlesBackend {
             ));
         }
         let limits = self.options.limits.common();
+        if !capture && self.retained.pending(&frame.key()) {
+            return Err(GlesError::Preparing);
+        }
         if self.flights.len() >= limits.max_inflight {
             return Err(GlesError::Busy);
         }
         self.images.prune(&[]);
         self.glyphs.prune(&[]);
         self.effects.prune();
+        self.check_native()?;
         let local = Budgets::new(limits);
         let mut plan_tickets = Vec::new();
+        let selection = std::sync::Arc::new(crate::common::retained::Plan::collect(
+            std::iter::once(frame),
+            size,
+            capture,
+            &self.budgets,
+            &local,
+            limits.transient_bytes,
+            |key| self.retained.lookup(key, 0, &frame.key()),
+            |bytes| {
+                plan_tickets.push(crate::common::renderer::reserve(
+                    &self.budgets.transient,
+                    &local.transient,
+                    bytes,
+                    limits.transient_bytes,
+                    "retained plan",
+                )?);
+                Ok(())
+            },
+        )?);
+        self.retained.retain(&selection);
+        let warm = selection
+            .warm
+            .map(|index| {
+                self.retained.start(
+                    selection.entries[index].key.clone(),
+                    0,
+                    frame.key(),
+                    &self.budgets.transient,
+                    limits.transient_bytes,
+                )
+            })
+            .transpose()?;
         let plan = {
             let _planning = reel_core::profile::Scope::new(reel_core::profile::Phase::ImagePlan);
             crate::common::image_plan::collect(
                 std::iter::once(frame),
                 self.context.capabilities().max_texture_size,
                 capture,
+                &selection,
                 |bytes| {
                     plan_tickets.push(crate::common::renderer::reserve(
                         &self.budgets.transient,
@@ -309,6 +400,18 @@ impl GlesBackend {
                 },
             )?
         };
+        if let Some(retry) = retry
+            && matches!(retry.cause, GlesError::Pressure { .. })
+        {
+            let resident = self._group.usage().bytes;
+            self.images.retain_demand(&plan.images);
+            self.check_native()?;
+            self.glyphs.prune_idle();
+            self.check_native()?;
+            if !retry.released && self._group.usage().bytes >= resident {
+                return Err(retry.cause);
+            }
+        }
         let image_growth = self.images.validate(
             &plan.images,
             self.context.capabilities(),
@@ -321,8 +424,8 @@ impl GlesBackend {
         if capture
             || self
                 .targets
-                .first()
-                .is_some_and(|target| target.view.size() != size)
+                .output_size()
+                .is_some_and(|cached| cached != size)
             || image_growth
                 > self.options.limits.total_bytes.saturating_sub(
                     self.budgets
@@ -334,6 +437,7 @@ impl GlesBackend {
                 )
         {
             self.targets.clear();
+            self.check_native()?;
         }
         for mask in &plan.masks {
             let caps = self.context.capabilities();
@@ -416,11 +520,18 @@ impl GlesBackend {
                 _prepared: None,
                 _images: touched,
                 upload: true,
+                retained: None,
             });
             return Err(GlesError::Busy);
         }
         // Captures retain their output until readback, independently of later frames.
-        let mut capture_targets = Vec::new();
+        let mut capture_targets = target_cache::Cache::default();
+        if capture {
+            capture_targets.configure(size);
+        } else {
+            self.targets.configure(size);
+        }
+        self.check_native()?;
         let targets = if capture {
             &mut capture_targets
         } else {
@@ -440,13 +551,34 @@ impl GlesBackend {
                 masks: &mut self.masks,
                 targets,
                 geometry: &mut self.geometry,
+                retained: &self.retained,
             },
             images,
             frame,
             size,
             capture,
+            selection,
+            warm,
         ) {
-            Ok(prepared) => Ok(prepared),
+            Ok(prepared) => {
+                if let Some(token) = prepared.retained {
+                    let storage = prepared.output.view.size();
+                    self.retained.stage(
+                        token,
+                        prepared.output.clone(),
+                        self.context.target_layout(storage)?.texture_bytes,
+                    );
+                    self.targets.clear();
+                    self.check_native()?;
+                    if let Err(error) = self.submit(frame, prepared, None) {
+                        self.retained.cancel(&frame.key());
+                        return Err(error);
+                    }
+                    Err(GlesError::Preparing)
+                } else {
+                    Ok(prepared)
+                }
+            }
             Err((error, work)) => {
                 self.images.release_idle();
                 if !self.drain_error() {
@@ -485,7 +617,10 @@ impl GlesBackend {
             _prepared: Some(prepared.clone()),
             _images: Vec::new(),
             upload: false,
+            retained: prepared.retained,
         });
+        self.check_native()?;
+        self.targets.submitted(prepared.targets());
         Ok((prepared, fence))
     }
 }
@@ -557,6 +692,9 @@ impl RenderBackend for GlesBackend {
         }
     }
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), GlesError> {
+        self.check_native()?;
+        self.retained.clear();
+        self.check_native()?;
         if info.physical_size != self.output_size()
             || info.surface_epoch.0 == 0
             || !info.scale_factor.is_finite()
@@ -584,6 +722,7 @@ impl RenderBackend for GlesBackend {
         frame: &RenderFrame,
         before_present: impl FnOnce(),
     ) -> Result<PresentOutcome, GlesError> {
+        self.check_native()?;
         if self.suspended {
             return Ok(PresentOutcome::Skipped(SkipReason::Suspended));
         }
@@ -598,7 +737,10 @@ impl RenderBackend for GlesBackend {
             .next_submission
             .checked_add(1)
             .ok_or(GlesError::IdentityExhausted)?;
-        let prepared = self.prepare(frame, info.physical_size, false)?;
+        let prepared = match self.prepare(frame, info.physical_size, false) {
+            Err(GlesError::Preparing) => return Ok(PresentOutcome::Preparing),
+            result => result?,
+        };
         if let Err(error) =
             self.programs
                 .present(&self.context, &prepared.output, info.physical_size)
@@ -619,14 +761,24 @@ impl RenderBackend for GlesBackend {
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {
         self.images.prune(resources);
+        if self.check_native().is_err() {
+            return;
+        }
         self.glyphs.prune(resources);
+        if self.check_native().is_err() {
+            return;
+        }
         self.effects.prune();
+    }
+    fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        self.retained.cancel(&frame.key());
     }
     fn poll(
         &mut self,
         out: &mut Vec<RenderEvent<GlesError>>,
         limit: usize,
     ) -> Result<(), GlesError> {
+        self.check_native()?;
         while self.events.len() < limit {
             let Some(flight) = self.flights.front() else {
                 break;
@@ -638,7 +790,10 @@ impl RenderBackend for GlesBackend {
             if let Some(prepared) = &flight._prepared {
                 prepared.recycle_geometry(&mut self.geometry);
             }
-            if flight.upload {
+            if let Some(token) = flight.retained {
+                self.retained.complete(token);
+            }
+            if flight.upload || flight.retained.is_some() {
                 self.events.push_back(RenderEvent::ResourcesAvailable);
             }
             if let Some((id, frame)) = flight.submission {
@@ -650,12 +805,16 @@ impl RenderBackend for GlesBackend {
         self.images.prune(&[]);
         self.glyphs.prune(&[]);
         self.effects.prune();
+        self.check_native()?;
+        self.targets.prune_cold();
+        self.check_native()?;
         Ok(())
     }
     fn has_pending(&self) -> bool {
         !self.flights.is_empty() || !self.events.is_empty()
     }
     fn suspend(&mut self) {
+        self.retained.clear();
         self.suspended = true;
         self.info = None;
     }
@@ -700,6 +859,7 @@ impl crate::capture::CaptureBackend for GlesBackend {
         &mut self,
         capture: &mut GlesCapture,
     ) -> Result<Option<crate::capture::CapturedPixels>, GlesError> {
+        self.check_native()?;
         if !capture.fence.poll().map_err(native_error)? {
             return Ok(None);
         }
@@ -744,7 +904,7 @@ impl crate::capture::CaptureBackend for GlesBackend {
 }
 impl Drop for GlesBackend {
     fn drop(&mut self) {
-        if self.context.finish().is_ok() {
+        if !self.context.refresh() && self.context.finish().is_ok() {
             self.flights.clear();
             self.failed_work.clear();
             self.failed_prepared.clear();
@@ -766,7 +926,9 @@ impl Drop for GlesBackend {
 }
 pub(super) fn native_error(error: native::Error) -> GlesError {
     match error {
-        native::Error::Egl(_, 0x300e) => GlesError::NativeDeviceLost(error.to_string()),
+        native::Error::Terminal(_) | native::Error::Egl(_, 0x300e) => {
+            GlesError::NativeDeviceLost(error.to_string())
+        }
         native::Error::Egl(_, 0x300d) => GlesError::NativeSurface(error.to_string()),
         _ => GlesError::Device(error.to_string()),
     }

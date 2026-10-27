@@ -31,6 +31,11 @@ pub(super) struct Context<'a> {
     pub(super) effects: Vec<Arc<super::effect::Compiled>>,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
+    pub(super) retained_cache: &'a crate::common::retained::Cache<super::retained::Output, Quality>,
+    pub(super) selection: Arc<crate::common::retained::Plan>,
+    pub(super) retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    pub(super) warm: Option<usize>,
+    pub(super) warmed: bool,
     pub(super) target_allocations: Vec<Arc<super::target_cache::Allocation>>,
     pub(super) available_targets: Vec<Target>,
     pub(super) target_writes: crate::common::target_writes::TargetWrites,
@@ -42,6 +47,7 @@ pub(super) struct Context<'a> {
     pub(super) geometry: Vec<super::geometry::Storage>,
 }
 struct Scope<'a> {
+    group: Option<&'a reel_ui::frame::FrameGroup>,
     scheduled: Option<bool>,
     shared_source: bool,
     target: Target,
@@ -59,6 +65,7 @@ struct Scope<'a> {
     scissor: Scissor,
     mesh_clip: Option<crate::common::mesh::RectClip>,
     isolated: bool,
+    forward_source: bool,
 }
 struct MaskComposition<'a> {
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
@@ -74,6 +81,8 @@ enum Pending<'a> {
     Transition {
         definition: &'a SceneTransition,
         previous: Option<Target>,
+        entry: Option<usize>,
+        cached: bool,
     },
 }
 struct DeferredComposite {
@@ -84,6 +93,7 @@ struct DeferredComposite {
     scissor: Scissor,
 }
 struct Stream<'a> {
+    retained_context: usize,
     scheduled: bool,
     deferred: Vec<DeferredComposite>,
     drawing: &'a FrameDrawing,
@@ -102,14 +112,15 @@ struct Stream<'a> {
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
         self.flush_draws()?;
-        let target = if let Some(index) = self
+        let storage_size = self.offscreen.storage_size(self.size);
+        let mut target = if let Some(index) = self
             .available_targets
             .iter()
-            .rposition(|target| target.size == self.size)
+            .rposition(|target| target.storage_size() == storage_size)
         {
             self.available_targets.swap_remove(index)
         } else {
-            let cost = target_bytes(self.size, self.quality)?;
+            let cost = target_bytes(storage_size, self.quality)?;
             let local = self
                 .budget_scope
                 .targets
@@ -125,14 +136,15 @@ impl Context<'_> {
                 })?;
             let allocation = self.target_cache.get(
                 self.gpu,
-                self.size,
+                storage_size,
                 self.quality,
                 self.target_allocations
                     .iter()
-                    .filter(|allocation| allocation.target.size == self.size)
+                    .filter(|allocation| allocation.target.storage_size() == storage_size)
                     .count(),
                 &self.budgets.targets,
                 cost,
+                self.offscreen.requirements(),
             )?;
             self.tickets.push(Reservation {
                 _shared: None,
@@ -146,6 +158,7 @@ impl Context<'_> {
             pushed?;
             target
         };
+        target.size = self.size;
         let mut writes = std::mem::take(&mut self.target_writes);
         writes.begin(target.slot, |bytes| self.transient(bytes))?;
         self.target_writes = writes;
@@ -209,7 +222,54 @@ impl Context<'_> {
                     continue;
                 }
                 self.scissor = current.scopes.last().scissor;
-                let child = self.start_stream(
+                let retained = self
+                    .selection
+                    .entry(current.retained_context, transition)
+                    .map(|(index, entry)| {
+                        (
+                            index,
+                            entry
+                                .input
+                                .as_ref()
+                                .map(|input| self.retained_cache.output(input)),
+                        )
+                    });
+                let (entry, cached) =
+                    retained.map_or((None, None), |(index, output)| (Some(index), output));
+                if let Some(previous) = cached {
+                    let target = previous.target;
+                    let mut inputs = std::mem::take(&mut self.retained_inputs);
+                    let result = push_stack(&mut inputs, previous.allocation, |bytes| {
+                        self.transient(bytes)
+                    });
+                    self.retained_inputs = inputs;
+                    result?;
+                    let child = self.start_stream(
+                        current.drawing,
+                        &current.drawing.commands()[transition.commands.clone()],
+                        Some(transition.commands.start),
+                        false,
+                        current.transform,
+                        self.scissor,
+                    )?;
+                    self.combine(
+                        &child.scopes.last().target,
+                        &current.scopes.last().target.view,
+                        &current.scopes.last().target.view,
+                        1.,
+                        0.,
+                        CompositeOperation::Transition(0.),
+                    )?;
+                    current.pending = Some(Pending::Transition {
+                        definition: transition,
+                        previous: Some(target),
+                        entry,
+                        cached: true,
+                    });
+                    push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                    continue;
+                }
+                let mut child = self.start_stream(
                     transition.previous.drawing(),
                     transition.previous.drawing().commands(),
                     Some(0),
@@ -219,6 +279,7 @@ impl Context<'_> {
                         * transition.previous.to_parent(),
                     self.scissor,
                 )?;
+                child.retained_context = entry.map_or(0, |index| index + 1);
                 self.combine(
                     &child.scopes.last().target,
                     &current.scopes.last().target.view,
@@ -230,6 +291,8 @@ impl Context<'_> {
                 current.pending = Some(Pending::Transition {
                     definition: transition,
                     previous: None,
+                    entry,
+                    cached: false,
                 });
                 push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                 continue;
@@ -269,6 +332,7 @@ impl Context<'_> {
                             mask.invert,
                             mask.operation,
                             mask.image_mask,
+                            [0; 2],
                         )?;
                         self.recycle_target(mask.source)?;
                         self.recycle_target(finished)?;
@@ -276,7 +340,13 @@ impl Context<'_> {
                     Pending::Transition {
                         definition,
                         previous: None,
+                        entry,
+                        cached,
                     } => {
+                        if entry.is_some() && entry == self.selection.warm {
+                            self.warmed = true;
+                            return Ok(finished);
+                        }
                         let child = self.start_stream(
                             parent.drawing,
                             &parent.drawing.commands()[definition.commands.clone()],
@@ -296,12 +366,16 @@ impl Context<'_> {
                         parent.pending = Some(Pending::Transition {
                             definition,
                             previous: Some(finished),
+                            entry,
+                            cached,
                         });
                         push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                     }
                     Pending::Transition {
                         definition,
                         previous: Some(previous),
+                        cached,
+                        ..
                     } => {
                         self.combine_transition(
                             &parent.scopes.last().target,
@@ -310,7 +384,9 @@ impl Context<'_> {
                             definition,
                             parent.transform,
                         )?;
-                        self.recycle_target(previous)?;
+                        if !cached {
+                            self.recycle_target(previous)?;
+                        }
                         self.recycle_target(finished)?;
                     }
                 }
@@ -347,6 +423,7 @@ impl Context<'_> {
                         Kind::Clip,
                         at,
                         Scope {
+                            group: None,
                             scheduled: None,
                             shared_source: false,
                             target: if !isolated {
@@ -370,6 +447,7 @@ impl Context<'_> {
                                 .or_else(|| Scissor::clip_bounds(clip, transform, self.size))
                                 .map_or(self.scissor, |s| self.scissor.intersect(s)),
                             isolated,
+                            forward_source: false,
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -443,6 +521,7 @@ impl Context<'_> {
                             })
                             .flatten()
                     });
+                    let mut forward_source = false;
                     let source_parent = if let Some(view) = source_view {
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, view.parent_rect);
@@ -454,13 +533,29 @@ impl Context<'_> {
                     } else if let Some(effect) =
                         group.effect.as_ref().or(group.mask_effect.as_ref())
                     {
-                        let source = crate::common::effect_plan::source_layout(
-                            effect,
-                            group.effect_to_target,
-                            transform,
-                            self.gpu.device.limits().max_texture_dimension_2d,
-                            at,
-                        )?;
+                        let parent = current.scopes.last();
+                        let source = if crate::common::effect_plan::same_source_domain(
+                            group,
+                            parent.group,
+                        ) {
+                            crate::common::effect_plan::SourceLayout {
+                                size: self.size,
+                                frame_to_source: transform,
+                            }
+                        } else {
+                            crate::common::effect_plan::source_layout(
+                                effect,
+                                group.effect_to_target,
+                                transform,
+                                self.gpu.device.limits().max_texture_dimension_2d,
+                                at,
+                            )?
+                        };
+                        forward_source = current.groups.is_source_child(current.next - 1)
+                            && current.scopes.last().isolated
+                            && crate::common::effect_plan::forwards_source(
+                                group, &source, transform, self.size,
+                            );
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, output_scissor);
                         if group.mask_effect.is_some() {
@@ -486,9 +581,13 @@ impl Context<'_> {
                         Kind::Group,
                         at,
                         Scope {
+                            group: Some(group),
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
-                            target: if batch.is_some_and(|entry| entry.shared && !entry.first) {
+                            forward_source,
+                            target: if forward_source {
+                                current.scopes.last().target.clone()
+                            } else if batch.is_some_and(|entry| entry.shared && !entry.first) {
                                 current
                                     .deferred
                                     .last()
@@ -591,6 +690,19 @@ impl Context<'_> {
                             .source_parent
                             .map_or(group.scissor, |(_, _, scissor)| scissor),
                     );
+                    if group.forward_source {
+                        let (effect, effect_transform) = group.effect.expect("forwarded effect");
+                        let processed = self.effect(
+                            current.drawing,
+                            effect,
+                            effect_transform,
+                            &source,
+                            entry.at,
+                        )?;
+                        self.recycle_target(source)?;
+                        current.scopes.last_mut().target = processed;
+                        continue;
+                    }
                     if let Some(view) = group.source_view.filter(|_| group.mask_effect.is_none()) {
                         if let Some(last) = group.scheduled {
                             push_stack(
@@ -616,13 +728,29 @@ impl Context<'_> {
                             }
                             continue;
                         }
-                        self.combine_view(
-                            &current.scopes.last().target,
-                            &source,
-                            view,
-                            group.opacity,
-                            group.invert,
-                        )?;
+                        if group.blend == Default::default() {
+                            self.combine_view(
+                                &current.scopes.last().target,
+                                &source,
+                                view,
+                                group.opacity,
+                                group.invert,
+                            )?;
+                        } else {
+                            self.combine_group(
+                                &current.scopes.last().target,
+                                &source.view,
+                                &source.view,
+                                reel_ui::frame::GroupComposite {
+                                    alpha: group.opacity,
+                                    blend: group.blend,
+                                },
+                                group.invert,
+                                CompositeOperation::SourceOver,
+                                None,
+                                view.origin(),
+                            )?;
+                        }
                         self.recycle_target(source)?;
                         continue;
                     }
@@ -671,6 +799,7 @@ impl Context<'_> {
                                 group.invert,
                                 CompositeOperation::AlphaMask,
                                 group.image_mask,
+                                [0; 2],
                             )?;
                             self.recycle_target(source)?;
                             self.recycle_target(coverage)?;
@@ -729,6 +858,7 @@ impl Context<'_> {
                             group.invert,
                             CompositeOperation::SourceOver,
                             group.image_mask,
+                            [0; 2],
                         )?;
                         self.recycle_target(source)?;
                     }
@@ -810,6 +940,7 @@ impl Context<'_> {
             |bytes| self.transient(bytes),
         )?;
         Ok(Stream {
+            retained_context: 0,
             scheduled: false,
             deferred: Vec::new(),
             drawing,
@@ -824,6 +955,7 @@ impl Context<'_> {
             size: self.size,
             transform,
             scopes: Scopes::new(Scope {
+                group: None,
                 scheduled: None,
                 shared_source: false,
                 target: self.target()?,
@@ -841,6 +973,7 @@ impl Context<'_> {
                 blend: Default::default(),
                 scissor,
                 isolated: true,
+                forward_source: false,
             }),
             pending: None,
         })
@@ -970,6 +1103,7 @@ impl Context<'_> {
         invert: f32,
         operation: CompositeOperation,
         image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
+        source_origin: [i32; 2],
     ) -> Result<(), GpuError> {
         self.flush_draws()?;
         if self.scissor.empty() {
@@ -1019,7 +1153,7 @@ impl Context<'_> {
             invert,
             operation,
             blend,
-            source_origin: [0; 2],
+            source_origin,
         };
         if let Some((definition, uv)) = image_mask {
             let pipeline = self.pipelines.masks.get(

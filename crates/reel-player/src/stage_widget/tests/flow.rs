@@ -61,7 +61,6 @@ fn flow_remaining_width_wraps_real_text_and_reuses_shaping() {
 #[test]
 #[ignore = "serial release measurement of actual grid construction, resize, idle and retirement"]
 fn flow_grid_runtime_cost() {
-    use stats_alloc::{INSTRUMENTED_SYSTEM, Region};
     use std::time::Instant;
     for (count, automatic) in [(12, false), (12, true), (120, false), (120, true)] {
         let mut f = Fixture::new(None);
@@ -98,56 +97,61 @@ fn flow_grid_runtime_cost() {
             )
             .unwrap();
         f.stage.replace(root).unwrap();
-        let region = Region::new(&INSTRUMENTED_SYSTEM);
         let started = Instant::now();
-        let frame = f.record();
-        f.accept(&frame);
-        drop(frame);
-        let mount_us = started.elapsed().as_micros();
-        let mounted = region.change();
-        let layouts = f.layouts();
-        let stable_region = Region::new(&INSTRUMENTED_SYSTEM);
-        let started = Instant::now();
-        for _ in 0..120 {
+        let mounted = allocation_counter::measure(|| {
             let frame = f.record();
             f.accept(&frame);
-        }
+            drop(frame);
+        });
+        let mount_us = started.elapsed().as_micros();
+        let layouts = f.layouts();
+        let started = Instant::now();
+        let idle = allocation_counter::measure(|| {
+            for _ in 0..120 {
+                let frame = f.record();
+                f.accept(&frame);
+            }
+        });
         let idle_us = started.elapsed().as_micros();
-        let idle = stable_region.change();
         assert_eq!(
             layouts,
             f.layouts(),
             "stable presentation does not recalculate layout"
         );
-        let changed_region = Region::new(&INSTRUMENTED_SYSTEM);
         let started = Instant::now();
-        for index in 0..60 {
-            f.edit(root, |p| p.width = Some(520. + f64::from(index % 2)));
+        let resize = allocation_counter::measure(|| {
+            for index in 0..60 {
+                f.edit(root, |p| p.width = Some(520. + f64::from(index % 2)));
+                let frame = f.record();
+                f.accept(&frame);
+            }
+        });
+        let resize_us = started.elapsed().as_micros();
+        let retirement = allocation_counter::measure(|| {
+            let empty = f
+                .stage
+                .create(NodeKind::Stack, NodeProps::default(), vec![])
+                .unwrap();
+            f.stage.replace(empty).unwrap();
             let frame = f.record();
             f.accept(&frame);
-        }
-        let resize_us = started.elapsed().as_micros();
-        let resize = changed_region.change();
-        let empty = f
-            .stage
-            .create(NodeKind::Stack, NodeProps::default(), vec![])
-            .unwrap();
-        f.stage.replace(empty).unwrap();
-        let frame = f.record();
-        f.accept(&frame);
-        drop(frame);
-        assert_eq!(f.layouts().len(), 1);
-        let retired = region.change();
+            drop(frame);
+            assert_eq!(f.layouts().len(), 1);
+        });
+        let retired = mounted.bytes_current
+            + idle.bytes_current
+            + resize.bytes_current
+            + retirement.bytes_current;
         eprintln!(
             "grid automatic={automatic} cells={count} node_props_bytes={} mounted_us={mount_us} mounted_allocations={} mounted_bytes={} idle_120_us={idle_us} idle_allocations={} idle_bytes={} resize_60_us={resize_us} resize_allocations={} resize_bytes={} retired_net_bytes={}",
             size_of::<NodeProps>(),
-            mounted.allocations,
-            mounted.bytes_allocated,
-            idle.allocations,
-            idle.bytes_allocated,
-            resize.allocations,
-            resize.bytes_allocated,
-            retired.bytes_allocated as i128 - retired.bytes_deallocated as i128
+            mounted.count_total,
+            mounted.bytes_total,
+            idle.count_total,
+            idle.bytes_total,
+            resize.count_total,
+            resize.bytes_total,
+            retired
         );
     }
 }

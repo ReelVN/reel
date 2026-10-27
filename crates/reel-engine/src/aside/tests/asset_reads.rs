@@ -13,6 +13,7 @@ struct State {
     pending: BTreeMap<u64, String>,
     ready: bool,
     cancelled: Vec<u64>,
+    maintains: u64,
 }
 #[derive(Clone)]
 struct Loader {
@@ -41,6 +42,9 @@ impl Loader {
     }
 }
 impl AssetLoader for Loader {
+    fn maintain(&mut self) {
+        self.state.borrow_mut().maintains += 1;
+    }
     fn read(&mut self, path: &str, version: Option<ContentVersion>) -> Result<u64, String> {
         let mut state = self.state.borrow_mut();
         state.reads.push((path.into(), version));
@@ -75,6 +79,36 @@ impl AssetLoader for Loader {
         state.pending.remove(&id);
         state.cancelled.push(id);
     }
+}
+
+#[test]
+fn native_reentry_leaves_external_completion_polling_to_the_host_turn() {
+    let code = r#"fn opening(){ let bytes=await assets.read("sample");
+        if bytes.len()!=3 {throw "asset result";} narrator("completed"); }"#;
+    let loader = Loader::new(vec![1, 2, 3], false);
+    let (mut session, mut vm) = models::prepared(code, false);
+    vm.set_asset_loader(Box::new(loader.clone())).unwrap();
+    models::drive(&mut vm, &mut session, false);
+    assert!(!vm.asset_reads_need_work());
+    let maintains = loader.state.borrow().maintains;
+    loader.state.borrow_mut().ready = true;
+    for _ in 0..128 {
+        assert!(matches!(
+            vm.step(
+                &mut session,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0
+            )
+            .unwrap(),
+            SessionStep::Vm(RunOutcome::Waiting(_))
+        ));
+    }
+    assert_eq!(loader.state.borrow().maintains, maintains);
+    assert!(vm.maintain_asset_reads(64).unwrap());
+    models::drive(&mut vm, &mut session, false);
+    assert!(
+        matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(dialogue)) if dialogue.text()=="completed")
+    );
 }
 
 fn settle(vm: &mut SessionVm, session: &mut Session) {

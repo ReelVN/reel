@@ -5,11 +5,13 @@ use reel_engine::{
     aside::{SessionVm, SliceBudget, VmLimits},
 };
 use reel_player::{aside_session::AsideSessionUi, story_runtime::StoryRuntime};
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
-use std::{alloc::System, time::Instant};
+use std::time::Instant;
 
-#[global_allocator]
-static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+fn measure<T>(work: impl FnOnce() -> T) -> (T, allocation_counter::AllocationInfo) {
+    let mut result = None;
+    let info = allocation_counter::measure(|| result = Some(work()));
+    (result.unwrap(), info)
+}
 
 /// Profile a supplied release distribution without a window or game interaction.
 /// Run with REEL_PROFILE_PACKAGE pointing at game.asb and --ignored --nocapture.
@@ -22,8 +24,15 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 #[test]
 #[ignore = "requires an external release distribution"]
 fn distribution_startup_cost() {
+    let info = allocation_counter::measure(distribution_startup_cost_inner);
+    eprintln!(
+        "startup_thread_allocations={} allocated_bytes={} peak_live_bytes={}",
+        info.count_total, info.bytes_total, info.bytes_max
+    );
+}
+
+fn distribution_startup_cost_inner() {
     let path = std::env::var_os("REEL_PROFILE_PACKAGE").expect("REEL_PROFILE_PACKAGE");
-    let region = Region::new(GLOBAL);
     let started = Instant::now();
     let mut loaded = reel_player::distribution::load(std::path::Path::new(&path), None).unwrap();
     if let Some(resources) = std::env::var_os("REEL_PROFILE_RESOURCES") {
@@ -37,21 +46,16 @@ fn distribution_startup_cost() {
     let load_time = started.elapsed();
     let code_bytes = loaded.package.program().execution_capacity_bytes();
     eprintln!(
-        "decode_ms={} code_bytes={} live_bytes={} code={:?}",
+        "decode_ms={} code_bytes={} code={:?}",
         load_time.as_millis(),
         code_bytes,
-        live_delta(&region),
         loaded.package.program().code_cache_stats()
     );
     let started = Instant::now();
     let assets =
         reel_player::assets::Assets::packaged(Default::default(), loaded.packages, loaded.loose)
             .unwrap();
-    eprintln!(
-        "archives_ms={} live_bytes={}",
-        started.elapsed().as_millis(),
-        live_delta(&region)
-    );
+    eprintln!("archives_ms={}", started.elapsed().as_millis(),);
     let media = reel_player::media::MediaPlayer::new(
         assets.clone(),
         Default::default(),
@@ -90,10 +94,9 @@ fn distribution_startup_cost() {
     .with_media(Box::new(media))
     .unwrap();
     eprintln!(
-        "vm_ms={} charged_bytes={} live_bytes={}",
+        "vm_ms={} charged_bytes={}",
         started.elapsed().as_millis(),
         session.adapter().vm().heap().budget_usage().charged_bytes(),
-        live_delta(&region)
     );
     let saves = reel_player::saves::SaveService::new(
         std::sync::Arc::new(reel_player::saves::DirectorySaves::new(
@@ -197,8 +200,7 @@ fn distribution_startup_cost() {
         if !initialized && runtime.driver().adapter().task() != initializer_task {
             initialized = true;
             eprintln!(
-                "module_init_ms={elapsed_ms} live_bytes={} heap={:?}",
-                live_delta(&region),
+                "module_init_ms={elapsed_ms} heap={:?}",
                 runtime.driver().adapter().vm().heap().stats()
             );
         }
@@ -214,8 +216,7 @@ fn distribution_startup_cost() {
         if elapsed_ms >= last_report + 1000 || settled || result.is_err() {
             last_report = elapsed_ms;
             eprintln!(
-                "startup_ms={elapsed_ms} steps={steps} max_tick_ns={max_tick_ns} live_bytes={} state={:?} stats={:?} result={result:?}",
-                live_delta(&region),
+                "startup_ms={elapsed_ms} steps={steps} max_tick_ns={max_tick_ns} state={:?} stats={:?} result={result:?}",
                 runtime.driver().state(),
                 runtime.driver().adapter().vm().stats()
             );
@@ -263,9 +264,8 @@ fn distribution_startup_cost() {
                 if frame.is_multiple_of(60) || frame == frames {
                     let vm = runtime.driver().adapter().vm();
                     eprintln!(
-                        "clock_frame={frame} elapsed_ms={} max_tick_ns={max_clock_tick_ns} live_bytes={} heap={:?} location={:?}",
+                        "clock_frame={frame} elapsed_ms={} max_tick_ns={max_clock_tick_ns} heap={:?} location={:?}",
                         started.elapsed().as_millis(),
-                        live_delta(&region),
                         vm.heap().stats(),
                         runtime
                             .driver()
@@ -285,9 +285,8 @@ fn distribution_startup_cost() {
                     .unwrap();
             }
             eprintln!(
-                "retained_gc_ms={} live_bytes={} heap={:?}",
+                "retained_gc_ms={} heap={:?}",
                 started.elapsed().as_millis(),
-                live_delta(&region),
                 runtime.driver().adapter().vm().heap().stats()
             );
             return;
@@ -328,11 +327,6 @@ fn settle(runtime: &mut StoryRuntime, now: u64) -> (usize, u128) {
     panic!("runtime did not settle");
 }
 
-fn live_delta(region: &Region<'_, System>) -> i128 {
-    let stats = region.change();
-    stats.bytes_allocated as i128 - stats.bytes_deallocated as i128
-}
-
 #[test]
 #[ignore = "measures host-side allocation and elapsed time"]
 fn pending_asset_maintenance_cost() {
@@ -361,25 +355,25 @@ fn pending_asset_maintenance_cost() {
         // explicit completion, keeping IO and decode work out of this measure.
         assets.maintain();
         assert!(assets.pending_io());
-        let region = Region::new(GLOBAL);
         let started = Instant::now();
-        for _ in 0..600 {
-            assets.maintain();
-        }
+        let stats = allocation_counter::measure(|| {
+            for _ in 0..600 {
+                assets.maintain();
+            }
+        });
         let elapsed = started.elapsed();
-        let stats = region.change();
         eprintln!(
             "pending_assets={count} ticks=600 elapsed_ns={} allocations={} allocated_bytes={}",
             elapsed.as_nanos(),
-            stats.allocations,
-            stats.bytes_allocated
+            stats.count_total,
+            stats.bytes_total
         );
         for request in requests {
             assert!(assets.poll(request).unwrap().is_none());
         }
         assets.close();
         assert!(!assets.pending_io());
-        reused_storage &= stats.allocations == 0;
+        reused_storage &= stats.count_total == 0;
     }
     assert!(reused_storage, "waiting IO must reuse its request map");
 }
@@ -426,6 +420,56 @@ fn history_and_script_collection_clear_reclaim_before_sleeping() {
         assert_eq!(after.pending_bytes, 0);
         assert!(!runtime.driver().adapter().vm().heap().collection_due());
     }
+}
+
+#[test]
+fn one_table_removal_uses_allocation_pressure_while_clear_requests_reclamation() {
+    let mut runtime = runtime(
+        r#"
+        fn main() {
+            let retained = [];
+            for i in 0..1000 { retained.append([i]); }
+            let records = model({gone: [1], kept: [2]});
+            let alias = records.kept;
+            stage.replace(text(value: derive(|| f"left={records.len()}")));
+            await run(delay(1));
+            let removed = records.remove("gone");
+            if removed[0] != 1 || records.len() != 1 || alias[0] != 2 || retained.len() != 1000 {
+                throw "remove changed retained aliases";
+            }
+            await run(delay(1));
+            records.clear();
+            retained.clear();
+            if records.len() != 0 || alias[0] != 2 || removed[0] != 1 { throw "clear changed retained aliases"; }
+            await run(delay(1));
+        }
+    "#,
+    );
+    settle(&mut runtime, 0);
+    runtime.driver_mut().unwrap().begin_collection().unwrap();
+    while runtime.driver().adapter().vm().heap().phase() != GcPhase::Idle {
+        runtime
+            .driver_mut()
+            .unwrap()
+            .gc_step(Default::default())
+            .unwrap();
+    }
+    let before = runtime.driver().adapter().vm().heap().stats();
+    settle(&mut runtime, 2_000_000_000);
+    let removed = runtime.driver().adapter().vm().heap().stats();
+    assert_eq!(
+        removed.collections, before.collections,
+        "one removal must not rescan the retained heap"
+    );
+    assert!(!runtime.driver().adapter().vm().heap().collection_due());
+    assert!(runtime.driver().adapter().stage().nodes().any(|node| matches!(&node.kind, reel_ui::stage::NodeKind::Text(text) if text.as_ref() == "left=1")));
+    settle(&mut runtime, 4_000_000_000);
+    let cleared = runtime.driver().adapter().vm().heap().stats();
+    assert!(cleared.collections > removed.collections);
+    assert!(cleared.live_objects < before.live_objects / 2);
+    assert_eq!(cleared.pending_bytes, 0);
+    assert!(!runtime.driver().adapter().vm().heap().collection_due());
+    assert!(runtime.driver().adapter().stage().nodes().any(|node| matches!(&node.kind, reel_ui::stage::NodeKind::Text(text) if text.as_ref() == "left=0")));
 }
 
 #[test]
@@ -554,44 +598,42 @@ fn runtime_cost() {
     let mut runtime = runtime(&source);
     settle(&mut runtime, 0);
     let before = runtime.driver().adapter().vm().heap().stats();
-    let region = Region::new(GLOBAL);
     let start = Instant::now();
-    let (steps, max_ns) = settle(&mut runtime, 2_000_000_000);
+    let ((steps, max_ns), allocation) = measure(|| settle(&mut runtime, 2_000_000_000));
     let elapsed = start.elapsed();
     let after = runtime.driver().adapter().vm().heap().stats();
-    let allocation = region.change();
     eprintln!(
         "stable_updates,rows={rows},updates=10000,elapsed_ns={},steps={steps},max_tick_ns={max_ns},gc_cycles={},gc_units={},allocations={},allocated_bytes={},live_delta_bytes={},live_objects={},payload_bytes={}",
         elapsed.as_nanos(),
         after.collections - before.collections,
         after.gc_units - before.gc_units,
-        allocation.allocations,
-        allocation.bytes_allocated,
-        live_delta(&region),
+        allocation.count_total,
+        allocation.bytes_total,
+        allocation.bytes_current,
         after.live_objects,
         after.payload_bytes
     );
-
     let before = after;
-    let region = Region::new(GLOBAL);
     let start = Instant::now();
-    let mut max_ns = 0;
-    let mut steps = 0;
-    for i in 1..=100 {
-        let (count, maximum) = settle(&mut runtime, (i + 1) * 2_000_000_000);
-        steps += count;
-        max_ns = max_ns.max(maximum);
-    }
+    let ((steps, max_ns), allocation) = measure(|| {
+        let mut max_ns = 0;
+        let mut steps = 0;
+        for i in 1..=100 {
+            let (count, maximum) = settle(&mut runtime, (i + 1) * 2_000_000_000);
+            steps += count;
+            max_ns = max_ns.max(maximum);
+        }
+        (steps, max_ns)
+    });
     let after = runtime.driver().adapter().vm().heap().stats();
-    let allocation = region.change();
     eprintln!(
         "stable_wakeups,rows={rows},wakeups=100,elapsed_ns={},steps={steps},max_tick_ns={max_ns},gc_cycles={},gc_units={},allocations={},allocated_bytes={},live_delta_bytes={},live_objects={},payload_bytes={}",
         start.elapsed().as_nanos(),
         after.collections - before.collections,
         after.gc_units - before.gc_units,
-        allocation.allocations,
-        allocation.bytes_allocated,
-        live_delta(&region),
+        allocation.count_total,
+        allocation.bytes_total,
+        allocation.bytes_current,
         after.live_objects,
         after.payload_bytes
     );
@@ -602,76 +644,80 @@ fn runtime_cost() {
 
     let driver = runtime.driver();
     let program = driver.adapter().vm().program().clone();
-    let region = Region::new(GLOBAL);
     let start = Instant::now();
-    let begin = Instant::now();
-    let mut capture = driver
-        .adapter()
-        .snapshot_begin(driver.ui().session())
-        .unwrap();
-    let begin_ns = begin.elapsed().as_nanos();
-    let mut peak = live_delta(&region);
-    let mut max_ns = 0;
-    let mut steps = 0;
-    loop {
-        let slice = Instant::now();
-        let progress = capture.step(SnapshotBudget { units: 256 }).unwrap();
-        max_ns = max_ns.max(slice.elapsed().as_nanos());
-        steps += 1;
-        peak = peak.max(live_delta(&region));
-        if progress.complete {
-            break;
+    let ((mut image, begin_ns, finish_ns, steps, max_ns), allocation) = measure(|| {
+        let begin = Instant::now();
+        let mut capture = driver
+            .adapter()
+            .snapshot_begin(driver.ui().session())
+            .unwrap();
+        let begin_ns = begin.elapsed().as_nanos();
+        let mut max_ns = 0;
+        let mut steps = 0;
+        loop {
+            let slice = Instant::now();
+            let progress = capture.step(SnapshotBudget { units: 256 }).unwrap();
+            max_ns = max_ns.max(slice.elapsed().as_nanos());
+            steps += 1;
+            if progress.complete {
+                break;
+            }
         }
-    }
-    let finish = Instant::now();
-    let mut image = capture.finish().unwrap();
-    let finish_ns = finish.elapsed().as_nanos();
-    peak = peak.max(live_delta(&region));
+        let finish = Instant::now();
+        let image = capture.finish().unwrap();
+        (image, begin_ns, finish.elapsed().as_nanos(), steps, max_ns)
+    });
     eprintln!(
-        "capture,rows={rows},elapsed_ns={},begin_ns={begin_ns},finish_ns={finish_ns},steps={steps},max_slice_ns={max_ns},allocated_bytes={},live_delta_bytes={},observed_peak_delta_bytes={peak}",
+        "capture,rows={rows},elapsed_ns={},begin_ns={begin_ns},finish_ns={finish_ns},steps={steps},max_slice_ns={max_ns},allocated_bytes={},live_delta_bytes={},peak_delta_bytes={}",
         start.elapsed().as_nanos(),
-        region.change().bytes_allocated,
-        live_delta(&region)
+        allocation.bytes_total,
+        allocation.bytes_current,
+        allocation.bytes_max
     );
-    let region = Region::new(GLOBAL);
     let start = Instant::now();
-    let begin = Instant::now();
-    let mut restore = SessionVm::restore_begin(
-        &mut image,
-        program,
-        VmLimits::default(),
-        SessionIdentity {
-            session_id: SessionId(92),
-            epoch: Epoch(2),
-        },
-        Default::default(),
-        None,
-        None,
-    )
-    .unwrap();
-    let begin_ns = begin.elapsed().as_nanos();
-    let mut peak = live_delta(&region);
-    let mut max_ns = 0;
-    let mut steps = 0;
-    loop {
-        let slice = Instant::now();
-        let progress = restore.step(SnapshotBudget { units: 256 }).unwrap();
-        max_ns = max_ns.max(slice.elapsed().as_nanos());
-        steps += 1;
-        peak = peak.max(live_delta(&region));
-        if progress.complete {
-            break;
+    let ((restored, begin_ns, finish_ns, steps, max_ns), allocation) = measure(|| {
+        let begin = Instant::now();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(92),
+                epoch: Epoch(2),
+            },
+            Default::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        let begin_ns = begin.elapsed().as_nanos();
+        let mut max_ns = 0;
+        let mut steps = 0;
+        loop {
+            let slice = Instant::now();
+            let progress = restore.step(SnapshotBudget { units: 256 }).unwrap();
+            max_ns = max_ns.max(slice.elapsed().as_nanos());
+            steps += 1;
+            if progress.complete {
+                break;
+            }
         }
-    }
-    let finish = Instant::now();
-    let (_session, restored) = restore.finish().unwrap();
-    let finish_ns = finish.elapsed().as_nanos();
-    peak = peak.max(live_delta(&region));
+        let finish = Instant::now();
+        let (_session, restored) = restore.finish().unwrap();
+        (
+            restored,
+            begin_ns,
+            finish.elapsed().as_nanos(),
+            steps,
+            max_ns,
+        )
+    });
     eprintln!(
-        "restore,rows={rows},elapsed_ns={},begin_ns={begin_ns},finish_ns={finish_ns},steps={steps},max_slice_ns={max_ns},allocated_bytes={},live_delta_bytes={},observed_peak_delta_bytes={peak},candidate_charged_bytes={}",
+        "restore,rows={rows},elapsed_ns={},begin_ns={begin_ns},finish_ns={finish_ns},steps={steps},max_slice_ns={max_ns},allocated_bytes={},live_delta_bytes={},peak_delta_bytes={},candidate_charged_bytes={}",
         start.elapsed().as_nanos(),
-        region.change().bytes_allocated,
-        live_delta(&region),
+        allocation.bytes_total,
+        allocation.bytes_current,
+        allocation.bytes_max,
         restored.vm().heap().stats().charged_bytes
     );
 }

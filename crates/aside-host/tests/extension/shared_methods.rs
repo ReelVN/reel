@@ -524,6 +524,122 @@ fn collect(vm: &mut Vm) {
 }
 
 #[test]
+fn weak_method_bindings_reuse_live_values_without_resurrecting_gc_or_retired_receivers() {
+    let fixture = fixture("fn main(){make().read()}");
+    let mut vm = Vm::load(
+        fixture.program,
+        fixture.support,
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    let heap = vm.heap_mut();
+    let fields = heap.alloc_table().unwrap();
+    let host = heap.alloc_host(fields, &[Value::int(40)], None).unwrap();
+    let ty = heap.host_type("sample::types::Base").unwrap();
+    heap.set_host_type(host, ty).unwrap();
+    let host_root = heap
+        .add_root(RootOwner(7), aside_vm::RootKind::Host, host)
+        .unwrap();
+    let before = heap.stats();
+    let first = vm.bind_host_method(host, "read").unwrap().unwrap();
+    for _ in 0..512 {
+        vm.bind_host_method(host, "read").unwrap().unwrap();
+    }
+    assert_eq!(vm.heap().stats().live_objects, before.live_objects + 1);
+
+    vm.begin_collection().unwrap();
+    while vm.heap().phase() == GcPhase::Mark {
+        vm.gc_step(GcBudget {
+            units: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    assert!(
+        vm.heap().info(first).is_err(),
+        "weak cache cannot mark a value"
+    );
+    let replacement = vm.bind_host_method(host, "read").unwrap().unwrap();
+    assert!(
+        !first.same_bits(replacement),
+        "white callable must not revive"
+    );
+    let bound_root = vm
+        .heap_mut()
+        .add_root(RootOwner(7), aside_vm::RootKind::Host, replacement)
+        .unwrap();
+    collect(&mut vm);
+    assert!(vm.heap().info(replacement).is_ok());
+    vm.heap_mut().release_root(bound_root).unwrap();
+    collect(&mut vm);
+    assert!(vm.heap().info(replacement).is_err());
+    vm.bind_host_method(host, "read").unwrap().unwrap();
+    vm.heap_mut().retire_host(host).unwrap();
+    assert!(matches!(
+        vm.bind_host_method(host, "read"),
+        Err(VmError::Heap(HeapError::RetiredHost))
+    ));
+    vm.heap_mut().release_root(host_root).unwrap();
+    collect(&mut vm);
+    assert!(vm.heap().info(host).is_err());
+    for _ in 0..1024 {
+        vm.heap_mut().alloc_table().unwrap();
+    }
+    assert!(
+        vm.heap().info(host).is_err(),
+        "pooled generations stay distinct"
+    );
+}
+
+#[test]
+fn restored_method_bindings_keep_their_receiver_and_rebuild_weak_cache_cold() {
+    use aside_vm::snapshot::{SnapshotBudget, SnapshotRegistry};
+    let fixture = fixture("fn main(){make().read()}");
+    let mut vm = Vm::load(
+        fixture.program.clone(),
+        fixture.support.clone(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    let fields = vm.heap_mut().alloc_table().unwrap();
+    let host = vm
+        .heap_mut()
+        .alloc_host(fields, &[Value::int(40)], None)
+        .unwrap();
+    let ty = vm.heap().host_type("sample::types::Base").unwrap();
+    vm.heap_mut().set_host_type(host, ty).unwrap();
+    let method = vm.bind_host_method(host, "read").unwrap().unwrap();
+    vm.heap_mut()
+        .add_root(RootOwner(7), aside_vm::RootKind::Host, method)
+        .unwrap();
+    let registry = SnapshotRegistry::default();
+    let mut capture = vm.snapshot_begin(&registry).unwrap();
+    while !capture.step(SnapshotBudget::default()).unwrap().complete {}
+    let image = capture.finish().unwrap();
+    let mut restore = Vm::restore_begin(
+        &image,
+        fixture.program,
+        fixture.support,
+        VmLimits::default(),
+        SessionEpoch(2),
+        &registry,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let (mut restored, map) = restore.finish().unwrap();
+    let host = map.value(host).unwrap();
+    let method = map.value(method).unwrap();
+    assert!(restored.heap().info(method).is_ok());
+    let before = restored.heap().stats().live_objects;
+    restored.bind_host_method(host, "read").unwrap().unwrap();
+    assert_eq!(restored.heap().stats().live_objects, before + 1);
+    restored.bind_host_method(host, "read").unwrap().unwrap();
+    assert_eq!(restored.heap().stats().live_objects, before + 1);
+}
+
+#[test]
 fn shared_method_tables_are_charged_once_and_add_no_per_object_graph() {
     let fixture = fixture("fn main(){42}");
     let growth = [true, false].map(|methods| {

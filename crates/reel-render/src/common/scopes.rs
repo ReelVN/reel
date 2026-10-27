@@ -6,12 +6,15 @@ use std::ops::Range;
 /// result is independent of the backend and preserves command/capture identities.
 pub(crate) struct GroupPlan {
     inline: Vec<u8>,
+    source_child: Vec<u8>,
 }
 struct PlannedGroup {
     start: usize,
     source_over: bool,
     output_source_over: bool,
     retained_boundary: bool,
+    child: Option<usize>,
+    other_content: bool,
 }
 impl GroupPlan {
     pub(crate) fn new(
@@ -25,11 +28,15 @@ impl GroupPlan {
             .iter()
             .any(|c| matches!(c.op, FrameOp::PushGroup(_)))
         {
-            return Ok(Self { inline: Vec::new() });
+            return Ok(Self {
+                inline: Vec::new(),
+                source_child: Vec::new(),
+            });
         }
         let bytes = commands.len().div_ceil(8);
-        reserve(bytes as u64)?;
+        reserve(bytes as u64 * 2)?;
         let mut inline = vec![0; bytes];
+        let mut source_child = vec![0; bytes];
         let mut stack: Vec<PlannedGroup> = Vec::new();
         let mut transitions = transitions.peekable();
         let mut capture_exclusions = capture_exclusions.peekable();
@@ -46,12 +53,17 @@ impl GroupPlan {
             }
             match &command.op {
                 FrameOp::PushGroup(group) => {
+                    if let Some(parent) = stack.last_mut() {
+                        parent.other_content |= parent.child.replace(index).is_some();
+                    }
                     push_stack(
                         &mut stack,
                         PlannedGroup {
                             start: index,
                             output_source_over: group.composite.blend == Default::default(),
                             retained_boundary: boundary,
+                            child: None,
+                            other_content: false,
                             source_over: !boundary
                                 && (group.composite.alpha == 1.
                                     || matches!(
@@ -78,6 +90,12 @@ impl GroupPlan {
                     if group.source_over {
                         inline[group.start / 8] |= 1 << (group.start % 8);
                     }
+                    if !group.other_content
+                        && !group.retained_boundary
+                        && let Some(child) = group.child
+                    {
+                        source_child[child / 8] |= 1 << (child % 8);
+                    }
                     // An isolated child's internal draws see its own transparent
                     // target. Only its final composite can depend on the parent
                     // backdrop. Preserve retained boundaries through every ancestor.
@@ -90,6 +108,9 @@ impl GroupPlan {
                 }
                 FrameOp::PushContext(_) | FrameOp::PopContext => {}
                 other => {
+                    if let Some(parent) = stack.last_mut() {
+                        parent.other_content = true;
+                    }
                     let source_over = match other {
                         FrameOp::Draw(
                             FrameDraw::Fill { composite, .. } | FrameDraw::Stroke { composite, .. },
@@ -105,11 +126,22 @@ impl GroupPlan {
                 }
             }
         }
-        Ok(Self { inline })
+        Ok(Self {
+            inline,
+            source_child,
+        })
     }
 
     pub(crate) fn can_inline(&self, push: usize) -> bool {
         self.inline
+            .get(push / 8)
+            .is_some_and(|bits| bits & (1 << (push % 8)) != 0)
+    }
+
+    /// The child is the parent's complete source. Replay must also prove that
+    /// both isolated groups use exactly the same raster grid and source domain.
+    pub(crate) fn is_source_child(&self, push: usize) -> bool {
+        self.source_child
             .get(push / 8)
             .is_some_and(|bits| bits & (1 << (push % 8)) != 0)
     }
@@ -349,6 +381,11 @@ impl<T> Scopes<T> {
     pub(crate) fn last(&self) -> &T {
         self.nested.last().map_or(&self.root, |entry| &entry.value)
     }
+    pub(crate) fn last_mut(&mut self) -> &mut T {
+        self.nested
+            .last_mut()
+            .map_or(&mut self.root, |entry| &mut entry.value)
+    }
     pub(crate) fn finish(self) -> Result<T, GpuError> {
         if let Some(entry) = self.nested.last() {
             return Err(GpuError::InvalidRecord {
@@ -420,6 +457,44 @@ mod tests {
                 },
             }),
         )
+    }
+
+    #[test]
+    fn source_forwarding_requires_a_single_child_without_retained_boundaries() {
+        let nested = vec![
+            command(0, FrameOp::PushGroup(ordinary_group())),
+            command(1, FrameOp::PushGroup(ordinary_group())),
+            translucent_fill(2),
+            command(3, FrameOp::PopGroup),
+            command(4, FrameOp::PopGroup),
+        ];
+        for extra in [None, Some(1), Some(4)] {
+            let mut commands = nested.clone();
+            if let Some(index) = extra {
+                commands.insert(index, translucent_fill(index));
+            }
+            for boundary in [false, true] {
+                let plan = GroupPlan::new(
+                    &commands,
+                    Some(0),
+                    boundary.then_some(2..3).into_iter(),
+                    std::iter::empty(),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                let child = if extra == Some(1) { 2 } else { 1 };
+                assert_eq!(plan.is_source_child(child), extra.is_none() && !boundary);
+            }
+        }
+        let captured = GroupPlan::new(
+            &nested,
+            Some(0),
+            std::iter::empty(),
+            std::iter::once(2..3),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(!captured.is_source_child(1));
     }
 
     #[test]
@@ -578,7 +653,9 @@ mod tests {
         assert_eq!(plan.inline.len(), commands.len().div_ceil(8));
         assert_eq!(
             reserved,
-            (plan.inline.capacity() + depth * size_of::<PlannedGroup>()) as u64
+            (plan.inline.capacity()
+                + plan.source_child.capacity()
+                + depth * size_of::<PlannedGroup>()) as u64
         );
     }
     #[test]

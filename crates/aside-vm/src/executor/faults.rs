@@ -14,7 +14,9 @@ impl Vm {
         start: u32,
         len: u32,
     ) -> Result<&[Value], VmError> {
-        Ok(self.slots.borrow_initialized_window(range, start, len)?)
+        Ok(self
+            .slots
+            .borrow_initialized_window(range, if len == 0 { 0 } else { start }, len)?)
     }
     pub(super) fn check_new_fault(&self, new: NewFault) -> Result<(), VmError> {
         if new.code.registry_version != 1 {
@@ -64,6 +66,8 @@ impl Vm {
         if n.fault_count == self.limits.max_native_faults {
             return Err(VmError::Limit);
         };
+        let len = self.native_fault_base() + n.fault_count + 1;
+        self.slots.grow(&mut self.heap, n.roots, len)?;
         self.put(
             n.roots,
             self.native_fault_base() + n.fault_count,
@@ -80,6 +84,14 @@ impl Vm {
         let FaultRetention::Replace(ids) = policy else {
             return Ok(());
         };
+        self.validate_native_faults(ids)?;
+        if !ids.is_empty() {
+            let len = self.native_fault_base() + ids.len() as u32;
+            self.slots.grow(&mut self.heap, n.roots, len)?;
+        }
+        self.write_native_faults(n, policy)
+    }
+    pub(super) fn validate_native_faults(&mut self, ids: &[FaultId]) -> Result<(), VmError> {
         if ids.len() > self.limits.max_native_faults as usize {
             return Err(VmError::Limit);
         };
@@ -87,6 +99,16 @@ impl Vm {
             self.heap.fault_info(id)?;
             self.heap.root_insertion_barrier(id.as_value())?;
         }
+        Ok(())
+    }
+    pub(super) fn write_native_faults(
+        &mut self,
+        n: &mut NativeFrame,
+        policy: FaultRetention<'_>,
+    ) -> Result<(), VmError> {
+        let FaultRetention::Replace(ids) = policy else {
+            return Ok(());
+        };
         for (i, &id) in ids.iter().enumerate() {
             self.put(n.roots, self.native_fault_base() + i as u32, id.as_value())?;
         }
@@ -218,7 +240,7 @@ impl Vm {
                 if let Some(id) = explicit {
                     self.put(n.roots, self.native_pending_slot(), id.as_value())?;
                 } else {
-                    self.clear(n.roots, self.native_pending_slot())?;
+                    self.clear_native_pending(n.roots)?;
                 }
                 n.pending_fault = Some(FaultSeed {
                     kind: FaultKind::Cancelled,
@@ -235,15 +257,15 @@ impl Vm {
         Ok(())
     }
     pub(super) fn unbuilt_fault(&self) -> Option<(FrameId, FaultSeed)> {
-        match self.active.frames.data.last().copied()? {
-            Frame::Script(s) => match s.phase {
+        match self.active.frames.data.last()? {
+            Frame::Script(s) => match &s.phase {
                 ScriptPhase::Exit {
                     reason: ExitReason::Throw(seed),
                     ..
                 }
                 | ScriptPhase::Release {
                     reason: ExitReason::Throw(seed),
-                } if seed.fault.is_none() => Some((s.id, seed)),
+                } if seed.fault.is_none() => Some((s.id, *seed)),
                 _ => None,
             },
             Frame::Native(n) => {
@@ -380,10 +402,28 @@ impl Vm {
             }
             _ => 1,
         };
-        if !m.take(0, work, alloc) {
+        let (roots, value_slot, fault_slot) = self.build_roots(build.frame)?;
+        let growth = if matches!(build.phase, BuildPhase::Complete) {
+            let Some(plan) = self.native_root_admission(roots, fault_slot + 1)? else {
+                return Ok(true);
+            };
+            Some(plan)
+        } else {
+            None
+        };
+        if !m.take(
+            0,
+            work + growth.as_ref().map_or(0, |p| p.work),
+            alloc + growth.as_ref().map_or(0, |p| p.allocation_bytes),
+        ) {
             return Ok(false);
         };
-        let (roots, value_slot, fault_slot) = self.build_roots(build.frame)?;
+        if growth.is_some()
+            && let Err(error) = self.slots.grow(&mut self.heap, roots, fault_slot + 1)
+        {
+            self.block_heap(error)?;
+            return Ok(true);
+        }
         match build.phase {
             BuildPhase::ErrorValue => {
                 if !build.seed.author_value && build.seed.kind != FaultKind::Thrown {

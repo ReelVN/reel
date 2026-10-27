@@ -20,7 +20,6 @@ use std::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 
 enum Request {
@@ -47,9 +46,6 @@ impl Reading {
         }
     }
     fn step(&mut self, files: &mut Files, cancelled: &AtomicBool) -> Result<bool, IoError> {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(failure("read cancelled"));
-        }
         let mut file = files.open(&self.request.resource, cancelled)?;
         let length = if let Some(length) = self.length {
             length
@@ -90,7 +86,6 @@ impl Reading {
             self.cursor.as_deref_mut(),
             cancelled,
         )?;
-        file.verify()?;
         Ok(end == length)
     }
 }
@@ -144,12 +139,13 @@ impl PackIo {
     pub(super) fn observed(
         paths: impl IntoIterator<Item = PathBuf>,
         temporary: &BudgetPool,
+        metadata: &BudgetPool,
         limits: QueueLimits,
         wake: WakeSignal,
         observer: ReadObserver,
     ) -> Result<Self, IoError> {
         Ok(Self(FileIo::build(
-            Files::Pack(pack::Files::open(paths, None, temporary)?),
+            Files::Pack(pack::Files::open(paths, None, temporary, metadata)?),
             limits,
             wake,
             Some(observer),
@@ -159,31 +155,36 @@ impl PackIo {
     /// only missing loose files fall through to the selected archive entry.
     /// Compressed entries share one fixed workspace charged to `temporary` until
     /// the IO worker exits. Raw-only mounts allocate no decoding workspace.
+    /// `metadata` admits index/mount capacities and parsing peak before allocation;
+    /// retained index storage stays charged until the IO worker releases it.
     pub fn open(
         paths: impl IntoIterator<Item = PathBuf>,
         overlay: Option<PathBuf>,
         target: String,
         temporary: &BudgetPool,
+        metadata: &BudgetPool,
         limits: QueueLimits,
         wake: WakeSignal,
     ) -> Result<Self, IoError> {
         let overlay = overlay
             .map(|root| directory::Files::for_target(root, limits.max_requests as usize, target))
             .transpose()?;
-        let files = pack::Files::open(paths, overlay, temporary)?;
+        let files = pack::Files::open(paths, overlay, temporary, metadata)?;
         Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
     }
     /// Mounts archives beneath a logical-to-physical resource selection. Archive
     /// entries supply resources absent from the selected file map.
+    /// Metadata admission and decoding workspace follow [`Self::open`].
     pub fn selected(
         paths: impl IntoIterator<Item = PathBuf>,
         selected: BTreeMap<String, PathBuf>,
         temporary: &BudgetPool,
+        metadata: &BudgetPool,
         limits: QueueLimits,
         wake: WakeSignal,
     ) -> Result<Self, IoError> {
         let overlay = directory::Files::selected(selected, limits.max_requests as usize);
-        let files = pack::Files::open(paths, Some(overlay), temporary)?;
+        let files = pack::Files::open(paths, Some(overlay), temporary, metadata)?;
         Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
     }
 }
@@ -197,10 +198,13 @@ impl Files {
         source: &AssetSource,
         cancelled: &AtomicBool,
     ) -> Result<ReadFile<'_>, IoError> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(failure("read cancelled"));
+        }
         reel_package::archive::validate_path(&source.key.0).map_err(io_error)?;
         let file = match self {
-            Self::Directory(files) => ReadFile::directory(files.open(source, cancelled)?),
-            Self::Pack(files) => files.entry(source, cancelled)?,
+            Self::Directory(files) => ReadFile::directory(files.open(source)?),
+            Self::Pack(files) => files.entry(source)?,
         };
         if source
             .version
@@ -216,9 +220,8 @@ struct ReadFile<'a> {
     offset: u64,
     length: u64,
     version: ContentVersion,
-    stamp: Option<SystemTime>,
     compressed: Option<(
-        &'a reel_package::archive::Entry,
+        reel_package::archive::Entry<'a>,
         &'a mut reel_package::archive::ReadScratch,
     )>,
 }
@@ -229,7 +232,6 @@ impl<'a> ReadFile<'a> {
             offset: 0,
             length: file.length,
             version: file.version,
-            stamp: Some(file.modified),
             compressed: None,
         }
     }
@@ -262,18 +264,6 @@ impl<'a> ReadFile<'a> {
                 return Err(failure("read cancelled"));
             }
             self.file.read_exact(chunk).map_err(io_error)?;
-        }
-        Ok(())
-    }
-    fn verify(&self) -> Result<(), IoError> {
-        if let Some(modified) = self.stamp
-            && !directory::same(
-                &self.file.metadata().map_err(io_error)?,
-                self.length,
-                modified,
-            )?
-        {
-            return Err(directory::changed());
         }
         Ok(())
     }
@@ -392,6 +382,13 @@ fn io_error(error: std::io::Error) -> IoError {
     reason = "rejection returns the owning request without allocating"
 )]
 impl AssetIo for FileIo {
+    fn background_reader(&self, wake: WakeSignal) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
+        Ok(Box::new(Self {
+            worker: self.worker.client(wake)?,
+            ids: self.ids.clone(),
+            limits: self.limits,
+        }))
+    }
     fn capabilities(&self) -> IoCaps {
         IoCaps {
             range_read: true,
@@ -496,6 +493,12 @@ macro_rules! forward_asset_io {
             reason = "rejection returns the owning request without allocating"
         )]
         impl AssetIo for $adapter {
+            fn background_reader(
+                &self,
+                wake: WakeSignal,
+            ) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
+                self.0.background_reader(wake)
+            }
             fn capabilities(&self) -> IoCaps {
                 self.0.capabilities()
             }

@@ -3,6 +3,7 @@ use super::{
     pipeline::{CompositeOperation, PipelineSlots},
     replay::Context,
 };
+use crate::Usage;
 #[cfg(test)]
 #[path = "texture_tests.rs"]
 mod texture_tests;
@@ -15,15 +16,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Usage {
-    pub targets: u64,
-    pub resources: u64,
-    pub transient: u64,
-    /// Completed geometry, staging and allocation metadata retained as an
-    /// evictable subset of `transient`; in-flight storage is excluded.
-    pub cached_geometry: u64,
-}
 pub struct Prepared {
     pub(super) capture: Option<Arc<super::capture::ReadbackStorage>>,
     pub(super) encoder: wgpu::CommandEncoder,
@@ -37,6 +29,7 @@ pub struct Prepared {
     glyphs: super::glyph_cache::FrameGlyphs,
     effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
+    retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
     geometry: Vec<super::geometry::Storage>,
     budget_scope: Budgets,
     admission: BudgetTicket,
@@ -54,7 +47,7 @@ impl Prepared {
         self.size
     }
 }
-struct Inflight {
+pub(super) struct Inflight {
     capture: Option<Arc<super::capture::ReadbackStorage>>,
     id: u64,
     done: Arc<AtomicBool>,
@@ -64,8 +57,43 @@ struct Inflight {
     _glyphs: super::glyph_cache::FrameGlyphs,
     _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
+    _retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
     _admission: BudgetTicket,
     geometry: Vec<super::geometry::Storage>,
+}
+struct CacheRetry {
+    cause: GpuError,
+    released: bool,
+}
+fn pressured_usage(cause: &GpuError, usage: Usage) -> Option<u64> {
+    match pressure_pool(cause)? {
+        BudgetCategory::Offscreen => Some(usage.targets),
+        BudgetCategory::GpuResource => Some(usage.resources),
+        BudgetCategory::Temporary => Some(usage.transient),
+        _ => unreachable!("renderer pressure uses its three allocation domains"),
+    }
+}
+fn pressure_pool(cause: &GpuError) -> Option<BudgetCategory> {
+    let GpuError::Pressure { domain, .. } = cause else {
+        return None;
+    };
+    match *domain {
+        "targets" => Some(BudgetCategory::Offscreen),
+        "image upload" | "texture upload" | "glyph atlas" | "glyph upload" => {
+            Some(BudgetCategory::GpuResource)
+        }
+        "transient"
+        | "mesh scratch"
+        | "geometry"
+        | "retained plan"
+        | "retained cache"
+        | "retained dependencies"
+        | "retained submission"
+        | "image plan"
+        | "image upload metadata"
+        | "glyph preparation" => Some(BudgetCategory::Temporary),
+        _ => None,
+    }
 }
 pub struct Renderer {
     pub(super) gpu: Gpu,
@@ -80,6 +108,7 @@ pub struct Renderer {
     glyphs: super::glyph_cache::GlyphCache,
     targets: super::target_cache::TargetCache,
     geometry: super::geometry::Cache,
+    retained: super::retained::Cache,
 }
 pub(super) use crate::common::renderer::{Budgets, Reservation, reserve};
 
@@ -109,6 +138,7 @@ impl Renderer {
             glyphs: Default::default(),
             targets: Default::default(),
             geometry: Default::default(),
+            retained: Default::default(),
         }
     }
     /// Prepare the device's supported quality tiers and built-in image masks
@@ -136,12 +166,14 @@ impl Renderer {
             "readback",
         )
     }
+    /// Current renderer-owned residency across the shared accounting domains.
     pub fn usage(&self) -> Usage {
         Usage {
             targets: self.budgets.targets.usage().bytes,
             resources: self.budgets.resources.usage().bytes,
             transient: self.budgets.transient.usage().bytes,
             cached_geometry: self.geometry.bytes(),
+            shared: None,
         }
     }
     pub fn poll(&mut self) -> Result<Vec<u64>, GpuError> {
@@ -150,7 +182,9 @@ impl Renderer {
         Ok(completed)
     }
     pub fn has_pending(&self) -> bool {
-        !self.inflight.is_empty() || self.has_pending_image_uploads()
+        !self.inflight.is_empty()
+            || self.has_pending_image_uploads()
+            || !self.retained.pending.lock().unwrap().entries.is_empty()
     }
     /// Submitted image uploads still own staging and may unblock a preparation
     /// slice. Hosts can poll these short-lived completions more frequently.
@@ -168,10 +202,40 @@ impl Renderer {
         let result = self.gpu.device.poll(wgpu::PollType::Poll);
         self.gpu.check()?;
         result.map_err(|e| GpuError::Device(e.to_string()))?;
-        let resources_available = limit != 0 && self.images.poll();
+        let mut resources_available = limit != 0 && self.images.poll();
         if resources_available {
             limit -= 1;
         }
+        for pending in &self.retained.pending.lock().unwrap().entries {
+            if pending.flight.done.load(Ordering::Acquire) {
+                for slot in &pending.flight.geometry {
+                    slot.storage.ready()?;
+                }
+            }
+        }
+        self.retained
+            .pending
+            .lock()
+            .unwrap()
+            .entries
+            .retain_mut(|pending| {
+                if limit != 0
+                    && pending.flight.done.load(Ordering::Acquire)
+                    && pending
+                        .flight
+                        .geometry
+                        .iter()
+                        .all(|slot| slot.storage.ready().unwrap_or(false))
+                {
+                    self.geometry.recycle(&mut pending.flight.geometry);
+                    self.retained.inputs.complete(pending.token);
+                    resources_available = true;
+                    limit -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
         for submission in &self.inflight {
             if submission.done.load(Ordering::Acquire) {
                 for slot in &submission.geometry {
@@ -202,6 +266,7 @@ impl Renderer {
         self.images.retire(&[]);
         self.glyphs.retire(&[]);
         self.pipelines.prune_masks();
+        self.targets.prune_cold();
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
@@ -217,8 +282,23 @@ impl Renderer {
             }
         }
     }
+    /// Prepare an immutable candidate. `Preparing` means internal GPU dependencies
+    /// were submitted; poll completions and retry this same candidate. Cancellation
+    /// releases cache ownership while submitted owners remain until their fence.
     pub fn prepare(&self, frame: &RenderFrame) -> Result<Prepared, GpuError> {
         self.prepare_frames(frame, None, frame.info().physical_size, false)
+    }
+    /// Cancel exact-candidate continuation while submitted owners await their fence.
+    pub fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        self.retained.inputs.cancel(&frame.key());
+        let mut ceiling = self.retained.ceiling.lock().unwrap();
+        if ceiling.as_ref().is_some_and(|(key, _)| *key == frame.key()) {
+            *ceiling = None;
+        }
+    }
+    pub(super) fn cancel_preparations(&mut self) {
+        self.retained.inputs.clear();
+        *self.retained.ceiling.lock().unwrap() = None;
     }
     pub(super) fn prepare_capture(
         &self,
@@ -228,6 +308,7 @@ impl Renderer {
         self.prepare_frames(frame, None, size, true)
     }
     /// Both immutable input frames stay leased through queue completion. No input acceptance.
+    /// On `Preparing`, poll completions and continue with the same input frames.
     pub fn crossfade(
         &self,
         from: &RenderFrame,
@@ -250,6 +331,16 @@ impl Renderer {
         size: [u32; 2],
         capture: bool,
     ) -> Result<Prepared, GpuError> {
+        let mut epoch = self.retained.epoch.lock().unwrap();
+        if *epoch != Some(frame.surface_epoch()) {
+            self.retained.inputs.clear();
+            *self.retained.ceiling.lock().unwrap() = None;
+            *epoch = Some(frame.surface_epoch());
+        }
+        drop(epoch);
+        if !capture && self.retained.inputs.pending(&frame.key()) {
+            return Err(GpuError::Preparing);
+        }
         // Capture reserves its output and readback after replay. Keep that
         // original admission path free of optional reusable staging.
         if capture {
@@ -257,7 +348,7 @@ impl Renderer {
             self.images.clear_idle();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
-        let result = self.prepare_cached(frame, second, size, capture, &policy);
+        let result = self.prepare_cached(frame, second, size, capture, &policy, None);
         let fallback = policy.optional.get()
             && matches!(
                 result,
@@ -270,25 +361,41 @@ impl Renderer {
                 })
             );
         if fallback || matches!(result, Err(GpuError::Pressure { .. })) {
-            let resident = self.budgets.transient.usage().bytes;
-            self.geometry.clear();
-            let released_uploads = self.images.clear_idle();
-            if fallback || self.budgets.transient.usage().bytes < resident || released_uploads {
-                #[cfg(test)]
-                self.gpu
-                    .upload_creations
-                    .geometry_retries
-                    .fetch_add(1, Ordering::Relaxed);
-                // The failed encoder is already dropped. Geometry uploads only
-                // belong to that encoder, so immutable replay cannot publish it.
-                return self.prepare_cached(
-                    frame,
-                    second,
-                    size,
-                    capture,
-                    &super::geometry::UploadPolicy::new(!capture && !fallback),
-                );
+            let cause = result.err().unwrap();
+            let resident = pressured_usage(&cause, self.usage());
+            if fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary) {
+                self.geometry.clear();
+                self.targets.release_idle();
             }
+            match pressure_pool(&cause) {
+                Some(BudgetCategory::Offscreen) => self.targets.prune_cold(),
+                Some(BudgetCategory::GpuResource) => {
+                    self.images.clear_idle();
+                }
+                _ => {}
+            }
+            #[cfg(test)]
+            self.gpu
+                .upload_creations
+                .geometry_retries
+                .fetch_add(1, Ordering::Relaxed);
+            // Rebuild demand before replaying. If optional cache reclamation
+            // releases no capacity, preserve the original pressure result.
+            return self.prepare_cached(
+                frame,
+                second,
+                size,
+                capture,
+                &super::geometry::UploadPolicy::new(!capture && !fallback),
+                Some(CacheRetry {
+                    released: fallback
+                        || resident.is_some_and(|before| {
+                            pressured_usage(&cause, self.usage())
+                                .is_some_and(|after| after < before)
+                        }),
+                    cause,
+                }),
+            );
         }
         result
     }
@@ -299,197 +406,389 @@ impl Renderer {
         size: [u32; 2],
         capture: bool,
         geometry_policy: &super::geometry::UploadPolicy,
+        mut retry: Option<CacheRetry>,
     ) -> Result<Prepared, GpuError> {
-        self.gpu.check()?;
-        self.images.retire(&[]);
-        self.glyphs.retire(&[]);
-        let budget_scope = Budgets::new(self.gpu.limits);
-        let mut tickets = Vec::new();
-        let plan = super::image_plan::collect(
-            std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
-            self.gpu.device.limits().max_texture_dimension_2d,
-            capture,
-            |bytes| {
-                tickets.push(reserve(
-                    &self.budgets.transient,
-                    &budget_scope.transient,
-                    bytes,
-                    self.gpu.limits.transient_bytes,
-                    "image plan",
-                )?);
-                Ok(())
-            },
-        )?;
-        for mask in &plan.masks {
-            if mask.definition.program.sources().len() + 3
-                > self
-                    .gpu
-                    .device
-                    .limits()
-                    .max_sampled_textures_per_shader_stage as usize
-            {
-                return Err(GpuError::Unsupported {
-                    at: mask.at,
-                    record: "mask exceeds device sampled texture capacity",
-                });
-            }
-        }
-        // Cold image uploads may yield Busy. Complete that admission before
-        // preparing glyphs so retries cannot discard and rerasterize their work.
-        let images = self.images.prepare(
-            &self.gpu,
-            &plan.images,
-            &self.budgets,
-            &budget_scope,
-            &self.admission,
-            &self.glyphs,
-        )?;
-        let transform = Affine::scale_non_uniform(
-            f64::from(size[0]) / frame.info().logical_size[0],
-            f64::from(size[1]) / frame.info().logical_size[1],
-        );
-        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
-        let mut glyphs = super::glyph_cache::FrameGlyphs::default();
-        let glyph_plan = crate::common::glyph_plan::Plan::collect(
-            std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
-            transform,
-            self.gpu.device.limits().max_texture_dimension_2d,
-            capture,
-            &mut super::glyph_cache::Preparation {
-                gpu: &self.gpu,
-                encoder: &mut encoder,
-                cache: &self.glyphs,
-                frame: &mut glyphs,
-                budgets: &self.budgets,
-                local: &budget_scope,
-                tickets: &mut tickets,
-                images: &self.images,
-            },
-        )?;
-        let mut offscreen = crate::common::offscreen::Plan::default();
-        let mut offscreen_tickets = Vec::new();
-        let (quality, _) = self.gpu.quality_for_targets(size, |quality| {
-            offscreen = Default::default();
-            offscreen_tickets.clear();
-            let (schedule, targets, retained) = crate::common::offscreen::Plan::choose(
-                frame,
-                second.map(|(frame, _)| frame),
+        loop {
+            self.gpu.check()?;
+            self.images.retire(&[]);
+            self.glyphs.retire(&[]);
+            let budget_scope = Budgets::new(self.gpu.limits);
+            let mut tickets = Vec::new();
+            let cached_quality = self.retained.inputs.quality();
+            let selection = Arc::new(crate::common::retained::Plan::collect(
+                std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
                 size,
                 capture,
-                quality.samples,
-                self.gpu.device.limits().max_texture_dimension_2d,
-                &glyph_plan,
-                self.gpu.limits.target_bytes / super::targets::target_bytes([1, 1], quality)?,
-                crate::common::target_plan::MaskExecution::Inline,
+                &self.budgets,
+                &budget_scope,
+                self.gpu.limits.transient_bytes,
+                |key| {
+                    cached_quality
+                        .and_then(|quality| self.retained.inputs.lookup(key, quality, &frame.key()))
+                },
                 |bytes| {
-                    reserve(
+                    tickets.push(reserve(
                         &self.budgets.transient,
                         &budget_scope.transient,
                         bytes,
                         self.gpu.limits.transient_bytes,
-                        "transient",
-                    )
+                        "retained plan",
+                    )?);
+                    Ok(())
+                },
+            )?);
+            self.retained.inputs.retain(&selection);
+            let preferred = cached_quality.filter(|_| selection.has_cached());
+            let plan = super::image_plan::collect(
+                std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
+                self.gpu.device.limits().max_texture_dimension_2d,
+                capture,
+                &selection,
+                |bytes| {
+                    tickets.push(reserve(
+                        &self.budgets.transient,
+                        &budget_scope.transient,
+                        bytes,
+                        self.gpu.limits.transient_bytes,
+                        "image plan",
+                    )?);
+                    Ok(())
                 },
             )?;
-            offscreen = schedule;
-            offscreen_tickets = retained;
-            Ok(targets)
-        })?;
-        let pipelines = self.pipelines.get(&self.gpu, quality)?;
-        for mask in plan.masks {
-            pipelines.masks.get(
+            if let Some(retry) = retry.take()
+                && matches!(retry.cause, GpuError::Pressure { .. })
+            {
+                let resident = pressured_usage(&retry.cause, self.usage());
+                if pressure_pool(&retry.cause) == Some(BudgetCategory::GpuResource) {
+                    self.images.retain_demand(&plan.images);
+                    self.geometry.glyphs.lock().unwrap().clear();
+                    self.glyphs.prune_idle();
+                }
+                if !retry.released
+                    && !resident.is_some_and(|before| {
+                        pressured_usage(&retry.cause, self.usage())
+                            .is_some_and(|after| after < before)
+                    })
+                {
+                    return Err(retry.cause);
+                }
+            }
+            for mask in &plan.masks {
+                if mask.definition.program.sources().len() + 3
+                    > self
+                        .gpu
+                        .device
+                        .limits()
+                        .max_sampled_textures_per_shader_stage as usize
+                {
+                    return Err(GpuError::Unsupported {
+                        at: mask.at,
+                        record: "mask exceeds device sampled texture capacity",
+                    });
+                }
+            }
+            // Cold image uploads may yield Busy. Complete that admission before
+            // preparing glyphs so retries cannot discard and rerasterize their work.
+            let images = self.images.prepare(
                 &self.gpu,
+                &plan.images,
+                &self.budgets,
+                &budget_scope,
+                &self.admission,
+                &self.glyphs,
+            )?;
+            let transform = Affine::scale_non_uniform(
+                f64::from(size[0]) / frame.info().logical_size[0],
+                f64::from(size[1]) / frame.info().logical_size[1],
+            );
+            let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+            let mut glyphs = super::glyph_cache::FrameGlyphs::default();
+            let glyph_plan = crate::common::glyph_plan::Plan::collect(
+                std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
+                transform,
+                self.gpu.device.limits().max_texture_dimension_2d,
+                capture,
+                &selection,
+                &mut super::glyph_cache::Preparation {
+                    gpu: &self.gpu,
+                    encoder: &mut encoder,
+                    cache: &self.glyphs,
+                    frame: &mut glyphs,
+                    budgets: &self.budgets,
+                    local: &budget_scope,
+                    tickets: &mut tickets,
+                    images: &self.images,
+                },
+            )?;
+            let mut offscreen = crate::common::offscreen::Plan::default();
+            let mut offscreen_tickets = Vec::new();
+            let mut target_plan = |quality: Quality| {
+                offscreen = Default::default();
+                offscreen_tickets.clear();
+                let (schedule, targets, retained) = crate::common::offscreen::Plan::choose(
+                    frame,
+                    second.map(|(frame, _)| frame),
+                    size,
+                    capture,
+                    quality.samples,
+                    self.gpu.device.limits().max_texture_dimension_2d,
+                    &glyph_plan,
+                    self.gpu.limits.target_bytes,
+                    &|extent| super::targets::target_bytes(extent, quality),
+                    crate::common::target_plan::MaskExecution::Inline,
+                    &selection,
+                    |bytes| {
+                        reserve(
+                            &self.budgets.transient,
+                            &budget_scope.transient,
+                            bytes,
+                            self.gpu.limits.transient_bytes,
+                            "transient",
+                        )
+                    },
+                )?;
+                offscreen = schedule;
+                offscreen_tickets = retained;
+                Ok(targets)
+            };
+            let quality = if let Some(quality) = preferred {
+                let bytes = target_plan(quality)?;
+                if bytes > self.gpu.limits.target_bytes {
+                    let mut qualities = self
+                        .gpu
+                        .supported_qualities()
+                        .skip_while(|candidate| *candidate != quality);
+                    qualities.next();
+                    if let Some(lower) = qualities.next() {
+                        self.retained.inputs.clear();
+                        *self.retained.ceiling.lock().unwrap() = Some((frame.key(), lower));
+                        continue;
+                    }
+                    return Err(GpuError::Budget {
+                        domain: "targets",
+                        requested: bytes,
+                        available: self.gpu.limits.target_bytes,
+                    });
+                }
+                quality
+            } else {
+                let ceiling = self
+                    .retained
+                    .ceiling
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .filter(|(key, _)| *key == frame.key())
+                    .map(|(_, quality)| *quality);
+                let mut allowed = ceiling.is_none();
+                self.gpu
+                    .quality_for_targets(size, |quality| {
+                        allowed |= Some(quality) == ceiling;
+                        if !allowed {
+                            return Ok(self.gpu.limits.target_bytes.saturating_add(1));
+                        }
+                        target_plan(quality)
+                    })?
+                    .0
+            };
+            let pipelines = self.pipelines.get(&self.gpu, quality)?;
+            for mask in plan.masks {
+                pipelines.masks.get(
+                    &self.gpu,
+                    quality,
+                    &mask.definition.program,
+                    mask.definition.parameters,
+                    &self.budgets.resources,
+                )?;
+            }
+            for image in images.values() {
+                tickets.push(Reservation {
+                    _shared: None,
+                    _local: super::image_cache::reserve_local(
+                        &budget_scope.resources,
+                        image.residency.as_ref().unwrap().bytes(),
+                        self.gpu.limits.resource_bytes,
+                    )?,
+                });
+            }
+            // Upload batches own their own admission. Reserving this earlier would
+            // deadlock cold frames on a host configured for one in-flight submission.
+            let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
+            self.targets.configure(size, quality);
+            let warm = selection
+                .warm
+                .map(|index| {
+                    self.retained.inputs.start(
+                        selection.entries[index].key.clone(),
+                        quality,
+                        frame.key(),
+                        &self.budgets.transient,
+                        self.gpu.limits.transient_bytes,
+                    )
+                })
+                .transpose()?;
+            let mut ctx = Context {
+                capture,
+                gpu: &self.gpu,
+                encoder,
+                pipelines,
                 quality,
-                &mask.definition.program,
-                mask.definition.parameters,
-                &self.budgets.resources,
-            )?;
+                size,
+                budgets: &self.budgets,
+                budget_scope,
+                tickets,
+                images,
+                image_cache: &self.images,
+                glyph_cache: &self.glyphs,
+                glyphs,
+                glyph_plan,
+                offscreen,
+                effects: Vec::new(),
+                white: None,
+                target_cache: &self.targets,
+                retained_cache: &self.retained.inputs,
+                selection,
+                retained_inputs: Vec::new(),
+                warm,
+                warmed: false,
+                target_allocations: Vec::new(),
+                available_targets: Vec::new(),
+                target_writes: Default::default(),
+                scissor: super::targets::Scissor::full(size),
+                mesh_clip: None,
+                paint_batch: None,
+                geometry_policy,
+                geometry_cache: &self.geometry,
+                geometry: Vec::new(),
+            };
+            let transform = Affine::scale_non_uniform(
+                f64::from(size[0]) / frame.info().logical_size[0],
+                f64::from(size[1]) / frame.info().logical_size[1],
+            );
+            let mut output = ctx.stream(frame.drawing(), transform)?;
+            ctx.offscreen.disable_batches();
+            let mut frames = vec![frame.clone()];
+            if let Some((second, progress)) = second
+                && !ctx.warmed
+            {
+                let b = ctx.stream(second.drawing(), transform)?;
+                if ctx.warmed {
+                    output = b;
+                } else {
+                    let mixed = ctx.target()?;
+                    ctx.combine(
+                        &mixed,
+                        &output.view,
+                        &b.view,
+                        1.,
+                        0.,
+                        CompositeOperation::Crossfade(progress),
+                    )?;
+                    output = mixed;
+                }
+                frames.push(second.clone());
+            }
+            drop(ctx.offscreen);
+            drop(offscreen_tickets);
+            self.gpu.check()?;
+            let retained = if ctx.warmed {
+                self.retained
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .reserve(&self.budgets.transient, self.gpu.limits.transient_bytes)?;
+                ctx.tickets.push(Reservation {
+                    _shared: None,
+                    _local: ctx
+                        .budget_scope
+                        .transient
+                        .reserve(size_of::<super::retained::Pending>() as u64)
+                        .map_err(|_| GpuError::Budget {
+                            domain: "retained submission",
+                            requested: size_of::<super::retained::Pending>() as u64,
+                            available: self
+                                .gpu
+                                .limits
+                                .transient_bytes
+                                .saturating_sub(ctx.budget_scope.transient.usage().bytes),
+                        })?,
+                });
+                let token = ctx
+                    .warm
+                    .expect("cold retained phase has an admitted output");
+                let allocation = ctx
+                    .target_allocations
+                    .iter()
+                    .find(|allocation| allocation.target.view == output.view)
+                    .expect("cold retained output belongs to this preparation")
+                    .clone();
+                let storage = output.storage_size();
+                self.retained.inputs.stage(
+                    token,
+                    super::retained::Output {
+                        allocation,
+                        target: output.clone(),
+                    },
+                    super::targets::target_bytes(storage, quality)?,
+                );
+                Some(token)
+            } else {
+                None
+            };
+            let prepared = Prepared {
+                capture: None,
+                encoder: ctx.encoder,
+                output: output.view,
+                texture: output.texture,
+                quality,
+                size,
+                frames,
+                tickets: ctx.tickets,
+                images: ctx.images,
+                glyphs: ctx.glyphs,
+                effects: ctx.effects,
+                targets: ctx.target_allocations,
+                retained_inputs: ctx.retained_inputs,
+                geometry: ctx.geometry,
+                budget_scope: ctx.budget_scope,
+                admission,
+                generation: self.gpu.generation,
+                owner: self.owner.clone(),
+            };
+            if let Some(token) = retained {
+                let done = Arc::new(AtomicBool::new(false));
+                self.gpu.queue.submit([prepared.encoder.finish()]);
+                let signal = done.clone();
+                self.gpu
+                    .queue
+                    .on_submitted_work_done(move || signal.store(true, Ordering::Release));
+                self.targets.clear();
+                self.retained
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .push(super::retained::Pending {
+                        token,
+                        flight: Inflight {
+                            capture: None,
+                            id: 0,
+                            done,
+                            _frames: prepared.frames,
+                            _tickets: prepared.tickets,
+                            _images: prepared.images,
+                            _glyphs: prepared.glyphs,
+                            _effects: prepared.effects,
+                            _targets: prepared.targets,
+                            _retained_inputs: prepared.retained_inputs,
+                            _admission: prepared.admission,
+                            geometry: prepared.geometry,
+                        },
+                    });
+                return Err(GpuError::Preparing);
+            }
+            return Ok(prepared);
         }
-        for image in images.values() {
-            tickets.push(Reservation {
-                _shared: None,
-                _local: super::image_cache::reserve_local(
-                    &budget_scope.resources,
-                    image.residency.as_ref().unwrap().bytes(),
-                    self.gpu.limits.resource_bytes,
-                )?,
-            });
-        }
-        // Upload batches own their own admission. Reserving this earlier would
-        // deadlock cold frames on a host configured for one in-flight submission.
-        let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
-        self.targets.configure(size, quality);
-        let mut ctx = Context {
-            capture,
-            gpu: &self.gpu,
-            encoder,
-            pipelines,
-            quality,
-            size,
-            budgets: &self.budgets,
-            budget_scope,
-            tickets,
-            images,
-            image_cache: &self.images,
-            glyph_cache: &self.glyphs,
-            glyphs,
-            glyph_plan,
-            offscreen,
-            effects: Vec::new(),
-            white: None,
-            target_cache: &self.targets,
-            target_allocations: Vec::new(),
-            available_targets: Vec::new(),
-            target_writes: Default::default(),
-            scissor: super::targets::Scissor::full(size),
-            mesh_clip: None,
-            paint_batch: None,
-            geometry_policy,
-            geometry_cache: &self.geometry,
-            geometry: Vec::new(),
-        };
-        let transform = Affine::scale_non_uniform(
-            f64::from(size[0]) / frame.info().logical_size[0],
-            f64::from(size[1]) / frame.info().logical_size[1],
-        );
-        let mut output = ctx.stream(frame.drawing(), transform)?;
-        ctx.offscreen = Default::default();
-        drop(offscreen_tickets);
-        let mut frames = vec![frame.clone()];
-        if let Some((second, progress)) = second {
-            let b = ctx.stream(second.drawing(), transform)?;
-            let mixed = ctx.target()?;
-            ctx.combine(
-                &mixed,
-                &output.view,
-                &b.view,
-                1.,
-                0.,
-                CompositeOperation::Crossfade(progress),
-            )?;
-            output = mixed;
-            frames.push(second.clone());
-        }
-        self.gpu.check()?;
-        Ok(Prepared {
-            capture: None,
-            encoder: ctx.encoder,
-            output: output.view,
-            texture: output.texture,
-            quality,
-            size,
-            frames,
-            tickets: ctx.tickets,
-            images: ctx.images,
-            glyphs: ctx.glyphs,
-            effects: ctx.effects,
-            targets: ctx.target_allocations,
-            geometry: ctx.geometry,
-            budget_scope: ctx.budget_scope,
-            admission,
-            generation: self.gpu.generation,
-            owner: self.owner.clone(),
-        })
     }
     pub(super) fn validate_prepared(&self, prepared: &Prepared) -> Result<(), GpuError> {
         self.gpu.check()?;
@@ -511,9 +810,14 @@ impl Renderer {
         let id = self.next;
         self.next = id.checked_add(1).ok_or(GpuError::IdentityExhausted)?;
         let done = Arc::new(AtomicBool::new(false));
+        self.targets.reserve_metadata(
+            prepared.size,
+            prepared.quality,
+            &prepared.targets,
+            &self.budgets.transient,
+            self.gpu.limits.transient_bytes,
+        );
         self.gpu.queue.submit([prepared.encoder.finish()]);
-        self.targets
-            .publish(prepared.size, prepared.quality, &prepared.targets);
         self.glyphs.publish(&prepared.glyphs);
         let signal = done.clone();
         self.gpu
@@ -529,10 +833,16 @@ impl Renderer {
             _glyphs: prepared.glyphs,
             _effects: prepared.effects,
             _targets: prepared.targets,
+            _retained_inputs: prepared.retained_inputs,
             _admission: prepared.admission,
             geometry: prepared.geometry,
         });
         self.gpu.check()?;
+        self.targets.publish(
+            prepared.size,
+            prepared.quality,
+            &self.inflight.last().unwrap()._targets,
+        );
         Ok(id)
     }
 }

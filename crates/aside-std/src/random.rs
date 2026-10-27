@@ -9,6 +9,9 @@ enum Slot {
     State,
 }
 
+pub(super) static READONLY: aside_host::aside_vm::HostPropertyValidator =
+    aside_host::aside_vm::HostPropertyValidator::new("std.random", 1, readonly);
+
 pub(super) fn readonly(
     _: &aside_host::aside_vm::PropertyRead<'_>,
     _: Value,
@@ -40,7 +43,7 @@ pub(super) fn random(
     let object = vm.heap_mut().alloc_host(
         fields,
         &[Value::int(TAG), Value::int(state)],
-        Some(readonly),
+        Some(&READONLY),
     )?;
     let ty = vm.heap().host_type(crate::source::RANDOM)?;
     vm.heap_mut().set_host_type(object, ty)?;

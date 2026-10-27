@@ -103,7 +103,7 @@ impl Vm {
                 return Ok(false);
             }
             self.heap.seal_string(builder)?;
-            match self.write(*s, dest, builder) {
+            match self.write(s.regs, dest, builder) {
                 Ok(()) => {
                     self.clear(s.env, 1)?;
                     s.pc = s.instruction_end;
@@ -193,9 +193,9 @@ impl Vm {
             if tuple {
                 self.heap.seal_tuple(builder)?;
             }
-            self.write(*s, dest, builder)
+            self.write(s.regs, dest, builder)
         } else {
-            self.read(*s, Reg(window.start.0 + index))
+            self.read(s.regs, Reg(window.start.0 + index))
                 .and_then(|value| self.heap.array_push(builder, value).map_err(heap_fault))
         };
         match result {
@@ -386,7 +386,7 @@ impl Vm {
                 }
             }
             TableSource::Pair(pair) => {
-                let key = match self.read(*s, pair[0]) {
+                let key = match self.read(s.regs, pair[0]) {
                     Ok(key) => key,
                     Err(kind) => return self.collection_fault(s, kind),
                 };
@@ -891,7 +891,7 @@ impl Vm {
                     };
                     return self.collection_fault(s, kind);
                 }
-                let value = match self.read(*s, reg) {
+                let value = match self.read(s.regs, reg) {
                     Ok(value) => value,
                     Err(kind) => return self.collection_fault(s, kind),
                 };
@@ -933,7 +933,7 @@ impl Vm {
                 let Some(TableSource::Pair(pair)) = self.table_source(*s, descriptor, field) else {
                     unreachable!()
                 };
-                let value = match self.read(*s, pair[1]) {
+                let value = match self.read(s.regs, pair[1]) {
                     Ok(value) => value,
                     Err(kind) => return self.collection_fault(s, kind),
                 };

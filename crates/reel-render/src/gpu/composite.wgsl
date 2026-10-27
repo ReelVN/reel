@@ -1,15 +1,16 @@
-struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32, blend: u32, source_uv: vec4<f32> /*MASK_FIELDS*/ };
+struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32, blend: u32, source_uv: vec4<f32>, mask_uv: vec4<f32>, backdrop_uv: vec4<f32> /*MASK_FIELDS*/ };
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var mask: texture_2d<f32>;
 @group(0) @binding(2) var linear_sampler: sampler;
 @group(0) @binding(3) var<uniform> params: Params;
 @group(0) @binding(4) var backdrop: texture_2d<f32>;
-struct Varying { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) source_uv: vec2<f32> };
+struct Varying { @builtin(position) pos: vec4<f32>, @location(0) mask_uv: vec2<f32>, @location(1) source_uv: vec2<f32>, @location(2) backdrop_uv: vec2<f32> };
 @vertex fn vertex(@builtin(vertex_index) i: u32) -> Varying {
     let uv = vec2(f32((i << 1u) & 2u), f32(i & 2u));
     var out: Varying;
     out.pos = vec4(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);
-    out.uv = uv;
+    out.mask_uv = uv * params.mask_uv.xy + params.mask_uv.zw;
+    out.backdrop_uv = uv * params.backdrop_uv.xy + params.backdrop_uv.zw;
     out.source_uv = uv * params.source_uv.xy + params.source_uv.zw;
     return out;
 }
@@ -36,7 +37,7 @@ fn covered_source(v: Varying) -> vec4<f32> {
         let encoded = encoded_srgb(clamp(s.rgb / s.a, vec3(0.0), vec3(1.0)));
         s = vec4(linear_srgb(mix(encoded, vec3(1.0) - encoded, params.invert)) * s.a, s.a);
     }
-    let m = textureSample(mask, linear_sampler, v.uv);
+    let m = textureSample(mask, linear_sampler, v.mask_uv);
     if params.mode == 3u { return mix(s, m, params.progress); }
     if params.mode == 4u {
         if params.progress <= 0.0 { return s; }
@@ -101,13 +102,13 @@ fn separable(s: vec4<f32>, d: vec4<f32>, mode: u32) -> vec4<f32> {
 }
 
 @fragment fn alpha_mask(v: Varying) -> @location(0) vec4<f32> {
-    return textureSample(source, linear_sampler, v.source_uv) * clamp(textureSample(mask, linear_sampler, v.uv).a, 0.0, 1.0) * params.opacity;
+    return textureSample(source, linear_sampler, v.source_uv) * clamp(textureSample(mask, linear_sampler, v.mask_uv).a, 0.0, 1.0) * params.opacity;
 }
 
 @fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {
     let s = covered_source(v);
     if params.blend == 0u { return s; }
-    let d = textureSample(backdrop, linear_sampler, v.uv);
+    let d = textureSample(backdrop, linear_sampler, v.backdrop_uv);
     if params.blend == 1u { return min(s + d, vec4(1.0)); }
     if params.blend == 4u { return subtract(s, d); }
     let alpha = s.a + d.a * (1.0 - s.a);
@@ -118,5 +119,5 @@ fn separable(s: vec4<f32>, d: vec4<f32>, mode: u32) -> vec4<f32> {
 }
 
 @fragment fn extended_blend(v: Varying) -> @location(0) vec4<f32> {
-    return separable(covered_source(v), textureSample(backdrop, linear_sampler, v.uv), params.blend);
+    return separable(covered_source(v), textureSample(backdrop, linear_sampler, v.backdrop_uv), params.blend);
 }

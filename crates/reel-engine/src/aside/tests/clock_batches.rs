@@ -66,6 +66,7 @@ fn continuous_clock_settles_sliced_derivations_and_restores_a_pending_batch() {
         let (mut session, mut vm) = models::prepared(source, encoded);
         models::drive(&mut vm, &mut session, false);
         assert_eq!(position(&vm), 0.);
+        assert!(vm.continuous_time_pending());
         let mut restored = false;
         let mut publications = 0;
         let mut last = 0.;
@@ -107,6 +108,10 @@ fn continuous_clock_settles_sliced_derivations_and_restores_a_pending_batch() {
                 while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
                 (session, vm) = restore.finish().unwrap();
                 assert_eq!(vm.activities.time(), sampled);
+                assert!(
+                    vm.continuous_time_pending(),
+                    "restore rebuilds clock sampling state"
+                );
                 restored = true;
             }
         }
@@ -133,6 +138,7 @@ fn continuous_clock_settles_sliced_derivations_and_restores_a_pending_batch() {
         }
         models::drive(&mut vm, &mut session, false);
         assert!(!vm.activities_need_time());
+        assert!(!vm.continuous_time_pending());
         activities::advance_clock(&mut vm, &session, 100., 1);
         models::drive(&mut vm, &mut session, false);
         assert_eq!(

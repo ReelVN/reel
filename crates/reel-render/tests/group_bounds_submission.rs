@@ -232,7 +232,7 @@ fn nested_isolation_frame() -> RenderFrame {
     frame
 }
 
-#[cfg(feature = "gles2")]
+#[cfg(all(feature = "gles2", feature = "profiling"))]
 const NESTED_TARGETS: u64 = 2;
 // The isolated 120 x 60 source includes raster padding and rounds to a 32-pixel bucket.
 const NESTED_TARGET_BYTES: u64 = TARGET_BYTES + 128 * 64 * 4;
@@ -385,7 +385,7 @@ fn gles_isolation(width: u64, atlas: bool) {
         #[cfg(feature = "profiling")]
         let before = reel_core::profile::Sample::snapshot();
         renderer.render_present(&frame, || {}).unwrap();
-        peak_live = peak_live.max(renderer.usage().peak_bytes);
+        peak_live = peak_live.max(renderer.usage().shared.unwrap().peak_bytes);
         let submit_us = submitting.elapsed().as_micros();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -766,8 +766,8 @@ fn gles_retained_targets_yield_to_geometry_pressure() {
             std::thread::yield_now();
         }
         let usage = renderer.usage();
-        assert!(usage.peak_bytes <= total_bytes);
-        completed.push((usage.bytes, renderer.cached_geometry_bytes()));
+        assert!(usage.shared.unwrap().peak_bytes <= total_bytes);
+        completed.push((usage.total(), usage.cached_geometry));
     }
     assert!(completed[0].0 >= TARGET_BYTES * 3);
     // Geometry remains accounted after completion. Excluding that measured

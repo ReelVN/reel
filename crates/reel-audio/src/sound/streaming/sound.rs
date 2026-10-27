@@ -255,14 +255,13 @@ impl Sound for StreamingSound {
 		}
 
 		let num_frames = out.len();
+		let volume = self.volume.amplitude_block();
+		let fade = self.playback_state_manager.fade_amplitudes();
+		let panning = self.panning.panning_block();
 		for (i, frame) in out.iter_mut().enumerate() {
 			let time_in_chunk = (i + 1) as f64 / num_frames as f64;
-			let volume = self.volume.interpolated_value(time_in_chunk).as_amplitude();
-			let fade_volume = self
-				.playback_state_manager
-				.interpolated_fade_volume(time_in_chunk)
-				.as_amplitude();
-			let panning = self.panning.interpolated_value(time_in_chunk);
+			let volume = volume.at(time_in_chunk);
+			let fade_volume = fade.at(time_in_chunk);
 			let playback_rate = self.playback_rate.interpolated_value(time_in_chunk);
 			let next_frames = self.next_frames();
 			let interpolated_out = interpolate_frame(
@@ -281,7 +280,7 @@ impl Sound for StreamingSound {
 				self.playback_state_manager.mark_as_stopped();
 				self.update_shared_playback_state();
 			}
-			*frame = (interpolated_out * fade_volume * volume).panned(panning);
+			*frame = panning.apply(interpolated_out * fade_volume * volume, time_in_chunk);
 		}
 	}
 

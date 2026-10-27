@@ -130,28 +130,31 @@ impl Vm {
                 }
             }
             ScriptPhase::Defaults { parameter } => {
-                let f = &self.program.package().functions[s.code.function.index()];
                 let sig = &self.program.package().signatures[signature.index()];
+                let bound = self.slots.read(at(s.bound, parameter)).is_ok();
                 let allocation = sig
                     .parameters
                     .get(parameter as usize)
-                    .filter(|_| self.slots.read(at(s.bound, parameter)).is_err())
+                    .filter(|_| !bound)
                     .and_then(|p| p.default)
                     .map_or(0, |default| match default {
                         ParameterDefault::Constant(id) => self.constant_allocation_bytes(id),
                         _ => 0,
                     });
-                if !m.take(0, f.bindings.len() as u64 + 2, allocation) {
+                let work = 2 + if bound {
+                    self.program.script_parameter_lookup_work()
+                } else {
+                    0
+                };
+                if !m.take(0, work, allocation) {
                     return Ok(false);
                 }
                 if parameter as usize == sig.parameters.len() + usize::from(sig.rest.is_some()) {
                     s.phase = ScriptPhase::Install { binding: 0 };
-                } else if self.slots.read(at(s.bound, parameter)).is_ok() {
-                    let storage = f
-                        .bindings
-                        .iter()
-                        .find(|b| b.initialization == BindingInitialization::Parameter(parameter))
-                        .map_or(BindingStorage::Value(Reg(parameter)), |b| b.storage);
+                } else if bound {
+                    let storage = self
+                        .program
+                        .script_parameter_storage(s.code.function, parameter);
                     s.phase = ScriptPhase::Parameter { parameter, storage };
                 } else if let Some(default) = sig.parameters[parameter as usize].default {
                     match default {
@@ -360,7 +363,7 @@ impl Vm {
                         c = name.0;
                     }
                 }
-                let (work, allocation) = match self.instruction_cost(s, op, a, b, c) {
+                let (work, allocation) = match self.instruction_cost(&s, op, a, b, c) {
                     Ok((work, allocation)) => (work + index_work, allocation),
                     Err(error) => {
                         if !m.take(1, 1 + index_work, 0) {
@@ -490,7 +493,7 @@ impl Vm {
                             self.finish_constant(s.env, [1, 2])?;
                             s.phase = ScriptPhase::Defaults { parameter };
                         } else {
-                            match self.write(s, work.dest, value) {
+                            match self.write(s.regs, work.dest, value) {
                                 Ok(()) => {
                                     self.finish_constant(s.env, [1, 2])?;
                                     s.pc = s.instruction_end;
@@ -702,11 +705,19 @@ impl Vm {
                 }
             }
             ScriptPhase::Release { reason } => {
+                let error = match reason {
+                    ExitReason::Throw(info) => Some(info),
+                    _ => None,
+                };
+                let Some(growth) = self.commit_root_admission(s.ret, error)? else {
+                    return Ok(true);
+                };
                 let caught = self.active.caught.data.len() as u64;
-                let next = (caught + 2).max(self.release_cost(4) + self.commit_work(s.ret));
+                let next =
+                    (caught + 2).max(self.release_cost(4) + self.commit_work(s.ret) + growth.0);
                 // The scan is not a saved stage. Charge it with its successor
                 // so the reported retry grant can complete this bounded action.
-                if !m.take(0, caught + next, 0) {
+                if !m.take(0, caught + next, growth.1) {
                     return Ok(false);
                 }
                 let index = self.active.caught.data.iter().position(|c| {
@@ -728,10 +739,6 @@ impl Vm {
                     ExitReason::Throw(info) if info.fault.is_some() => Some(self.value(s.env, 2)?),
                     _ => None,
                 };
-                let error = match reason {
-                    ExitReason::Throw(info) => Some(info),
-                    _ => None,
-                };
                 let committed = if s.generator {
                     self.generator_release(s, value, cause, error)?
                 } else {
@@ -751,7 +758,7 @@ impl Vm {
     }
     pub(super) fn instruction_cost(
         &self,
-        s: ScriptFrame,
+        s: &ScriptFrame,
         op: Opcode,
         _a: u32,
         b: u32,

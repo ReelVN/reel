@@ -39,7 +39,15 @@ mod tests {
             let size = if bucket == 0 { [32, 32] } else { [64, 32] };
             let cost = super::super::targets::target_bytes(size, quality).unwrap();
             let allocation = cache
-                .get(&gpu, size, quality, 0, &budgets.targets, cost)
+                .get(
+                    &gpu,
+                    size,
+                    quality,
+                    0,
+                    &budgets.targets,
+                    cost,
+                    &crate::common::target_plan::Requirements::default(),
+                )
                 .unwrap();
             if let Some(first) = &first[bucket] {
                 assert!(
@@ -49,7 +57,15 @@ mod tests {
             } else {
                 first[bucket] = Some(allocation.clone());
             }
-            cache.publish([960, 544], quality, &[allocation]);
+            let used = [allocation];
+            cache.reserve_metadata(
+                [960, 544],
+                quality,
+                &used,
+                &budgets.transient,
+                limits.transient_bytes,
+            );
+            cache.publish([960, 544], quality, &used);
             let expected = if frame == 0 {
                 32 * 32 * 4
             } else {
@@ -58,6 +74,24 @@ mod tests {
             assert_eq!(budgets.targets.usage().bytes, expected);
             assert_eq!(budgets.targets.usage().peak_bytes, expected);
         }
+        drop(first[1].take());
+        for _ in 0..2 {
+            cache.publish([960, 544], quality, &[first[0].as_ref().unwrap().clone()]);
+        }
+        assert_eq!(budgets.targets.usage().bytes, 32 * 32 * 4);
+        let same = cache
+            .get(
+                &gpu,
+                [32, 32],
+                quality,
+                0,
+                &budgets.targets,
+                32 * 32 * 4,
+                &crate::common::target_plan::Requirements::default(),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(first[0].as_ref().unwrap(), &same));
+        drop(same);
         // Cache eviction cannot return a flight's live bytes. The last owner
         // releases them independently of the now-empty idle cache.
         let flight = first[0].take().unwrap();
@@ -72,12 +106,20 @@ mod tests {
 struct Entries {
     size: [u32; 2],
     quality: Quality,
-    slots: Vec<Arc<Allocation>>,
+    slots: crate::common::target_cache::Cache<Arc<Allocation>>,
 }
 #[derive(Default)]
 pub(super) struct TargetCache(Mutex<Option<Entries>>);
 
 impl TargetCache {
+    #[cfg(test)]
+    pub(super) fn metadata_bytes(&self) -> u64 {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |entries| entries.slots.capacity_bytes())
+    }
     pub(super) fn configure(&self, size: [u32; 2], quality: Quality) {
         let mut cache = self.0.lock().unwrap();
         if let Some(entries) = cache.as_ref()
@@ -89,10 +131,14 @@ impl TargetCache {
         *cache = Some(Entries {
             size,
             quality,
-            slots: Vec::new(),
+            slots: Default::default(),
         });
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one physical request shares its quality, lifetime demand and accounting"
+    )]
     pub(super) fn get(
         &self,
         gpu: &Gpu,
@@ -101,25 +147,35 @@ impl TargetCache {
         index: usize,
         pool: &BudgetPool,
         cost: u64,
+        required: &crate::common::target_plan::Requirements,
     ) -> Result<Arc<Allocation>, GpuError> {
-        if let Some(entries) = self.0.lock().unwrap().as_mut()
+        if let Some(entries) = self.0.lock().unwrap().as_ref()
             && entries.quality == quality
-            && let Some(target) = entries
-                .slots
-                .iter()
-                .filter(|allocation| allocation.target.size == size)
-                .nth(index)
+            && let Some(target) = entries.slots.get(size, index)
         {
             return Ok(target.clone());
         }
-        // Different size buckets survive changes in allocation order. Under
-        // pressure, release only cache ownership; flights retain actual storage.
-        if cost > gpu.limits.target_bytes.saturating_sub(pool.usage().bytes)
-            && let Some(entries) = self.0.lock().unwrap().as_mut()
-        {
-            entries.slots.clear();
+        let mut resident = pool.reserve(cost);
+        for recent in [false, true] {
+            if resident.is_ok() {
+                break;
+            }
+            let released = self
+                .0
+                .lock()
+                .unwrap()
+                .as_mut()
+                .filter(|entries| entries.quality == quality)
+                .is_some_and(|entries| {
+                    entries
+                        .slots
+                        .reclaim(required, recent, |owner| Arc::strong_count(owner) == 1)
+                });
+            if released {
+                resident = pool.reserve(cost);
+            }
         }
-        let resident = pool.reserve(cost).map_err(|_| GpuError::Pressure {
+        let resident = resident.map_err(|_| GpuError::Pressure {
             domain: "targets",
             requested: cost,
             available: gpu.limits.target_bytes.saturating_sub(pool.usage().bytes),
@@ -130,27 +186,80 @@ impl TargetCache {
         }))
     }
 
+    pub(super) fn reserve_metadata(
+        &self,
+        size: [u32; 2],
+        quality: Quality,
+        slots: &[Arc<Allocation>],
+        metadata: &BudgetPool,
+        limit: u64,
+    ) {
+        let mut cache = self.0.lock().unwrap();
+        if let Some(entries) = cache.as_mut()
+            && entries.size == size
+            && entries.quality == quality
+        {
+            let additional = slots
+                .iter()
+                .filter(|allocation| {
+                    !entries
+                        .slots
+                        .contains(allocation.target.storage_size(), |cached| {
+                            Arc::ptr_eq(cached, allocation)
+                        })
+                })
+                .count();
+            // Reuse is optional. Metadata pressure cannot reject an otherwise
+            // fully prepared submission; publish keeps only admitted slots.
+            let _ = entries.slots.reserve(additional, metadata, limit);
+        }
+    }
+
     pub(super) fn publish(&self, size: [u32; 2], quality: Quality, slots: &[Arc<Allocation>]) {
         let mut cache = self.0.lock().unwrap();
         if let Some(entries) = cache.as_mut()
             && entries.size == size
             && entries.quality == quality
         {
-            // Cache ownership includes every warm size bucket, with the same
-            // resident tickets that are held by prepared/in-flight submissions.
+            entries.slots.submitted();
             for allocation in slots {
+                entries
+                    .slots
+                    .mark_used(allocation.target.storage_size(), |cached| {
+                        Arc::ptr_eq(cached, allocation)
+                    });
+            }
+            entries
+                .slots
+                .prune_cold(|owner| Arc::strong_count(owner) == 1);
+            for allocation in slots {
+                let size = allocation.target.storage_size();
                 if !entries
                     .slots
-                    .iter()
-                    .any(|cached| Arc::ptr_eq(cached, allocation))
+                    .contains(size, |cached| Arc::ptr_eq(cached, allocation))
                 {
-                    entries.slots.push(allocation.clone());
+                    entries.slots.insert(size, allocation.clone());
                 }
             }
         }
     }
 
-    #[cfg(test)]
+    pub(super) fn prune_cold(&self) {
+        if let Some(entries) = self.0.lock().unwrap().as_mut() {
+            entries
+                .slots
+                .prune_cold(|owner| Arc::strong_count(owner) == 1);
+        }
+    }
+
+    pub(super) fn release_idle(&self) {
+        if let Some(entries) = self.0.lock().unwrap().as_mut() {
+            entries
+                .slots
+                .release_idle(|owner| Arc::strong_count(owner) == 1);
+        }
+    }
+
     pub(super) fn clear(&self) {
         *self.0.lock().unwrap() = None;
     }

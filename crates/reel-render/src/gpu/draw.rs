@@ -74,9 +74,11 @@ impl Context<'_> {
         self.flush_draws()?;
         self.ensure_sampled(&source.view);
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
-        mesh.quad(
-            Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
-            Rect::new(0., 0., 1., 1.),
+        crate::common::effect_plan::projected_source(
+            &mut mesh,
+            source.size,
+            source.storage_size(),
+            false,
         )?;
         mesh::transform_glyphs(
             &mut mesh,
@@ -855,6 +857,14 @@ impl Context<'_> {
             multiview_mask: None,
             occlusion_query_set: None,
         });
+        pass.set_viewport(
+            0.,
+            0.,
+            batch.target.size[0] as f32,
+            batch.target.size[1] as f32,
+            0.,
+            1.,
+        );
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), index_format);
         for (entry, group) in batch.geometry.entries.iter().zip(&groups) {

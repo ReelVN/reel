@@ -1,17 +1,17 @@
-//! Blocking Read/Seek views for decoder workers and native media callbacks.
-//! The shared resource service owns and polls its ordinary AssetIo lane.
+//! Decoder workers submit and drain readers on the shared bounded IO lane.
 #[cfg(target_os = "vita")]
 use pvr_psp2_sys::platform::wake::Wake;
 use reel_core::{
-    budget::OwnedBytes,
-    identity::{AssetKey, AssetSource, IoId, Priority, Scope},
-    io::{DescribeRequest, IoPayload, ReadRequest},
-    result::Terminal,
+    budget::{BudgetPool, BudgetTicket, OwnedBytes},
+    identity::{AssetKey, AssetSource, Priority, Scope},
+    io::{AssetIo, DescribeRequest, IoEvent, IoPayload, ReadRequest},
+    result::{RejectCode, RejectReason, Terminal},
     wake::WakeSignal,
 };
 #[cfg(not(target_os = "vita"))]
 use std::sync::Condvar;
 use std::{
+    collections::VecDeque,
     io::{self, Read, Seek, SeekFrom},
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
@@ -27,13 +27,13 @@ enum Response {
 }
 struct State {
     source: AssetSource,
-    request: Option<Request>,
-    active: Option<IoId>,
-    response: Option<Result<Response, String>>,
+    completion: Option<BudgetTicket>,
     closed: bool,
 }
 struct Shared {
     state: Mutex<State>,
+    reader: Mutex<Option<Box<dyn AssetIo + Send>>>,
+    admission: Arc<Mutex<Admission>>,
     #[cfg(not(target_os = "vita"))]
     ready: Condvar,
     #[cfg(target_os = "vita")]
@@ -41,13 +41,23 @@ struct Shared {
     wake: WakeSignal,
 }
 impl Shared {
+    fn recycle_completion(&self, completion: BudgetTicket) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return false;
+        }
+        assert!(state.completion.is_none(), "one completion slot per stream");
+        state.completion = Some(completion);
+        true
+    }
     fn notify(&self) {
+        // Serialize notification with the predicate check before Condvar::wait.
+        let _state = self.state.lock().unwrap();
         #[cfg(not(target_os = "vita"))]
         self.ready.notify_one();
         #[cfg(target_os = "vita")]
         self.ready.signal().expect("signal live asset stream event");
     }
-
     fn wait<'a>(&'a self, state: MutexGuard<'a, State>) -> io::Result<MutexGuard<'a, State>> {
         #[cfg(not(target_os = "vita"))]
         {
@@ -55,21 +65,39 @@ impl Shared {
         }
         #[cfg(target_os = "vita")]
         {
-            // AvPlayer calls Read on an SDK thread without pthread cancellation
-            // state. The kernel event retains notifications across this unlock;
-            // the caller rechecks the response/closed predicate after each wake.
+            // SDK callbacks lack pthread cancellation state. The kernel event
+            // retains notifications across this unlock before waiting.
             drop(state);
             self.ready.wait(None).map_err(io::Error::other)?;
             Ok(self.state.lock().unwrap())
         }
     }
+    fn wake_next(&self) {
+        let next = self
+            .admission
+            .lock()
+            .unwrap()
+            .waiters
+            .front()
+            .and_then(Weak::upgrade);
+        if let Some(next) = next {
+            next.wake.wake();
+        }
+    }
+    fn leave_admission(&self) {
+        self.admission
+            .lock()
+            .unwrap()
+            .waiters
+            .retain(|waiter| !std::ptr::eq(waiter.as_ptr(), self) && waiter.strong_count() != 0);
+        self.wake_next();
+    }
 }
-
-/// Cancelling wakes a decoder even while its IO completion is still in flight.
+/// Cancelling wakes the decoder and cancels its client without a host pump.
 #[derive(Clone)]
 pub struct StreamControl(Arc<Shared>);
 impl StreamControl {
-    /// Fixed source identity becomes available after the worker's first describe.
+    /// Fixed source identity becomes available after the first describe.
     pub fn version(&self) -> Option<reel_core::identity::ResourceVersion> {
         let state = self.0.state.lock().unwrap();
         state
@@ -81,14 +109,25 @@ impl StreamControl {
             })
     }
     pub fn cancel(&self) {
-        self.0.state.lock().unwrap().closed = true;
-        self.0.notify();
+        let completion = {
+            let mut state = self.0.state.lock().unwrap();
+            state.closed = true;
+            state.completion.take()
+        };
+        drop(completion);
+        let reader = self.0.reader.lock().unwrap().take();
+        drop(reader);
+        self.0.admission.lock().unwrap().readers.retain(|reader| {
+            !std::ptr::eq(reader.as_ptr(), Arc::as_ptr(&self.0)) && reader.strong_count() != 0
+        });
+        self.0.leave_admission();
         self.0.wake.wake();
     }
 }
-
 pub struct AssetStream {
     shared: Arc<Shared>,
+    input: BudgetPool,
+    events: Vec<IoEvent>,
     position: u64,
     length: Option<u64>,
     chunk: u32,
@@ -102,27 +141,147 @@ impl AssetStream {
         self.length = Some(length);
         Ok(length)
     }
-    fn transact(&mut self, request: Request) -> io::Result<Response> {
-        let mut state = self.shared.state.lock().unwrap();
-        if state.closed {
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "asset stream closed",
-            ));
+    fn submit(&self, request: Request) -> Result<Option<reel_core::identity::IoId>, RejectReason> {
+        let mut admission = self.shared.admission.lock().unwrap();
+        if matches!(request, Request::Read { .. })
+            && admission
+                .waiters
+                .front()
+                .is_none_or(|next| !std::ptr::eq(next.as_ptr(), Arc::as_ptr(&self.shared)))
+        {
+            return Ok(None);
         }
-        state.request = Some(request);
-        self.shared.wake.wake();
-        loop {
+        let output = if let Request::Read { len, .. } = request {
+            Some(self.input.reserve(u64::from(len))?)
+        } else {
+            None
+        };
+        let (source, completion) = {
+            let mut state = self.shared.state.lock().unwrap();
             if state.closed {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "asset stream closed",
-                ));
+                return Err(closed_reason());
             }
-            if let Some(result) = state.response.take() {
-                return result.map_err(io::Error::other);
+            (
+                state.source.clone(),
+                state
+                    .completion
+                    .take()
+                    .expect("idle reader owns its completion slot"),
+            )
+        };
+        let mut endpoint = self.shared.reader.lock().unwrap();
+        let reader = endpoint.as_mut().ok_or_else(closed_reason)?;
+        let (result, returned) = match request {
+            Request::Describe => match reader.describe(DescribeRequest {
+                resource: source,
+                scope: Scope::Process,
+                priority: Priority::Realtime,
+                completion,
+            }) {
+                Ok(id) => (Ok(id), None),
+                Err(error) => (Err(error.reason), Some(error.request.completion)),
+            },
+            Request::Read { offset, len } => match reader.read(ReadRequest {
+                resource: source,
+                offset,
+                len,
+                scope: Scope::Process,
+                priority: Priority::Realtime,
+                output: output.unwrap(),
+                completion,
+            }) {
+                Ok(id) => (Ok(id), None),
+                Err(error) => (Err(error.reason), Some(error.request.completion)),
+            },
+        };
+        if result.is_ok() && matches!(request, Request::Read { .. }) {
+            admission.waiters.pop_front();
+        }
+        drop(endpoint);
+        drop(admission);
+        if let Some(completion) = returned {
+            self.shared.recycle_completion(completion);
+        }
+        if result.is_ok() {
+            self.shared.wake_next();
+        }
+        result.map(Some)
+    }
+    fn transact(&mut self, request: Request) -> io::Result<Response> {
+        if matches!(request, Request::Read { .. }) {
+            self.shared
+                .admission
+                .lock()
+                .unwrap()
+                .waiters
+                .push_back(Arc::downgrade(&self.shared));
+        }
+        let result = self.transact_inner(request);
+        self.shared.leave_admission();
+        result
+    }
+    fn transact_inner(&mut self, request: Request) -> io::Result<Response> {
+        let mut active = None;
+        loop {
+            self.shared.wake.acknowledge();
+            if self.shared.state.lock().unwrap().closed {
+                return Err(closed());
             }
-            state = self.shared.wait(state)?;
+            if active.is_none() {
+                match self.submit(request) {
+                    Ok(id) => active = id,
+                    Err(reason) if reason.code == RejectCode::Busy => {}
+                    Err(reason) => return Err(io::Error::other(reason.message)),
+                }
+            }
+            if active.is_some() {
+                {
+                    let mut reader = self.shared.reader.lock().unwrap();
+                    reader
+                        .as_mut()
+                        .ok_or_else(closed)?
+                        .poll(&mut self.events, 1);
+                }
+                if let Some(event) = self.events.pop() {
+                    assert_eq!(Some(event.id), active, "reader owns one in-flight request");
+                    if !self.shared.recycle_completion(event.completion) {
+                        return Err(closed());
+                    }
+                    return match event.result {
+                        Terminal::Completed(IoPayload::Described(info)) => {
+                            if !info.range_read || !info.seekable || info.version.is_none() {
+                                Err(io::Error::other(
+                                    "media requires a seekable, versioned asset source",
+                                ))
+                            } else {
+                                self.shared.state.lock().unwrap().source.version = info.version;
+                                info.length
+                                    .map(Response::Info)
+                                    .ok_or_else(|| io::Error::other("media length unavailable"))
+                            }
+                        }
+                        Terminal::Completed(IoPayload::Read(read))
+                            if self.shared.state.lock().unwrap().source.version
+                                == Some(read.version) =>
+                        {
+                            Ok(Response::Bytes(read.bytes))
+                        }
+                        Terminal::Completed(_) => Err(io::Error::other(
+                            "unexpected asset stream response or version",
+                        )),
+                        Terminal::Failed(error) => Err(io::Error::other(error.message)),
+                        Terminal::Cancelled => Err(io::Error::other("asset stream cancelled")),
+                    };
+                }
+            }
+            let mut state = self.shared.state.lock().unwrap();
+            if state.closed {
+                return Err(closed());
+            }
+            if !self.shared.wake.is_pending() {
+                state = self.shared.wait(state)?;
+            }
+            drop(state);
         }
     }
 }
@@ -151,6 +310,10 @@ impl Read for AssetStream {
         let count = bytes.as_slice().len();
         output[..count].copy_from_slice(bytes.as_slice());
         self.position += count as u64;
+        drop(bytes);
+        // Completion draining precedes input lease release. Wake its next FIFO
+        // waiter here so tiny allowances also progress without a main-thread turn.
+        self.shared.wake_next();
         Ok(count)
     }
 }
@@ -160,14 +323,13 @@ impl Seek for AssetStream {
             Some(n) => n,
             None => self.open()?,
         };
-        let position = match offset {
+        self.position = match offset {
             SeekFrom::Start(n) => Some(n),
             SeekFrom::Current(n) => self.position.checked_add_signed(n),
             SeekFrom::End(n) => length.checked_add_signed(n),
         }
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid asset seek"))?;
-        self.position = position;
-        Ok(position)
+        Ok(self.position)
     }
 }
 impl Drop for AssetStream {
@@ -175,157 +337,86 @@ impl Drop for AssetStream {
         StreamControl(self.shared.clone()).cancel();
     }
 }
-
+fn closed() -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, "asset stream closed")
+}
+fn closed_reason() -> RejectReason {
+    RejectReason::new(RejectCode::Unavailable, "asset stream closed")
+}
 #[derive(Default)]
-pub(super) struct Streams(Vec<Weak<Shared>>);
+struct Admission {
+    readers: Vec<Weak<Shared>>,
+    waiters: VecDeque<Weak<Shared>>,
+}
+#[derive(Default)]
+pub(super) struct Streams(Arc<Mutex<Admission>>);
 impl Streams {
     pub(super) fn create(
         &mut self,
         source: String,
-        wake: WakeSignal,
+        io: &dyn AssetIo,
+        input: BudgetPool,
+        completion: BudgetPool,
         chunk: u32,
     ) -> Result<(StreamControl, AssetStream), String> {
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State {
-                source: AssetSource {
-                    key: AssetKey(source),
-                    version: None,
-                },
-                request: None,
-                active: None,
-                response: None,
-                closed: false,
-            }),
-            #[cfg(not(target_os = "vita"))]
-            ready: Condvar::new(),
-            #[cfg(target_os = "vita")]
-            ready: Wake::new().map_err(|error| error.to_string())?,
-            wake,
+        #[cfg(target_os = "vita")]
+        let ready = Wake::new().map_err(|error| error.to_string())?;
+        // Reserve the reader's one completion before it can wait. The same
+        // ticket follows each request/terminal and is recycled after draining.
+        let completion = completion.reserve(512).map_err(|reason| reason.message)?;
+        let shared = Arc::new_cyclic(|weak: &Weak<Shared>| {
+            let target = weak.clone();
+            Shared {
+                state: Mutex::new(State {
+                    source: AssetSource {
+                        key: AssetKey(source),
+                        version: None,
+                    },
+                    completion: Some(completion),
+                    closed: false,
+                }),
+                reader: Mutex::new(None),
+                admission: self.0.clone(),
+                #[cfg(not(target_os = "vita"))]
+                ready: Condvar::new(),
+                #[cfg(target_os = "vita")]
+                ready,
+                wake: WakeSignal::new(move || {
+                    if let Some(shared) = target.upgrade() {
+                        shared.notify();
+                    }
+                }),
+            }
         });
-        self.0.push(Arc::downgrade(&shared));
+        *shared.reader.lock().unwrap() = Some(
+            io.background_reader(shared.wake.clone())
+                .map_err(|reason| reason.message)?,
+        );
+        let mut admission = self.0.lock().unwrap();
+        admission
+            .readers
+            .retain(|reader| reader.strong_count() != 0);
+        admission.readers.push(Arc::downgrade(&shared));
+        // Reserve one waiting read per admitted client before decoder work.
+        let extra = admission.readers.len() - admission.waiters.len();
+        admission.waiters.reserve(extra);
+        drop(admission);
         Ok((
             StreamControl(shared.clone()),
             AssetStream {
                 shared,
+                input,
+                events: Vec::with_capacity(1),
                 position: 0,
                 length: None,
                 chunk,
             },
         ))
     }
-    pub(super) fn pending(&self) -> bool {
-        self.0.iter().filter_map(Weak::upgrade).any(|s| {
-            let state = s.state.lock().unwrap();
-            state.request.is_some() || state.active.is_some()
-        })
-    }
     pub(super) fn close(&mut self) {
-        for shared in self.0.drain(..).filter_map(|s| s.upgrade()) {
+        let readers = std::mem::take(&mut self.0.lock().unwrap().readers);
+        for shared in readers.into_iter().filter_map(|reader| reader.upgrade()) {
             StreamControl(shared).cancel();
-        }
-    }
-    pub(super) fn deliver(&mut self, event: &mut reel_core::io::IoEvent) -> bool {
-        for shared in self.0.iter().filter_map(Weak::upgrade) {
-            let mut state = shared.state.lock().unwrap();
-            if state.active != Some(event.id) {
-                continue;
-            }
-            state.active = None;
-            let result = std::mem::replace(&mut event.result, Terminal::Cancelled);
-            state.response = Some(match result {
-                Terminal::Completed(IoPayload::Described(info)) => {
-                    if !info.range_read || !info.seekable || info.version.is_none() {
-                        Err("media requires a seekable, versioned asset source".into())
-                    } else {
-                        state.source.version = info.version;
-                        info.length
-                            .map(Response::Info)
-                            .ok_or_else(|| "media length unavailable".into())
-                    }
-                }
-                Terminal::Completed(IoPayload::Read(read))
-                    if state.source.version == Some(read.version) =>
-                {
-                    Ok(Response::Bytes(read.bytes))
-                }
-                Terminal::Completed(_) => Err("unexpected asset stream response or version".into()),
-                Terminal::Failed(e) => Err(e.message),
-                Terminal::Cancelled => Err("asset stream cancelled".into()),
-            });
-            shared.notify();
-            return true;
-        }
-        false
-    }
-    pub(super) fn submit(
-        &mut self,
-        io: &mut dyn reel_core::io::AssetIo,
-        input: &reel_core::budget::BudgetPool,
-        completion: &reel_core::budget::BudgetPool,
-    ) {
-        self.0.retain(|s| s.strong_count() > 0);
-        for shared in self.0.iter().filter_map(Weak::upgrade) {
-            let mut state = shared.state.lock().unwrap();
-            if state.closed {
-                if let Some(id) = state.active.take() {
-                    io.cancel(id);
-                }
-                state.request = None;
-                state.response = None;
-                continue;
-            }
-            let Some(request) = state.request.take() else {
-                continue;
-            };
-            let ticket = match completion.reserve(512) {
-                Ok(ticket) => ticket,
-                Err(_) => {
-                    state.request = Some(request);
-                    continue;
-                }
-            };
-            let result = match request {
-                Request::Describe => io
-                    .describe(DescribeRequest {
-                        resource: state.source.clone(),
-                        scope: Scope::Process,
-                        priority: Priority::Realtime,
-                        completion: ticket,
-                    })
-                    .map_err(|e| e.reason),
-                Request::Read { offset, len } => {
-                    let output = match input.reserve(u64::from(len)) {
-                        Ok(ticket) => ticket,
-                        Err(_) => {
-                            state.request = Some(request);
-                            continue;
-                        }
-                    };
-                    io.read(ReadRequest {
-                        resource: state.source.clone(),
-                        offset,
-                        len,
-                        scope: Scope::Process,
-                        priority: Priority::Realtime,
-                        output,
-                        completion: ticket,
-                    })
-                    .map_err(|e| e.reason)
-                }
-            };
-            match result {
-                Ok(id) => state.active = Some(id),
-                Err(reason) if reason.retryable() => state.request = Some(request),
-                Err(reason) => {
-                    state.response = Some(Err(reason.message));
-                    shared.notify();
-                }
-            }
-        }
-        if !self.0.is_empty() {
-            // Tiny input allowances may fit one chunk; rotate admission so the
-            // same stream cannot consume that sole reservation every host tick.
-            self.0.rotate_left(1);
         }
     }
 }

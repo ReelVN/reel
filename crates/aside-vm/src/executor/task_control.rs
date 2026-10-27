@@ -26,12 +26,17 @@ impl Vm {
             }
             Completion::Error(new) => {
                 self.check_new_fault(new)?;
+                self.heap.root_insertion_barrier(new.value)?;
+                if new.cause.is_some() {
+                    let len = self.native_pending_slot() + 1;
+                    self.slots.grow(&mut self.heap, n.roots, len)?;
+                }
                 self.put(n.roots, 0, new.value)?;
-                self.put(
-                    n.roots,
-                    self.native_pending_slot(),
-                    new.cause.map_or(Value::NULL, FaultId::as_value),
-                )?;
+                if let Some(id) = new.cause {
+                    self.put(n.roots, self.native_pending_slot(), id.as_value())?;
+                } else {
+                    self.clear_native_pending(n.roots)?;
+                }
                 n.pending_fault = Some(FaultSeed {
                     kind: new.code.kind,
                     location: n.location,
@@ -50,6 +55,8 @@ impl Vm {
                 if !self.native_holds(n, id)? {
                     return Err(VmError::InvalidFault);
                 };
+                let len = self.native_pending_slot() + 1;
+                self.slots.grow(&mut self.heap, n.roots, len)?;
                 self.put(n.roots, 0, self.heap.fault_value(id)?)?;
                 self.put(n.roots, self.native_pending_slot(), id.as_value())?;
                 // A continuation can inspect/recover this producer fault first.
@@ -63,6 +70,7 @@ impl Vm {
             }
         }
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
+        self.wait_revision = self.wait_revision.wrapping_add(1);
         Ok(())
     }
     pub fn delivery_value(&self, id: DeliveryId) -> Result<Value, VmError> {
@@ -129,7 +137,7 @@ impl Vm {
         self.clear(self.active.delivery.unwrap(), 1)?;
         self.active.terminal = None;
         self.active.task_owner = None;
-        self.active.task_id = None;
+        self.forget_active_task();
         Ok(())
     }
     /// Invalidate this task's tickets immediately and schedule budgeted frame cleanup.
@@ -202,6 +210,7 @@ impl Vm {
             return Ok(());
         }
         self.active.cancelling = true;
+        self.wait_revision = self.wait_revision.wrapping_add(1);
         self.active.fault_build = None;
         self.active.blocked = None;
         self.active.cooperative_cancel = false;
@@ -240,35 +249,107 @@ impl Vm {
         self.active_slot = Some(slot);
     }
     pub(super) fn task(&self, id: TaskId) -> Result<&TaskState, VmError> {
-        if id.heap != self.heap.id() || id.epoch != self.heap.epoch() {
-            return Err(VmError::UnknownTask);
-        }
         if self.active.task_id == Some(id) {
             return Ok(&self.active);
         }
-        self.tasks
-            .data
-            .iter()
-            .find(|t| t.task_id == Some(id))
-            .ok_or(VmError::UnknownTask)
+        Ok(&self.tasks.data[self.task_slot(id)?])
     }
     pub(super) fn select_task(&mut self, id: TaskId) -> Result<(), VmError> {
         if self.active.task_id == Some(id) {
             return Ok(());
         }
-        if id.heap != self.heap.id() || id.epoch != self.heap.epoch() {
-            return Err(VmError::UnknownTask);
-        }
-        let slot = self
-            .tasks
-            .data
-            .iter()
-            .position(|t| t.task_id == Some(id))
-            .ok_or(VmError::UnknownTask)?;
+        let slot = self.task_slot(id)?;
         self.select_slot(slot);
         Ok(())
     }
+    fn task_slot(&self, id: TaskId) -> Result<usize, VmError> {
+        if id.heap != self.heap.id() || id.epoch != self.heap.epoch() {
+            return Err(VmError::UnknownTask);
+        }
+        let index = self
+            .task_index
+            .data
+            .binary_search_by_key(&id.serial, |&(serial, _)| serial)
+            .map_err(|_| VmError::UnknownTask)?;
+        Ok(self.task_index.data[index].1)
+    }
+    pub(super) fn forget_active_task(&mut self) {
+        if let Some(id) = self.active.task_id.take() {
+            let index = self
+                .task_index
+                .data
+                .binary_search_by_key(&id.serial, |&(serial, _)| serial)
+                .expect("live task identity is indexed");
+            self.task_index.data.remove(index);
+        }
+    }
     pub fn pooled_root_ranges(&self) -> u32 {
         2 + 2 * self.tasks.data.len() as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vm(limits: VmLimits) -> Vm {
+        Vm::load(
+            verify(fixtures::helper_native(), Limits::default()).unwrap(),
+            super::super::review_tests::echo_registry(),
+            limits,
+            SessionEpoch(17),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn identity_index_tracks_selection_cancellation_and_reused_slots() {
+        let mut vm = vm(VmLimits::default());
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            tasks.push(
+                vm.start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+                    .unwrap(),
+            );
+        }
+        let slots = vm.tasks.data.len();
+        let capacity = vm.task_index.data.capacity();
+        assert_eq!(vm.task_index.data.len(), 32);
+        assert_eq!(
+            vm.task_index.bytes(),
+            (capacity * std::mem::size_of::<(u64, usize)>()) as u64
+        );
+        for &task in tasks.iter().rev() {
+            vm.select_task(task).unwrap();
+            assert_eq!(vm.task(task).unwrap().task_id, Some(task));
+        }
+        for &task in tasks.iter().step_by(2) {
+            vm.cancel_task(task).unwrap();
+            assert!(matches!(
+                vm.run_slice(task, SliceBudget::default(), || 0),
+                Err(VmError::Idle)
+            ));
+            assert!(matches!(vm.task(task), Err(VmError::UnknownTask)));
+            let replacement = vm
+                .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+                .unwrap();
+            assert_eq!(vm.task(replacement).unwrap().task_id, Some(replacement));
+            assert!(matches!(vm.select_task(task), Err(VmError::UnknownTask)));
+        }
+        assert_eq!(vm.tasks.data.len(), slots);
+        assert_eq!(vm.task_index.data.capacity(), capacity);
+        assert_eq!(vm.task_index.data.len(), 32);
+    }
+
+    #[test]
+    fn failed_start_releases_its_index_entry() {
+        let mut vm = vm(VmLimits::default());
+        vm.limits.max_frames = 0;
+        assert!(
+            vm.start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+                .is_err()
+        );
+        assert!(vm.task_index.data.is_empty());
+        assert!(vm.is_idle());
     }
 }

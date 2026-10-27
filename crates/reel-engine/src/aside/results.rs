@@ -299,6 +299,9 @@ impl Results {
         Ok(())
     }
 }
+pub(super) static READONLY: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.result", 1, readonly);
+
 pub(super) fn readonly(
     heap: &aside_vm::PropertyRead<'_>,
     object: Value,
@@ -632,7 +635,7 @@ impl Results {
             if kind == Kind::Operation {
                 None
             } else {
-                Some(readonly)
+                Some(&READONLY)
             },
         )?;
         let type_index = (-(kind as i64) - 1101) as usize;
@@ -1110,7 +1113,7 @@ mod tests {
                     Value::NULL,
                     Value::NULL,
                 ],
-                Some(readonly),
+                Some(&READONLY),
             )
             .unwrap();
         heap.observe_host_properties(result, 0, 1).unwrap();

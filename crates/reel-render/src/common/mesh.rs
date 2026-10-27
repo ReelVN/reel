@@ -521,6 +521,14 @@ impl Mesh {
             clip_identity: None,
         }
     }
+    pub(crate) fn triangles(&mut self, vertices: &[Vertex]) -> Result<(), GpuError> {
+        self.allocation.grow(&mut self.vertices, vertices.len())?;
+        self.allocation.grow(&mut self.indices, vertices.len())?;
+        let start = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(vertices);
+        self.indices.extend(start..start + vertices.len() as u32);
+        Ok(())
+    }
     pub(crate) fn quad(&mut self, rect: Rect, uv: Rect) -> Result<(), GpuError> {
         self.allocation.grow(&mut self.vertices, 4)?;
         self.allocation.grow(&mut self.indices, 6)?;

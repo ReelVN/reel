@@ -56,6 +56,8 @@ struct VerifiedData {
     limits: Limits,
     /// Sorted (signature, parameter) pairs; only Cell parameters are retained.
     native_parameter_cells: Vec<(u32, u32)>,
+    /// Sorted (function, parameter) pairs; Value slots need no retained record.
+    script_parameter_cells: Vec<(u32, u32)>,
     module_bindings: ModuleBindings,
     opcode_uses: Vec<OpcodeUse>,
     member_symbols: Vec<SymbolId>,
@@ -86,6 +88,7 @@ struct InstructionUses {
 }
 struct DerivedLayouts {
     native_parameters: Vec<(u32, u32)>,
+    script_parameters: Vec<(u32, u32)>,
     modules: ModuleBindings,
     opcode_uses: Vec<OpcodeUse>,
     member_symbols: Vec<SymbolId>,
@@ -255,6 +258,28 @@ impl VerifiedProgram {
             .len()
             .checked_ilog2()
             .unwrap_or(0) as u64
+    }
+    /// The verifier fixes every parameter register and retains only Cell slots.
+    pub(crate) fn script_parameter_storage(
+        &self,
+        function: FunctionId,
+        parameter: u32,
+    ) -> BindingStorage {
+        if self
+            .0
+            .script_parameter_cells
+            .binary_search(&(function.0, parameter))
+            .is_ok()
+        {
+            BindingStorage::Cell(Reg(parameter))
+        } else {
+            BindingStorage::Value(Reg(parameter))
+        }
+    }
+    /// Binary search uses ceil(log2(len)) + 1 comparisons for a nonempty table.
+    pub(crate) fn script_parameter_lookup_work(&self) -> u64 {
+        let length = self.0.script_parameter_cells.len();
+        u64::from(usize::BITS - length.saturating_sub(1).leading_zeros()) + 1
     }
     pub fn source_at(&self, function: FunctionId, pc: Pc) -> Option<SourceSpan> {
         let f = self.0.package.functions.get(function.index())?;
@@ -508,6 +533,7 @@ fn publish(
             stats,
             limits,
             native_parameter_cells: layouts.native_parameters,
+            script_parameter_cells: layouts.script_parameters,
             module_bindings: layouts.modules,
             opcode_uses: layouts.opcode_uses,
             member_symbols: layouts.member_symbols,
@@ -1251,6 +1277,18 @@ impl ParameterLayouts {
     fn release(self, b: &mut Budget) {
         b.release(self.declarations);
         b.release(self.offsets);
+    }
+    fn script_cells(&self, b: &mut Budget) -> Result<Vec<(u32, u32)>, Error> {
+        b.work(self.declarations.len() as u64 * 2)?;
+        let count = self.declarations.iter().filter(|d| d.2).count();
+        let mut cells = b.vec(count)?;
+        cells.extend(
+            self.declarations
+                .iter()
+                .filter(|d| d.2)
+                .map(|&(function, parameter, _)| (function, parameter)),
+        );
+        Ok(cells)
     }
 }
 

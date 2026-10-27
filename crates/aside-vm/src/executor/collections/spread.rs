@@ -113,7 +113,7 @@ impl Vm {
         source: Reg,
         finish: TableFinish,
     ) -> Result<(), FaultKind> {
-        let value = self.read(*s, source)?;
+        let value = self.read(s.regs, source)?;
         if !self.is_text(table, ObjectKind::Table) || !self.is_text(value, ObjectKind::Table) {
             return Err(FaultKind::Type);
         }

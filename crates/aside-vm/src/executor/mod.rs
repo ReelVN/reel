@@ -31,6 +31,8 @@ mod generator_tests;
 mod iterators;
 mod member_hints;
 mod models;
+mod native_bindings;
+mod native_roots;
 mod reactive;
 pub(crate) mod snapshot;
 mod text;
@@ -509,6 +511,12 @@ impl TaskState {
         })
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeParameters {
+    needs_cells: bool,
+    has_defaults: bool,
+}
+
 /// Task selection swaps bounded state owners; all registered windows remain in
 /// the single FrameSlots provider. Field order deallocates before budget refunds.
 pub struct Vm {
@@ -517,10 +525,13 @@ pub struct Vm {
     slots: FrameSlots,
     active: TaskState,
     tasks: ChargedVec<TaskState>,
+    // Serial order makes identity queries independent of the pooled task layout.
+    task_index: ChargedVec<(u64, usize)>,
     active_slot: Option<usize>,
+    wait_revision: u64,
     scratch: ChargedVec<Value>,
     text_scratch: ChargedVec<u8>,
-    native_cells: ChargedVec<bool>,
+    native_parameters: ChargedVec<NativeParameters>,
     native_values: ChargedVec<(FunctionId, u32)>,
     type_checks: Rc<types::TypeChecks>,
     init_symbol: Option<SymbolId>,
@@ -528,11 +539,14 @@ pub struct Vm {
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
     member_hints: member_hints::MemberHints,
+    native_bindings: native_bindings::NativeBindings,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
     next_id: u64,
     native_entries: u64,
+    native_binding_hits: u64,
+    native_binding_misses: u64,
     native_resumes: u64,
     native_null_publications: u64,
     slices: u64,
@@ -562,6 +576,12 @@ impl Vm {
     }
     pub fn limits(&self) -> VmLimits {
         self.limits
+    }
+    /// Slice count and quota usage recorded by the most recent `run_slice` call.
+    /// Reads stored counters in constant time without traversing tasks.
+    #[inline]
+    pub fn last_slice_usage(&self) -> (u64, SliceUsage) {
+        (self.slices, self.last_usage)
     }
     pub fn task_id(&self) -> Option<TaskId> {
         self.active
@@ -621,6 +641,8 @@ impl Vm {
                     .map(|t| t.equality_cursors.data.len())
                     .sum::<usize>()) as u32,
             native_entries: self.native_entries,
+            native_binding_hits: self.native_binding_hits,
+            native_binding_misses: self.native_binding_misses,
             native_resumes: self.native_resumes,
             native_null_publications: self.native_null_publications,
             slices: self.slices,
@@ -721,12 +743,12 @@ impl Vm {
             Err(FaultKind::Type)
         }
     }
-    fn read(&self, s: ScriptFrame, reg: Reg) -> Result<Value, FaultKind> {
-        self.slots.read(at(s.regs, reg.0)).map_err(heap_fault)
+    fn read(&self, regs: RootRangeToken, reg: Reg) -> Result<Value, FaultKind> {
+        self.slots.read(at(regs, reg.0)).map_err(heap_fault)
     }
-    fn write(&mut self, s: ScriptFrame, reg: Reg, v: Value) -> Result<(), FaultKind> {
+    fn write(&mut self, regs: RootRangeToken, reg: Reg, v: Value) -> Result<(), FaultKind> {
         self.slots
-            .write(&mut self.heap, at(s.regs, reg.0), v)
+            .write(&mut self.heap, at(regs, reg.0), v)
             .map_err(heap_fault)
     }
     fn value(&self, r: RootRangeToken, i: u32) -> Result<Value, VmError> {
@@ -799,19 +821,11 @@ impl Vm {
     fn native_push_cost(&self, native: NativeId, count: u32) -> (u64, u64) {
         let signature = self.program.package().natives[native.index()].signature;
         let sig = &self.program.package().signatures[signature.index()];
-        let cells = self.native_cells.data[native.index()];
+        let cells = self.native_parameters.data[native.index()].needs_cells;
         let parameters = sig.parameters.len() as u64 + u64::from(sig.rest.is_some());
-        let values = 3
-            + self.limits.max_native_faults as u64
-            + self.limits.max_arguments as u64
-            + self.limits.max_continuation_values as u64
-            + count as u64 * 2
-            + parameters * (1 + u64::from(cells));
+        let values = 3 + count as u64 * 2 + parameters * (1 + u64::from(cells));
         let (work, bytes) = self.window_push_cost(3 + u64::from(cells), values);
-        (
-            work + sig.parameters.len() as u64 + self.native_layout_work() + 3,
-            bytes,
-        )
+        (work + 3, bytes)
     }
 
     pub fn run_slice(
@@ -825,6 +839,7 @@ impl Vm {
         let mut meter = Meter {
             budget,
             usage: SliceUsage::default(),
+            clock_steps: 0,
         };
         let result = self.run(&mut meter, &mut now);
         self.code_window = crate::bytecode::CodeWindow::default();
@@ -844,7 +859,7 @@ impl Vm {
                     RunOutcome::Returned(t.id)
                 });
             }
-            if m.budget.deadline_ns.is_some_and(|d| now() >= d) {
+            if m.deadline_reached(now) {
                 return Ok(RunOutcome::BudgetYield(m.usage));
             }
             if self.active.cancelling {
@@ -893,7 +908,7 @@ impl Vm {
                                 NativeInput::CallbackCancelled
                             }
                         };
-                        self.clear(native.roots, self.native_pending_slot())?;
+                        self.clear_native_pending(native.roots)?;
                         native.callback_fault = None;
                         native.pending_fault = None;
                         native.phase = NativePhase::Resume(input);
@@ -915,7 +930,7 @@ impl Vm {
                 }
                 self.active.cancelling = false;
                 self.active.task_owner = None;
-                self.active.task_id = None;
+                self.forget_active_task();
                 return Err(VmError::Idle);
             }
             if self.active.fault_build.is_some() {
@@ -1053,7 +1068,7 @@ impl Vm {
     }
     fn native_fault(&mut self, n: &mut NativeFrame, kind: FaultKind) -> Result<(), VmError> {
         self.put(n.roots, 0, Value::NULL)?;
-        self.clear(n.roots, self.native_pending_slot())?;
+        self.clear_native_pending(n.roots)?;
         n.pending_fault = Some(FaultSeed {
             fault: None,
             explicit: None,
@@ -1130,8 +1145,20 @@ fn vm_fault(e: VmError) -> FaultKind {
 struct Meter {
     budget: SliceBudget,
     usage: SliceUsage,
+    clock_steps: u8,
 }
 impl Meter {
+    fn deadline_reached(&mut self, now: &mut impl FnMut() -> u64) -> bool {
+        let Some(deadline) = self.budget.deadline_ns else {
+            return false;
+        };
+        if self.clock_steps != 0 {
+            self.clock_steps -= 1;
+            return false;
+        }
+        self.clock_steps = 31;
+        now() >= deadline
+    }
     fn admits(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
         self.usage.required_work = work;
         self.usage.required_allocation = allocation;
@@ -1146,6 +1173,10 @@ impl Meter {
         self.usage.instructions += instructions;
         self.usage.work += work;
         self.usage.allocation_bytes += allocation;
+        // Allocations and bulk work end the current clock batch immediately.
+        if allocation != 0 || work >= 32 {
+            self.clock_steps = 0;
+        }
         self.usage.required_work = 0;
         self.usage.required_allocation = 0;
         true

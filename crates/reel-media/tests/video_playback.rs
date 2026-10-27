@@ -58,7 +58,11 @@ fn software_factory_respects_session_workspace_budget_and_stop_flag() {
         .unwrap();
     assert!(budget.usage().bytes > 0);
     stopped.store(true, Ordering::Release);
-    assert!(decoder.next_packet().is_err());
+    assert!(
+        decoder
+            .poll_packet(reel_media::video::DecodeDemand::ALL)
+            .is_err()
+    );
     drop(decoder);
     assert_eq!(budget.usage().bytes, 0);
 }
@@ -208,7 +212,13 @@ fn silent_movie_uses_session_time_and_stop_remains_terminal() {
 }
 
 mod video_decode {
-    use reel_media::video::{DecodedPacket, MovieDecoder};
+    use reel_media::video::{DecodeDemand, DecodedPacket, MovieDecoder};
+    fn next(decoder: &mut MovieDecoder) -> Option<DecodedPacket> {
+        let std::task::Poll::Ready(packet) = decoder.poll_packet(DecodeDemand::ALL).unwrap() else {
+            panic!("software decode has ready samples or ends");
+        };
+        packet
+    }
 
     #[test]
     fn baseline_movie_decodes_every_picture_and_real_aac_samples() {
@@ -226,7 +236,7 @@ mod video_decode {
         let mut energy = 0.;
         let mut first = None;
         let mut changed = false;
-        while let Some(packet) = decoder.next_packet().unwrap() {
+        while let Some(packet) = next(&mut decoder) {
             match packet {
                 DecodedPacket::Video(frame) => {
                     assert_eq!(
@@ -254,7 +264,7 @@ mod video_decode {
         assert!(changed);
         assert_eq!(audio_frames, 48000);
         assert!(energy > 100.);
-        assert!(decoder.next_packet().unwrap().is_none());
+        assert!(next(&mut decoder).is_none());
     }
 
     #[test]
@@ -269,7 +279,7 @@ mod video_decode {
         decoder.seek(0.625).unwrap();
         let mut video = Vec::new();
         let mut audio = 0;
-        while let Some(packet) = decoder.next_packet().unwrap() {
+        while let Some(packet) = next(&mut decoder) {
             match packet {
                 DecodedPacket::Video(frame) => video.push(frame.pts),
                 DecodedPacket::Audio(frame) => {
@@ -294,7 +304,7 @@ mod video_decode {
         )
         .unwrap();
         assert_eq!(decoder.info().audio_sample_rate, None);
-        let Some(DecodedPacket::Video(frame)) = decoder.next_packet().unwrap() else {
+        let Some(DecodedPacket::Video(frame)) = next(&mut decoder) else {
             panic!("video expected")
         };
         assert_eq!(frame.color.matrix, YuvMatrix::Bt709);
@@ -313,7 +323,7 @@ mod video_decode {
         decoder.seek(0.2).unwrap();
         decoder.set_end(0.4);
         let mut samples = 0;
-        while let Some(packet) = decoder.next_packet().unwrap() {
+        while let Some(packet) = next(&mut decoder) {
             if let DecodedPacket::Audio(audio) = packet {
                 samples += audio.frames.len();
                 assert!(audio.pts >= 0.2 - 1e-9);

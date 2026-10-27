@@ -118,6 +118,9 @@ pub(super) enum SpeechCommand {
     Revealed,
 }
 
+pub(super) static IMMUTABLE: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.character", 1, immutable);
+
 pub(super) fn immutable(
     _: &aside_vm::PropertyRead<'_>,
     _: Value,
@@ -167,7 +170,7 @@ impl SessionVm {
         let value = self.vm.heap_mut().alloc_host(
             fields,
             &[Value::int(id.generation() as i64)],
-            Some(immutable),
+            Some(&IMMUTABLE),
         )?;
         self.stage
             .types
@@ -427,7 +430,7 @@ impl SessionVm {
             let key = heap.alloc_string(key)?;
             heap.table_store(fields, i as u32, key, value)?;
         }
-        let value = heap.alloc_host(fields, &[id, name], Some(immutable))?;
+        let value = heap.alloc_host(fields, &[id, name], Some(&IMMUTABLE))?;
         self.stage
             .types
             .mark(heap, value, "reel::types::Character")?;
@@ -448,7 +451,7 @@ impl SessionVm {
         }
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
-        let value = heap.alloc_host(fields, &[id, name, text, history], Some(immutable))?;
+        let value = heap.alloc_host(fields, &[id, name, text, history], Some(&IMMUTABLE))?;
         self.stage
             .types
             .mark(heap, value, "reel::types::CharacterLine")?;

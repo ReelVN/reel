@@ -113,6 +113,7 @@ impl Session {
                 identity: self.identity,
                 status: self.status,
                 owners: Vec::new(),
+                owner_revocation_revision: 0,
                 next_owner: self.next_owner,
                 next_interaction: self.next_interaction,
                 last_input_sequence: None,

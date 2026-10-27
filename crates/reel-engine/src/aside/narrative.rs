@@ -330,6 +330,9 @@ pub(super) struct Narrative {
 
 use super::observable::{array, publish, record};
 
+pub(super) static AUTO_CONDITION: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.auto-condition", 1, auto_condition_validator);
+
 pub(super) fn auto_condition_validator(
     _: &aside_vm::PropertyRead<'_>,
     _: Value,
@@ -477,7 +480,7 @@ impl Narrative {
         let fields = heap.alloc_table()?;
         let key = heap.alloc_string("condition")?;
         heap.table_store(fields, 0, key, Value::bool(true))?;
-        let auto_condition = heap.alloc_host(fields, &[], Some(auto_condition_validator))?;
+        let auto_condition = heap.alloc_host(fields, &[], Some(&AUTO_CONDITION))?;
         heap.observe_host_properties(auto_condition, 1, 0)?;
         let roots = heap.alloc_array(&[dialogue, choice, reading, auto_condition])?;
         for (value, ty) in [

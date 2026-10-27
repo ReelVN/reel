@@ -7,11 +7,7 @@ use reel_ui::{
     core::{DefaultProperties, Widget},
     dpi::PhysicalSize,
 };
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
-use std::{alloc::System, time::Instant};
-
-#[global_allocator]
-static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+use std::time::Instant;
 
 #[test]
 fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
@@ -70,14 +66,16 @@ fn stable_typewriter_cost(reveal_skippable: bool) {
     ui.advance_dialogue(1_000_000, 1000.).unwrap();
     ui.sync(&mut bridge, root_id).unwrap();
     let started = Instant::now();
-    let region = Region::new(GLOBAL);
-    for i in 2..=10_001 {
-        assert!(ui.advance_dialogue(i * 1_000_000, 1000.).unwrap());
-        ui.sync(&mut bridge, root_id).unwrap();
-    }
-    let stats = region.change();
+    // Count this projection thread; parallel contract fixtures and resource
+    // workers own separate allocation lifetimes.
+    let stats = allocation_counter::measure(|| {
+        for i in 2..=10_001 {
+            assert!(ui.advance_dialogue(i * 1_000_000, 1000.).unwrap());
+            ui.sync(&mut bridge, root_id).unwrap();
+        }
+    });
     let elapsed = started.elapsed();
-    assert_eq!((stats.allocations, stats.reallocations), (0, 0));
+    assert_eq!((stats.count_total, stats.bytes_total), (0, 0));
     let Some(InteractionView::Dialogue(dialogue)) = ui.session().view().interaction else {
         panic!("dialogue")
     };
@@ -89,30 +87,30 @@ fn stable_typewriter_cost(reveal_skippable: bool) {
     accept(&mut ui, &mut bridge, root_id);
     ui.advance_dialogue(20_000_000_000, 1000.).unwrap();
     let auto_started = Instant::now();
-    let auto_region = Region::new(GLOBAL);
-    for i in 1..=10_000 {
-        assert!(
-            !ui.advance_dialogue(20_000_000_000 + i * 1_000_000, 1000.)
-                .unwrap()
-        );
-    }
-    let auto_stats = auto_region.change();
+    let auto_stats = allocation_counter::measure(|| {
+        for i in 1..=10_000 {
+            assert!(
+                !ui.advance_dialogue(20_000_000_000 + i * 1_000_000, 1000.)
+                    .unwrap()
+            );
+        }
+    });
     ui.session_mut().set_skip_reading(true, true, false);
-    let skip_region = Region::new(GLOBAL);
-    assert!(ui.advance_dialogue(40_000_000_000, 1000.).unwrap());
-    let skip_stats = skip_region.change();
-    assert_eq!((skip_stats.allocations, skip_stats.reallocations), (0, 0));
+    let skip_stats = allocation_counter::measure(|| {
+        assert!(ui.advance_dialogue(40_000_000_000, 1000.).unwrap());
+    });
+    assert_eq!((skip_stats.count_total, skip_stats.bytes_total), (0, 0));
     assert!(ui.session().read_progress().contains("cost"));
 
-    assert_eq!((auto_stats.allocations, auto_stats.reallocations), (0, 0));
+    assert_eq!((auto_stats.count_total, auto_stats.bytes_total), (0, 0));
     eprintln!(
         "10000 auto clock updates: {:?}; allocations=0, reallocations=0",
         auto_started.elapsed()
     );
 
     eprintln!(
-        "10000 typewriter + projection updates: {elapsed:?}; allocations={}, reallocations={}",
-        stats.allocations, stats.reallocations
+        "10000 typewriter + projection updates: {elapsed:?}; allocations={}, allocated_bytes={}",
+        stats.count_total, stats.bytes_total
     );
 }
 

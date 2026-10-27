@@ -173,6 +173,11 @@ impl SessionUi {
                 self.playback.remaining
             };
         }
+        // The first accepted reveal anchors its playback time immediately,
+        // before subsequent ticks wait for the next grapheme's deadline.
+        if self.playback.last_ns.is_none() {
+            return Duration::ZERO;
+        }
         let Some(InteractionView::Dialogue(dialogue)) = self.session.view().interaction else {
             return Duration::MAX;
         };

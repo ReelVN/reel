@@ -426,7 +426,7 @@ impl Vm {
         };
         let base = desc
             .base
-            .map(|r| self.read(*s, r))
+            .map(|r| self.read(s.regs, r))
             .transpose()?
             .unwrap_or(Value::NULL);
         if !base.same_bits(Value::NULL) {

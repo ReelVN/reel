@@ -395,6 +395,7 @@ fn geometry_staging_yields_to_whole_frame_admission() {
             frame.info().physical_size,
             false,
             &crate::gpu::geometry::UploadPolicy::new(false),
+            None,
         )
         .unwrap();
     let required = original.budget_scope.transient.usage().peak_bytes;
@@ -428,7 +429,11 @@ fn geometry_staging_yields_to_whole_frame_admission() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         renderer.poll().unwrap();
-        assert_eq!(renderer.usage().transient, 0);
+        assert_eq!(
+            renderer.usage().transient,
+            renderer.targets.metadata_bytes(),
+            "only admitted target-cache metadata survives completion"
+        );
         assert_eq!(renderer.usage().cached_geometry, 0);
     }
     eprintln!("geometry low-budget immutable_peak={required} frames=2 bounded_retries=2");

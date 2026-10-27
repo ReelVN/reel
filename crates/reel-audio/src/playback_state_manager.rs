@@ -24,8 +24,8 @@ impl PlaybackStateManager {
 		}
 	}
 
-	pub fn interpolated_fade_volume(&self, amount: f64) -> Decibels {
-		self.volume_fade.interpolated_value(amount)
+	pub fn fade_amplitudes(&self) -> crate::parameter::Amplitude {
+		self.volume_fade.amplitude_block()
 	}
 
 	pub fn playback_state(&self) -> PlaybackState {

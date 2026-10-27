@@ -1,6 +1,10 @@
 //! Bounded worker playback and mixer-owned PCM consumption.
-use super::{DecodedPacket, MediaRead, VideoDecoderFactory, VideoFrame, VideoInfo};
+mod decode;
+#[cfg(test)]
+mod tests;
+use super::{MediaRead, VideoDecoderFactory, VideoFrame, VideoInfo};
 use crate::worker_event::WorkerEvent;
+use decode::decode;
 use reel_audio::{
     Frame,
     info::Info,
@@ -14,7 +18,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering, fence},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -28,7 +32,7 @@ pub struct VideoOptions {
     /// Exclusive source endpoint, independent of looping. Hosts can queue the
     /// next segment against the same audio consumption clock.
     pub end: Option<Duration>,
-    /// Restore a terminal visual without admitting or decoding its audio track.
+    /// Restore a terminal visual without publishing its audio track.
     pub poster: bool,
     /// Initial transport state; decoding can prepare the first picture while paused.
     pub paused: bool,
@@ -96,7 +100,8 @@ impl Clock {
             }
             let bits = u64::from(self.low.load(Ordering::Relaxed))
                 | (u64::from(self.high.load(Ordering::Relaxed)) << 32);
-            if before == self.sequence.load(Ordering::Acquire) {
+            fence(Ordering::Acquire);
+            if before == self.sequence.load(Ordering::Relaxed) {
                 return f64::from_bits(bits);
             }
         }
@@ -331,7 +336,7 @@ impl VideoPlayback {
         self.shared.state.lock().unwrap().info.clone()
     }
     /// Admit this exactly once through MediaPlayer/KiraMixer. Until admission
-    /// the bounded audio queue stalls decode, rather than discarding the track.
+    /// the bounded audio queue pauses PCM delivery while video decoding continues.
     pub fn take_audio(&mut self) -> Option<StreamSoundData> {
         let data = self.shared.state.lock().unwrap().audio.take();
         self.audio_clock |= data.is_some();
@@ -442,155 +447,4 @@ impl Drop for VideoPlayback {
     fn drop(&mut self) {
         self.cancel(); /* detached worker owns cleanup until its cancelled read returns */
     }
-}
-
-fn decode(
-    source: Box<dyn MediaRead>,
-    options: VideoOptions,
-    budget: BudgetPool,
-    shared: &Shared,
-    factory: &dyn VideoDecoderFactory,
-) -> Result<(), String> {
-    let mut decoder = {
-        let _profile = reel_core::profile::Scope::new(reel_core::profile::Phase::VideoOpen);
-        factory.open(source, budget.clone(), shared.transport.cancelled.clone())?
-    };
-    if let Some(end) = options.end {
-        decoder.set_end(end.as_secs_f64());
-    }
-    if options.poster {
-        decoder.prepare_poster(options.start.as_secs_f64())?;
-    } else if options.start != Duration::ZERO {
-        decoder.seek(options.start.as_secs_f64())?;
-    }
-    let info = decoder.info().clone();
-    let mut audio = if let Some(rate) = info.audio_sample_rate {
-        let ticket = budget
-            .reserve((options.queued_audio_frames * std::mem::size_of::<Sample>()) as u64)
-            .map_err(|e| e.message)?;
-        let residency = Arc::new(PcmResidency { _ticket: ticket });
-        let (producer, consumer) = rtrb::RingBuffer::new(options.queued_audio_frames);
-        shared.state.lock().unwrap().audio = Some(StreamSoundData {
-            consumer,
-            transport: shared.transport.clone(),
-            sample_rate: rate,
-            _residency: residency.clone(),
-        });
-        Some((producer, residency, options.start.as_secs_f64()))
-    } else {
-        None
-    };
-    shared.state.lock().unwrap().info = Some(info.clone());
-    shared.wake.wake();
-    loop {
-        if shared.transport.cancelled.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        // One in-flight decoded picture/AAC block is accounted before decoding,
-        // including while it waits behind the bounded publication queue.
-        let plane_bytes = u64::from(info.width) * u64::from(info.height)
-            + 2 * u64::from(info.width.div_ceil(2)) * u64::from(info.height.div_ceil(2));
-        let mut scratch = budget
-            .reserve(plane_bytes.max(1024 * 8))
-            .map_err(|e| e.message)?;
-        let packet = {
-            let _profile = reel_core::profile::Scope::new(reel_core::profile::Phase::VideoDecode);
-            decoder.next_packet()?
-        };
-        let Some(packet) = packet else {
-            if options.poster {
-                return Err("video contains no picture at the saved position".into());
-            }
-            break;
-        };
-        match packet {
-            DecodedPacket::Video(mut frame) => {
-                let end = options.end.map_or(f64::INFINITY, |e| e.as_secs_f64());
-                if frame.pts >= end {
-                    continue;
-                }
-                frame.duration = frame.duration.min(end - frame.pts);
-                let mut state = shared.state.lock().unwrap();
-                let blocked = state.frames.len() >= options.queued_video_frames;
-                if blocked {
-                    drop(state);
-                    decoder.set_paused(true)?;
-                    state = shared.state.lock().unwrap();
-                }
-                while state.frames.len() >= options.queued_video_frames
-                    && !shared.transport.cancelled.load(Ordering::Acquire)
-                {
-                    drop(state);
-                    shared.available.wait(None)?;
-                    state = shared.state.lock().unwrap();
-                }
-                if shared.transport.cancelled.load(Ordering::Acquire) {
-                    return Ok(());
-                }
-                let bytes = frame.planes.iter().map(|p| p.capacity() as u64).sum();
-                scratch.resize(bytes).map_err(|e| e.message)?;
-                state.frames.push_back(Arc::new(ResidentFrame {
-                    frame,
-                    _ticket: scratch,
-                }));
-                if options.poster {
-                    state.terminal = Some(VideoTerminal::Completed);
-                }
-                drop(state);
-                if blocked {
-                    decoder.set_paused(false)?;
-                }
-                shared.wake.wake();
-                if options.poster {
-                    return Ok(());
-                }
-            }
-            DecodedPacket::Audio(packet) => {
-                let (producer, _residency, position) = audio.as_mut().unwrap();
-                let step = 1. / f64::from(packet.sample_rate);
-                let endpoint = options.end.map_or(f64::INFINITY, |e| e.as_secs_f64());
-                let mut index = 0;
-                let mut blocked = false;
-                while *position < packet.pts || index < packet.frames.len() {
-                    if shared.transport.cancelled.load(Ordering::Acquire) {
-                        return Ok(());
-                    }
-                    if *position + step / 2. >= endpoint {
-                        break;
-                    }
-                    let silent = *position + step / 2. < packet.pts;
-                    let frame = if silent {
-                        Frame::ZERO
-                    } else {
-                        Frame::new(packet.frames[index][0], packet.frames[index][1])
-                    };
-                    match producer.push(Sample {
-                        frame,
-                        end: *position + step,
-                    }) {
-                        Ok(()) => {
-                            *position += step;
-                            if !silent {
-                                index += 1;
-                            }
-                        }
-                        Err(_) => {
-                            if !blocked {
-                                decoder.set_paused(true)?;
-                                blocked = true;
-                            }
-                            shared.available.wait(Some(Duration::from_millis(5)))?;
-                        }
-                    }
-                }
-                if blocked {
-                    decoder.set_paused(false)?;
-                }
-            }
-        }
-        if decoder.audio_finished() {
-            shared.transport.audio_end.store(true, Ordering::Release);
-        }
-    }
-    Ok(())
 }

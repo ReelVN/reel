@@ -732,7 +732,24 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
             expected
         );
     }
-    assert_eq!(parameter_layout_bytes(&program), 2 * 8 + 2 * 4);
+    // Two native Cell slots and three script Cell slots share no wire storage.
+    assert_eq!(parameter_layout_bytes(&program), 5 * 8 + 2 * 4);
+    for (function, definition) in p.functions.iter().enumerate() {
+        let signature = &p.signatures[definition.signature.index()];
+        for parameter in 0..signature.parameters.len() + usize::from(signature.rest.is_some()) {
+            let expected = definition
+                .bindings
+                .iter()
+                .find(|binding| {
+                    binding.initialization == BindingInitialization::Parameter(parameter as u32)
+                })
+                .map_or(BindingStorage::Value(Reg(parameter as u32)), |b| b.storage);
+            assert_eq!(
+                program.script_parameter_storage(FunctionId(function as u32), parameter as u32),
+                expected
+            );
+        }
+    }
     assert_eq!(
         program
             .native_parameter_storage(NativeId(0), 4)
@@ -772,7 +789,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
     ];
     let ordinary = verify(no_defaults, limits()).unwrap();
     assert!(!ordinary.native_parameters_need_cells(NativeId(0)).unwrap());
-    assert_eq!(parameter_layout_bytes(&ordinary), 2 * 4);
+    assert_eq!(parameter_layout_bytes(&ordinary), 3 * 8 + 2 * 4);
     assert_eq!(
         ordinary.native_parameter_storage(NativeId(0), 0).unwrap(),
         BindingStorage::Value(Reg(0))

@@ -60,9 +60,10 @@ impl MainTrack {
 			effect.process(out, dt, info);
 		}
 		let num_frames = out.len();
+		let volume = self.volume.amplitude_block();
 		for (i, frame) in out.iter_mut().enumerate() {
 			let time_in_chunk = (i + 1) as f64 / num_frames as f64;
-			let volume = self.volume.interpolated_value(time_in_chunk).as_amplitude();
+			let volume = volume.at(time_in_chunk);
 			*frame *= volume;
 		}
 	}
