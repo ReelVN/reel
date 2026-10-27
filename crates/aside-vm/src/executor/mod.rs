@@ -576,6 +576,12 @@ impl Vm {
     pub fn limits(&self) -> VmLimits {
         self.limits
     }
+    /// Completed slice count and the latest slice's quota usage, read in constant
+    /// time. Host responses, queue maintenance and GC leave these values unchanged.
+    #[inline]
+    pub fn last_slice_usage(&self) -> (u64, SliceUsage) {
+        (self.slices, self.last_usage)
+    }
     pub fn task_id(&self) -> Option<TaskId> {
         self.active
             .task_id

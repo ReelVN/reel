@@ -709,6 +709,7 @@ impl SessionVm {
         budget: SessionBudget,
         mut now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
+        self.ordinary_step_executed = false;
         self.live(session)?;
         if self
             .skip_input
@@ -837,7 +838,11 @@ impl SessionVm {
         } else {
             &mut self.tasks[index - 1].minimum
         };
-        let outcome = match minimum.run(&mut self.vm, task, budget, now) {
+        let before = self.vm.last_slice_usage().0;
+        let outcome = minimum.run(&mut self.vm, task, budget, now);
+        let (slices, usage) = self.vm.last_slice_usage();
+        self.ordinary_step_executed = slices != before && usage.instructions != 0;
+        let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(VmError::Idle) if index > 0 && self.tasks[index - 1].cancelling => {
                 self.media.finish_batch(task, false);
@@ -923,6 +928,7 @@ impl SessionVm {
         budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<Option<SessionStep>, AdapterError> {
+        self.ordinary_step_executed = false;
         if self.reactive_ready
             && self.derived_task.is_none()
             && let Some(output) = self.vm.heap_mut().next_derived()?

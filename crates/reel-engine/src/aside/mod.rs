@@ -245,6 +245,7 @@ pub struct SessionVm {
     derived_task: Option<TaskId>,
     derived_minimum: SliceMinimum,
     reactive_ready: bool,
+    ordinary_step_executed: bool,
     feedback_only: bool,
     // Source of the projected version survives subsequent task scheduling.
     projected_stage_revision: u64,
@@ -359,6 +360,7 @@ impl SessionVm {
             derived_task: None,
             derived_minimum: SliceMinimum::default(),
             reactive_ready: true,
+            ordinary_step_executed: false,
             feedback_only: false,
             projected_stage_revision: 0,
             authored_stage_revision: 0,
@@ -536,6 +538,13 @@ impl SessionVm {
             && !self.activities.pending()
             && !self.transitions.pending(self.activities.time())
             && !self.particles.needs_work(self.stage.retirement_revision)
+    }
+    /// Whether the latest scheduler step executed ordinary task VM instructions.
+    /// Reactive evaluation, maintenance and host-only continuation dispatch return
+    /// false. Both [`Self::step`] and [`Self::step_reactive`] clear this transient
+    /// result on entry; restoration starts false.
+    pub fn ordinary_step_executed(&self) -> bool {
+        self.ordinary_step_executed
     }
     pub fn cleanup_pending(&self) -> bool {
         self.revoked

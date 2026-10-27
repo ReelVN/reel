@@ -97,3 +97,75 @@ fn input_wakes_start_short_delays_at_current_time_with_or_without_a_running_cloc
         );
     }
 }
+
+#[test]
+fn maintenance_progress_keeps_the_clock_turn_pending_for_ready_script() {
+    let mut story = runtime(
+        r#"
+        fn main() {
+            let timer=clock();
+            stage.replace(text("pending",x:bind(timer.elapsed)));
+            let gate=completion();
+            for i in 0..130 { spawn(|| { await gate; }); }
+            await window.configure(fullscreen:true);
+            narrator("done");
+        }
+    "#,
+    );
+    story.set_window_control_enabled(true);
+    story
+        .driver_mut()
+        .unwrap()
+        .adapter_mut()
+        .set_window_info(std::sync::Arc::new(reel_core::window::WindowInfo {
+            capabilities: reel_core::window::WindowCapabilities {
+                fullscreen: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+    for _ in 0..20_000 {
+        if !story.needs_work() && !story.driver().has_runnable_tasks() {
+            break;
+        }
+        story.wake_ready();
+        story.tick(SliceBudget::default(), || 0).unwrap();
+    }
+    assert!(!story.driver().has_runnable_tasks());
+    let request = story
+        .driver_mut()
+        .unwrap()
+        .adapter_mut()
+        .take_window_request(true)
+        .unwrap()
+        .unwrap();
+    story
+        .driver_mut()
+        .unwrap()
+        .adapter_mut()
+        .complete_window_request(
+            request.id,
+            Ok(reel_engine::aside::window::WindowReply::Configured(
+                std::sync::Arc::new(Default::default()),
+            )),
+        )
+        .unwrap();
+    story.wake_input();
+    story.advance_clock(16_000_000).unwrap();
+    assert!(story.driver().adapter().stage_ready());
+    let before = story.driver().adapter().vm().stats().slices;
+    story.tick(SliceBudget::default(), || 16_000_000).unwrap();
+    assert_eq!(
+        story.driver().adapter().vm().stats().slices,
+        before,
+        "bounded wait maintenance precedes VM execution"
+    );
+    assert!(story.driver().has_runnable_tasks());
+    assert!(
+        story.clock_turn_pending,
+        "maintenance without a VM slice cannot release the next clock batch"
+    );
+    settle(&mut story, 16_000_000);
+    assert!(matches!(story.driver().ui().session().view().interaction,
+        Some(reel_engine::InteractionView::Dialogue(dialogue)) if dialogue.text()=="done"));
+}

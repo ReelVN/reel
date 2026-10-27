@@ -551,8 +551,7 @@ impl StoryRuntime {
         let settled = self.driver().adapter().stage_ready();
         let progress = self.driver.as_mut().unwrap().tick(budget, 256, now)?;
         if settled
-            && !matches!(&progress, StoryProgress::Vm(RunOutcome::BudgetYield(usage))
-                if usage.instructions == 0)
+            && self.driver().adapter().ordinary_step_executed()
             && !matches!(
                 &progress,
                 StoryProgress::Decoding { .. } | StoryProgress::NativeBudgetYield { .. }
