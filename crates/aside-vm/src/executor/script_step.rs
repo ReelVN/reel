@@ -360,7 +360,7 @@ impl Vm {
                         c = name.0;
                     }
                 }
-                let (work, allocation) = match self.instruction_cost(s, op, a, b, c) {
+                let (work, allocation) = match self.instruction_cost(&s, op, a, b, c) {
                     Ok((work, allocation)) => (work + index_work, allocation),
                     Err(error) => {
                         if !m.take(1, 1 + index_work, 0) {
@@ -490,7 +490,7 @@ impl Vm {
                             self.finish_constant(s.env, [1, 2])?;
                             s.phase = ScriptPhase::Defaults { parameter };
                         } else {
-                            match self.write(s, work.dest, value) {
+                            match self.write(s.regs, work.dest, value) {
                                 Ok(()) => {
                                     self.finish_constant(s.env, [1, 2])?;
                                     s.pc = s.instruction_end;
@@ -751,7 +751,7 @@ impl Vm {
     }
     pub(super) fn instruction_cost(
         &self,
-        s: ScriptFrame,
+        s: &ScriptFrame,
         op: Opcode,
         _a: u32,
         b: u32,

@@ -117,7 +117,7 @@ impl Vm {
                 self.collection_fault(s, FaultKind::Type)?;
             } else {
                 self.heap.seal_string(value)?;
-                self.write(*s, dest, value)
+                self.write(s.regs, dest, value)
                     .map_err(|_| VmError::Contract("text result register"))?;
                 s.pc = s.instruction_end;
                 s.phase = ScriptPhase::Body;

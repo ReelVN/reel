@@ -4,6 +4,19 @@ use super::*;
 
 const OWNER: RootOwner = RootOwner(17);
 
+#[test]
+#[ignore = "execution frame layout measurement for native CPU profiles"]
+fn execution_frame_layout_cost() {
+    println!(
+        "execution-layout frame={} script={} native={} phase={} register_window={}",
+        size_of::<Frame>(),
+        size_of::<ScriptFrame>(),
+        size_of::<NativeFrame>(),
+        size_of::<ScriptPhase>(),
+        size_of::<RootRangeToken>(),
+    );
+}
+
 pub(super) fn echo_registry() -> RuntimeSupport {
     RuntimeSupport {
         host_types: Vec::new(),

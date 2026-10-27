@@ -235,15 +235,15 @@ impl Vm {
         Ok(())
     }
     pub(super) fn unbuilt_fault(&self) -> Option<(FrameId, FaultSeed)> {
-        match self.active.frames.data.last().copied()? {
-            Frame::Script(s) => match s.phase {
+        match self.active.frames.data.last()? {
+            Frame::Script(s) => match &s.phase {
                 ScriptPhase::Exit {
                     reason: ExitReason::Throw(seed),
                     ..
                 }
                 | ScriptPhase::Release {
                     reason: ExitReason::Throw(seed),
-                } if seed.fault.is_none() => Some((s.id, seed)),
+                } if seed.fault.is_none() => Some((s.id, *seed)),
                 _ => None,
             },
             Frame::Native(n) => {

@@ -482,7 +482,7 @@ impl Vm {
     }
     pub(super) fn make_ticket(
         &self,
-        n: NativeFrame,
+        n: &NativeFrame,
         task: TaskId,
         serial: u64,
         input: NativeInput,
@@ -525,7 +525,7 @@ impl Vm {
             return Err(VmError::InvalidTicket);
         }
         match task.frames.data.last() {
-            Some(Frame::Native(n)) if matches!(n.phase,NativePhase::Issued {serial,input} if self.make_ticket(*n,ticket.task,serial,input)==ticket) => {
+            Some(Frame::Native(n)) if matches!(n.phase,NativePhase::Issued {serial,input} if self.make_ticket(n,ticket.task,serial,input)==ticket) => {
                 Ok(*n)
             }
             _ => Err(VmError::InvalidTicket),

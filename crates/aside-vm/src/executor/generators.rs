@@ -1086,11 +1086,11 @@ impl Vm {
             return Err(FaultKind::InvalidState);
         }
         let generator = self.generator_value(*s).map_err(vm_fault)?;
-        let value = self.read(*s, item)?;
+        let value = self.read(s.regs, item)?;
         self.heap
             .set_field(generator, RESULT, value)
             .map_err(heap_fault)?;
-        self.write(*s, result, Value::NULL)?;
+        self.write(s.regs, result, Value::NULL)?;
         s.pc = s.instruction_end;
         s.phase = ScriptPhase::GeneratorCapture {
             part: 0,

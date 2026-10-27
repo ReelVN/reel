@@ -730,12 +730,12 @@ impl Vm {
             Err(FaultKind::Type)
         }
     }
-    fn read(&self, s: ScriptFrame, reg: Reg) -> Result<Value, FaultKind> {
-        self.slots.read(at(s.regs, reg.0)).map_err(heap_fault)
+    fn read(&self, regs: RootRangeToken, reg: Reg) -> Result<Value, FaultKind> {
+        self.slots.read(at(regs, reg.0)).map_err(heap_fault)
     }
-    fn write(&mut self, s: ScriptFrame, reg: Reg, v: Value) -> Result<(), FaultKind> {
+    fn write(&mut self, regs: RootRangeToken, reg: Reg, v: Value) -> Result<(), FaultKind> {
         self.slots
-            .write(&mut self.heap, at(s.regs, reg.0), v)
+            .write(&mut self.heap, at(regs, reg.0), v)
             .map_err(heap_fault)
     }
     fn value(&self, r: RootRangeToken, i: u32) -> Result<Value, VmError> {

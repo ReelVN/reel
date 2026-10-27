@@ -563,7 +563,7 @@ impl Vm {
                     return Ok(None);
                 }
                 let serial = self.serial()?;
-                let ticket = self.make_ticket(n, self.active.task_id.unwrap(), serial, input);
+                let ticket = self.make_ticket(&n, self.active.task_id.unwrap(), serial, input);
                 if input == NativeInput::Entry {
                     self.native_entries += 1;
                 } else {
@@ -575,7 +575,7 @@ impl Vm {
             }
             NativePhase::Issued { serial, input } => {
                 return Ok(Some(RunOutcome::HostCall(self.make_ticket(
-                    n,
+                    &n,
                     self.active.task_id.unwrap(),
                     serial,
                     input,
