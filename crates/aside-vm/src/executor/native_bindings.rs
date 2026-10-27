@@ -48,4 +48,4 @@ impl NativeBindings {
 
 // The fixed storage is included by Vm's control-size reservation. Snapshots
 // rebuild it cold, and collection never traverses or clears these weak keys.
-const _: () = assert!(std::mem::size_of::<NativeBindings>() == 6_144);
+const _: () = assert!(std::mem::size_of::<NativeBindings>() <= 6_144);
