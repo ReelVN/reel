@@ -26,12 +26,17 @@ impl Vm {
             }
             Completion::Error(new) => {
                 self.check_new_fault(new)?;
+                self.heap.root_insertion_barrier(new.value)?;
+                if new.cause.is_some() {
+                    let len = self.native_pending_slot() + 1;
+                    self.slots.grow(&mut self.heap, n.roots, len)?;
+                }
                 self.put(n.roots, 0, new.value)?;
-                self.put(
-                    n.roots,
-                    self.native_pending_slot(),
-                    new.cause.map_or(Value::NULL, FaultId::as_value),
-                )?;
+                if let Some(id) = new.cause {
+                    self.put(n.roots, self.native_pending_slot(), id.as_value())?;
+                } else {
+                    self.clear_native_pending(n.roots)?;
+                }
                 n.pending_fault = Some(FaultSeed {
                     kind: new.code.kind,
                     location: n.location,
@@ -50,6 +55,8 @@ impl Vm {
                 if !self.native_holds(n, id)? {
                     return Err(VmError::InvalidFault);
                 };
+                let len = self.native_pending_slot() + 1;
+                self.slots.grow(&mut self.heap, n.roots, len)?;
                 self.put(n.roots, 0, self.heap.fault_value(id)?)?;
                 self.put(n.roots, self.native_pending_slot(), id.as_value())?;
                 // A continuation can inspect/recover this producer fault first.

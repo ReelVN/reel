@@ -705,11 +705,19 @@ impl Vm {
                 }
             }
             ScriptPhase::Release { reason } => {
+                let error = match reason {
+                    ExitReason::Throw(info) => Some(info),
+                    _ => None,
+                };
+                let Some(growth) = self.commit_root_admission(s.ret, error)? else {
+                    return Ok(true);
+                };
                 let caught = self.active.caught.data.len() as u64;
-                let next = (caught + 2).max(self.release_cost(4) + self.commit_work(s.ret));
+                let next =
+                    (caught + 2).max(self.release_cost(4) + self.commit_work(s.ret) + growth.0);
                 // The scan is not a saved stage. Charge it with its successor
                 // so the reported retry grant can complete this bounded action.
-                if !m.take(0, caught + next, 0) {
+                if !m.take(0, caught + next, growth.1) {
                     return Ok(false);
                 }
                 let index = self.active.caught.data.iter().position(|c| {
@@ -729,10 +737,6 @@ impl Vm {
                 let value = self.value(s.env, 1)?;
                 let cause = match reason {
                     ExitReason::Throw(info) if info.fault.is_some() => Some(self.value(s.env, 2)?),
-                    _ => None,
-                };
-                let error = match reason {
-                    ExitReason::Throw(info) => Some(info),
                     _ => None,
                 };
                 let committed = if s.generator {

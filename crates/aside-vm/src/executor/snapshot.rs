@@ -886,6 +886,25 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
             {
                 return Err(SnapshotError::Invalid("native continuation schema".into()));
             }
+            let len = vm.heap.range_descriptor(frame.roots)?.len;
+            let mut required = 3.max(2 + frame.continuation_len);
+            if frame.fault_count != 0 {
+                required = required.max(vm.native_fault_base() + frame.fault_count);
+            }
+            if frame
+                .pending_fault
+                .is_some_and(|seed| seed.fault.is_some() || seed.explicit.is_some())
+            {
+                required = required.max(vm.native_pending_slot() + 1);
+            }
+            if let NativePhase::Callback { count } = frame.phase
+                && count != 0
+            {
+                required = required.max(2 + vm.limits.max_continuation_values + count);
+            }
+            if len < required || len > vm.native_fault_base() + vm.limits.max_native_faults {
+                return Err(SnapshotError::Invalid("native root window schema".into()));
+            }
             if let NativePhase::DefaultConstant { parameter, work } = frame.phase {
                 return validate_default_constant(
                     vm,

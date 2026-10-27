@@ -323,12 +323,7 @@ impl Vm {
             has_defaults,
             needs_cells,
         } = self.native_parameters.data[native.index()];
-        let values = 3
-            + u64::from(self.limits.max_continuation_values)
-            + u64::from(self.limits.max_arguments)
-            + u64::from(self.limits.max_native_faults)
-            + u64::from(count) * 2
-            + u64::from(n) * (1 + u64::from(needs_cells));
+        let values = 3 + u64::from(count) * 2 + u64::from(n) * (1 + u64::from(needs_cells));
         self.slots
             .admit_windows(&mut self.heap, 3 + usize::from(needs_cells), values)?;
         let id = FrameId(self.serial()?);
@@ -359,13 +354,7 @@ impl Vm {
         } else {
             None
         };
-        let roots = match self.open(
-            site.owner,
-            RootKind::NativeContinuation,
-            3 + self.limits.max_continuation_values
-                + self.limits.max_arguments
-                + self.limits.max_native_faults,
-        ) {
+        let roots = match self.open(site.owner, RootKind::NativeContinuation, 3) {
             Ok(r) => r,
             Err(e) => {
                 if let Some(r) = bindings {
@@ -533,8 +522,13 @@ impl Vm {
             _ => Err(VmError::InvalidTicket),
         }
     }
-    /// Acceptance is bounded by max_arguments/max_continuation_values; no callback
-    /// is executed here. All borrowed input values are rooted before ticket consumption.
+    /// Accept a response at an exclusive safe point without running a callback.
+    /// Payload counts retain their configured limits. Root growth can relocate
+    /// the full execution pool (bounded by its configured capacity); it admits
+    /// replacement buffers including old/new overlap before publication. This
+    /// host entry has no slice work budget. Borrowed inputs and their actual root
+    /// window are admitted before ticket consumption. Failed growth preserves
+    /// the issued ticket and previous continuation for retry or cancellation.
     pub fn respond(
         &mut self,
         ticket: HostTicket,
@@ -543,6 +537,7 @@ impl Vm {
         self.select_task(ticket.task)
             .map_err(|_| VmError::InvalidTicket)?;
         let mut n = self.ticket(ticket)?;
+        self.prepare_native_response(n, ticket, &response)?;
         match response {
             HostResponse::Ready(v) => {
                 self.put(n.roots, 0, v)?;
@@ -550,13 +545,12 @@ impl Vm {
                 n.phase = NativePhase::Commit(false);
             }
             HostResponse::Error(new) => {
-                self.check_new_fault(new)?;
                 self.put(n.roots, 0, new.value)?;
-                self.put(
-                    n.roots,
-                    self.native_pending_slot(),
-                    new.cause.map_or(Value::NULL, FaultId::as_value),
-                )?;
+                if let Some(id) = new.cause {
+                    self.put(n.roots, self.native_pending_slot(), id.as_value())?;
+                } else {
+                    self.clear_native_pending(n.roots)?;
+                }
                 n.pending_fault = Some(FaultSeed {
                     kind: new.code.kind,
                     location: n.location,
@@ -568,9 +562,6 @@ impl Vm {
                 n.phase = NativePhase::Commit(true);
             }
             HostResponse::ForwardFault(id) => {
-                if !self.native_holds(n, id)? {
-                    return Err(VmError::InvalidFault);
-                };
                 let value = self.heap.fault_value(id)?;
                 self.put(n.roots, 0, value)?;
                 self.put(n.roots, self.native_pending_slot(), id.as_value())?;
@@ -578,9 +569,6 @@ impl Vm {
                 n.phase = NativePhase::Commit(true);
             }
             HostResponse::Pending(wait) => {
-                if wait != ticket.wait_id() {
-                    return Err(VmError::InvalidWait);
-                }
                 // NoWait constrains actual waiting, not the native's signature mask.
                 if no_wait(n.context) || n.effects.0 & Effects::WAIT == 0 {
                     self.native_fault(&mut n, FaultKind::Effect)?;
@@ -597,13 +585,6 @@ impl Vm {
                 arguments,
                 continuation,
             } => {
-                if arguments.len() > self.limits.max_arguments as usize {
-                    return Err(VmError::Limit);
-                }
-                self.closure_function(closure)?;
-                for &v in arguments {
-                    self.heap.root_insertion_barrier(v)?;
-                }
                 self.save_continuation(&mut n, continuation)?;
                 self.put(n.roots, 1, closure)?;
                 for (i, &v) in arguments.iter().enumerate() {
@@ -640,28 +621,13 @@ impl Vm {
         n: &mut NativeFrame,
         c: Continuation<'_>,
     ) -> Result<(), VmError> {
-        if c.values.len() > self.limits.max_continuation_values as usize {
-            return Err(VmError::Limit);
-        }
-        if let FaultRetention::Replace(ids) = c.faults {
-            if ids.len() > self.limits.max_native_faults as usize {
-                return Err(VmError::Limit);
-            };
-            for &id in ids {
-                self.heap.fault_info(id)?;
-                self.heap.root_insertion_barrier(id.as_value())?;
-            }
-        }
-        for &v in c.values {
-            self.heap.root_insertion_barrier(v)?;
-        }
         for (i, &v) in c.values.iter().enumerate() {
             self.put(n.roots, 2 + i as u32, v)?;
         }
         for i in c.values.len() as u32..n.continuation_len {
             self.put(n.roots, 2 + i, Value::NULL)?;
         }
-        self.retain_native_faults(n, c.faults)?;
+        self.write_native_faults(n, c.faults)?;
         n.continuation_active = true;
         n.continuation_len = c.values.len() as u32;
         n.continuation_version = c.version;

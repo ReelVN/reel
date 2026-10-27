@@ -5,6 +5,7 @@ use crate::{
     Heap, HeapBudgetUsage, HeapError, HeapId, RootKind, RootOwner, RootRangeToken, RootToken,
     SessionEpoch, Value,
 };
+mod growth;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FrameSlotsLimits {
@@ -712,8 +713,23 @@ impl FrameSlots {
         heap: &mut Heap,
         capacity: u32,
     ) -> Result<RelocationCost, HeapError> {
+        self.relocate_growing(heap, capacity, None)
+    }
+    fn relocate_growing(
+        &mut self,
+        heap: &mut Heap,
+        capacity: u32,
+        growth: Option<(RangeKey, u32)>,
+    ) -> Result<RelocationCost, HeapError> {
         self.preflight(heap)?;
-        if capacity < self.active_values || capacity > self.limits.max_capacity {
+        let delta = growth.map_or(0, |(key, len)| {
+            len - self.mappings.as_ref().unwrap().data[index(key)]
+                .unwrap()
+                .len
+        });
+        if capacity < self.active_values.saturating_add(delta)
+            || capacity > self.limits.max_capacity
+        {
             return Err(HeapError::WindowCapacity);
         }
         let mut new_values = ChargedVec::new(&self.usage, capacity as usize)?;
@@ -732,11 +748,13 @@ impl FrameSlots {
                     new_bitmap.data[to / 64] |= 1 << (to % 64);
                 }
             }
-            next += w.len;
+            next += growth
+                .filter(|(key, _)| *key == w.key)
+                .map_or(w.len, |(_, len)| len);
         }
         let cost = RelocationCost {
             descriptor_slots: self.mappings.as_ref().unwrap().data.len() as u32,
-            values: next,
+            values: self.active_values,
             bitmap_bytes: new_bitmap.bytes(),
             old_buffer_bytes: self.values.as_ref().unwrap().bytes()
                 + self.bitmap.as_ref().unwrap().bytes(),
@@ -746,8 +764,15 @@ impl FrameSlots {
         next = 0;
         for w in self.mappings.as_mut().unwrap().data.iter_mut().flatten() {
             w.base = next;
+            if let Some((key, len)) = growth
+                && w.key == key
+            {
+                w.len = len;
+                heap.ranges.get_mut(key).unwrap().len = len;
+            }
             next += w.len;
         }
+        self.active_values += delta;
         let old_values = self.values.replace(new_values);
         let old_bitmap = self.bitmap.replace(new_bitmap);
         let spans = &mut self.free.as_mut().unwrap().data;

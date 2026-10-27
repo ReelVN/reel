@@ -292,6 +292,8 @@ pub struct VmLimits {
     pub max_frames: u32,
     pub max_unwinds: u32,
     pub max_arguments: u32,
+    /// Maximum values accepted in a native continuation. Its root storage grows
+    /// with actual responses; an ordinary leaf call does not reserve this limit.
     pub max_continuation_values: u32,
     pub max_native_faults: u32,
 }

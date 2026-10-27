@@ -32,6 +32,7 @@ mod iterators;
 mod member_hints;
 mod models;
 mod native_bindings;
+mod native_roots;
 mod reactive;
 pub(crate) mod snapshot;
 mod text;
@@ -822,12 +823,7 @@ impl Vm {
         let sig = &self.program.package().signatures[signature.index()];
         let cells = self.native_parameters.data[native.index()].needs_cells;
         let parameters = sig.parameters.len() as u64 + u64::from(sig.rest.is_some());
-        let values = 3
-            + self.limits.max_native_faults as u64
-            + self.limits.max_arguments as u64
-            + self.limits.max_continuation_values as u64
-            + count as u64 * 2
-            + parameters * (1 + u64::from(cells));
+        let values = 3 + count as u64 * 2 + parameters * (1 + u64::from(cells));
         let (work, bytes) = self.window_push_cost(3 + u64::from(cells), values);
         (work + 3, bytes)
     }
@@ -912,7 +908,7 @@ impl Vm {
                                 NativeInput::CallbackCancelled
                             }
                         };
-                        self.clear(native.roots, self.native_pending_slot())?;
+                        self.clear_native_pending(native.roots)?;
                         native.callback_fault = None;
                         native.pending_fault = None;
                         native.phase = NativePhase::Resume(input);
@@ -1072,7 +1068,7 @@ impl Vm {
     }
     fn native_fault(&mut self, n: &mut NativeFrame, kind: FaultKind) -> Result<(), VmError> {
         self.put(n.roots, 0, Value::NULL)?;
-        self.clear(n.roots, self.native_pending_slot())?;
+        self.clear_native_pending(n.roots)?;
         n.pending_fault = Some(FaultSeed {
             fault: None,
             explicit: None,
