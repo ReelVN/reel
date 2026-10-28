@@ -41,9 +41,18 @@ pub fn remove(target: &Path) -> io::Result<Published> {
     platform::remove(target)
 }
 
-/// Enumerate published logical files, excluding directories and staging.
-pub fn entries(directory: &Path) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
-    platform::entries(directory)
+/// Enumerate selected published logical files, excluding directories and staging.
+/// Each returned file owns one committed version; later replacement or removal
+/// leaves that open reader attached to the selected version. The selector runs
+/// before opening data, and dropping the iterator stops enumeration.
+pub fn entries<F>(
+    directory: &Path,
+    select: F,
+) -> io::Result<impl Iterator<Item = io::Result<(PathBuf, fs::File)>> + use<F>>
+where
+    F: Fn(&Path) -> bool,
+{
+    platform::entries(directory, select)
 }
 
 #[cfg(not(target_os = "vita"))]

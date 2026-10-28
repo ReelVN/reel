@@ -399,17 +399,17 @@ impl SaveStorage for DirectorySaves {
         }
     }
     fn list(&self) -> Result<Vec<SaveSlot>, StorageError> {
-        let entries = match reel_storage::entries(&self.root) {
+        let entries = match reel_storage::entries(&self.root, |path| {
+            path.extension().is_some_and(|e| e == "save")
+        }) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
         let mut slots = Vec::new();
         for entry in entries {
-            let entry = entry?;
-            if entry.extension().is_some_and(|e| e == "save") {
-                slots.push(self.metadata(&mut reel_storage::open(&entry)?)?);
-            }
+            let (_, mut file) = entry?;
+            slots.push(self.metadata(&mut file)?);
         }
         slots.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(slots)

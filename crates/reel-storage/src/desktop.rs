@@ -43,13 +43,17 @@ pub(super) fn remove(target: &Path) -> io::Result<Published> {
     })
 }
 
-pub(super) fn entries(
+pub(super) fn entries<F>(
     directory: &Path,
-) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
-    Ok(fs::read_dir(directory)?.filter_map(|entry| {
+    select: F,
+) -> io::Result<impl Iterator<Item = io::Result<(PathBuf, fs::File)>> + use<F>>
+where
+    F: Fn(&Path) -> bool,
+{
+    Ok(fs::read_dir(directory)?.filter_map(move |entry| {
         match entry.and_then(|entry| Ok(entry.file_type()?.is_file().then(|| entry.path()))) {
-            Ok(Some(path)) => Some(Ok(path)),
-            Ok(None) => None,
+            Ok(Some(path)) if select(&path) => Some(fs::File::open(&path).map(|file| (path, file))),
+            Ok(_) => None,
             Err(error) => Some(Err(error)),
         }
     }))
