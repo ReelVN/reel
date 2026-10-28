@@ -6,6 +6,8 @@ pub(in crate::aside::stage) struct Index {
     cursor: Option<ChangeCursor>,
     topology: u64,
     dependencies: Vec<(u64, NodeId)>,
+    changed: Vec<u64>,
+    changed_charge: HeapReservation,
     pub pending: Vec<NodeId>,
     virtuals: Vec<NodeId>,
     dependency_charge: HeapReservation,
@@ -19,6 +21,8 @@ impl Index {
             cursor: None,
             topology: 0,
             dependencies: Vec::new(),
+            changed: Vec::new(),
+            changed_charge: heap.budget_usage().reserve(0)?,
             pending: Vec::new(),
             virtuals: Vec::new(),
             dependency_charge: heap.budget_usage().reserve(0)?,
@@ -36,28 +40,35 @@ impl Index {
         let Some(changes) = self.cursor.and_then(|cursor| heap.changes_since(cursor)) else {
             return Ok(false);
         };
+        // The bounded write history can contain many writes to the same shared
+        // effect or override. Visit each dependency range only once per batch.
+        self.changed.clear();
         for handle in changes {
-            let start = self
-                .dependencies
-                .partition_point(|(key, _)| *key < handle.key);
+            reserve(heap, &mut self.changed, &mut self.changed_charge)?;
+            self.changed.push(handle.key);
+        }
+        self.changed.sort_unstable();
+        self.changed.dedup();
+        for &changed in &self.changed {
+            let start = self.dependencies.partition_point(|(key, _)| *key < changed);
             for &(key, id) in &self.dependencies[start..] {
-                if key != handle.key {
+                if key != changed {
                     break;
                 }
-                if let Err(at) = self.pending.binary_search(&id) {
-                    reserve(heap, &mut self.pending, &mut self.pending_charge)?;
-                    self.pending.insert(at, id);
-                }
+                reserve(heap, &mut self.pending, &mut self.pending_charge)?;
+                self.pending.push(id);
             }
         }
         if !self.pending.is_empty() {
             for &id in &self.virtuals {
-                if let Err(at) = self.pending.binary_search(&id) {
-                    reserve(heap, &mut self.pending, &mut self.pending_charge)?;
-                    self.pending.insert(at, id);
-                }
+                reserve(heap, &mut self.pending, &mut self.pending_charge)?;
+                self.pending.push(id);
             }
         }
+        // Append first: reverse-order changes must not repeatedly shift the
+        // already collected nodes. A node may depend on several changed sources.
+        self.pending.sort_unstable();
+        self.pending.dedup();
         Ok(true)
     }
     pub fn is_current(&self, heap: &Heap, stage: &Stage) -> Option<bool> {

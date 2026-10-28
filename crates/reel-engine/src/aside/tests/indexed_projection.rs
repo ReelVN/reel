@@ -146,3 +146,51 @@ fn indexed_projection_cost() {
         assert_eq!(vm.stage().node(child).unwrap().props.x, 9999.);
     }
 }
+
+#[test]
+#[ignore = "release CPU measurement of repeated shared-effect invalidation"]
+fn shared_effect_projection_cost() {
+    let code = r#"
+use reel::types::Fragment;
+fn coverage(pixel: Fragment, amount: float = 0.5) -> float { amount }
+fn opening() {
+    let paint = effect(coverage);
+    let root = stack(effect: paint);
+    for i in 0..511 { root.add(stack(effect: paint)); }
+    stage.replace(root);
+    narrator("ready");
+}"#;
+    let (mut session, mut vm) = models::prepared(code, false);
+    models::drive(&mut vm, &mut session, false);
+    let root = vm.stage().root().unwrap();
+    let field = property(&vm, root, stage::NodeProperty::Effect);
+    let fields = vm.vm.heap().host_fields(field.host).unwrap();
+    let effect = vm.vm.heap().table_entry(fields, field.field).unwrap().1;
+    let parameter = PropertyId {
+        host: effect,
+        field: 0,
+    };
+    let visits = vm.stage.projection_visits;
+    let started = std::time::Instant::now();
+    for frame in 0..200 {
+        for write in 0..128 {
+            vm.vm
+                .heap_mut()
+                .write_host_property(parameter, Value::float((frame * 128 + write) as f64), true)
+                .unwrap();
+        }
+        vm.sync_stage(&session).unwrap();
+    }
+    println!(
+        "shared_effect frames=200 nodes=512 writes_per_frame=128 visits={} elapsed_us={}",
+        vm.stage.projection_visits - visits,
+        started.elapsed().as_micros()
+    );
+    assert_eq!(vm.stage.projection_visits - visits, 200 * 512);
+    for node in vm.stage().nodes() {
+        assert_eq!(
+            node.props.effect.as_ref().unwrap().values(),
+            &[EffectValue::Float(25599_f32.to_bits())]
+        );
+    }
+}
