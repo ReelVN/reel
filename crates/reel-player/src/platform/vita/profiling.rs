@@ -49,5 +49,10 @@ pub(super) fn record_device(recording: &mut Recording, backend: &GxmBackend) {
         timing.upload_capacity_wait.cpu_us,
         timing.resource_replacement_wait.calls,
         timing.resource_replacement_wait.cpu_us,
+        native.main_textures.reserved_bytes,
+        native.main_textures.used_bytes,
+        u64::from(native.main_textures.blocks),
+        native.main_textures.idle_bytes,
+        native.display_reserved_bytes,
     ]);
 }

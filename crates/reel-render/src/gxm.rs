@@ -40,7 +40,11 @@ pub fn create_context(
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<native::Context, native::Error> {
     let config = native::Config {
-        pixel_arena_bytes: options.limits.total_bytes,
+        pixel_arena_bytes: options
+            .limits
+            .total_bytes
+            .min(native::Config::default().pixel_arena_bytes),
+        main_texture_arena_bytes: options.limits.resource_bytes,
         buffer_arena_bytes: options.limits.transient_bytes,
         upload_staging_bytes: options.limits.transient_bytes.min(4 << 20),
         ..Default::default()
@@ -74,6 +78,7 @@ fn create_program(
         stride: 12,
         attributes,
         clip_uniform: clipped.then_some("reel_clip_rect"),
+        output: native::FragmentOutput::Patched,
     })
 }
 

@@ -7,7 +7,7 @@ use std::{
 
 #[cfg(any(target_os = "vita", test))]
 const CAPACITY: usize = 256;
-pub(super) const NAMES: [&str; 40] = [
+pub(super) const NAMES: [&str; 45] = [
     "renderer_resources",
     "renderer_targets",
     "renderer_transient",
@@ -48,6 +48,11 @@ pub(super) const NAMES: [&str; 40] = [
     "upload_capacity_wait_cpu_us",
     "resource_replacement_wait_calls",
     "resource_replacement_wait_cpu_us",
+    "main_textures_reserved",
+    "main_textures_used",
+    "main_texture_blocks",
+    "main_textures_idle",
+    "display_reserved",
 ];
 
 pub(crate) type DeviceSample = [u64; NAMES.len()];

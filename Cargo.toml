@@ -12,7 +12,7 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 reel-ui = { path = "crates/reel-ui", default-features = false }
-vita-native = { git = "https://github.com/jhq223/vita-native.git", rev = "caab1cd8558c61ba4ecf0be1b8664a47cf0d73bd", default-features = false }
+vita-native = { git = "https://github.com/jhq223/vita-native.git", rev = "3061d3c345f8e666883a5c21da141895089be624", default-features = false }
 
 anymore = "=1.0.0"
 imaging = "=0.0.1"

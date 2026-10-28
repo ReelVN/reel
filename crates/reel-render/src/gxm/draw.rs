@@ -231,7 +231,11 @@ impl GlyphCache {
                 "glyph atlas",
             )?;
             let storage = gpu.ticket(storage);
-            let texture = match gpu.create_texture(size, native::TextureFormat::Luma8) {
+            let texture = match gpu.create_texture(
+                size,
+                native::TextureFormat::Luma8,
+                native::TextureMemory::Cdram,
+            ) {
                 Ok(texture) => texture,
                 Err(error) => {
                     if gpu.finish().is_err() {

@@ -191,7 +191,11 @@ impl Images {
         let storage = reserve(&budgets.resources, bytes, limit, "white texture")?;
         let storage = gpu.ticket(storage);
         let built = (|| {
-            let texture = gpu.create_texture([1, 1], native::TextureFormat::Rgba8)?;
+            let texture = gpu.create_texture(
+                [1, 1],
+                native::TextureFormat::Rgba8,
+                native::TextureMemory::Cdram,
+            )?;
             gpu.upload(&texture, [0, 0], [1, 1], &[255; 4], 4)?;
             Ok::<_, GpuError>(texture)
         })();
@@ -305,65 +309,67 @@ impl Images {
         let built = (|| {
             let mut planes = Vec::new();
             let mut video = [[0.; 4]; 4];
-            let texture =
-                if let ResourceData::Yuv420(image) = source.data() {
-                    video[..3].copy_from_slice(&image.rgb_rows());
-                    video[3][0] =
-                        f32::from(image.color().transfer == reel_core::image::YuvTransfer::Srgb);
-                    if let Some(shared) = native_frame(image) {
-                        let [y, uv] = gpu.import_nv12(shared)?;
-                        planes.push(uv);
-                        y
-                    } else if let Some((texture, chroma)) = recycled_textures {
-                        planes = chroma;
-                        texture
-                    } else {
-                        for index in 0..image.plane_count() {
-                            planes.push(gpu.create_texture(
-                                image.plane_size(index),
-                                plane_format(image, index),
-                            )?);
-                        }
-                        planes.remove(0)
-                    }
-                } else if format.is_some_and(TextureFormat::is_compressed) {
-                    // Compressed allocation is inseparable from its complete mip upload.
-                    let ResourceData::Texture {
-                        descriptor,
-                        bytes: blocks,
-                    } = source.data()
-                    else {
-                        unreachable!()
-                    };
-                    let texture = if let Some((texture, _)) = recycled_textures {
-                        texture
-                    } else {
-                        gpu.create_mip_texture(
-                            layout.storage_size,
-                            native_format(format.unwrap()),
-                            mip_count,
-                        )?
-                    };
-                    match descriptor.storage_layout {
-                        reel_core::texture::TextureStorageLayout::Linear => {
-                            gpu.upload_bc_texture(&texture, blocks.data())?
-                        }
-                        reel_core::texture::TextureStorageLayout::GxmBcMorton => {
-                            gpu.upload_bc_morton_texture(&texture, blocks.data())?
-                        }
-                    }
+            let texture = if let ResourceData::Yuv420(image) = source.data() {
+                video[..3].copy_from_slice(&image.rgb_rows());
+                video[3][0] =
+                    f32::from(image.color().transfer == reel_core::image::YuvTransfer::Srgb);
+                if let Some(shared) = native_frame(image) {
+                    let [y, uv] = gpu.import_nv12(shared)?;
+                    planes.push(uv);
+                    y
+                } else if let Some((texture, chroma)) = recycled_textures {
+                    planes = chroma;
                     texture
                 } else {
-                    if let Some((texture, _)) = recycled_textures {
-                        texture
-                    } else {
-                        gpu.create_mip_texture(
-                            layout.storage_size,
-                            native_format(format.unwrap_or(TextureFormat::Rgba8)),
-                            mip_count,
-                        )?
+                    for index in 0..image.plane_count() {
+                        planes.push(gpu.create_texture(
+                            image.plane_size(index),
+                            plane_format(image, index),
+                            native::TextureMemory::Main,
+                        )?);
                     }
+                    planes.remove(0)
+                }
+            } else if format.is_some_and(TextureFormat::is_compressed) {
+                // Compressed allocation is inseparable from its complete mip upload.
+                let ResourceData::Texture {
+                    descriptor,
+                    bytes: blocks,
+                } = source.data()
+                else {
+                    unreachable!()
                 };
+                let texture = if let Some((texture, _)) = recycled_textures {
+                    texture
+                } else {
+                    gpu.create_mip_texture(
+                        layout.storage_size,
+                        native_format(format.unwrap()),
+                        mip_count,
+                        native::TextureMemory::Main,
+                    )?
+                };
+                match descriptor.storage_layout {
+                    reel_core::texture::TextureStorageLayout::Linear => {
+                        gpu.upload_bc_texture(&texture, blocks.data())?
+                    }
+                    reel_core::texture::TextureStorageLayout::GxmBcMorton => {
+                        gpu.upload_bc_morton_texture(&texture, blocks.data())?
+                    }
+                }
+                texture
+            } else {
+                if let Some((texture, _)) = recycled_textures {
+                    texture
+                } else {
+                    gpu.create_mip_texture(
+                        layout.storage_size,
+                        native_format(format.unwrap_or(TextureFormat::Rgba8)),
+                        mip_count,
+                        native::TextureMemory::Main,
+                    )?
+                }
+            };
             Ok::<_, GpuError>((texture, planes, video))
         })();
         let (texture, planes, video) = match built {
