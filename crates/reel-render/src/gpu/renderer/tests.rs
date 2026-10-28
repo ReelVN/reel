@@ -1007,6 +1007,7 @@ fn retained_transition_reuploads_retired_images_and_releases_them_after_completi
 
 mod geometry;
 mod instances;
+mod task_subgraphs;
 mod text;
 mod uploads;
 

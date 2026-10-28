@@ -1,5 +1,6 @@
 //! Batch independent source-over siblings before their ordered parent composites.
-//! Retained transitions, captures, backdrop reads and nested isolation delimit runs.
+//! Each source owns its internal task dependencies. External parent reads,
+//! retained transitions and captures delimit independent source windows.
 use super::{
     GpuError, glyph_plan,
     scissor::Scissor,
@@ -13,6 +14,9 @@ use reel_ui::{
 #[path = "offscreen_schedule.rs"]
 mod schedule;
 pub(crate) use schedule::ParentStep;
+#[cfg(test)]
+#[path = "offscreen_test_support.rs"]
+pub(crate) mod test_support;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Entry {
@@ -156,6 +160,11 @@ impl Plan {
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],
         );
+        let mut width = 8;
+        #[cfg(test)]
+        if test_support::disabled() {
+            width = 0;
+        }
         let (mut plan, mut retained) = if second.is_none() {
             Self::build(
                 frame.drawing(),
@@ -164,7 +173,7 @@ impl Plan {
                 samples,
                 max_dimension,
                 glyphs,
-                8,
+                width,
                 capture,
                 groups.as_ref(),
                 &mut reserve,
@@ -172,7 +181,6 @@ impl Plan {
         } else {
             (Self::default(), Vec::new())
         };
-        let mut width = 8;
         let mut shared = true;
         loop {
             if plan.is_empty() {
@@ -547,12 +555,16 @@ impl Plan {
                 FrameOp::PushGroup(group) => {
                     let mut end = next + 1;
                     let mut depth = 1;
-                    let mut leaf = true;
+                    let mut independent = true;
                     while let Some(command) = commands.get(end) {
                         match &command.op {
-                            FrameOp::PushGroup(_) => {
+                            FrameOp::PushGroup(child) => {
                                 depth += 1;
-                                leaf &= groups.can_inline(end);
+                                // Every nested target starts inside this isolated
+                                // source. Its effects and local backdrop reads
+                                // retain their original consumer order; none can
+                                // observe the outer source's parent target.
+                                independent &= child.filters.is_empty();
                             }
                             FrameOp::PopGroup => {
                                 depth -= 1;
@@ -560,15 +572,18 @@ impl Plan {
                                     break;
                                 }
                             }
-                            FrameOp::PushContext(_) | FrameOp::PopContext => {}
+                            FrameOp::PushContext(_)
+                            | FrameOp::PopContext
+                            | FrameOp::PushClip(_)
+                            | FrameOp::PopClip => {}
                             FrameOp::Draw(draw) => {
-                                leaf &= ordinary_draw(draw);
+                                independent &= ordinary_draw(draw);
                             }
-                            _ => leaf = false,
+                            _ => independent = false,
                         }
                         end += 1;
                     }
-                    let view = (leaf && group.composite.blend == Default::default())
+                    let view = (independent && group.composite.blend == Default::default())
                         .then(|| {
                             SourceView::group(
                                 group,

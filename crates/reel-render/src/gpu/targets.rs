@@ -125,6 +125,8 @@ impl Target {
         }
     }
     pub fn attachment(&self, clear: bool) -> wgpu::RenderPassColorAttachment<'_> {
+        #[cfg(test)]
+        pass_trace::record(&self.texture);
         wgpu::RenderPassColorAttachment {
             view: self.multisample.as_ref().unwrap_or(&self.view),
             resolve_target: self.multisample.as_ref().map(|_| &self.view),
@@ -138,6 +140,36 @@ impl Target {
                 store: wgpu::StoreOp::Store,
             },
         }
+    }
+}
+
+#[cfg(test)]
+pub(super) mod pass_trace {
+    use std::cell::RefCell;
+    thread_local! { static TRACE: RefCell<Option<Vec<wgpu::Texture>>> = const { RefCell::new(None) }; }
+    pub fn record(texture: &wgpu::Texture) {
+        TRACE.with_borrow_mut(|trace| {
+            if let Some(trace) = trace {
+                trace.push(texture.clone());
+            }
+        });
+    }
+    pub fn collect<T>(work: impl FnOnce() -> T) -> (T, Vec<wgpu::Texture>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TRACE.with_borrow_mut(|trace| *trace = None);
+            }
+        }
+        TRACE.with_borrow_mut(|trace| {
+            assert!(trace.is_none());
+            *trace = Some(Vec::new());
+        });
+        let reset = Reset;
+        let value = work();
+        let trace = TRACE.with_borrow_mut(Option::take).unwrap();
+        drop(reset);
+        (value, trace)
     }
 }
 
