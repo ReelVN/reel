@@ -65,6 +65,8 @@ const NAMES: &[&str] = &[
     "u_fetches[0]",
     "u_seed0",
     "u_seed1",
+    "u_origin",
+    "u_origins[0]",
 ];
 pub(super) type Values<'a> = SmallVec<[UniformValue<'a>; 24]>;
 #[path = "programs/paint.rs"]
