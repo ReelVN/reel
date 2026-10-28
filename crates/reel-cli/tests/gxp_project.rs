@@ -15,10 +15,12 @@ fn project_effects_compile_to_gxp() {
     let mut count = 0;
     for definition in checked.effects.definitions() {
         let id = blake3::Hash::from(definition.id).to_hex().to_string();
-        if selected.as_ref().is_some_and(|selected| selected != &id) {
+        let origin = checked.effects.origin(definition.id).unwrap();
+        if selected.as_ref().is_some_and(|selected| {
+            selected != &id && selected.as_str() != origin.function.as_ref()
+        }) {
             continue;
         }
-        let origin = checked.effects.origin(definition.id).unwrap();
         let fragment = reel_render::effect::compile_fragment(
             &definition.program,
             reel_render::effect::Language::Cg,

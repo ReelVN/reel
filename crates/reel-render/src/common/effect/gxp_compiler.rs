@@ -202,6 +202,13 @@ fn register_pressure(stdout: &[u8], stderr: &[u8]) -> bool {
     })
 }
 
+struct Temporary(PathBuf);
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::register_pressure;
@@ -214,12 +221,5 @@ mod tests {
         assert!(!register_pressure(b"warning D7203: spilling enabled", b""));
         assert!(!register_pressure(b"error D1001: invalid syntax", b""));
         assert!(!register_pressure(b"source: error D7203: text", b""));
-    }
-}
-
-struct Temporary(PathBuf);
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
