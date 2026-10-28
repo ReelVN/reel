@@ -9,6 +9,7 @@
 pub(crate) fn for_kind(kind: &str) -> &'static str {
     match kind {
         "texture" => env!("REEL_CONVERTER_TEXTURE"),
+        "atlas" => env!("REEL_CONVERTER_ATLAS"),
         "tiles" => env!("REEL_CONVERTER_TILES"),
         "opus" => env!("REEL_CONVERTER_OPUS"),
         "video" => env!("REEL_CONVERTER_VIDEO"),

@@ -489,3 +489,98 @@ fn mip_opt_in_changes_recipe_and_default_remains_single_level() {
             .contains("mipmaps belongs to texture rules")
     );
 }
+
+#[test]
+fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
+    use reel_core::prepared_atlas::PreparedAtlasView;
+    let (directory, tool, target) = fixture();
+    let root = directory.path();
+    fs::write(root.join("resources.toml"), "[[targets.vita]]\nmatch = 'images/**'\nconvert = 'atlas'\nformat = 'rgba8'\npage_size = [64,64]\nscale = 0.5\n").unwrap();
+    let first = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    let room =
+        PreparedAtlasView::decode(&fs::read(&first.files["images/room.png"]).unwrap()).unwrap();
+    let ui = PreparedAtlasView::decode(&fs::read(&first.files["images/ui.png"]).unwrap()).unwrap();
+    assert_eq!(room.page, ui.page);
+    assert_eq!(room.image.logical_size, [12, 6]);
+    assert_eq!(room.image.content_size, [6, 3]);
+    assert_eq!(ui.image.logical_size, [4, 2]);
+    assert_ne!(room.image.content_origin, ui.image.content_origin);
+    let page_bytes = fs::read(&first.files[&room.page]).unwrap();
+    let (header, payload) = TextureHeader::parse(&page_bytes).unwrap();
+    let size = header.descriptor().layout.storage_size;
+    assert!(size[0] < 64 && size[1] < 64);
+    assert_eq!(header.descriptor().mip_count, 1);
+    for view in [&room, &ui] {
+        view.image.validate(size).unwrap();
+        assert!(view.image.content_origin.iter().all(|n| n % 4 == 0));
+        let [x, y] = view.image.content_origin;
+        let at = |x: u32, y: u32| {
+            &payload[((y * size[0] + x) * 4) as usize..((y * size[0] + x + 1) * 4) as usize]
+        };
+        assert_eq!(at(x, y), at(x - 1, y));
+        assert_eq!(at(x, y), at(x, y - 1));
+        assert_eq!(
+            at(x + view.image.content_size[0] - 1, y),
+            at(x + view.image.content_size[0], y)
+        );
+    }
+    assert_eq!(first.report.converted, 2);
+    let second = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_eq!(first.files, second.files);
+    assert_eq!(second.report.reused, 2);
+    assert_eq!(second.report.converted, 0);
+    let tiny_cache_reuse = prepare(root, &tool, &target, 1).unwrap();
+    assert_eq!(tiny_cache_reuse.files, first.files);
+    fs::write(
+        root.join("resources.toml"),
+        "[[targets.vita]]\nmatch='images/**'\nconvert='atlas'\nformat='bc3'\npage_size=[64,64]\n",
+    )
+    .unwrap();
+    let compressed = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    let room_bc =
+        PreparedAtlasView::decode(&fs::read(&compressed.files["images/room.png"]).unwrap())
+            .unwrap();
+    let ui_bc =
+        PreparedAtlasView::decode(&fs::read(&compressed.files["images/ui.png"]).unwrap()).unwrap();
+    let file = fs::read(&compressed.files[&room_bc.page]).unwrap();
+    let (header, payload) = TextureHeader::parse(&file).unwrap();
+    let descriptor = header.descriptor();
+    assert_eq!(descriptor.format, TextureFormat::Bc3Rgba);
+    let [w, h] = descriptor.layout.storage_size;
+    let mut blocks = vec![0; payload.len()];
+    for y in 0..h / 4 {
+        for x in 0..w / 4 {
+            let source = descriptor.storage_layout.block_offset([w, h], 16, x, y);
+            let dest = ((y * w / 4 + x) * 16) as usize;
+            blocks[dest..dest + 16].copy_from_slice(&payload[source..source + 16]);
+        }
+    }
+    let pixels = rgbcx::decode(w, h, &blocks, rgbcx::Format::Bc3).unwrap();
+    let sample = |view: &PreparedAtlasView| {
+        let [x, y] = view.image.content_origin;
+        let offset = ((y * w + x) * 4) as usize;
+        <[u8; 4]>::try_from(&pixels[offset..offset + 4]).unwrap()
+    };
+    let green = sample(&room_bc);
+    let blue = sample(&ui_bc);
+    assert!(
+        green[1] > 110 && green[3] > 110 && green[0] < 8 && green[2] < 8,
+        "{green:?}"
+    );
+    assert!(
+        blue[2] > 240 && blue[3] > 240 && blue[0] < 8 && blue[1] < 8,
+        "{blue:?}"
+    );
+    fs::write(
+        root.join("resources.toml"),
+        "[[targets.vita]]\nmatch='images/**'\nconvert='atlas'\nmipmaps=true\n",
+    )
+    .unwrap();
+    assert!(
+        prepare(root, &tool, &target, MEMORY_BYTES)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("one level")
+    );
+}
