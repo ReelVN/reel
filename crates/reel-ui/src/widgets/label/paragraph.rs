@@ -161,21 +161,26 @@ impl Paragraph {
         quantize: bool,
         writing_mode: reel_text::WritingMode,
     ) -> Self {
+        let spans = text.spans();
+        let first_span = spans.partition_point(|s| s.range.end <= range.start);
         let mut out = Self {
             plain: range.clone(),
             source: text.clone(),
             emphasis: emphasis
-                && text.spans().iter().any(|s| {
-                    s.style.emphasis && s.range.start < range.end && range.start < s.range.end
-                }),
+                && spans[first_span..]
+                    .iter()
+                    .take_while(|s| s.range.start < range.end)
+                    .any(|s| s.style.emphasis),
             brushes: vec![Color::WHITE.into()],
             ..Default::default()
         };
         let mut cursor = range.start;
-        for annotation in text
-            .ruby()
+        // Base and note fragments share the text but create no further ruby boxes.
+        let annotations = if ruby { text.ruby() } else { &[] };
+        let first_annotation = annotations.partition_point(|r| r.range.start < range.start);
+        for annotation in annotations[first_annotation..]
             .iter()
-            .filter(|r| ruby && range.start <= r.range.start && r.range.end <= range.end)
+            .take_while(|r| r.range.end <= range.end)
         {
             let unit = annotation.range.clone();
             let note = annotation.annotation.as_ref();
@@ -194,31 +199,28 @@ impl Paragraph {
                 writing_mode,
             );
             let mut note_styles = styles.clone();
-            let base_size = text
-                .style_at(unit.start)
-                .and_then(|s| s.size)
-                .unwrap_or_else(|| {
-                    styles
-                        .inner()
-                        .values()
-                        .find_map(|p| {
-                            if let StyleProperty::FontSize(n) = p {
-                                Some(*n)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(24.)
-                });
+            let base_style = text.style_at(unit.start);
+            let base_size = base_style.and_then(|s| s.size).unwrap_or_else(|| {
+                styles
+                    .inner()
+                    .values()
+                    .find_map(|p| {
+                        if let StyleProperty::FontSize(n) = p {
+                            Some(*n)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(24.)
+            });
             note_styles.insert(StyleProperty::FontSize(base_size * 0.5));
-            if let Some(family) = text.style_at(unit.start).and_then(|s| s.font.as_deref()) {
+            if let Some(family) = base_style.and_then(|s| s.font.as_deref()) {
                 note_styles.insert(StyleProperty::FontFamily(
                     reel_text::FontFamily::from(family).into_owned(),
                 ));
             }
-            if let Some(weight) = text
-                .style_at(unit.start)
-                .and_then(|s| s.weight.or_else(|| s.bold.then_some(700.)))
+            if let Some(weight) =
+                base_style.and_then(|s| s.weight.or_else(|| s.bold.then_some(700.)))
             {
                 note_styles.insert(StyleProperty::FontWeight(reel_text::FontWeight::new(
                     weight,
@@ -237,7 +239,7 @@ impl Paragraph {
                 quantize,
                 writing_mode,
             );
-            if let Some(color) = text.style_at(unit.start).and_then(|s| s.color) {
+            if let Some(color) = base_style.and_then(|s| s.color) {
                 note.default_color = Some(brush(color));
             }
             let baseline = if writing_mode == reel_text::WritingMode::VerticalLr {
@@ -560,6 +562,10 @@ impl Paragraph {
                         continue;
                     };
                     let run = glyphs.run();
+                    let bytes = run.text_range();
+                    if bytes.end <= shown.start || bytes.start >= shown.end {
+                        continue;
+                    }
                     if previous == Some(run.index()) {
                         continue;
                     }
@@ -623,6 +629,9 @@ impl Paragraph {
                     continue;
                 };
                 let item = &mut self.boxes[position.id as usize];
+                if item.range.end <= visible.start || item.range.start >= visible.end {
+                    continue;
+                }
                 let base_x = position.x + (item.width - item.base.width()) / 2.;
                 let base_y = position.y + item.base_offset(self.layout.writing_mode());
                 item.base.paint_faded(
@@ -988,7 +997,13 @@ mod viewport_tests {
     #[ignore = "requires REEL_SESSION_FONT; CPU retained-scene cost and rich-text viewport regression"]
     fn long_paragraph_records_only_visible_lines_without_changing_rich_paint() {
         let source = Text::parse("[b]Speaker:[/b] [u]office ffi[/u] [s]old[/s] [em]marked[/em] [ruby=reading]base[/ruby] [size=36]Large[/size] [color=#ff3399]color[/color]\n".repeat(2000)).unwrap();
+        let build_started = Instant::now();
         let mut paragraph = paragraph(&source);
+        eprintln!(
+            "rich paragraph construction: {} ruby boxes, {:?}",
+            paragraph.boxes.len(),
+            build_started.elapsed()
+        );
         let full = scene(&mut paragraph, None, Affine::IDENTITY, 0..source.len());
         let total = glyph_count(&full);
         let center = paragraph.layout.get(1000).unwrap().metrics().baseline as f64;
