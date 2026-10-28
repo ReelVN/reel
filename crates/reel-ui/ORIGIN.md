@@ -10,5 +10,7 @@ The imported source contained no NOTICE file.
 Reel maintains the code in one `reel-ui` workspace package. Local changes include
 safe-tree ownership, frozen presentation/input geometry, portable frame export,
 budgeted resources, author-stage controls, retained drawing and Popup layers.
+Label width changes reuse shaped paragraphs for line breaking within the existing
+bounded layout cache; font, style and text changes invalidate that cache.
 Text shaping/editing comes from the shared `reel-text` package; native adapters
 live in `reel-player` and `reel-render`.

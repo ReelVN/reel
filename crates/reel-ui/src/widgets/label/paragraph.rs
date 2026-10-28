@@ -16,7 +16,7 @@ use skrifa::{
 };
 use std::ops::Range;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Paragraph {
     layout: Layout<BrushIndex>,
     boxes: Vec<Annotation>,
@@ -31,10 +31,12 @@ pub(super) struct Paragraph {
     // searchable range even when large glyphs or ruby overlap adjacent lines.
     paint_lines: Vec<(f32, f32)>,
 }
+#[derive(Clone)]
 struct Mapping {
     plain: Range<usize>,
     start: usize,
 }
+#[derive(Clone)]
 struct Annotation {
     range: Range<usize>,
     index: usize,
@@ -72,6 +74,15 @@ impl std::ops::DerefMut for Paragraph {
     }
 }
 impl Paragraph {
+    /// Reuse shaping and ruby when only the paragraph's line constraint changes.
+    pub fn reflow(&self, width: Option<f32>) -> Self {
+        let mut out = self.clone();
+        out.layout.break_all_lines(width);
+        out.paint_lines.clear();
+        out.index_paint_lines();
+        out
+    }
+
     pub fn text_caret(&self) -> Option<Line> {
         if self.plain.is_empty() {
             return None;

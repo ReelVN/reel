@@ -664,6 +664,24 @@ impl Label {
             }
         }
 
+        // Text, styles, fonts and writing mode invalidate this whole cache.
+        // Equal-scale entries already own the shaping needed for a new width.
+        let paragraph =
+            if let Some(layout) = self.layouts.iter().find(|layout| layout.scale == scale) {
+                layout.layout.reflow(max_advance)
+            } else {
+                Paragraph::build(
+                    font_ctx,
+                    layout_ctx,
+                    &self.text,
+                    &self.styles,
+                    max_advance,
+                    scale,
+                    self.text_fit == TextFit::None,
+                    self.writing_mode,
+                )
+            };
+
         // No known compatible cache entry, so need to do text layout.
         let (mut idx, layout) = if self.layouts.len() < Self::CACHE_CAPACITY {
             // Create a new cache entry.
@@ -685,18 +703,8 @@ impl Label {
             (idx, layout)
         };
 
-        // TODO: Should we use a different scale?
-        // See https://github.com/linebender/xilem/issues/1264
-        layout.layout = Paragraph::build(
-            font_ctx,
-            layout_ctx,
-            &self.text,
-            &self.styles,
-            max_advance,
-            scale,
-            self.text_fit == TextFit::None,
-            self.writing_mode,
-        );
+        layout.layout = paragraph;
+        layout.alignment_width = -1.;
 
         // Check if the layout result matches an existing cache entry.
         // This happens when slightly increasing max_advance, as we can't then safely pre-identify
@@ -1911,3 +1919,6 @@ mod reveal_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod reflow_tests;
