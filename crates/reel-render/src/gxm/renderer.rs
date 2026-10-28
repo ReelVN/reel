@@ -78,10 +78,14 @@ pub struct Backend {
     drain_failed: bool,
 }
 impl Backend {
-    /// Create the thread-bound device and load its offline programs.
+    /// Create the device and notify the host after display completion.
+    /// The wake callback only signals the host; graphics work stays on this thread.
     #[cfg(target_os = "vita")]
-    pub fn new(options: Options) -> Result<Self, GpuError> {
-        let context = super::create_context(&options).map_err(native_error)?;
+    pub fn new(
+        options: Options,
+        wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, GpuError> {
+        let context = super::create_context(&options, wake).map_err(native_error)?;
         Self::with_context(context, options)
     }
 

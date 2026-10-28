@@ -473,7 +473,13 @@ impl NativeLoop {
         let wake = Wake::new()?;
         let power = PowerEvents::new(wake.clone())?;
         let controls = native::input::Input::new()?;
-        let backend = GxmBackend::new(GxmOptions::default())?;
+        let display_wake = wake.clone();
+        let backend = GxmBackend::new(
+            GxmOptions::default(),
+            Some(Arc::new(move || {
+                let _ = display_wake.signal();
+            })),
+        )?;
         let host = VitaHost::new(backend.output_size(), wake.clone());
         Ok((
             Self {

@@ -35,7 +35,10 @@ mod renderer;
 
 /// Create a native device with Reel's offline clear programs. Hosts that issue
 /// native commands directly use the same initialization as the frame executor.
-pub fn create_context(options: &GxmOptions) -> Result<native::Context, native::Error> {
+pub fn create_context(
+    options: &GxmOptions,
+    wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+) -> Result<native::Context, native::Error> {
     let config = native::Config {
         pixel_arena_bytes: options.limits.total_bytes,
         buffer_arena_bytes: options.limits.transient_bytes,
@@ -52,6 +55,7 @@ pub fn create_context(options: &GxmOptions) -> Result<native::Context, native::E
             color_uniform: "u_clear_color",
             clip_uniform: "reel_clip_rect",
         },
+        wake,
     )
 }
 
