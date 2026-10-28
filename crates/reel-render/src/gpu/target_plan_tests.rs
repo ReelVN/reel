@@ -370,6 +370,12 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
         reel_ui::frame::BlendMode::default(),
         reel_ui::peniko::Mix::Screen.into(),
         reel_ui::peniko::Mix::Multiply.into(),
+        reel_ui::peniko::Mix::Overlay.into(),
+        reel_ui::peniko::Mix::HardLight.into(),
+        reel_ui::peniko::Mix::ColorDodge.into(),
+        reel_ui::peniko::Mix::Lighten.into(),
+        reel_ui::peniko::Mix::Difference.into(),
+        reel_ui::peniko::Mix::SoftLight.into(),
     ] {
         for clipped in [false, true] {
             let mut scene = Scene::new();
@@ -446,10 +452,8 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
                 .unwrap();
                 assert_eq!(
                     pixels,
-                    u64::from(size[0])
-                        * u64::from(size[1])
-                        * if blend == Default::default() { 1 } else { 2 }
-                        + source_pixels
+                    u64::from(size[0]) * u64::from(size[1])
+                        + source_pixels * if blend == Default::default() { 1 } else { 2 }
                 );
             }
         }

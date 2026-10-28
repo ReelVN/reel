@@ -822,7 +822,7 @@ impl Input<'_> {
                                     }
                                 } else {
                                     scratch.composite(
-                                        current.size,
+                                        source,
                                         scope.group.is_some_and(|group| {
                                             group.composite.blend != Default::default()
                                         }),

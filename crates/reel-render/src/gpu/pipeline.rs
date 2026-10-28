@@ -112,6 +112,8 @@ pub(super) struct CompositeParams {
     pub blend: u32,
     /// Integer parent pixels preceding the source's top-left storage texel.
     pub source_origin: [i32; 2],
+    /// Integer parent pixels preceding the copied backdrop's first texel.
+    pub backdrop_origin: [i32; 2],
 }
 pub(super) const COMPOSITE_WORDS: usize = 20;
 pub(super) const COMPOSITE_BYTES: u64 = (COMPOSITE_WORDS * size_of::<u32>()) as u64;
@@ -136,7 +138,13 @@ impl CompositeParams {
                 .map(f32::to_bits)
         };
         let mask_uv = mapping(mask);
-        let backdrop_uv = mapping(backdrop);
+        let size = backdrop.texture().size();
+        let backdrop_uv = crate::common::source_view::uv_mapping(
+            target.size,
+            [size.width, size.height],
+            self.backdrop_origin,
+        )
+        .map(f32::to_bits);
         let (mode, progress, softness) = operation_words(self.operation);
         [
             self.opacity.to_bits(),

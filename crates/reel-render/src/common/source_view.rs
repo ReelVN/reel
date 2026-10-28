@@ -122,6 +122,49 @@ mod tests {
         widgets::Label,
     };
 
+    #[test]
+    fn cropped_backdrop_round_trip_keeps_parent_texels_and_multisample_positions() {
+        let parent = [960, 544];
+        let parent_storage = [1024, 576];
+        let source_storage = [192, 96];
+        let view = SourceView::group(
+            &group(),
+            InkBounds::Rect(Rect::new(20.5, 30.25, 159.5, 69.75)),
+            Affine::IDENTITY,
+            parent,
+            Scissor::full(parent),
+            false,
+            4096,
+        )
+        .unwrap();
+        let origin = view.origin();
+        let copy = uv_mapping(view.storage_size, parent_storage, origin.map(|v| -v));
+        let blend = uv_mapping(parent, source_storage, origin);
+        for offset in [0.125, 0.375, 0.5, 0.875] {
+            for x in [0, view.source_rect.width - 1] {
+                for y in [0, view.source_rect.height - 1] {
+                    let local = [x as f32 + offset, y as f32 + offset];
+                    for axis in 0..2 {
+                        let original = local[axis] + origin[axis] as f32;
+                        let copied = (local[axis] / view.storage_size[axis] as f32 * copy[axis]
+                            + copy[axis + 2])
+                            * parent_storage[axis] as f32;
+                        let sampled = (original / parent[axis] as f32 * blend[axis]
+                            + blend[axis + 2])
+                            * source_storage[axis] as f32;
+                        assert!((copied - original).abs() < 0.0001);
+                        assert!((sampled - local[axis]).abs() < 0.0001);
+                    }
+                }
+            }
+        }
+        // Both maps only change coordinates. The copied RGBA, including source
+        // alpha, is consumed by the original blend expression without scaling.
+        assert_eq!(view.storage_size, [160, 64]);
+        assert_eq!(parent[0] * parent[1] + 2 * 160 * 64, 542720);
+        assert_eq!(2 * parent[0] * parent[1] + 160 * 64, 1054720);
+    }
+
     fn group() -> FrameGroup {
         FrameGroup {
             image_mask: None,

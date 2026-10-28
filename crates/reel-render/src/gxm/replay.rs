@@ -22,6 +22,7 @@ struct Composition<'a> {
     source: &'a Target,
     mask: &'a Target,
     backdrop: &'a Target,
+    backdrop_origin: [i32; 2],
     alpha: f32,
     invert: f32,
     operation: CompositeOperation,
@@ -919,20 +920,15 @@ impl Context<'_> {
                                 group.invert,
                             )?;
                         } else {
-                            self.combine_group(
+                            self.combine_cropped(
                                 &current.scopes.last().target,
                                 &source,
-                                &source,
-                                GroupPaint {
-                                    source_origin: view.origin(),
-                                    composite: reel_ui::frame::GroupComposite {
-                                        alpha: group.opacity,
-                                        blend: group.blend,
-                                    },
-                                    invert: group.invert,
-                                    operation: CompositeOperation::SourceOver,
-                                    image_mask: None,
+                                view,
+                                reel_ui::frame::GroupComposite {
+                                    alpha: group.opacity,
+                                    blend: group.blend,
                                 },
+                                group.invert,
                             )?;
                         }
                         self.recycle_target(source)?;
@@ -1254,6 +1250,7 @@ impl Context<'_> {
                 source,
                 mask,
                 backdrop: source,
+                backdrop_origin: [0; 2],
                 alpha,
                 invert,
                 operation,
@@ -1295,6 +1292,7 @@ impl Context<'_> {
                 source,
                 mask: source,
                 backdrop: source,
+                backdrop_origin: [0; 2],
                 alpha,
                 invert,
                 operation: CompositeOperation::SourceOver,
@@ -1318,6 +1316,7 @@ impl Context<'_> {
             source,
             mask,
             backdrop,
+            backdrop_origin,
             alpha,
             invert,
             operation,
@@ -1374,11 +1373,14 @@ impl Context<'_> {
         values.extend(shader.vec4("u_source_uv", source.source_uv(self.size, source_origin)));
         for (name, input) in [
             ("u_mask_uv", mask),
-            ("u_backdrop_uv", backdrop),
             ("u_expression_uv", expression.unwrap_or(source)),
         ] {
             values.extend(shader.vec4(name, input.frame_uv(self.size)));
         }
+        values.extend(shader.vec4(
+            "u_backdrop_uv",
+            backdrop.source_uv(self.size, backdrop_origin),
+        ));
         values.extend(shader.float("u_invert", invert));
         values.extend(shader.float("u_blend", blend as f32));
         values.extend(shader.float("u_has_expression", f32::from(expression.is_some())));

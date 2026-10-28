@@ -1,6 +1,60 @@
 use super::*;
 
 impl Context<'_> {
+    pub(super) fn combine_cropped(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        view: crate::common::source_view::SourceView,
+        composite: reel_ui::frame::GroupComposite,
+        invert: f32,
+    ) -> Result<(), GpuError> {
+        self.flush_draws()?;
+        if self.scissor.empty() {
+            return Ok(());
+        }
+        // The source and backdrop share the same integer parent-pixel grid and
+        // capacity class; only their initialized content is sampled later.
+        let size = self.size;
+        let scissor = self.scissor;
+        self.size = view.storage_size;
+        self.scissor = view.source_rect;
+        let backdrop = self.target()?;
+        self.composition(
+            &backdrop,
+            Composition {
+                source: target,
+                mask: target,
+                backdrop: target,
+                backdrop_origin: [0; 2],
+                alpha: 1.,
+                invert: 0.,
+                operation: CompositeOperation::SourceOver,
+                blend: 0,
+                expression: None,
+                source_origin: view.origin().map(|coordinate| -coordinate),
+            },
+        )?;
+        self.size = size;
+        self.scissor = scissor;
+        self.composition(
+            target,
+            Composition {
+                source,
+                mask: source,
+                backdrop: &backdrop,
+                backdrop_origin: view.origin(),
+                alpha: composite.alpha,
+                invert,
+                operation: CompositeOperation::SourceOver,
+                blend: blend_code(composite.blend).expect("validated group blend"),
+                expression: None,
+                source_origin: view.origin(),
+            },
+        )?;
+        self.recycle_target(backdrop)
+    }
+
     pub(super) fn combine_group(
         &mut self,
         target: &Target,
@@ -54,6 +108,7 @@ impl Context<'_> {
                 source,
                 mask,
                 backdrop: backdrop.as_ref().unwrap_or(source),
+                backdrop_origin: [0; 2],
                 alpha: composite.alpha,
                 invert,
                 operation,
@@ -98,6 +153,7 @@ impl Context<'_> {
                 source: old,
                 mask: new,
                 backdrop: old,
+                backdrop_origin: [0; 2],
                 alpha: 1.,
                 invert: 0.,
                 operation,

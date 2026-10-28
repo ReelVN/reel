@@ -12,6 +12,7 @@ use reel_ui::{
     kurbo::Affine,
 };
 use std::{collections::HashMap, sync::Arc};
+mod backdrop;
 pub(super) struct Context<'a> {
     pub(super) capture: bool,
     pub(super) gpu: &'a Gpu,
@@ -795,18 +796,15 @@ impl Context<'_> {
                                 group.invert,
                             )?;
                         } else {
-                            self.combine_group(
+                            self.combine_cropped(
                                 &current.scopes.last().target,
-                                &source.view,
-                                &source.view,
+                                &source,
+                                view,
                                 reel_ui::frame::GroupComposite {
                                     alpha: group.opacity,
                                     blend: group.blend,
                                 },
                                 group.invert,
-                                CompositeOperation::SourceOver,
-                                None,
-                                view.origin(),
                             )?;
                         }
                         self.recycle_target(source)?;
@@ -1143,6 +1141,7 @@ impl Context<'_> {
                 operation,
                 blend: 0,
                 source_origin: [0; 2],
+                backdrop_origin: [0; 2],
             },
         );
         Ok(())
@@ -1179,6 +1178,7 @@ impl Context<'_> {
                         operation: CompositeOperation::SourceOver,
                         blend: 0,
                         source_origin: item.view.origin(),
+                        backdrop_origin: [0; 2],
                     },
                 )
             }),
@@ -1216,6 +1216,7 @@ impl Context<'_> {
                 operation: CompositeOperation::SourceOver,
                 blend: 0,
                 source_origin: view.origin(),
+                backdrop_origin: [0; 2],
             },
         );
         Ok(())
@@ -1284,6 +1285,7 @@ impl Context<'_> {
             operation,
             blend,
             source_origin,
+            backdrop_origin: [0; 2],
         };
         if let Some((definition, uv)) = image_mask {
             let pipeline = self.pipelines.masks.get(
@@ -1414,6 +1416,7 @@ impl Context<'_> {
                 operation: CompositeOperation::MaskedTransition(transition.progress),
                 blend: 0,
                 source_origin: [0; 2],
+                backdrop_origin: [0; 2],
             },
             definition,
             uv,
