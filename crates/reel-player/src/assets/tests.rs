@@ -689,3 +689,48 @@ fn idle_asset_service_preserves_external_wakes_without_polling_empty_workers() {
     assets.maintain();
     assert_eq!(assets.0.borrow().pumps, before + 2);
 }
+
+#[test]
+fn settled_images_drain_cancelled_worker_completions_and_clear_wake() {
+    let assets = Assets::directory(AssetOptions::default());
+    let (send, wake) = mpsc::channel();
+    assets.set_waker(Arc::new(move || {
+        let _ = send.send(());
+    }));
+    let mut images = crate::images::Images::new(assets.clone());
+    assert!(images.poll().unwrap());
+    assert!(!images.has_result_pending());
+
+    // A shared-service consumer starts work after the image demand has settled.
+    let request = assets.request_encoded("cancelled.png".into(), PNG).unwrap();
+    assets.maintain();
+    wake.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(assets.0.borrow().completion.usage().tickets, 1);
+    assets.cancel(request);
+    assert!(assets.0.borrow().loads.is_empty());
+    assert!(assets.pending_io());
+    assert!(images.has_result_pending());
+
+    // Draining a worker terminal can itself notify peers about released capacity.
+    // Both that wake and the cancelled completion must clear through settled poll.
+    let mut polls = 0;
+    while images.has_result_pending() || assets.pending_io() {
+        assert!(polls < 4, "settled images left resource cleanup runnable");
+        assert!(images.poll().unwrap());
+        polls += 1;
+    }
+    let service = assets.0.borrow();
+    for pool in [
+        &service.completion,
+        &service.input,
+        &service.output,
+        &service.temporary,
+    ] {
+        assert_eq!(pool.usage().tickets, 0);
+        assert_eq!(pool.usage().bytes, 0);
+    }
+    assert!(images.loaded.is_empty());
+    println!(
+        "settled_cancelled_worker cleanup_polls={polls} completion_tickets=0 wake_pending=false"
+    );
+}
