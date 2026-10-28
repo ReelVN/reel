@@ -288,9 +288,20 @@ impl Plan {
                 }
                 // With one finite scratch class, source and backdrop overlap.
                 // An affordable parent allocation avoids duplicating every
-                // source-size bucket over time. This also applies to static
-                // sources: stable capacity takes priority over minimum bytes.
-                if single_backdrop_class {
+                // source-size bucket over time. Limit its physical cost to two
+                // source capacities so a small control cannot retain a screen.
+                let stable_capacity = if single_backdrop_class {
+                    let parent_bytes = cost(size)?;
+                    plan.requirements()
+                        .iter()
+                        .find(|(storage, _)| *storage != size)
+                        .map(|(storage, _)| cost(storage))
+                        .transpose()?
+                        .is_some_and(|source| parent_bytes <= source.saturating_mul(2))
+                } else {
+                    false
+                };
+                if stable_capacity {
                     plan.stable_backdrop = true;
                     let candidate = (|| -> Result<_, GpuError> {
                         let mut temporary = Vec::new();
