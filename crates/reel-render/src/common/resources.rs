@@ -5,8 +5,13 @@ use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 /// adapters must require released source leases and unique ownership when taking
 /// it. Replacing or clearing a slot only releases this pool's own reference.
 pub(crate) struct RetiredImages<T> {
-    slots: [Option<T>; 64],
+    slots: [Option<RetiredImage<T>>; 64],
     next: usize,
+}
+struct RetiredImage<T> {
+    value: T,
+    age: u8,
+    uses: u8,
 }
 impl<T> Default for RetiredImages<T> {
     fn default() -> Self {
@@ -17,19 +22,42 @@ impl<T> Default for RetiredImages<T> {
     }
 }
 impl<T> RetiredImages<T> {
-    pub(crate) fn put(&mut self, image: T) {
-        self.slots[self.next] = Some(image);
+    pub(crate) fn put(&mut self, image: T, uses: u8) {
+        self.slots[self.next] = Some(RetiredImage {
+            value: image,
+            age: 0,
+            uses,
+        });
         self.next = (self.next + 1) % self.slots.len();
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
-        self.slots.iter().flatten()
+        self.slots.iter().flatten().map(|slot| &slot.value)
     }
     pub(crate) fn take_if(&mut self, matches: impl Fn(&T) -> bool) -> Option<T> {
         let index = self
             .slots
             .iter()
-            .position(|slot| slot.as_ref().is_some_and(&matches))?;
-        self.slots[index].take()
+            .position(|slot| slot.as_ref().is_some_and(|slot| matches(&slot.value)))?;
+        self.slots[index].take().map(|slot| slot.value)
+    }
+    /// Age only accepted render submissions; polling and failed preparation do
+    /// not shorten reuse windows. Repeated storage reuse earns up to 32 frames.
+    pub(crate) fn submitted(&mut self) {
+        for slot in self.slots.iter_mut().flatten() {
+            slot.age = slot.age.saturating_add(1);
+        }
+    }
+    /// A cold pool reference retires only after external readers and the source
+    /// lease have released it. Other readers keep their independent ownership.
+    pub(crate) fn prune_cold(&mut self, reusable: impl Fn(&T) -> bool) {
+        for slot in &mut self.slots {
+            if slot.as_ref().is_some_and(|entry| {
+                let retention = 2 + entry.uses.saturating_mul(2).min(30);
+                entry.age >= retention && reusable(&entry.value)
+            }) {
+                *slot = None;
+            }
+        }
     }
     pub(crate) fn clear(&mut self) {
         *self = Self::default();
@@ -342,14 +370,14 @@ mod tests {
         );
         let mut retired = RetiredImages::default();
         let held = Arc::new((0, budget.reserve(4096).unwrap()));
-        retired.put(held.clone());
+        retired.put(held.clone(), 0);
         assert!(
             retired
                 .take_if(|image| Arc::strong_count(image) == 1)
                 .is_none()
         );
         for version in 1..=64 {
-            retired.put(Arc::new((version, budget.reserve(4096).unwrap())));
+            retired.put(Arc::new((version, budget.reserve(4096).unwrap())), 0);
         }
         assert_eq!(retired.iter().count(), 64);
         assert_eq!(
@@ -365,6 +393,42 @@ mod tests {
         drop(newest);
         drop(held);
         assert_eq!(budget.usage().bytes, 0);
+    }
+
+    #[test]
+    fn retired_storage_ages_only_with_submissions_and_waits_for_readers() {
+        use std::sync::Arc;
+        let unique = |value: &Arc<u8>| Arc::strong_count(value) == 1;
+        let mut retired = RetiredImages::default();
+        retired.put(Arc::new(1), 0);
+        retired.put(Arc::new(2), u8::MAX);
+        let flight = Arc::new(3);
+        retired.put(flight.clone(), 0);
+        for _ in 0..1000 {
+            retired.prune_cold(unique);
+        }
+        assert_eq!(retired.iter().count(), 3, "polling cannot age storage");
+        retired.submitted();
+        retired.prune_cold(unique);
+        assert_eq!(retired.iter().count(), 3);
+        retired.submitted();
+        retired.prune_cold(unique);
+        assert_eq!(retired.iter().map(|v| **v).collect::<Vec<_>>(), [2, 3]);
+        for _ in 2..31 {
+            retired.submitted();
+            retired.prune_cold(unique);
+        }
+        assert_eq!(
+            retired.iter().count(),
+            2,
+            "hot storage earns 32 submissions"
+        );
+        retired.submitted();
+        retired.prune_cold(unique);
+        assert_eq!(retired.iter().map(|v| **v).collect::<Vec<_>>(), [3]);
+        drop(flight);
+        retired.prune_cold(unique);
+        assert_eq!(retired.iter().count(), 0);
     }
 
     #[test]

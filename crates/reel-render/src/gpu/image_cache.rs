@@ -51,6 +51,9 @@ struct Copy {
 }
 
 impl ImageCache {
+    pub(super) fn submitted(&self) {
+        self.retired.lock().unwrap().submitted();
+    }
     pub(super) fn usage(&self) -> [u64; 3] {
         let bytes = |image: &Arc<Image>| image.residency.as_ref().map_or(0, BudgetTicket::bytes);
         let cached = self.images.lock().unwrap().values().map(bytes).sum();
@@ -107,8 +110,10 @@ impl ImageCache {
         for (_, image) in
             cache.extract_if(|_, image| !image.source.as_ref().unwrap().retained(versions))
         {
-            retired.put(image);
+            let uses = image.reuse_count;
+            retired.put(image, uses);
         }
+        retired.prune_cold(reusable);
     }
 
     pub(super) fn prepare(
@@ -551,7 +556,9 @@ impl ImageCache {
                     _ => false,
                 }
         })?;
-        Arc::try_unwrap(image).ok()
+        let mut image = Arc::try_unwrap(image).ok()?;
+        image.reuse_count = image.reuse_count.saturating_add(1);
+        Some(image)
     }
 
     pub(super) fn poll(&self) -> bool {

@@ -558,6 +558,7 @@ impl Backend {
             retained: prepared.retained,
         });
         self.check_native()?;
+        self.images.submitted();
         self.targets.submitted(prepared.targets());
         Ok((prepared, fence))
     }

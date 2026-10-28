@@ -45,6 +45,7 @@ pub struct Image {
     pub(super) yuv: Option<super::video::Planes>,
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
     pub(super) source: Option<ResourceSource>,
+    pub(super) reuse_count: u8,
 }
 impl Image {
     pub(super) fn uv_transform(&self) -> reel_ui::kurbo::Affine {
@@ -157,6 +158,7 @@ pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError>
         yuv: None,
         residency: None,
         source: None,
+        reuse_count: 0,
     })
 }
 
@@ -231,6 +233,7 @@ pub(super) fn create_texture(
         yuv: None,
         residency: None,
         source: None,
+        reuse_count: 0,
     })
 }
 /// Copy whole format block rows, retaining compressed bytes throughout staging.

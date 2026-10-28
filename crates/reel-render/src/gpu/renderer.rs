@@ -850,6 +850,7 @@ impl Renderer {
             geometry: prepared.geometry,
         });
         self.gpu.check()?;
+        self.images.submitted();
         self.targets.publish(
             prepared.size,
             prepared.quality,
