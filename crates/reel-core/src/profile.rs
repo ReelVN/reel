@@ -51,8 +51,18 @@ pub enum Phase {
     ControlPoll,
     /// Host event wait, including timeout and scheduler wake latency.
     HostWait,
+    /// Offscreen payload admission, nested within TargetCreate.
+    TargetReserve,
+    /// Native offscreen pixel allocation, nested within TargetCreate.
+    TargetTexture,
+    /// Native surface and scheduling owner creation, nested within TargetCreate.
+    TargetFramebuffer,
+    /// Successfully constructed targets; instantaneous count, zero duration.
+    TargetCreated,
+    /// Cross-frame scratch cache hits; instantaneous count, zero duration.
+    TargetReused,
 }
-pub const NAMES: [&str; 38] = [
+pub const NAMES: [&str; 43] = [
     "input",
     "tick",
     "session",
@@ -91,7 +101,21 @@ pub const NAMES: [&str; 38] = [
     "texture_copy",
     "control_poll",
     "host_wait",
+    "target_reserve",
+    "target_texture",
+    "target_framebuffer",
+    "target_created",
+    "target_reused",
 ];
+
+/// Record an instantaneous event in the phase's call count without a duration.
+#[inline]
+pub fn count(phase: Phase) {
+    #[cfg(feature = "profiling")]
+    enabled::count(phase);
+    #[cfg(not(feature = "profiling"))]
+    let _ = phase;
+}
 
 /// Record retained-result reuse and the dependency bytes encoded for its key.
 #[inline]
@@ -159,6 +183,10 @@ mod enabled {
     static RETAINED_HITS: AtomicU64 = AtomicU64::new(0);
     static RETAINED_MISSES: AtomicU64 = AtomicU64::new(0);
     static RETAINED_KEY_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn count(phase: Phase) {
+        CALLS[phase as usize].fetch_add(1, Ordering::Relaxed);
+    }
 
     pub(super) fn retained_cache(hit: bool, bytes: u64) {
         if hit {
@@ -230,6 +258,9 @@ mod enabled {
             phase,
             Phase::Draw
                 | Phase::TargetCreate
+                | Phase::TargetReserve
+                | Phase::TargetTexture
+                | Phase::TargetFramebuffer
                 | Phase::BufferCreate
                 | Phase::GlyphRaster
                 | Phase::VmSlice

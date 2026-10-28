@@ -499,7 +499,11 @@ impl Target {
             .target_layout(size, format)
             .map_err(|error| (error.into(), None))?
             .texture_bytes;
-        let storage = budget.reserve(bytes).map_err(|_| {
+        let storage = {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetReserve);
+            budget.reserve(bytes)
+        }
+        .map_err(|_| {
             (
                 GpuError::Pressure {
                     domain: "offscreen targets",
@@ -511,8 +515,16 @@ impl Target {
         })?;
         let storage = context.ticket(storage);
         let built = (|| {
-            let view = super::super::create_target_texture(context, size, format)?;
-            let framebuffer = context.framebuffer(&view)?;
+            let view = {
+                let _timing =
+                    reel_core::profile::Scope::new(reel_core::profile::Phase::TargetTexture);
+                super::super::create_target_texture(context, size, format)?
+            };
+            let framebuffer = {
+                let _timing =
+                    reel_core::profile::Scope::new(reel_core::profile::Phase::TargetFramebuffer);
+                context.framebuffer(&view)?
+            };
             Ok::<_, native::Error>((view, framebuffer))
         })();
         let (view, framebuffer) = match built {
@@ -529,6 +541,7 @@ impl Target {
                 return Err((error, Some(storage)));
             }
         };
+        reel_core::profile::count(reel_core::profile::Phase::TargetCreated);
         Ok(Self {
             slot: 0,
             view,

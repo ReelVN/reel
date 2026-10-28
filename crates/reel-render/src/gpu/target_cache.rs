@@ -320,6 +320,7 @@ impl TargetCache {
                 .slots
                 .get_eligible(size, index, |target| !target.target.is_effect_pinned())
         {
+            reel_core::profile::count(reel_core::profile::Phase::TargetReused);
             return Ok(target.clone());
         }
         let mut resident = pool.reserve(cost);

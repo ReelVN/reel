@@ -92,6 +92,7 @@ impl Context<'_> {
                 self.offscreen.requirements()
             };
             let mut target = if let Some(target) = cache.get(storage_size, index) {
+                reel_core::profile::count(reel_core::profile::Phase::TargetReused);
                 target
             } else {
                 let mut allocation = Target::new(

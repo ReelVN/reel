@@ -129,6 +129,7 @@ impl Target {
                 })
                 .create_view(&Default::default())
         });
+        reel_core::profile::count(reel_core::profile::Phase::TargetCreated);
         Self {
             slot: 0,
             size,
