@@ -8,7 +8,7 @@ use reel_core::texture::{
 };
 use std::path::Path;
 pub(crate) mod mips;
-mod quality;
+pub(crate) mod quality;
 
 /// `Auto` uses BC1 for opaque images and BC3 for images with transparency.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
@@ -370,7 +370,7 @@ pub(crate) fn prepare_linear(
     Ok((descriptor, linear))
 }
 
-fn quantized_pixels(
+pub(crate) fn quantized_pixels(
     linear: &image::Rgba32FImage,
     descriptor: TextureDescriptor,
     dither: Dither,

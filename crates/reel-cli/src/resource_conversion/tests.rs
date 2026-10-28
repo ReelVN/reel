@@ -531,6 +531,16 @@ fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
     assert_eq!(second.report.converted, 0);
     let tiny_cache_reuse = prepare(root, &tool, &target, 1).unwrap();
     assert_eq!(tiny_cache_reuse.files, first.files);
+    image::RgbaImage::from_fn(13, 9, |x, y| {
+        image::Rgba([
+            ((x * 19 + y * 7) % 256) as u8,
+            ((x * 11 + y * 23) % 256) as u8,
+            ((x * 31 + y * 13) % 256) as u8,
+            ((x * 17 + y * 29) % 256) as u8,
+        ])
+    })
+    .save(root.join("resources/images/noise.png"))
+    .unwrap();
     fs::write(
         root.join("resources.toml"),
         "[[targets.vita]]\nmatch='images/**'\nconvert='atlas'\nformat='bc3'\npage_size=[64,64]\n",
@@ -542,6 +552,9 @@ fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
             .unwrap();
     let ui_bc =
         PreparedAtlasView::decode(&fs::read(&compressed.files["images/ui.png"]).unwrap()).unwrap();
+    let noise_bc =
+        PreparedAtlasView::decode(&fs::read(&compressed.files["images/noise.png"]).unwrap())
+            .unwrap();
     let file = fs::read(&compressed.files[&room_bc.page]).unwrap();
     let (header, payload) = TextureHeader::parse(&file).unwrap();
     let descriptor = header.descriptor();
@@ -561,6 +574,45 @@ fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
         let offset = ((y * w + x) * 4) as usize;
         <[u8; 4]>::try_from(&pixels[offset..offset + 4]).unwrap()
     };
+    for (name, view, source) in [
+        (
+            "room",
+            &room_bc,
+            root.join("resources/@vita/images/room.png"),
+        ),
+        ("ui", &ui_bc, root.join("resources/images/ui.png")),
+        ("noise", &noise_bc, root.join("resources/images/noise.png")),
+    ] {
+        let standalone_path = root.join(format!("{name}-standalone.reel-texture"));
+        crate::prepare_texture::prepare(
+            &source,
+            &standalone_path,
+            crate::prepare_texture::Options {
+                format: crate::prepare_texture::Format::Bc3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let file = fs::read(standalone_path).unwrap();
+        let (standalone_header, standalone) = TextureHeader::parse(&file).unwrap();
+        let [sw, sh] = standalone_header.descriptor().layout.storage_size;
+        for y in 0..sh / 4 {
+            for x in 0..sw / 4 {
+                let source = ((y * sw / 4 + x) * 16) as usize;
+                let target = descriptor.storage_layout.block_offset(
+                    [w, h],
+                    16,
+                    view.image.content_origin[0] / 4 + x,
+                    view.image.content_origin[1] / 4 + y,
+                );
+                assert_eq!(
+                    &payload[target..target + 16],
+                    &standalone[source..source + 16],
+                    "{name} block {x},{y}"
+                );
+            }
+        }
+    }
     let green = sample(&room_bc);
     let blue = sample(&ui_bc);
     assert!(

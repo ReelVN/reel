@@ -188,7 +188,11 @@ pub(super) fn prepare(
             layout: TextureLayout::identity(page_size),
             source_encoding: ColorEncoding::Srgb,
         };
-        let payload = prepare_texture::mips::encode(atlas, descriptor, dither).map_err(invalid)?;
+        let payload = if format.is_compressed() {
+            encode_independent_blocks(&atlas, descriptor, &items)?
+        } else {
+            prepare_texture::mips::encode(atlas, descriptor, dither).map_err(invalid)?
+        };
         let header = TextureHeader::new(descriptor, TextureCodec::Raw, payload.len() as u64)
             .map_err(invalid)?;
         let mut file = File::create(staging.path().join("page.reel-texture"))?;
@@ -228,6 +232,89 @@ pub(super) fn prepare(
     }
     insert_prepared(prepared, page_name, page)?;
     Ok(())
+}
+
+/// Fit each image against its own visible pixels, then copy its original blocks
+/// into the page. Gutter blocks are encoded separately and never share a block
+/// with another image.
+fn encode_independent_blocks(
+    atlas: &Rgba32FImage,
+    page: TextureDescriptor,
+    items: &[Item],
+) -> io::Result<Vec<u8>> {
+    let size = page.layout.storage_size;
+    let block_bytes = page.format.block_bytes() as usize;
+    let mut result = vec![0; page.byte_len().map_err(invalid)? as usize];
+    let format = match page.format {
+        TextureFormat::Bc1Rgb => rgbcx::Format::Bc1,
+        TextureFormat::Bc3Rgba => rgbcx::Format::Bc3,
+        _ => unreachable!(),
+    };
+    for item in items {
+        let padded = item.content.map(|n| n.next_multiple_of(4) + 8);
+        let region = Rgba32FImage::from_fn(padded[0], padded[1], |x, y| {
+            *atlas.get_pixel(item.origin[0] - 4 + x, item.origin[1] - 4 + y)
+        });
+        let region_descriptor = TextureDescriptor {
+            storage_layout: TextureStorageLayout::Linear,
+            mip_count: 1,
+            layout: TextureLayout::identity(padded),
+            ..page
+        };
+        let quantized = prepare_texture::quantized_pixels(
+            &region,
+            region_descriptor,
+            prepare_texture::Dither::None,
+        );
+        let gutters = rgbcx::encode(
+            padded[0],
+            padded[1],
+            quantized.as_raw(),
+            format,
+            rgbcx::Quality::Balanced,
+        )
+        .map_err(invalid)?;
+        for y in 0..padded[1] / 4 {
+            for x in 0..padded[0] / 4 {
+                let from = ((y * (padded[0] / 4) + x) as usize) * block_bytes;
+                let to = page.storage_layout.block_offset(
+                    size,
+                    block_bytes,
+                    (item.origin[0] - 4) / 4 + x,
+                    (item.origin[1] - 4) / 4 + y,
+                );
+                result[to..to + block_bytes].copy_from_slice(&gutters[from..from + block_bytes]);
+            }
+        }
+        let visible = Rgba32FImage::from_fn(item.content[0], item.content[1], |x, y| {
+            *atlas.get_pixel(item.origin[0] + x, item.origin[1] + y)
+        });
+        let storage = item.content.map(|n| n.next_multiple_of(4));
+        let descriptor = TextureDescriptor {
+            storage_layout: TextureStorageLayout::Linear,
+            mip_count: 1,
+            layout: TextureLayout {
+                logical_size: item.logical,
+                content_size: item.content,
+                storage_size: storage,
+            },
+            ..page
+        };
+        let blocks = prepare_texture::quality::encode(&visible, descriptor).map_err(invalid)?;
+        for y in 0..storage[1] / 4 {
+            for x in 0..storage[0] / 4 {
+                let from = ((y * (storage[0] / 4) + x) as usize) * block_bytes;
+                let to = page.storage_layout.block_offset(
+                    size,
+                    block_bytes,
+                    item.origin[0] / 4 + x,
+                    item.origin[1] / 4 + y,
+                );
+                result[to..to + block_bytes].copy_from_slice(&blocks[from..from + block_bytes]);
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Best short-side fit with disjoint guillotine splits. Every rectangle has a
