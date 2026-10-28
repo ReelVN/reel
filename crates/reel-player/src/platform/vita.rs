@@ -451,10 +451,13 @@ impl NativeLoop {
         let wake = Wake::new()?;
         let power = PowerEvents::new(wake.clone())?;
         let controls = native::input::Input::new()?;
+        // Existing host-service stacks already reduce free MAIN. Configure before
+        // graphics or session/media workers own additional managed blocks.
+        vita_native::allocator::configure_main_budget()?;
+        let heap = vita_native::allocator::stats()?;
         let free = native::memory::free_memory()?;
-        let capacity = free
-            .main_bytes
-            .saturating_sub(KERNEL_MAIN_UNMANAGED_RESERVE_BYTES);
+        let capacity =
+            u64::from(heap.main_limit).saturating_sub(KERNEL_MAIN_UNMANAGED_RESERVE_BYTES);
         let kernel_main = BudgetGroup::new(capacity);
         let main_pool = kernel_main.pool(
             BudgetCategory::GpuResource,

@@ -46,7 +46,7 @@ arboard = { version = "=3.6.1", default-features = false, features = ["wayland-d
 reel-media = { path = "../reel-media", default-features = false, features = ["decode"] }
 
 [target.'cfg(target_os = "vita")'.dependencies]
-vita-native = { workspace = true, features = ["app"] }
+vita-native = { workspace = true, features = ["app", "process-allocator"] }
 
 [dev-dependencies]
 allocation-counter = "=0.8.1"
