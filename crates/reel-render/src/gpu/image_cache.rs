@@ -199,12 +199,10 @@ impl ImageCache {
             if images.contains_key(&handle) {
                 continue;
             }
-            let row = match item.source.data() {
-                ResourceData::Image { image, .. } => Some(resources::row_bytes(image.width)),
-                ResourceData::Texture { .. } => Some(resources::texture_row_bytes(
-                    item.texture.expect("planned texture"),
-                )),
-                _ => None,
+            let row = if let Some(image) = item.source.image_descriptor() {
+                Some(resources::row_bytes(image.width))
+            } else {
+                item.texture.map(resources::texture_row_bytes)
             };
             let staging_limit = if let Some(row) = row {
                 if converted && work_remaining < row {
@@ -260,11 +258,7 @@ impl ImageCache {
                 });
                 break;
             }
-            if let ResourceData::Image {
-                image: source,
-                encoding,
-            } = item.source.data()
-            {
+            if let Some(source) = item.source.image_descriptor() {
                 let row_bytes = resources::row_bytes(source.width);
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
@@ -284,7 +278,7 @@ impl ImageCache {
                         image
                     };
                     image.layout = reel_core::texture::TextureLayout::identity(image.size);
-                    image.encoding = *encoding;
+                    image.encoding = source.encoding;
                     image.source = Some(resources::ResourceSource {
                         version: item.source.version().clone(),
                         lease: item.source.downgrade(),
@@ -368,7 +362,7 @@ impl ImageCache {
                     });
                     break;
                 }
-            } else if let ResourceData::Texture { descriptor, .. } = item.source.data() {
+            } else if let Some(descriptor) = item.source.texture_descriptor() {
                 let layout = item.texture.expect("planned texture");
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
@@ -383,7 +377,7 @@ impl ImageCache {
                     } else {
                         let residency = reserve_gpu(item.resident)?;
                         let mut image =
-                            resources::create_texture(gpu, *descriptor, layout, item.at)?;
+                            resources::create_texture(gpu, descriptor, layout, item.at)?;
                         image.residency = Some(residency);
                         image
                     };
@@ -405,7 +399,7 @@ impl ImageCache {
                     });
                 }
                 let pending = &partial[&handle];
-                let (level, level_row) = layout.at_row(*descriptor, pending.next_row);
+                let (level, level_row) = layout.at_row(descriptor, pending.next_row);
                 let row_bytes = resources::texture_row_bytes(level);
                 let count = (limit
                     .saturating_sub(pool.usage().bytes)
@@ -544,27 +538,23 @@ impl ImageCache {
                     .residency
                     .as_ref()
                     .is_some_and(|ticket| ticket.bytes() == item.resident)
-                && match item.source.data() {
-                    ResourceData::Yuv420(source) => {
-                        image.size == source.size()
-                            && image
-                                .yuv
-                                .as_ref()
-                                .is_some_and(|planes| planes.layout == source.layout())
-                    }
-                    ResourceData::Image { image: source, .. } => {
-                        image.yuv.is_none()
-                            && image.texture_format.is_none()
-                            && image.size == [source.width, source.height]
-                    }
-                    ResourceData::Texture { descriptor, .. } => {
-                        image.yuv.is_none()
-                            && image.texture_format == Some(descriptor.format)
-                            && image.texture.mip_level_count() == descriptor.mip_count
-                            && image.size
-                                == item.texture.expect("planned texture").layout.storage_size
-                    }
-                    _ => false,
+                && if let Some(source) = item.source.image_descriptor() {
+                    image.yuv.is_none()
+                        && image.texture_format.is_none()
+                        && image.size == [source.width, source.height]
+                } else if let Some(descriptor) = item.source.texture_descriptor() {
+                    image.yuv.is_none()
+                        && image.texture_format == Some(descriptor.format)
+                        && image.texture.mip_level_count() == descriptor.mip_count
+                        && image.size == item.texture.expect("planned texture").layout.storage_size
+                } else if let ResourceData::Yuv420(source) = item.source.data() {
+                    image.size == source.size()
+                        && image
+                            .yuv
+                            .as_ref()
+                            .is_some_and(|planes| planes.layout == source.layout())
+                } else {
+                    false
                 }
         })?;
         let mut image = Arc::try_unwrap(image).ok()?;

@@ -246,31 +246,29 @@ impl Images {
         let native_import =
             matches!(source.data(), ResourceData::Yuv420(image) if native_frame(image).is_some());
         let (bytes, _) = costs(item)?;
-        let (layout, format, encoding, kind) = match source.data() {
-            ResourceData::Image { image, encoding } => {
-                if image.format != ImageFormat::Rgba8 {
-                    return Err(GpuError::Unsupported {
-                        at,
-                        record: "image format",
-                    });
-                }
-                (
-                    TextureLayout::identity([image.width, image.height]),
-                    None,
-                    *encoding,
-                    0.,
-                )
+        let (layout, format, encoding, kind) = if let Some(image) = source.image_descriptor() {
+            if image.format != ImageFormat::Rgba8 {
+                return Err(GpuError::Unsupported {
+                    at,
+                    record: "image format",
+                });
             }
-            ResourceData::Texture { descriptor, .. } => {
-                let upload = item.texture.expect("planned texture");
-                (
-                    upload.layout,
-                    Some(descriptor.format),
-                    descriptor.source_encoding,
-                    0.,
-                )
-            }
-            ResourceData::Yuv420(image) => (
+            (
+                TextureLayout::identity([image.width, image.height]),
+                None,
+                image.encoding,
+                0.,
+            )
+        } else if let Some(descriptor) = source.texture_descriptor() {
+            let upload = item.texture.expect("planned texture");
+            (
+                upload.layout,
+                Some(descriptor.format),
+                descriptor.source_encoding,
+                0.,
+            )
+        } else if let ResourceData::Yuv420(image) = source.data() {
+            (
                 TextureLayout::identity(image.size()),
                 None,
                 ColorEncoding::Linear,
@@ -279,19 +277,16 @@ impl Images {
                 } else {
                     1.
                 },
-            ),
-            _ => {
-                return Err(GpuError::Unsupported {
-                    at,
-                    record: "non-image upload",
-                });
-            }
-        };
-        let mip_count = if let ResourceData::Texture { descriptor, .. } = source.data() {
-            descriptor.mip_count
+            )
         } else {
-            1
+            return Err(GpuError::Unsupported {
+                at,
+                record: "non-image upload",
+            });
         };
+        let mip_count = source
+            .texture_descriptor()
+            .map_or(1, |descriptor| descriptor.mip_count);
         let recycled = self
             .retired
             .take_if(|image| recyclable(image, item, bytes))
@@ -592,15 +587,16 @@ fn progress(
         return Ok(true);
     }
     loop {
-        let (size, stride, pixels, convert, alpha) = match pending.source.data() {
-            ResourceData::Image { image, .. } => (
-                [image.width, image.height],
-                image.width as usize * 4,
-                pending.pixels.as_ref().expect("image pixel reader").bytes(),
-                true,
-                image.alpha_type,
-            ),
-            ResourceData::Texture { descriptor, .. } => {
+        let (size, stride, pixels, convert, alpha) =
+            if let Some(image) = pending.source.image_descriptor() {
+                (
+                    [image.width, image.height],
+                    image.width as usize * 4,
+                    pending.pixels.as_ref().expect("image pixel reader").bytes(),
+                    true,
+                    image.alpha_type,
+                )
+            } else if let Some(descriptor) = pending.source.texture_descriptor() {
                 if pending.plane >= descriptor.mip_count as usize {
                     return Ok(true);
                 }
@@ -625,8 +621,7 @@ fn progress(
                     false,
                     ImageAlphaType::AlphaPremultiplied,
                 )
-            }
-            ResourceData::Yuv420(image) => {
+            } else if let ResourceData::Yuv420(image) = pending.source.data() {
                 if pending.plane >= image.plane_count() {
                     return Ok(true);
                 }
@@ -637,13 +632,11 @@ fn progress(
                     false,
                     ImageAlphaType::AlphaPremultiplied,
                 )
-            }
-            _ => unreachable!(),
-        };
+            } else {
+                unreachable!()
+            };
         if pending.row == size[1] {
-            if pending.image.kind != 0.
-                || matches!(pending.source.data(), ResourceData::Texture { .. })
-            {
+            if pending.image.kind != 0. || pending.source.texture_descriptor().is_some() {
                 pending.plane += 1;
                 pending.row = 0;
                 continue;
@@ -662,9 +655,7 @@ fn progress(
         };
         let rows = ((*quota / row as u64).max(1).min(u64::from(u32::MAX)) as u32)
             .min(size[1] - pending.row);
-        let texture = if pending.plane == 0
-            || matches!(pending.source.data(), ResourceData::Texture { .. })
-        {
+        let texture = if pending.plane == 0 || pending.source.texture_descriptor().is_some() {
             &pending.image.texture
         } else {
             &pending.image.planes[pending.plane - 1]
@@ -697,7 +688,10 @@ fn progress(
         } else {
             let start = pending.row as usize * stride;
             let span = (rows as usize - 1) * stride + row;
-            if matches!(pending.source.data(), ResourceData::Texture { descriptor, .. } if descriptor.mip_count > 1)
+            if pending
+                .source
+                .texture_descriptor()
+                .is_some_and(|descriptor| descriptor.mip_count > 1)
             {
                 gpu.upload_mip_rows(
                     texture,

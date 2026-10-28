@@ -185,28 +185,25 @@ pub(crate) fn collect<'a>(
                 record: "missing image lease",
             })?;
             let mut texture = None;
-            let size = match source.data() {
-                ResourceData::Texture { descriptor, .. } => {
-                    let upload = super::resources::TextureUploadLayout::new(*descriptor)?;
-                    texture = Some(upload);
-                    upload.layout.storage_size
-                }
-                ResourceData::Image { image, .. } => {
-                    if image.format != ImageFormat::Rgba8 {
-                        return Err(GpuError::Unsupported {
-                            at,
-                            record: "image format",
-                        });
-                    }
-                    [image.width, image.height]
-                }
-                ResourceData::Yuv420(image) => image.size(),
-                _ => {
+            let size = if let Some(descriptor) = source.texture_descriptor() {
+                let upload = super::resources::TextureUploadLayout::new(descriptor)?;
+                texture = Some(upload);
+                upload.layout.storage_size
+            } else if let Some(image) = source.image_descriptor() {
+                if image.format != ImageFormat::Rgba8 {
                     return Err(GpuError::Unsupported {
                         at,
-                        record: "non-image resource",
+                        record: "image format",
                     });
                 }
+                [image.width, image.height]
+            } else if let ResourceData::Yuv420(image) = source.data() {
+                image.size()
+            } else {
+                return Err(GpuError::Unsupported {
+                    at,
+                    record: "non-image resource",
+                });
             };
             if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
                 return Err(GpuError::InvalidSize);

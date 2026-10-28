@@ -9,7 +9,7 @@ use reel_ui::peniko::{
     ImageAlphaType,
     color::{AlphaColor, LinearSrgb, PremulColor, Srgb},
 };
-use reel_ui::resources::{ColorEncoding, ResourceData, ResourceLease};
+use reel_ui::resources::{ColorEncoding, ResourceLease};
 
 use crate::common::resources::rgba8_linear_f16;
 
@@ -66,7 +66,7 @@ pub(super) fn image_rows(
     staging: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
     let (lease, pixels) = source;
-    let ResourceData::Image { image, encoding } = lease.data() else {
+    let Some(image) = lease.image_descriptor() else {
         return Err(GpuError::Unsupported {
             at,
             record: "non-image resource",
@@ -80,7 +80,7 @@ pub(super) fn image_rows(
     }
     upload_rows_with(gpu, encoder, target, rows, staging, |index| {
         let rgba = &pixels.bytes()[index * 4..index * 4 + 4];
-        rgba8_linear_f16(rgba, *encoding, image.alpha_type)
+        rgba8_linear_f16(rgba, image.encoding, image.alpha_type)
     })
 }
 pub use crate::common::resources::upload_cost;
@@ -251,7 +251,7 @@ pub(super) fn texture_rows(
     reusable: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
     let (source, pixels) = source;
-    let ResourceData::Texture { descriptor, .. } = source.data() else {
+    let Some(descriptor) = source.texture_descriptor() else {
         return Err(GpuError::InvalidSize);
     };
     let row = texture_row_bytes(upload);

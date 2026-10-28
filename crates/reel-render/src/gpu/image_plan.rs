@@ -32,26 +32,22 @@ pub(super) fn collect<'a>(
         .images
         .into_iter()
         .map(|item| {
-            let (resident, staging, minimum_staging) = match item.source.data() {
-                ResourceData::Texture { .. } => {
-                    let upload = item.texture.expect("planned texture");
-                    let (resident, staging) = resources::texture_costs(upload);
-                    (resident, staging, resources::texture_row_bytes(upload))
-                }
-                ResourceData::Image { image, .. } => {
-                    let size = [image.width, image.height];
-                    let resident = u64::from(image.width) * u64::from(image.height) * 8;
-                    (
-                        resident,
-                        resources::upload_cost(size)? - resident,
-                        resources::row_bytes(size[0]),
-                    )
-                }
-                ResourceData::Yuv420(image) => {
-                    let (resident, staging) = super::video::costs(image);
-                    (resident, staging, staging)
-                }
-                _ => unreachable!("common image demand validates resource kinds"),
+            let (resident, staging, minimum_staging) = if let Some(upload) = item.texture {
+                let (resident, staging) = resources::texture_costs(upload);
+                (resident, staging, resources::texture_row_bytes(upload))
+            } else if let Some(image) = item.source.image_descriptor() {
+                let size = [image.width, image.height];
+                let resident = u64::from(image.width) * u64::from(image.height) * 8;
+                (
+                    resident,
+                    resources::upload_cost(size)? - resident,
+                    resources::row_bytes(size[0]),
+                )
+            } else if let ResourceData::Yuv420(image) = item.source.data() {
+                let (resident, staging) = super::video::costs(image);
+                (resident, staging, staging)
+            } else {
+                unreachable!("common image demand validates resource kinds")
             };
             Ok(Required {
                 source: item.source,

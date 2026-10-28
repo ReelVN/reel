@@ -178,6 +178,21 @@ impl ResourcePixels {
     }
 }
 
+/// Immutable decoded image metadata, independent of pixel residency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageDescriptor {
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Pixel channel format.
+    pub format: ImageFormat,
+    /// Alpha representation of the decoded pixels.
+    pub alpha_type: ImageAlphaType,
+    /// Color encoding of the decoded pixels.
+    pub encoding: ColorEncoding,
+}
+
 /// An explicit producer resource used as the brush of this widget's recorded
 /// image fills. No encoded pixels or fabricated RGBA image descriptor is needed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -194,6 +209,23 @@ impl ResourceLease {
     }
     pub fn data(&self) -> &ResourceData {
         &self.0.data
+    }
+    /// Return decoded image metadata without retaining its pixel allocation.
+    pub fn image_descriptor(&self) -> Option<ImageDescriptor> {
+        match &self.0.data {
+            ResourceData::Image { image, encoding } => Some(ImageDescriptor {
+                width: image.width,
+                height: image.height,
+                format: image.format,
+                alpha_type: image.alpha_type,
+                encoding: *encoding,
+            }),
+            _ => None,
+        }
+    }
+    /// Return prepared texture metadata without retaining its block allocation.
+    pub fn texture_descriptor(&self) -> Option<TextureDescriptor> {
+        self.0.data.texture_descriptor()
     }
     /// Acquire an owning CPU reader for decoded image or texture pixels.
     /// Other resource kinds have their own data and return `None`.
