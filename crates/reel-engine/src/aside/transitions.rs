@@ -133,6 +133,9 @@ pub(super) struct Transitions {
     charge: Option<HeapReservation>,
     time: f64,
     round: Option<(f64, usize)>,
+    checked_lifetimes: Option<(u64, u64)>,
+    #[cfg(test)]
+    pub(super) lifetime_checks: std::cell::Cell<usize>,
 }
 
 impl Transitions {
@@ -222,6 +225,10 @@ impl SessionVm {
     }
 
     fn transition_owner_live(&self, index: usize) -> Result<bool, AdapterError> {
+        #[cfg(test)]
+        self.transitions
+            .lifetime_checks
+            .set(self.transitions.lifetime_checks.get() + 1);
         let entry = &self.transitions.live[index];
         if entry.state.finished {
             return Ok(true);
@@ -234,7 +241,17 @@ impl SessionVm {
         )
     }
 
+    fn transition_lifetimes(&self) -> (u64, u64) {
+        (
+            self.vm.heap().host_retirement_revision(),
+            self.stage.retirement_revision,
+        )
+    }
+
     pub(super) fn transitions_pending(&self) -> bool {
+        if self.transitions.checked_lifetimes == Some(self.transition_lifetimes()) {
+            return false;
+        }
         (0..self.transitions.live.len()).any(|index| {
             !self
                 .transition_owner_live(index)
@@ -277,6 +294,10 @@ impl SessionVm {
         &mut self,
         session: &mut Session,
     ) -> Result<(), AdapterError> {
+        let lifetimes = self.transition_lifetimes();
+        if self.transitions.checked_lifetimes == Some(lifetimes) {
+            return Ok(());
+        }
         let mut index = 0;
         while index < self.transitions.live.len() {
             if self.transition_owner_live(index)? {
@@ -289,6 +310,8 @@ impl SessionVm {
             self.cancel_inner_scopes(session, task, frame)?;
             self.close_transition(index)?;
         }
+        // Cancellation can retire another owner; observe that on the next turn.
+        self.transitions.checked_lifetimes = Some(lifetimes);
         Ok(())
     }
 
@@ -588,6 +611,7 @@ impl SessionVm {
                 return Err(error.into());
             }
             self.transitions.serial = serial;
+            self.transitions.checked_lifetimes = None;
             self.transitions.live.push_back(Transition {
                 state: SavedTransition {
                     serial,

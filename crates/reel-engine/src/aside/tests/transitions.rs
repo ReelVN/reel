@@ -888,3 +888,33 @@ fn transition_snapshot_accounts_retained_picture_before_vm_capture_with_one_unit
         retained_bytes + size_of::<Option<Arc<reel_ui::frame::SavedRetainedScene>>>() as u64
     );
 }
+
+#[test]
+fn transition_lifetimes_are_rechecked_after_retirement_and_not_vm_reentry() {
+    let (mut session, mut vm) = prepared(
+        r#"fn opening() {
+        let node=stack(); stage.replace(node);
+        stage.transition(target:node, duration:1, change:||{});
+    }"#,
+        false,
+    );
+    drive(&mut vm, &mut session, false);
+    assert!(vm.transition_views().next().is_some());
+    vm.maintain_transitions(&mut session).unwrap();
+    let before = vm.transitions.lifetime_checks.get();
+    for _ in 0..4096 {
+        assert!(!vm.transitions_pending());
+        vm.maintain_transitions(&mut session).unwrap();
+    }
+    assert_eq!(vm.transitions.lifetime_checks.get(), before);
+    println!(
+        "transition_lifetimes reentries=4096 owner_checks={}",
+        vm.transitions.lifetime_checks.get() - before
+    );
+    let target = vm.stage().root().unwrap();
+    let value = vm.stage.value(vm.vm.heap(), target).unwrap();
+    vm.stage.remove_node(vm.vm.heap_mut(), value).unwrap();
+    assert!(vm.transitions_pending());
+    vm.maintain_transitions(&mut session).unwrap();
+    assert!(vm.transition_views().next().is_none());
+}
