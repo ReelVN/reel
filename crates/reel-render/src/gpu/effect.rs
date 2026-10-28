@@ -230,7 +230,8 @@ impl Context<'_> {
                 self.quality.samples,
             ],
         };
-        let probe = if !self.capture
+        let probe = if self.effect_admission.enabled()
+            && !self.capture
             && !self.scissor.empty()
             && effect_plan::context(effect, transform, self.size, source.size).is_some()
         {
@@ -245,43 +246,52 @@ impl Context<'_> {
             None
         };
         if let Some(probe) = probe {
-            if let Some((_token, hit)) = self.effect_results.lookup(&probe) {
+            if let Some((token, hit)) = self.effect_results.lookup(&probe) {
+                if self
+                    .effect_pins
+                    .iter()
+                    .any(|held| held.effect_token() == Some(token))
+                {
+                    return Ok(hit.target);
+                }
                 let bytes = super::targets::target_bytes(hit.target.storage_size(), self.quality)?;
-                let local =
-                    self.budget_scope
-                        .targets
-                        .reserve(bytes)
-                        .map_err(|_| GpuError::Budget {
-                            domain: "offscreen targets",
-                            requested: bytes,
-                            available: self
-                                .gpu
-                                .limits
-                                .target_bytes
-                                .saturating_sub(self.budget_scope.targets.usage().bytes),
-                        })?;
-                self.tickets.push(crate::common::renderer::Reservation {
-                    _shared: None,
-                    _local: local,
-                });
-                let mut owners = std::mem::take(&mut self.retained_inputs);
-                let held = crate::common::scopes::push_stack(
-                    &mut owners,
-                    hit.allocation.clone(),
-                    |bytes| self.transient(bytes),
-                );
-                self.retained_inputs = owners;
-                held?;
-                let mut pins = std::mem::take(&mut self.effect_pins);
-                let held =
-                    crate::common::scopes::push_stack(&mut pins, hit.target.clone(), |bytes| {
-                        self.transient(bytes)
+                if self.effect_admission.can_retain(bytes) {
+                    let local =
+                        self.budget_scope
+                            .targets
+                            .reserve(bytes)
+                            .map_err(|_| GpuError::Budget {
+                                domain: "offscreen targets",
+                                requested: bytes,
+                                available: self
+                                    .gpu
+                                    .limits
+                                    .target_bytes
+                                    .saturating_sub(self.budget_scope.targets.usage().bytes),
+                            })?;
+                    self.tickets.push(crate::common::renderer::Reservation {
+                        _shared: None,
+                        _local: local,
                     });
-                self.effect_pins = pins;
-                held?;
-                return Ok(hit.target);
+                    let mut owners = std::mem::take(&mut self.retained_inputs);
+                    let held = crate::common::scopes::push_stack(
+                        &mut owners,
+                        hit.allocation.clone(),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.retained_inputs = owners;
+                    held?;
+                    let mut pins = std::mem::take(&mut self.effect_pins);
+                    let held =
+                        crate::common::scopes::push_stack(&mut pins, hit.target.clone(), |bytes| {
+                            self.transient(bytes)
+                        });
+                    self.effect_pins = pins;
+                    held?;
+                    self.effect_admission.retain(bytes);
+                    return Ok(hit.target);
+                }
             }
-            let candidate = self.effect_results.prepare(probe, &self.budgets.transient);
             let output = self.effect_draw(
                 drawing,
                 effect,
@@ -291,7 +301,9 @@ impl Context<'_> {
                 None,
                 at,
             )?;
-            if let Some(candidate) = candidate
+            let bytes = super::targets::target_bytes(output.storage_size(), self.quality)?;
+            if self.effect_admission.can_retain(bytes)
+                && let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient)
                 && let Some(pinned) = output.pin_effect(candidate.token, &self.budgets.transient)
             {
                 let mut pins = std::mem::take(&mut self.effect_pins);
@@ -313,6 +325,7 @@ impl Context<'_> {
                     );
                     self.effect_pending = pending;
                     if saved.is_ok() {
+                        self.effect_admission.retain(bytes);
                         return Ok(pinned);
                     }
                     self.effect_pins.pop();

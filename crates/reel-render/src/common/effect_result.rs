@@ -1,5 +1,7 @@
 //! Content identity for already-materialized ordinary effect outputs.
 use reel_core::budget::{BudgetPool, BudgetTicket};
+mod admission;
+pub(crate) use admission::Admission;
 #[cfg(test)]
 mod tests;
 use reel_ui::{

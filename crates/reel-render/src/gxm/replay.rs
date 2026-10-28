@@ -59,6 +59,7 @@ pub(super) struct Context<'a> {
     pub mask_cache: &'a mut crate::common::mask::split::Cache,
     pub effects: Vec<Rc<super::effect::Compiled>>,
     pub effect_results: &'a crate::common::effect_result::Cache<Target>,
+    pub effect_admission: crate::common::effect_result::Admission,
     pub effect_pending: Vec<crate::common::effect_result::Pending<Target>>,
     pub effect_pins: Vec<Target>,
     pub target_cache: &'a mut super::target_cache::Cache,
@@ -117,6 +118,7 @@ pub(super) struct Caches<'a> {
     pub glyphs: &'a mut draw::GlyphCache,
     pub effects: &'a mut super::effect::Cache,
     pub effect_results: &'a crate::common::effect_result::Cache<Target>,
+    pub effect_results_enabled: bool,
     pub masks: &'a mut crate::common::mask::split::Cache,
     pub targets: &'a mut super::target_cache::Cache,
     pub coverage_targets: &'a mut super::target_cache::Cache,
@@ -150,6 +152,7 @@ pub(super) fn prepare(
         glyphs: glyph_cache,
         effects: effect_cache,
         effect_results,
+        effect_results_enabled,
         masks: mask_cache,
         targets: target_cache,
         coverage_targets: coverage_target_cache,
@@ -179,6 +182,7 @@ pub(super) fn prepare(
         mask_cache,
         effects: Vec::new(),
         effect_results,
+        effect_admission: Default::default(),
         effect_pending: Vec::new(),
         effect_pins: Vec::new(),
         target_cache,
@@ -250,6 +254,11 @@ pub(super) fn prepare(
                 available: limits.target_bytes,
             });
         }
+        context.effect_admission = crate::common::effect_result::Admission::new(
+            bytes,
+            limits.target_bytes,
+            effect_results_enabled && !capture,
+        );
         context.offscreen = schedule;
         let result = context.stream(frame.drawing(), transform);
         drop(std::mem::take(&mut context.offscreen));

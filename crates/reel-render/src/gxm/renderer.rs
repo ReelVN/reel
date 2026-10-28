@@ -295,6 +295,7 @@ impl Backend {
         capture: bool,
         retry: Option<CacheRetry>,
     ) -> Result<replay::Prepared, GpuError> {
+        let effect_results_enabled = retry.is_none();
         self.check_native()?;
         self.masks.prune();
         if self.drain_failed {
@@ -554,6 +555,7 @@ impl Backend {
                 geometry: &mut self.geometry,
                 retained: &self.retained,
                 effect_results: &self.effect_results,
+                effect_results_enabled,
             },
             images,
             frame,

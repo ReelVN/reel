@@ -5,6 +5,8 @@ use super::{
 };
 use crate::Usage;
 #[cfg(test)]
+mod effect_admission_tests;
+#[cfg(test)]
 #[path = "texture_tests.rs"]
 mod texture_tests;
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits};
@@ -449,6 +451,7 @@ impl Renderer {
         geometry_policy: &super::geometry::UploadPolicy,
         mut retry: Option<CacheRetry>,
     ) -> Result<Prepared, GpuError> {
+        let effect_results_enabled = retry.is_none();
         loop {
             self.gpu.check()?;
             self.images.retire(&[]);
@@ -595,6 +598,7 @@ impl Renderer {
             );
             let mut offscreen = crate::common::offscreen::Plan::default();
             let mut offscreen_tickets = Vec::new();
+            let mut required_target_bytes = 0;
             let mut target_plan = |quality: Quality| {
                 offscreen = Default::default();
                 offscreen_tickets.clear();
@@ -629,6 +633,7 @@ impl Renderer {
                         },
                     )?;
                 offscreen = schedule;
+                required_target_bytes = targets;
                 offscreen_tickets = retained;
                 Ok(targets)
             };
@@ -749,6 +754,11 @@ impl Renderer {
                 coverage_pipeline,
                 retained_cache: &self.retained.inputs,
                 effect_results: &self.effect_results,
+                effect_admission: crate::common::effect_result::Admission::new(
+                    required_target_bytes,
+                    self.gpu.limits.target_bytes,
+                    effect_results_enabled && !capture,
+                ),
                 effect_pending: Vec::new(),
                 effect_pins: Vec::new(),
                 effect_uniform_cache: &self.effect_uniforms,

@@ -33,6 +33,7 @@ pub(super) struct Context<'a> {
     pub(super) offscreen: crate::common::offscreen::Plan,
     pub(super) effects: Vec<Arc<super::effect::Compiled>>,
     pub(super) effect_results: &'a crate::common::effect_result::Cache<super::retained::Output>,
+    pub(super) effect_admission: crate::common::effect_result::Admission,
     pub(super) effect_pending: Vec<crate::common::effect_result::Pending<super::retained::Output>>,
     pub(super) effect_pins: Vec<Target>,
     pub(super) effect_uniform_cache: &'a super::effect_uniform::Cache,
