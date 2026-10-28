@@ -3,7 +3,7 @@ use super::{GpuError, scopes::push_stack};
 use reel_ui::{
     frame::{FrameDraw, FrameImageMask, FrameOp, RecordLocation, RenderFrame},
     peniko::{Brush, ImageFormat},
-    resources::{ResourceData, ResourceHandle, ResourceLease},
+    resources::{ResourceHandle, ResourceLease, ResourceView},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -197,7 +197,7 @@ pub(crate) fn collect<'a>(
                     });
                 }
                 [image.width, image.height]
-            } else if let ResourceData::Yuv420(image) = source.data() {
+            } else if let ResourceView::Yuv420(image) = source.view() {
                 image.size()
             } else {
                 return Err(GpuError::Unsupported {

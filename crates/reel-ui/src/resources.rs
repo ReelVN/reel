@@ -200,6 +200,36 @@ pub struct ImageDescriptor {
     pub encoding: ColorEncoding,
 }
 
+/// Immutable resource metadata. Image and texture pixel bytes require an owned reader.
+#[derive(Debug)]
+pub enum ResourceView<'a> {
+    /// Portable shader descriptor and immutable program bytes.
+    EffectShader {
+        /// Shader format and parameter contract.
+        descriptor: &'a EffectShaderDescriptor,
+        /// Immutable shader program bytes.
+        bytes: &'a Blob<u8>,
+    },
+    /// Prepared texture metadata.
+    Texture {
+        /// Validated texture storage layout.
+        descriptor: TextureDescriptor,
+    },
+    /// Decoded image metadata.
+    Image {
+        /// Decoded size, channel and color information.
+        image: ImageDescriptor,
+    },
+    /// Producer-owned planar video pixels.
+    Yuv420(&'a reel_core::image::Yuv420Image),
+    /// Immutable font bytes.
+    Font(&'a Blob<u8>),
+    /// External producer identity.
+    External {
+        /// Producer-provided identity.
+        token: u64,
+    },
+}
 /// An explicit producer resource used as the brush of this widget's recorded
 /// image fills. No encoded pixels or fabricated RGBA image descriptor is needed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -217,6 +247,23 @@ impl ResourceLease {
     pub fn data(&self) -> &ResourceData {
         &self.0.data
     }
+    /// Return the resource metadata without taking ownership of image pixels.
+    pub fn view(&self) -> ResourceView<'_> {
+        match &self.0.data {
+            ResourceData::EffectShader { descriptor, bytes } => {
+                ResourceView::EffectShader { descriptor, bytes }
+            }
+            ResourceData::Texture { descriptor, .. } => ResourceView::Texture {
+                descriptor: *descriptor,
+            },
+            ResourceData::Image { .. } => ResourceView::Image {
+                image: self.image_descriptor().expect("image metadata"),
+            },
+            ResourceData::Yuv420(image) => ResourceView::Yuv420(image),
+            ResourceData::Font(font) => ResourceView::Font(font),
+            ResourceData::External { token } => ResourceView::External { token: *token },
+        }
+    }
     /// Return decoded image metadata without retaining its pixel allocation.
     pub fn image_descriptor(&self) -> Option<ImageDescriptor> {
         match &self.0.data {
@@ -233,6 +280,18 @@ impl ResourceLease {
     /// Return prepared texture metadata without retaining its block allocation.
     pub fn texture_descriptor(&self) -> Option<TextureDescriptor> {
         self.0.data.texture_descriptor()
+    }
+    /// Logical dimensions of an image, texture, or video resource.
+    pub fn image_size(&self) -> Option<[u32; 2]> {
+        if let Some(image) = self.image_descriptor() {
+            Some([image.width, image.height])
+        } else if let Some(texture) = self.texture_descriptor() {
+            Some(texture.layout.logical_size)
+        } else if let ResourceView::Yuv420(image) = self.view() {
+            Some(image.size())
+        } else {
+            None
+        }
     }
     /// Declared image or texture payload length, independent of residency.
     pub fn pixel_byte_len(&self) -> Option<usize> {
@@ -710,26 +769,33 @@ impl ResourceSnapshot {
             .map(ResourceLease::handle)
     }
     pub(crate) fn image(&self, image: &ImageData) -> Option<ResourceHandle> {
-        self.matching(
-            &image.data,
-            |lease| matches!(lease.data(),ResourceData::Image {image:other,..} if same_image(image,other)),
-        )
+        self.matching(&image.data, |lease| {
+            lease.image_descriptor().is_some_and(|other| {
+                image.width == other.width
+                    && image.height == other.height
+                    && image.format == other.format
+                    && image.alpha_type == other.alpha_type
+                    && lease
+                        .read_pixels()
+                        .is_some_and(|pixels| same_blob(&image.data, &pixels.0))
+            })
+        })
     }
     pub(crate) fn contains_image(&self, handle: ResourceHandle) -> bool {
         self.leases
             .iter()
-            .any(|lease| lease.handle() == handle && lease.data().image_size().is_some())
+            .any(|lease| lease.handle() == handle && lease.image_size().is_some())
     }
     pub(crate) fn font(&self, font: &FontData) -> Option<ResourceHandle> {
         self.matching(
             &font.data,
-            |lease| matches!(lease.data(), ResourceData::Font(other) if same_blob(&font.data, other)),
+            |lease| matches!(lease.view(), ResourceView::Font(other) if same_blob(&font.data, other)),
         )
     }
     pub(crate) fn external(&self, token: u64) -> Option<ResourceHandle> {
         self.leases
             .iter()
-            .find(|r| matches!(r.data(),ResourceData::External {token:t} if *t==token))
+            .find(|r| matches!(r.view(),ResourceView::External {token:t} if t==token))
             .map(ResourceLease::handle)
     }
     pub fn leases(&self) -> &[ResourceLease] {

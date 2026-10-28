@@ -1104,7 +1104,7 @@ fn make_op(
             } = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
             let prepare_effect = |value: crate::core::PaintEffect, coverage: bool| {
                 let valid = resources.leases().iter().any(|lease| lease.handle() == value.shader.handle()
-                    && matches!(lease.data(), crate::resources::ResourceData::EffectShader { descriptor, .. }
+                    && matches!(lease.view(), crate::resources::ResourceView::EffectShader { descriptor, .. }
                         if descriptor.matches_instance(&value.instance)
                             && (!coverage || descriptor.output == crate::stage::effect::EffectType::Float)));
                 if !valid

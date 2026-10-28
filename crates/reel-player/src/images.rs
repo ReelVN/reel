@@ -253,7 +253,7 @@ impl Images {
                         }
                         ImageAsset::Raster(lease) => {
                             if let Some(tile) = self.tiles.get(&pending.source)
-                                && lease.data().image_size() != Some(tile.dimensions)
+                                && lease.image_size() != Some(tile.dimensions)
                             {
                                 return Err("tile dimensions differ from manifest".into());
                             }

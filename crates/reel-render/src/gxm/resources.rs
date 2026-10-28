@@ -4,7 +4,7 @@ use crate::common::resources::ResourceSource;
 use reel_core::texture::{TextureFormat, TextureLayout};
 use reel_ui::{
     peniko::{ImageAlphaType, ImageFormat},
-    resources::{ResourceData, ResourcePixels},
+    resources::ResourcePixels,
 };
 
 pub(super) struct Image {
@@ -243,8 +243,7 @@ impl Images {
             "partial image metadata",
         )?;
         let at = item.at;
-        let native_import =
-            matches!(source.data(), ResourceData::Yuv420(image) if native_frame(image).is_some());
+        let native_import = matches!(source.view(), reel_ui::resources::ResourceView::Yuv420(image) if native_frame(image).is_some());
         let (bytes, _) = costs(item)?;
         let (layout, format, encoding, kind) = if let Some(image) = source.image_descriptor() {
             if image.format != ImageFormat::Rgba8 {
@@ -267,7 +266,7 @@ impl Images {
                 descriptor.source_encoding,
                 0.,
             )
-        } else if let ResourceData::Yuv420(image) = source.data() {
+        } else if let reel_ui::resources::ResourceView::Yuv420(image) = source.view() {
             (
                 TextureLayout::identity(image.size()),
                 None,
@@ -313,7 +312,7 @@ impl Images {
         let built = (|| {
             let mut planes = Vec::new();
             let mut video = [[0.; 4]; 4];
-            let texture = if let ResourceData::Yuv420(image) = source.data() {
+            let texture = if let reel_ui::resources::ResourceView::Yuv420(image) = source.view() {
                 video[..3].copy_from_slice(&image.rgb_rows());
                 video[3][0] =
                     f32::from(image.color().transfer == reel_core::image::YuvTransfer::Srgb);
@@ -507,7 +506,7 @@ fn costs(item: &crate::common::image_plan::Required<'_>) -> Result<(u64, u64), G
             .bytes as u64,
             0,
         ))
-    } else if let ResourceData::Yuv420(image) = item.source.data() {
+    } else if let reel_ui::resources::ResourceView::Yuv420(image) = item.source.view() {
         if native_frame(image).is_some() {
             return Ok((0, 0));
         }
@@ -542,7 +541,7 @@ fn recyclable(
         && image._storage.bytes() == bytes
         && !image.coverage
         && !image.native_import
-        && !matches!(item.source.data(), ResourceData::Yuv420(source) if native_frame(source).is_some())
+        && !matches!(item.source.view(), reel_ui::resources::ResourceView::Yuv420(source) if native_frame(source).is_some())
         && if let Some(source) = item.source.image_descriptor() {
             image.kind == 0.
                 && image.format.is_none()
@@ -553,7 +552,7 @@ fn recyclable(
                 && image.texture.mip_count() == descriptor.mip_count
                 && image.layout.storage_size
                     == item.texture.expect("planned texture").layout.storage_size
-        } else if let ResourceData::Yuv420(source) = item.source.data() {
+        } else if let reel_ui::resources::ResourceView::Yuv420(source) = item.source.view() {
             image.layout.storage_size == source.size()
                 && image.planes.len() + 1 == source.plane_count()
                 && image.kind
@@ -613,7 +612,7 @@ fn progress(
                     false,
                     ImageAlphaType::AlphaPremultiplied,
                 )
-            } else if let ResourceData::Yuv420(image) = pending.source.data() {
+            } else if let reel_ui::resources::ResourceView::Yuv420(image) = pending.source.view() {
                 if pending.plane >= image.plane_count() {
                     return Ok(true);
                 }
@@ -638,7 +637,7 @@ fn progress(
         if *quota == 0 {
             return Ok(false);
         }
-        let row = if let ResourceData::Yuv420(image) = pending.source.data() {
+        let row = if let reel_ui::resources::ResourceView::Yuv420(image) = pending.source.view() {
             image.row_bytes(pending.plane) as usize
         } else if let Some(format) = pending.image.format {
             format.row_bytes(size[0]).ok_or(GpuError::InvalidSize)? as usize

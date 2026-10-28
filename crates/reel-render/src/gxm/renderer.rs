@@ -413,7 +413,10 @@ impl Backend {
             for handle in &mask.definition.images {
                 if plan.images.iter().any(|image| {
                     image.source.handle() == *handle
-                        && matches!(image.source.data(), ResourceData::Yuv420(_))
+                        && matches!(
+                            image.source.view(),
+                            reel_ui::resources::ResourceView::Yuv420(_)
+                        )
                 }) {
                     return Err(GpuError::Unsupported {
                         at: mask.at,

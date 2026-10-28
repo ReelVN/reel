@@ -6,7 +6,7 @@ use super::GpuError;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
     kurbo::Affine,
-    resources::{EffectShaderDescriptor, ResourceData, ResourceLease},
+    resources::{EffectShaderDescriptor, ResourceLease, ResourceView},
     stage::effect::EffectValue,
 };
 
@@ -210,7 +210,7 @@ pub(crate) fn shader<'a>(
             at,
             record: "effect shader resource",
         })?;
-    let ResourceData::EffectShader { descriptor, bytes } = lease.data() else {
+    let ResourceView::EffectShader { descriptor, bytes } = lease.view() else {
         return Err(GpuError::InvalidRecord {
             at,
             record: "effect shader resource kind",
@@ -326,7 +326,7 @@ fn coverage_variant(drawing: &FrameDrawing, group: &reel_ui::frame::FrameGroup) 
         if lease.handle() != effect.shader {
             return false;
         }
-        let ResourceData::EffectShader { descriptor, .. } = lease.data() else {
+        let ResourceView::EffectShader { descriptor, .. } = lease.view() else {
             return false;
         };
         descriptor.coverage_offset.is_some()

@@ -2,7 +2,7 @@
 //! share their immutable producer backing until the save worker serializes them.
 use super::*;
 use crate::resources::{
-    ColorEncoding, ResourceData, ResourceLease, ResourceRegistry, ResourceVersion,
+    ColorEncoding, ResourceData, ResourceLease, ResourceRegistry, ResourceVersion, ResourceView,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(test)]
@@ -290,8 +290,8 @@ impl RetainedScene {
                                 bytes: pixels.blob(),
                             }
                         } else {
-                            match lease.data() {
-                                ResourceData::EffectShader { descriptor, bytes } => {
+                            match lease.view() {
+                                ResourceView::EffectShader { descriptor, bytes } => {
                                     snapshot_charge(
                                         &mut ticket,
                                         descriptor.parameters.len()
@@ -302,12 +302,12 @@ impl RetainedScene {
                                         bytes: bytes.clone(),
                                     }
                                 }
-                                ResourceData::Texture { .. } | ResourceData::Image { .. } => {
+                                ResourceView::Texture { .. } | ResourceView::Image { .. } => {
                                     unreachable!()
                                 }
-                                ResourceData::Font(font) => InlineResource::Font(font.clone()),
-                                ResourceData::Yuv420(image) => InlineResource::Yuv(image.clone()),
-                                ResourceData::External { .. } => {
+                                ResourceView::Font(font) => InlineResource::Font(font.clone()),
+                                ResourceView::Yuv420(image) => InlineResource::Yuv(image.clone()),
+                                ResourceView::External { .. } => {
                                     return Err(retained::error(BuildErrorKind::UnsupportedRecord));
                                 }
                             }
@@ -323,15 +323,15 @@ impl RetainedScene {
                             + if let Some(bytes) = lease.pixel_byte_len() {
                                 bytes as u64
                             } else {
-                                match lease.data() {
-                                    ResourceData::EffectShader { bytes, descriptor } => {
+                                match lease.view() {
+                                    ResourceView::EffectShader { bytes, descriptor } => {
                                         bytes.len() as u64
                                             + (descriptor.parameters.capacity()
                                                 * size_of::<crate::stage::effect::EffectType>())
                                                 as u64
                                     }
-                                    ResourceData::Font(font) => font.len() as u64,
-                                    ResourceData::Yuv420(image) => image.byte_len() as u64,
+                                    ResourceView::Font(font) => font.len() as u64,
+                                    ResourceView::Yuv420(image) => image.byte_len() as u64,
                                     _ => unreachable!(),
                                 }
                             },
@@ -381,9 +381,9 @@ fn asset_matches(asset: &RetainedAsset, lease: &ResourceLease) -> bool {
         RetainedAssetKind::Image => {
             lease.image_descriptor().is_some() || lease.texture_descriptor().is_some()
         }
-        RetainedAssetKind::Font => matches!(lease.data(), ResourceData::Font(_)),
+        RetainedAssetKind::Font => matches!(lease.view(), ResourceView::Font(_)),
         RetainedAssetKind::EffectShader => {
-            matches!(lease.data(), ResourceData::EffectShader { .. })
+            matches!(lease.view(), ResourceView::EffectShader { .. })
         }
     }
 }
@@ -624,10 +624,10 @@ impl RetainedRestore {
                     if lease.image_descriptor().is_some() || lease.texture_descriptor().is_some() {
                         ResourceKind::Image
                     } else {
-                        match lease.data() {
-                            ResourceData::EffectShader { .. } => ResourceKind::EffectShader,
-                            ResourceData::Yuv420(_) => ResourceKind::Video,
-                            ResourceData::Font(_) => ResourceKind::Font,
+                        match lease.view() {
+                            ResourceView::EffectShader { .. } => ResourceKind::EffectShader,
+                            ResourceView::Yuv420(_) => ResourceKind::Video,
+                            ResourceView::Font(_) => ResourceKind::Font,
                             _ => return Err(retained::error(BuildErrorKind::UnsupportedRecord)),
                         }
                     };
@@ -821,7 +821,7 @@ impl RetainedRestore {
                         .chain(group.mask_effect.iter().map(|effect| (effect, true)))
                     {
                         if !build.resources.iter().any(|lease| lease.handle() == effect.shader
-                            && matches!(lease.data(), ResourceData::EffectShader { descriptor, .. }
+                            && matches!(lease.view(), ResourceView::EffectShader { descriptor, .. }
                                 if descriptor.definition == effect.definition
                                     && descriptor.accepts(&effect.values)
                                     && descriptor.textures as usize == effect.images.len()

@@ -147,7 +147,7 @@ impl Image {
 
     /// Draw a decoded host resource without manufacturing an RGBA image.
     pub fn from_resource(lease: ResourceLease) -> Self {
-        let [w, h] = lease.data().image_size().expect("image resource");
+        let [w, h] = lease.image_size().expect("image resource");
         let mut image = Self::tiled(Size::new(w.into(), h.into()), Vec::new());
         image.resource = Some(lease);
         image
@@ -155,7 +155,7 @@ impl Image {
 
     /// Replacing a same-sized decoded frame invalidates paint, not layout.
     pub fn set_resource(this: &mut WidgetMut<'_, Self>, lease: ResourceLease) {
-        let [w, h] = lease.data().image_size().expect("image resource");
+        let [w, h] = lease.image_size().expect("image resource");
         let size = Size::new(w.into(), h.into());
         let old_size = this.widget.preferred_size();
         this.widget.image_data = None;

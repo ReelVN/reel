@@ -4,7 +4,7 @@ use crate::common::image_plan;
 pub(super) use image_plan::peak;
 use reel_ui::{
     frame::{RecordLocation, RenderFrame},
-    resources::{ResourceData, ResourceLease},
+    resources::{ResourceLease, ResourceView},
 };
 
 pub(super) struct Required<'a> {
@@ -43,7 +43,7 @@ pub(super) fn collect<'a>(
                     resources::upload_cost(size)? - resident,
                     resources::row_bytes(size[0]),
                 )
-            } else if let ResourceData::Yuv420(image) = item.source.data() {
+            } else if let ResourceView::Yuv420(image) = item.source.view() {
                 let (resident, staging) = super::video::costs(image);
                 (resident, staging, staging)
             } else {

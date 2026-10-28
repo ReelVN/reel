@@ -25,9 +25,7 @@ use reel_core::{
 };
 use reel_ui::bridge::{PresentationNotice, PresentationOutcome};
 use reel_ui::frame::RenderFrame;
-use reel_ui::resources::{
-    ColorEncoding, ResourceData, ResourceHandle, ResourceLease, ResourceWeak,
-};
+use reel_ui::resources::{ColorEncoding, ResourceHandle, ResourceLease, ResourceWeak};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -556,7 +554,7 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
                 }
             }
             UploadPayload::Font { bytes } => {
-                let ResourceData::Font(font) = item.resource.data() else {
+                let reel_ui::resources::ResourceView::Font(font) = item.resource.view() else {
                     return Err(RejectCode::Unsupported);
                 };
                 if bytes.as_slice().len() != font.len() {
@@ -684,7 +682,7 @@ impl RenderBackend for RecordingBackend {
             return Ok(PresentOutcome::SurfaceUnavailable);
         }
         if frame.resources().leases().iter().any(|r| {
-            !matches!(r.data(), ResourceData::External { .. })
+            !matches!(r.view(), reel_ui::resources::ResourceView::External { .. })
                 && !self.resident.iter().any(|ready| ready.handle == r.handle())
         }) {
             return Err(RenderError::ResourcesUnavailable);

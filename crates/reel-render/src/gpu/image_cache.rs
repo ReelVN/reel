@@ -8,7 +8,7 @@ use super::{
 };
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::resources::{
-    ResourceData, ResourceHandle, ResourceLease, ResourcePixels, ResourceVersion,
+    ResourceHandle, ResourceLease, ResourcePixels, ResourceVersion, ResourceView,
 };
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -466,7 +466,7 @@ impl ImageCache {
                     });
                     break;
                 }
-            } else if let ResourceData::Yuv420(source) = item.source.data() {
+            } else if let ResourceView::Yuv420(source) = item.source.view() {
                 let residency = if let Some(image) = &mut recycled {
                     image.residency.take().unwrap()
                 } else {
@@ -547,7 +547,7 @@ impl ImageCache {
                         && image.texture_format == Some(descriptor.format)
                         && image.texture.mip_level_count() == descriptor.mip_count
                         && image.size == item.texture.expect("planned texture").layout.storage_size
-                } else if let ResourceData::Yuv420(source) = item.source.data() {
+                } else if let ResourceView::Yuv420(source) = item.source.view() {
                     image.size == source.size()
                         && image
                             .yuv
