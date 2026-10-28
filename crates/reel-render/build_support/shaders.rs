@@ -36,6 +36,11 @@ pub fn sources() -> Vec<Shader> {
         ("source_over", "REEL_SOURCE_OVER_ONLY"),
         ("alpha_mask", "REEL_ALPHA_MASK_ONLY"),
         ("extended_blend", "REEL_EXTENDED_BLEND"),
+        ("composite_overwrite", "REEL_FULL_OVERWRITE"),
+        (
+            "extended_blend_overwrite",
+            "REEL_EXTENDED_BLEND\n#define REEL_FULL_OVERWRITE",
+        ),
     ] {
         add(
             name,

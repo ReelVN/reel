@@ -33,6 +33,9 @@ impl Gpu {
     pub fn limits(&self) -> GpuLimits {
         self.limits
     }
+    /// Request a native renderer device. The instance must leave
+    /// `STRICT_WEBGPU_COMPLIANCE` unset: fully overwritten scratch attachments
+    /// use WGPU's `DontCare` load operation.
     pub async fn request(
         instance: &wgpu::Instance,
         surface: Option<&wgpu::Surface<'_>>,

@@ -1369,6 +1369,16 @@ impl Context<'_> {
         };
         let plain = mode == 0. && invert == 0. && blend == 0 && expression.is_none();
         let coverage = mode == 1. && invert == 0. && blend == 0 && expression.is_none();
+        let replacing = matches!(
+            operation,
+            CompositeOperation::Transition(_) | CompositeOperation::MaskedTransition(_)
+        ) || blend != 0;
+        let overwrite = crate::common::target_writes::FullOverwrite::composite(
+            self.size,
+            target.view.size(),
+            self.scissor,
+            replacing,
+        );
         let _kind = reel_core::profile::Scope::new(if plain {
             reel_core::profile::Phase::SourceComposite
         } else if coverage {
@@ -1376,7 +1386,9 @@ impl Context<'_> {
         } else {
             reel_core::profile::Phase::EffectComposite
         });
-        let shader = if plain {
+        let shader = if let Some(proof) = overwrite {
+            self.programs.overwrite(self.gpu, blend > 4, proof)?
+        } else if plain {
             &self.programs.source_over
         } else if coverage {
             &self.programs.alpha_mask
@@ -1395,7 +1407,11 @@ impl Context<'_> {
         if let Some(expression) = expression {
             self.ensure_sampled(&expression.view)?;
         }
-        self.ensure_target(target)?;
+        if overwrite.is_some() {
+            self.target_writes.take(target.slot);
+        } else {
+            self.ensure_target(target)?;
+        }
         let mut values = Values::new();
         for (name, unit) in [
             ("u_source", 0),
@@ -1420,10 +1436,6 @@ impl Context<'_> {
         values.extend(shader.float("u_invert", invert));
         values.extend(shader.float("u_blend", blend as f32));
         values.extend(shader.float("u_has_expression", f32::from(expression.is_some())));
-        let replacing = matches!(
-            operation,
-            CompositeOperation::Transition(_) | CompositeOperation::MaskedTransition(_)
-        ) || blend != 0;
         self.programs.quad(
             self.gpu,
             programs::Quad {

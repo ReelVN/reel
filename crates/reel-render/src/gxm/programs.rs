@@ -83,7 +83,15 @@ impl Shader {
         vertex: ShaderCode<'_>,
         fragment: ShaderCode<'_>,
     ) -> Result<Self, GpuError> {
-        let program = create_program_with_vertex(context, vertex, fragment, true, false)?;
+        Self::with_clipping(context, vertex, fragment, true)
+    }
+    fn with_clipping(
+        context: &super::ownership::Device,
+        vertex: ShaderCode<'_>,
+        fragment: ShaderCode<'_>,
+        clipped: bool,
+    ) -> Result<Self, GpuError> {
+        let program = create_program_with_vertex(context, vertex, fragment, clipped, false)?;
         let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
         Ok(Self { program, uniforms })
     }
@@ -191,6 +199,7 @@ pub(super) struct Programs {
     pub paint: paint::PaintPrograms,
     pub composite: Shader,
     pub extended_blend: Shader,
+    overwrite: [std::cell::OnceCell<Shader>; 2],
     pub source_over: Shader,
     pub alpha_mask: Shader,
     pub mask_8: Shader,
@@ -234,6 +243,7 @@ impl Programs {
             source_window: [0.; 4],
         });
         Ok(Self {
+            overwrite: std::array::from_fn(|_| std::cell::OnceCell::new()),
             paint: paint::PaintPrograms::new(budget),
             composite: Shader::with_vertex(
                 context,
@@ -308,6 +318,28 @@ impl Programs {
             indices: context.index_buffer_u16(&[0, 1, 2, 0, 2, 3])?,
             _storage: storage,
         })
+    }
+    pub fn overwrite(
+        &self,
+        context: &super::ownership::Device,
+        extended: bool,
+        _: crate::common::target_writes::FullOverwrite,
+    ) -> Result<&Shader, GpuError> {
+        let slot = &self.overwrite[usize::from(extended)];
+        if slot.get().is_none() {
+            let shader = Shader::with_clipping(
+                context,
+                shader_code!("composite_vertex"),
+                if extended {
+                    shader_code!("extended_blend_overwrite")
+                } else {
+                    shader_code!("composite_overwrite")
+                },
+                false,
+            )?;
+            assert!(slot.set(shader).is_ok(), "single-threaded program creation");
+        }
+        Ok(slot.get().unwrap())
     }
     pub fn quad(&self, context: &super::ownership::Device, quad: Quad<'_>) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);

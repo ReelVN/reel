@@ -4,6 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use wgpu::util::DeviceExt;
 
+#[cfg(test)]
+#[path = "pipeline/overwrite_tests.rs"]
+mod overwrite_tests;
+
 /// Only the three existing format/sample pairs can occupy these instance slots.
 /// No frame data or application-accounted allocations live here.
 #[derive(Default)]
@@ -662,9 +666,19 @@ impl Pipelines {
         params: CompositeParams,
     ) {
         let group = self.composite_group(device, target, inputs, &params);
+        let full = crate::common::target_writes::FullOverwrite::composite(
+            target.size,
+            target.storage_size(),
+            params.scissor,
+            params.blend != 0 || params.operation.replaces(),
+        );
+        let mut attachment = target.attachment(params.clear);
+        if let Some(proof) = full {
+            attachment.ops.load = super::targets::overwrite_load(proof);
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("whole group composite"),
-            color_attachments: &[Some(target.attachment(params.clear))],
+            color_attachments: &[Some(attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,

@@ -649,7 +649,7 @@ fn rgba_encodings_and_alpha_modes_match_independent_linear_pixels() {
     };
     use reel_ui::{
         peniko::{ImageAlphaType, ImageBrush, ImageFormat},
-        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+        resources::{ColorEncoding, ResourceRegistry},
     };
     let mut renderer = device();
     let pool = pool();

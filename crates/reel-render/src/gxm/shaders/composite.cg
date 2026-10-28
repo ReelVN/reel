@@ -3,7 +3,11 @@
 varying float4 fragment_position : WPOS;
 varying out float4 reel_output : COLOR;
 uniform float4 reel_clip_rect;
-void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
+void reel_clip(){
+#ifndef REEL_FULL_OVERWRITE
+if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;
+#endif
+}
 varying float2 v_source_uv : TEXCOORD0;
 varying float2 v_mask_uv : TEXCOORD1;
 varying float2 v_backdrop_uv : TEXCOORD2;
