@@ -378,7 +378,7 @@ fn small_png_metadata_uses_the_configured_decoder_budget() {
     }
 }
 
-fn load_until_done(assets: &Assets, id: LoadId) -> Result<ResourceLease, String> {
+pub(super) fn load_until_done(assets: &Assets, id: LoadId) -> Result<ResourceLease, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(lease) = assets.poll(id)? {

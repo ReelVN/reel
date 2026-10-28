@@ -398,6 +398,9 @@ impl ResourceLease {
     }
     /// Whether a decoded image or texture currently has CPU pixels.
     pub fn pixels_resident(&self) -> bool {
+        if let ResourceView::AtlasView { backing, .. } = self.view() {
+            return backing.pixels_resident();
+        }
         self.0.pixels.as_ref().is_some_and(|pixels| {
             pixels
                 .lock()

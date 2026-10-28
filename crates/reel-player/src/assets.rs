@@ -1,4 +1,5 @@
 //! Shared author-resource IO and decoding. Adapters own platform work; consumers own waits.
+mod atlas;
 mod data;
 mod decode;
 pub use data::AssetDataLoader;
@@ -98,6 +99,8 @@ enum Phase {
     Done(Result<ResourceLease, String>),
     Bytes(ResourceVersion, Arc<OwnedBytes>),
     ImageManifest(reel_core::prepared_image::PreparedImage),
+    AtlasResolve(atlas::ViewRequest),
+    AtlasWait(atlas::ViewRequest),
 }
 /// A logical image path can resolve to raster storage or a tiled-image manifest.
 pub(crate) enum ImageAsset {
@@ -132,6 +135,7 @@ struct Service {
     next: u64,
     loads: BTreeMap<LoadId, Load>,
     origins: origins::Origins,
+    atlas_pages: atlas::Pages,
     streams: stream::Streams,
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
@@ -299,6 +303,7 @@ impl Assets {
             stream_input: input_pool(options.stream_input_bytes()),
             output: pool(BudgetCategory::CpuOutput, options.resident_bytes),
             origins: origins::Origins::new(metadata.clone()),
+            atlas_pages: atlas::Pages::default(),
             metadata,
             io_workspace_bytes: temporary.usage().bytes,
             temporary,
@@ -335,6 +340,7 @@ impl Assets {
     pub fn close(&self) {
         let mut service = self.0.borrow_mut();
         service.loads.clear();
+        service.atlas_pages.clear();
         service.origins.clear();
         service.streams.close();
         service.io = None;
@@ -561,6 +567,9 @@ impl Assets {
     pub fn cancel(&self, id: LoadId) {
         let mut service = self.0.borrow_mut();
         if let Some(load) = service.loads.remove(&id) {
+            if let Phase::AtlasWait(view) = &load.phase {
+                service.release_atlas(&view.manifest.page);
+            }
             match load.phase {
                 Phase::Describing(id) | Phase::Reading(id) => {
                     if let Some(io) = &mut service.io {
@@ -756,6 +765,7 @@ impl Service {
             }
         }
         self.loads = loads;
+        self.advance_atlases();
         if progress.has_work || more_completions {
             self.wake.wake();
         }
@@ -828,6 +838,31 @@ impl Service {
             }
             Phase::Probe | Phase::Decode => {
                 let mut probe = matches!(load.phase, Phase::Probe);
+                if probe
+                    && load
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .as_slice()
+                        .starts_with(reel_core::prepared_atlas::PreparedAtlasView::MAGIC)
+                {
+                    let input = load.input.as_ref().unwrap().as_slice();
+                    let mut storage = self
+                        .metadata
+                        .reserve(input.len() as u64 + 512)
+                        .map_err(|e| e.message)?;
+                    let manifest = reel_core::prepared_atlas::PreparedAtlasView::decode(input)
+                        .map_err(str::to_owned)?;
+                    storage
+                        .resize((manifest.page.capacity() + 512) as u64)
+                        .map_err(|e| e.message)?;
+                    load.input = None;
+                    load.phase = Phase::AtlasResolve(atlas::ViewRequest {
+                        manifest,
+                        _storage: storage,
+                    });
+                    return Ok(());
+                }
                 if probe
                     && load
                         .input
