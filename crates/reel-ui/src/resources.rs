@@ -523,6 +523,22 @@ impl ResourceRegistry {
         ResourceSnapshot::capture(handles.iter().map(|&handle| self.acquire(handle)), pool)
     }
 }
+// Equal lookup sources must have the same key. Actual equality is still checked
+// within each key range: Blob IDs are hints, and YUV storage is producer-owned.
+fn snapshot_source_key(data: &ResourceData) -> (u8, u64) {
+    match data {
+        ResourceData::Yuv420(image) => {
+            let [width, height] = image.size();
+            (1, (u64::from(width) << 32) | u64::from(height))
+        }
+        ResourceData::External { token } => (2, *token),
+        _ => (0, data.blob().expect("blob-backed resource").id()),
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug)]
 pub struct ResourceSnapshot {
     pub(crate) leases: Vec<ResourceLease>,
@@ -563,18 +579,39 @@ impl ResourceSnapshot {
         let ticket = pool
             .reserve(bytes as u64)
             .map_err(|_| ResourceError::Bytes)?;
+        let indexed = resources.len() >= 16;
         let mut leases = Vec::with_capacity(resources.len());
         for lease in resources {
             let lease = lease?;
             if lease.is_retired() {
                 return Err(ResourceError::RetiredOrForeign);
             }
-            if leases.iter().any(|other: &ResourceLease| {
-                other.handle() == lease.handle() || lookup_same_source(other.data(), lease.data())
-            }) {
-                return Err(ResourceError::ConflictingVersion);
+            if indexed {
+                let key = snapshot_source_key(lease.data());
+                let start = leases.partition_point(|other: &ResourceLease| {
+                    snapshot_source_key(other.data()) < key
+                });
+                let end = start
+                    + leases[start..]
+                        .partition_point(|other| snapshot_source_key(other.data()) == key);
+                // A handle belongs to one immutable Resource, so the same handle
+                // necessarily has the same source key. Blob IDs remain hints.
+                if leases[start..end].iter().any(|other| {
+                    other.handle() == lease.handle()
+                        || lookup_same_source(other.data(), lease.data())
+                }) {
+                    return Err(ResourceError::ConflictingVersion);
+                }
+                leases.insert(end, lease);
+            } else {
+                if leases.iter().any(|other: &ResourceLease| {
+                    other.handle() == lease.handle()
+                        || lookup_same_source(other.data(), lease.data())
+                }) {
+                    return Err(ResourceError::ConflictingVersion);
+                }
+                leases.push(lease);
             }
-            leases.push(lease);
         }
         leases.sort_unstable_by_key(|r| {
             (

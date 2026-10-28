@@ -1,0 +1,311 @@
+use super::*;
+use reel_core::identity::{AssetKey, ContentVersion};
+
+fn pool() -> BudgetPool {
+    BudgetPool::new(
+        BudgetCategory::Snapshot,
+        QueueLimits {
+            max_requests: 10000,
+            max_bytes: 64 << 20,
+        },
+    )
+}
+fn version(i: usize) -> ResourceVersion {
+    ResourceVersion {
+        key: AssetKey(format!("resource/{i}")),
+        version: ContentVersion([i as u8; 32]),
+    }
+}
+fn external(registry: &mut ResourceRegistry, p: &BudgetPool, i: usize) -> ResourceLease {
+    let h = registry
+        .register(
+            version(i),
+            ResourceData::External { token: i as u64 },
+            p.reserve(0).unwrap(),
+        )
+        .unwrap();
+    registry.acquire(h).unwrap()
+}
+fn capture(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot, ResourceError> {
+    ResourceSnapshot::capture(values.iter().cloned().map(Ok), p)
+}
+fn linear(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot, ResourceError> {
+    let ticket = p
+        .reserve((values.len() * size_of::<ResourceLease>()) as u64)
+        .map_err(|_| ResourceError::Bytes)?;
+    let mut leases = Vec::with_capacity(values.len());
+    for lease in values.iter().cloned() {
+        if lease.is_retired() {
+            return Err(ResourceError::RetiredOrForeign);
+        }
+        if leases.iter().any(|other: &ResourceLease| {
+            other.handle() == lease.handle() || lookup_same_source(other.data(), lease.data())
+        }) {
+            return Err(ResourceError::ConflictingVersion);
+        }
+        leases.push(lease);
+    }
+    leases.sort_unstable_by_key(|r| {
+        (
+            r.data().blob().is_none(),
+            r.data().blob().map_or(0, Blob::id),
+            r.handle(),
+        )
+    });
+    Ok(ResourceSnapshot {
+        leases,
+        _ticket: ticket,
+    })
+}
+
+#[test]
+fn indexed_capture_preserves_conflicts_order_lifetimes_and_budget() {
+    let p = pool();
+    let mut registry = ResourceRegistry::new(80, 1 << 20).unwrap();
+    let leases: Vec<_> = (0..40)
+        .rev()
+        .map(|i| external(&mut registry, &p, i))
+        .collect();
+    for count in [0, 1, 15, 16, 40] {
+        let before = p.usage().bytes;
+        let a = capture(&leases[..count], &p).unwrap();
+        assert_eq!(
+            p.usage().bytes - before,
+            (count * size_of::<ResourceLease>()) as u64
+        );
+        let b = linear(&leases[..count], &p).unwrap();
+        assert_eq!(
+            a.leases()
+                .iter()
+                .map(ResourceLease::handle)
+                .collect::<Vec<_>>(),
+            b.leases()
+                .iter()
+                .map(ResourceLease::handle)
+                .collect::<Vec<_>>()
+        );
+        drop((a, b));
+        assert_eq!(p.usage().bytes, before);
+    }
+    let mut dup = leases.clone();
+    dup.push(leases[3].clone());
+    assert_eq!(
+        capture(&dup, &p).unwrap_err(),
+        ResourceError::ConflictingVersion
+    );
+    // Earlier conflict must win over an iterator error or a later retired lease.
+    let mut results: Vec<_> = dup.iter().cloned().map(Ok).collect();
+    results.push(Err(ResourceError::Bytes));
+    assert_eq!(
+        ResourceSnapshot::capture(results.into_iter(), &p).unwrap_err(),
+        ResourceError::ConflictingVersion
+    );
+    let tight = BudgetPool::new(
+        BudgetCategory::Snapshot,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: (leases.len() * size_of::<ResourceLease>() - 1) as u64,
+        },
+    );
+    assert_eq!(capture(&leases, &tight).unwrap_err(), ResourceError::Bytes);
+    assert_eq!(tight.usage().bytes, 0);
+    let snapshot = capture(&leases, &p).unwrap();
+    registry.retire(leases[0].handle());
+    assert!(
+        snapshot
+            .leases()
+            .iter()
+            .any(|v| v.handle() == leases[0].handle())
+    );
+    assert_eq!(
+        capture(&leases, &p).unwrap_err(),
+        ResourceError::RetiredOrForeign
+    );
+    drop(snapshot);
+}
+
+#[test]
+fn indexed_capture_distinguishes_source_aliases_and_blob_id_collisions() {
+    let p = pool();
+    let mut a = ResourceRegistry::new(40, 1 << 20).unwrap();
+    let mut b = ResourceRegistry::new(4, 1 << 20).unwrap();
+    let mut values: Vec<_> = (0..20).map(|i| external(&mut a, &p, i)).collect();
+    let one: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new([1u8, 2, 3, 4]);
+    let two: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new([5u8, 6, 7, 8]);
+    let blob_a = Blob::from_raw_parts(one, 7);
+    let blob_b = Blob::from_raw_parts(two, 7);
+    let h1 = a
+        .register(
+            version(100),
+            ResourceData::Font(blob_a.clone()),
+            p.reserve(4).unwrap(),
+        )
+        .unwrap();
+    let h2 = b
+        .register(
+            version(101),
+            ResourceData::Font(blob_b),
+            p.reserve(4).unwrap(),
+        )
+        .unwrap();
+    let h3 = b
+        .register(
+            version(102),
+            ResourceData::Font(blob_a),
+            p.reserve(4).unwrap(),
+        )
+        .unwrap();
+    values.push(a.acquire(h1).unwrap());
+    values.push(b.acquire(h2).unwrap());
+    assert!(
+        capture(&values, &p).is_ok(),
+        "same blob ID does not imply equal source"
+    );
+    values.push(b.acquire(h3).unwrap());
+    assert_eq!(
+        capture(&values, &p).unwrap_err(),
+        ResourceError::ConflictingVersion
+    );
+}
+
+#[derive(Debug)]
+struct Planes([Vec<u8>; 3]);
+impl reel_core::image::Yuv420Storage for Planes {
+    fn plane(&self, index: usize) -> &[u8] {
+        &self.0[index]
+    }
+}
+#[test]
+fn indexed_capture_matches_image_encoding_and_yuv_storage_rules() {
+    use reel_core::image::{Yuv420Image, YuvColor, YuvMatrix, YuvTransfer};
+    let p = pool();
+    let mut a = ResourceRegistry::new(32, 1 << 20).unwrap();
+    let mut b = ResourceRegistry::new(8, 1 << 20).unwrap();
+    let prefix: Vec<_> = (0..20).map(|i| external(&mut a, &p, i)).collect();
+    let image = ImageData {
+        data: Blob::new(Arc::new([255u8; 4])),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: 1,
+        height: 1,
+    };
+    let h1 = a
+        .register(
+            version(100),
+            ResourceData::Image {
+                image: image.clone(),
+                encoding: ColorEncoding::Srgb,
+            },
+            p.reserve(4).unwrap(),
+        )
+        .unwrap();
+    let h2 = b
+        .register(
+            version(101),
+            ResourceData::Image {
+                image,
+                encoding: ColorEncoding::Linear,
+            },
+            p.reserve(4).unwrap(),
+        )
+        .unwrap();
+    let mut values = prefix.clone();
+    values.push(a.acquire(h1).unwrap());
+    values.push(b.acquire(h2).unwrap());
+    assert_eq!(
+        capture(&values, &p).unwrap_err(),
+        ResourceError::ConflictingVersion
+    );
+    let color = YuvColor {
+        matrix: YuvMatrix::Bt601,
+        full_range: false,
+        transfer: YuvTransfer::Bt709,
+    };
+    let make = || {
+        Yuv420Image::new(
+            [2, 2],
+            color,
+            Arc::new(Planes([vec![0; 4], vec![0; 1], vec![0; 1]])),
+        )
+        .unwrap()
+    };
+    let one = make();
+    let other = make();
+    let y1 = a.register_yuv420(version(102), one.clone()).unwrap();
+    let y2 = b.register_yuv420(version(103), other).unwrap();
+    let y3 = b.register_yuv420(version(104), one).unwrap();
+    values = prefix;
+    values.push(a.acquire(y1).unwrap());
+    values.push(b.acquire(y2).unwrap());
+    assert!(capture(&values, &p).is_ok());
+    values.push(b.acquire(y3).unwrap());
+    assert_eq!(
+        capture(&values, &p).unwrap_err(),
+        ResourceError::ConflictingVersion
+    );
+}
+
+#[test]
+#[ignore = "repeatable resource snapshot CPU cost comparison"]
+fn snapshot_capture_cost() {
+    use std::{hint::black_box, time::Instant};
+    let p = pool();
+    let mut registry = ResourceRegistry::new(2048, 4 << 20).unwrap();
+    // Real blob-backed image/font identities exercise the ordinary dialogue and
+    // multi-image paths; byte size is irrelevant to identity lookup itself.
+    let all: Vec<_> = (0..1024)
+        .map(|i| {
+            let blob = Blob::new(Arc::new([i as u8; 4]));
+            let data = if i % 4 == 0 {
+                ResourceData::Font(blob)
+            } else {
+                ResourceData::Image {
+                    image: ImageData {
+                        data: blob,
+                        format: ImageFormat::Rgba8,
+                        alpha_type: ImageAlphaType::Alpha,
+                        width: 1,
+                        height: 1,
+                    },
+                    encoding: ColorEncoding::Srgb,
+                }
+            };
+            let h = registry
+                .register(version(i), data, p.reserve(4).unwrap())
+                .unwrap();
+            registry.acquire(h).unwrap()
+        })
+        .collect();
+    for (n, iterations) in [(8, 10000), (16, 8000), (32, 5000), (256, 500), (1024, 80)] {
+        for order in ["forward", "reverse", "mixed"] {
+            let values: Vec<_> = (0..n)
+                .map(|i| {
+                    let k = match order {
+                        "reverse" => n - i - 1,
+                        "mixed" => (i * 131) % n,
+                        _ => i,
+                    };
+                    all[k].clone()
+                })
+                .collect();
+            let time = |f: fn(
+                &[ResourceLease],
+                &BudgetPool,
+            ) -> Result<ResourceSnapshot, ResourceError>| {
+                let start = Instant::now();
+                for _ in 0..iterations {
+                    black_box(f(black_box(&values), &p).unwrap());
+                }
+                start.elapsed()
+            };
+            let old = time(linear);
+            let new = time(capture);
+            println!(
+                "snapshot n={n} order={order} iterations={iterations} old_ns={} new_ns={} ticket_bytes={} extra_index_bytes=0",
+                old.as_nanos(),
+                new.as_nanos(),
+                n * size_of::<ResourceLease>()
+            );
+        }
+    }
+}
