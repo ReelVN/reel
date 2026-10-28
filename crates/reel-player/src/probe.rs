@@ -15,7 +15,7 @@ const SEGMENTS: usize = 64;
 static SERIAL: AtomicU32 = AtomicU32::new(0);
 static VM_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-const VM_NAMES: [&str; 18] = [
+const VM_NAMES: [&str; 24] = [
     "fn",
     "pc",
     "main",
@@ -34,6 +34,12 @@ const VM_NAMES: [&str; 18] = [
     "pending_bytes",
     "file",
     "source",
+    "instructions",
+    "work",
+    "derived_starts",
+    "compact_derived_starts",
+    "derived_outputs",
+    "compact_derived_outputs",
 ];
 const ABSENT: u64 = u64::MAX;
 static VM_REQUESTED: AtomicBool = AtomicBool::new(true);
@@ -100,6 +106,12 @@ fn vm_sample(story: Option<&StoryRuntime>) -> [u64; VM_NAMES.len()] {
         location
             .and_then(|location| location.source)
             .map_or(ABSENT, |source| u64::from(source.start)),
+        stats.cumulative_instructions,
+        stats.cumulative_work,
+        stats.derived_starts,
+        stats.compact_derived_starts,
+        stats.derived_outputs,
+        stats.compact_derived_outputs,
     ]
 }
 

@@ -193,7 +193,7 @@ callee、所有实参、展开和 children 按源码顺序各求值一次，然�
 
 class 使用单继承，命名声明写 class Child: Parent { ... }；匿名类表达式写 class { ... } 或 class: Parent { ... }。命名声明建立词法绑定，该绑定可直接作为类值使用；匿名类表达式创建并返回新的类对象。实例有声明字段，let/let mut 表示只读/可写；字段初始化每实例按基类到子类执行。未给初值的只读字段必须由构造过程赋值一次；结束时验证完整，实例状态为 Constructing、Ready 或 Failed，并记录已初始化字段。成功返回 Ready；异常结束标记 Failed。显式发布过的引用仍保持身份，但对 Failed 实例的普通操作报告 ConstructionFailed，诊断/status 查询保留可用；Constructing 中读取未初始化字段报告 UninitializedField。普通已经发生的副作用沿用语言规则，构造失败不伪装成外部事务回滚；快照保存构造状态、字段位图与执行帧。owner/Region 硬撤销或 invoke_sync 预算终止同样由 VM 清理把未完成实例标记 Failed；GC/快照只追踪已初始化槽。全部别名与既有绑定方法读取同一实例状态，方法调用也执行 Failed 检查。构造方法 fn init(self, ...) 显式首参 self；类调用创建实例并调用最近的有效 init，派生类未声明 init 时继承基类构造。声明派生 init 时只调用它，super.init(...) 显式初始化基类，禁止同一基类 init 重复执行。字段初始化不会因 super.init 重跑。
 
-方法调用提供接收者一次；方法取值形成强保留接收者的绑定闭包，普通表中的闭包不自动注入 self，普通函数不继承调用者的隐式 this。super.method 固定从词法基类查找并保留同一个接收者。每次方法取值可以创建新闭包，不保证两次取值身份相等；事件注销依赖 Subscription token。static let/static let mut 与 static fn 属于类，static fn 无 self；只读 static 初始化一次。class 可作为值和局部声明，继承图不得成环，公开字段与方法反射不暴露内部布局。
+方法调用提供接收者一次；方法取值形成强保留接收者的绑定闭包，普通表中的闭包不自动注入 self，普通函数不继承调用者的隐式 this。super.method 固定从词法基类查找并保留同一个接收者。有界弱缓存可以复用仍存活的绑定闭包，缓存本身不延长接收者或声明的生命；每次取值也可以创建新闭包，事件注销依赖 Subscription token。static let/static let mut 与static fn 属于类，static fn 无 self；只读 static 初始化一次。class 可作为值和局部声明，继承图不得成环，公开字段与方法反射不暴露内部布局。
 
 类、实例和 super 可以用字符串索引访问成员，`object[name]` 与对应的点访问共享字段类型、读写权限、继承和接收者绑定。赋值与复合赋值的对象、键各求值一次。非字符串键报告 Type，缺失成员报告 MissingKey；固定布局保留，索引赋值不能增加字段。可观察实例的索引读取记录实际字段依赖，bind 固定创建时选中的字段。
 

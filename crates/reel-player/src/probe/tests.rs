@@ -35,6 +35,16 @@ fn vm_snapshot_reports_selected_task_execution_and_collection_progress() {
     assert_eq!(field(sample, "native_entries"), vm.stats().native_entries);
     assert!(field(sample, "native_entries") > 0);
     assert_eq!(
+        field(sample, "instructions"),
+        vm.stats().cumulative_instructions
+    );
+    assert_eq!(field(sample, "work"), vm.stats().cumulative_work);
+    assert!(field(sample, "instructions") > 0);
+    assert_eq!(
+        field(sample, "compact_derived_starts"),
+        vm.stats().compact_derived_starts
+    );
+    assert_eq!(
         field(sample, "last_instructions"),
         u64::from(vm.stats().usage.instructions)
     );
