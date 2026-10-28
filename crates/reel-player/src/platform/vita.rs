@@ -20,7 +20,7 @@ use crate::{
     player::{Player, PlayerOptions},
 };
 use reel_core::{
-    budget::{BudgetCategory, BudgetGroup, QueueLimits},
+    budget::{BudgetCategory, BudgetGroup, BudgetPool, QueueLimits},
     clock::{Clock, MonoTime, UnixMillis},
     wake::WakeSignal,
     window::{WindowCapabilities, WindowConfiguration, WindowInfo, WindowPlatform, WindowSize},
@@ -318,9 +318,10 @@ fn run_package_on(
     options.media.video.decoded_bytes = 24 << 20;
     options.media.video.queued_pictures = 2;
     options.media.video.queued_audio_frames = 4096;
-    options.media.video_decoder = Some(Arc::new(
-        reel_media::video::VitaVideoDecoderFactory::default(),
-    ));
+    options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory {
+        contiguous_budget: Some(native.video_contiguous.clone()),
+        ..Default::default()
+    }));
     let story = crate::distribution::story_from_package(loaded.package)?;
     drop(loading);
     run_story_on(story, options, native, backend)
@@ -427,8 +428,10 @@ fn close_backend<T>(result: Result<T, Error>, backend: GxmBackend) -> Result<T, 
 // Unmanaged SDK allocations remain outside this ledger. Calibrate the reserve
 // from device evidence; zero preserves the currently configured allowance.
 const KERNEL_MAIN_UNMANAGED_RESERVE_BYTES: u64 = 0;
+const CONTIGUOUS_UNMANAGED_RESERVE_BYTES: u64 = 0;
 struct NativeLoop {
     _kernel_main: BudgetGroup,
+    video_contiguous: BudgetPool,
     host: VitaHost,
     wake: Arc<Wake>,
     power: PowerEvents,
@@ -460,6 +463,16 @@ impl NativeLoop {
                 max_bytes: capacity,
             },
         );
+        let contiguous_capacity = free
+            .contiguous_bytes
+            .saturating_sub(CONTIGUOUS_UNMANAGED_RESERVE_BYTES);
+        let video_contiguous = BudgetGroup::new(contiguous_capacity).pool(
+            BudgetCategory::CpuOutput,
+            QueueLimits {
+                max_requests: u32::MAX,
+                max_bytes: contiguous_capacity,
+            },
+        );
         let display_wake = wake.clone();
         let backend = GxmBackend::new(
             GxmOptions::default(),
@@ -472,6 +485,7 @@ impl NativeLoop {
         Ok((
             Self {
                 _kernel_main: kernel_main,
+                video_contiguous,
                 host,
                 wake,
                 power,
@@ -491,8 +505,11 @@ impl NativeLoop {
             wake,
             power,
             controls,
-            ..
+            _kernel_main: kernel_main,
+            video_contiguous,
         } = self;
+        #[cfg(not(feature = "profiling"))]
+        let _ = (kernel_main, video_contiguous);
         // Carry held input through the boundary until release. A launch-confirm press
         // must not become a second confirmation in the newly mounted game.
         let mut input = input::Input::default();
@@ -588,7 +605,12 @@ impl NativeLoop {
                     );
                     if now >= next_memory_sample {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
-                        profiling::record_device(&mut recording, player.backend);
+                        profiling::record_device(
+                            &mut recording,
+                            player.backend,
+                            kernel_main,
+                            video_contiguous,
+                        );
                     }
                 }
                 // UI signals run on this thread. Rendering may request another
@@ -615,7 +637,12 @@ impl NativeLoop {
             Ok(())
         })();
         #[cfg(feature = "profiling")]
-        profiling::record_device(&mut recording, player.backend);
+        profiling::record_device(
+            &mut recording,
+            player.backend,
+            kernel_main,
+            video_contiguous,
+        );
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;

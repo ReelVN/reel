@@ -2,12 +2,19 @@
 use crate::probe::Recording;
 use reel_render::gxm::GxmBackend;
 
-pub(super) fn record_device(recording: &mut Recording, backend: &GxmBackend) {
+pub(super) fn record_device(
+    recording: &mut Recording,
+    backend: &GxmBackend,
+    main: &reel_core::budget::BudgetGroup,
+    contiguous: &reel_core::budget::BudgetPool,
+) {
     let Ok(native) = backend.native_memory_usage() else {
         return;
     };
     let renderer = backend.usage();
     let timing = native.submission_timing;
+    let main = main.usage();
+    let contiguous = contiguous.usage();
     recording.record_device([
         renderer.resources,
         renderer.targets,
@@ -54,5 +61,9 @@ pub(super) fn record_device(recording: &mut Recording, backend: &GxmBackend) {
         u64::from(native.main_textures.blocks),
         native.main_textures.idle_bytes,
         native.display_reserved_bytes,
+        main.bytes,
+        main.peak_bytes,
+        contiguous.bytes,
+        contiguous.peak_bytes,
     ]);
 }

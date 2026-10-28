@@ -37,11 +37,17 @@ struct MainBudget(reel_core::budget::BudgetPool);
 impl vita_native::memory::MemoryBudget for MainBudget {
     fn reserve(
         &self,
+        class: vita_native::memory::MemoryClass,
         bytes: u64,
     ) -> Result<
         Box<dyn vita_native::memory::MemoryReservation>,
         vita_native::memory::MemoryBudgetError,
     > {
+        if class != vita_native::memory::MemoryClass::MainKernel {
+            return Err(vita_native::memory::MemoryBudgetError::Other(
+                "unexpected GXM memory class".into(),
+            ));
+        }
         self.0
             .reserve(bytes)
             .map(|ticket| Box::new(ticket) as Box<dyn vita_native::memory::MemoryReservation>)

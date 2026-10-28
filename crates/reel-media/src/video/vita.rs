@@ -15,14 +15,26 @@ use vita_native::{
 };
 
 #[derive(Debug)]
-struct NativeBudget(BudgetPool);
+struct NativeBudget {
+    local: BudgetPool,
+    contiguous: Option<BudgetPool>,
+}
 impl MemoryBudget for NativeBudget {
     fn reserve(
         &self,
+        class: vita_native::memory::MemoryClass,
         bytes: u64,
     ) -> Result<Box<dyn MemoryReservation>, vita_native::memory::MemoryBudgetError> {
-        self.0
-            .reserve(bytes)
+        let physical = match class {
+            vita_native::memory::MemoryClass::Heap => None,
+            vita_native::memory::MemoryClass::ContiguousKernel => self.contiguous.as_ref(),
+            vita_native::memory::MemoryClass::MainKernel => {
+                return Err(vita_native::memory::MemoryBudgetError::Other(
+                    "unexpected ordinary MAIN video allocation".into(),
+                ));
+            }
+        };
+        super::native_budget::reserve(&self.local, physical, bytes)
             .map(|ticket| Box::new(ticket) as Box<dyn MemoryReservation>)
             .map_err(|error| match error.code {
                 reel_core::result::RejectCode::Busy => {
@@ -39,11 +51,14 @@ impl MemoryBudget for NativeBudget {
 pub struct VitaVideoDecoderFactory {
     /// Maximum rounded physical capacity for owned sampled NV12 blocks.
     pub frame_pool_bytes: u64,
+    /// Optional physical quota for contiguous video blocks across decoder instances.
+    pub contiguous_budget: Option<BudgetPool>,
 }
 impl Default for VitaVideoDecoderFactory {
     fn default() -> Self {
         Self {
             frame_pool_bytes: 8 << 20,
+            contiguous_budget: None,
         }
     }
 }
@@ -66,7 +81,10 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
     ) -> Result<Box<dyn VideoDecoder>, String> {
         let player = Player::open(
             Box::new(source),
-            Arc::new(NativeBudget(budget.clone())),
+            Arc::new(NativeBudget {
+                local: budget.clone(),
+                contiguous: self.contiguous_budget.clone(),
+            }),
             stopped.clone(),
         )?;
         let color = sequence_color(player.sequence_parameter_set())?;
@@ -83,7 +101,10 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
         let frames = Nv12Pool::new(
             [info.width, info.height],
             self.frame_pool_bytes,
-            Arc::new(NativeBudget(budget.clone())),
+            Arc::new(NativeBudget {
+                local: budget.clone(),
+                contiguous: self.contiguous_budget.clone(),
+            }),
         )?;
         Ok(Box::new(VitaDecoder {
             frames,

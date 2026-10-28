@@ -1,5 +1,7 @@
 //! Worker-owned video decoding and bounded playback using portable frames.
 #[cfg(any(test, all(feature = "vita", target_os = "vita")))]
+mod native_budget;
+#[cfg(any(test, all(feature = "vita", target_os = "vita")))]
 mod pcm_pool;
 mod playback;
 pub use playback::*;
