@@ -12,6 +12,14 @@ fn prepared_options(
     calls: bool,
     generic_parameters: bool,
 ) -> (Vm, Value, Value, RuntimeSupport) {
+    prepared_storage(generic, calls, generic_parameters, false)
+}
+fn prepared_storage(
+    generic: bool,
+    calls: bool,
+    generic_parameters: bool,
+    packed: bool,
+) -> (Vm, Value, Value, RuntimeSupport) {
     let mut p = fixtures::helper_native();
     p.signatures[0].parameters[0].ty = TypeId(0);
     p.signatures[0].return_type = TypeId(0);
@@ -112,6 +120,15 @@ fn prepared_options(
         })];
     }
     let program = verify(p, Limits::default()).unwrap();
+    let program = if packed {
+        VerifiedProgram::decode(
+            program.encode(Limits::default()).unwrap().as_bytes(),
+            Limits::default(),
+        )
+        .unwrap()
+    } else {
+        program
+    };
     let program = if generic {
         program.without_compact_derived_plans()
     } else {

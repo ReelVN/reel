@@ -1,6 +1,6 @@
 //! Bounded, non-owning positions for named member lookups. A hint never owns a
-//! value or skips current-key validation; table versions and property semantics
-//! remain in the ordinary lookup/commit path. Snapshots restore this cold.
+//! value. A full object generation and structural version can reuse a proven
+//! key position; other receivers validate its current key. Snapshots restore cold.
 use super::*;
 
 const SLOTS: usize = 256;
@@ -11,19 +11,29 @@ struct Hint {
     function: u32,
     pc: u32,
     entry: u32,
+    table: u64,
+    version: u64,
 }
 
-pub(super) struct MemberHints([Hint; SLOTS]);
+pub(super) struct MemberHints {
+    entries: [Hint; SLOTS],
+    #[cfg(test)]
+    pub(super) identities: bool,
+}
 
 impl Default for MemberHints {
     fn default() -> Self {
-        Self(
-            [Hint {
+        Self {
+            entries: [Hint {
                 function: u32::MAX,
                 pc: 0,
                 entry: 0,
+                table: 0,
+                version: 0,
             }; SLOTS],
-        )
+            #[cfg(test)]
+            identities: true,
+        }
     }
 }
 
@@ -33,16 +43,34 @@ impl MemberHints {
             & (SLOTS - 1)
     }
 
-    pub(super) fn get(&self, function: FunctionId, pc: Pc) -> Option<u32> {
-        let hint = self.0[Self::slot(function, pc)];
-        (hint.function == function.0 && hint.pc == pc.0).then_some(hint.entry)
+    pub(super) fn get(
+        &self,
+        function: FunctionId,
+        pc: Pc,
+        table: Value,
+        version: u64,
+    ) -> Option<(u32, bool)> {
+        let hint = self.entries[Self::slot(function, pc)];
+        let trusted = hint.table == table.object_parts().unwrap().1 && hint.version == version;
+        #[cfg(test)]
+        let trusted = trusted && self.identities;
+        (hint.function == function.0 && hint.pc == pc.0).then_some((hint.entry, trusted))
     }
 
-    pub(super) fn remember(&mut self, function: FunctionId, pc: Pc, entry: u32) {
-        self.0[Self::slot(function, pc)] = Hint {
+    pub(super) fn remember(
+        &mut self,
+        function: FunctionId,
+        pc: Pc,
+        entry: u32,
+        table: Value,
+        version: u64,
+    ) {
+        self.entries[Self::slot(function, pc)] = Hint {
             function: function.0,
             pc: pc.0,
             entry,
+            table: table.object_parts().unwrap().1,
+            version,
         };
     }
 }
@@ -70,4 +98,55 @@ impl Vm {
 }
 
 // This fixed storage is included by Vm's existing control-size reservation.
-const _: () = assert!(std::mem::size_of::<MemberHints>() == 3_072);
+const _: () = assert!(std::mem::size_of::<[Hint; SLOTS]>() == 8_192);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn identity_proofs_include_generation_and_structure_without_rooting_receivers() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let table = heap.alloc_table().unwrap();
+        let key = heap.alloc_string("value").unwrap();
+        heap.table_store(table, 0, key, Value::int(1)).unwrap();
+        let version = heap.info(table).unwrap().structure_version;
+        let mut hints = MemberHints::default();
+        hints.remember(FunctionId(0), Pc(1), 0, table, version);
+        assert_eq!(
+            hints.get(FunctionId(0), Pc(1), table, version),
+            Some((0, true))
+        );
+        heap.table_store(table, 0, key, Value::int(2)).unwrap();
+        assert_eq!(
+            hints.get(
+                FunctionId(0),
+                Pc(1),
+                table,
+                heap.info(table).unwrap().structure_version
+            ),
+            Some((0, true))
+        );
+        let second = heap.alloc_string("second").unwrap();
+        heap.table_store(table, 1, second, Value::int(3)).unwrap();
+        assert_eq!(
+            hints.get(
+                FunctionId(0),
+                Pc(1),
+                table,
+                heap.info(table).unwrap().structure_version
+            ),
+            Some((0, false))
+        );
+        let (_, bits) = table.object_parts().unwrap();
+        let next_generation = Value::object(heap.id(), bits ^ (1u64 << 32));
+        assert_eq!(
+            hints.get(FunctionId(0), Pc(1), next_generation, version),
+            Some((0, false))
+        );
+        heap.begin_collection().unwrap();
+        while heap.phase() != crate::GcPhase::Idle {
+            heap.gc_step(crate::GcBudget::default()).unwrap();
+        }
+        assert!(heap.info(table).is_err());
+    }
+}

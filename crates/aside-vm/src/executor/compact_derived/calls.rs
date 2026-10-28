@@ -355,3 +355,34 @@ fn positional_native_call_cost() {
         );
     }
 }
+
+#[test]
+#[ignore = "release differential packed derived and member lookup measurement"]
+fn packed_derived_lookup_cost() {
+    for (generic, identities) in [
+        (true, false),
+        (false, false),
+        (false, true),
+        (false, true),
+        (false, false),
+        (true, false),
+    ] {
+        let (mut vm, output, _, _) = prepared_storage(generic, true, false, true);
+        vm.member_hints.identities = identities;
+        let mut work = 0;
+        let start = std::time::Instant::now();
+        for _ in 0..100000 {
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let (outcome, used, _, _, _, _) = drive(&mut vm, task, false);
+            work += used;
+            let RunOutcome::Returned(delivery) = outcome else {
+                panic!("derive");
+            };
+            vm.discard_delivery(delivery).unwrap();
+        }
+        eprintln!(
+            "packed_derived generic={generic} member_identity={identities} evaluations=100000 elapsed_us={} work={work}",
+            start.elapsed().as_micros()
+        );
+    }
+}
