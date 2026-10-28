@@ -344,6 +344,7 @@ impl Plan {
         let mut run_start = 0;
         let mut next = 0;
         while let Some(command) = commands.get(next) {
+            // The build entry guard already excluded active retained/capture boundaries.
             if let FrameOp::PushGroup(group) = &command.op
                 && let Some(consumed) = super::scopes::invisible_group(
                     group,

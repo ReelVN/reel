@@ -118,6 +118,7 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                 widget.clip = false;
                 widget.effect = Some(paint.clone());
                 widget.opacity = opacity;
+                widget.capture_included = depth != 4;
                 for _ in 1..depth {
                     let mut parent = r01_fixture::RecordWidget::new(Scene::new());
                     parent.clip = false;
@@ -142,6 +143,50 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                 .unwrap();
                 while !build.step(r01_fixture::step_budget()).unwrap().complete {}
                 let frame = build.finish().unwrap();
+                if depth == 4 {
+                    assert!(!frame.drawing().capture_exclusions().is_empty());
+                    let glyphs = crate::common::glyph_plan::Plan::default();
+                    let selection = Default::default();
+                    let (schedule, scheduled, _) = offscreen::Plan::choose(
+                        &frame,
+                        None,
+                        [160, 120],
+                        true,
+                        1,
+                        4096,
+                        &glyphs,
+                        u64::MAX,
+                        &|size| Ok(u64::from(size[0]) * u64::from(size[1])),
+                        MaskExecution::Inline,
+                        &selection,
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+                    assert!(schedule.is_empty());
+                    let replayed = Input {
+                        frame: &frame,
+                        second: None,
+                        size: [160, 120],
+                        capture: true,
+                        samples: 1,
+                        max_dimension: 4096,
+                        glyphs: &glyphs,
+                        schedule: &schedule,
+                        masks: MaskExecution::Inline,
+                        selection: &selection,
+                        cost: &|logical| {
+                            let size = schedule.storage_size(logical);
+                            Ok(u64::from(size[0]) * u64::from(size[1]))
+                        },
+                    }
+                    .measure(|_| Ok(()))
+                    .unwrap()
+                    .bytes;
+                    assert_eq!(scheduled, replayed);
+                    // Even outside the viewport, the effect wrappers around
+                    // the excluded child keep their local source requirements.
+                    assert!(scheduled > 160 * 120);
+                }
                 for masks in [MaskExecution::Inline, MaskExecution::Sampled] {
                     let pixels = target_pixels(
                         &frame,
