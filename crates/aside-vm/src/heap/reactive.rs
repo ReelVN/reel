@@ -395,21 +395,25 @@ impl Heap {
 
     pub fn commit_derived(&mut self, output: Value, result: Value) -> Result<(), HeapError> {
         let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
-        let mut inputs = DependencyCursor::new(dependencies);
-        while let Some((host, selector)) = inputs.next(self)? {
-            self.check_derived_cycle(
-                PropertyId {
-                    host: output,
-                    field: 0,
-                },
-                PropertyId {
-                    host,
-                    field: selector.as_int().unwrap() as u32,
-                },
-            )?;
-        }
         let old = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
         if !self.same_derived_dependencies(old, dependencies)? {
+            // Every committed edge and binding change already passed cycle checks.
+            // An unchanged capture preserves that graph, even when ancestor values
+            // or dependencies changed between evaluations. Only replacement edges
+            // can add a cycle and need traversing the current graph again.
+            let mut inputs = DependencyCursor::new(dependencies);
+            while let Some((host, selector)) = inputs.next(self)? {
+                self.check_derived_cycle(
+                    PropertyId {
+                        host: output,
+                        field: 0,
+                    },
+                    PropertyId {
+                        host,
+                        field: selector.as_int().unwrap() as u32,
+                    },
+                )?;
+            }
             let weak = self.host_payload(output, DerivedSlot::Weak as u32)?;
             // Admit new edges before publishing the computed value. A failed evaluation
             // never changes the last valid output; retained metadata stays GC-owned.
