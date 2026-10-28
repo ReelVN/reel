@@ -52,7 +52,11 @@ fn continuation_and_collection_wakes_do_not_oversample_a_running_clock() {
     );
     settle(&mut story, 33_333_334);
     assert_eq!(story.logical_ns, 33_333_334);
-    assert!(story.driver().adapter().vm().stats().native_entries > before.native_entries);
+    let stage = story.driver().adapter().stage();
+    let x = stage.node(stage.root().unwrap()).unwrap().props.x;
+    assert_eq!(x, 2. / 60.);
+    // Compact derived reads need no native entry; the projected elapsed time
+    // proves that the next producer deadline was actually sampled.
 }
 
 #[test]
