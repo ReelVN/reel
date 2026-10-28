@@ -490,6 +490,7 @@ pub(crate) struct Plan {
     enabled: bool,
     pub entries: Vec<Entry>,
     spans: Vec<(usize, Range<usize>)>,
+    persistent_bytes: u64,
     pub warm: Option<usize>,
 }
 struct Cursor<'a> {
@@ -545,6 +546,7 @@ impl Plan {
                 break;
             }
         }
+        plan.finish_queries();
         Ok(plan)
     }
 
@@ -684,13 +686,46 @@ impl Plan {
         self.entries.iter().any(|entry| entry.input.is_some())
     }
     pub(crate) fn selected(&self, drawing: &FrameDrawing, command: usize) -> bool {
-        !self.enabled
-            || self.spans.iter().any(|(identity, range)| {
-                *identity == drawing as *const _ as usize && range.contains(&command)
-            })
+        if !self.enabled {
+            return true;
+        }
+        let identity = drawing as *const _ as usize;
+        if self.spans.len() <= 8 {
+            return self
+                .spans
+                .iter()
+                .any(|(id, range)| *id == identity && range.contains(&command));
+        }
+        let index = self
+            .spans
+            .partition_point(|(id, range)| (*id, range.start) <= (identity, command));
+        index != 0 && self.spans[index - 1].0 == identity && command < self.spans[index - 1].1.end
     }
     pub(crate) fn persistent_bytes(&self) -> u64 {
-        self.entries
+        self.persistent_bytes
+    }
+    /// Freeze repeated frame queries once the traversal has selected its prefix.
+    /// Merging overlapping/adjacent ranges changes neither command membership nor
+    /// retained ordering, and keeps the traversal's already accounted capacity.
+    fn finish_queries(&mut self) {
+        self.spans
+            .sort_unstable_by_key(|(id, range)| (*id, range.start));
+        let mut written = 0;
+        for read in 0..self.spans.len() {
+            let (id, range) = self.spans[read].clone();
+            if written != 0
+                && self.spans[written - 1].0 == id
+                && range.start <= self.spans[written - 1].1.end
+            {
+                self.spans[written - 1].1.end = self.spans[written - 1].1.end.max(range.end);
+            } else {
+                self.spans[written] = (id, range);
+                written += 1;
+            }
+        }
+        self.spans.truncate(written);
+        self.persistent_bytes = self
+            .entries
             .iter()
             .filter_map(|entry| entry.input.as_ref())
             .enumerate()
@@ -703,6 +738,6 @@ impl Plan {
                     .any(|earlier| earlier.token == input.token)
             })
             .map(|(_, input)| input.bytes)
-            .sum()
+            .sum();
     }
 }

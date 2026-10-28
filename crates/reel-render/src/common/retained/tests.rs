@@ -619,3 +619,97 @@ fn cached_old_drawing_requests_no_glyph_raster_or_atlas_work() {
         "cached pixels replace old text's GPU demand while its CPU font lease remains retained"
     );
 }
+
+#[test]
+fn selected_intervals_merge_per_drawing_and_preserve_gaps() {
+    let pool = f::pool();
+    let mut bridge = f::widget_bridge(f::RecordWidget::new(fill(Color::WHITE)), Affine::IDENTITY);
+    let frame = f::build(
+        bridge.record(FrameId(1)).unwrap(),
+        f::empty_snapshot(&pool),
+        &pool,
+    );
+    let identity = frame.drawing() as *const _ as usize;
+    let spans = vec![
+        (identity, 30..40),
+        (identity, 5..10),
+        (identity, 9..15),
+        (identity, 15..20),
+        (identity + 1, 0..100),
+        (identity, 4..7),
+        (identity, 31..33),
+    ];
+    let mut plan = Plan {
+        enabled: true,
+        spans: spans.clone(),
+        ..Default::default()
+    };
+    let capacity = plan.spans.capacity();
+    plan.finish_queries();
+    assert_eq!(
+        plan.spans,
+        [
+            (identity, 4..20),
+            (identity, 30..40),
+            (identity + 1, 0..100)
+        ]
+    );
+    assert_eq!(plan.spans.capacity(), capacity);
+    for command in 0..=100 {
+        assert_eq!(
+            plan.selected(frame.drawing(), command),
+            spans
+                .iter()
+                .any(|(id, range)| *id == identity && range.contains(&command))
+        );
+    }
+}
+
+#[test]
+#[ignore = "CPU query cost measurement; no graphics adapter"]
+fn retained_selection_query_cost() {
+    use std::{hint::black_box, time::Instant};
+    let pool = f::pool();
+    let mut bridge = f::widget_bridge(f::RecordWidget::new(fill(Color::WHITE)), Affine::IDENTITY);
+    let frame = f::build(
+        bridge.record(FrameId(1)).unwrap(),
+        f::empty_snapshot(&pool),
+        &pool,
+    );
+    let drawing = frame.drawing();
+    let identity = drawing as *const _ as usize;
+    for count in [8, 128, 1024] {
+        let mut plan = Plan {
+            enabled: true,
+            spans: (0..count)
+                .map(|index| (identity, index * 4..index * 4 + 2))
+                .collect(),
+            ..Default::default()
+        };
+        let reference = plan.spans.clone();
+        plan.finish_queries();
+        let mut timings = Vec::new();
+        let mut sums = Vec::new();
+        for optimized in [false, true] {
+            let began = Instant::now();
+            let mut selected = 0;
+            for query in 0..200_000 {
+                let command = black_box(query % (count * 4));
+                selected += usize::from(if optimized {
+                    black_box(&plan).selected(black_box(drawing), command)
+                } else {
+                    black_box(&reference)
+                        .iter()
+                        .any(|(id, range)| *id == identity && range.contains(&command))
+                });
+            }
+            timings.push(began.elapsed().as_micros());
+            sums.push(selected);
+        }
+        assert_eq!(sums[0], sums[1]);
+        println!(
+            "retained_selection spans={count} queries=200000 linear_us={} indexed_us={} metadata_delta=0",
+            timings[0], timings[1]
+        );
+    }
+}
