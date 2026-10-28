@@ -215,6 +215,7 @@ pub(crate) struct InlineFill {
     pub draw: FrameDraw,
     pub at: RecordLocation,
     pub consumed: usize,
+    pub command: usize,
     pub scissor: super::scissor::Scissor,
 }
 impl InlineFill {
@@ -297,10 +298,12 @@ pub(crate) fn inline_group_fill(
                     brush_transform,
                     composite,
                     command.origin.at,
+                    index,
                 ));
             }
             FrameOp::PopGroup if clips == 0 => {
-                let (rect, transform, fill_rule, brush, brush_transform, composite, at) = draw?;
+                let (rect, transform, fill_rule, brush, brush_transform, composite, at, command) =
+                    draw?;
                 return Some(InlineFill {
                     draw: FrameDraw::Fill {
                         shape: Geometry::Rect(*rect),
@@ -315,6 +318,7 @@ pub(crate) fn inline_group_fill(
                     },
                     at,
                     consumed: index + 1,
+                    command,
                     scissor,
                 });
             }

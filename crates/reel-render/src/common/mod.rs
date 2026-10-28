@@ -21,6 +21,7 @@ pub(crate) mod resources;
 pub(crate) mod retained;
 pub(crate) mod scopes;
 
+pub(crate) mod occlusion_plan;
 pub(crate) mod offscreen;
 pub(crate) mod precision;
 pub(crate) mod scissor;

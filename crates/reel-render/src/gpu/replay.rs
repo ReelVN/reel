@@ -561,6 +561,10 @@ impl Context<'_> {
                         current.transitions_enabled,
                         self.capture,
                     ) {
+                        if !current.draw_selected(&self.selection, current.next + fill.command) {
+                            current.next += fill.consumed;
+                            continue;
+                        }
                         self.scissor = self.scissor.intersect(fill.scissor);
                         self.draw(
                             current.drawing,
@@ -1073,6 +1077,9 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::Draw(draw) => {
+                    if !current.draw_selected(&self.selection, current.next - 1) {
+                        continue;
+                    }
                     if current.scheduled && self.offscreen.defer_draw(current.next - 1) {
                         continue;
                     }
@@ -1100,6 +1107,8 @@ impl Context<'_> {
                             batch_end = batch_end.min(range.start.saturating_sub(offset));
                         }
                     }
+                    let batch_end =
+                        current.draw_batch_end(&self.selection, current.next - 1, batch_end);
                     let consumed = self.image_batch(
                         &current.scopes.last().target,
                         &current.commands[current.next - 1..batch_end],

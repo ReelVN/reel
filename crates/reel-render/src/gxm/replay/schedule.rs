@@ -1,6 +1,20 @@
 //! Execute admitted parent operations in original order after their sources.
 use super::*;
 use crate::common::offscreen::ParentStep;
+impl Stream<'_> {
+    pub(super) fn draw_selected(&self, plan: &crate::common::retained::Plan, index: usize) -> bool {
+        self.offset
+            .is_none_or(|offset| plan.selected(self.drawing, offset + index))
+    }
+    pub(super) fn draw_batch_end(
+        &self,
+        plan: &crate::common::retained::Plan,
+        start: usize,
+        end: usize,
+    ) -> usize {
+        plan.draw_batch_end(self.drawing, self.offset, start, end)
+    }
+}
 impl Context<'_> {
     pub(super) fn combine_view(
         &mut self,
@@ -62,6 +76,10 @@ impl Context<'_> {
                 ParentStep::Draws(range) => {
                     let mut next = range.start;
                     while next < range.end {
+                        if !current.draw_selected(&self.selection, next) {
+                            next += 1;
+                            continue;
+                        }
                         self.scissor = current.scopes.last().scissor;
                         self.mesh_clip = current.scopes.last().mesh_clip;
                         let command = &current.commands[next];
@@ -69,9 +87,10 @@ impl Context<'_> {
                             unreachable!("planned parent draw")
                         };
                         self.at = Some(command.origin.at);
+                        let end = current.draw_batch_end(&self.selection, next, range.end);
                         let consumed = self.image_batch(
                             target,
-                            &current.commands[next..range.end],
+                            &current.commands[next..end],
                             current.transform,
                         )?;
                         if consumed == 0 {
