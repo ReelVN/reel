@@ -185,6 +185,9 @@ impl Plan {
                 Ok(())
             })?);
             let mut bytes = measured.as_ref().unwrap().bytes;
+            let share_backdrops = bytes <= byte_limit
+                && measured.as_ref().unwrap().reusable
+                && measured.as_ref().unwrap().local_backdrop;
             let mut storage_tickets = Vec::new();
             if bytes > byte_limit && measured.as_ref().unwrap().reusable {
                 drop(measured.take());
@@ -227,6 +230,51 @@ impl Plan {
                     plan.requirements = Default::default();
                     storage_tickets = tickets;
                     plan.storage = storage;
+                }
+                // A cropped backdrop duplicates its source's size class. Compare
+                // the whole padded pool, even below the admission limit: ordered
+                // blends can otherwise retain two targets for every source size.
+                if share_backdrops {
+                    let input = super::target_plan::Input {
+                        frame,
+                        second,
+                        size,
+                        capture,
+                        samples,
+                        max_dimension,
+                        glyphs,
+                        schedule: &plan,
+                        masks,
+                        selection,
+                        cost,
+                    };
+                    if let Ok((mut storage, _, mut tickets)) = input.storage(&mut reserve) {
+                        if let Ok(Some((padded, padded_tickets))) = storage.padded_capacities(
+                            size,
+                            max_dimension,
+                            capacity_limit,
+                            cost,
+                            &mut reserve,
+                        ) {
+                            storage = padded;
+                            tickets = padded_tickets;
+                        }
+                        let shared_bytes = storage.bytes() + selection.persistent_bytes();
+                        // Below pressure, eliminate existing allocations rather
+                        // than introducing a new class or higher multiplicity.
+                        // Otherwise animated overlap can alternate two pools and
+                        // increase creation despite a smaller individual plan.
+                        let reuses_pool = storage
+                            .requirements()
+                            .iter()
+                            .all(|(size, count)| count <= plan.requirements().count(size));
+                        if shared_bytes < bytes && reuses_pool {
+                            bytes = shared_bytes;
+                            plan.requirements = Default::default();
+                            plan.storage = storage;
+                            storage_tickets = tickets;
+                        }
+                    }
                 }
                 retained.extend(storage_tickets);
                 plan.groups = groups.map(|groups| {

@@ -103,6 +103,7 @@ mod plan_tests;
 #[derive(Default)]
 struct Scratch {
     buckets: Vec<Bucket>,
+    local_backdrop: bool,
     events: Option<Vec<super::target_storage::Event>>,
 }
 struct Bucket {
@@ -348,6 +349,7 @@ pub(crate) struct Input<'a> {
 pub(crate) struct Measured {
     pub bytes: u64,
     pub reusable: bool,
+    pub local_backdrop: bool,
     scratch: Scratch,
 }
 impl Measured {
@@ -385,6 +387,7 @@ impl Input<'_> {
         Ok(Measured {
             bytes,
             reusable,
+            local_backdrop: scratch.local_backdrop,
             scratch,
         })
     }
@@ -821,14 +824,11 @@ impl Input<'_> {
                                         }
                                     }
                                 } else {
-                                    scratch.composite(
-                                        source,
-                                        scope.group.is_some_and(|group| {
-                                            group.composite.blend != Default::default()
-                                        }),
-                                        false,
-                                        &mut reserve,
-                                    )?;
+                                    let backdrop = scope.group.is_some_and(|group| {
+                                        group.composite.blend != Default::default()
+                                    });
+                                    scratch.local_backdrop |= backdrop;
+                                    scratch.composite(source, backdrop, false, &mut reserve)?;
                                     scratch.release(source, &mut reserve)?;
                                 }
                                 continue;
