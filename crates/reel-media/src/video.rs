@@ -23,6 +23,26 @@ use std::{
 pub use vita::VitaVideoDecoderFactory;
 
 pub use reel_core::image::{Yuv420Layout, YuvColor, YuvMatrix, YuvTransfer};
+
+fn budget_failure(
+    pool: &BudgetPool,
+    source: &str,
+    bytes: u64,
+    mut error: reel_core::result::RejectReason,
+) -> reel_core::result::RejectReason {
+    let snapshot = pool.snapshot();
+    error.message = format!(
+        "{}: {} (required={bytes}, pool_used_snapshot={}, pool_limit={}, pool_tickets_snapshot={}, pool_ticket_limit={}, group_snapshot={:?})",
+        source,
+        error.message,
+        snapshot.usage.bytes,
+        snapshot.limits.max_bytes,
+        snapshot.usage.tickets,
+        snapshot.limits.max_requests,
+        snapshot.group
+    );
+    error
+}
 /// Owned top-down 8-bit YUV 4:2:0; no decoder-owned pointers escape.
 #[derive(Debug)]
 pub struct VideoFrame {
@@ -41,11 +61,14 @@ pub struct VideoFrame {
     pub planes: [Vec<u8>; 3],
     pub color: YuvColor,
 }
+/// A decoded PCM packet and the reservation for its vector capacity.
 #[derive(Debug)]
 pub struct AudioFrames {
     pub pts: f64,
     pub sample_rate: u32,
     pub frames: Vec<[f32; 2]>,
+    /// Reservation for the complete capacity of `frames`, transferred with it.
+    pub storage: BudgetTicket,
 }
 #[derive(Debug)]
 pub enum DecodedPacket {
@@ -106,18 +129,17 @@ pub trait VideoDecoder {
     /// readiness waits. Codec work observes the factory's shared stop flag.
     fn poll_packet(&mut self, demand: DecodeDemand) -> Result<Poll<Option<DecodedPacket>>, String>;
     /// Return a PCM packet after its initialized samples have entered the bounded
-    /// sample queue. Called only on the decode worker; the ticket charges the
-    /// vector capacity until a pooling decoder reuses or releases that storage.
-    /// Decoders without retained output storage release both arguments here.
-    fn recycle_audio(&mut self, _packet: AudioFrames, _storage: BudgetTicket) {}
+    /// sample queue. Called only on the decode worker; the packet's ticket
+    /// charges its vector capacity until it is reused or released.
+    fn recycle_audio(&mut self, _packet: AudioFrames) {}
     /// Seek on the source timeline, retaining picture preroll and trimming PCM
     /// before the requested position. No previous packet storage is mutated.
     fn seek(&mut self, seconds: f64) -> Result<(), String>;
 }
 
 /// Opens a decoder on the playback worker. The worker charges returned vector
-/// picture storage and PCM queues; optional owned picture storage and adapter
-/// buffers carry their own reservations from
+/// picture storage and PCM queues; PCM packets, optional owned picture storage
+/// and adapter buffers carry their own reservations from
 /// the supplied pool. The shared stop flag covers initialization, decode and waits.
 pub trait VideoDecoderFactory: std::fmt::Debug + Send + Sync {
     /// Own the seekable resource stream until the decoder has fenced its native

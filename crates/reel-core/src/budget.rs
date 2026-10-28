@@ -63,6 +63,17 @@ impl BudgetGroup {
     }
 }
 
+/// Local and optional shared-group accounting captured under the same locks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BudgetSnapshot {
+    /// Limits for this pool.
+    pub limits: QueueLimits,
+    /// Current pool reservations and their simultaneous peak.
+    pub usage: BudgetUsage,
+    /// Shared group byte limit and current simultaneous usage.
+    pub group: Option<(u64, BudgetUsage)>,
+}
+
 #[derive(Debug)]
 struct Account {
     category: BudgetCategory,
@@ -95,6 +106,20 @@ impl BudgetPool {
 
     pub fn usage(&self) -> BudgetUsage {
         self.0.lock().expect("budget account poisoned").usage
+    }
+
+    /// Capture the local limit, usage and optional group under their accounting locks.
+    pub fn snapshot(&self) -> BudgetSnapshot {
+        let account = self.0.lock().expect("budget account poisoned");
+        let group = account.group.as_ref().map(|group| {
+            let group = group.0.lock().expect("budget group poisoned");
+            (group.max_bytes, group.usage)
+        });
+        BudgetSnapshot {
+            limits: account.limits,
+            usage: account.usage,
+            group,
+        }
     }
 
     /// Capacity available for one new ticket at this observation. A shared

@@ -3,7 +3,7 @@ use super::{
     AudioFrames, DecodeDemand, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory,
     VideoFrame, VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
 };
-use reel_core::budget::{BudgetPool, BudgetTicket};
+use reel_core::budget::BudgetPool;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -16,6 +16,7 @@ use vita_native::{
 
 #[derive(Debug)]
 struct NativeBudget {
+    owner: &'static str,
     local: BudgetPool,
     contiguous: Option<BudgetPool>,
 }
@@ -36,11 +37,14 @@ impl MemoryBudget for NativeBudget {
         };
         super::native_budget::reserve(&self.local, physical, bytes)
             .map(|ticket| Box::new(ticket) as Box<dyn MemoryReservation>)
-            .map_err(|error| match error.code {
-                reel_core::result::RejectCode::Busy => {
-                    vita_native::memory::MemoryBudgetError::Capacity(error.message)
+            .map_err(|mut error| {
+                error.message = format!("{} {class:?}: {}", self.owner, error.message);
+                match error.code {
+                    reel_core::result::RejectCode::Busy => {
+                        vita_native::memory::MemoryBudgetError::Capacity(error.message)
+                    }
+                    _ => vita_native::memory::MemoryBudgetError::Other(error.message),
                 }
-                _ => vita_native::memory::MemoryBudgetError::Other(error.message),
             })
     }
 }
@@ -82,6 +86,7 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
         let player = Player::open(
             Box::new(source),
             Arc::new(NativeBudget {
+                owner: "AvPlayer",
                 local: budget.clone(),
                 contiguous: self.contiguous_budget.clone(),
             }),
@@ -102,6 +107,7 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
             [info.width, info.height],
             self.frame_pool_bytes,
             Arc::new(NativeBudget {
+                owner: "NV12 output pool",
                 local: budget.clone(),
                 contiguous: self.contiguous_budget.clone(),
             }),
@@ -228,10 +234,12 @@ impl VitaDecoder {
                 if skip != 0 {
                     frames.drain(..skip);
                 }
+                let (frames, storage) = self.pcm.publish();
                 Ok(Some(AudioFrames {
                     pts: packet.pts + skip as f64 / rate,
                     sample_rate: packet.sample_rate,
-                    frames: self.pcm.publish(),
+                    frames,
+                    storage,
                 }))
             }
             NativePoll::Pending => Ok(None),
@@ -246,8 +254,8 @@ impl VideoDecoder for VitaDecoder {
     fn video_output_bytes(&self) -> u64 {
         0
     }
-    fn recycle_audio(&mut self, packet: AudioFrames, storage: BudgetTicket) {
-        self.pcm.recycle(packet.frames, storage);
+    fn recycle_audio(&mut self, packet: AudioFrames) {
+        self.pcm.recycle(packet.frames, packet.storage);
     }
     fn info(&self) -> &VideoInfo {
         &self.info

@@ -14,8 +14,15 @@ pub(super) fn reserve(
     physical: Option<&BudgetPool>,
     bytes: u64,
 ) -> Result<Reservation, RejectReason> {
-    let local = local.reserve(bytes)?;
-    let physical = physical.map(|pool| pool.reserve(bytes)).transpose()?;
+    let local = local
+        .reserve(bytes)
+        .map_err(|e| super::budget_failure(local, "local", bytes, e))?;
+    let physical = physical
+        .map(|pool| {
+            pool.reserve(bytes)
+                .map_err(|e| super::budget_failure(pool, "physical", bytes, e))
+        })
+        .transpose()?;
     Ok(Reservation {
         _local: local,
         _physical: physical,
@@ -41,7 +48,12 @@ mod tests {
         let block = Arc::new(reserve(&local, Some(&physical), 4).unwrap());
         assert_eq!(group.usage().bytes, 4);
         let before = local.usage().bytes;
-        assert!(reserve(&local, Some(&physical), 1).is_err());
+        let failure = reserve(&local, Some(&physical), 1).err().unwrap();
+        assert!(failure.message.contains("physical"));
+        assert!(failure.message.contains("required=1"));
+        assert!(failure.message.contains("pool_used_snapshot=4"));
+        assert!(failure.message.contains("pool_limit=8"));
+        assert!(failure.message.contains("group_snapshot=Some((4,"));
         assert_eq!(local.usage().bytes, before);
         let reader = block.clone();
         drop(block);

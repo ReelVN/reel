@@ -10,6 +10,7 @@ struct Factory {
     empty: bool,
 }
 struct Decoder {
+    budget: BudgetPool,
     factory: Factory,
     info: VideoInfo,
     sent: bool,
@@ -19,10 +20,11 @@ impl VideoDecoderFactory for Factory {
     fn open(
         &self,
         _: Box<dyn MediaRead>,
-        _: BudgetPool,
+        budget: BudgetPool,
         _: Arc<AtomicBool>,
     ) -> Result<Box<dyn VideoDecoder>, String> {
         Ok(Box::new(Decoder {
+            budget,
             factory: Factory {
                 release: self.release.clone(),
                 calls: self.calls.clone(),
@@ -67,6 +69,7 @@ impl VideoDecoder for Decoder {
             return Ok(Poll::Ready(Some(DecodedPacket::Audio(AudioFrames {
                 pts: 0.,
                 sample_rate: 4,
+                storage: self.budget.reserve(8 * 8).map_err(|e| e.message)?,
                 frames: vec![[0.5, -0.5]; 8],
             }))));
         }

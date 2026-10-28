@@ -10,6 +10,7 @@ struct InterleavedFactory {
     audio_first: bool,
 }
 struct Interleaved {
+    budget: BudgetPool,
     info: VideoInfo,
     audio_first: bool,
     pictures: usize,
@@ -19,10 +20,11 @@ impl VideoDecoderFactory for InterleavedFactory {
     fn open(
         &self,
         _: Box<dyn MediaRead>,
-        _: BudgetPool,
+        budget: BudgetPool,
         _: Arc<AtomicBool>,
     ) -> Result<Box<dyn VideoDecoder>, String> {
         Ok(Box::new(Interleaved {
+            budget,
             info: VideoInfo {
                 width: 2,
                 height: 2,
@@ -59,6 +61,7 @@ impl VideoDecoder for Interleaved {
             return Ok(Poll::Ready(Some(DecodedPacket::Audio(AudioFrames {
                 pts: 0.,
                 sample_rate: 4,
+                storage: self.budget.reserve(8 * 8).map_err(|e| e.message)?,
                 frames: (1..=8).map(|i| [i as f32, -(i as f32)]).collect(),
             }))));
         }

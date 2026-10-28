@@ -475,7 +475,7 @@ impl MovieDecoder {
                 encoded,
             );
             let decoded = audio.decoder.decode(&packet).map_err(error)?;
-            let mut frames = stereo(&decoded)?;
+            let (mut frames, storage) = stereo(&decoded, &self.budget)?;
             let rate = f64::from(audio.rate);
             let first = ((audio.cursor.start.max(self.seek_position) - at) * rate)
                 .round()
@@ -491,6 +491,7 @@ impl MovieDecoder {
                 pts: at + first as f64 / rate,
                 sample_rate: audio.rate,
                 frames,
+                storage,
             }))));
         }
     }
@@ -583,39 +584,51 @@ impl AvcConfig {
     }
 }
 
-fn stereo(buffer: &GenericAudioBufferRef<'_>) -> Result<Vec<[f32; 2]>, String> {
-    fn convert<S: Sample>(buffer: &AudioBuffer<S>) -> Result<Vec<[f32; 2]>, String>
+fn stereo(
+    buffer: &GenericAudioBufferRef<'_>,
+    budget: &BudgetPool,
+) -> Result<(Vec<[f32; 2]>, BudgetTicket), String> {
+    fn convert<S: Sample>(
+        buffer: &AudioBuffer<S>,
+        budget: &BudgetPool,
+    ) -> Result<(Vec<[f32; 2]>, BudgetTicket), String>
     where
         f32: FromSample<S>,
     {
-        match buffer.num_planes() {
-            1 => Ok(buffer
-                .plane(0)
-                .unwrap()
-                .iter()
-                .map(|&a| [f32::from_sample(a); 2])
-                .collect()),
-            2 => Ok(buffer
-                .plane(0)
-                .unwrap()
+        if !(1..=2).contains(&buffer.num_planes()) {
+            return Err("video audio must be mono or stereo".into());
+        }
+        let first = buffer.plane(0).unwrap();
+        let bytes = (first.len() * std::mem::size_of::<[f32; 2]>()) as u64;
+        let mut storage = budget
+            .reserve(bytes)
+            .map_err(|e| super::budget_failure(budget, "software PCM", bytes, e).message)?;
+        let frames: Vec<_> = match buffer.num_planes() {
+            1 => first.iter().map(|&a| [f32::from_sample(a); 2]).collect(),
+            2 => first
                 .iter()
                 .zip(buffer.plane(1).unwrap())
                 .map(|(&a, &b)| [f32::from_sample(a), f32::from_sample(b)])
-                .collect()),
-            _ => Err("video audio must be mono or stereo".into()),
-        }
+                .collect(),
+            _ => unreachable!(),
+        };
+        let bytes = (frames.capacity() * std::mem::size_of::<[f32; 2]>()) as u64;
+        storage
+            .resize(bytes)
+            .map_err(|e| super::budget_failure(budget, "software PCM resize", bytes, e).message)?;
+        Ok((frames, storage))
     }
     match buffer {
-        GenericAudioBufferRef::U8(b) => convert(b),
-        GenericAudioBufferRef::U16(b) => convert(b),
-        GenericAudioBufferRef::U24(b) => convert(b),
-        GenericAudioBufferRef::U32(b) => convert(b),
-        GenericAudioBufferRef::S8(b) => convert(b),
-        GenericAudioBufferRef::S16(b) => convert(b),
-        GenericAudioBufferRef::S24(b) => convert(b),
-        GenericAudioBufferRef::S32(b) => convert(b),
-        GenericAudioBufferRef::F32(b) => convert(b),
-        GenericAudioBufferRef::F64(b) => convert(b),
+        GenericAudioBufferRef::U8(b) => convert(b, budget),
+        GenericAudioBufferRef::U16(b) => convert(b, budget),
+        GenericAudioBufferRef::U24(b) => convert(b, budget),
+        GenericAudioBufferRef::U32(b) => convert(b, budget),
+        GenericAudioBufferRef::S8(b) => convert(b, budget),
+        GenericAudioBufferRef::S16(b) => convert(b, budget),
+        GenericAudioBufferRef::S24(b) => convert(b, budget),
+        GenericAudioBufferRef::S32(b) => convert(b, budget),
+        GenericAudioBufferRef::F32(b) => convert(b, budget),
+        GenericAudioBufferRef::F64(b) => convert(b, budget),
     }
 }
 
