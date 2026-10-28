@@ -43,6 +43,7 @@ fn upload_bytes<T>(
 pub(super) struct Buffers {
     pub vertices: wgpu::Buffer,
     pub indices: wgpu::Buffer,
+    pub instances: Option<Box<wgpu::Buffer>>,
     staging: Option<wgpu::Buffer>,
     mapping: Option<Arc<AtomicU8>>,
     pub layout: Option<crate::common::draw_batch::Layout>,
@@ -143,16 +144,16 @@ impl Cache {
         if !reuse {
             return None;
         }
-        let storage = self
-            .pool
-            .lock()
-            .unwrap()
-            .take_matching(batch.capacity(), |storage| {
+        let storage = self.pool.lock().unwrap().take_eligible(
+            batch.capacity(),
+            |storage| storage.instances.is_none(),
+            |storage| {
                 storage
                     .layout
                     .as_ref()
                     .map_or(0, |layout| layout.score(batch))
-            })?;
+            },
+        )?;
         let bytes = storage.ticket.bytes()
             + storage
                 .storage
@@ -199,7 +200,8 @@ impl Cache {
         let requested = view.capacity();
         let mut pool = self.pool.lock().unwrap();
         if policy.reuse
-            && let Some(storage) = pool.take(requested)
+            && let Some(storage) =
+                pool.take_eligible(requested, |storage| storage.instances.is_none(), |_| 0)
             && let Ok(ticket) = local.transient.reserve(
                 storage.ticket.bytes()
                     + storage
@@ -337,6 +339,7 @@ impl Cache {
                 storage: Buffers {
                     vertices,
                     indices,
+                    instances: None,
                     staging,
                     mapping: reusable.then(|| Arc::new(AtomicU8::new(MAPPED))),
                     layout: None,
@@ -346,6 +349,8 @@ impl Cache {
         ))
     }
 }
+#[path = "geometry_instances.rs"]
+mod instances;
 impl Buffers {
     /// Return None when the ordered extents changed and require a full upload.
     /// Four-byte index copies include their unchanged neighbour in mapped storage.

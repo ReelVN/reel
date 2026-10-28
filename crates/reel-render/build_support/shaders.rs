@@ -23,6 +23,7 @@ pub fn sources() -> Vec<Shader> {
     };
     for name in [
         "vertex",
+        "vertex_instances",
         "composite_vertex",
         "effect_vertex",
         "effect_padded_vertex",
@@ -146,6 +147,12 @@ pub fn sources() -> Vec<Shader> {
         "vertex_bounded",
         true,
         &read("vertex"),
+        "#define REEL_BOUNDED",
+    );
+    add(
+        "vertex_instances_bounded",
+        true,
+        &read("vertex_instances"),
         "#define REEL_BOUNDED",
     );
     let paint = read("paint");

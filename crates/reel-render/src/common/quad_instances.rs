@@ -16,6 +16,45 @@ pub(crate) const MAX_INSTANCES: usize = u16::MAX as usize;
 // Amortize the shared template/index payload to at most half of ordinary u16
 // quad geometry. Smaller source calls can still join an existing instance run.
 pub(crate) const MIN_INSTANCES: usize = 3;
+pub(crate) struct Attribute {
+    pub location: u32,
+    pub components: u32,
+    pub offset: u64,
+}
+pub(crate) const VERTEX_ATTRIBUTES: [Attribute; 3] = [
+    Attribute {
+        location: 0,
+        components: 1,
+        offset: 0,
+    },
+    Attribute {
+        location: 1,
+        components: 2,
+        offset: 4,
+    },
+    Attribute {
+        location: 3,
+        components: 4,
+        offset: 12,
+    },
+];
+pub(crate) const INSTANCE_ATTRIBUTES: [Attribute; 3] = [
+    Attribute {
+        location: 4,
+        components: 4,
+        offset: 0,
+    },
+    Attribute {
+        location: 5,
+        components: 4,
+        offset: 16,
+    },
+    Attribute {
+        location: 2,
+        components: 4,
+        offset: 32,
+    },
+];
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct QuadVertex {
@@ -102,10 +141,8 @@ impl<'a> Input<'a> {
             .flat_map(|vertex| vertex.uv)
             .any(|value| !value.is_finite())
         {
-            return Err(GpuError::Unsupported {
-                at,
-                record: "transformed geometry outside float32 range",
-            });
+            // The ordinary path validates UV only for visible quads.
+            return Ok(None);
         }
         Ok(Some(Self {
             batch,
@@ -200,7 +237,9 @@ impl Batch {
             + self.instances.len() as u64 * size_of::<Instance>() as u64
     }
     pub fn expanded_bytes(&self) -> usize {
-        self.instances.len() * (4 * size_of::<Vertex>() + 6 * size_of::<u32>())
+        self.instances
+            .len()
+            .saturating_mul(4 * size_of::<Vertex>() + 6 * size_of::<u32>())
     }
     pub fn direct_paint(
         &self,
@@ -217,6 +256,7 @@ impl Batch {
             std::iter::once(self.template.vertices[0].window),
         )
     }
+    #[cfg(all(feature = "gxm", target_os = "vita"))]
     pub fn direct_coverage(&self, appearance: Option<&[[f32; 4]; 9]>) -> Option<mesh::DirectPaint> {
         (self.direct_paint(mesh::PaintSource::Texture, [false; 2], appearance, None)
             == Some(mesh::DirectPaint::Rgba))
@@ -240,6 +280,13 @@ impl Batch {
     pub fn worthwhile(&self) -> bool {
         self.bytes() * 2
             <= self.instances.len() as u64 * (4 * size_of::<Vertex>() + 6 * size_of::<u16>()) as u64
+    }
+    pub fn instanced(&self, merges_before: bool, merges_after: bool) -> bool {
+        self.worthwhile() && !merges_before && !merges_after
+    }
+    /// Preserve the old upload boundary if this run later needs mesh fallback.
+    pub fn can_merge(&self, other: &Self) -> bool {
+        self.expanded_bytes().saturating_add(other.expanded_bytes()) <= super::draw_batch::MAX_BYTES
     }
     pub fn merge(&mut self, other: Self) -> Result<(), GpuError> {
         assert!(

@@ -52,6 +52,9 @@ pub(super) struct Context<'a> {
     pub(super) target_writes: crate::common::target_writes::TargetWrites,
     pub(super) scissor: Scissor,
     pub(super) mesh_clip: Option<crate::common::mesh::RectClip>,
+    pub(super) instance_batch: Option<super::draw::InstanceBatch>,
+    #[cfg(test)]
+    pub(super) sprite_instances_enabled: bool,
     pub(super) paint_batch: Option<super::draw::PaintBatch>,
     pub(super) geometry_policy: &'a super::geometry::UploadPolicy,
     pub(super) geometry_cache: &'a super::geometry::Cache,

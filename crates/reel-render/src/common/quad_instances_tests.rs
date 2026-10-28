@@ -103,6 +103,9 @@ fn instances_and_expanded_fallback_preserve_every_old_vertex_bit() {
         .unwrap();
     assert_eq!(actual.instances.len(), 4);
     assert!(actual.worthwhile());
+    assert!(actual.instanced(false, false));
+    assert!(!actual.instanced(true, false));
+    assert!(!actual.instanced(false, true));
     assert_eq!(actual.bytes(), 112 + 12 + 4 * 48);
     let mut expected = Mesh::new(allocation());
     for batch in [&first, &second] {
@@ -152,6 +155,37 @@ fn instances_and_expanded_fallback_preserve_every_old_vertex_bit() {
     drop((actual, expected));
     assert_eq!(shared.transient.usage().bytes, 0);
     assert_eq!(local.transient.usage().bytes, 0);
+}
+
+#[test]
+fn compatible_instance_runs_preserve_the_original_mesh_upload_boundary() {
+    let limits = GpuLimits::default();
+    let shared = Budgets::new(limits);
+    let local = Budgets::new(limits);
+    let make = |count| {
+        let mut batch = sprite_batch();
+        let sprite = batch.instances[0];
+        batch.instances = vec![sprite; count];
+        let input = Input::sprites(
+            &batch,
+            Affine::IDENTITY,
+            layout(),
+            Affine::IDENTITY,
+            None,
+            [200, 200],
+            at(),
+        )
+        .unwrap()
+        .unwrap();
+        Batch::new(
+            &input,
+            Allocation::new(&shared, &local, limits.transient_bytes, 1 << 24),
+        )
+        .unwrap()
+    };
+    let first = make(1000);
+    assert!(first.can_merge(&make(213)));
+    assert!(!first.can_merge(&make(214)));
 }
 #[test]
 fn sparse_support_and_special_composites_keep_the_existing_expansion() {

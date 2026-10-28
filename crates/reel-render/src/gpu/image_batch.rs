@@ -53,6 +53,7 @@ impl Context<'_> {
         let Some(first) = commands.first().and_then(quad) else {
             return Ok(0);
         };
+        self.expand_instances()?;
         let handle = first.brush.image.resource;
         let image = self.image_resource(handle, commands[0].origin.at)?;
         let source = image

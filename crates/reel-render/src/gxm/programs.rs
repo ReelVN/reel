@@ -83,7 +83,7 @@ impl Shader {
         vertex: ShaderCode<'_>,
         fragment: ShaderCode<'_>,
     ) -> Result<Self, GpuError> {
-        let program = create_program_with_vertex(context, vertex, fragment, true)?;
+        let program = create_program_with_vertex(context, vertex, fragment, true, false)?;
         let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
         Ok(Self { program, uniforms })
     }
@@ -128,6 +128,7 @@ pub(super) fn create_program(
         },
         fragment,
         true,
+        false,
     )
 }
 fn create_program_with_vertex(
@@ -135,7 +136,11 @@ fn create_program_with_vertex(
     vertex: ShaderCode<'_>,
     fragment: ShaderCode<'_>,
     clipped: bool,
+    instanced: bool,
 ) -> Result<Program, GpuError> {
+    let vertex_attributes = super::geometry::vertex_attributes();
+    let instance_attributes = super::geometry::instance_attributes();
+    let regular_attributes = attributes();
     let program = super::super::create_program(
         context,
         vertex,
@@ -143,7 +148,7 @@ fn create_program_with_vertex(
         &[
             AttributeBinding {
                 location: 0,
-                name: "a_position",
+                name: if instanced { "a_corner" } else { "a_position" },
             },
             AttributeBinding {
                 location: 1,
@@ -157,8 +162,27 @@ fn create_program_with_vertex(
                 location: 3,
                 name: "a_window",
             },
+            AttributeBinding {
+                location: 4,
+                name: "a_positions01",
+            },
+            AttributeBinding {
+                location: 5,
+                name: "a_positions23",
+            },
         ],
-        &attributes(),
+        native::VertexLayout {
+            stride: if instanced { 7 } else { 12 },
+            attributes: if instanced {
+                &vertex_attributes
+            } else {
+                &regular_attributes
+            },
+        },
+        instanced.then_some(native::VertexLayout {
+            stride: 12,
+            attributes: &instance_attributes,
+        }),
         clipped,
     )?;
     Ok(program)

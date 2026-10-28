@@ -210,6 +210,10 @@ impl Context<'_> {
         let image = self.image_resource(batch.brush.image.resource, at)?;
         let source = image.source.as_ref().and_then(|s| s.lease.upgrade());
         let coverage = source.as_ref().and_then(|s| s.image_coverage());
+        if self.sprite_instances(target, batch, outer, at, &image, coverage)? {
+            return Ok(());
+        }
+        self.expand_instances()?;
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
         mesh.sprites(
             batch,
@@ -241,6 +245,9 @@ impl Context<'_> {
         origin: reel_ui::frame::CommandOrigin,
     ) -> Result<(), GpuError> {
         let at = origin.at;
+        if !matches!(draw, FrameDraw::Sprites(_)) {
+            self.expand_instances()?;
+        }
         if !self.capture && self.geometry_policy.reuse && frame.recording(origin).is_some() {
             self.geometry_policy.optional.set(true);
         }
@@ -650,26 +657,7 @@ impl Context<'_> {
                 source: mesh::PaintSource::Texture,
             },
             repeat,
-            appearance.map(|appearance| {
-                let mut uniform = appearance_uniform(appearance);
-                uniform[8] = [
-                    image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
-                    image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
-                    match image.texture_format {
-                        Some(reel_core::texture::TextureFormat::Bc1Rgb) => 1.,
-                        Some(reel_core::texture::TextureFormat::Bc3Rgba) => 2.,
-                        _ => 0.,
-                    },
-                    f32::from(quality == ImageQuality::Low),
-                ];
-                if uniform[4][3] == 3.
-                    && image.yuv.is_none()
-                    && image.encoding == reel_ui::resources::ColorEncoding::Linear
-                {
-                    uniform[4][3] = 4.;
-                }
-                uniform
-            }),
+            image_appearance(image, appearance, quality),
         )
     }
 
@@ -704,13 +692,6 @@ impl Context<'_> {
         if mesh.indices.is_empty() {
             return Ok(());
         }
-        if self
-            .paint_batch
-            .as_ref()
-            .is_some_and(|batch| batch.geometry.full(&mesh))
-        {
-            self.flush_draws()?;
-        }
         let direct = if coverage {
             mesh.direct_coverage(appearance.as_ref())
         } else {
@@ -734,6 +715,22 @@ impl Context<'_> {
             appearance,
             scissor: self.scissor.for_vertices(&mesh.vertices, self.size),
         };
+        self.expand_instances()?;
+        self.queue_mesh(target, mesh, state)
+    }
+    fn queue_mesh(
+        &mut self,
+        target: &Target,
+        mesh: crate::common::recording_cache::Reference,
+        state: PaintState,
+    ) -> Result<(), GpuError> {
+        if self
+            .paint_batch
+            .as_ref()
+            .is_some_and(|batch| batch.geometry.full(&mesh))
+        {
+            self.flush_draws()?;
+        }
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);
             self.paint_batch = Some(batch);
@@ -746,8 +743,100 @@ impl Context<'_> {
             Ok(())
         }
     }
+    fn paint_group(&self, state: &PaintState) -> wgpu::BindGroup {
+        let device = &self.gpu.device;
+        let PaintState {
+            image,
+            texture_format,
+            yuv,
+            repeat,
+            quality,
+            appearance,
+            ..
+        } = state;
+        #[cfg(test)]
+        {
+            self.gpu
+                .upload_creations
+                .brush_groups
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let appearance_buffer = appearance.as_ref().map(|values| {
+            #[cfg(test)]
+            self.gpu
+                .upload_creations
+                .appearance_buffers
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("brush appearance"),
+                contents: bytemuck::cast_slice(values),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
+        let samplers = if *quality == ImageQuality::Low {
+            &self.pipelines.nearest_samplers
+        } else {
+            &self.pipelines.samplers
+        };
+        let sampler = &samplers[usize::from(repeat[0]) + 2 * usize::from(repeat[1])];
+        let appearance = appearance_buffer
+            .as_ref()
+            .unwrap_or_else(|| match texture_format {
+                Some(reel_core::texture::TextureFormat::Bc1Rgb) => {
+                    &self.pipelines.block_appearance[0]
+                }
+                Some(reel_core::texture::TextureFormat::Bc3Rgba) => {
+                    &self.pipelines.block_appearance[1]
+                }
+                _ => &self.pipelines.plain_appearance,
+            });
+        let base = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(image),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: appearance.as_entire_binding(),
+            },
+        ];
+        if let Some(yuv) = yuv {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("video brush"),
+                layout: &self.pipelines.yuv_layout,
+                entries: &[
+                    base[0].clone(),
+                    base[1].clone(),
+                    base[2].clone(),
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&yuv.chroma[0]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&yuv.chroma[1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: yuv.color.as_entire_binding(),
+                    },
+                ],
+            })
+        } else {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("reel brush"),
+                layout: &self.pipelines.paint_layout,
+                entries: &base,
+            })
+        }
+    }
     /// Consume an ordered segment in one pass; uploads remain immutable in flight.
     pub(super) fn flush_draws(&mut self) -> Result<(), GpuError> {
+        self.finish_instances()?;
         let Some(batch) = self.paint_batch.take() else {
             return Ok(());
         };
@@ -775,7 +864,6 @@ impl Context<'_> {
                     .count()
                     * 144) as u64,
         )?;
-        let device = &self.gpu.device;
         let index_format = match batch.geometry.capacity().index_format {
             crate::common::indices::Format::U16 => wgpu::IndexFormat::Uint16,
             crate::common::indices::Format::U32 => wgpu::IndexFormat::Uint32,
@@ -807,95 +895,7 @@ impl Context<'_> {
         let indices = &storage.indices;
         let mut groups = Vec::with_capacity(group_count);
         for (index, entry) in materials() {
-            let PaintState {
-                image,
-                texture_format,
-                yuv,
-                repeat,
-                quality,
-                appearance,
-                ..
-            } = &entry.state;
-            #[cfg(test)]
-            {
-                self.gpu
-                    .upload_creations
-                    .brush_groups
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            let appearance_buffer = appearance.as_ref().map(|values| {
-                #[cfg(test)]
-                self.gpu
-                    .upload_creations
-                    .appearance_buffers
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("brush appearance"),
-                    contents: bytemuck::cast_slice(values),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                })
-            });
-            let samplers = if *quality == ImageQuality::Low {
-                &self.pipelines.nearest_samplers
-            } else {
-                &self.pipelines.samplers
-            };
-            let sampler = &samplers[usize::from(repeat[0]) + 2 * usize::from(repeat[1])];
-            let appearance = appearance_buffer
-                .as_ref()
-                .unwrap_or_else(|| match texture_format {
-                    Some(reel_core::texture::TextureFormat::Bc1Rgb) => {
-                        &self.pipelines.block_appearance[0]
-                    }
-                    Some(reel_core::texture::TextureFormat::Bc3Rgba) => {
-                        &self.pipelines.block_appearance[1]
-                    }
-                    _ => &self.pipelines.plain_appearance,
-                });
-            let base = [
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(image),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: appearance.as_entire_binding(),
-                },
-            ];
-            let group = if let Some(yuv) = yuv {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("video brush"),
-                    layout: &self.pipelines.yuv_layout,
-                    entries: &[
-                        base[0].clone(),
-                        base[1].clone(),
-                        base[2].clone(),
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(&yuv.chroma[0]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::TextureView(&yuv.chroma[1]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: yuv.color.as_entire_binding(),
-                        },
-                    ],
-                })
-            } else {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("reel brush"),
-                    layout: &self.pipelines.paint_layout,
-                    entries: &base,
-                })
-            };
-            groups.push((index, group));
+            groups.push((index, self.paint_group(&entry.state)));
         }
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("reel ordered draw segment"),
@@ -998,6 +998,33 @@ impl Context<'_> {
     }
 }
 
+fn image_appearance(
+    image: &resources::Image,
+    appearance: Option<ImageAppearance>,
+    quality: ImageQuality,
+) -> Option<super::gradient::Uniform> {
+    appearance.map(|appearance| {
+        let mut uniform = appearance_uniform(appearance);
+        uniform[8] = [
+            image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
+            image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
+            match image.texture_format {
+                Some(reel_core::texture::TextureFormat::Bc1Rgb) => 1.,
+                Some(reel_core::texture::TextureFormat::Bc3Rgba) => 2.,
+                _ => 0.,
+            },
+            f32::from(quality == ImageQuality::Low),
+        ];
+        if uniform[4][3] == 3.
+            && image.yuv.is_none()
+            && image.encoding == reel_ui::resources::ColorEncoding::Linear
+        {
+            uniform[4][3] = 4.;
+        }
+        uniform
+    })
+}
+
 use crate::common::appearance::appearance_uniform;
 
 #[cfg(test)]
@@ -1047,3 +1074,7 @@ mod tests {
         }
     }
 }
+
+#[path = "draw_instances.rs"]
+mod instances;
+pub(super) use instances::InstanceBatch;

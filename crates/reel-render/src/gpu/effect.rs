@@ -135,7 +135,14 @@ impl Cache {
                 quality,
                 &layout,
                 source,
-                (padded, if padded { "vertex_padded" } else { "vertex" }),
+                (
+                    if padded {
+                        pipeline::VertexInput::Mesh
+                    } else {
+                        pipeline::VertexInput::None
+                    },
+                    if padded { "vertex_padded" } else { "vertex" },
+                ),
                 pipeline::FragmentOutput {
                     entry: "fragment",
                     blend: terminal.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),

@@ -115,6 +115,8 @@ pub struct Renderer {
     targets: super::target_cache::TargetCache,
     coverage_targets: super::target_cache::TargetCache,
     geometry: super::geometry::Cache,
+    #[cfg(test)]
+    sprite_instances_enabled: bool,
     retained: super::retained::Cache,
     pub(super) effect_results: crate::common::effect_result::Cache<super::retained::Output>,
     pub(super) effect_uniforms: super::effect_uniform::Cache,
@@ -148,6 +150,8 @@ impl Renderer {
             targets: Default::default(),
             coverage_targets: Default::default(),
             geometry: Default::default(),
+            #[cfg(test)]
+            sprite_instances_enabled: true,
             retained: Default::default(),
             effect_results: Default::default(),
             effect_uniforms: Default::default(),
@@ -730,6 +734,9 @@ impl Renderer {
                 scissor: super::targets::Scissor::full(size),
                 mesh_clip: None,
                 paint_batch: None,
+                instance_batch: None,
+                #[cfg(test)]
+                sprite_instances_enabled: self.sprite_instances_enabled,
                 geometry_policy,
                 geometry_cache: &self.geometry,
                 geometry: Vec::new(),

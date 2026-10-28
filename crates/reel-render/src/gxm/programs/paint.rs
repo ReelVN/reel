@@ -81,7 +81,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 40],
+    entries: [OnceCell<Box<Entry>>; 80],
     budget: BudgetPool,
 }
 impl PaintPrograms {
@@ -96,8 +96,10 @@ impl PaintPrograms {
         device: &super::super::ownership::Device,
         kind: Kind,
         clipped: bool,
+        instanced: bool,
     ) -> Result<&Shader, GpuError> {
-        let slot = &self.entries[kind.index() * 2 + usize::from(clipped)];
+        let slot =
+            &self.entries[kind.index() * 4 + usize::from(clipped) * 2 + usize::from(instanced)];
         if slot.get().is_none() {
             let storage = device.ticket(
                 self.budget
@@ -106,13 +108,18 @@ impl PaintPrograms {
             );
             let program = create_program_with_vertex(
                 device,
-                if matches!(kind, Kind::Bounded(_)) {
+                if instanced && matches!(kind, Kind::Bounded(_)) {
+                    shader_code!("vertex_instances_bounded")
+                } else if instanced {
+                    shader_code!("vertex_instances")
+                } else if matches!(kind, Kind::Bounded(_)) {
                     shader_code!("vertex_bounded")
                 } else {
                     shader_code!("vertex")
                 },
                 kind.code(clipped),
                 clipped,
+                instanced,
             )?;
             let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
             let entry = Box::new(Entry {

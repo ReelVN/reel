@@ -101,16 +101,17 @@ fn create_program(
     vertex: native::ShaderCode<'_>,
     fragment: native::ShaderCode<'_>,
     bindings: &[native::AttributeBinding<'_>],
-    attributes: &[native::VertexAttribute],
+    layout: native::VertexLayout<'_>,
+    instance: Option<native::VertexLayout<'_>>,
     clipped: bool,
 ) -> Result<native::Program, native::Error> {
     context.create_program(native::ProgramDescriptor {
         vertex,
         fragment,
         bindings,
-        stride: 12,
-        attributes,
-        instance: None,
+        stride: layout.stride,
+        attributes: layout.attributes,
+        instance,
         clip_uniform: clipped.then_some("reel_clip_rect"),
         output: native::FragmentOutput::Patched,
     })

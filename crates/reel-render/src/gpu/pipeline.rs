@@ -227,6 +227,7 @@ pub(super) struct CompositeInputs<'a> {
     pub backdrop: &'a wgpu::TextureView,
 }
 pub struct Pipelines {
+    instances: Mutex<[Option<Arc<wgpu::RenderPipeline>>; 18]>,
     pub paint: wgpu::RenderPipeline,
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
@@ -563,6 +564,7 @@ impl Pipelines {
             })
         });
         Self {
+            instances: Default::default(),
             paint,
             coverage,
             #[cfg(test)]
@@ -750,11 +752,24 @@ pub(super) fn pipeline_entry(
         quality,
         layout,
         code,
-        (mesh, "vertex"),
+        (
+            if mesh {
+                VertexInput::Mesh
+            } else {
+                VertexInput::None
+            },
+            "vertex",
+        ),
         fragment,
         #[cfg(test)]
         counts,
     )
+}
+
+pub(super) enum VertexInput {
+    None,
+    Mesh,
+    Instances,
 }
 
 pub(super) fn pipeline_vertex(
@@ -762,7 +777,7 @@ pub(super) fn pipeline_vertex(
     quality: Quality,
     layout: &wgpu::BindGroupLayout,
     code: &str,
-    vertex: (bool, &str),
+    vertex: (VertexInput, &str),
     fragment: FragmentOutput<'_>,
     #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
@@ -801,6 +816,20 @@ pub(super) fn pipeline_vertex(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &attributes,
     })];
+    let base_attributes = instance_attributes(crate::common::quad_instances::VERTEX_ATTRIBUTES);
+    let per_instance = instance_attributes(crate::common::quad_instances::INSTANCE_ATTRIBUTES);
+    let instance_buffers = [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: size_of::<crate::common::quad_instances::QuadVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &base_attributes,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: size_of::<crate::common::quad_instances::Instance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &per_instance,
+        }),
+    ];
     #[cfg(test)]
     if let Some(counts) = counts {
         counts
@@ -814,7 +843,11 @@ pub(super) fn pipeline_vertex(
             module: &shader,
             entry_point: Some(vertex.1),
             compilation_options: Default::default(),
-            buffers: if vertex.0 { &buffers } else { &[] },
+            buffers: match vertex.0 {
+                VertexInput::None => &[],
+                VertexInput::Mesh => &buffers,
+                VertexInput::Instances => &instance_buffers,
+            },
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -836,6 +869,22 @@ pub(super) fn pipeline_vertex(
         cache: None,
     })
 }
+fn instance_attributes<const N: usize>(
+    attrs: [crate::common::quad_instances::Attribute; N],
+) -> [wgpu::VertexAttribute; N] {
+    attrs.map(|attr| wgpu::VertexAttribute {
+        shader_location: attr.location,
+        offset: attr.offset,
+        format: match attr.components {
+            1 => wgpu::VertexFormat::Float32,
+            2 => wgpu::VertexFormat::Float32x2,
+            4 => wgpu::VertexFormat::Float32x4,
+            _ => unreachable!(),
+        },
+    })
+}
+#[path = "pipeline_instances.rs"]
+mod instances;
 
 pub(super) fn operation_words(operation: CompositeOperation) -> (u32, f32, f32) {
     match operation {

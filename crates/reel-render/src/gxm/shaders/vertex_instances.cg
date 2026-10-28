@@ -1,0 +1,18 @@
+// Select CPU-projected corners without recalculating author transforms.
+#ifdef REEL_BOUNDED
+#define REEL_COLOR_SEMANTIC TEXCOORD1_HALF
+#else
+#define REEL_COLOR_SEMANTIC TEXCOORD1
+#endif
+void main(float a_corner : POSITION, float2 a_uv : TEXCOORD0,
+          float4 a_color : TEXCOORD1, float4 a_window : TEXCOORD2,
+          float4 a_positions01 : TEXCOORD3, float4 a_positions23 : TEXCOORD4,
+          out float4 position : POSITION, out float2 v_uv : TEXCOORD0,
+          out float4 v_color : REEL_COLOR_SEMANTIC, out float4 v_window : TEXCOORD2) {
+    float2 selected;
+    if(a_corner==0.0) selected=a_positions01.xy;
+    else if(a_corner==1.0) selected=a_positions01.zw;
+    else if(a_corner==2.0) selected=a_positions23.xy;
+    else selected=a_positions23.zw;
+    position=float4(selected,0.0,1.0);v_uv=a_uv;v_color=a_color;v_window=a_window;
+}
