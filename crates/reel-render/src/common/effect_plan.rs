@@ -399,14 +399,14 @@ pub(crate) fn projected_source(
     context[7] = [1., 0., 0., 0.];
     context[8] = [0., 1., 0., 0.];
     map_storage(&mut context, logical, storage);
-    let mut vertices = implicit_mesh::vertices(&context).ok_or(GpuError::InvalidSize)?;
-    for vertex in &mut vertices {
+    let mut geometry = implicit_mesh::geometry(&context).ok_or(GpuError::InvalidSize)?;
+    for vertex in geometry.vertices_mut() {
         vertex.position = [
             (vertex.position[0] + 1.) * 0.5 * logical[0] as f32,
             (1. - vertex.position[1]) * 0.5 * logical[1] as f32,
         ];
     }
-    mesh.triangles(&vertices)
+    mesh.indexed_triangles(geometry.vertices(), geometry.indices().iter().copied())
 }
 
 /// Common fixed image metadata: content scale/encoding/format plus texel centers.
@@ -475,7 +475,7 @@ mod tests {
                     1 << 20,
                 ));
                 projected_source(&mut mesh, logical, storage).unwrap();
-                assert_eq!(mesh.vertices.len(), if storage == logical { 4 } else { 54 });
+                assert_eq!(mesh.vertices.len(), if storage == logical { 4 } else { 16 });
                 let mut area = 0.;
                 for triangle in mesh.indices.as_chunks::<3>().0 {
                     let [a, b, c] = triangle.map(|index| mesh.vertices[index as usize].position);
