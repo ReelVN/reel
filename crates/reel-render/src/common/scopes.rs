@@ -1,6 +1,8 @@
 mod cache;
+mod cull;
 use super::GpuError;
 pub(crate) use cache::{Cache, Cached, Proof};
+pub(crate) use cull::invisible_group;
 use reel_ui::frame::{FrameCommand, FrameDraw, FrameGroup, FrameOp, RecordLocation};
 use std::ops::Range;
 

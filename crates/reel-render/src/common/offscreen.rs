@@ -344,6 +344,19 @@ impl Plan {
         let mut run_start = 0;
         let mut next = 0;
         while let Some(command) = commands.get(next) {
+            if let FrameOp::PushGroup(group) = &command.op
+                && let Some(consumed) = super::scopes::invisible_group(
+                    group,
+                    &commands[next + 1..],
+                    transform,
+                    size,
+                    scissor,
+                    false,
+                )
+            {
+                next += consumed + 1;
+                continue;
+            }
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => {
                     next += 1;

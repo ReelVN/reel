@@ -606,6 +606,18 @@ impl Context<'_> {
                     )?;
                 }
                 FrameOp::PushGroup(group) => {
+                    if let Some(consumed) = crate::common::scopes::invisible_group(
+                        group,
+                        &current.commands[current.next..],
+                        transform,
+                        self.size,
+                        self.scissor,
+                        current.transitions_enabled && !current.drawing.transitions().is_empty()
+                            || self.capture && !current.drawing.capture_exclusions().is_empty(),
+                    ) {
+                        current.next += consumed;
+                        continue;
+                    }
                     if let Some(fill) = crate::common::scopes::inline_group_fill(
                         group,
                         &current.commands[current.next..],

@@ -97,6 +97,8 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
     };
     for transform in [
         Affine::IDENTITY,
+        Affine::translate((2000., 0.)),
+        Affine::translate((-2000., 0.)) * Affine::rotate(0.2),
         Affine::translate((13.2, -7.6))
             * Affine::scale_non_uniform(0.83, 0.29)
             * Affine::rotate(2.1),
@@ -155,7 +157,11 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                         |_| Ok(()),
                     )
                     .unwrap();
-                    let expected = if transform == Affine::IDENTITY {
+                    let expected = if transform.as_coeffs()[4].abs() == 2000. {
+                        // The complete eight-level effect chain is outside the
+                        // output. Source targets disappear from admission too.
+                        160 * 120
+                    } else if transform == Affine::IDENTITY {
                         160 * 120
                             * if opacity == 1. {
                                 if depth == 1 { 2 } else { 3 }
@@ -406,6 +412,10 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
 }
 
 fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
+    sibling_frame_with_hidden(barrier, excluded, false)
+}
+
+fn sibling_frame_with_hidden(barrier: bool, excluded: bool, hidden: bool) -> RenderFrame {
     let mut scene = Scene::new();
     let draw = |scene: &mut Scene, left| {
         scene.draw(Draw::Fill {
@@ -429,8 +439,9 @@ fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
             },
             ..Default::default()
         });
-        draw(&mut scene, 20. + index as f64 * 60.);
-        draw(&mut scene, 60. + index as f64 * 60.);
+        let offset = if hidden && index % 2 == 1 { 2000. } else { 0. };
+        draw(&mut scene, 20. + index as f64 * 60. + offset);
+        draw(&mut scene, 60. + index as f64 * 60. + offset);
         scene.pop_group();
         scene.pop_group();
     }
@@ -452,6 +463,44 @@ fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
     .unwrap();
     while !build.step(r01_fixture::step_budget()).unwrap().complete {}
     build.finish().unwrap()
+}
+
+#[test]
+fn invisible_siblings_leave_a_balanced_visible_atlas_and_no_target_demand() {
+    let frame = sibling_frame_with_hidden(false, false, true);
+    let (schedule, pixels, _) = offscreen::Plan::choose(
+        &frame,
+        None,
+        [960, 544],
+        false,
+        1,
+        4096,
+        &crate::common::glyph_plan::Plan::default(),
+        u64::MAX,
+        &|size| Ok(u64::from(size[0]) * u64::from(size[1])),
+        MaskExecution::Inline,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let entries: Vec<_> = (0..frame.commands().len())
+        .filter_map(|i| schedule.entry(i))
+        .collect();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries.iter().filter(|entry| entry.first).count(), 1);
+    assert_eq!(entries.iter().filter(|entry| entry.last).count(), 1);
+    assert!(entries.iter().all(|entry| entry.shared));
+    assert!(entries.windows(2).all(|pair| pair[0].push < pair[1].push));
+    let size = entries[0].view.storage_size;
+    assert_eq!(pixels, 960 * 544 + u64::from(size[0]) * u64::from(size[1]));
+    assert_eq!(
+        schedule
+            .requirements()
+            .iter()
+            .map(|(_, count)| count)
+            .sum::<u64>(),
+        2
+    );
 }
 
 #[test]

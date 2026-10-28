@@ -18,7 +18,7 @@ use reel_ui::{
 
 #[test]
 #[ignore = "actual adapter submission and accounting; no capture or pixel readback"]
-fn terminal_effect_native_submission_keeps_two_targets_and_both_quality_formats() {
+fn terminal_effect_submission_preserves_visible_sources_and_culls_invisible_outputs() {
     let pool = r01_fixture::pool();
     let program = EffectProgram::new(
         vec![],
@@ -64,74 +64,79 @@ fn terminal_effect_native_submission_keeps_two_targets_and_both_quality_formats(
             .unwrap(),
         )
         .unwrap();
-    let bounds = Rect::new(0., 0., 160., 120.);
-    let mut scene = Scene::new();
-    scene.draw(Draw::Fill {
-        transform: Affine::IDENTITY,
-        fill_rule: Default::default(),
-        brush: Brush::Solid(Color::WHITE),
-        brush_transform: None,
-        shape: Geometry::Rect(bounds),
-        composite: Default::default(),
-    });
-    let mut widget = r01_fixture::RecordWidget::new(scene);
-    widget.clip = false;
-    widget.opacity = 0.37;
-    widget.effect = Some(PaintEffect {
-        instance: EffectInstance::new([4; 32], program, vec![]).unwrap(),
-        shader: registry.acquire(handle).unwrap(),
-        images: vec![],
-        bounds,
-        coverage_invert: false,
-    });
-    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
-    let mut build = FrameBuild::new(
-        bridge.record(FrameId(1)).unwrap(),
-        registry.freeze(&[handle], &pool).unwrap(),
-        FrameInfo {
-            logical_size: [160., 120.],
-            physical_size: [160, 120],
-        },
-        r01_fixture::limits(),
-        &pool,
-    )
-    .unwrap();
-    while !build.step(r01_fixture::step_budget()).unwrap().complete {}
-    let frame = build.finish().unwrap();
-    for (format, stride) in [
-        (wgpu::TextureFormat::Rgba16Float, 8),
-        (wgpu::TextureFormat::Rgba8Unorm, 4),
-    ] {
-        let bytes = 2 * 160 * 120 * stride;
-        let gpu = pollster::block_on(Gpu::request(
-            &wgpu::Instance::default(),
-            None,
-            DeviceGeneration(1),
-            GpuLimits {
-                target_bytes: bytes,
-                ..Default::default()
+    for transform in [Affine::IDENTITY, Affine::translate((2000., 0.))] {
+        let bounds = Rect::new(0., 0., 160., 120.);
+        let mut scene = Scene::new();
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(Color::WHITE),
+            brush_transform: None,
+            shape: Geometry::Rect(bounds),
+            composite: Default::default(),
+        });
+        let mut widget = r01_fixture::RecordWidget::new(scene);
+        widget.clip = false;
+        widget.opacity = 0.37;
+        widget.effect = Some(PaintEffect {
+            instance: EffectInstance::new([4; 32], program.clone(), vec![]).unwrap(),
+            shader: registry.acquire(handle).unwrap(),
+            images: vec![],
+            bounds,
+            coverage_invert: false,
+        });
+        let mut bridge = r01_fixture::widget_bridge(widget, transform);
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(1)).unwrap(),
+            registry.freeze(&[handle], &pool).unwrap(),
+            FrameInfo {
+                logical_size: [160., 120.],
+                physical_size: [160, 120],
             },
-        ))
+            r01_fixture::limits(),
+            &pool,
+        )
         .unwrap();
-        eprintln!(
-            "terminal adapter={:?} f16={}",
-            gpu.adapter.get_info(),
-            gpu.device.features().contains(wgpu::Features::SHADER_F16)
-        );
-        let mut renderer = Renderer::new(gpu);
-        renderer.prepare_pipelines().unwrap();
-        let prepared = renderer.prepare(&frame).unwrap();
-        assert_eq!(prepared.quality().format, format);
-        assert_eq!(prepared.quality().samples, 1);
-        assert_eq!(renderer.usage().targets, bytes);
-        let submission = renderer.submit(prepared).unwrap();
-        renderer
-            .gpu()
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
+        while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+        let frame = build.finish().unwrap();
+        for (format, stride) in [
+            (wgpu::TextureFormat::Rgba16Float, 8),
+            (wgpu::TextureFormat::Rgba8Unorm, 4),
+        ] {
+            let targets = if transform == Affine::IDENTITY { 2 } else { 1 };
+            let bytes = targets * 160 * 120 * stride;
+            let gpu = pollster::block_on(Gpu::request(
+                &wgpu::Instance::default(),
+                None,
+                DeviceGeneration(1),
+                GpuLimits {
+                    target_bytes: bytes,
+                    ..Default::default()
+                },
+            ))
             .unwrap();
-        assert!(renderer.poll().unwrap().contains(&submission));
-        eprintln!("terminal format={format:?} target_bytes={bytes} completed={submission}");
+            eprintln!(
+                "terminal adapter={:?} f16={}",
+                gpu.adapter.get_info(),
+                gpu.device.features().contains(wgpu::Features::SHADER_F16)
+            );
+            let mut renderer = Renderer::new(gpu);
+            renderer.prepare_pipelines().unwrap();
+            let prepared = renderer.prepare(&frame).unwrap();
+            assert_eq!(prepared.quality().format, format);
+            assert_eq!(prepared.quality().samples, 1);
+            assert_eq!(renderer.usage().targets, bytes);
+            let submission = renderer.submit(prepared).unwrap();
+            renderer
+                .gpu()
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            assert!(renderer.poll().unwrap().contains(&submission));
+            eprintln!(
+                "terminal transform={transform:?} format={format:?} target_bytes={bytes} completed={submission}"
+            );
+        }
     }
 }
 
