@@ -9,7 +9,7 @@ use std::sync::{
 /// An asset name, encoded data or immutable decoded resource. Clones share the input.
 #[derive(Clone, Debug)]
 pub struct ImageSource {
-    key: String,
+    key: Arc<str>,
     encoded: Option<Arc<[u8]>>,
     resource: Option<crate::resources::ResourceLease>,
 }
@@ -17,7 +17,7 @@ impl ImageSource {
     /// No picture has been supplied yet. This never requests an asset.
     pub fn empty() -> Self {
         Self {
-            key: String::new(),
+            key: Arc::from(""),
             encoded: None,
             resource: None,
         }
@@ -28,7 +28,7 @@ impl ImageSource {
     pub fn encoded(bytes: impl Into<Arc<[u8]>>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Self {
-            key: format!("memory:image/{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+            key: format!("memory:image/{}", NEXT.fetch_add(1, Ordering::Relaxed)).into(),
             encoded: Some(bytes.into()),
             resource: None,
         }
@@ -41,7 +41,8 @@ impl ImageSource {
             key: format!(
                 "memory:resource/{}/{}/{}",
                 handle.registry, handle.slot, handle.generation
-            ),
+            )
+            .into(),
             encoded: None,
             resource: Some(lease),
         }
@@ -64,7 +65,7 @@ impl PartialEq for ImageSource {
 impl From<String> for ImageSource {
     fn from(key: String) -> Self {
         Self {
-            key,
+            key: key.into(),
             encoded: None,
             resource: None,
         }
@@ -72,6 +73,31 @@ impl From<String> for ImageSource {
 }
 impl From<&str> for ImageSource {
     fn from(key: &str) -> Self {
-        key.to_owned().into()
+        Self {
+            key: key.into(),
+            encoded: None,
+            resource: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_clones_share_asset_names_and_encoded_identity() {
+        for source in [
+            ImageSource::from("assets/background.png"),
+            ImageSource::from(String::from("assets/foreground.png")),
+            ImageSource::encoded(Arc::<[u8]>::from([1, 2, 3])),
+        ] {
+            let cloned = source.clone();
+            assert!(Arc::ptr_eq(&source.key, &cloned.key));
+            assert_eq!(source, cloned);
+            if let Some(bytes) = source.bytes() {
+                assert!(Arc::ptr_eq(bytes, cloned.bytes().unwrap()));
+            }
+        }
     }
 }
