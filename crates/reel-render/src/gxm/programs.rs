@@ -149,6 +149,24 @@ fn create_program_with_vertex(
     clipped: bool,
     instanced: bool,
 ) -> Result<Program, GpuError> {
+    create_program_with_output(
+        context,
+        vertex,
+        fragment,
+        clipped,
+        instanced,
+        native::FragmentOutput::Patched,
+    )
+}
+
+fn create_program_with_output(
+    context: &super::ownership::Device,
+    vertex: ShaderCode<'_>,
+    fragment: ShaderCode<'_>,
+    clipped: bool,
+    instanced: bool,
+    output: native::FragmentOutput,
+) -> Result<Program, GpuError> {
     let vertex_attributes = super::geometry::vertex_attributes();
     let instance_attributes = super::geometry::instance_attributes();
     let regular_attributes = attributes();
@@ -195,6 +213,7 @@ fn create_program_with_vertex(
             attributes: &instance_attributes,
         }),
         clipped,
+        output,
     )?;
     Ok(program)
 }
@@ -203,6 +222,8 @@ pub(super) struct Programs {
     pub composite: Shader,
     pub extended_blend: Shader,
     overwrite: [std::cell::OnceCell<Shader>; 2],
+    #[cfg(feature = "gxm-tile-destination")]
+    tile: [std::cell::OnceCell<Shader>; 2],
     pub source_over: Shader,
     pub alpha_mask: Shader,
     pub mask_8: Shader,
@@ -247,6 +268,8 @@ impl Programs {
         });
         Ok(Self {
             overwrite: std::array::from_fn(|_| std::cell::OnceCell::new()),
+            #[cfg(feature = "gxm-tile-destination")]
+            tile: std::array::from_fn(|_| std::cell::OnceCell::new()),
             paint: paint::PaintPrograms::new(budget),
             composite: Shader::with_vertex(
                 context,
@@ -322,6 +345,35 @@ impl Programs {
             _storage: storage,
         })
     }
+    #[cfg(feature = "gxm-tile-destination")]
+    pub fn tile(
+        &self,
+        context: &super::ownership::Device,
+        extended: bool,
+    ) -> Result<&Shader, GpuError> {
+        let slot = &self.tile[usize::from(extended)];
+        if slot.get().is_none() {
+            let program = create_program_with_output(
+                context,
+                shader_code!("composite_vertex"),
+                if extended {
+                    shader_code!("tile_extended_blend")
+                } else {
+                    shader_code!("tile_composite")
+                },
+                true,
+                false,
+                native::FragmentOutput::Declared,
+            )?;
+            let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
+            assert!(
+                slot.set(Shader { program, uniforms }).is_ok(),
+                "single-threaded program creation"
+            );
+        }
+        Ok(slot.get().unwrap())
+    }
+
     pub fn overwrite(
         &self,
         context: &super::ownership::Device,

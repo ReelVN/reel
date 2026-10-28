@@ -35,6 +35,11 @@ pub fn sources() -> Vec<Shader> {
         ("composite", ""),
         ("source_over", "REEL_SOURCE_OVER_ONLY"),
         ("alpha_mask", "REEL_ALPHA_MASK_ONLY"),
+        ("tile_composite", "REEL_TILE_DESTINATION"),
+        (
+            "tile_extended_blend",
+            "REEL_TILE_DESTINATION\n#define REEL_EXTENDED_BLEND",
+        ),
         ("extended_blend", "REEL_EXTENDED_BLEND"),
         ("composite_overwrite", "REEL_FULL_OVERWRITE"),
         (

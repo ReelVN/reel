@@ -1,5 +1,7 @@
 //! Temporary device experiment; delegates drawing to production Reel/native code.
 #![allow(dead_code)]
+#[path = "blend_color.rs"]
+mod blend_color;
 #[path = "../../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
 #[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
@@ -480,11 +482,11 @@ fn run() -> Result {
     }
     if !matches!(
         selected.as_str(),
-        "authored" | "all" | "render" | "matrix" | "media" | "video_color"
+        "authored" | "all" | "render" | "matrix" | "media" | "video_color" | "blend_color"
     ) && !CASES.contains(&selected.as_str())
     {
         return Err(format!(
-            "unknown case {selected}; available: authored,all,render,matrix,media,video_color,{}",
+            "unknown case {selected}; available: authored,all,render,matrix,media,video_color,blend_color,{}",
             CASES.join(",")
         )
         .into());
@@ -493,7 +495,7 @@ fn run() -> Result {
         "BEGIN title=REELP0002 case={selected} render_frames={frames} trace={trace} render_vsync={vsync} render_flights={flights} source={} dirty={} no_readback={}",
         env!("REEL_PROBE_REVISION"),
         env!("REEL_PROBE_DIRTY"),
-        selected != "video_color"
+        !matches!(selected.as_str(), "video_color" | "blend_color")
     ));
     // Package sessions use the player's sampler, including VM task locations.
     let _sampler = (selected != "authored")
@@ -506,9 +508,13 @@ fn run() -> Result {
         result?;
     } else {
         reel_player::platform::vita::Runtime::run(|runtime| {
-            if selected == "video_color" {
+            if matches!(selected.as_str(), "video_color" | "blend_color") {
                 marker(&selected, "START");
-                let result = video_color::run(runtime.renderer());
+                let result = if selected == "video_color" {
+                    video_color::run(runtime.renderer())
+                } else {
+                    blend_color::run(runtime.renderer())
+                };
                 marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
                 return result;
             }

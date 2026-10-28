@@ -245,6 +245,7 @@ pub(super) fn prepare(
             &color_cost,
             Some(&coverage_cost),
             crate::common::target_plan::MaskExecution::Sampled,
+            super::super::destination_access(),
             &selection,
             groups,
             |bytes| {

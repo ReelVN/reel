@@ -962,7 +962,11 @@ impl Input<'_> {
                                     }
                                 } else {
                                     let backdrop = scope.group.is_some_and(|group| {
-                                        group.composite.blend != Default::default()
+                                        schedule.destination().backdrop(
+                                            group.composite.blend,
+                                            true,
+                                            false,
+                                        )
                                     });
                                     scratch.local_backdrop |= backdrop;
                                     scratch.composite(
@@ -1029,9 +1033,13 @@ impl Input<'_> {
                             }
                         }
                         let mask = scope.group.and_then(|group| group.mask);
-                        let backdrop = scope
-                            .group
-                            .is_some_and(|group| group.composite.blend != Default::default());
+                        let backdrop = scope.group.is_some_and(|group| {
+                            schedule.destination().backdrop(
+                                group.composite.blend,
+                                !scope.clip && mask.is_none(),
+                                group.image_mask.is_some(),
+                            )
+                        });
                         if scope.clip {
                             let single = coverage_cost.is_some()
                                 && single_clip(scope.group, scope.retained_source.is_some());

@@ -280,6 +280,7 @@ mod tests {
                     &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
                     None,
                     crate::common::target_plan::MaskExecution::Inline,
+                    crate::common::blend::DestinationAccess::Sampled,
                     &selection,
                     proof,
                     |_| {

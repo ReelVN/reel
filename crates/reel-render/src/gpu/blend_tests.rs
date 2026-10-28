@@ -219,7 +219,7 @@ fn separable_shader_formulas_match_both_backends_at_piecewise_and_alpha_boundari
         .split_once("vec4 separable(")
         .unwrap()
         .1
-        .split_once("void main")
+        .split_once("\n}")
         .unwrap()
         .0
         .rsplit_once("return ")

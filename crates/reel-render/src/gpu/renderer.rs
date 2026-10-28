@@ -620,6 +620,7 @@ impl Renderer {
                         coverage_quality
                             .map(|_| &coverage_cost as &dyn Fn([u32; 2]) -> Result<u64, GpuError>),
                         crate::common::target_plan::MaskExecution::Inline,
+                        crate::common::blend::DestinationAccess::Sampled,
                         &selection,
                         groups.clone(),
                         |bytes| {

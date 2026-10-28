@@ -8,6 +8,8 @@ publish = false
 [features]
 default = []
 profiling = ["reel-core/profiling", "vita-native?/profiling"]
+# Opt-in current-pixel blending for device validation on RGBA8 targets.
+gxm-tile-destination = ["gxm"]
 wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:pollster", "dep:half", "dep:guillotiere"]
 gxm = ["dep:vita-native", "vita-native/graphics", "vita-native/video", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
 

@@ -100,6 +100,11 @@ impl Context<'_> {
         };
         let plain = mode == 0. && invert == 0. && blend == 0 && expression.is_none();
         let coverage = mode == 1. && invert == 0. && blend == 0 && expression.is_none();
+        let current_pixel = self.offscreen.destination().current_pixel_code(
+            blend,
+            matches!(operation, CompositeOperation::SourceOver),
+            expression.is_some(),
+        );
         let replacing = matches!(
             operation,
             CompositeOperation::Transition(_) | CompositeOperation::MaskedTransition(_)
@@ -108,7 +113,7 @@ impl Context<'_> {
             self.size,
             target.view.size(),
             self.scissor,
-            replacing,
+            replacing && !current_pixel,
         );
         let _kind = reel_core::profile::Scope::new(if plain {
             reel_core::profile::Phase::SourceComposite
@@ -128,11 +133,17 @@ impl Context<'_> {
         } else {
             &self.programs.composite
         };
+        #[cfg(feature = "gxm-tile-destination")]
+        let shader = if current_pixel {
+            self.programs.tile(self.gpu, blend > 4)?
+        } else {
+            shader
+        };
         self.ensure_sampled(&source.view)?;
-        if !plain {
+        if !plain && !current_pixel {
             self.ensure_sampled(&mask.view)?;
         }
-        if blend != 0 {
+        if blend != 0 && !current_pixel {
             self.ensure_sampled(&backdrop.view)?;
         }
         if let Some(expression) = expression {
@@ -178,7 +189,7 @@ impl Context<'_> {
                     &mask.view,
                     &backdrop.view,
                     &expression.unwrap_or(source).view,
-                ][..if plain {
+                ][..if plain || current_pixel {
                     1
                 } else if coverage {
                     2
@@ -207,6 +218,27 @@ impl Context<'_> {
         self.flush_draws()?;
         if self.scissor.empty() {
             return Ok(());
+        }
+        if self
+            .offscreen
+            .destination()
+            .current_pixel(composite.blend, true, false)
+        {
+            return self.composition(
+                target,
+                Composition {
+                    source,
+                    mask: source,
+                    backdrop: source,
+                    backdrop_origin: [0; 2],
+                    alpha: composite.alpha,
+                    invert,
+                    operation: CompositeOperation::SourceOver,
+                    blend: blend_code(composite.blend).expect("validated group blend"),
+                    expression: None,
+                    source_origin: view.origin(),
+                },
+            );
         }
         // Allocation capacity follows the common plan; the copy keeps the source
         // grid and initializes only the pixels sampled by the final blend.
@@ -287,7 +319,11 @@ impl Context<'_> {
         } else {
             None
         };
-        let backdrop = if blend != 0 {
+        let backdrop = if self.offscreen.destination().backdrop(
+            composite.blend,
+            matches!(operation, CompositeOperation::SourceOver),
+            image_mask.is_some(),
+        ) {
             let backdrop = self.target()?;
             if !self.copy_backdrop(&backdrop, target, self.scissor, self.scissor)? {
                 self.combine(

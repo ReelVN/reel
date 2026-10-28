@@ -9,6 +9,14 @@ pub use renderer::{Backend as GxmBackend, Capture as GxmCapture};
 type MemoryUsage = native::MemoryUsage;
 mod limits;
 
+fn destination_access() -> crate::common::blend::DestinationAccess {
+    if cfg!(feature = "gxm-tile-destination") {
+        crate::common::blend::DestinationAccess::CurrentPixelUnorm8
+    } else {
+        crate::common::blend::DestinationAccess::Sampled
+    }
+}
+
 /// Native presentation and work concurrency.
 #[derive(Clone, Debug)]
 pub struct GxmOptions {
@@ -56,6 +64,10 @@ pub fn create_context(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one native pipeline and its reflected vertex interface"
+)]
 fn create_program(
     context: &native::Context,
     vertex: native::ShaderCode<'_>,
@@ -64,6 +76,7 @@ fn create_program(
     layout: native::VertexLayout<'_>,
     instance: Option<native::VertexLayout<'_>>,
     clipped: bool,
+    output: native::FragmentOutput,
 ) -> Result<native::Program, native::Error> {
     context.create_program(native::ProgramDescriptor {
         vertex,
@@ -73,7 +86,7 @@ fn create_program(
         attributes: layout.attributes,
         instance,
         clip_uniform: clipped.then_some("reel_clip_rect"),
-        output: native::FragmentOutput::Patched,
+        output,
     })
 }
 

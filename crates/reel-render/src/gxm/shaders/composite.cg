@@ -1,7 +1,9 @@
 // Native GXM counterpart of the shared renderer algorithm.
 // Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
 varying float4 fragment_position : WPOS;
+#ifndef REEL_TILE_DESTINATION
 varying out float4 reel_output : COLOR;
+#endif
 uniform float4 reel_clip_rect;
 void reel_clip(){
 #ifndef REEL_FULL_OVERWRITE
@@ -54,6 +56,32 @@ float4 separable(float4 s,float4 d){
  return float4(s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a) + s.a * d.a * blended, s.a + d.a * (1.0 - s.a));
 }
 #endif
+float4 blend_color(float4 s,float4 d){
+#ifdef REEL_EXTENDED_BLEND
+ return separable(s,d);
+#else
+ float alpha=s.a+d.a*(1.0-s.a);
+ if(u_blend==1.0)return min(s+d,1.0);
+ else if(u_blend==4.0)return float4(max(d.rgb-s.rgb,float3(0.0)),d.a);
+ else if(u_blend==2.0)return float4(s.rgb*d.rgb+s.rgb*(1.0-d.a)+d.rgb*(1.0-s.a),alpha);
+ else return float4(s.rgb+d.rgb-s.rgb*d.rgb,alpha);
+#endif
+}
+#ifdef REEL_TILE_DESTINATION
+// The source has already passed through its RGBA8 isolation boundary. Preserve
+// the existing half output boundary before the explicit saturated UCHAR4 pack.
+// This prototype remains opt-in until compared with the native patcher output.
+__nativecolor __regformat unsigned char4 main(
+ __regformat unsigned char4 destination : FRAGCOLOR) : COLOR0 {
+ reel_clip();
+ float4 s=sample_source();
+ if(u_invert!=0.0&&s.a>0.0){float3 encoded=encode(clamp(s.rgb/s.a,0.0,1.0));s.rgb=linear(lerp(encoded,1.0-encoded,u_invert))*s.a;}
+ s*=u_params.x;
+ float4 d=float4(destination)*(1.0/255.0);
+ half4 result=half4(blend_color(s,d));
+ return (unsigned char4)(saturate(result)*255.0);
+}
+#else
 void main(){
  reel_clip();
  float4 s=sample_source(),m=tex2D(u_mask,v_mask_uv);
@@ -62,15 +90,10 @@ void main(){
  if(u_params.y==3.0)s=lerp(s,m,u_params.z);
  else if(u_params.y==4.0)s=u_params.z<=0.0?s:(u_params.z>=1.0?m:lerp(s,m,clamp(expression,0.0,1.0)));
  else {float coverage=1.0;if(u_params.y==1.0)coverage=clamp(m.a,0.0,1.0);if(u_params.y==2.0)coverage=clamp(dot(m.rgb,float3(0.2126,0.7152,0.0722)),0.0,1.0);s*=coverage*u_params.x*expression;}
-#ifdef REEL_EXTENDED_BLEND
- reel_output=separable(s,tex2D(u_backdrop,v_backdrop_uv));
-#else
+#ifndef REEL_EXTENDED_BLEND
  if(u_blend==0.0){reel_output=s;return;}
- float4 d=tex2D(u_backdrop,v_backdrop_uv);float alpha=s.a+d.a*(1.0-s.a);
- if(u_blend==1.0)reel_output=min(s+d,1.0);
- else if(u_blend==4.0)reel_output=float4(max(d.rgb-s.rgb,float3(0.0)),d.a);
- else if(u_blend==2.0)reel_output=float4(s.rgb*d.rgb+s.rgb*(1.0-d.a)+d.rgb*(1.0-s.a),alpha);
- else reel_output=float4(s.rgb+d.rgb-s.rgb*d.rgb,alpha);
 #endif
+ reel_output=blend_color(s,tex2D(u_backdrop,v_backdrop_uv));
 }
+#endif
 #endif

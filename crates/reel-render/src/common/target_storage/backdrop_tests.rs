@@ -87,6 +87,53 @@ fn choose(frame: &RenderFrame) -> (offscreen::Plan, u64) {
     choose_limit(frame, LIMIT)
 }
 
+#[test]
+fn current_pixel_destination_retires_the_backdrop_without_eliding_the_source() {
+    use crate::common::blend::DestinationAccess;
+    let frame = frame_groups(&[[160, 96]], false);
+    let choose_access = |destination| {
+        offscreen::Plan::choose_with_groups(
+            &frame,
+            None,
+            ROOT,
+            false,
+            1,
+            4096,
+            &glyph_plan::Plan::default(),
+            LIMIT,
+            &cost,
+            None,
+            target_plan::MaskExecution::Sampled,
+            destination,
+            &Default::default(),
+            None,
+            |_| Ok(()),
+        )
+        .unwrap()
+    };
+    let (sampled, sampled_bytes, _) = choose_access(DestinationAccess::Sampled);
+    let (current, current_bytes, _) = choose_access(DestinationAccess::CurrentPixelUnorm8);
+    let source = sampled
+        .requirements()
+        .iter()
+        .find(|(size, _)| *size != ROOT)
+        .unwrap()
+        .0;
+    assert_eq!(sampled.requirements().count(ROOT), 1);
+    assert_eq!(current.requirements().count(ROOT), 1);
+    assert_eq!(sampled.requirements().count(source), 2);
+    assert_eq!(current.requirements().count(source), 1);
+    assert_eq!(
+        sampled_bytes,
+        cost(ROOT).unwrap() + 2 * cost(source).unwrap()
+    );
+    assert_eq!(current_bytes, cost(ROOT).unwrap() + cost(source).unwrap());
+    assert!(
+        current.is_empty(),
+        "source group keeps its original painter position"
+    );
+}
+
 fn choose_limit(frame: &RenderFrame, limit: u64) -> (offscreen::Plan, u64) {
     choose_cost(frame, limit, &cost)
 }

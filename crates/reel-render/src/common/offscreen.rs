@@ -38,9 +38,14 @@ pub(crate) struct Plan {
     coverage_requirements: super::target_plan::Requirements,
     coverage_enabled: bool,
     stable_backdrop: bool,
+    destination: super::blend::DestinationAccess,
 }
 
 impl Plan {
+    pub(crate) fn destination(&self) -> super::blend::DestinationAccess {
+        self.destination
+    }
+
     pub(crate) fn groups(
         &self,
         commands: &[reel_ui::frame::FrameCommand],
@@ -129,6 +134,7 @@ impl Plan {
             cost,
             None,
             masks,
+            super::blend::DestinationAccess::Sampled,
             selection,
             None,
             reserve,
@@ -151,6 +157,7 @@ impl Plan {
         cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         coverage_cost: Option<&dyn Fn([u32; 2]) -> Result<u64, GpuError>>,
         masks: super::target_plan::MaskExecution,
+        destination: super::blend::DestinationAccess,
         selection: &super::retained::Plan,
         groups: Option<std::sync::Arc<super::scopes::Cached>>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
@@ -188,6 +195,7 @@ impl Plan {
                 retained.clear();
             }
             plan.coverage_enabled = coverage_cost.is_some();
+            plan.destination = destination.for_samples(samples);
             plan.groups = groups.as_ref().map(|groups| {
                 (
                     frame.commands().as_ptr() as usize,
