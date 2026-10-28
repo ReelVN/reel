@@ -66,6 +66,7 @@ pub struct Backend {
     masks: crate::common::mask::split::Cache,
     targets: target_cache::Cache,
     retained: crate::common::retained::Cache<resources::Target, u8>,
+    effect_results: crate::common::effect_result::Cache<resources::Target>,
     geometry: geometry::Cache,
     info: Option<SurfaceInfo>,
     suspended: bool,
@@ -122,6 +123,7 @@ impl Backend {
             masks: Default::default(),
             targets: Default::default(),
             retained: Default::default(),
+            effect_results: Default::default(),
             geometry: Default::default(),
             info: None,
             suspended: false,
@@ -191,6 +193,8 @@ impl Backend {
         self.glyphs = draw::GlyphCache::default();
         self.check_native()?;
         self.masks = Default::default();
+        self.effect_results.clear();
+        self.check_native()?;
         self.targets.clear();
         self.check_native()?;
         self.retained.clear();
@@ -244,6 +248,7 @@ impl Backend {
         if (fallback || matches!(result, Err(GpuError::Pressure { .. }))) && !self.drain_failed {
             let cause = result.err().unwrap();
             let resident = self._group.usage().bytes;
+            self.effect_results.clear();
             self.targets.release_idle();
             self.check_native()?;
             self.geometry.clear();
@@ -494,6 +499,7 @@ impl Backend {
                 targets,
                 geometry: &mut self.geometry,
                 retained: &self.retained,
+                effect_results: &self.effect_results,
             },
             images,
             frame,
@@ -551,6 +557,11 @@ impl Backend {
                 self.failed_prepared.push(prepared);
             }
             return Err(error.into());
+        }
+        self.effect_results.submitted();
+        for pending in prepared.take_effect_pending() {
+            self.effect_results
+                .publish(pending, &self.budgets.transient);
         }
         self.flights.push_back(Flight {
             fence: fence.clone(),
@@ -637,6 +648,7 @@ impl RenderBackend for Backend {
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), GpuError> {
         self.check_native()?;
         self.retained.clear();
+        self.effect_results.clear();
         self.check_native()?;
         if info.physical_size != self.output_size()
             || info.surface_epoch.0 == 0
@@ -757,6 +769,7 @@ impl RenderBackend for Backend {
     }
     fn suspend(&mut self) {
         self.retained.clear();
+        self.effect_results.clear();
         self.suspended = true;
         self.info = None;
     }

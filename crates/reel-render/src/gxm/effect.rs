@@ -107,8 +107,107 @@ impl Context<'_> {
         effect: &FrameEffect,
         transform: Affine,
         source: &Target,
+        source_commands: Option<(std::ops::Range<usize>, Affine)>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
+        use crate::common::effect_result::{Grid, Probe};
+        self.flush_draws()?;
+        let proof_transform = source_commands
+            .as_ref()
+            .map_or(Affine::IDENTITY, |(_, value)| *value);
+        let (source_transform, effect_transform) = Grid::transforms(proof_transform, transform);
+        let grid = Grid {
+            source_transform,
+            effect_transform,
+            source_size: source.size,
+            source_storage: source.view.size(),
+            output_size: self.size,
+            output_storage: self.offscreen.storage_size(self.size),
+            scissor: [
+                self.scissor.x,
+                self.scissor.y,
+                self.scissor.width,
+                self.scissor.height,
+            ],
+            quality: [0, 1],
+        };
+        let probe = if !self.capture
+            && !self.scissor.empty()
+            && effect_plan::context(effect, transform, self.size, source.size).is_some()
+        {
+            if let Some(token) = source.effect_token() {
+                Some(Probe::from_output(token, effect, grid))
+            } else if let Some((commands, _)) = source_commands {
+                Probe::new(drawing, commands, effect, grid)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(probe) = probe {
+            if let Some((_token, hit)) = self.effect_results.lookup(&probe) {
+                let bytes = self.gpu.target_layout(hit.view.size())?.texture_bytes;
+                let local =
+                    self.budget_scope
+                        .targets
+                        .reserve(bytes)
+                        .map_err(|_| GpuError::Budget {
+                            domain: "offscreen targets",
+                            requested: bytes,
+                            available: self
+                                .limits
+                                .target_bytes
+                                .saturating_sub(self.budget_scope.targets.usage().bytes),
+                        })?;
+                self.tickets.push(crate::common::renderer::Reservation {
+                    _shared: None,
+                    _local: local,
+                });
+
+                let mut pins = std::mem::take(&mut self.effect_pins);
+                let held = crate::common::scopes::push_stack(&mut pins, hit.clone(), |bytes| {
+                    self.transient(bytes)
+                });
+                self.effect_pins = pins;
+                held?;
+                return Ok(hit);
+            }
+            let candidate = self.effect_results.prepare(probe, &self.budgets.transient);
+            let output = self.effect_draw(
+                drawing,
+                effect,
+                transform,
+                effect_plan::Source::sampled(source, source.size, source.view.size()),
+                None,
+                None,
+                at,
+            )?;
+            if let Some(candidate) = candidate
+                && let Some(pinned) = output.pin_effect(candidate.token, &self.budgets.transient)
+            {
+                let mut pins = std::mem::take(&mut self.effect_pins);
+                let held = crate::common::scopes::push_stack(&mut pins, pinned.clone(), |bytes| {
+                    self.transient(bytes)
+                });
+                self.effect_pins = pins;
+                if held.is_ok() {
+                    let stored = pinned.clone();
+                    let mut pending = std::mem::take(&mut self.effect_pending);
+                    let saved = crate::common::scopes::push_stack(
+                        &mut pending,
+                        candidate.finish(stored),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.effect_pending = pending;
+                    if saved.is_ok() {
+                        return Ok(pinned);
+                    }
+                    self.effect_pins.pop();
+                }
+            }
+            return Ok(output);
+        }
         self.effect_draw(
             drawing,
             effect,

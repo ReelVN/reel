@@ -105,6 +105,90 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires actual graphics adapter; allocates targets without drawing or readback"]
+    fn effect_pin_prevents_scratch_reuse_until_last_guard_retires() {
+        let limits = super::super::GpuLimits::default();
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            limits,
+        ))
+        .unwrap();
+        let quality = Quality {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            samples: 1,
+            degraded: false,
+        };
+        let budgets = Budgets::new(limits);
+        let cache = TargetCache::default();
+        cache.configure([64, 64], quality);
+        let size = [32, 32];
+        let cost = super::super::targets::target_bytes(size, quality).unwrap();
+        let requirements = crate::common::target_plan::Requirements::default();
+        let first = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                0,
+                &budgets.targets,
+                cost,
+                &requirements,
+            )
+            .unwrap();
+        cache.reserve_metadata(
+            [64, 64],
+            quality,
+            &[first.clone()],
+            &budgets.transient,
+            limits.transient_bytes,
+        );
+        cache.publish([64, 64], quality, &[first.clone()]);
+        let pin = first
+            .target
+            .pin_effect(
+                crate::common::effect_result::Token(1, 1),
+                &budgets.transient,
+            )
+            .unwrap();
+        let retained = pin.clone();
+        assert!(first.target.is_effect_pinned());
+        let second = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                0,
+                &budgets.targets,
+                cost,
+                &requirements,
+            )
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        drop(pin);
+        assert!(first.target.is_effect_pinned());
+        drop(retained);
+        assert!(!first.target.is_effect_pinned());
+        let again = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                0,
+                &budgets.targets,
+                cost,
+                &requirements,
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        cache.clear();
+        drop((first, second, again));
+        assert_eq!(budgets.targets.usage().bytes, 0);
+        assert_eq!(budgets.transient.usage().bytes, 0);
+    }
+
+    #[test]
     #[ignore = "native target allocation measurement; no drawing or readback"]
     fn continuous_bounds_capacity_cost() {
         use crate::common::{target_plan::Requirements, target_storage};

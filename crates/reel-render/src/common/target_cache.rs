@@ -2,6 +2,9 @@
 use super::{GpuError, target_plan::Requirements};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 
+/// Shared idle threshold for cold optional target retention in accepted submissions.
+pub(crate) const MAX_IDLE_SUBMISSIONS: u8 = 32;
+
 struct Slot<T> {
     size: [u32; 2],
     value: T,
@@ -34,6 +37,7 @@ impl<T> Cache<T> {
             .take_while(|slot| slot.size == size)
             .any(|slot| same(&slot.value))
     }
+    #[cfg(test)]
     pub(crate) fn get(&self, size: [u32; 2], index: usize) -> Option<&T> {
         let start = self.slots.partition_point(|slot| slot.size < size);
         self.slots
@@ -144,7 +148,11 @@ impl<T> Cache<T> {
     pub(crate) fn prune_cold(&mut self, mut unique: impl FnMut(&T) -> bool) -> bool {
         let before = self.slots.len();
         self.slots.retain(|slot| {
-            let retention = 2 + slot.uses.saturating_sub(1).saturating_mul(2).min(30);
+            let retention = 2 + slot
+                .uses
+                .saturating_sub(1)
+                .saturating_mul(2)
+                .min(MAX_IDLE_SUBMISSIONS - 2);
             slot.age < retention || !unique(&slot.value)
         });
         self.slots.len() != before
@@ -162,6 +170,7 @@ impl<T> Cache<T> {
     /// Reclaim one independent owner outside the plan's physical multiplicity.
     /// Oldest owners go first; equal-age candidates prefer larger storage. The
     /// caller retries admission before discarding another reusable target.
+    #[cfg(test)]
     pub(crate) fn reclaim(
         &mut self,
         required: &Requirements,

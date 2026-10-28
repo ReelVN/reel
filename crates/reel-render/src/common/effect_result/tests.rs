@@ -12,6 +12,7 @@ fn pool() -> BudgetPool {
 }
 fn source(scene: Arc<Scene>) -> Source {
     Source::Recording(Recording {
+        owner: 1,
         scene,
         local: LocalId::None,
         image: ImageProjection {
@@ -149,8 +150,39 @@ fn candidate_is_private_until_publish_and_output_tokens_never_repeat() {
     );
     let output_key = Key::new(Probe::from_output(token, &effect, grid()), &pool).unwrap();
     assert!(output_key.matches(&Probe::from_output(token, &effect, grid())));
-    assert!(!output_key.matches(&Probe::from_output(Token(token.0 + 1), &effect, grid())));
+    assert!(!output_key.matches(&Probe::from_output(
+        Token(token.0 + 1, token.1),
+        &effect,
+        grid()
+    )));
     drop(output_key);
+    let second = cache
+        .prepare(Probe::from_output(token, &effect, grid()), &pool)
+        .unwrap()
+        .finish(Arc::new(()));
+    let second_token = second.token;
+    assert!(
+        cache
+            .lookup(&Probe::from_output(token, &effect, grid()))
+            .is_none()
+    );
+    assert!(cache.publish(second, &pool));
+    assert_eq!(
+        cache
+            .lookup(&Probe::from_output(token, &effect, grid()))
+            .unwrap()
+            .0,
+        second_token
+    );
+    assert!(
+        cache
+            .lookup(&Probe::from_output(
+                Token(token.0 + 1, token.1),
+                &effect,
+                grid()
+            ))
+            .is_none()
+    );
     cache.clear();
     let b = cache
         .prepare(probe(&effect, grid(), scene.clone()), &pool)
@@ -159,8 +191,150 @@ fn candidate_is_private_until_publish_and_output_tokens_never_repeat() {
     assert_ne!(token, b.token);
     assert!(cache.publish(b, &pool));
     let lease = cache.lookup(&probe(&effect, grid(), scene)).unwrap().1;
-    assert!(cache.reclaim_one());
+    cache.clear();
     assert_eq!(Arc::strong_count(&lease), 1);
     drop(lease);
+    assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
+#[ignore = "repeatable CPU-only effect key hit cost; does not execute GPU passes"]
+fn effect_key_hot_hit_cost() {
+    use std::{hint::black_box, time::Instant};
+    let pool = pool();
+    let effect = effect();
+    let scene = Arc::new(Scene::new());
+    let key = Key::new(probe(&effect, grid(), scene.clone()), &pool).unwrap();
+    let retained = pool.usage().bytes;
+    let started = Instant::now();
+    let mut hits = 0;
+    for _ in 0..100_000 {
+        hits +=
+            usize::from(black_box(&key).matches(&probe(black_box(&effect), grid(), scene.clone())));
+    }
+    println!(
+        "effect_key hits={hits} iterations=100000 elapsed_ns={} retained_bytes={} additional_budget_bytes={}",
+        started.elapsed().as_nanos(),
+        retained,
+        pool.usage().bytes - retained
+    );
+    assert_eq!(hits, 100_000);
+    assert_eq!(pool.usage().bytes, retained);
+    let cache = Cache::<Arc<()>>::default();
+    let candidate = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap();
+    assert!(cache.publish(candidate.finish(Arc::new(())), &pool));
+    let admitted = pool.usage().bytes;
+    let started = Instant::now();
+    let mut hits = 0;
+    for _ in 0..100_000 {
+        hits += usize::from(
+            cache
+                .lookup(&probe(black_box(&effect), grid(), scene.clone()))
+                .is_some(),
+        );
+    }
+    println!(
+        "effect_cache hits={hits} iterations=100000 elapsed_ns={} cache_bytes={} additional_budget_bytes={}",
+        started.elapsed().as_nanos(),
+        admitted - retained,
+        pool.usage().bytes - admitted
+    );
+    assert_eq!(hits, 100_000);
+    assert_eq!(pool.usage().bytes, admitted);
+}
+
+#[test]
+fn changing_parameters_replace_each_stage_without_growing_retained_results() {
+    let pool = pool();
+    let cache = Cache::<Arc<()>>::default();
+    let second_effect = effect();
+    let mut previous: Option<(Token, Token)> = None;
+    for frame in 0..256 {
+        // Simulate a freshly recorded source for the same effect node.
+        let scene = Arc::new(Scene::new());
+        let mut first_effect = effect();
+        first_effect.values[0] = EffectValue::Float((frame as f32).to_bits());
+        let first = cache
+            .prepare(probe(&first_effect, grid(), scene.clone()), &pool)
+            .unwrap();
+        let first_token = first.token;
+        if let Some((old_first, old_second)) = previous {
+            assert_ne!(first_token.0, old_first.0);
+            assert_eq!(first_token.1, old_first.1);
+            assert!(
+                cache
+                    .lookup(&Probe::from_output(old_first, &second_effect, grid()))
+                    .is_some()
+            );
+            assert_ne!(first_token, old_second);
+        }
+        assert!(cache.publish(first.finish(Arc::new(())), &pool));
+        let second = cache
+            .prepare(
+                Probe::from_output(first_token, &second_effect, grid()),
+                &pool,
+            )
+            .unwrap();
+        let second_token = second.token;
+        if let Some((_, old_second)) = previous {
+            assert_eq!(second_token.1, old_second.1);
+        }
+        assert!(cache.publish(second.finish(Arc::new(())), &pool));
+        assert_eq!(cache.test_stats().0, 2);
+        assert!(
+            cache
+                .lookup(&Probe::from_output(first_token, &second_effect, grid()))
+                .is_some()
+        );
+        previous = Some((first_token, second_token));
+    }
+    cache.clear();
+    assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
+fn refused_optional_metadata_does_not_keep_a_zero_byte_ticket() {
+    let pool = BudgetPool::new(
+        BudgetCategory::Temporary,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: 65536,
+        },
+    );
+    let cache = Cache::<Arc<()>>::default();
+    let effect = effect();
+    let scene = Arc::new(Scene::new());
+    let candidate = cache.prepare(probe(&effect, grid(), scene), &pool).unwrap();
+    assert!(!cache.publish(candidate.finish(Arc::new(())), &pool));
+    assert_eq!(pool.usage().bytes, 0);
+    let ticket = pool.reserve(1).unwrap();
+    drop(ticket);
+}
+
+#[test]
+fn cold_results_reclaim_incrementally_without_invalidating_a_flight_owner() {
+    let pool = pool();
+    let effect = effect();
+    let scene = Arc::new(Scene::new());
+    let cache = Cache::<Arc<()>>::default();
+    let output = Arc::new(());
+    let flight = output.clone();
+    let candidate = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap();
+    assert!(cache.publish(candidate.finish(output), &pool));
+    for _ in 0..31 {
+        cache.submitted();
+    }
+    assert!(cache.lookup(&probe(&effect, grid(), scene)).is_some());
+    for _ in 0..31 {
+        cache.submitted();
+    }
+    assert_eq!(cache.test_stats().0, 1);
+    cache.submitted();
+    assert_eq!(cache.test_stats().0, 0);
+    assert_eq!(Arc::strong_count(&flight), 1);
     assert_eq!(pool.usage().bytes, 0);
 }

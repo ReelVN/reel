@@ -30,6 +30,8 @@ pub struct Prepared {
     effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
     retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    effect_pending: Vec<crate::common::effect_result::Pending<super::retained::Output>>,
+    effect_pins: Vec<super::targets::Target>,
     geometry: Vec<super::geometry::Storage>,
     budget_scope: Budgets,
     admission: BudgetTicket,
@@ -58,6 +60,7 @@ pub(super) struct Inflight {
     _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
     _retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    _effect_pins: Vec<super::targets::Target>,
     _admission: BudgetTicket,
     geometry: Vec<super::geometry::Storage>,
 }
@@ -110,6 +113,7 @@ pub struct Renderer {
     targets: super::target_cache::TargetCache,
     geometry: super::geometry::Cache,
     retained: super::retained::Cache,
+    pub(super) effect_results: crate::common::effect_result::Cache<super::retained::Output>,
 }
 pub(super) use crate::common::renderer::{Budgets, Reservation, reserve};
 
@@ -140,6 +144,7 @@ impl Renderer {
             targets: Default::default(),
             geometry: Default::default(),
             retained: Default::default(),
+            effect_results: Default::default(),
         }
     }
     /// Prepare the device's supported quality tiers and built-in image masks
@@ -339,6 +344,7 @@ impl Renderer {
         let mut epoch = self.retained.epoch.lock().unwrap();
         if *epoch != Some(frame.surface_epoch()) {
             self.retained.inputs.clear();
+            self.effect_results.clear();
             *self.retained.ceiling.lock().unwrap() = None;
             *epoch = Some(frame.surface_epoch());
         }
@@ -351,6 +357,7 @@ impl Renderer {
         if capture {
             self.geometry.clear();
             self.images.clear_idle();
+            self.effect_results.clear();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
         let result = self.prepare_cached(frame, second, size, capture, &policy, None);
@@ -368,12 +375,13 @@ impl Renderer {
         if fallback || matches!(result, Err(GpuError::Pressure { .. })) {
             let cause = result.err().unwrap();
             let resident = pressured_usage(&cause, self.usage());
+            self.effect_results.clear();
             if fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary) {
                 self.geometry.clear();
                 self.targets.release_idle();
             }
             match pressure_pool(&cause) {
-                Some(BudgetCategory::Offscreen) => self.targets.prune_cold(),
+                Some(BudgetCategory::Offscreen) => self.targets.release_idle(),
                 Some(BudgetCategory::GpuResource) => {
                     self.images.clear_idle();
                 }
@@ -660,6 +668,9 @@ impl Renderer {
                 white: None,
                 target_cache: &self.targets,
                 retained_cache: &self.retained.inputs,
+                effect_results: &self.effect_results,
+                effect_pending: Vec::new(),
+                effect_pins: Vec::new(),
                 selection,
                 retained_inputs: Vec::new(),
                 warm,
@@ -762,6 +773,8 @@ impl Renderer {
                 effects: ctx.effects,
                 targets: ctx.target_allocations,
                 retained_inputs: ctx.retained_inputs,
+                effect_pending: ctx.effect_pending,
+                effect_pins: ctx.effect_pins,
                 geometry: ctx.geometry,
                 budget_scope: ctx.budget_scope,
                 admission,
@@ -771,6 +784,11 @@ impl Renderer {
             if let Some(token) = retained {
                 let done = Arc::new(AtomicBool::new(false));
                 self.gpu.queue.submit([prepared.encoder.finish()]);
+                self.effect_results.submitted();
+                for pending in prepared.effect_pending {
+                    self.effect_results
+                        .publish(pending, &self.budgets.transient);
+                }
                 let signal = done.clone();
                 self.gpu
                     .queue
@@ -794,6 +812,7 @@ impl Renderer {
                             _effects: prepared.effects,
                             _targets: prepared.targets,
                             _retained_inputs: prepared.retained_inputs,
+                            _effect_pins: prepared.effect_pins,
                             _admission: prepared.admission,
                             geometry: prepared.geometry,
                         },
@@ -831,6 +850,11 @@ impl Renderer {
             self.gpu.limits.transient_bytes,
         );
         self.gpu.queue.submit([prepared.encoder.finish()]);
+        self.effect_results.submitted();
+        for pending in prepared.effect_pending {
+            self.effect_results
+                .publish(pending, &self.budgets.transient);
+        }
         self.glyphs.publish(&prepared.glyphs);
         let signal = done.clone();
         self.gpu
@@ -847,6 +871,7 @@ impl Renderer {
             _effects: prepared.effects,
             _targets: prepared.targets,
             _retained_inputs: prepared.retained_inputs,
+            _effect_pins: prepared.effect_pins,
             _admission: prepared.admission,
             geometry: prepared.geometry,
         });

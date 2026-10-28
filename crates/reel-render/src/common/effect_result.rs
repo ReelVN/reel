@@ -1,7 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "effect replay integration is being developed in the next slice"
-)]
 //! Content identity for already-materialized ordinary effect outputs.
 use reel_core::budget::{BudgetPool, BudgetTicket};
 #[cfg(test)]
@@ -59,21 +55,31 @@ struct ImageProjection {
     brush_transform: Option<[u64; 6]>,
 }
 struct Recording {
+    owner: u64,
     scene: Arc<Scene>,
     local: LocalId,
     image: ImageProjection,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Token(pub(crate) usize);
+// The first component uniquely identifies pixels; the second identifies the
+// stable producer family across changed parameter or image versions.
+pub(crate) struct Token(pub(crate) usize, pub(crate) usize);
 enum Source {
     Recording(Recording),
     Output(Token),
 }
 impl Source {
-    fn anchor(&self) -> (u8, usize) {
+    fn anchor(&self) -> (u8, u64) {
         match self {
-            Self::Recording(recording) => (0, Arc::as_ptr(&recording.scene) as usize),
-            Self::Output(token) => (1, token.0),
+            Self::Recording(recording) => (0, recording.owner),
+            Self::Output(token) => (1, token.1 as u64),
+        }
+    }
+    fn same_family(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Recording(a), Self::Recording(b)) => a.owner == b.owner,
+            (Self::Output(a), Self::Output(b)) => a.1 == b.1,
+            _ => false,
         }
     }
 }
@@ -81,7 +87,10 @@ impl PartialEq for Source {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Recording(a), Self::Recording(b)) => {
-                Arc::ptr_eq(&a.scene, &b.scene) && a.local == b.local && a.image == b.image
+                a.owner == b.owner
+                    && Arc::ptr_eq(&a.scene, &b.scene)
+                    && a.local == b.local
+                    && a.image == b.image
             }
             (Self::Output(a), Self::Output(b)) => a == b,
             _ => false,
@@ -108,11 +117,13 @@ impl<'a> Probe<'a> {
             return None;
         }
         let commands = drawing.commands().get(commands)?;
-        if !matches!(commands.first()?.op, FrameOp::PushGroup(_))
-            || !matches!(commands.last()?.op, FrameOp::PopGroup)
-        {
+        let FrameOp::PushGroup(group) = &commands.first()?.op else {
+            return None;
+        };
+        if !matches!(commands.last()?.op, FrameOp::PopGroup) {
             return None;
         }
+        let owner = group.owner.to_raw();
         let mut source = None;
         for command in &commands[1..commands.len() - 1] {
             match &command.op {
@@ -131,6 +142,7 @@ impl<'a> Probe<'a> {
                         return None;
                     }
                     source = Some(Source::Recording(Recording {
+                        owner,
                         scene: recording.root().upgrade()?,
                         local,
                         image: ImageProjection {
@@ -187,15 +199,8 @@ impl Key {
             && self.coverage_invert == probe.effect.coverage_invert
             && self.grid == probe.grid
     }
-    fn same_key(&self, other: &Self) -> bool {
-        self.source == other.source
-            && self.definition == other.definition
-            && self.shader == other.shader
-            && self.values == other.values
-            && self.images == other.images
-            && self.bounds == other.bounds
-            && self.coverage_invert == other.coverage_invert
-            && self.grid == other.grid
+    fn same_family(&self, other: &Self) -> bool {
+        self.source.same_family(&other.source) && self.definition == other.definition
     }
     /// Optional cache admission: failure leaves the ordinary render path intact.
     pub(crate) fn new(probe: Probe<'_>, pool: &BudgetPool) -> Option<Self> {
@@ -233,12 +238,16 @@ struct Entry<T> {
     key: Key,
     token: Token,
     output: T,
-    age: u8,
+    last_used: u64,
 }
 struct State<T> {
     entries: Vec<Entry<T>>,
     metadata: Option<BudgetTicket>,
     next: usize,
+    submitted: u64,
+    cursor: usize,
+    #[cfg(test)]
+    hits: [usize; 2],
 }
 impl<T> Default for State<T> {
     fn default() -> Self {
@@ -246,6 +255,10 @@ impl<T> Default for State<T> {
             entries: Vec::new(),
             metadata: None,
             next: 1,
+            submitted: 0,
+            cursor: 0,
+            #[cfg(test)]
+            hits: [0; 2],
         }
     }
 }
@@ -282,19 +295,41 @@ impl<T: Clone> Cache<T> {
         let start = state
             .entries
             .partition_point(|entry| entry.key.source.anchor() < anchor);
-        let entry = state.entries[start..]
-            .iter_mut()
-            .take_while(|entry| entry.key.source.anchor() == anchor)
-            .find(|entry| entry.key.matches(probe))?;
-        entry.age = 0;
-        Some((entry.token, entry.output.clone()))
+        let index = start
+            + state.entries[start..]
+                .iter()
+                .take_while(|entry| entry.key.source.anchor() == anchor)
+                .position(|entry| entry.key.matches(probe))?;
+        let submitted = state.submitted;
+        let entry = &mut state.entries[index];
+        entry.last_used = submitted;
+        let hit = (entry.token, entry.output.clone());
+        #[cfg(test)]
+        {
+            state.hits[anchor.0 as usize] += 1;
+        }
+        Some(hit)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_stats(&self) -> (usize, [usize; 2]) {
+        let state = self.0.lock().unwrap();
+        (state.entries.len(), state.hits)
     }
     /// Preparation is private to a candidate. It cannot be observed by another
     /// candidate until the renderer successfully submits the producing work.
     pub(crate) fn prepare(&self, probe: Probe<'_>, pool: &BudgetPool) -> Option<Candidate> {
         let key = Key::new(probe, pool)?;
         let mut state = self.0.lock().unwrap();
-        let token = Token(state.next);
+        let anchor = key.source.anchor();
+        let start = state
+            .entries
+            .partition_point(|entry| entry.key.source.anchor() < anchor);
+        let family = state.entries[start..]
+            .iter()
+            .take_while(|entry| entry.key.source.anchor() == anchor)
+            .find(|entry| entry.key.same_family(&key))
+            .map_or(state.next, |entry| entry.token.1);
+        let token = Token(state.next, family);
         state.next = state.next.checked_add(1)?;
         Some(Candidate { key, token })
     }
@@ -306,7 +341,8 @@ impl<T: Clone> Cache<T> {
             .partition_point(|entry| entry.key.source.anchor() < anchor);
         let end = start
             + state.entries[start..].partition_point(|entry| entry.key.source.anchor() == anchor);
-        if let Some(index) = (start..end).find(|&i| state.entries[i].key.same_key(&pending.key)) {
+        if let Some(index) = (start..end).find(|&i| state.entries[i].key.same_family(&pending.key))
+        {
             state.entries.remove(index);
         }
         if state.entries.len() == state.entries.capacity() {
@@ -320,20 +356,15 @@ impl<T: Clone> Cache<T> {
             else {
                 return false;
             };
-            if state.metadata.is_none() {
-                let Ok(ticket) = pool.reserve(0) else {
+            if let Some(metadata) = &mut state.metadata {
+                if metadata.resize(peak as u64).is_err() {
+                    return false;
+                }
+            } else {
+                let Ok(ticket) = pool.reserve(peak as u64) else {
                     return false;
                 };
                 state.metadata = Some(ticket);
-            }
-            if state
-                .metadata
-                .as_mut()
-                .unwrap()
-                .resize(peak as u64)
-                .is_err()
-            {
-                return false;
             }
             let additional = capacity - state.entries.len();
             state.entries.reserve_exact(additional);
@@ -348,44 +379,48 @@ impl<T: Clone> Cache<T> {
         let index = state
             .entries
             .partition_point(|entry| entry.key.source.anchor() <= anchor);
+        let submitted = state.submitted;
         state.entries.insert(
             index,
             Entry {
                 key: pending.key,
                 token: pending.token,
                 output: pending.output,
-                age: 0,
+                last_used: submitted,
             },
         );
         true
     }
-    /// Only accepted submissions age cached outputs.
+    /// Advance only after submission and inspect one optional result at a time.
     pub(crate) fn submitted(&self) {
         let mut state = self.0.lock().unwrap();
-        for entry in &mut state.entries {
-            entry.age = entry.age.saturating_add(1);
-        }
-    }
-    pub(crate) fn reclaim_one(&self) -> bool {
-        let mut state = self.0.lock().unwrap();
-        let Some((index, _)) = state
-            .entries
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, entry)| entry.age)
-        else {
-            return false;
-        };
-        state.entries.remove(index);
+        state.submitted = state.submitted.saturating_add(1);
         if state.entries.is_empty() {
-            state.entries = Vec::new();
-            state.metadata = None;
+            state.cursor = 0;
+            return;
         }
-        true
+        let index = state.cursor % state.entries.len();
+        if state
+            .submitted
+            .saturating_sub(state.entries[index].last_used)
+            >= u64::from(super::target_cache::MAX_IDLE_SUBMISSIONS)
+        {
+            state.entries.remove(index);
+            if state.entries.is_empty() {
+                state.entries = Vec::new();
+                state.metadata = None;
+                state.cursor = 0;
+            } else {
+                state.cursor = index % state.entries.len();
+            }
+        } else {
+            state.cursor = (index + 1) % state.entries.len();
+        }
     }
     pub(crate) fn clear(&self) {
         let mut state = self.0.lock().unwrap();
         state.entries = Vec::new();
         state.metadata = None;
+        state.cursor = 0;
     }
 }
