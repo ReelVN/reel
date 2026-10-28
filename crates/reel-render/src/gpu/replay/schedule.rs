@@ -14,18 +14,18 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(());
         }
-        self.transient(super::pipeline::COMPOSITE_BYTES)?;
+        self.transient(super::super::pipeline::COMPOSITE_BYTES)?;
         self.ensure_sampled(&source.view);
         self.pipelines.composite(
             &self.gpu.device,
             &mut self.encoder,
             target,
-            super::pipeline::CompositeInputs {
+            super::super::pipeline::CompositeInputs {
                 source: &source.view,
                 mask: &source.view,
                 backdrop: &source.view,
             },
-            super::pipeline::CompositeParams {
+            super::super::pipeline::CompositeParams {
                 clear: self.target_writes.take(target.slot),
                 scissor: self.scissor,
                 opacity: alpha,
@@ -47,7 +47,7 @@ impl Context<'_> {
     ) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
         self.flush_draws()?;
-        self.transient(super::pipeline::COMPOSITE_BYTES * pending.len() as u64)?;
+        self.transient(super::super::pipeline::COMPOSITE_BYTES * pending.len() as u64)?;
         let clear = self.target_writes.take(target.slot);
         self.pipelines.composite_batch(
             &self.gpu.device,
@@ -56,12 +56,12 @@ impl Context<'_> {
             clear,
             pending.iter().map(|item| {
                 (
-                    super::pipeline::CompositeInputs {
+                    super::super::pipeline::CompositeInputs {
                         source: &item.source.view,
                         mask: &item.source.view,
                         backdrop: &item.source.view,
                     },
-                    super::pipeline::CompositeParams {
+                    super::super::pipeline::CompositeParams {
                         clear: false,
                         scissor: item.scissor,
                         opacity: item.opacity,
