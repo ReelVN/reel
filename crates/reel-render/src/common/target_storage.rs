@@ -1,5 +1,7 @@
 //! Physical storage shared by scratch extents with compatible lifetimes.
 use super::{GpuError, scopes::push_stack};
+#[cfg(test)]
+mod animation_tests;
 mod capacities;
 
 #[derive(Clone, Copy)]

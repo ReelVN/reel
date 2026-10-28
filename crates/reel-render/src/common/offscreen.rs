@@ -200,21 +200,33 @@ impl Plan {
                         storage_tickets.push(reserve(bytes)?);
                         Ok(())
                     })?;
-                    // Capacity reuse is optional. A tight transient budget keeps
-                    // the already admitted exact plan and its quality intact.
-                    if let Ok(Some((storage, tickets))) = super::target_storage::Plan::capacities(
+                }
+                // Capacity reuse is optional for both exact and lifetime-shared
+                // classes. Metadata pressure leaves the admitted plan intact.
+                let capacity_limit = byte_limit.saturating_sub(selection.persistent_bytes());
+                let padded = if plan.storage.bytes() == 0 {
+                    super::target_storage::Plan::capacities(
                         &plan.requirements,
                         size,
                         max_dimension,
-                        byte_limit.saturating_sub(selection.persistent_bytes()),
+                        capacity_limit,
                         cost,
                         &mut reserve,
-                    ) {
-                        bytes = storage.bytes() + selection.persistent_bytes();
-                        plan.requirements = Default::default();
-                        storage_tickets = tickets;
-                        plan.storage = storage;
-                    }
+                    )
+                } else {
+                    plan.storage.padded_capacities(
+                        size,
+                        max_dimension,
+                        capacity_limit,
+                        cost,
+                        &mut reserve,
+                    )
+                };
+                if let Ok(Some((storage, tickets))) = padded {
+                    bytes = storage.bytes() + selection.persistent_bytes();
+                    plan.requirements = Default::default();
+                    storage_tickets = tickets;
+                    plan.storage = storage;
                 }
                 retained.extend(storage_tickets);
                 plan.groups = groups.map(|groups| {
