@@ -1152,8 +1152,7 @@ impl SessionUi {
         let content_revision = self.images.content_revision;
         if !self.prepare_image_requests(bridge, root_id)? {
             self.images_waiting_presentation = true;
-            self.pause_dialogue();
-            self.binding.borrow_mut().accepted = None;
+            self.wait_for_image_presentation();
             return Ok(());
         }
         // Geometry may change while the viewport still requests the same loaded
@@ -1171,8 +1170,7 @@ impl SessionUi {
             if (demand_changed || content_changed || self.pending_stage.is_some())
                 && !self.prepare_tiles(bridge, root_id, content_changed)?
             {
-                self.pause_dialogue();
-                self.binding.borrow_mut().accepted = None;
+                self.wait_for_image_presentation();
                 return Ok(());
             }
         } else if images_ready {
@@ -1210,8 +1208,7 @@ impl SessionUi {
                     &geometry,
                 );
             }
-            self.pause_dialogue();
-            self.binding.borrow_mut().accepted = None;
+            self.wait_for_image_presentation();
             if !self.virtual_images_ready {
                 return Ok(());
             }

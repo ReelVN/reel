@@ -252,7 +252,8 @@ impl SessionUi {
         binding.control_accepted = Some(stamp);
         binding.accepted_buttons = Some(stamp.button_revision);
         binding.accepted =
-            (frame.current && !self.images_pending() && stamp == current_stamp).then_some(stamp);
+            (frame.current && !self.images_pending() && stamp.same_advance(current_stamp))
+                .then_some(stamp);
         if frame.current && !self.images_pending() && stamp == current_stamp {
             self.images_waiting_presentation = false;
         }
