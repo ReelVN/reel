@@ -294,3 +294,87 @@ fn optional_effect_outputs_leave_the_original_scratch_peak_and_quality_available
     );
     same_pixels(&expected, &control.readback(prepared).unwrap());
 }
+
+#[test]
+#[ignore = "finite actual GPU animation, stable-cache recovery and numeric comparison"]
+fn animated_effects_recycle_pixels_and_resume_retention_when_settled() {
+    use reel_ui::{frame::FrameOp, resources::ResourceSnapshot};
+    let (original, mut bridge) = chain([64, 48]);
+    let owner = original
+        .commands()
+        .iter()
+        .rev()
+        .find_map(|command| {
+            if let FrameOp::PushGroup(group) = &command.op {
+                group.effect.as_ref().map(|_| group.owner)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let pool = r01_fixture::pool();
+    let mut subject = renderer(64 << 20);
+    let mut control = renderer(64 << 20);
+    let warm = subject.prepare(&original).unwrap();
+    subject.readback(warm).unwrap();
+    let mut settled = None;
+    let mut expected = Vec::new();
+    for index in 1..=8 {
+        bridge.edit_widget(owner, |mut widget| {
+            let mut widget = widget.downcast::<r01_fixture::RecordWidget>();
+            let effect = widget.widget.effect.as_mut().unwrap();
+            effect.instance = EffectInstance::new(
+                [17; 32],
+                effect.instance.program().clone(),
+                vec![EffectValue::Vec4([
+                    (0.3 + index as f32 * 0.04).to_bits(),
+                    0.8f32.to_bits(),
+                    0.7f32.to_bits(),
+                    1f32.to_bits(),
+                ])],
+            )
+            .unwrap();
+            widget.ctx.request_pre_paint();
+        });
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(index + 1)).unwrap(),
+            ResourceSnapshot::capture(original.resources().leases().iter().cloned().map(Ok), &pool)
+                .unwrap(),
+            original.info(),
+            r01_fixture::limits(),
+            &pool,
+        )
+        .unwrap();
+        while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+        let frame = build.finish().unwrap();
+        control.effect_results.clear();
+        let reference = control.prepare(&frame).unwrap();
+        let quality = reference.quality();
+        expected = control.readback(reference).unwrap();
+        let prepared = subject.prepare(&frame).unwrap();
+        assert_eq!(prepared.quality(), quality);
+        assert!(
+            prepared.effect_pins.is_empty(),
+            "changing dependencies must keep scratch pixels reusable"
+        );
+        assert!(
+            !prepared.effect_pending.is_empty(),
+            "the observed producer must publish metadata"
+        );
+        same_pixels(&expected, &subject.readback(prepared).unwrap());
+        settled = Some(frame);
+    }
+    let frame = settled.unwrap();
+    let mut pins = 0;
+    for _ in 0..8 {
+        let prepared = subject.prepare(&frame).unwrap();
+        pins = prepared.effect_pins.len();
+        same_pixels(&expected, &subject.readback(prepared).unwrap());
+    }
+    assert!(
+        pins >= 6,
+        "the settled materialized chain must regain cache reuse"
+    );
+    let (_, hits) = subject.effect_results.test_stats();
+    assert!(hits[0] > 0 && hits[1] > 0);
+}

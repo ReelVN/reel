@@ -220,8 +220,21 @@ impl Context<'_> {
                 .texture_bytes;
             if self.effect_admission.can_retain(bytes)
                 && let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient)
-                && let Some(pinned) = output.pin_effect(candidate.token, &self.budgets.transient)
             {
+                if !candidate.retain {
+                    let mut pending = std::mem::take(&mut self.effect_pending);
+                    let _ = crate::common::scopes::push_stack(
+                        &mut pending,
+                        candidate.observe(),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.effect_pending = pending;
+                    return Ok(output);
+                }
+                let Some(pinned) = output.pin_effect(candidate.token, &self.budgets.transient)
+                else {
+                    return Ok(output);
+                };
                 let mut pins = std::mem::take(&mut self.effect_pins);
                 let held = crate::common::scopes::push_stack(&mut pins, pinned.clone(), |bytes| {
                     self.transient(bytes)

@@ -250,7 +250,7 @@ fn effect_key_hot_hit_cost() {
 }
 
 #[test]
-fn changing_parameters_replace_each_stage_without_growing_retained_results() {
+fn changing_parameters_keep_bounded_observations_until_dependencies_stabilize() {
     let pool = pool();
     let cache = Cache::<Arc<()>>::default();
     let second_effect = effect();
@@ -267,14 +267,21 @@ fn changing_parameters_replace_each_stage_without_growing_retained_results() {
         if let Some((old_first, old_second)) = previous {
             assert_ne!(first_token.0, old_first.0);
             assert_eq!(first_token.1, old_first.1);
-            assert!(
+            assert_eq!(
                 cache
                     .lookup(&Probe::from_output(old_first, &second_effect, grid()))
-                    .is_some()
+                    .is_some(),
+                frame == 1,
             );
             assert_ne!(first_token, old_second);
         }
-        assert!(cache.publish(first.finish(Arc::new(())), &pool));
+        assert_eq!(first.retain, frame == 0);
+        let first = if first.retain {
+            first.finish(Arc::new(()))
+        } else {
+            first.observe()
+        };
+        assert!(cache.publish(first, &pool));
         let second = cache
             .prepare(
                 Probe::from_output(first_token, &second_effect, grid()),
@@ -285,16 +292,77 @@ fn changing_parameters_replace_each_stage_without_growing_retained_results() {
         if let Some((_, old_second)) = previous {
             assert_eq!(second_token.1, old_second.1);
         }
-        assert!(cache.publish(second.finish(Arc::new(())), &pool));
-        assert_eq!(cache.test_stats().0, 2);
-        assert!(
+        assert_eq!(second.retain, frame == 0);
+        let second = if second.retain {
+            second.finish(Arc::new(()))
+        } else {
+            second.observe()
+        };
+        assert!(cache.publish(second, &pool));
+        assert_eq!(cache.test_stats().0, if frame == 0 { 2 } else { 0 });
+        assert_eq!(cache.0.lock().unwrap().entries.len(), 2);
+        assert_eq!(
             cache
                 .lookup(&Probe::from_output(first_token, &second_effect, grid()))
-                .is_some()
+                .is_some(),
+            frame == 0
         );
+        // Repeating the newly published identity permits pixel retention again.
+        let settled = cache
+            .prepare(probe(&first_effect, grid(), scene), &pool)
+            .unwrap();
+        assert!(settled.retain);
+        drop(settled);
         previous = Some((first_token, second_token));
     }
     cache.clear();
+    assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
+fn changed_dependencies_wait_for_submission_then_restore_retention_without_releasing_readers() {
+    let pool = pool();
+    let mut effect = effect();
+    let scene = Arc::new(Scene::new());
+    let cache = Cache::<Arc<()>>::default();
+    let output = Arc::new(());
+    let flight = output.clone();
+    let candidate = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap();
+    assert!(candidate.retain);
+    assert!(cache.publish(candidate.finish(output), &pool));
+    effect.values[0] = EffectValue::Float(1f32.to_bits());
+    let cancelled = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap();
+    assert!(!cancelled.retain);
+    drop(cancelled);
+    let candidate = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap();
+    assert!(
+        !candidate.retain,
+        "abandoned work must not establish stability"
+    );
+    assert_eq!(Arc::strong_count(&flight), 2);
+    assert!(cache.publish(candidate.observe(), &pool));
+    assert_eq!(Arc::strong_count(&flight), 1);
+    assert!(
+        cache
+            .lookup(&probe(&effect, grid(), scene.clone()))
+            .is_none()
+    );
+    let settled = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap();
+    assert!(settled.retain);
+    assert!(cache.publish(settled.finish(Arc::new(())), &pool));
+    assert!(cache.lookup(&probe(&effect, grid(), scene)).is_some());
+    for _ in 0..32 {
+        cache.submitted();
+    }
+    assert_eq!(cache.test_stats().0, 0);
     assert_eq!(pool.usage().bytes, 0);
 }
 

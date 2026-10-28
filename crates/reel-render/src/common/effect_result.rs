@@ -245,7 +245,7 @@ impl Key {
 struct Entry<T> {
     key: Key,
     token: Token,
-    output: T,
+    output: Option<T>,
     last_used: u64,
 }
 struct State<T> {
@@ -281,18 +281,30 @@ impl<T> Default for Cache<T> {
 pub(crate) struct Candidate {
     key: Key,
     pub(crate) token: Token,
+    /// New producers may retain immediately; changed producers first publish
+    /// metadata until an identical dependency set recurs in a later candidate.
+    pub(crate) retain: bool,
 }
 pub(crate) struct Pending<T> {
     key: Key,
     pub(crate) token: Token,
-    pub(crate) output: T,
+    output: Option<T>,
 }
 impl Candidate {
     pub(crate) fn finish<T>(self, output: T) -> Pending<T> {
+        assert!(self.retain, "changed effect must publish observation first");
         Pending {
             key: self.key,
             token: self.token,
-            output,
+            output: Some(output),
+        }
+    }
+    /// Publish only dependency identity, leaving this frame's pixels recyclable.
+    pub(crate) fn observe<T>(self) -> Pending<T> {
+        Pending {
+            key: self.key,
+            token: self.token,
+            output: None,
         }
     }
 }
@@ -311,7 +323,7 @@ impl<T: Clone> Cache<T> {
         let submitted = state.submitted;
         let entry = &mut state.entries[index];
         entry.last_used = submitted;
-        let hit = (entry.token, entry.output.clone());
+        let hit = (entry.token, entry.output.as_ref()?.clone());
         #[cfg(test)]
         {
             state.hits[anchor.0 as usize] += 1;
@@ -321,25 +333,36 @@ impl<T: Clone> Cache<T> {
     #[cfg(test)]
     pub(crate) fn test_stats(&self) -> (usize, [usize; 2]) {
         let state = self.0.lock().unwrap();
-        (state.entries.len(), state.hits)
+        (
+            state
+                .entries
+                .iter()
+                .filter(|entry| entry.output.is_some())
+                .count(),
+            state.hits,
+        )
     }
     /// Preparation is private to a candidate. It cannot be observed by another
     /// candidate until the renderer successfully submits the producing work.
     pub(crate) fn prepare(&self, probe: Probe<'_>, pool: &BudgetPool) -> Option<Candidate> {
-        let key = Key::new(probe, pool)?;
         let mut state = self.0.lock().unwrap();
-        let anchor = key.source.anchor();
+        let anchor = probe.source.anchor();
         let start = state
             .entries
             .partition_point(|entry| entry.key.source.anchor() < anchor);
-        let family = state.entries[start..]
+        let previous = state.entries[start..]
             .iter()
             .take_while(|entry| entry.key.source.anchor() == anchor)
-            .find(|entry| entry.key.same_family(&key))
-            .map_or(state.next, |entry| entry.token.1);
+            .find(|entry| {
+                entry.key.source.same_family(&probe.source)
+                    && entry.key.definition == probe.effect.definition
+            });
+        let retain = previous.is_none_or(|entry| entry.key.matches(&probe));
+        let family = previous.map_or(state.next, |entry| entry.token.1);
+        let key = Key::new(probe, pool)?;
         let token = Token(state.next, family);
         state.next = state.next.checked_add(1)?;
-        Some(Candidate { key, token })
+        Some(Candidate { key, token, retain })
     }
     pub(crate) fn publish(&self, pending: Pending<T>, pool: &BudgetPool) -> bool {
         let mut state = self.0.lock().unwrap();
