@@ -246,6 +246,8 @@ impl SegmentLoader<'_> {
     }
 }
 
+mod output_idle;
+
 type OutputFactory = Box<dyn FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, String>>;
 
 /// A session-local backend. A custom host supplies AssetIo through Assets and
@@ -272,6 +274,7 @@ pub struct MediaPlayer {
     next: u64,
     closed: bool,
     suspended: bool,
+    output_idle: output_idle::OutputIdle,
     failure: Option<String>,
     reclaim_pending: bool,
     #[cfg(feature = "profiling")]
@@ -288,7 +291,8 @@ impl MediaPlayer {
             .as_mut()
             .unwrap()
             .play_video_audio(sound)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.run_output()
     }
     pub fn new(
         assets: Assets,
@@ -375,6 +379,7 @@ impl MediaPlayer {
             next: 0,
             closed: false,
             suspended: false,
+            output_idle: output_idle::OutputIdle::default(),
             failure: None,
             reclaim_pending: false,
             #[cfg(feature = "profiling")]
@@ -405,6 +410,7 @@ impl MediaPlayer {
             .max_pull_frames
             .max(output.capabilities().min_pull_frames);
         let format = output.configure(request).map_err(|e| e.to_string())?;
+        self.output_idle.max_pull_frames = format.max_pull_frames;
         let reclaim = AudioReclaimService::new(
             ReclaimLimits {
                 max_generations: 1,
@@ -431,12 +437,8 @@ impl MediaPlayer {
         let owner = service
             .register_owner(Scope::Process)
             .map_err(|e| e.message)?;
-        output
-            .start(service.take_fill().unwrap())
-            .map_err(|e| e.reason.message)?;
-        if self.suspended {
-            output.suspend().map_err(|e| e.to_string())?;
-        }
+        // Keep the prepared renderer until a source can actually consume PCM.
+        // Configure retains format validation without opening a native stream.
         self.owner = Some(owner);
         self.output = Some(output);
         self.service = Some(service);
@@ -445,7 +447,7 @@ impl MediaPlayer {
     }
     fn output_failure(&mut self) {
         if let Some(output) = &self.output
-            && output.status().state == AudioState::Failed
+            && (output.status().state == AudioState::Failed || self.failure.is_some())
             && let Some(service) = &mut self.service
         {
             let status = output.status();
@@ -453,7 +455,10 @@ impl MediaPlayer {
                 .latest_device_error
                 .map_or(AudioErrorKind::DeviceFailure, |e| e.kind);
             let _ = service.fail_output(reason);
-            self.failure = Some(format!("audio output: {reason:?}"));
+            let message = self
+                .failure
+                .get_or_insert_with(|| format!("audio output: {reason:?}"))
+                .clone();
             for entry in self.entries.values_mut() {
                 if let Phase::Playing(media) = entry.phase
                     && let Some(state) = service.snapshot(media)
@@ -468,8 +473,7 @@ impl MediaPlayer {
                         control.cancel();
                         self.worker.cancel(entry.key);
                     }
-                    entry.phase =
-                        Phase::Done(MediaResult::Failed(format!("audio output: {reason:?}")));
+                    entry.phase = Phase::Done(MediaResult::Failed(message.clone()));
                 }
             }
         }
@@ -859,6 +863,8 @@ impl MediaBackend for MediaPlayer {
             }
         }
         entry.refresh_deadlines(self.suspended);
+        self.maintain_output();
+        self.output_failure();
         Ok(())
     }
     fn group_volume(
@@ -1095,6 +1101,8 @@ impl MediaBackend for MediaPlayer {
                 }
             }
         }
+        self.maintain_output();
+        self.output_failure();
         if self.failure.is_some()
             && self
                 .service
@@ -1127,7 +1135,8 @@ impl MediaBackend for MediaPlayer {
         })
     }
     fn poll_after(&self) -> Option<Duration> {
-        (self.video_pending()
+        (self.output_idle.quiet.is_some()
+            || self.video_pending()
             || !self.entries.is_empty()
             || self.cleanup_pending()
             || self.reclaim_pending
@@ -1148,13 +1157,21 @@ impl MediaBackend for MediaPlayer {
         for entry in self.movies.entries.values() {
             entry.pause(true);
         }
-        if let Some(output) = &mut self.output {
+        if let Some(output) = &mut self.output
+            && output.status().state == AudioState::Running
+        {
             let _ = output.suspend();
+        }
+        if let Some(service) = &mut self.service {
+            service.set_output_suspended(true);
         }
         self.output_failure();
     }
     fn resume(&mut self) {
         self.suspended = false;
+        if let Some(service) = &mut self.service {
+            service.set_output_suspended(false);
+        }
         for entry in self.entries.values_mut() {
             entry.refresh_deadlines(false);
         }
@@ -1162,9 +1179,7 @@ impl MediaBackend for MediaPlayer {
         for entry in self.movies.entries.values() {
             entry.pause(entry.paused);
         }
-        if let Some(output) = &mut self.output {
-            let _ = output.resume();
-        }
+        self.maintain_output();
         self.output_failure();
     }
     fn close(&mut self) {

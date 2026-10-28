@@ -93,6 +93,20 @@ pub(super) struct Movie {
     poster_result: Option<MediaResult>,
 }
 impl Movie {
+    pub(super) fn dormant_audio(&self) -> bool {
+        self.paused
+            && self
+                .playback
+                .as_ref()
+                .is_some_and(VideoPlayback::audio_pending)
+    }
+    pub(super) fn active_audio(&self) -> bool {
+        !self.paused
+            && self
+                .playback
+                .as_ref()
+                .is_some_and(VideoPlayback::audio_pending)
+    }
     pub fn position(&self) -> Duration {
         self.playback
             .as_ref()
@@ -342,10 +356,12 @@ impl MediaPlayer {
             let Some(playback) = &mut movie.playback else {
                 continue;
             };
-            if self
-                .service
-                .as_ref()
-                .is_some_and(AudioActivityService::can_play_video_audio)
+            if !movie.paused
+                && !self.suspended
+                && self
+                    .service
+                    .as_ref()
+                    .is_some_and(AudioActivityService::can_play_video_audio)
                 && let Some(sound) = playback.take_audio()
                 && let Err(error) = self.play_video_audio(sound)
             {

@@ -128,13 +128,21 @@ pub(super) fn decode(
         }
         if let Some(packet) = pending.as_mut() {
             let (producer, _, position) = audio.as_mut().unwrap();
-            if packet.publish(producer, position, end) {
+            let before = *position;
+            let complete = packet.publish(producer, position, end);
+            if *position > before && !shared.transport.audio_ready.swap(true, Ordering::AcqRel) {
+                shared.wake.wake();
+            }
+            if complete {
                 let returned = pending.take().unwrap();
                 decoder.recycle_audio(returned.packet, returned._storage);
             }
         }
-        if pending.is_none() && decoder.audio_finished() {
-            shared.transport.audio_end.store(true, Ordering::Release);
+        if pending.is_none()
+            && decoder.audio_finished()
+            && !shared.transport.audio_end.swap(true, Ordering::AcqRel)
+        {
+            shared.wake.wake();
         }
         if eof && pending.is_none() {
             return Ok(());
@@ -171,7 +179,11 @@ pub(super) fn decode(
             }
             // PCM consumption is lock-free and does not signal this event.
             // Picture retirement and control changes provide retained wakes.
-            let timeout = audio.as_ref().map(|_| Duration::from_millis(5));
+            let timeout = audio.as_ref().and_then(|_| {
+                (!shared.transport.paused.load(Ordering::Acquire)
+                    && shared.state.lock().unwrap().audio.is_none())
+                .then_some(Duration::from_millis(5))
+            });
             shared.available.wait(timeout)?;
             continue;
         }

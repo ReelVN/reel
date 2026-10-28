@@ -178,6 +178,16 @@ fn pause_parks_resume_and_start_rearm_and_future_queue_progresses_without_contro
     playback.resume();
     let before = control.waits.load(Ordering::Acquire);
     wait(|| control.waits.load(Ordering::Acquire) > before + 1);
+    playback.suspend_decode(true);
+    parked(&control);
+    assert!(
+        !playback.paused,
+        "system output suspension must preserve business state"
+    );
+    assert!(!playback.is_stopped());
+    playback.suspend_decode(false);
+    let before = control.waits.load(Ordering::Acquire);
+    wait(|| control.waits.load(Ordering::Acquire) > before + 1);
     let next = prepare(
         &pool,
         Arc::new(AtomicUsize::new(0)),

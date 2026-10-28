@@ -11,6 +11,7 @@ use reel_engine::{
     audio::AudioLoopRegion,
 };
 use std::{cell::RefCell, rc::Rc, time::Instant};
+mod idle;
 mod rate;
 
 #[derive(Clone)]

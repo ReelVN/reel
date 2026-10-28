@@ -720,6 +720,7 @@ impl KiraMixer {
                     queue_slot,
                     started: std::sync::atomic::AtomicBool::new(!held),
                     paused: false,
+                    output_suspended: false,
                 }
                 .with_decode_mode())
             }
@@ -885,15 +886,23 @@ pub struct Playback {
     queue_slot: usize,
     started: std::sync::atomic::AtomicBool,
     paused: bool,
+    output_suspended: bool,
 }
 impl Playback {
     fn with_decode_mode(self) -> Self {
         self.sync_decode();
         self
     }
+    pub(crate) fn suspend_decode(&mut self, suspended: bool) {
+        self.output_suspended = suspended;
+        self.sync_decode();
+    }
     pub(crate) fn sync_decode(&self) {
         let current = self.handle.queue_cursor().0;
-        let active = self.started.load(Ordering::Acquire) && !self.paused && !self.is_stopped();
+        let active = self.started.load(Ordering::Acquire)
+            && !self.paused
+            && !self.output_suspended
+            && !self.is_stopped();
         for (index, bounds) in &self.bounds {
             if let Some(control) = bounds.control.as_ref().and_then(std::sync::Weak::upgrade) {
                 control.mode(active && *index == current, active && *index > current);
