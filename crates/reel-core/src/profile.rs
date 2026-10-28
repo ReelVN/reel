@@ -45,8 +45,10 @@ pub enum Phase {
     VmSlice,
     /// External native dispatch, including continuation resumes.
     HostCall,
+    /// Ordered copies between GPU-resident textures; includes submission CPU time.
+    TextureCopy,
 }
-pub const NAMES: [&str; 35] = [
+pub const NAMES: [&str; 36] = [
     "input",
     "tick",
     "session",
@@ -82,6 +84,7 @@ pub const NAMES: [&str; 35] = [
     "retained_plan",
     "vm_slice",
     "host_call",
+    "texture_copy",
 ];
 
 /// Record retained-result reuse and the dependency bytes encoded for its key.
