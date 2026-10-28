@@ -3,8 +3,9 @@
 pub struct Limits {
     /// Cached image, glyph atlas and persistent draw resources, in bytes.
     pub resource_bytes: u64,
-    /// Simultaneous physical RGBA8 render targets, in bytes. Defaults to 48 MiB;
-    /// storage is charged on demand within the shared total ceiling.
+    /// Simultaneous physical RGBA8 render targets, in bytes. Defaults to 64 MiB,
+    /// leaving 24 MiB of the native CDRAM pixel arena for glyphs and other pixels.
+    /// Storage is charged on demand within the shared total ceiling.
     pub target_bytes: u64,
     /// CPU staging, in-flight geometry and evictable completed geometry, in bytes.
     pub transient_bytes: u64,
@@ -20,7 +21,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             resource_bytes: 64 << 20,
-            target_bytes: 48 << 20,
+            target_bytes: 64 << 20,
             transient_bytes: 8 << 20,
             total_bytes: 96 << 20,
             max_inflight: 2,
