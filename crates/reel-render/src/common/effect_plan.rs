@@ -1,5 +1,6 @@
 //! Shared parameter, coordinate and resource admission for prepared effects.
 pub(crate) mod implicit_mesh;
+pub(crate) mod roi;
 #[cfg(test)]
 mod terminal_tests;
 use super::GpuError;

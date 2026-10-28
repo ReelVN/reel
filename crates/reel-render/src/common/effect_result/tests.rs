@@ -56,6 +56,7 @@ fn grid() -> Grid {
         effect_transform: affine(Affine::IDENTITY),
         source_size: [32, 32],
         source_storage: [32, 32],
+        source_scissor: [0, 0, 32, 32],
         output_size: [32, 32],
         output_storage: [32, 32],
         scissor: [0, 0, 32, 32],
@@ -102,6 +103,9 @@ fn key_preserves_recording_and_exact_dependency_bits() {
     assert!(!key.matches(&probe(&effect, changed_grid, scene.clone())));
     changed_grid = grid();
     changed_grid.output_storage[0] += 1;
+    assert!(!key.matches(&probe(&effect, changed_grid, scene.clone())));
+    changed_grid = grid();
+    changed_grid.source_scissor[2] -= 1;
     assert!(!key.matches(&probe(&effect, changed_grid, scene.clone())));
     changed_grid = grid();
     changed_grid.scissor[2] -= 1;

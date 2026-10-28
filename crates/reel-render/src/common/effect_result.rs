@@ -33,6 +33,8 @@ pub(crate) struct Grid {
     pub effect_transform: [u64; 6],
     pub source_size: [u32; 2],
     pub source_storage: [u32; 2],
+    /// Validly drawn source pixels; the rest of its storage remains transparent.
+    pub source_scissor: [u32; 4],
     pub output_size: [u32; 2],
     pub output_storage: [u32; 2],
     pub scissor: [u32; 4],

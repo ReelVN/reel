@@ -848,6 +848,23 @@ impl Input<'_> {
                                     at,
                                 )?
                             };
+                            let output_scissor = Scissor::group_bounds(
+                                group,
+                                current.transform,
+                                current.size,
+                                current.transitions_enabled
+                                    && !current.drawing.transitions().is_empty(),
+                            )
+                            .map_or(parent_scissor, |s| parent_scissor.intersect(s));
+                            let source_scissor = super::effect_plan::roi::source_scissor(
+                                current.drawing,
+                                group,
+                                current.transform * group.effect_to_target,
+                                current.size,
+                                output_scissor,
+                                source.size,
+                                schedule.storage_size(source.size),
+                            );
                             forward_source = current.groups.is_source_child(current.next - 1)
                                 && current.scopes.last().is_some_and(|scope| scope.isolated)
                                 && super::effect_plan::forwards_source(
@@ -859,7 +876,7 @@ impl Input<'_> {
                             let restore = (current.transform, current.size);
                             current.transform = source.frame_to_source;
                             current.size = source.size;
-                            current.scissor = Scissor::full(source.size);
+                            current.scissor = source_scissor;
                             Some(restore)
                         } else {
                             current.scissor = Scissor::group_bounds(

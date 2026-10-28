@@ -116,20 +116,29 @@ impl Context<'_> {
         effect: &FrameEffect,
         transform: Affine,
         source: &Target,
-        source_commands: Option<(std::ops::Range<usize>, Affine)>,
+        source_commands: Option<(
+            std::ops::Range<usize>,
+            Affine,
+            crate::common::scissor::Scissor,
+        )>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         use crate::common::effect_result::{Grid, Probe};
         self.flush_draws()?;
         let proof_transform = source_commands
             .as_ref()
-            .map_or(Affine::IDENTITY, |(_, value)| *value);
+            .map_or(Affine::IDENTITY, |(_, value, _)| *value);
+        let region = source_commands.as_ref().map_or(
+            crate::common::scissor::Scissor::full(source.size),
+            |(_, _, region)| *region,
+        );
         let (source_transform, effect_transform) = Grid::transforms(proof_transform, transform);
         let grid = Grid {
             source_transform,
             effect_transform,
             source_size: source.size,
             source_storage: source.view.size(),
+            source_scissor: [region.x, region.y, region.width, region.height],
             output_size: self.size,
             output_storage: self.offscreen.storage_size(self.size),
             scissor: [
@@ -147,7 +156,7 @@ impl Context<'_> {
         {
             if let Some(token) = source.effect_token() {
                 Some(Probe::from_output(token, effect, grid))
-            } else if let Some((commands, _)) = source_commands {
+            } else if let Some((commands, _, _)) = source_commands {
                 Probe::new(drawing, commands, effect, grid)
             } else {
                 None

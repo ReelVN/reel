@@ -2,6 +2,25 @@
 use super::*;
 use crate::common::offscreen::ParentStep;
 impl Stream<'_> {
+    pub(super) fn source_commands(
+        &self,
+        group: &Scope<'_>,
+        capture: bool,
+    ) -> Option<(std::ops::Range<usize>, Affine, Scissor)> {
+        group
+            .source_input
+            .filter(|_| {
+                group.isolated
+                    && !group.shared_source
+                    && group.mask_effect.is_none()
+                    && group.delayed.is_none()
+                    && !capture
+                    && self.drawing.transitions().is_empty()
+                    && self.drawing.capture_exclusions().is_empty()
+            })
+            .zip(self.offset)
+            .map(|((push, raster, region), offset)| (push..offset + self.next, raster, region))
+    }
     pub(super) fn draw_selected(&self, plan: &crate::common::retained::Plan, index: usize) -> bool {
         self.offset
             .is_none_or(|offset| plan.selected(self.drawing, offset + index))

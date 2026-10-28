@@ -185,20 +185,25 @@ impl Context<'_> {
         effect: &FrameEffect,
         transform: Affine,
         source: &Target,
-        source_commands: Option<(std::ops::Range<usize>, Affine)>,
+        source_commands: Option<(std::ops::Range<usize>, Affine, super::targets::Scissor)>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         use crate::common::effect_result::{Grid, Probe};
         self.flush_draws()?;
         let proof_transform = source_commands
             .as_ref()
-            .map_or(Affine::IDENTITY, |(_, value)| *value);
+            .map_or(Affine::IDENTITY, |(_, value, _)| *value);
+        let region = source_commands.as_ref().map_or(
+            super::targets::Scissor::full(source.size),
+            |(_, _, region)| *region,
+        );
         let (source_transform, effect_transform) = Grid::transforms(proof_transform, transform);
         let grid = Grid {
             source_transform,
             effect_transform,
             source_size: source.size,
             source_storage: source.storage_size(),
+            source_scissor: [region.x, region.y, region.width, region.height],
             output_size: self.size,
             output_storage: self.offscreen.storage_size(self.size),
             scissor: [
@@ -237,7 +242,7 @@ impl Context<'_> {
         {
             if let Some(token) = source.effect_token() {
                 Some(Probe::from_output(token, effect, grid))
-            } else if let Some((commands, _)) = source_commands {
+            } else if let Some((commands, _, _)) = source_commands {
                 Probe::new(drawing, commands, effect, grid)
             } else {
                 None
@@ -444,6 +449,12 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(output);
         }
+        #[cfg(test)]
+        crate::common::effect_plan::roi::testing::observe(
+            effect.definition,
+            self.size,
+            self.scissor,
+        );
         if let Some(mask) = coverage {
             self.ensure_sampled(&mask.view);
         }
@@ -627,5 +638,7 @@ impl Context<'_> {
     }
 }
 
+#[cfg(test)]
+mod roi_tests;
 #[cfg(test)]
 mod tests;

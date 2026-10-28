@@ -62,7 +62,7 @@ pub(super) struct Context<'a> {
     pub(super) geometry: Vec<super::geometry::Storage>,
 }
 struct Scope<'a> {
-    source_input: Option<(usize, Affine)>,
+    source_input: Option<(usize, Affine, Scissor)>,
     clip_child: Option<&'a reel_ui::frame::FrameGroup>,
     delayed: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation, f32)>,
     group: Option<&'a reel_ui::frame::FrameGroup>,
@@ -625,6 +625,7 @@ impl Context<'_> {
                             .flatten()
                     });
                     let mut forward_source = false;
+                    let mut effect_source_scissor = None;
                     let source_parent = if let Some(view) = source_view {
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, view.parent_rect);
@@ -654,6 +655,16 @@ impl Context<'_> {
                                 at,
                             )?
                         };
+                        effect_source_scissor =
+                            Some(crate::common::effect_plan::roi::source_scissor(
+                                current.drawing,
+                                group,
+                                transform * group.effect_to_target,
+                                self.size,
+                                output_scissor,
+                                source.size,
+                                self.offscreen.storage_size(source.size),
+                            ));
                         forward_source = current.groups.is_source_child(current.next - 1)
                             && current.scopes.last().isolated
                             && crate::common::effect_plan::forwards_source(
@@ -680,13 +691,20 @@ impl Context<'_> {
                     } else {
                         None
                     };
+                    let source_scissor = if let Some(view) = source_view {
+                        view.source_rect
+                    } else if source_parent.is_some() {
+                        effect_source_scissor.unwrap_or(Scissor::full(self.size))
+                    } else {
+                        output_scissor
+                    };
                     current.scopes.push(
                         Kind::Group,
                         at,
                         Scope {
-                            source_input: current
-                                .offset
-                                .map(|offset| (offset + current.next - 1, current.transform)),
+                            source_input: current.offset.map(|offset| {
+                                (offset + current.next - 1, current.transform, source_scissor)
+                            }),
                             group: Some(group),
                             clip_child: None,
                             delayed: None,
@@ -733,13 +751,7 @@ impl Context<'_> {
                             opacity: group.composite.alpha,
                             invert: group.invert,
                             blend: group.composite.blend,
-                            scissor: if let Some(view) = source_view {
-                                view.source_rect
-                            } else if source_parent.is_some() {
-                                Scissor::full(self.size)
-                            } else {
-                                output_scissor
-                            },
+                            scissor: source_scissor,
                             isolated,
                         },
                         |bytes| self.transient(bytes),
@@ -753,19 +765,7 @@ impl Context<'_> {
                     };
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
-                    let source_commands = group
-                        .source_input
-                        .filter(|_| {
-                            group.isolated
-                                && !group.shared_source
-                                && group.mask_effect.is_none()
-                                && group.delayed.is_none()
-                                && !self.capture
-                                && current.drawing.transitions().is_empty()
-                                && current.drawing.capture_exclusions().is_empty()
-                        })
-                        .zip(current.offset)
-                        .map(|((push, raster), offset)| (push..offset + current.next, raster));
+                    let source_commands = current.source_commands(&group, self.capture);
                     if group.isolated {
                         self.flush_draws()?;
                     }

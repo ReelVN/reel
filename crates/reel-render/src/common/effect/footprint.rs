@@ -98,8 +98,8 @@ pub fn source_footprint(program: &EffectProgram) -> Option<EffectSourceFootprint
                 }
                 EffectOp::SourceSample { uv } => {
                     sampled = true;
-                    for axis in 0..2 {
-                        let offset = match values[uv.0 as usize][axis] {
+                    for (axis, &term) in values[uv.0 as usize][..2].iter().enumerate() {
+                        let offset = match term {
                             Term::Uv(a) if a == axis as u8 => 0.,
                             Term::Coordinate(a, delta) if a == axis as u8 => delta,
                             _ => return None,
