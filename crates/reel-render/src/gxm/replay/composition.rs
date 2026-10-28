@@ -1,6 +1,45 @@
 use super::*;
 
 impl Context<'_> {
+    fn copy_backdrop(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        read: Scissor,
+        write: Scissor,
+    ) -> Result<bool, GpuError> {
+        if target.view.format() != native::TextureFormat::Rgba8
+            || source.view.format() != native::TextureFormat::Rgba8
+            || target.same_allocation(source)
+        {
+            return Ok(false);
+        }
+        let Some(region) = crate::common::backdrop_copy::Region::new(
+            source.view.size(),
+            target.view.size(),
+            read,
+            write,
+            1,
+        ) else {
+            return Ok(false);
+        };
+        self.ensure_sampled(&source.view)?;
+        if region.overwrites_destination(target.view.size()) {
+            self.target_writes.take(target.slot);
+        } else {
+            self.ensure_target(target)?;
+        }
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TextureCopy);
+        self.gpu.copy_texture(
+            &source.view,
+            region.source_origin,
+            &target.view,
+            region.destination_origin,
+            region.extent,
+        )?;
+        Ok(true)
+    }
+
     pub fn combine(
         &mut self,
         target: &Target,
@@ -174,21 +213,23 @@ impl Context<'_> {
         backdrop.size = view.storage_size;
         self.size = view.storage_size;
         self.scissor = view.source_rect;
-        self.composition(
-            &backdrop,
-            Composition {
-                source: target,
-                mask: target,
-                backdrop: target,
-                backdrop_origin: [0; 2],
-                alpha: 1.,
-                invert: 0.,
-                operation: CompositeOperation::SourceOver,
-                blend: 0,
-                expression: None,
-                source_origin: view.origin().map(|coordinate| -coordinate),
-            },
-        )?;
+        if !self.copy_backdrop(&backdrop, target, view.parent_rect, view.source_rect)? {
+            self.composition(
+                &backdrop,
+                Composition {
+                    source: target,
+                    mask: target,
+                    backdrop: target,
+                    backdrop_origin: [0; 2],
+                    alpha: 1.,
+                    invert: 0.,
+                    operation: CompositeOperation::SourceOver,
+                    blend: 0,
+                    expression: None,
+                    source_origin: view.origin().map(|coordinate| -coordinate),
+                },
+            )?;
+        }
         self.size = size;
         self.scissor = scissor;
         self.composition(
@@ -244,14 +285,16 @@ impl Context<'_> {
         };
         let backdrop = if blend != 0 {
             let backdrop = self.target()?;
-            self.combine(
-                &backdrop,
-                target,
-                target,
-                1.,
-                0.,
-                CompositeOperation::SourceOver,
-            )?;
+            if !self.copy_backdrop(&backdrop, target, self.scissor, self.scissor)? {
+                self.combine(
+                    &backdrop,
+                    target,
+                    target,
+                    1.,
+                    0.,
+                    CompositeOperation::SourceOver,
+                )?;
+            }
             Some(backdrop)
         } else {
             None
