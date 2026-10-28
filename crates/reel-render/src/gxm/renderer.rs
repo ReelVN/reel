@@ -82,12 +82,14 @@ pub struct Backend {
 impl Backend {
     /// Create the device and notify the host after display completion.
     /// The wake callback only signals the host; graphics work stays on this thread.
+    /// The optional MAIN pool charges kernel blocks, independent of renderer payload limits.
     #[cfg(target_os = "vita")]
     pub fn new(
         options: Options,
         wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+        main_budget: Option<reel_core::budget::BudgetPool>,
     ) -> Result<Self, GpuError> {
-        let context = super::create_context(&options, wake).map_err(native_error)?;
+        let context = super::create_context(&options, wake, main_budget).map_err(native_error)?;
         Self::with_context(context, options)
     }
 

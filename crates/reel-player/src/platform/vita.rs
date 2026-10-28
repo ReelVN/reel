@@ -20,7 +20,7 @@ use crate::{
     player::{Player, PlayerOptions},
 };
 use reel_core::{
-    budget::QueueLimits,
+    budget::{BudgetCategory, BudgetGroup, QueueLimits},
     clock::{Clock, MonoTime, UnixMillis},
     wake::WakeSignal,
     window::{WindowCapabilities, WindowConfiguration, WindowInfo, WindowPlatform, WindowSize},
@@ -424,7 +424,11 @@ fn close_backend<T>(result: Result<T, Error>, backend: GxmBackend) -> Result<T, 
     }
 }
 
+// Unmanaged SDK allocations remain outside this ledger. Calibrate the reserve
+// from device evidence; zero preserves the currently configured allowance.
+const KERNEL_MAIN_UNMANAGED_RESERVE_BYTES: u64 = 0;
 struct NativeLoop {
+    _kernel_main: BudgetGroup,
     host: VitaHost,
     wake: Arc<Wake>,
     power: PowerEvents,
@@ -444,16 +448,30 @@ impl NativeLoop {
         let wake = Wake::new()?;
         let power = PowerEvents::new(wake.clone())?;
         let controls = native::input::Input::new()?;
+        let free = native::memory::free_memory()?;
+        let capacity = free
+            .main_bytes
+            .saturating_sub(KERNEL_MAIN_UNMANAGED_RESERVE_BYTES);
+        let kernel_main = BudgetGroup::new(capacity);
+        let main_pool = kernel_main.pool(
+            BudgetCategory::GpuResource,
+            QueueLimits {
+                max_requests: u32::MAX,
+                max_bytes: capacity,
+            },
+        );
         let display_wake = wake.clone();
         let backend = GxmBackend::new(
             GxmOptions::default(),
             Some(Arc::new(move || {
                 let _ = display_wake.signal();
             })),
+            Some(main_pool),
         )?;
         let host = VitaHost::new(backend.output_size(), wake.clone());
         Ok((
             Self {
+                _kernel_main: kernel_main,
                 host,
                 wake,
                 power,
@@ -473,6 +491,7 @@ impl NativeLoop {
             wake,
             power,
             controls,
+            ..
         } = self;
         // Carry held input through the boundary until release. A launch-confirm press
         // must not become a second confirmation in the newly mounted game.

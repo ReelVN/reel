@@ -33,11 +33,34 @@ macro_rules! shader_code {
 }
 mod renderer;
 
+struct MainBudget(reel_core::budget::BudgetPool);
+impl vita_native::memory::MemoryBudget for MainBudget {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<
+        Box<dyn vita_native::memory::MemoryReservation>,
+        vita_native::memory::MemoryBudgetError,
+    > {
+        self.0
+            .reserve(bytes)
+            .map(|ticket| Box::new(ticket) as Box<dyn vita_native::memory::MemoryReservation>)
+            .map_err(|error| match error.code {
+                reel_core::result::RejectCode::Busy => {
+                    vita_native::memory::MemoryBudgetError::Capacity(error.message)
+                }
+                _ => vita_native::memory::MemoryBudgetError::Other(error.message),
+            })
+    }
+}
+
 /// Create a native device with Reel's offline clear programs. Hosts that issue
 /// native commands directly use the same initialization as the frame executor.
+/// An optional MAIN pool accounts rounded native blocks through physical release.
 pub fn create_context(
     options: &GxmOptions,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    main_budget: Option<reel_core::budget::BudgetPool>,
 ) -> Result<native::Context, native::Error> {
     let config = native::Config {
         pixel_arena_bytes: options
@@ -60,6 +83,10 @@ pub fn create_context(
             clip_uniform: "reel_clip_rect",
         },
         wake,
+        main_budget.map(|pool| {
+            std::sync::Arc::new(MainBudget(pool))
+                as std::sync::Arc<dyn vita_native::memory::MemoryBudget>
+        }),
     )
 }
 

@@ -17,11 +17,19 @@ use vita_native::{
 #[derive(Debug)]
 struct NativeBudget(BudgetPool);
 impl MemoryBudget for NativeBudget {
-    fn reserve(&self, bytes: u64) -> Result<Box<dyn MemoryReservation>, String> {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<Box<dyn MemoryReservation>, vita_native::memory::MemoryBudgetError> {
         self.0
             .reserve(bytes)
             .map(|ticket| Box::new(ticket) as Box<dyn MemoryReservation>)
-            .map_err(|error| error.message)
+            .map_err(|error| match error.code {
+                reel_core::result::RejectCode::Busy => {
+                    vita_native::memory::MemoryBudgetError::Capacity(error.message)
+                }
+                _ => vita_native::memory::MemoryBudgetError::Other(error.message),
+            })
     }
 }
 
