@@ -269,8 +269,9 @@ impl StoryRuntime {
     }
 
     /// Next absolute host-clock wake, or `None` while idle or suspended.
-    /// Story timers remain anchored to the latest logical-time sample; media
-    /// polling and runnable work keep their relative maintenance intervals.
+    /// Ready VM, GC and sampled activity continuations resume immediately. Story
+    /// timers stay anchored to the latest logical-time sample; external work
+    /// retains its maintenance polling interval.
     pub fn wake_deadline(
         &self,
         now: reel_core::clock::MonoTime,
@@ -281,6 +282,15 @@ impl StoryRuntime {
         };
         if !self.needs_tick() {
             return None;
+        }
+        if self.starting.is_none()
+            && self.capture.is_none()
+            && self.saves.as_ref().is_none_or(|s| !s.busy())
+            && self.suspended_at.is_none()
+            && !self.driver().cleanup_pending()
+            && (self.runnable || self.collecting || self.driver().activities_pending())
+        {
+            return Some(now);
         }
         if self.short_poll() {
             return Some(MonoTime(after(now.0, std::time::Duration::from_millis(1))));
