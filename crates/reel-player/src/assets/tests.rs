@@ -33,10 +33,8 @@ pub(crate) fn prepared_effect_assets(
         let input = BudgetPool::new(BudgetCategory::CpuInput, limits);
         let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
         for definition in products.definitions() {
-            for (language, format) in [
-                (Language::Wgsl, EffectShaderFormat::Wgsl),
-                (Language::GlslEs100, EffectShaderFormat::GlslEs100),
-            ] {
+            {
+                let (language, format) = (Language::Wgsl, EffectShaderFormat::Wgsl);
                 let fragment = compile_fragment(&definition.program, language, 4 << 20).unwrap();
                 let descriptor = EffectShaderDescriptor::with_textures(
                     definition.id,
@@ -89,6 +87,8 @@ fn prepared_texture_preserves_blocks_and_uses_bounded_workspace() {
         TextureFormat::Bc3Rgba,
     ] {
         let descriptor = TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout {
@@ -183,6 +183,8 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
         }
     }
     let descriptor = TextureDescriptor {
+        storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+        mip_count: 1,
         format: TextureFormat::Bc3Rgba,
         source_encoding: ColorEncoding::Linear,
         layout: TextureLayout::identity([64, 64]),

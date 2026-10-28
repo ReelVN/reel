@@ -90,6 +90,7 @@ enum Phase {
     Done(MediaResult),
 }
 struct Entry {
+    io_deadline: Option<reel_core::io::ReadDeadline>,
     request: AudioRequest,
     phase: Phase,
     paused: bool,
@@ -103,6 +104,7 @@ struct Entry {
     _queue_storage: BudgetTicket,
 }
 struct Segment {
+    io_deadline: Option<reel_core::io::ReadDeadline>,
     item: u64,
     key: u64,
     request: AudioQueueItem,
@@ -110,6 +112,31 @@ struct Segment {
     descriptor: BudgetTicket,
 }
 impl Entry {
+    fn refresh_deadlines(&mut self, suspended: bool) {
+        fn capture(phase: &Phase, deadline: &mut Option<reel_core::io::ReadDeadline>) {
+            if deadline.is_none()
+                && let Phase::Queued(control) = phase
+            {
+                *deadline = Some(control.read_deadline());
+            }
+        }
+        capture(&self.phase, &mut self.io_deadline);
+        if let Some(deadline) = &self.io_deadline {
+            deadline.rate(self.request.rate.value.max(self.request.rate.target));
+            deadline.pause(
+                suspended
+                    || self.paused
+                    || !self.started
+                    || !matches!(self.phase, Phase::Playing(_)),
+            );
+        }
+        for segment in &mut self.queue {
+            capture(&segment.phase, &mut segment.io_deadline);
+            if let Some(deadline) = &segment.io_deadline {
+                deadline.pause(true);
+            }
+        }
+    }
     fn observe(&mut self, state: &reel_media::AudioActivitySnapshot<'_>) {
         self.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
         self.request.rate = state.rate;
@@ -121,6 +148,7 @@ impl Entry {
             .is_some_and(|segment| segment.item <= item)
         {
             let segment = self.queue.pop_front().unwrap();
+            self.io_deadline = segment.io_deadline;
             self.item = segment.item;
             self.key = segment.key;
             self.request.source = segment.request.source;
@@ -318,6 +346,7 @@ impl MediaPlayer {
                                     length,
                                     request.pool,
                                     reel_media::DecodeLimits {
+                                        io_deadline: Some(control.read_deadline()),
                                         static_threshold: request.threshold,
                                         window_frames: request.window,
                                     },
@@ -667,6 +696,7 @@ impl MediaBackend for MediaPlayer {
         self.entries.insert(
             id,
             Entry {
+                io_deadline: None,
                 request,
                 phase: Phase::Loading,
                 paused,
@@ -716,6 +746,7 @@ impl MediaBackend for MediaPlayer {
         }
         self.next = key;
         entry.queue.push_back(Segment {
+            io_deadline: None,
             item,
             key: self.next,
             request,
@@ -827,6 +858,7 @@ impl MediaBackend for MediaPlayer {
                 return Err("finish is available for finite video playback".into());
             }
         }
+        entry.refresh_deadlines(self.suspended);
         Ok(())
     }
     fn group_volume(
@@ -931,6 +963,7 @@ impl MediaBackend for MediaPlayer {
                     &mut segment.descriptor,
                 );
             }
+            entry.refresh_deadlines(self.suspended);
             if !entry.paused && matches!(entry.phase, Phase::Ready(_, _)) {
                 let Phase::Ready(version, sound) =
                     std::mem::replace(&mut entry.phase, Phase::Loading)
@@ -1014,6 +1047,7 @@ impl MediaBackend for MediaPlayer {
                     entry.started = true;
                 }
             }
+            entry.refresh_deadlines(self.suspended);
             let failure = entry
                 .queue
                 .iter()
@@ -1107,6 +1141,9 @@ impl MediaBackend for MediaPlayer {
     }
     fn suspend(&mut self) {
         self.suspended = true;
+        for entry in self.entries.values_mut() {
+            entry.refresh_deadlines(true);
+        }
         #[cfg(feature = "video")]
         for entry in self.movies.entries.values() {
             entry.pause(true);
@@ -1118,6 +1155,9 @@ impl MediaBackend for MediaPlayer {
     }
     fn resume(&mut self) {
         self.suspended = false;
+        for entry in self.entries.values_mut() {
+            entry.refresh_deadlines(false);
+        }
         #[cfg(feature = "video")]
         for entry in self.movies.entries.values() {
             entry.pause(entry.paused);

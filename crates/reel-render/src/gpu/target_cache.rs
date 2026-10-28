@@ -75,7 +75,7 @@ mod tests {
             assert_eq!(budgets.targets.usage().peak_bytes, expected);
         }
         drop(first[1].take());
-        for _ in 0..2 {
+        for _ in 0..32 {
             cache.publish([960, 544], quality, &[first[0].as_ref().unwrap().clone()]);
         }
         assert_eq!(budgets.targets.usage().bytes, 32 * 32 * 4);
@@ -102,6 +102,82 @@ mod tests {
         assert_eq!(budgets.targets.usage().bytes, 0);
         gpu.check().unwrap();
     }
+
+    #[test]
+    #[ignore = "native target allocation measurement; no drawing or readback"]
+    fn continuous_bounds_capacity_cost() {
+        use crate::common::{target_plan::Requirements, target_storage};
+        let limits = super::super::GpuLimits::default();
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            limits,
+        ))
+        .unwrap();
+        let quality = Quality {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            samples: 1,
+            degraded: false,
+        };
+        let root = [960, 544];
+        for bucketed in [false, true] {
+            let budgets = Budgets::new(limits);
+            let cache = TargetCache::default();
+            cache.configure(root, quality);
+            let mut previous = std::sync::Weak::new();
+            let mut allocations = 0;
+            let began = std::time::Instant::now();
+            for frame in 0..256 {
+                let logical = [481 + frame % 32, 384];
+                let exact = Requirements::collect([(logical, 1)].into_iter(), |_| Ok(())).unwrap();
+                let plan = if bucketed {
+                    target_storage::Plan::capacities(
+                        &exact,
+                        root,
+                        4096,
+                        limits.target_bytes,
+                        &|size| super::super::targets::target_bytes(size, quality),
+                        |_| Ok(()),
+                    )
+                    .unwrap()
+                } else {
+                    None
+                };
+                let (size, required) = plan.as_ref().map_or((logical, &exact), |(plan, _)| {
+                    (plan.storage_size(logical), plan.requirements())
+                });
+                let bytes = super::super::targets::target_bytes(size, quality).unwrap();
+                let allocation = cache
+                    .get(&gpu, size, quality, 0, &budgets.targets, bytes, required)
+                    .unwrap();
+                allocations += usize::from(
+                    !previous
+                        .upgrade()
+                        .is_some_and(|old| Arc::ptr_eq(&old, &allocation)),
+                );
+                previous = Arc::downgrade(&allocation);
+                let used = [allocation];
+                cache.reserve_metadata(
+                    root,
+                    quality,
+                    &used,
+                    &budgets.transient,
+                    limits.transient_bytes,
+                );
+                cache.publish(root, quality, &used);
+            }
+            println!(
+                "target_capacity bucketed={bucketed} frames=256 allocations={allocations} elapsed_us={} peak_bytes={}",
+                began.elapsed().as_micros(),
+                budgets.targets.usage().peak_bytes
+            );
+            assert_eq!(allocations, if bucketed { 1 } else { 256 });
+            cache.clear();
+            assert_eq!(budgets.targets.usage().bytes, 0);
+        }
+        gpu.check().unwrap();
+    }
 }
 struct Entries {
     size: [u32; 2],
@@ -109,7 +185,10 @@ struct Entries {
     slots: crate::common::target_cache::Cache<Arc<Allocation>>,
 }
 #[derive(Default)]
-pub(super) struct TargetCache(Mutex<Option<Entries>>);
+pub(super) struct TargetCache(
+    Mutex<Option<Entries>>,
+    pub(super) Mutex<crate::common::scopes::Cache>,
+);
 
 impl TargetCache {
     #[cfg(test)]
@@ -119,6 +198,7 @@ impl TargetCache {
             .unwrap()
             .as_ref()
             .map_or(0, |entries| entries.slots.capacity_bytes())
+            + self.1.lock().unwrap().metadata_bytes()
     }
     pub(super) fn configure(&self, size: [u32; 2], quality: Quality) {
         let mut cache = self.0.lock().unwrap();
@@ -157,22 +237,23 @@ impl TargetCache {
         }
         let mut resident = pool.reserve(cost);
         for recent in [false, true] {
-            if resident.is_ok() {
-                break;
-            }
-            let released = self
-                .0
-                .lock()
-                .unwrap()
-                .as_mut()
-                .filter(|entries| entries.quality == quality)
-                .is_some_and(|entries| {
-                    entries
-                        .slots
-                        .reclaim(required, recent, |owner| Arc::strong_count(owner) == 1)
-                });
-            if released {
-                resident = pool.reserve(cost);
+            while resident.is_err() {
+                let released = self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .filter(|entries| entries.quality == quality)
+                    .is_some_and(|entries| {
+                        entries
+                            .slots
+                            .reclaim(required, recent, |owner| Arc::strong_count(owner) == 1)
+                    });
+                if released {
+                    resident = pool.reserve(cost);
+                } else {
+                    break;
+                }
             }
         }
         let resident = resident.map_err(|_| GpuError::Pressure {
@@ -223,6 +304,15 @@ impl TargetCache {
         {
             entries.slots.submitted();
             for allocation in slots {
+                let size = allocation.target.storage_size();
+                if !entries
+                    .slots
+                    .contains(size, |cached| Arc::ptr_eq(cached, allocation))
+                {
+                    entries.slots.insert(size, allocation.clone());
+                }
+            }
+            for allocation in slots {
                 entries
                     .slots
                     .mark_used(allocation.target.storage_size(), |cached| {
@@ -232,15 +322,6 @@ impl TargetCache {
             entries
                 .slots
                 .prune_cold(|owner| Arc::strong_count(owner) == 1);
-            for allocation in slots {
-                let size = allocation.target.storage_size();
-                if !entries
-                    .slots
-                    .contains(size, |cached| Arc::ptr_eq(cached, allocation))
-                {
-                    entries.slots.insert(size, allocation.clone());
-                }
-            }
         }
     }
 
@@ -253,6 +334,7 @@ impl TargetCache {
     }
 
     pub(super) fn release_idle(&self) {
+        self.1.lock().unwrap().disable();
         if let Some(entries) = self.0.lock().unwrap().as_mut() {
             entries
                 .slots
@@ -261,6 +343,7 @@ impl TargetCache {
     }
 
     pub(super) fn clear(&self) {
+        self.1.lock().unwrap().clear();
         *self.0.lock().unwrap() = None;
     }
 }

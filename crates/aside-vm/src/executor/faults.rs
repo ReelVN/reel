@@ -381,7 +381,9 @@ impl Vm {
                 crate::fault::FAULT_NODE_BYTES
             }
             BuildPhase::Envelope => crate::fault::FAULT_NODE_BYTES,
-            BuildPhase::Stack(n) if (n as usize) < self.active.frames.data.len() => {
+            BuildPhase::Stack(n) | BuildPhase::CompactScriptStack(n)
+                if (n as usize) < self.active.frames.data.len() =>
+            {
                 crate::fault::FAULT_NODE_BYTES
             }
             BuildPhase::Cause if build.seed.explicit.or(build.implicit).is_some() => {
@@ -391,14 +393,30 @@ impl Vm {
             _ => 0,
         };
         let work = match build.phase {
-            BuildPhase::Stack(n) if (n as usize) < self.active.frames.data.len() => {
-                let function = match self.active.frames.data[n as usize] {
-                    Frame::Script(s) => s.code.function,
-                    Frame::Native(n) => n.location.code.function,
+            BuildPhase::Stack(n) | BuildPhase::CompactScriptStack(n)
+                if (n as usize) < self.active.frames.data.len() =>
+            {
+                let (function, extra) = match self.active.frames.data[n as usize] {
+                    Frame::Script(s)
+                        if s.derived_bridge.is_some()
+                            && matches!(build.phase, BuildPhase::Stack(_)) =>
+                    {
+                        let output = self.value(s.env, 3)?;
+                        let function = FunctionId(
+                            self.heap
+                                .host_payload(output, crate::heap::DerivedSlot::Origin as u32)?
+                                .as_int()
+                                .unwrap() as u32,
+                        );
+                        (function, 6)
+                    }
+                    Frame::Script(s) => (s.code.function, 0),
+                    Frame::Native(n) => (n.location.code.function, 0),
                 };
-                crate::bytecode::SourceMapSequence::lookup_work(
-                    &self.program.package().functions[function.index()].source_map,
-                )
+                extra
+                    + crate::bytecode::SourceMapSequence::lookup_work(
+                        &self.program.package().functions[function.index()].source_map,
+                    )
             }
             _ => 1,
         };
@@ -464,13 +482,25 @@ impl Vm {
                 }
                 build.phase = BuildPhase::Stack(0);
             }
-            BuildPhase::Stack(cursor) => {
+            BuildPhase::Stack(cursor) | BuildPhase::CompactScriptStack(cursor) => {
                 if cursor as usize == self.active.frames.data.len() {
                     build.phase = BuildPhase::Cause;
                 } else {
                     let envelope = self.value(self.active.delivery.unwrap(), 0)?;
                     let tail = self.heap.unfinished_stack(envelope)?;
-                    let entry = self.stack_entry(cursor as usize);
+                    let compact = if matches!(build.phase, BuildPhase::Stack(_)) {
+                        match self.active.frames.data[cursor as usize] {
+                            Frame::Script(s) if s.derived_bridge.is_some() => Some(s),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let entry = if let Some(script) = compact {
+                        self.compact_stack_entry(script)?
+                    } else {
+                        self.stack_entry(cursor as usize)
+                    };
                     match self.heap.alloc_fault_node(
                         ObjectKind::FaultStack,
                         FaultData::Stack(entry),
@@ -483,7 +513,11 @@ impl Vm {
                             return Ok(true);
                         }
                     }
-                    build.phase = BuildPhase::Stack(cursor + 1);
+                    build.phase = if compact.is_some() {
+                        BuildPhase::CompactScriptStack(cursor)
+                    } else {
+                        BuildPhase::Stack(cursor + 1)
+                    };
                 }
             }
             BuildPhase::Cause => {

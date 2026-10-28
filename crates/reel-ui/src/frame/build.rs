@@ -66,6 +66,14 @@ impl Building {
             if b.max_commands == 0 {
                 break;
             }
+            if self.job.as_ref().is_some_and(|job| {
+                job.field < 9 && matches!(job.command.op, FrameOp::Draw(FrameDraw::Sprites(_)))
+            }) {
+                if !self.copy_sprites(&mut p, &b)? {
+                    break;
+                }
+                continue;
+            }
             if self.job.is_some() {
                 // Payload elements advance in place; move the full command only at commit.
                 if self.job.as_ref().unwrap().field < 9 {
@@ -319,8 +327,10 @@ impl Building {
         let cursor = self.cursors.last().unwrap();
         let scene = Self::scene(&self.source, cursor).unwrap();
         let command = &scene.commands()[cursor.position];
-        let mut bytes =
-            payload_bytes(scene, command).ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
+        let sprite_bytes = self.sprite_bytes()?;
+        let mut bytes = payload_bytes(scene, command)
+            .and_then(|n| n.checked_add(sprite_bytes))
+            .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
         let stack_bytes = match command {
             Command::PushClip(_) => growth_bytes(&cursor.scopes)
                 .and_then(|n| n.checked_add(growth_bytes(&cursor.clips)?)),
@@ -555,6 +565,7 @@ impl Building {
             &self.resources,
         )
         .map_err(|kind| self.error(kind))?;
+        let op = self.sprite_op(op)?;
         validate_op(&op).map_err(|kind| self.error(kind))?;
         let ink = initial_ink(&op);
         self.job = Some(CopyJob {

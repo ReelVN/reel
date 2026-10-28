@@ -1,0 +1,126 @@
+//! Paint variants are created on first use and retain their native budget lease.
+use super::{BudgetPool, GpuError, NAMES, Shader, create_program_with_vertex, native};
+use std::cell::OnceCell;
+
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    Direct(crate::common::mesh::DirectPaint),
+    Bounded(crate::common::mesh::DirectPaint),
+    Rgba,
+    Coverage,
+    Gradient,
+    GlyphGradient,
+    Appearance,
+    Packed,
+    Video,
+    VideoAppearance,
+}
+impl Kind {
+    fn index(self) -> usize {
+        match self {
+            Self::Direct(direct) => direct as usize,
+            Self::Bounded(direct) => {
+                16 + if direct as usize == 7 {
+                    3
+                } else {
+                    direct as usize
+                }
+            }
+            Self::Rgba => 8,
+            Self::Coverage => 9,
+            Self::Gradient => 10,
+            Self::GlyphGradient => 11,
+            Self::Appearance => 12,
+            Self::Packed => 13,
+            Self::Video => 14,
+            Self::VideoAppearance => 15,
+        }
+    }
+    fn code(self, clipped: bool) -> native::ShaderCode<'static> {
+        macro_rules! pair {
+            ($name:literal) => {
+                if clipped {
+                    shader_code!($name)
+                } else {
+                    native::ShaderCode::GxpBinary(include_bytes!(concat!(
+                        env!("OUT_DIR"),
+                        "/",
+                        $name,
+                        "_unclipped.gxp"
+                    )))
+                }
+            };
+        }
+        match self.index() {
+            0 => pair!("paint_direct"),
+            1 => pair!("paint_direct_bc1"),
+            2 => pair!("paint_direct_bc3"),
+            3 => pair!("paint_regional"),
+            4 => pair!("paint_regional_bc1"),
+            5 => pair!("paint_regional_bc3"),
+            6 => pair!("paint_direct_coverage"),
+            7 => pair!("paint_solid"),
+            8 => pair!("paint_rgba"),
+            9 => pair!("paint_coverage"),
+            10 => pair!("paint_gradient"),
+            11 => pair!("paint_glyph_gradient"),
+            12 => pair!("paint_appearance"),
+            13 => pair!("paint_packed"),
+            14 => pair!("paint_video"),
+            15 => pair!("paint_video_appearance"),
+            16 => pair!("paint_direct_bounded"),
+            17 => pair!("paint_direct_bc1_bounded"),
+            18 => pair!("paint_direct_bc3_bounded"),
+            19 => pair!("paint_solid_bounded"),
+            _ => unreachable!(),
+        }
+    }
+}
+struct Entry {
+    shader: Shader,
+    _storage: super::super::ownership::NativeTicket,
+}
+pub(crate) struct PaintPrograms {
+    entries: [OnceCell<Box<Entry>>; 40],
+    budget: BudgetPool,
+}
+impl PaintPrograms {
+    pub fn new(budget: &BudgetPool) -> Self {
+        Self {
+            entries: std::array::from_fn(|_| OnceCell::new()),
+            budget: budget.clone(),
+        }
+    }
+    pub fn get(
+        &self,
+        device: &super::super::ownership::Device,
+        kind: Kind,
+        clipped: bool,
+    ) -> Result<&Shader, GpuError> {
+        let slot = &self.entries[kind.index() * 2 + usize::from(clipped)];
+        if slot.get().is_none() {
+            let storage = device.ticket(
+                self.budget
+                    .reserve(size_of::<Entry>() as u64)
+                    .map_err(|error| GpuError::Device(error.message))?,
+            );
+            let program = create_program_with_vertex(
+                device,
+                if matches!(kind, Kind::Bounded(_)) {
+                    shader_code!("vertex_bounded")
+                } else {
+                    shader_code!("vertex")
+                },
+                kind.code(clipped),
+                clipped,
+            )?;
+            let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
+            let entry = Box::new(Entry {
+                shader: Shader { program, uniforms },
+                _storage: storage,
+            });
+            assert!(slot.set(entry).is_ok(), "single-threaded program creation");
+        }
+        Ok(&slot.get().unwrap().shader)
+    }
+}

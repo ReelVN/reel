@@ -17,7 +17,7 @@ fn main() -> io::Result<()> {
 
     let texture = [
         "crates/reel-cli/src/prepare_texture.rs",
-        "crates/reel-cli/src/prepare_texture/quality.rs",
+        "crates/reel-cli/src/prepare_texture",
         "crates/reel-core/src/texture.rs",
     ];
     let mut tiles = texture.to_vec();
@@ -44,8 +44,9 @@ fn main() -> io::Result<()> {
     let effects = [
         "crates/reel-cli/src/prepare_effects.rs",
         "crates/reel-render/src/common/effect.rs",
-        "crates/reel-render/src/gles2/shaders/effect_vertex.glsl",
-        "crates/reel-render/src/gles2/shaders/effect_padded_vertex.glsl",
+        "crates/reel-render/src/common/effect",
+        "crates/reel-render/src/gxm/shaders/effect_vertex.cg",
+        "crates/reel-render/src/gxm/shaders/effect_padded_vertex.cg",
         "crates/reel-ui/src/resources/effect.rs",
         "crates/reel-ui/src/stage/effect.rs",
     ];
@@ -95,23 +96,22 @@ fn main() -> io::Result<()> {
             hash.finalize().to_hex()
         );
     }
-    // Shader products depend on their generator and the pinned compiler, not
-    // unrelated image/audio dependencies or the absolute checkout location.
+    // SDK compiler contents and flags are fingerprinted by prepare_effects at
+    // export time, so replacing tools also invalidates an already-built CLI.
     let mut hash = blake3::Hasher::new();
     field(&mut hash, b"Reel effect compiler v1");
+    let mut effect_files = BTreeSet::new();
     for source in effects {
-        let path = root.join(source);
-        watched.insert(path.clone());
-        field(&mut hash, source.as_bytes());
+        collect(&root.join(source), &mut effect_files, &mut watched)?;
+    }
+    for path in effect_files {
+        let relative = path.strip_prefix(&root).map_err(io::Error::other)?;
+        field(
+            &mut hash,
+            relative.to_string_lossy().replace('\\', "/").as_bytes(),
+        );
         field(&mut hash, &fs::read(path)?);
     }
-    let compiler = lock
-        .split("[[package]]")
-        .find(|entry| entry.lines().any(|line| line == "name = \"pvr-compiler\""))
-        .ok_or_else(|| io::Error::other("missing pinned effect compiler"))?;
-    let compiler_id = blake3::hash(compiler.as_bytes()).to_hex();
-    field(&mut hash, compiler_id.as_bytes());
-    println!("cargo:rustc-env=REEL_EFFECT_COMPILER={compiler_id}");
     println!(
         "cargo:rustc-env=REEL_CONVERTER_EFFECT={}",
         hash.finalize().to_hex()

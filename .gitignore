@@ -3,9 +3,7 @@ target/
 /target/reel-artifacts/
 # Project examples keep generated packages beside their source.
 /examples/**/build/
-# Native modules and private probe packages are supplied by their build owners.
-/crates/reel-player/runtime/vita/module/
-/crates/reel-dev/runtime/vita/module/
+# Private probe packages are supplied by their project owners.
 /crates/reel-dev/runtime/vita/authored/
 /crates/reel-dev/runtime/vita/media/
 # Prevent obsolete output locations from being accidentally committed again.

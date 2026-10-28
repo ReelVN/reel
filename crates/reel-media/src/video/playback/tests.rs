@@ -65,6 +65,7 @@ impl VideoDecoder for Interleaved {
         if video {
             self.pictures += 1;
             return Ok(Poll::Ready(Some(DecodedPacket::Video(VideoFrame {
+                storage: None,
                 pts: self.pictures as f64 / 2.,
                 duration: 0.5,
                 width: 2,
@@ -214,4 +215,70 @@ fn split_clock_reads_complete_publications() {
         assert!(values.contains(&clock.load().to_bits()));
     }
     worker.join().unwrap();
+}
+
+#[test]
+fn owned_picture_storage_retains_its_budget_through_shared_cpu_views() {
+    #[derive(Debug)]
+    struct Owned {
+        y: [u8; 4],
+        uv: [u8; 2],
+        _ticket: BudgetTicket,
+    }
+    impl reel_core::image::Yuv420Storage for Owned {
+        fn plane(&self, index: usize) -> &[u8] {
+            match index {
+                0 => &self.y,
+                1 => &self.uv,
+                _ => &[],
+            }
+        }
+        fn native_storage(&self) -> Option<&(dyn std::any::Any + Send + Sync)> {
+            Some(self)
+        }
+    }
+    let budget = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 4,
+            max_bytes: 16,
+        },
+    );
+    let source = Arc::new(Owned {
+        y: [3; 4],
+        uv: [128; 2],
+        _ticket: budget.reserve(6).unwrap(),
+    });
+    let frame = Arc::new(ResidentFrame {
+        frame: VideoFrame {
+            storage: Some(source),
+            pts: 0.,
+            duration: 1.,
+            width: 2,
+            height: 2,
+            layout: Yuv420Layout::Nv12,
+            row_strides: [2, 2, 0],
+            planes: std::array::from_fn(|_| Vec::new()),
+            color: YuvColor {
+                matrix: crate::video::YuvMatrix::Bt709,
+                full_range: false,
+                transfer: crate::video::YuvTransfer::Bt709,
+            },
+        },
+        _ticket: budget.reserve(0).unwrap(),
+    });
+    let image = reel_core::image::Yuv420Image::with_layout(
+        [2, 2],
+        frame.frame.color,
+        Yuv420Layout::Nv12,
+        [2, 2, 0],
+        frame.clone(),
+    )
+    .unwrap();
+    drop(frame);
+    assert_eq!(image.plane(0), [3; 4]);
+    assert!(image.native_storage().unwrap().is::<Owned>());
+    assert_eq!(budget.usage().bytes, 6);
+    drop(image);
+    assert_eq!(budget.usage().bytes, 0);
 }

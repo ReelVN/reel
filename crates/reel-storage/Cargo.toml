@@ -9,7 +9,7 @@ publish = false
 atomic-write-file = "=0.3.1"
 
 [target.'cfg(target_os = "vita")'.dependencies]
-pvr-psp2-sys = { workspace = true, features = ["platform"] }
+vita-native = { workspace = true, features = ["app"] }
 
 [lints]
 workspace = true

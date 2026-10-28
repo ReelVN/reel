@@ -4,7 +4,14 @@ use super::{
     mesh::{Allocation, Mesh, RectClip},
     recording_cache::Reference,
 };
-use std::ops::{Deref, Range};
+#[cfg(test)]
+use std::ops::Deref;
+use std::ops::Range;
+
+mod packing;
+#[cfg(feature = "gxm")]
+pub(crate) use packing::Packed;
+pub(crate) use packing::View;
 
 pub(crate) struct Entry<T> {
     pub range: Range<u32>,
@@ -32,10 +39,12 @@ pub(crate) struct Batch<T> {
 // This temporary upload view stays on the stack; boxing adds an allocation to
 // every cold batch and does not reduce any retained collection.
 #[allow(clippy::large_enum_variant)]
+#[cfg(test)]
 pub(crate) enum Materialized<'a> {
     Borrowed(&'a Mesh),
     Owned(Mesh),
 }
+#[cfg(test)]
 impl Deref for Materialized<'_> {
     type Target = Mesh;
     fn deref(&self) -> &Mesh {
@@ -106,9 +115,11 @@ impl<T> Batch<T> {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub fn materialize(&self) -> Result<Materialized<'_>, GpuError> {
         self.materialize_range(0..self.segments.len())
     }
+    #[cfg(test)]
     pub fn materialize_range(&self, range: Range<usize>) -> Result<Materialized<'_>, GpuError> {
         if range.len() == 1 {
             return Ok(Materialized::Borrowed(&self.segments[range.start].mesh));
@@ -118,6 +129,16 @@ impl<T> Batch<T> {
             mesh.append(&segment.mesh)?;
         }
         Ok(Materialized::Owned(mesh))
+    }
+    pub fn view(&self, range: UploadRange) -> View<'_> {
+        View::new(
+            &self.segments[range.segments],
+            range.vertices.start,
+            self.capacity().index_format,
+        )
+    }
+    pub fn full_view(&self) -> View<'_> {
+        View::new(&self.segments, 0, self.capacity().index_format)
     }
     pub fn capacity(&self) -> super::geometry::Capacity {
         let narrow = self.vertices <= usize::from(u16::MAX) + 1;
@@ -404,6 +425,15 @@ mod tests {
         );
         let middle = changed.materialize_range(1..3).unwrap();
         assert_eq!(middle.indices, [0, 1, 2, 4, 5, 6]);
+        let packed = changed
+            .view(layout.ranges(&changed).next().unwrap())
+            .pack(|_| Ok(()))
+            .unwrap();
+        assert_eq!(
+            bytemuck::cast_slice::<u32, u16>(&packed.indices),
+            [4, 5, 6, 8, 9, 10]
+        );
+        assert_eq!(packed.format, super::super::indices::Format::U16);
         let mut unknown = make([1, 2, 3, 4, 5]);
         for segment in &mut unknown.segments {
             segment.key.identity = None;
@@ -413,5 +443,170 @@ mod tests {
             0,
             "a full upload is selected without retained segments"
         );
+    }
+
+    #[test]
+    fn packed_upload_preserves_vertices_indices_alignment_and_reservation() {
+        use crate::common::{
+            indices::{Format, Upload},
+            mesh::Vertex,
+        };
+        let limits = GpuLimits::default();
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        for count in [1, 2, 65_536, 65_537] {
+            let mut mesh = Mesh::new(Allocation::new(
+                &shared,
+                &local,
+                limits.transient_bytes,
+                1 << 26,
+            ));
+            mesh.vertices.resize(
+                count,
+                Vertex {
+                    position: [0.5, -0.5],
+                    uv: [0.2, 0.7],
+                    color: [0.1, 0.2, 0.3, 0.4],
+                    source_window: [0.2, 0.3, 0.6, 0.7],
+                },
+            );
+            mesh.indices.extend([count as u32 - 1, 0, count as u32 - 1]);
+            let mut batch = Batch::new(mesh, ()).unwrap();
+            for merged in [false, true] {
+                if merged {
+                    let mut mesh = Mesh::new(Allocation::new(
+                        &shared,
+                        &local,
+                        limits.transient_bytes,
+                        1 << 26,
+                    ));
+                    mesh.quad(Rect::new(3., 4., 5., 6.), Rect::ZERO).unwrap();
+                    batch.push(mesh, ()).unwrap();
+                }
+                let old = batch.materialize().unwrap();
+                let indices = Upload::new(&old, |_| Ok(())).unwrap();
+                let view = batch.full_view();
+                let bytes = view.capacity();
+                let packed = view
+                    .pack(|requested| {
+                        assert_eq!(
+                            requested,
+                            bytes.indices + if merged { bytes.vertices } else { 0 }
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(
+                    bytemuck::cast_slice::<_, u8>(&packed.vertices),
+                    bytemuck::cast_slice::<_, u8>(&old.vertices)
+                );
+                assert_eq!(
+                    bytemuck::cast_slice::<_, u8>(&packed.indices),
+                    indices.bytes()
+                );
+                if !merged {
+                    assert_eq!(
+                        packed.vertices.as_ptr(),
+                        batch.segments[0].mesh.vertices.as_ptr()
+                    );
+                }
+                assert_eq!(
+                    packed.format,
+                    if old.vertices.len() > 65_536 {
+                        Format::U32
+                    } else {
+                        Format::U16
+                    }
+                );
+                assert!(view.pack::<()>(|_| Err(GpuError::InvalidSize)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "CPU packing measurement; run in release mode"]
+    fn packing_cost() {
+        use crate::common::indices::Upload;
+        use std::{hint::black_box, time::Instant};
+        let limits = GpuLimits::default();
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let mut batch = None;
+        for _ in 0..64 {
+            let mut mesh = Mesh::new(Allocation::new(
+                &shared,
+                &local,
+                limits.transient_bytes,
+                1 << 26,
+            ));
+            for _ in 0..16 {
+                mesh.quad(Rect::new(1., 2., 3., 4.), Rect::ZERO).unwrap();
+            }
+            if let Some(batch) = &mut batch {
+                Batch::push(batch, mesh, ()).unwrap();
+            } else {
+                batch = Some(Batch::new(mesh, ()).unwrap());
+            }
+        }
+        let batch = batch.unwrap();
+        let capacity = batch.capacity();
+        let baseline = shared.transient.usage().bytes;
+        let old = batch.materialize().unwrap();
+        let mut old_index_bytes = 0;
+        let indices = Upload::new(&old, |n| {
+            old_index_bytes = n;
+            Ok(())
+        })
+        .unwrap();
+        let old_scratch = shared.transient.usage().bytes - baseline + old_index_bytes;
+        drop(indices);
+        drop(old);
+        let mut new_scratch = 0;
+        drop(
+            batch
+                .full_view()
+                .pack(|n| {
+                    new_scratch = n;
+                    Ok(())
+                })
+                .unwrap(),
+        );
+        let mut vertices = vec![0_u8; capacity.vertices as usize];
+        let mut indices = vec![0_u8; capacity.indices as usize];
+        for path in ["merged_mesh", "cpu_packed", "mapped_packed"] {
+            let start = Instant::now();
+            for _ in 0..5_000 {
+                match path {
+                    "merged_mesh" => {
+                        let mesh = batch.materialize().unwrap();
+                        let packed = Upload::new(&mesh, |_| Ok(())).unwrap();
+                        vertices.copy_from_slice(bytemuck::cast_slice(&mesh.vertices));
+                        indices.copy_from_slice(packed.bytes());
+                    }
+                    "cpu_packed" => {
+                        let packed = batch.full_view().pack(|_| Ok(())).unwrap();
+                        vertices.copy_from_slice(bytemuck::cast_slice(&packed.vertices));
+                        indices.copy_from_slice(bytemuck::cast_slice(&packed.indices));
+                    }
+                    _ => {
+                        let view = batch.full_view();
+                        view.vertices(|offset, bytes| {
+                            vertices[offset..offset + bytes.len()].copy_from_slice(bytes)
+                        });
+                        view.indices(|offset, bytes| {
+                            indices[offset..offset + bytes.len()].copy_from_slice(bytes)
+                        });
+                    }
+                }
+                black_box((&vertices, &indices));
+            }
+            eprintln!(
+                "{path}: iterations=5000 elapsed_us={} upload_bytes={} old_scratch={} new_cpu_scratch={} new_mapped_scratch=1024",
+                start.elapsed().as_micros(),
+                capacity.bytes(),
+                old_scratch,
+                new_scratch
+            );
+        }
     }
 }

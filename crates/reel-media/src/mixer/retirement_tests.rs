@@ -428,6 +428,7 @@ fn completed_stream_releases_window_before_queued_infinite_successor_and_status_
             length,
             pool.clone(),
             DecodeLimits {
+                io_deadline: None,
                 static_threshold: 0,
                 window_frames: 256,
             },

@@ -1,9 +1,10 @@
-//! Derived computations use ordinary native continuations and script frames.
+//! Derived computations share ordinary script semantics and native commit continuations.
 use super::*;
 use crate::heap::DerivedSlot;
 
 pub(super) struct ReactiveRead {
     output: Value,
+    compact: Option<FunctionId>,
     native: NativeId,
     count: u32,
     location: Location,
@@ -45,11 +46,20 @@ impl Vm {
             .host_payload(output, DerivedSlot::CallPc as u32)?
             .as_int()
             .unwrap() as u32);
-        let push = self.native_push_cost(native, count);
-        cost.0 += push.0 + 3 * u64::from(count) + self.heap.derived_claim_work() + 2;
+        let compact = if self.compact_output(output)? {
+            Some(self.closure_function(self.heap.derived_closure(output)?)?)
+        } else {
+            None
+        };
+        let push = compact.map_or_else(
+            || self.native_push_cost(native, count),
+            |function| self.script_push_cost(function, 0),
+        );
+        cost.0 += push.0 + 3 * u64::from(count) + self.heap.derived_claim_work() + 12;
         cost.1 += push.1;
         Ok(Some(ReactiveRead {
             output,
+            compact,
             native,
             count,
             location: Location {
@@ -68,6 +78,32 @@ impl Vm {
         s: ScriptFrame,
         read: ReactiveRead,
     ) -> Result<(), VmError> {
+        if let Some(function) = read.compact {
+            let closure = self.heap.derived_closure(read.output)?;
+            self.push_script(
+                function,
+                Some(closure),
+                ArgSource::None,
+                0,
+                s.owner,
+                inherit(s.context, Context::Derived),
+                s.effects,
+                ReturnTo::ReactiveRead {
+                    frame: s.id,
+                    call: s.pc,
+                },
+            )?;
+            let signature = self.program.package().natives[read.native.index()].signature;
+            let effects = Effects(
+                s.effects.0
+                    & self.program.package().signatures[signature.index()]
+                        .effects
+                        .0,
+            );
+            self.enter_compact_derived(read.output, s.module, effects)?;
+            self.heap.claim_derived(read.output)?;
+            return Ok(());
+        }
         let site = NativeSite {
             owner: s.owner,
             module: s.module,
@@ -101,18 +137,33 @@ impl Vm {
         self.heap.claim_derived(read.output)?;
         Ok(())
     }
+    /// Implement the standard read-only derived-value contract. Proven straight-line
+    /// expressions retain their script instructions and may defer the native bridge
+    /// until this same commit continuation; custom observers use `call_reactive`.
     pub fn respond_derive(&mut self, ticket: HostTicket) -> Result<(), VmError> {
         self.select_task(ticket.task)?;
         let native = self.ticket(ticket)?;
         match ticket.input {
             NativeInput::Entry => {
                 let closure = self.host_arguments(ticket)?[0];
-                self.closure_function(closure)?;
+                let function = self.closure_function(closure)?;
                 let output = if let Some(output) = native.derived_output {
                     output
                 } else {
                     self.heap.alloc_derived(closure)?
                 };
+                let signature = &self.program.package().signatures[native.signature.index()];
+                if signature.parameters.len() == 1
+                    && signature.rest.is_none()
+                    && native.bindings.is_none()
+                    && self.program.compact_derived(function)
+                {
+                    self.heap.set_host_payload(
+                        output,
+                        DerivedSlot::Compact as u32,
+                        Value::bool(true),
+                    )?;
+                }
                 self.call_reactive(
                     ticket,
                     output,
@@ -164,6 +215,9 @@ impl Vm {
     pub fn reactive_task_output(&self, task: TaskId) -> Result<Option<Value>, VmError> {
         Ok(match self.task(task)?.frames.data.first() {
             Some(Frame::Native(frame)) => frame.derived_output,
+            Some(Frame::Script(frame)) if frame.derived_bridge.is_some() => {
+                Some(self.value(frame.env, 3)?)
+            }
             _ => None,
         })
     }
@@ -268,7 +322,40 @@ impl Vm {
         frame.derived_output = Some(output);
     }
 
+    /// Schedule an existing observer, retaining its output before execution begins.
+    /// Standard compact expressions publish the same host commit ticket after their
+    /// budgeted script phase. Both phases retain ordinary GC and snapshot ownership.
     pub fn start_derived(&mut self, output: Value, owner: RootOwner) -> Result<TaskId, VmError> {
+        if self.compact_output(output)? {
+            let function = FunctionId(
+                self.heap
+                    .host_payload(output, DerivedSlot::Function as u32)?
+                    .as_int()
+                    .unwrap() as u32,
+            );
+            let module =
+                ModuleInstanceId(self.program.package().functions[function.index()].module.0);
+            let task = self.start_closure(
+                self.heap.derived_closure(output)?,
+                &[],
+                owner,
+                Context::Derived,
+            )?;
+            if let Err(error) = self.enter_compact_derived(
+                output,
+                module,
+                self.program.package().signatures[self.program.package().functions
+                    [function.index()]
+                .signature
+                .index()]
+                .effects,
+            ) {
+                self.forget_active_task();
+                self.active.task_owner = None;
+                return Err(error);
+            }
+            return Ok(task);
+        }
         let arguments = self
             .heap
             .host_payload(output, DerivedSlot::Arguments as u32)?;

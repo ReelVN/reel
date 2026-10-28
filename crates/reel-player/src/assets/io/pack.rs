@@ -14,12 +14,13 @@ struct Archive {
 }
 struct Workspace {
     scratch: ReadScratch,
+    source: Option<usize>,
     _ticket: BudgetTicket,
 }
 pub(super) struct Files {
     archives: Vec<Archive>,
     overlay: Option<directory::Files>,
-    workspace: Option<Workspace>,
+    workspace: Option<Box<Workspace>>,
     _storage: BudgetTicket,
 }
 impl Files {
@@ -95,10 +96,16 @@ impl Files {
             if ticket.category() != BudgetCategory::Temporary {
                 return Err(failure("archive workspace requires a temporary budget"));
             }
-            Some(Workspace {
+            storage
+                .resize(storage.bytes() + size_of::<Workspace>() as u64)
+                .map_err(|error| {
+                    failure(format!("archive workspace metadata: {}", error.message))
+                })?;
+            Some(Box::new(Workspace {
                 scratch: ReadScratch::new(),
+                source: None,
                 _ticket: ticket,
-            })
+            }))
         } else {
             None
         };
@@ -117,15 +124,16 @@ impl Files {
                 Err(error) => return Err(error),
             }
         }
-        let (file, descriptor) = self
+        let (source_index, file, descriptor) = self
             .archives
             .iter_mut()
+            .enumerate()
             .rev()
-            .find_map(|archive| {
+            .find_map(|(source_index, archive)| {
                 archive
                     .index
                     .get(&source.key.0)
-                    .map(|entry| (&mut archive.file, entry))
+                    .map(|entry| (source_index, &mut archive.file, entry))
             })
             .ok_or_else(|| IoError {
                 code: IoErrorCode::NotFound,
@@ -134,7 +142,12 @@ impl Files {
         let compressed = match descriptor.storage {
             EntryStorage::Raw => None,
             EntryStorage::Blocks { .. } => {
-                Some((descriptor, &mut self.workspace.as_mut().unwrap().scratch))
+                let workspace = self.workspace.as_mut().unwrap();
+                if workspace.source != Some(source_index) {
+                    workspace.scratch.clear_encoded();
+                    workspace.source = Some(source_index);
+                }
+                Some((descriptor, &mut workspace.scratch))
             }
         };
         Ok(ReadFile {

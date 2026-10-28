@@ -182,7 +182,7 @@ impl<K: Keyboard> TextInput<K> {
 }
 
 #[cfg(target_os = "vita")]
-impl Keyboard for pvr_psp2_sys::platform::ime::Keyboard {
+impl Keyboard for vita_native::app::ime::Keyboard {
     fn open() -> Result<Self, Error> {
         Ok(Self::open(PREFIX)?)
     }

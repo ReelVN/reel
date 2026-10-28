@@ -9,8 +9,10 @@ use std::sync::{
 use crate::decode::{AudioDecoder, AudioDecoderFactory, MediaRead};
 
 /// PCM residency limits used while preparing a sound off the audio thread.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DecodeLimits {
+    /// Optional asset deadline, updated off the realtime thread from window occupancy.
+    pub io_deadline: Option<reel_core::io::ReadDeadline>,
     /// Maximum decoded PCM bytes retained as a complete static sound.
     pub static_threshold: u64,
     /// Number of frames in the streaming window; must be at least eight.
@@ -22,6 +24,8 @@ struct Slot {
     pcm: AtomicU64,
 }
 struct Window {
+    io_deadline: Option<reel_core::io::ReadDeadline>,
+    sample_rate: u32,
     slots: Box<[Slot]>,
     status: Arc<StreamStatus>,
     wanted: AtomicUsize,
@@ -90,12 +94,17 @@ impl Window {
         let mut eof = false;
         let mut seeking_to = None;
         let mut last_idle_wanted = usize::MAX;
+        let mut deadline_published = false;
         while !self.stopped.load(Ordering::Acquire) {
             let wanted = self.wanted.load(Ordering::Acquire);
             let request = self.serial.load(Ordering::Acquire);
             let outside = wanted < next.saturating_sub(self.slots.len().saturating_sub(4))
                 || wanted > next.saturating_add(self.slots.len());
             if request != serial || (outside && seeking_to.is_none()) {
+                if let Some(deadline) = &self.io_deadline {
+                    deadline.buffered(Duration::ZERO);
+                    deadline_published = true;
+                }
                 serial = request;
                 seeking_to = Some(wanted);
                 next = usize::try_from(match decoder.seek(wanted as u64) {
@@ -116,12 +125,26 @@ impl Window {
             if eof || next >= wanted.saturating_add(self.slots.len().saturating_sub(4)) {
                 // Paused and not-yet-admitted items keep their bounded window,
                 // but do not wake at the active refill cadence.
+                if deadline_published {
+                    if let Some(deadline) = &self.io_deadline {
+                        deadline.clear();
+                    }
+                    deadline_published = false;
+                }
                 let idle = wanted == last_idle_wanted;
                 last_idle_wanted = wanted;
                 std::thread::sleep(Duration::from_millis(if idle { 8 } else { 1 }));
                 continue;
             }
             if next >= packet_start + packet_len {
+                // Only a new packet can perform source IO. Refilling part of an
+                // already decoded packet needs neither a clock read nor a hint lock.
+                if let Some(deadline) = &self.io_deadline {
+                    deadline.buffered(Duration::from_secs_f64(
+                        next.saturating_sub(wanted) as f64 / f64::from(self.sample_rate),
+                    ));
+                    deadline_published = true;
+                }
                 let decoded = {
                     let _profile =
                         reel_core::profile::Scope::new(reel_core::profile::Phase::AudioDecode);
@@ -177,6 +200,7 @@ impl DecodedSound {
         let DecodeLimits {
             static_threshold,
             window_frames,
+            io_deadline,
         } = limits;
         if window_frames < 8 {
             return Err("audio stream window needs at least eight frames".into());
@@ -291,6 +315,8 @@ impl DecodedSound {
             release: Mutex::new(None),
         });
         let window = Arc::new(Window {
+            io_deadline,
+            sample_rate,
             slots: (0..window_frames)
                 .map(|_| Slot {
                     index: AtomicUsize::new(usize::MAX),
@@ -315,6 +341,9 @@ impl DecodedSound {
                     && !window.stopped.load(Ordering::Acquire)
                 {
                     window.status.fail(error);
+                }
+                if let Some(deadline) = &window.io_deadline {
+                    deadline.clear();
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -365,6 +394,7 @@ mod tests {
                 bytes.len() as u64,
                 pool.clone(),
                 DecodeLimits {
+                    io_deadline: None,
                     static_threshold: threshold,
                     window_frames: 256,
                 },
@@ -419,6 +449,8 @@ mod tests {
             release: Mutex::new(None),
         });
         let window = Arc::new(Window {
+            io_deadline: None,
+            sample_rate: 48_000,
             slots: (0..64)
                 .map(|_| Slot {
                     index: AtomicUsize::new(usize::MAX),
@@ -473,6 +505,7 @@ mod tests {
                 bytes.len() as u64,
                 pool.clone(),
                 DecodeLimits {
+                    io_deadline: None,
                     static_threshold: threshold,
                     window_frames: 4096,
                 },

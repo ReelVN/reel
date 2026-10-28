@@ -47,6 +47,8 @@ pub(super) struct Context<'a> {
     pub(super) geometry: Vec<super::geometry::Storage>,
 }
 struct Scope<'a> {
+    clip_child: Option<&'a reel_ui::frame::FrameGroup>,
+    delayed: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation, f32)>,
     group: Option<&'a reel_ui::frame::FrameGroup>,
     scheduled: Option<bool>,
     shared_source: bool,
@@ -68,6 +70,7 @@ struct Scope<'a> {
     forward_source: bool,
 }
 struct MaskComposition<'a> {
+    terminal_effect: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation)>,
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
     source: Target,
     opacity: f32,
@@ -102,7 +105,7 @@ struct Stream<'a> {
     transition_next: usize,
     transitions_enabled: bool,
     commands: &'a [FrameCommand],
-    groups: crate::common::scopes::GroupPlan,
+    groups: crate::common::scopes::Proof,
     next: usize,
     size: [u32; 2],
     transform: Affine,
@@ -321,19 +324,32 @@ impl Context<'_> {
                 match parent.pending.take().expect("suspended composition") {
                     Pending::Mask(mask) => {
                         self.scissor = self.scissor.intersect(mask.scissor);
-                        self.combine_group(
-                            &parent.scopes.last().target,
-                            &mask.source.view,
-                            &finished.view,
-                            reel_ui::frame::GroupComposite {
-                                alpha: mask.opacity,
-                                blend: mask.blend,
-                            },
-                            mask.invert,
-                            mask.operation,
-                            mask.image_mask,
-                            [0; 2],
-                        )?;
+                        if let Some((effect, transform, at)) = mask.terminal_effect {
+                            self.effect_into(
+                                parent.drawing,
+                                effect,
+                                transform,
+                                &mask.source,
+                                &parent.scopes.last().target,
+                                mask.opacity,
+                                Some((&finished, false)),
+                                at,
+                            )?;
+                        } else {
+                            self.combine_group(
+                                &parent.scopes.last().target,
+                                &mask.source.view,
+                                &finished.view,
+                                reel_ui::frame::GroupComposite {
+                                    alpha: mask.opacity,
+                                    blend: mask.blend,
+                                },
+                                mask.invert,
+                                mask.operation,
+                                mask.image_mask,
+                                [0; 2],
+                            )?;
+                        }
                         self.recycle_target(mask.source)?;
                         self.recycle_target(finished)?;
                     }
@@ -424,6 +440,18 @@ impl Context<'_> {
                         at,
                         Scope {
                             group: None,
+                            clip_child: isolated
+                                .then(|| {
+                                    crate::common::effect_plan::clipped_effect(
+                                        current.drawing,
+                                        current.commands,
+                                        current.next,
+                                        self.quality.samples,
+                                        self.capture || !current.drawing.transitions().is_empty(),
+                                    )
+                                })
+                                .flatten(),
+                            delayed: None,
                             scheduled: None,
                             shared_source: false,
                             target: if !isolated {
@@ -582,6 +610,8 @@ impl Context<'_> {
                         at,
                         Scope {
                             group: Some(group),
+                            clip_child: None,
+                            delayed: None,
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
                             forward_source,
@@ -648,6 +678,21 @@ impl Context<'_> {
                     if group.isolated {
                         self.flush_draws()?;
                     }
+                    let terminal_tail = group.group.and_then(|definition| {
+                        crate::common::effect_plan::terminal_tail(
+                            current.drawing,
+                            definition,
+                            self.quality.samples,
+                            self.capture || !current.drawing.transitions().is_empty(),
+                        )
+                    });
+                    let mut terminal_effect = group
+                        .delayed
+                        .map(|(effect, transform, at, _)| (effect, transform, at));
+                    let terminal_opacity = group
+                        .delayed
+                        .map_or(group.opacity, |(_, _, _, opacity)| opacity);
+                    let nested = group.delayed.is_some();
                     let mut source = group.target;
                     if let Some((coverage, to_parent)) = group.mask_effect {
                         let view = group.source_view.expect("local coverage source");
@@ -777,14 +822,79 @@ impl Context<'_> {
                         self.recycle_target(source)?;
                         source = projected;
                     } else if let Some((effect, transform)) = group.effect {
-                        let processed =
-                            self.effect(current.drawing, effect, transform, &source, entry.at)?;
-                        self.recycle_target(source)?;
-                        source = processed;
+                        if group.group.is_some_and(|definition| {
+                            current
+                                .scopes
+                                .last()
+                                .clip_child
+                                .is_some_and(|child| std::ptr::eq(child, definition))
+                        }) && crate::common::effect_plan::coverage_retention(
+                            source.size,
+                            self.size,
+                        ) {
+                            let parent = current.scopes.last_mut();
+                            let empty = std::mem::replace(&mut parent.target, source);
+                            parent.delayed = Some((effect, transform, entry.at, group.opacity));
+                            self.recycle_target(empty)?;
+                            continue;
+                        }
+
+                        if group.group.is_some_and(|definition| {
+                            crate::common::effect_plan::terminal_composite(
+                                definition,
+                                self.quality.samples,
+                                self.capture || !current.drawing.transitions().is_empty(),
+                            )
+                        }) {
+                            self.effect_into(
+                                current.drawing,
+                                effect,
+                                transform,
+                                &source,
+                                &current.scopes.last().target,
+                                group.opacity,
+                                None,
+                                entry.at,
+                            )?;
+                            self.recycle_target(source)?;
+                            continue;
+                        }
+                        if terminal_tail == Some(crate::effect::OutputTail::AlphaCoverage)
+                            && crate::common::effect_plan::coverage_retention(
+                                source.size,
+                                self.size,
+                            )
+                        {
+                            terminal_effect = Some((effect, transform, entry.at));
+                        } else {
+                            let processed =
+                                self.effect(current.drawing, effect, transform, &source, entry.at)?;
+                            self.recycle_target(source)?;
+                            source = processed;
+                        }
                     }
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
                         self.clip(&coverage, clip, transform, entry.at)?;
+                        if let Some((effect, effect_transform, at)) = terminal_effect {
+                            if nested {
+                                self.scissor = self.scissor.intersect(group.scissor);
+                            }
+                            self.effect_into(
+                                current.drawing,
+                                effect,
+                                effect_transform,
+                                &source,
+                                &current.scopes.last().target,
+                                terminal_opacity,
+                                Some((&coverage, nested)),
+                                at,
+                            )?;
+                            self.recycle_target(source)?;
+                            self.recycle_target(coverage)?;
+                            continue;
+                        }
+
                         if group.mask.is_none() {
                             // Fold coverage and opacity into the final source-over pass.
                             // No intermediate full-size clipped texture is needed.
@@ -826,6 +936,7 @@ impl Context<'_> {
                             },
                         )?;
                         current.pending = Some(Pending::Mask(MaskComposition {
+                            terminal_effect,
                             scissor: self.scissor,
                             image_mask: group.image_mask,
                             source,
@@ -924,21 +1035,25 @@ impl Context<'_> {
         scissor: Scissor,
     ) -> Result<Stream<'a>, GpuError> {
         let capture = self.capture;
-        let groups = crate::common::scopes::GroupPlan::new(
-            commands,
-            offset,
-            drawing
-                .transitions()
-                .iter()
-                .filter(|_| transitions_enabled)
-                .map(|t| t.commands.clone()),
-            drawing
-                .capture_exclusions()
-                .iter()
-                .filter(|_| capture)
-                .cloned(),
-            |bytes| self.transient(bytes),
-        )?;
+        let groups = if let Some(groups) = self.offscreen.groups(commands, transitions_enabled) {
+            groups
+        } else {
+            crate::common::scopes::Proof::Owned(crate::common::scopes::GroupPlan::new(
+                commands,
+                offset,
+                drawing
+                    .transitions()
+                    .iter()
+                    .filter(|_| transitions_enabled)
+                    .map(|t| t.commands.clone()),
+                drawing
+                    .capture_exclusions()
+                    .iter()
+                    .filter(|_| capture)
+                    .cloned(),
+                |bytes| self.transient(bytes),
+            )?)
+        };
         Ok(Stream {
             retained_context: 0,
             scheduled: false,
@@ -956,6 +1071,8 @@ impl Context<'_> {
             transform,
             scopes: Scopes::new(Scope {
                 group: None,
+                clip_child: None,
+                delayed: None,
                 scheduled: None,
                 shared_source: false,
                 target: self.target()?,

@@ -23,6 +23,7 @@ pub(crate) struct ResourceDraw {
     pub resource: ResourceLease,
     pub sampler: ImageSampler,
     pub source_rect: Option<crate::kurbo::Rect>,
+    pub sprites: Option<Result<crate::frame::SpriteInstances, crate::frame::BuildErrorKind>>,
 }
 impl CachedPaint {
     pub fn clear(&mut self) {
@@ -72,6 +73,7 @@ impl CachedPaint {
                 owner,
                 image,
                 None,
+                None,
             );
             record_owner_range(
                 &mut command_owners,
@@ -88,6 +90,7 @@ impl CachedPaint {
                     ..image
                 },
                 Some(&binding.resource),
+                binding.sprites.clone(),
             );
             next = binding.command + 1;
         }
@@ -98,6 +101,7 @@ impl CachedPaint {
                 self.scene.commands().len(),
                 owner,
                 image,
+                None,
                 None,
             );
         }
@@ -119,6 +123,7 @@ pub(crate) fn record_owner_range(
     owner: WidgetId,
     image: ImagePaint,
     lease: Option<&ResourceLease>,
+    sprites: Option<Result<crate::frame::SpriteInstances, crate::frame::BuildErrorKind>>,
 ) {
     let crate::frame::ImagePaint {
         color: image_color,
@@ -131,6 +136,8 @@ pub(crate) fn record_owner_range(
         return;
     }
     if let Some(last) = ranges.last_mut()
+        && sprites.is_none()
+        && last.sprites.is_none()
         && last.owner == owner
         && last.image_color == image_color
         && last.image_appearance == image_appearance
@@ -150,6 +157,7 @@ pub(crate) fn record_owner_range(
             image_lease: lease.cloned(),
             image_sampling_transform,
             image_source_rect,
+            sprites,
         });
     }
 }

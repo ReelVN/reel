@@ -213,7 +213,7 @@ pub(super) fn create_texture(
             height: size[1],
             depth_or_array_layers: 1,
         },
-        mip_level_count: 1,
+        mip_level_count: descriptor.mip_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: texture_format(descriptor.format),
@@ -275,11 +275,27 @@ pub(super) fn texture_rows(
             .map_err(|e| GpuError::Device(e.to_string()))?;
         let mut mapping = mapping.slice(..);
         for y in 0..count {
-            let src = (u64::from(rows.start + y) * upload.source_row_bytes) as usize;
             let dest = u64::from(y) * row;
-            mapping
-                .slice(dest as usize..(dest + packed) as usize)
-                .copy_from_slice(&bytes.data()[src..src + packed as usize]);
+            let mut output = mapping.slice(dest as usize..(dest + packed) as usize);
+            if descriptor.storage_layout == reel_core::texture::TextureStorageLayout::Linear {
+                let src =
+                    (upload.offset + u64::from(rows.start + y) * upload.source_row_bytes) as usize;
+                output.copy_from_slice(&bytes.data()[src..src + packed as usize]);
+            } else {
+                let n = descriptor.format.block_bytes() as usize;
+                for x in 0..upload.layout.storage_size[0].div_ceil(4) {
+                    let src = upload.offset as usize
+                        + descriptor.storage_layout.block_offset(
+                            descriptor.mip_size(upload.mip),
+                            n,
+                            x,
+                            rows.start + y,
+                        );
+                    output
+                        .slice(x as usize * n..(x as usize + 1) * n)
+                        .copy_from_slice(&bytes.data()[src..src + n]);
+                }
+            }
         }
     }
     staging.unmap();
@@ -299,7 +315,7 @@ pub(super) fn texture_rows(
         },
         wgpu::TexelCopyTextureInfo {
             texture: &target.texture,
-            mip_level: 0,
+            mip_level: upload.mip,
             origin: wgpu::Origin3d {
                 x: 0,
                 y: rows.start * edge,
@@ -308,7 +324,7 @@ pub(super) fn texture_rows(
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::Extent3d {
-            width: target.size[0],
+            width: upload.layout.storage_size[0].next_multiple_of(edge),
             height: count * edge,
             depth_or_array_layers: 1,
         },

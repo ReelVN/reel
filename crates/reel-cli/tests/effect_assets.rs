@@ -74,18 +74,18 @@ fn desktop_cache_reuses_code_across_defaults_and_rebuilds_damaged_products() {
         "checking source performs no shader IO"
     );
     let prepared = prepare_effects::prepare(root, &first.effects, Target::Desktop).unwrap();
-    assert_eq!(prepared.report.converted, 4);
+    assert_eq!(prepared.report.converted, 2);
     let original = descriptors(&prepared.files);
     let unchanged = prepare_effects::prepare(root, &first.effects, Target::Desktop).unwrap();
     assert_eq!(
         (unchanged.report.converted, unchanged.report.reused),
-        (0, 4)
+        (0, 2)
     );
     assert_eq!(unchanged.files, prepared.files);
     let corrupt = prepared.files.values().next().unwrap();
     fs::write(corrupt, b"interrupted cache payload").unwrap();
     let repaired = prepare_effects::prepare(root, &first.effects, Target::Desktop).unwrap();
-    assert_eq!((repaired.report.converted, repaired.report.reused), (1, 3));
+    assert_eq!((repaired.report.converted, repaired.report.reused), (1, 1));
     assert_eq!(descriptors(&repaired.files), original);
     fs::write(
         root.join("src/main.aside"),
@@ -98,7 +98,7 @@ fn desktop_cache_reuses_code_across_defaults_and_rebuilds_damaged_products() {
     .unwrap();
     let changed = checked(root);
     let rebuilt = prepare_effects::prepare(root, &changed.effects, Target::Desktop).unwrap();
-    assert_eq!((rebuilt.report.converted, rebuilt.report.reused), (2, 2));
+    assert_eq!((rebuilt.report.converted, rebuilt.report.reused), (1, 1));
     let keys = |items: &BTreeMap<String, EffectShaderDescriptor>| {
         let mut keys = items.values().map(|d| d.shader_key).collect::<Vec<_>>();
         keys.sort();
@@ -118,10 +118,13 @@ fn desktop_cache_reuses_code_across_defaults_and_rebuilds_damaged_products() {
             .keys()
             .filter(|name| name.ends_with(".reel-effect"))
             .count(),
-        4
+        2
     );
     assert!(
-        files.keys().all(|name| !name.ends_with("/sgx.reel-effect")),
+        files
+            .keys()
+            .filter(|name| name.ends_with(".reel-effect"))
+            .all(|name| name.ends_with("/wgsl.reel-effect")),
         "preview assets cannot change the desktop shader backend"
     );
 }
@@ -173,7 +176,7 @@ fn build_publishes_movable_asb_and_shader_archive_with_catalogs() {
             .iter()
             .flat_map(|path| archive_products(path))
             .collect::<Vec<_>>();
-        assert_eq!(descriptors.len(), 4);
+        assert_eq!(descriptors.len(), 2);
         let relocated = tempfile::tempdir().unwrap();
         fs::copy(&package, relocated.path().join("game.asb")).unwrap();
         for archive in &loaded.packages {
@@ -195,7 +198,8 @@ fn build_publishes_movable_asb_and_shader_archive_with_catalogs() {
 }
 
 #[test]
-fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() {
+fn export_prepares_destination_formats_and_reuses_gxp_binary_for_new_defaults() {
+    let compiler_available = reel_render::effect::gxp_compiler::Compiler::new().is_ok();
     let temporary = project(SOURCE);
     let root = temporary.path();
     let loaded = project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
@@ -210,7 +214,7 @@ fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() 
             directory: loaded.assets(),
         }],
         text: vec![],
-        resource_target: if pvr_compiler::AVAILABLE {
+        resource_target: if compiler_available {
             "vita"
         } else {
             "desktop"
@@ -226,30 +230,27 @@ fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() 
         .iter()
         .flat_map(|path| archive_products(path))
         .collect::<Vec<_>>();
-    assert_eq!(
-        descriptors.len(),
-        if pvr_compiler::AVAILABLE { 2 } else { 4 }
-    );
-    if !pvr_compiler::AVAILABLE {
+    assert_eq!(descriptors.len(), 2);
+    if !compiler_available {
         assert!(
             prepare_effects::prepare(root, &checked.effects, Target::Vita)
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("Linux build host")
+                .contains("Sony psp2cgc compiler not found")
         );
         return;
     }
     assert!(
         descriptors
             .iter()
-            .all(|d| d.format == EffectShaderFormat::Sgx543)
+            .all(|d| d.format == EffectShaderFormat::Gxp)
     );
     let code_files = || {
         fs::read_dir(root.join("build/resources/objects"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "sgx"))
+            .filter(|path| path.extension().is_some_and(|extension| extension == "gxp"))
             .map(|path| {
                 let modified = fs::metadata(&path).unwrap().modified().unwrap();
                 (path, modified)
@@ -265,7 +266,7 @@ fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() 
     assert_eq!(
         code_files(),
         before,
-        "default-only changes reuse the SGX binary without rewriting it"
+        "default-only changes reuse the GXP binary without rewriting it"
     );
 }
 
@@ -292,21 +293,20 @@ fn main() {
     let prepared =
         prepare_effects::prepare(temporary.path(), &checked.effects, Target::Desktop).unwrap();
     let products = descriptors(&prepared.files);
-    for format in [EffectShaderFormat::Wgsl, EffectShaderFormat::GlslEs100] {
-        let path = format.asset_path(definition);
-        assert_eq!(products[&path].textures, 1);
-        assert_eq!(products[&path].parameters.len(), 4);
-        let envelope = fs::read(&prepared.files[&path]).unwrap();
-        let (_, raw) =
-            EffectShaderDescriptor::decode_payload(&envelope, prepare_effects::MAX_SHADER_BYTES)
-                .unwrap();
-        let shader = std::str::from_utf8(&envelope[raw]).unwrap();
-        assert!(shader.contains("reel_texture_0"));
-        assert!(
-            !shader.contains("u_ops"),
-            "the prepared graph executes static expressions"
-        );
-    }
+    let path = EffectShaderFormat::Wgsl.asset_path(definition);
+    assert_eq!(products[&path].textures, 1);
+    assert_eq!(products[&path].parameters.len(), 4);
+    let envelope = fs::read(&prepared.files[&path]).unwrap();
+    let (_, raw) =
+        EffectShaderDescriptor::decode_payload(&envelope, prepare_effects::MAX_SHADER_BYTES)
+            .unwrap();
+    let shader = std::str::from_utf8(&envelope[raw]).unwrap();
+    assert!(shader.contains("reel_texture_0"));
+    assert!(
+        !shader.contains("u_ops"),
+        "the prepared graph executes static expressions"
+    );
+
     let artifact = reel_cli::build_with_profile(
         &checked,
         Some("main::main"),

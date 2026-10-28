@@ -625,6 +625,7 @@ pub struct Stage {
     detached_roots: Vec<NodeId>,
     next_id: u64,
     revision: u64,
+    topology_revision: u64,
     identity: StageIdentity,
     popup_count: usize,
 }
@@ -638,6 +639,10 @@ impl Stage {
     }
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    /// Changes when mounted parent/child relationships or the root change.
+    pub fn topology_revision(&self) -> u64 {
+        self.topology_revision
     }
     pub fn identity(&self) -> &StageIdentity {
         &self.identity
@@ -687,6 +692,7 @@ impl Stage {
         let node = self.nodes.get_mut(&id).unwrap();
         node.revision.properties = self.revision;
         if children {
+            self.topology_revision = self.topology_revision.wrapping_add(1);
             node.revision.children = self.revision;
         }
         let mut parent = node.parent;
@@ -995,6 +1001,7 @@ impl Stage {
         }
         if parent.is_none() {
             self.revision = self.revision.wrapping_add(1);
+            self.topology_revision = self.topology_revision.wrapping_add(1);
         }
         Ok(self.remove_tree(node))
     }
@@ -1051,6 +1058,7 @@ impl Stage {
         self.root = Some(root);
         self.remove_detached_root(root);
         self.revision = self.revision.wrapping_add(1);
+        self.topology_revision = self.topology_revision.wrapping_add(1);
         Ok(retired)
     }
 
@@ -1085,6 +1093,7 @@ impl Stage {
         match self.root.take() {
             Some(root) => {
                 self.revision = self.revision.wrapping_add(1);
+                self.topology_revision = self.topology_revision.wrapping_add(1);
                 self.remove_tree(root)
             }
             None => Vec::new(),

@@ -1,7 +1,7 @@
 //! Persistent generic VN workload: BC1 scenery, two alpha BC3 portraits and
 //! a real shaped line. Hidden suffixes enter GPU preparation only when revealed.
 use super::*;
-use crate::fixture::StageGroup;
+use crate::device::fixture::StageGroup;
 use reel_ui::{
     app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
     bridge::PresentationBridge,
@@ -205,7 +205,7 @@ fn texture(
                 let body = (1. - ((x - 192.) / (88. + y * 0.15)).abs()).min((y - 150.) / 24.);
                 let alpha = (head.max(body) * 4.).clamp(0., 1.);
                 let alpha = if bx * 4 >= content_size[0] { 0. } else { alpha };
-                let color = if index % 2 == 0 {
+                let color = if index.is_multiple_of(2) {
                     [160., 90., 56.]
                 } else {
                     [55., 105., 165.]
@@ -238,6 +238,8 @@ fn texture(
     let bytes = OwnedBytes::new(bytes, storage).map_err(|e| error(e.reason))?;
     let payload = TexturePayload::new(
         TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format,
             layout: TextureLayout {
                 logical_size: content_size,

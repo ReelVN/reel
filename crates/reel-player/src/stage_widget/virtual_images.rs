@@ -156,9 +156,8 @@ impl StageWidget {
                     let ready =
                         StageView::image_requests_for(Some(child), format).is_ok_and(|requests| {
                             requests
-                                .required
-                                .keys()
-                                .all(|source| images.contains_key(source))
+                                .required()
+                                .all(|(source, _)| images.contains_key(source))
                         });
                     let actual = stage
                         .nodes

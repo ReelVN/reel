@@ -66,6 +66,8 @@ fn fixture_with_encoding(
                 if encoding == TileEncoding::ReelTexture {
                     use reel_core::texture::*;
                     let descriptor = TextureDescriptor {
+                        storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                        mip_count: 1,
                         format: if x % 2 == 0 {
                             TextureFormat::Bc1Rgb
                         } else {

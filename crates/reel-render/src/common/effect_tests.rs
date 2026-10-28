@@ -37,36 +37,22 @@ impl Graph {
     }
 }
 
-fn fragment(generated: &GeneratedEffect, language: Language) -> String {
-    match language {
-        Language::GlslEs100 => {
-            let result = if generated.output_type == EffectType::Float {
-                "vec4(reel_effect(v_uv, v_uv * u_size, u_size))"
-            } else {
-                "reel_effect(v_uv, v_uv * u_size, u_size)"
-            };
-            format!(
-                "#version 100\nprecision highp float;\nvarying vec2 v_uv;\nuniform vec2 u_size;\nuniform sampler2D u_source;\n{}\nvec4 reel_source_sample(vec2 uv) {{ return texture2D(u_source, uv); }}\n{}\nvoid main() {{ gl_FragColor = {result}; }}\n",
-                generated.declarations, generated.function
-            )
-        }
-        Language::Wgsl => {
-            let binding = if generated.parameters.slots.is_empty() {
-                ""
-            } else {
-                "@group(0) @binding(0) var<uniform> reel_parameters: ReelEffectParameters;"
-            };
-            let result = if generated.output_type == EffectType::Float {
-                "vec4<f32>(reel_effect(uv, uv * size, size))"
-            } else {
-                "reel_effect(uv, uv * size, size)"
-            };
-            format!(
-                "{}\n{binding}\n@group(0) @binding(1) var source: texture_2d<f32>;\n@group(0) @binding(2) var source_sampler: sampler;\nfn reel_source_sample(uv: vec2<f32>) -> vec4<f32> {{ return textureSampleLevel(source, source_sampler, uv, 0.0); }}\n{}\n@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {{\n    let size = vec2<f32>(960.0, 544.0);\n    return {result};\n}}\n",
-                generated.declarations, generated.function
-            )
-        }
-    }
+#[cfg(feature = "wgpu")]
+fn wgsl_fragment(generated: &GeneratedEffect) -> String {
+    let binding = if generated.parameters.slots.is_empty() {
+        ""
+    } else {
+        "@group(0) @binding(0) var<uniform> reel_parameters: ReelEffectParameters;"
+    };
+    let result = if generated.output_type == EffectType::Float {
+        "vec4<f32>(reel_effect(uv, uv * size, size))"
+    } else {
+        "reel_effect(uv, uv * size, size)"
+    };
+    format!(
+        "{}\n{binding}\n@group(0) @binding(1) var source: texture_2d<f32>;\n@group(0) @binding(2) var source_sampler: sampler;\nfn reel_source_sample(uv: vec2<f32>) -> vec4<f32> {{ return textureSampleLevel(source, source_sampler, uv, 0.0); }}\n{}\n@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {{\n    let size = vec2<f32>(960.0, 544.0);\n    return {result};\n}}\n",
+        generated.declarations, generated.function
+    )
 }
 
 /// One ordinary expression covers source reads, logical coordinates, live values,
@@ -121,8 +107,227 @@ fn sampled_program() -> Arc<EffectProgram> {
     g.finish(output)
 }
 
+/// Independent RGBA accumulators share each fetched vector. Scheduling one
+/// output channel at a time would keep all 61 vectors live across the others.
+fn sampling_program(radius: i32) -> Arc<EffectProgram> {
+    sampling_offsets(&(-radius..=radius).map(|n| n as f32).collect::<Vec<_>>())
+}
+
+fn sampling_offsets(offsets: &[f32]) -> Arc<EffectProgram> {
+    let mut g = Graph::default();
+    let uv = g.node(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
+    let x = g.node(EffectType::Float, EffectOp::Extract { value: uv, lane: 0 });
+    let y = g.node(EffectType::Float, EffectOp::Extract { value: uv, lane: 1 });
+    let size = g.node(EffectType::Vec2, EffectOp::Input(EffectInput::Size));
+    let height = g.node(
+        EffectType::Float,
+        EffectOp::Extract {
+            value: size,
+            lane: 1,
+        },
+    );
+    let zero = g.float(0.0);
+    let mut channels = [zero; 4];
+    for &tap in offsets {
+        let offset = g.float(tap);
+        let offset = g.node(
+            EffectType::Float,
+            EffectOp::Binary {
+                op: EffectBinary::Divide,
+                left: offset,
+                right: height,
+            },
+        );
+        let local_y = g.node(
+            EffectType::Float,
+            EffectOp::Binary {
+                op: EffectBinary::Add,
+                left: y,
+                right: offset,
+            },
+        );
+        let at = g.node(EffectType::Vec2, EffectOp::Vec2([x, local_y]));
+        let sample = g.node(EffectType::Vec4, EffectOp::SourceSample { uv: at });
+        for (lane, channel) in channels.iter_mut().enumerate() {
+            let value = g.node(
+                EffectType::Float,
+                EffectOp::Extract {
+                    value: sample,
+                    lane: lane as u8,
+                },
+            );
+            *channel = g.node(
+                EffectType::Float,
+                EffectOp::Binary {
+                    op: EffectBinary::Add,
+                    left: *channel,
+                    right: value,
+                },
+            );
+        }
+    }
+    let divisor = g.float(offsets.len() as f32);
+    for channel in &mut channels {
+        *channel = g.node(
+            EffectType::Float,
+            EffectOp::Binary {
+                op: EffectBinary::Divide,
+                left: *channel,
+                right: divisor,
+            },
+        );
+    }
+    let output = g.node(EffectType::Vec4, EffectOp::Vec4(channels));
+    g.finish(output)
+}
+
 #[test]
-fn parameter_layout_matches_both_uniform_abis() {
+fn parallel_channels_consume_each_sample_before_the_next_fetch() {
+    for language in [Language::Wgsl, Language::Cg] {
+        let generated = generate(&sampling_program(5), language, 1 << 20).unwrap();
+        let mut taps = generated.function.split(" = reel_source_sample(");
+        taps.next().unwrap();
+        let taps = taps.collect::<Vec<_>>();
+        assert_eq!(taps.len(), 11);
+        for tap in taps {
+            for lane in [".x;", ".y;", ".z;", ".w;"] {
+                assert!(
+                    tap.contains(lane),
+                    "all channels consume the current sample in {language:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn large_proved_reduction_keeps_integer_constants_and_final_scaling() {
+    let program = sampling_program(30);
+    let plan = reduction::Reduction::find(&program, program.output()).unwrap();
+    assert_eq!((plan.first, plan.end, plan.step), (-30, 31, 1));
+    for language in [Language::Wgsl, Language::Cg] {
+        let fragment = compile_fragment(&program, language, 1 << 20).unwrap();
+        let function = generate(&program, language, 1 << 20).unwrap().function;
+        assert_eq!(function.matches(" = reel_source_sample(").count(), 1);
+        assert!(function.contains("!= 31;"));
+        assert!(function.contains("+= 1)"));
+        assert!(function.contains("= -30;"));
+        assert!(function.find(" / ").unwrap() < function.rfind(" / ").unwrap());
+        #[cfg(feature = "wgpu")]
+        if language == Language::Wgsl {
+            let module = wgpu::naga::front::wgsl::parse_str(&fragment.source).unwrap();
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
+        }
+        if language == Language::Cg {
+            assert!(fragment.source.contains("#pragma loop (unroll: never)"));
+            assert!(fragment.source.contains("tex2Dlod(reel_source"));
+        }
+    }
+}
+
+#[test]
+fn sampling_counter_preserves_literals_at_float_precision_boundaries() {
+    for (first, step, count, float_counter) in [
+        (-30, 1, 61, true),
+        (30, -1, 61, true),
+        (16_777_200, 1, 17, false),
+        (-16_777_200, -1, 17, false),
+        (-16_777_216, 2, 17, true),
+    ] {
+        let offsets: Vec<_> = (0..count).map(|i| (first + step * i) as f32).collect();
+        let program = sampling_offsets(&offsets);
+        let plan = reduction::Reduction::find(&program, program.output()).unwrap();
+        assert_eq!(plan.float_counter, float_counter);
+        if float_counter {
+            let mut counter = plan.first as f32;
+            for offset in offsets {
+                assert_ne!(counter, plan.end as f32);
+                assert_eq!(counter.to_bits(), offset.to_bits());
+                counter += plan.step as f32;
+            }
+            assert_eq!(counter, plan.end as f32);
+        }
+        for language in [Language::Wgsl, Language::Cg] {
+            let fragment = compile_fragment(&program, language, 1 << 20).unwrap();
+            let expected = match (language, float_counter) {
+                (Language::Cg, true) => "for (float reel_i",
+                (Language::Cg, false) => "for (int reel_i",
+                (Language::Wgsl, true) => ": f32 =",
+                (Language::Wgsl, false) => ": i32 =",
+            };
+            assert!(fragment.source.contains(expected));
+            #[cfg(feature = "wgpu")]
+            if language == Language::Wgsl {
+                let module = wgpu::naga::front::wgsl::parse_str(&fragment.source).unwrap();
+                wgpu::naga::valid::Validator::new(
+                    wgpu::naga::valid::ValidationFlags::all(),
+                    wgpu::naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn sampling_reduction_rejects_noninteger_sequences_and_conflicting_literal_aliases() {
+    let program = sampling_program(30);
+    let rebuild = |nodes| EffectProgram::new(vec![], nodes, program.output()).unwrap();
+    let mut nodes = program.nodes().to_vec();
+    let varying = nodes.iter_mut().find(|node| matches!(node.op, EffectOp::Constant(EffectValue::Float(bits)) if bits == (-29f32).to_bits())).unwrap();
+    varying.op = EffectOp::Constant(EffectValue::Float((-29.25f32).to_bits()));
+    let changed = rebuild(nodes);
+    assert!(reduction::Reduction::find(&changed, changed.output()).is_none());
+
+    // The first tap's -30 literal is also the fixed X coordinate. Replacing all
+    // references to that ID with the loop counter would incorrectly move X.
+    let mut nodes = program.nodes().to_vec();
+    let fixed = EffectNodeId(nodes.iter().position(|node| matches!(node.op, EffectOp::Constant(EffectValue::Float(bits)) if bits == (-30f32).to_bits())).unwrap() as u32);
+    for node in &mut nodes {
+        if let EffectOp::Vec2([_, y]) = node.op {
+            node.op = EffectOp::Vec2([fixed, y]);
+        }
+    }
+    let aliased = rebuild(nodes);
+    assert!(reduction::Reduction::find(&aliased, aliased.output()).is_none());
+}
+
+#[test]
+fn reduction_iteration_recomputes_a_first_tap_also_used_outside_the_loop() {
+    let program = sampling_program(30);
+    let mut nodes = program.nodes().to_vec();
+    let first = EffectNodeId(
+        nodes
+            .iter()
+            .position(|node| matches!(node.op, EffectOp::SourceSample { .. }))
+            .unwrap() as u32,
+    );
+    let output = EffectNodeId(nodes.len() as u32);
+    nodes.push(EffectNode {
+        ty: EffectType::Vec4,
+        op: EffectOp::Binary {
+            op: EffectBinary::Add,
+            left: program.output(),
+            right: first,
+        },
+    });
+    let program = EffectProgram::new(vec![], nodes, output).unwrap();
+    for language in [Language::Wgsl, Language::Cg] {
+        let generated = generate(&program, language, 1 << 20).unwrap();
+        let (before, body) = generated.function.split_once("for (").unwrap();
+        assert_eq!(before.matches(" = reel_source_sample(").count(), 1);
+        assert_eq!(body.matches(" = reel_source_sample(").count(), 1);
+    }
+}
+
+#[test]
+fn parameter_layout_matches_all_uniform_abis() {
     let mut g = Graph::default();
     for ty in [
         EffectType::Bool,
@@ -135,12 +340,18 @@ fn parameter_layout_matches_both_uniform_abis() {
     }
     let output = g.float(1.0);
     let program = g.finish(output);
-    let glsl = generate(&program, Language::GlslEs100, 16384).unwrap();
     let wgsl = generate(&program, Language::Wgsl, 16384).unwrap();
-    assert_eq!(glsl.parameters, wgsl.parameters);
-    assert_eq!(glsl.parameters.byte_len(), 80);
+    let cg = generate(&program, Language::Cg, 16384).unwrap();
+    assert_eq!(wgsl.parameters, cg.parameters);
+    for index in 0..5 {
+        assert!(
+            cg.declarations
+                .contains(&format!("uniform float4 reel_parameter_{index};"))
+        );
+    }
+    assert_eq!(wgsl.parameters.byte_len(), 80);
     assert_eq!(
-        glsl.parameters
+        wgsl.parameters
             .slots
             .iter()
             .map(|s| s.byte_offset)
@@ -154,29 +365,29 @@ fn parameter_layout_matches_both_uniform_abis() {
         EffectValue::Vec3([3.0_f32.to_bits(); 3]),
         EffectValue::Vec4([4.0_f32.to_bits(); 4]),
     ];
-    let packed = glsl.parameters.pack(&values).unwrap();
+    let packed = wgsl.parameters.pack(&values).unwrap();
     assert_eq!(packed[0], [1., 0., 0., 0.]);
     assert_eq!(packed[1][0].to_bits(), (-0.0_f32).to_bits());
     assert_eq!(packed[2], [1., 2., 0., 0.]);
     assert_eq!(packed[3], [3., 3., 3., 0.]);
     assert_eq!(packed[4], [4.; 4]);
-    assert_eq!(glsl.parameters.pack(&[]), Err(ParameterError::Count));
+    assert_eq!(wgsl.parameters.pack(&[]), Err(ParameterError::Count));
     values[0] = EffectValue::Float(0);
     assert_eq!(
-        glsl.parameters.pack(&values),
+        wgsl.parameters.pack(&values),
         Err(ParameterError::Type { index: 0 })
     );
     values[0] = EffectValue::Bool(false);
     values[1] = EffectValue::Float(f32::NAN.to_bits());
     assert_eq!(
-        glsl.parameters.pack(&values),
+        wgsl.parameters.pack(&values),
         Err(ParameterError::NonFinite { index: 1 })
     );
 }
 
 #[test]
 fn emits_only_root_dependencies_and_keeps_branch_work_local() {
-    for language in [Language::GlslEs100, Language::Wgsl] {
+    for language in [Language::Wgsl, Language::Cg] {
         let generated = generate(&sampled_program(), language, 16384).unwrap();
         assert!(generated.samples_source);
         let function = generated.function.split("reel_effect(").nth(1).unwrap();
@@ -201,7 +412,7 @@ fn emits_only_root_dependencies_and_keeps_branch_work_local() {
         },
     );
     let program = g.finish(sum);
-    let generated = generate(&program, Language::GlslEs100, 1024).unwrap();
+    let generated = generate(&program, Language::Wgsl, 1024).unwrap();
     assert!(!generated.samples_source);
     assert_eq!(generated.function.matches(" = 1e0;").count(), 1);
     assert!(!generated.function.contains("reel_source_sample"));
@@ -247,14 +458,14 @@ fn deep_graph_and_branch_expansion_respect_source_limit() {
         );
     }
     assert!(matches!(
-        generate(&g.finish(value), Language::GlslEs100, 4096),
+        generate(&g.finish(value), Language::Wgsl, 4096),
         Err(GenerateError::SourceLimit { limit: 4096 })
     ));
 }
 
 #[test]
 fn complete_fragments_keep_source_sampling_and_parameter_abi() {
-    for language in [Language::GlslEs100, Language::Wgsl] {
+    for language in [Language::Wgsl, Language::Cg] {
         let output = compile_fragment(&sampled_program(), language, 16384).unwrap();
         assert_eq!(output.parameters.byte_len(), 32);
         assert!(compile_fragment(&sampled_program(), language, output.source.len()).is_ok());
@@ -263,13 +474,15 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
             Err(GenerateError::SourceLimit { .. })
         ));
         match language {
-            Language::GlslEs100 => {
+            Language::Cg => {
+                assert!(output.source.contains("uniform float4 reel_context[10]"));
                 assert!(
                     output
                         .source
-                        .contains(&format!("uniform vec4 reel_context[{CONTEXT_SLOTS}]"))
+                        .contains("tex2Dlod(reel_source, float4(q, 0.0, 0.0))")
                 );
-                assert!(output.source.contains("texture2D(reel_source"));
+                assert!(output.source.contains("fragment_position : WPOS"));
+                assert!(!output.source.contains("1.0 - q.y"));
             }
             Language::Wgsl => {
                 assert!(output.source.contains("textureSampleLevel(reel_source"));
@@ -280,11 +493,11 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
 }
 
 #[test]
-fn scalar_coverage_inversion_follows_clamping_in_both_shader_languages() {
+fn scalar_coverage_inversion_follows_clamping_in_all_shader_languages() {
     let mut graph = Graph::default();
     let output = graph.float(2.0);
     let program = graph.finish(output);
-    for language in [Language::GlslEs100, Language::Wgsl] {
+    for language in [Language::Wgsl, Language::Cg] {
         let shader = compile_fragment(&program, language, 16384).unwrap();
         let clamp = shader.source.find("coverage = clamp(").unwrap();
         let invert = shader.source.find("coverage = 1.0 - coverage").unwrap();
@@ -306,6 +519,86 @@ fn scalar_coverage_inversion_follows_clamping_in_both_shader_languages() {
             .unwrap();
         }
     }
+}
+
+#[test]
+#[ignore = "requires the Sony SDK offline compiler; compiles GXP without device or readback"]
+fn cg_fragments_compile_all_typed_operations() {
+    let compiler = gxp_compiler::Compiler::new().expect("locate Sony SDK compiler");
+    let programs = operation_programs()
+        .into_iter()
+        .chain(external_texture_programs())
+        .chain([("wide_sampling".into(), sampling_program(30))])
+        .collect::<Vec<_>>();
+    for (name, program) in &programs {
+        let fragment = compile_fragment(program, Language::Cg, 65536).unwrap();
+        let binary = compiler
+            .compile(gxp_compiler::Stage::Fragment, &fragment.source)
+            .unwrap_or_else(|error| panic!("{name}: {error}\n{}", fragment.source));
+        assert_eq!(&binary[..4], b"GXP\0");
+        if OutputTail::supports_coverage(
+            fragment.output_type,
+            program.textures().len() as u32,
+            fragment.source_sampler,
+        ) {
+            let masked =
+                compile_fragment_with_tail(program, Language::Cg, OutputTail::AlphaCoverage, 65536)
+                    .unwrap();
+            let code = compiler
+                .compile(gxp_compiler::Stage::Fragment, &masked.source)
+                .unwrap_or_else(|e| panic!("{name} masked: {e}"));
+            assert_eq!(&code[..4], b"GXP\0");
+        }
+    }
+    println!(
+        "compiled {} typed Cg operation programs to GXP",
+        programs.len()
+    );
+}
+
+fn external_texture_programs() -> Vec<(String, Arc<EffectProgram>)> {
+    use reel_ui::stage::effect::EffectTextureParameter;
+    let mut programs = Vec::new();
+    for binding in 0..2 {
+        for channel in [
+            EffectTextureChannel::Color,
+            EffectTextureChannel::Alpha,
+            EffectTextureChannel::Gray,
+        ] {
+            let ty = if channel == EffectTextureChannel::Color {
+                EffectType::Vec4
+            } else {
+                EffectType::Float
+            };
+            let program = EffectProgram::with_textures(
+                vec![],
+                vec![
+                    EffectTextureParameter { name: "ink".into() },
+                    EffectTextureParameter {
+                        name: "noise".into(),
+                    },
+                ],
+                vec![
+                    EffectNode {
+                        ty: EffectType::Vec2,
+                        op: EffectOp::Input(EffectInput::Uv),
+                    },
+                    EffectNode {
+                        ty,
+                        op: EffectOp::TextureSample {
+                            binding,
+                            uv: EffectNodeId(0),
+                            channel,
+                        },
+                    },
+                ],
+                EffectNodeId(1),
+            )
+            .unwrap();
+            programs.push((format!("texture_{binding}_{channel:?}"), program));
+        }
+    }
+    programs
 }
 
 /// Every operation is the root of its own graph: dead-code elimination cannot
@@ -528,7 +821,7 @@ fn wgsl_fragments_validate_and_source_calls_stay_in_branches() {
     use wgpu::naga;
     for (name, program) in operation_programs() {
         let generated = generate(&program, Language::Wgsl, 65536).unwrap();
-        let source = fragment(&generated, Language::Wgsl);
+        let source = wgsl_fragment(&generated);
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|e| panic!("{name}: {}\n{source}", e.emit_to_string(&source)));
         naga::valid::Validator::new(
@@ -589,34 +882,6 @@ fn wgsl_fragments_validate_and_source_calls_stay_in_branches() {
     }
 }
 
-#[cfg(all(feature = "gles2", not(target_os = "vita")))]
-#[test]
-#[ignore = "requires a native EGL context; compiles and links without framebuffer readback"]
-fn glsl_es_fragments_compile_and_link() {
-    use pvr_psp2_sys::graphics::{AttributeBinding, Context, ShaderCode};
-    let context = Context::headless([1, 1], false).unwrap();
-    let vertex = "#version 100\nattribute vec2 a_position; varying vec2 v_uv; void main() { v_uv = a_position; gl_Position = vec4(a_position, 0.0, 1.0); }";
-    let programs = operation_programs();
-    for (name, program) in &programs {
-        let generated = generate(program, Language::GlslEs100, 65536).unwrap();
-        let source = fragment(&generated, Language::GlslEs100);
-        context
-            .create_program(
-                ShaderCode::Source(vertex),
-                ShaderCode::Source(&source),
-                &[AttributeBinding {
-                    location: 0,
-                    name: "a_position",
-                }],
-            )
-            .unwrap_or_else(|e| panic!("{name}: {e:?}\n{source}"));
-    }
-    println!(
-        "compiled and linked {} generated GLSL ES 1.00 fragments",
-        programs.len()
-    );
-}
-
 #[test]
 #[ignore = "exports generated sources to REEL_EFFECT_SHADER_DIR for offline target compilation"]
 fn export_anonymous_effect_fragments() {
@@ -625,23 +890,36 @@ fn export_anonymous_effect_fragments() {
             .expect("set REEL_EFFECT_SHADER_DIR to an ignored artifact directory"),
     );
     std::fs::create_dir_all(&directory).unwrap();
-    for language in [Language::GlslEs100, Language::Wgsl] {
-        let generated = compile_fragment(&sampled_program(), language, 16384).unwrap();
-        let extension = if language == Language::Wgsl {
-            "wgsl"
-        } else {
-            "glsl"
-        };
-        std::fs::write(
-            directory.join(format!("sampled.{extension}")),
-            &generated.source,
-        )
-        .unwrap();
-        println!(
-            "{language:?}: generated_bytes={}, parameters={}B",
-            generated.source.len(),
-            generated.parameters.byte_len()
-        );
+    for (name, program) in [
+        ("sampled", sampled_program()),
+        ("sampling61", sampling_program(30)),
+    ] {
+        for language in [Language::Wgsl, Language::Cg] {
+            let generated = compile_fragment(&program, language, 16384).unwrap();
+            let extension = if language == Language::Wgsl {
+                "wgsl"
+            } else {
+                "cg"
+            };
+            std::fs::write(
+                directory.join(format!("{name}.{extension}")),
+                &generated.source,
+            )
+            .unwrap();
+            let masked =
+                compile_fragment_with_tail(&program, language, OutputTail::AlphaCoverage, 16384)
+                    .unwrap();
+            std::fs::write(
+                directory.join(format!("{name}-masked.{extension}")),
+                masked.source,
+            )
+            .unwrap();
+            println!(
+                "{name} {language:?}: generated_bytes={}, parameters={}B",
+                generated.source.len(),
+                generated.parameters.byte_len()
+            );
+        }
     }
 }
 
@@ -682,7 +960,7 @@ fn typed_external_textures_emit_fixed_bindings_and_validate_wgsl() {
             EffectNodeId(index as u32 + 1),
         )
         .unwrap();
-        for language in [Language::GlslEs100, Language::Wgsl] {
+        for language in [Language::Wgsl, Language::Cg] {
             let fragment = compile_fragment(&program, language, 32768).unwrap();
             assert!(fragment.source.contains("reel_texture_0"));
             assert!(!fragment.source.contains("u_ops"));
@@ -701,4 +979,30 @@ fn typed_external_textures_emit_fixed_bindings_and_validate_wgsl() {
             }
         }
     }
+}
+
+#[test]
+fn independent_coverage_tail_preserves_typed_author_program_and_sampler_bound() {
+    for language in [Language::Wgsl, Language::Cg] {
+        let program = sampled_program();
+        let ordinary = compile_fragment(&program, language, 16384).unwrap();
+        let masked =
+            compile_fragment_with_tail(&program, language, OutputTail::AlphaCoverage, 16384)
+                .unwrap();
+        assert_eq!(ordinary.parameters, masked.parameters);
+        assert!(masked.source.contains("reel_composite_mask"));
+        assert!(masked.source.contains("stored * coverage *"));
+        assert!(
+            compile_fragment_with_tail(
+                &program,
+                language,
+                OutputTail::AlphaCoverage,
+                masked.source.len() - 1
+            )
+            .is_err()
+        );
+    }
+    assert!(OutputTail::supports_coverage(EffectType::Vec4, 14, true));
+    assert!(!OutputTail::supports_coverage(EffectType::Vec4, 15, true));
+    assert!(!OutputTail::supports_coverage(EffectType::Float, 0, true));
 }

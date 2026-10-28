@@ -38,13 +38,13 @@ impl<T> RetiredImages<T> {
 
 /// Initialized CPU upload capacity. Native upload APIs finish reading this slice
 /// before returning, so later uploads may overwrite it without a GPU wait.
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 #[derive(Default)]
 pub(crate) struct UploadScratch {
     bytes: Vec<u8>,
     ticket: Option<reel_core::budget::BudgetTicket>,
 }
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 impl UploadScratch {
     pub(crate) fn capacity(&self) -> u64 {
         self.bytes.len() as u64
@@ -89,12 +89,44 @@ pub(crate) struct TextureUploadLayout {
     pub(crate) row_bytes: u64,
     pub(crate) rows: u32,
     pub(crate) resident_bytes: u64,
+    pub(crate) mip: u32,
+    pub(crate) offset: u64,
 }
 impl TextureUploadLayout {
+    /// Resolve a flat upload-row cursor without retaining per-level allocations.
+    #[cfg(any(feature = "wgpu", test))]
+    pub(crate) fn at_row(self, descriptor: TextureDescriptor, mut row: u32) -> (Self, u32) {
+        for mip in 0..descriptor.mip_count {
+            let size = self.layout.storage_size.map(|v| (v >> mip).max(1));
+            let rows = size[1].div_ceil(descriptor.format.block_size());
+            if row < rows {
+                return (
+                    Self {
+                        layout: TextureLayout {
+                            storage_size: size,
+                            ..self.layout
+                        },
+                        rows,
+                        mip,
+                        offset: descriptor.mip_offset(mip).expect("validated mip"),
+                        row_bytes: descriptor.format.row_bytes(size[0]).unwrap(),
+                        source_row_bytes: descriptor
+                            .format
+                            .row_bytes(descriptor.mip_size(mip)[0])
+                            .unwrap(),
+                        ..self
+                    },
+                    row,
+                );
+            }
+            row -= rows;
+        }
+        unreachable!("upload cursor within validated mip chain")
+    }
     pub(crate) fn new(descriptor: TextureDescriptor) -> Result<Self, GpuError> {
         descriptor.byte_len().map_err(|_| GpuError::InvalidSize)?;
         let mut layout = descriptor.layout;
-        if descriptor.format == TextureFormat::Rgba8 {
+        if descriptor.format == TextureFormat::Rgba8 && descriptor.mip_count == 1 {
             let content = layout.content_size;
             let candidate = |round: fn(u32) -> Option<u32>| {
                 round(content[0])
@@ -129,11 +161,21 @@ impl TextureUploadLayout {
                 .format
                 .row_bytes(layout.storage_size[0])
                 .ok_or(GpuError::InvalidSize)?,
-            rows: layout.storage_size[1] / descriptor.format.block_size(),
-            resident_bytes: descriptor
-                .format
-                .byte_len(layout.storage_size)
-                .ok_or(GpuError::InvalidSize)?,
+            rows: (0..descriptor.mip_count)
+                .map(|i| {
+                    (layout.storage_size[1] >> i)
+                        .max(1)
+                        .div_ceil(descriptor.format.block_size())
+                })
+                .sum(),
+            mip: 0,
+            offset: 0,
+            resident_bytes: TextureDescriptor {
+                layout,
+                ..descriptor
+            }
+            .byte_len()
+            .map_err(|_| GpuError::InvalidSize)?,
         })
     }
 }
@@ -188,18 +230,18 @@ static SRGB_TO_LINEAR_F16: LazyLock<[u16; 256]> =
 static NORMALIZED_F16: LazyLock<[u16; 256]> =
     LazyLock::new(|| std::array::from_fn(|i| half::f16::from_f32(i as f32 / 255.).to_bits()));
 
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 static SRGB_TO_LINEAR_U8: LazyLock<[u8; 256]> =
     LazyLock::new(|| SRGB_TO_LINEAR_F16.map(linear_f16_u8));
 
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 fn linear_f16_u8(bits: u16) -> u8 {
     (half::f16::from_bits(bits).to_f32().clamp(0., 1.) * 255.).round() as u8
 }
 
-/// Convert into the GLES UNORM working texture. Opaque images use a single
+/// Convert into the GXM UNORM working texture. Opaque images use a single
 /// lookup per channel; translucent pixels retain the shared color conversion.
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 pub(crate) fn rgba8_linear_u8(
     rgba: &[u8],
     encoding: ColorEncoding,
@@ -370,6 +412,8 @@ mod tests {
             ([4095, 1080], [4096, 4096], [4096, 1088]),
         ] {
             let descriptor = TextureDescriptor {
+                storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                mip_count: 1,
                 format: TextureFormat::Rgba8,
                 source_encoding: ColorEncoding::Linear,
                 layout: TextureLayout {
@@ -405,6 +449,8 @@ mod tests {
             TextureFormat::Bgra8,
         ] {
             let descriptor = TextureDescriptor {
+                storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                mip_count: 1,
                 format,
                 source_encoding: ColorEncoding::Linear,
                 layout: TextureLayout {
@@ -441,5 +487,30 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mip_tests {
+    use super::*;
+    #[test]
+    fn flat_progress_visits_each_level_and_charges_full_chain() {
+        let d = TextureDescriptor {
+            mip_count: 5,
+            storage_layout: Default::default(),
+            format: TextureFormat::Bc3Rgba,
+            layout: TextureLayout::identity([16, 8]),
+            source_encoding: reel_core::texture::ColorEncoding::Linear,
+        };
+        let upload = TextureUploadLayout::new(d).unwrap();
+        assert_eq!(upload.resident_bytes, 208);
+        assert_eq!(upload.rows, 6);
+        let mut bytes = 0;
+        for row in 0..upload.rows {
+            let (level, local) = upload.at_row(d, row);
+            assert!(local < level.rows);
+            bytes += level.row_bytes;
+        }
+        assert_eq!(bytes, 208);
     }
 }

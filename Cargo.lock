@@ -1387,18 +1387,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glow"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "263218b0ba2b0715c3370fb04674f5f8aa331594b521c94ff0a8e4a8472d1386"
-dependencies = [
- "js-sys",
- "slotmap",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "glutin_wgl_sys"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3211,24 +3199,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
-name = "pvr-compiler"
-version = "0.1.1"
-source = "git+https://github.com/jhq223/pvr-compiler.git?rev=21f382885f7250149ff9fde4d21ad17769cda325#21f382885f7250149ff9fde4d21ad17769cda325"
-dependencies = [
- "cc",
-]
-
-[[package]]
-name = "pvr-psp2-sys"
-version = "0.1.3"
-source = "git+https://github.com/jhq223/pvr-psp2-sys.git?rev=c8cd9a5eadb3691417fc8c480be6f89037e5a129#c8cd9a5eadb3691417fc8c480be6f89037e5a129"
-dependencies = [
- "glow 0.18.0",
- "khronos-egl",
- "vitasdk-sys",
-]
-
-[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3399,7 +3369,6 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "pollster",
- "pvr-compiler",
  "reel-core",
  "reel-engine",
  "reel-media",
@@ -3428,8 +3397,6 @@ name = "reel-dev"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "pvr-compiler",
- "pvr-psp2-sys",
  "reel-core",
  "reel-package",
  "reel-player",
@@ -3437,6 +3404,7 @@ dependencies = [
  "reel-storage",
  "reel-ui",
  "serde_json",
+ "vita-native",
 ]
 
 [[package]]
@@ -3472,7 +3440,6 @@ dependencies = [
  "ogg",
  "openh264",
  "opus",
- "pvr-psp2-sys",
  "reel-audio",
  "reel-core",
  "rtrb",
@@ -3480,6 +3447,7 @@ dependencies = [
  "symphonia",
  "sync_wrapper",
  "triple_buffer",
+ "vita-native",
 ]
 
 [[package]]
@@ -3510,7 +3478,6 @@ dependencies = [
  "image",
  "pollster",
  "postcard",
- "pvr-psp2-sys",
  "reel-core",
  "reel-engine",
  "reel-media",
@@ -3522,6 +3489,7 @@ dependencies = [
  "serde",
  "smallvec",
  "ui-events-winit",
+ "vita-native",
  "wgpu",
  "winit",
 ]
@@ -3536,14 +3504,13 @@ dependencies = [
  "lyon_tessellation",
  "pollster",
  "postcard",
- "pvr-compiler",
- "pvr-psp2-sys",
  "reel-core",
  "reel-ui",
  "serde",
  "smallvec",
  "stats_alloc",
  "swash",
+ "vita-native",
  "wgpu",
 ]
 
@@ -3552,7 +3519,7 @@ name = "reel-storage"
 version = "1.0.0"
 dependencies = [
  "atomic-write-file",
- "pvr-psp2-sys",
+ "vita-native",
 ]
 
 [[package]]
@@ -4805,6 +4772,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vita-native"
+version = "1.0.0"
+source = "git+https://github.com/jhq223/vita-native.git?rev=d066447f6b14e8d62f92d1e852b7324700c9d11b#d066447f6b14e8d62f92d1e852b7324700c9d11b"
+dependencies = [
+ "vitasdk-sys",
+]
+
+[[package]]
 name = "vitasdk-sys"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5120,7 +5095,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "cfg_aliases",
- "glow 0.17.0",
+ "glow",
  "glutin_wgl_sys",
  "gpu-allocator",
  "hashbrown 0.17.1",

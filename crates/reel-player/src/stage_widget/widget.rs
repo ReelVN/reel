@@ -949,28 +949,17 @@ impl Widget for SceneWidget {
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
             use reel_ui::{kurbo::Affine, peniko::ImageSampler};
             let [width, height] = image.data().image_size().expect("particle image resource");
-            // A single widget, image resource and painter pass. Image alpha is
-            // carried in the brush, avoiding one compositing group per sprite.
-            for sprite in batch.samples() {
-                if sprite.opacity <= 0. || sprite.size <= 0. {
-                    continue;
-                }
-                let transform = Affine::translate((sprite.position[0], sprite.position[1]))
-                    * Affine::rotate(sprite.rotation.to_radians())
-                    * Affine::scale(sprite.size / f64::from(width))
-                    * Affine::translate((-f64::from(width) * 0.5, -f64::from(height) * 0.5));
-                ctx.draw_resource_image(
-                    painter,
-                    image,
-                    Rect::new(0., 0., f64::from(width), f64::from(height)),
-                    transform,
-                    Affine::IDENTITY,
-                    ImageSampler {
-                        alpha: sprite.opacity as f32,
-                        ..Default::default()
-                    },
-                );
-            }
+            let instances = self.particle_sampler.record(batch);
+            ctx.draw_resource_sprites(
+                painter,
+                image,
+                Rect::new(0., 0., f64::from(width), f64::from(height)),
+                Affine::IDENTITY,
+                ImageSampler::default(),
+                instances,
+            );
+        } else {
+            self.particle_sampler = Default::default();
         }
         self.paint_selection(ctx, painter);
     }

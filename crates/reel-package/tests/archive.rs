@@ -489,7 +489,7 @@ impl Seek for SparseArchive {
 }
 
 #[test]
-fn compressed_sparse_mount_and_ranges_only_read_addressed_records_and_payloads() {
+fn compressed_sparse_mount_batches_bounded_records_and_preserves_exact_outputs() {
     let (mut bytes, payload) = compressed_fixture();
     let gap = 1u64 << 34;
     let main = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
@@ -536,7 +536,7 @@ fn compressed_sparse_mount_and_ranges_only_read_addressed_records_and_payloads()
     assert_eq!(
         input.reads,
         [
-            (original_directory + gap, 16),
+            (original_directory + gap, 3 * 16),
             (entry.offset, first_stored as usize),
         ]
     );
@@ -577,7 +577,7 @@ fn compressed_sparse_mount_and_ranges_only_read_addressed_records_and_payloads()
     assert_eq!(
         input.reads,
         [
-            (original_directory + gap + 16, 16),
+            (original_directory + gap + 16, 2 * 16),
             (entry.offset + raw_relative + 123, 19),
         ]
     );
@@ -727,11 +727,11 @@ fn sequential_blocks_batch_directory_reads_and_preserve_small_range_cache() {
     );
     assert_eq!(
         input.reads.len(),
-        261,
-        "259 payload blocks and two directory reads"
+        5,
+        "three bounded payload windows and two directory reads"
     );
     assert_eq!(input.reads[0].1, 4096);
-    assert_eq!(input.reads[257].1, 3 * 16);
+    assert_eq!(input.reads[3].1, 3 * 16);
 
     // A small request owns its cached decoded block. Complete block decodes write
     // into the caller's buffer and preserve those still-valid cached bytes.

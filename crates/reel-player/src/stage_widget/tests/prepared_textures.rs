@@ -27,6 +27,8 @@ fn particle_frame(compressed: bool) -> (RenderFrame, BudgetPool) {
     };
     let handle = if compressed {
         let descriptor = TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format: TextureFormat::Bc3Rgba,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout {
@@ -179,20 +181,17 @@ fn particle_frame(compressed: bool) -> (RenderFrame, BudgetPool) {
         .complete
     {}
     let frame = build.finish().unwrap();
-    let images: Vec<_> = frame
+    let batches: Vec<_> = frame
         .commands()
         .iter()
         .filter_map(|c| match &c.op {
-            FrameOp::Draw(FrameDraw::Fill {
-                brush: Brush::Image(brush),
-                transform,
-                brush_transform,
-                ..
-            }) => Some((brush, *transform, *brush_transform)),
+            FrameOp::Draw(FrameDraw::Sprites(batch)) => Some(batch),
             _ => None,
         })
         .collect();
-    assert_eq!(images.len(), samples.len());
+    assert_eq!(batches.len(), 1);
+    let batch = batches[0];
+    assert_eq!(batch.instances.len(), samples.len());
     assert!(
         frame
             .commands()
@@ -211,10 +210,12 @@ fn particle_frame(compressed: bool) -> (RenderFrame, BudgetPool) {
             >= 2,
         "particle background and border keep their original brushes"
     );
-    for ((brush, transform, sampling), sample) in images.iter().zip(samples) {
+    for (instance, sample) in batch.instances.iter().zip(samples) {
+        let brush = &batch.brush;
+        let transform = batch.transform * instance.transform(batch.bounds);
         assert_eq!(brush.image.resource, handle);
-        assert_eq!(*sampling, Some(Affine::IDENTITY));
-        assert!((brush.sampler.alpha - sample.opacity as f32).abs() < 1e-6);
+        assert_eq!(brush.sampler.alpha, 1.);
+        assert!((instance.alpha - sample.opacity as f32).abs() < 1e-6);
         let expected = Affine::translate((sample.position[0], sample.position[1]))
             * Affine::rotate(sample.rotation.to_radians())
             * Affine::scale(sample.size / 48.)

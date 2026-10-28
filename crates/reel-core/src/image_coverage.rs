@@ -95,6 +95,10 @@ impl ImageCoverage {
     /// enclosing every possible hardware alpha interpolation. BC1 is opaque;
     /// unsupported storage returns `None` and retains the ordinary geometry.
     pub fn texture(descriptor: TextureDescriptor, bytes: &[u8]) -> Option<Self> {
+        // Coarse mip filtering can spread alpha beyond the base-level coverage bands.
+        if descriptor.mip_count > 1 {
+            return None;
+        }
         descriptor.validate(bytes.len()).ok()?;
         let size = descriptor.layout.content_size;
         let storage = descriptor.layout.storage_size;
@@ -103,17 +107,18 @@ impl ImageCoverage {
                 Self::uncompressed(size, storage[0] as usize * 4, bytes, false)
             }
             TextureFormat::Bc3Rgba => {
-                let stride = storage[0] as usize / 4 * 16;
                 let mut coverage = Self::empty(size);
                 for y in 0..size[1].div_ceil(4) {
-                    let start = y as usize * stride;
-                    let row = &bytes[start..start + size[0].div_ceil(4) as usize * 16];
-                    if let Some(first) = row.as_chunks::<16>().0.iter().position(bc3_has_alpha) {
-                        let last = row.as_chunks::<16>().0.iter().rposition(bc3_has_alpha)?;
+                    let active = |x: u32| {
+                        let at = descriptor.storage_layout.block_offset(storage, 16, x, y);
+                        bc3_has_alpha(bytes[at..at + 16].try_into().unwrap())
+                    };
+                    if let Some(first) = (0..size[0].div_ceil(4)).find(|&x| active(x)) {
+                        let last = (first..size[0].div_ceil(4)).rfind(|&x| active(x))?;
                         coverage.include([
-                            first as u32 * 4,
+                            first * 4,
                             y * 4,
-                            (last as u32 * 4 + 4).min(size[0]),
+                            (last * 4 + 4).min(size[0]),
                             (y * 4 + 4).min(size[1]),
                         ]);
                     }
@@ -219,6 +224,8 @@ mod tests {
     #[test]
     fn bc3_checks_zero_endpoints_special_selectors_and_excludes_storage_padding() {
         let descriptor = TextureDescriptor {
+            storage_layout: crate::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format: TextureFormat::Bc3Rgba,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout {
@@ -274,6 +281,8 @@ mod tests {
         }
         let opaque = vec![255; sparse.len()];
         let descriptor = TextureDescriptor {
+            storage_layout: crate::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format: TextureFormat::Bc3Rgba,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout::identity(size),

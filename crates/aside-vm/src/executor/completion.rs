@@ -481,6 +481,69 @@ impl Vm {
     ) -> Result<Option<RunOutcome>, VmError> {
         let top = self.active.frames.data.len() - 1;
         match n.phase {
+            NativePhase::PlannedCheck { source } => {
+                if !m.take(0, 1 + u64::from(n.argument_count), 0) {
+                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                let ArgSource::Caller { frame, descriptor } = source else {
+                    unreachable!()
+                };
+                let Frame::Script(caller) = self.active.frames.data[self.index(frame)?] else {
+                    unreachable!()
+                };
+                let Descriptor::Call(call) = &self.program.package().functions
+                    [caller.code.function.index()]
+                .descriptors[descriptor.index()] else {
+                    unreachable!()
+                };
+                let Arguments::Window(window) = call.arguments else {
+                    unreachable!()
+                };
+                match self
+                    .slots
+                    .borrow_initialized_window(caller.regs, window.start.0, window.len)
+                {
+                    Ok(_) => n.phase = NativePhase::PlannedCopy { source, index: 0 },
+                    Err(error) => self.native_fault(&mut n, heap_fault(error))?,
+                }
+            }
+            NativePhase::PlannedCopy { source, index } => {
+                if index < n.argument_count {
+                    if !m.take(0, 2 + self.type_checks.argument_extra(n.signature), 0) {
+                        return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                    }
+                    let position = self
+                        .program
+                        .native_call_slots(n.argument_plan.unwrap())
+                        .unwrap()[index as usize];
+                    let ty = self.program.package().signatures[n.signature.index()].parameters
+                        [position as usize]
+                        .ty;
+                    let result = self
+                        .argument(source, index)
+                        .map_err(vm_fault)
+                        .and_then(|(_, value)| self.check_type(ty, value).map(|()| value));
+                    match result {
+                        Ok(value) => {
+                            self.put(n.bound, position, value)?;
+                            n.phase = NativePhase::PlannedCopy {
+                                source,
+                                index: index + 1,
+                            };
+                        }
+                        Err(kind) => self.native_fault(&mut n, kind)?,
+                    }
+                } else {
+                    if !m.take(0, 1, 0) {
+                        return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                    }
+                    n.phase = if n.has_defaults {
+                        NativePhase::Defaults { parameter: 0 }
+                    } else {
+                        NativePhase::Resume(NativeInput::Entry)
+                    };
+                }
+            }
             NativePhase::Copy { source, index } => {
                 if !m.take(0, self.argument_work(source, index), 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));

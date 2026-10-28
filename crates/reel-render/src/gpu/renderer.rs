@@ -510,6 +510,7 @@ impl Renderer {
                 capture,
                 &selection,
                 &mut super::glyph_cache::Preparation {
+                    uploads: Default::default(),
                     gpu: &self.gpu,
                     encoder: &mut encoder,
                     cache: &self.glyphs,
@@ -520,33 +521,40 @@ impl Renderer {
                     images: &self.images,
                 },
             )?;
+            let groups = self.targets.1.lock().unwrap().get(
+                frame.drawing(),
+                capture,
+                &self.budgets.transient,
+            );
             let mut offscreen = crate::common::offscreen::Plan::default();
             let mut offscreen_tickets = Vec::new();
             let mut target_plan = |quality: Quality| {
                 offscreen = Default::default();
                 offscreen_tickets.clear();
-                let (schedule, targets, retained) = crate::common::offscreen::Plan::choose(
-                    frame,
-                    second.map(|(frame, _)| frame),
-                    size,
-                    capture,
-                    quality.samples,
-                    self.gpu.device.limits().max_texture_dimension_2d,
-                    &glyph_plan,
-                    self.gpu.limits.target_bytes,
-                    &|extent| super::targets::target_bytes(extent, quality),
-                    crate::common::target_plan::MaskExecution::Inline,
-                    &selection,
-                    |bytes| {
-                        reserve(
-                            &self.budgets.transient,
-                            &budget_scope.transient,
-                            bytes,
-                            self.gpu.limits.transient_bytes,
-                            "transient",
-                        )
-                    },
-                )?;
+                let (schedule, targets, retained) =
+                    crate::common::offscreen::Plan::choose_with_groups(
+                        frame,
+                        second.map(|(frame, _)| frame),
+                        size,
+                        capture,
+                        quality.samples,
+                        self.gpu.device.limits().max_texture_dimension_2d,
+                        &glyph_plan,
+                        self.gpu.limits.target_bytes,
+                        &|extent| super::targets::target_bytes(extent, quality),
+                        crate::common::target_plan::MaskExecution::Inline,
+                        &selection,
+                        groups.clone(),
+                        |bytes| {
+                            reserve(
+                                &self.budgets.transient,
+                                &budget_scope.transient,
+                                bytes,
+                                self.gpu.limits.transient_bytes,
+                                "transient",
+                            )
+                        },
+                    )?;
                 offscreen = schedule;
                 offscreen_tickets = retained;
                 Ok(targets)

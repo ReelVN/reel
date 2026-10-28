@@ -15,6 +15,8 @@ pub enum GcPhase {
 /// A byte quota smaller than one chunk cannot free that chunk and reports blocked.
 #[derive(Clone, Copy, Debug)]
 pub struct GcBudget {
+    /// Root scan operations. A range operation reads one descriptor/value or
+    /// skips vacant slots within one 64-slot occupancy word.
     pub roots: u32,
     pub edges: u32,
     pub weak: u32,
@@ -43,7 +45,9 @@ pub struct GcProgress {
     pub roots: u32,
     pub single_root_slots: u32,
     pub range_descriptors: u32,
+    /// Vacant range slots skipped, independent of the number of scan operations.
     pub range_holes: u32,
+    pub range_hole_blocks: u32,
     pub range_values: u32,
     pub edges: u32,
     pub weak: u32,
@@ -130,7 +134,8 @@ impl Heap {
     }
 
     /// Run only at the host's single-threaded safe points; never calls script/native code.
-    /// Each operation is an edge/slot/chunk, with a total units cap between clock checks.
+    /// Each operation is an edge, slot, occupancy word or chunk, with a total
+    /// units cap between clock checks.
     pub fn gc_step(&mut self, budget: GcBudget) -> Result<GcProgress, HeapError> {
         self.gc_step_impl(budget, None)
     }
@@ -303,8 +308,16 @@ impl Heap {
         let Some(key) = self.range_index[self.gc.range_slot] else {
             self.gc.range_key = None;
             self.gc.range_offset = 0;
-            self.gc.range_slot += 1;
-            p.range_holes += 1;
+            let word = self.gc.range_slot / 64;
+            let live = self.range_occupied[word] & (u64::MAX << (self.gc.range_slot % 64));
+            let next = if live == 0 {
+                ((word + 1) * 64).min(self.range_scan_len)
+            } else {
+                word * 64 + live.trailing_zeros() as usize
+            };
+            p.range_holes += (next - self.gc.range_slot) as u32;
+            p.range_hole_blocks += 1;
+            self.gc.range_slot = next;
             return Ok(());
         };
         let token = RootRangeToken::new(self, key);

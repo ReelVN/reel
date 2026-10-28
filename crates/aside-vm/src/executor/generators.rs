@@ -857,6 +857,7 @@ impl Vm {
         }
         let id = FrameId(self.serial()?);
         let mut frame = ScriptFrame {
+            derived_bridge: None,
             id,
             code: CodeRef {
                 function,

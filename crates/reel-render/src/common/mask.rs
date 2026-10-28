@@ -1,9 +1,9 @@
 //! Bounded scalar storage planning and recognition of simple sampled masks.
 #![cfg_attr(
-    not(any(test, all(feature = "gles2", feature = "wgpu"))),
+    not(any(test, all(feature = "gxm", feature = "wgpu"))),
     allow(
         dead_code,
-        reason = "register planning is shared; evaluated scalar chains are specific to GLES"
+        reason = "register planning is shared; evaluated scalar chains are specific to GXM"
     )
 )]
 use reel_ui::stage::{MaskChannel, MaskOp, MaskProgram};

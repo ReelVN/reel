@@ -27,6 +27,7 @@ struct PaintState {
     quality: ImageQuality,
     appearance: Option<super::gradient::Uniform>,
     direct: Option<mesh::DirectPaint>,
+    bounded: bool,
     opaque: Option<mesh::OpaquePaint>,
     scissor: super::targets::Scissor,
 }
@@ -78,7 +79,6 @@ impl Context<'_> {
             &mut mesh,
             source.size,
             source.storage_size(),
-            false,
         )?;
         mesh::transform_glyphs(
             &mut mesh,
@@ -189,6 +189,39 @@ impl Context<'_> {
         let (image, _) = resources::upload(self.gpu, &mut self.encoder, size, pixels, available)?;
         Ok(image)
     }
+    fn draw_sprites(
+        &mut self,
+        target: &Target,
+        batch: &reel_ui::frame::FrameSprites,
+        outer: Affine,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        self.composite_supported(batch.composite, at)?;
+        let image = self.image_resource(batch.brush.image.resource, at)?;
+        let source = image.source.as_ref().and_then(|s| s.lease.upgrade());
+        let coverage = source.as_ref().and_then(|s| s.image_coverage());
+        let mut mesh = mesh::Mesh::new(self.mesh_allocation());
+        mesh.sprites(
+            batch,
+            outer,
+            image.layout,
+            image.uv_transform(),
+            coverage,
+            self.size,
+            at,
+        )?;
+        self.paint_resource(
+            target,
+            mesh,
+            &image,
+            [
+                batch.brush.sampler.x_extend == Extend::Repeat,
+                batch.brush.sampler.y_extend == Extend::Repeat,
+            ],
+            batch.brush.image.appearance.map(|a| a.transformed(outer)),
+            batch.brush.sampler.quality,
+        )
+    }
     pub(super) fn draw(
         &mut self,
         frame: &FrameDrawing,
@@ -235,6 +268,7 @@ impl Context<'_> {
                 *composite,
             ),
             FrameDraw::GlyphRun(run) => return self.glyphs(frame, target, run, outer, origin),
+            FrameDraw::Sprites(batch) => return self.draw_sprites(target, batch, outer, at),
             FrameDraw::BlurredRoundedRect(_) => {
                 return Err(GpuError::Unsupported {
                     at,
@@ -675,6 +709,7 @@ impl Context<'_> {
                 .flatten()
         };
         let state = PaintState {
+            bounded: mesh.bounded_color.paint(direct, texture_format),
             direct,
             opaque: mesh.opaque_paint(direct),
             image: image.clone(),
@@ -687,7 +722,7 @@ impl Context<'_> {
             repeat,
             quality,
             appearance,
-            scissor: self.scissor,
+            scissor: self.scissor.for_vertices(&mesh.vertices, self.size),
         };
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);
@@ -882,10 +917,29 @@ impl Context<'_> {
                 #[cfg(test)]
                 self.pipelines.direct_draws[index]
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(test)]
                 if let Some(opaque) = entry.state.opaque {
-                    #[cfg(test)]
                     self.pipelines.opaque_draws[opaque as usize]
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(bounded) = self
+                    .pipelines
+                    .bounded
+                    .as_ref()
+                    .filter(|_| entry.state.bounded)
+                {
+                    let index = if index == 7 { 3 } else { index };
+                    if let Some(opaque) = entry.state.opaque {
+                        let index = if matches!(opaque, mesh::OpaquePaint::Solid) {
+                            1
+                        } else {
+                            0
+                        };
+                        &self.pipelines.bounded_opaque.as_ref().unwrap()[index]
+                    } else {
+                        &bounded[index]
+                    }
+                } else if let Some(opaque) = entry.state.opaque {
                     &self.pipelines.opaque[opaque as usize]
                 } else {
                     &self.pipelines.direct[index]

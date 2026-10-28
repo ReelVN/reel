@@ -1,6 +1,7 @@
 use super::{Error, Result, SIZE, r01_fixture};
 #[path = "masks.rs"]
 mod masks;
+#[path = "scenes/text.rs"]
 mod text;
 pub const TEXT_REVEAL_FRAMES: usize = text::LINE.len();
 use reel_core::{
@@ -73,7 +74,7 @@ impl Assets {
         let size = [256, 256];
         let handle = if case.starts_with("bc1")
             || case.starts_with("bc3")
-            || case == "resources" && index % 2 != 0
+            || case == "resources" && !index.is_multiple_of(2)
         {
             let format = if case.starts_with("bc1") {
                 TextureFormat::Bc1Rgb
@@ -95,6 +96,8 @@ impl Assets {
                     version.clone(),
                     TexturePayload::new(
                         TextureDescriptor {
+                            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                            mip_count: 1,
                             format,
                             layout: if case.ends_with("_region") {
                                 TextureLayout {

@@ -87,6 +87,9 @@ impl Vm {
         }
     }
     pub(super) fn abort_class(&mut self, s: ScriptFrame) -> Result<(), VmError> {
+        if s.derived_bridge.is_some() {
+            return Ok(());
+        }
         let Ok(value) = self.value(s.env, 3) else {
             return Ok(());
         };

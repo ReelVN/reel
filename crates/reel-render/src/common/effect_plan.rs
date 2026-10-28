@@ -1,5 +1,7 @@
 //! Shared parameter, coordinate and resource admission for prepared effects.
 pub(crate) mod implicit_mesh;
+#[cfg(test)]
+mod terminal_tests;
 use super::GpuError;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
@@ -73,6 +75,65 @@ pub(crate) fn direct_mask_projection(
         && group.image_mask.is_none()
         && group.filters.is_empty()
 }
+/// Fuse an effect's terminal opacity/source-over pass on the same output grid.
+/// Sampling still reads the complete isolated source. Masks, backdrop reads,
+/// capture/retained boundaries, inversion and multisample resolves remain passes.
+pub(crate) fn terminal_composite(
+    group: &reel_ui::frame::FrameGroup,
+    samples: u32,
+    boundary: bool,
+) -> bool {
+    samples == 1
+        && !boundary
+        && group.effect.is_some()
+        && group.mask_effect.is_none()
+        && group.composite.blend == Default::default()
+        && group.invert == 0.
+        && group.clip.is_none()
+        && group.mask.is_none()
+        && group.image_mask.is_none()
+        && group.filters.is_empty()
+}
+/// Holding the original source through coverage must not exceed the replaced
+/// parent-grid result in shared planned storage. Axis-wise comparison preserves
+/// monotonic row rounding; adapters still admit their actual recycled capacities.
+pub(crate) fn coverage_retention(source: [u32; 2], parent: [u32; 2]) -> bool {
+    source[0] <= parent[0] && source[1] <= parent[1]
+}
+/// Select a fixed output tail without changing authored operations or coverage quantization.
+/// Masks execute in independent streams; combined masks and color-reading effects remain passes.
+pub(crate) fn terminal_tail(
+    drawing: &FrameDrawing,
+    group: &reel_ui::frame::FrameGroup,
+    samples: u32,
+    boundary: bool,
+) -> Option<crate::effect::OutputTail> {
+    use crate::effect::OutputTail;
+    if terminal_composite(group, samples, boundary) {
+        return Some(OutputTail::Ordinary);
+    }
+    if samples != 1
+        || boundary
+        || group.mask_effect.is_some()
+        || group.image_mask.is_some()
+        || group.invert != 0.
+        || group.composite.blend != Default::default()
+        || !group.filters.is_empty()
+    {
+        return None;
+    }
+    match (group.clip.is_some(), group.mask) {
+        (true, None) => {}
+        (false, Some(mask))
+            if drawing
+                .masks()
+                .get(&mask.mask)
+                .is_some_and(|m| m.mode == reel_ui::imaging::MaskMode::Alpha) => {}
+        _ => return None,
+    }
+    coverage_variant(drawing, group).then_some(OutputTail::AlphaCoverage)
+}
+
 pub(crate) fn source_layout(
     effect: &FrameEffect,
     effect_to_frame: Affine,
@@ -185,12 +246,73 @@ pub(crate) fn context(
         [0., 0., 1., 1.],
         implicit_a,
         implicit_b,
+        [0.; 4],
     ];
     slots
         .iter()
         .flatten()
         .all(|v| v.is_finite())
         .then_some(slots)
+}
+
+/// Prove an isolated clip contains only one ordinary effect group. No context,
+/// sibling, retained transition or capture boundary crosses the delayed output.
+pub(crate) fn clipped_effect<'a>(
+    drawing: &FrameDrawing,
+    commands: &'a [reel_ui::frame::FrameCommand],
+    next: usize,
+    samples: u32,
+    boundary: bool,
+) -> Option<&'a reel_ui::frame::FrameGroup> {
+    use reel_ui::frame::FrameOp;
+    let FrameOp::PushGroup(group) = &commands.get(next)?.op else {
+        return None;
+    };
+    if !terminal_composite(group, samples, boundary) || !coverage_variant(drawing, group) {
+        return None;
+    }
+    let mut depth = 1usize;
+    for (index, command) in commands.iter().enumerate().skip(next + 1) {
+        match command.op {
+            FrameOp::PushGroup(_) | FrameOp::PushClip(_) => depth += 1,
+            FrameOp::PopGroup | FrameOp::PopClip => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return matches!(command.op, FrameOp::PopGroup)
+                        .then_some(())
+                        .and_then(|_| {
+                            matches!(
+                                commands.get(index + 1).map(|c| &c.op),
+                                Some(FrameOp::PopClip)
+                            )
+                            .then_some(group)
+                        });
+                }
+            }
+            FrameOp::PushContext(_) | FrameOp::PopContext => return None,
+            _ => {}
+        }
+    }
+    None
+}
+fn coverage_variant(drawing: &FrameDrawing, group: &reel_ui::frame::FrameGroup) -> bool {
+    let Some(effect) = group.effect.as_ref() else {
+        return false;
+    };
+    drawing.resources().leases().iter().any(|lease| {
+        if lease.handle() != effect.shader {
+            return false;
+        }
+        let ResourceData::EffectShader { descriptor, .. } = lease.data() else {
+            return false;
+        };
+        descriptor.coverage_offset.is_some()
+            && crate::effect::OutputTail::supports_coverage(
+                descriptor.output,
+                descriptor.textures,
+                descriptor.source_sampler,
+            )
+    })
 }
 
 /// Explicitly map parent frame pixels to the supplied source storage. Coverage
@@ -226,18 +348,15 @@ pub(crate) fn map_source(
     context[8] = [b as f32, d as f32, f as f32, 0.0];
 }
 /// Preserve logical source coordinates when scratch storage has a larger extent.
-/// GLES draws into the bottom-left viewport; the shared context uses top-left UVs.
 pub(crate) fn map_storage(
     context: &mut [[f32; 4]; crate::effect::CONTEXT_SLOTS],
     logical: [u32; 2],
     storage: [u32; 2],
-    bottom_left: bool,
 ) {
     let scale = [
         logical[0] as f32 / storage[0] as f32,
         logical[1] as f32 / storage[1] as f32,
     ];
-    let offset = if bottom_left { 1. - scale[1] } else { 0. };
     for index in [2, 7] {
         for value in &mut context[index][..3] {
             *value *= scale[0];
@@ -247,12 +366,11 @@ pub(crate) fn map_storage(
         for value in &mut context[index][..3] {
             *value *= scale[1];
         }
-        context[index][2] += offset;
     }
     context[5][2] = storage[0] as f32;
     context[5][3] = storage[1] as f32;
     context[6][0] *= scale[0];
-    context[6][1] = context[6][1] * scale[1] + offset;
+    context[6][1] *= scale[1];
     context[6][2] *= scale[0];
     context[6][3] *= scale[1];
 }
@@ -263,16 +381,11 @@ pub(crate) fn projected_source(
     mesh: &mut super::mesh::Mesh,
     logical: [u32; 2],
     storage: [u32; 2],
-    bottom_left: bool,
 ) -> Result<(), GpuError> {
     if logical == storage {
         return mesh.quad(
             reel_ui::kurbo::Rect::new(0., 0., f64::from(logical[0]), f64::from(logical[1])),
-            if bottom_left {
-                reel_ui::kurbo::Rect::new(0., 1., 1., 0.)
-            } else {
-                reel_ui::kurbo::Rect::new(0., 0., 1., 1.)
-            },
+            reel_ui::kurbo::Rect::new(0., 0., 1., 1.),
         );
     }
     let mut context = [[0.; 4]; crate::effect::CONTEXT_SLOTS];
@@ -285,16 +398,13 @@ pub(crate) fn projected_source(
     context[6] = [0., 0., 1., 1.];
     context[7] = [1., 0., 0., 0.];
     context[8] = [0., 1., 0., 0.];
-    map_storage(&mut context, logical, storage, bottom_left);
+    map_storage(&mut context, logical, storage);
     let mut vertices = implicit_mesh::vertices(&context).ok_or(GpuError::InvalidSize)?;
     for vertex in &mut vertices {
         vertex.position = [
             (vertex.position[0] + 1.) * 0.5 * logical[0] as f32,
             (1. - vertex.position[1]) * 0.5 * logical[1] as f32,
         ];
-        if bottom_left {
-            vertex.uv[1] = 1. - vertex.uv[1];
-        }
     }
     mesh.triangles(&vertices)
 }
@@ -341,6 +451,13 @@ pub(crate) fn slot(value: EffectValue) -> [f32; 4] {
     }
 }
 
+/// Borrowed output domain; coverage's flag preserves an outer clip attachment store.
+pub(crate) struct Terminal<'a, T> {
+    pub target: &'a T,
+    pub opacity: f32,
+    pub coverage: Option<(&'a T, bool)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,39 +468,32 @@ mod tests {
         let local = super::super::renderer::Budgets::new(Default::default());
         for logical in [[240, 80], [200, 100]] {
             for storage in [logical, [240, 100]] {
-                for bottom_left in [false, true] {
-                    let mut mesh = super::super::mesh::Mesh::new(
-                        super::super::mesh::Allocation::new(&budgets, &local, 1 << 20, 1 << 20),
-                    );
-                    projected_source(&mut mesh, logical, storage, bottom_left).unwrap();
-                    assert_eq!(mesh.vertices.len(), if storage == logical { 4 } else { 54 });
-                    let mut area = 0.;
-                    for triangle in mesh.indices.as_chunks::<3>().0 {
-                        let [a, b, c] =
-                            triangle.map(|index| mesh.vertices[index as usize].position);
-                        area += ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]))
-                            .abs()
-                            * 0.5;
-                    }
-                    assert!((area - (logical[0] * logical[1]) as f32).abs() < 0.01);
-                    for vertex in &mesh.vertices {
-                        for axis in 0..2 {
-                            let point = vertex.position[axis];
-                            assert!(point >= -0.0001 && point <= logical[axis] as f32 + 0.0001);
-                            let pixel = if bottom_left && axis == 1 {
-                                logical[axis] as f32 - point
-                            } else {
-                                point
-                            };
-                            let expected = if logical == storage {
-                                pixel
-                            } else {
-                                pixel.clamp(0.5, logical[axis] as f32 - 0.5)
-                            };
-                            assert!(
-                                (vertex.uv[axis] * storage[axis] as f32 - expected).abs() < 0.0001
-                            );
-                        }
+                let mut mesh = super::super::mesh::Mesh::new(super::super::mesh::Allocation::new(
+                    &budgets,
+                    &local,
+                    1 << 20,
+                    1 << 20,
+                ));
+                projected_source(&mut mesh, logical, storage).unwrap();
+                assert_eq!(mesh.vertices.len(), if storage == logical { 4 } else { 54 });
+                let mut area = 0.;
+                for triangle in mesh.indices.as_chunks::<3>().0 {
+                    let [a, b, c] = triangle.map(|index| mesh.vertices[index as usize].position);
+                    area +=
+                        ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() * 0.5;
+                }
+                assert!((area - (logical[0] * logical[1]) as f32).abs() < 0.01);
+                for vertex in &mesh.vertices {
+                    for axis in 0..2 {
+                        let point = vertex.position[axis];
+                        assert!(point >= -0.0001 && point <= logical[axis] as f32 + 0.0001);
+                        let pixel = point;
+                        let expected = if logical == storage {
+                            pixel
+                        } else {
+                            pixel.clamp(0.5, logical[axis] as f32 - 0.5)
+                        };
+                        assert!((vertex.uv[axis] * storage[axis] as f32 - expected).abs() < 0.0001);
                     }
                 }
             }
@@ -406,43 +516,32 @@ mod tests {
         let output = [170, 130];
         let storage = [240, 100];
         for logical in [[240, 80], [200, 100], storage] {
-            for bottom_left in [false, true] {
-                let mut mapped = context(&effect, Affine::IDENTITY, output, logical).unwrap();
-                let view = Affine::translate((17., -11.));
-                map_source(&mut mapped, &effect, Affine::IDENTITY, view, logical);
-                map_storage(&mut mapped, logical, storage, bottom_left);
-                assert_eq!(
-                    &mapped[5][..2],
-                    &[170., 130.],
-                    "logical viewport stays fixed"
-                );
-                for sample in [[-20., -20.], [0.5, 0.5], [70.5, 55.5], [250., 140.]] {
-                    let at = [sample[0] / output[0] as f32, sample[1] / output[1] as f32];
-                    for axis in 0..2 {
-                        let row = mapped[7 + axis];
-                        let uv = row[0] * at[0] + row[1] * at[1] + row[2];
-                        let half = 0.5 / storage[axis] as f32;
-                        let clamped = uv.clamp(
-                            mapped[6][axis] + half,
-                            mapped[6][axis] + mapped[6][axis + 2] - half,
-                        );
-                        let expected = (sample[axis] + [17., -11.][axis])
-                            .clamp(0.5, logical[axis] as f32 - 0.5);
-                        let actual = if bottom_left && axis == 1 {
-                            (1. - clamped) * storage[axis] as f32
-                        } else {
-                            clamped * storage[axis] as f32
-                        };
-                        let expected = if bottom_left && axis == 1 {
-                            logical[axis] as f32 - expected
-                        } else {
-                            expected
-                        };
-                        assert!(
-                            (actual - expected).abs() < 0.0001,
-                            "{logical:?} {bottom_left} {axis}: {actual} != {expected}"
-                        );
-                    }
+            let mut mapped = context(&effect, Affine::IDENTITY, output, logical).unwrap();
+            let view = Affine::translate((17., -11.));
+            map_source(&mut mapped, &effect, Affine::IDENTITY, view, logical);
+            map_storage(&mut mapped, logical, storage);
+            assert_eq!(
+                &mapped[5][..2],
+                &[170., 130.],
+                "logical viewport stays fixed"
+            );
+            for sample in [[-20., -20.], [0.5, 0.5], [70.5, 55.5], [250., 140.]] {
+                let at = [sample[0] / output[0] as f32, sample[1] / output[1] as f32];
+                for axis in 0..2 {
+                    let row = mapped[7 + axis];
+                    let uv = row[0] * at[0] + row[1] * at[1] + row[2];
+                    let half = 0.5 / storage[axis] as f32;
+                    let clamped = uv.clamp(
+                        mapped[6][axis] + half,
+                        mapped[6][axis] + mapped[6][axis + 2] - half,
+                    );
+                    let expected =
+                        (sample[axis] + [17., -11.][axis]).clamp(0.5, logical[axis] as f32 - 0.5);
+                    let actual = clamped * storage[axis] as f32;
+                    assert!(
+                        (actual - expected).abs() < 0.0001,
+                        "{logical:?} {axis}: {actual} != {expected}"
+                    );
                 }
             }
         }

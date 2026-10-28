@@ -238,7 +238,6 @@ fn execute_project_with_capture(
         } else {
             scenario_capture::ScenarioCapture::cpu()
         };
-        captures.configure_driver(runtime.driver_mut().unwrap());
         runtime.set_frame_capture_enabled(gpu_capture);
         let (mut bridge, mut root) = captures.bridge(runtime.driver());
         let mut identity = runtime.driver().ui().session().identity();
@@ -344,7 +343,6 @@ fn execute_project_with_capture(
                     identity = next;
                     replacements += 1;
                     captures.new_session();
-                    captures.configure_driver(runtime.driver_mut().unwrap());
                     (bridge, root) = captures.bridge(runtime.driver());
                 }
                 if captures.drive(runtime.driver_mut().unwrap()) {

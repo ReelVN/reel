@@ -1,13 +1,14 @@
 //! Offline effect fragments in the ordinary prepared-resource namespace.
 //!
-//! Definition products skip code generation on cache hits. SGX compilation has
-//! a second content key over complete GLSL and the pinned compiler, so changing
+//! Definition products skip code generation on cache hits. GXP compilation has
+//! a second content key over complete typed Cg and the actual SDK tools, so changing
 //! a parameter name or default can reuse the same compiled code. Runtime hosts
 //! consume the resulting envelopes without loading a compiler or the typed IR.
 use crate::resource_conversion::{Prepared, Report};
 use reel_engine::aside::source::{EffectDefinition, EffectProducts};
 use reel_package::archive::{ArchiveKind, ArchiveWriter};
-use reel_render::effect::{Language, compile_fragment};
+use reel_render::effect::gxp_compiler::{Compiler, Stage};
+use reel_render::effect::{Language, OutputTail, compile_fragment, compile_fragment_with_tail};
 use reel_ui::resources::{EffectShaderDescriptor, EffectShaderFormat};
 use std::{
     collections::BTreeMap,
@@ -37,8 +38,8 @@ impl Target {
     }
     fn formats(self) -> &'static [EffectShaderFormat] {
         match self {
-            Self::Desktop => &[EffectShaderFormat::Wgsl, EffectShaderFormat::GlslEs100],
-            Self::Vita => &[EffectShaderFormat::Sgx543],
+            Self::Desktop => &[EffectShaderFormat::Wgsl],
+            Self::Vita => &[EffectShaderFormat::Gxp],
         }
     }
     fn name(self) -> &'static str {
@@ -71,14 +72,30 @@ pub fn prepare_with_input(
     if products.is_empty() {
         return Ok(prepared);
     }
-    if target == Target::Vita && !pvr_compiler::AVAILABLE {
-        return Err(io::Error::other(
-            "Vita effect shaders require the pinned PVR compiler on a Linux build host; export this project with the Linux Reel CLI",
-        ));
+    let compiler_diagnostic = |error| {
+        diagnostic(
+            products,
+            products.definitions().next().unwrap(),
+            EffectShaderFormat::Gxp,
+            input,
+            error,
+        )
+    };
+    let compiler = (target == Target::Vita)
+        .then(Compiler::new)
+        .transpose()
+        .map_err(compiler_diagnostic)?;
+    let mut compiler_identity = blake3::Hasher::new();
+    if let Some(compiler) = &compiler {
+        compiler
+            .fingerprint(|field| {
+                compiler_identity.update(field);
+            })
+            .map_err(compiler_diagnostic)?;
     }
+    let compiler_identity = compiler_identity.finalize();
     let cache = project.join("build/resources/objects");
     fs::create_dir_all(&cache)?;
-    let mut compiler = None;
     for definition in products.definitions() {
         for &format in target.formats() {
             let key = identity(&[
@@ -86,6 +103,7 @@ pub fn prepare_with_input(
                 env!("REEL_CONVERTER_EFFECT").as_bytes(),
                 &definition.id,
                 format.suffix().as_bytes(),
+                compiler_identity.as_bytes(),
             ]);
             let path = cache.join(format!("effect-{key}.reel-effect"));
             let size = (|| -> io::Result<usize> {
@@ -96,10 +114,9 @@ pub fn prepare_with_input(
                         prepared.report.reused += 1;
                         bytes.len()
                     } else {
-                        let language = if format == EffectShaderFormat::Wgsl {
-                            Language::Wgsl
-                        } else {
-                            Language::GlslEs100
+                        let language = match format {
+                            EffectShaderFormat::Wgsl => Language::Wgsl,
+                            EffectShaderFormat::Gxp => Language::Cg,
                         };
                         let fragment =
                             compile_fragment(&definition.program, language, MAX_SHADER_BYTES)
@@ -109,10 +126,44 @@ pub fn prepare_with_input(
                                     ))
                                 })?;
                         prepared.report.source_bytes += fragment.source.len() as u64;
-                        let raw = if format == EffectShaderFormat::Sgx543 {
-                            sgx(&cache, &fragment.source, &mut compiler)?
+                        let mut raw = if format == EffectShaderFormat::Gxp {
+                            gxp(
+                                &cache,
+                                &fragment.source,
+                                compiler.as_ref().unwrap(),
+                                compiler_identity.as_bytes(),
+                            )?
                         } else {
                             fragment.source.into_bytes()
+                        };
+                        let coverage_offset = if OutputTail::supports_coverage(
+                            fragment.output_type,
+                            definition.program.textures().len() as u32,
+                            fragment.source_sampler,
+                        ) {
+                            let masked = compile_fragment_with_tail(
+                                &definition.program,
+                                language,
+                                OutputTail::AlphaCoverage,
+                                MAX_SHADER_BYTES,
+                            )
+                            .map_err(io::Error::other)?;
+                            prepared.report.source_bytes += masked.source.len() as u64;
+                            let code = if format == EffectShaderFormat::Gxp {
+                                gxp(
+                                    &cache,
+                                    &masked.source,
+                                    compiler.as_ref().unwrap(),
+                                    compiler_identity.as_bytes(),
+                                )?
+                            } else {
+                                masked.source.into_bytes()
+                            };
+                            let offset = u32::try_from(raw.len()).map_err(io::Error::other)?;
+                            raw.extend_from_slice(&code);
+                            Some(offset)
+                        } else {
+                            None
                         };
                         let descriptor = EffectShaderDescriptor::with_textures(
                             definition.id,
@@ -129,6 +180,13 @@ pub fn prepare_with_input(
                             &raw,
                         )
                         .map_err(io::Error::other)?;
+                        let descriptor = if let Some(offset) = coverage_offset {
+                            descriptor
+                                .with_coverage_variant(offset, &raw)
+                                .map_err(io::Error::other)?
+                        } else {
+                            descriptor
+                        };
                         let bytes = descriptor.encode_payload(&raw).map_err(io::Error::other)?;
                         if bytes.len() > MAX_SHADER_BYTES {
                             return Err(io::Error::other(
@@ -200,17 +258,18 @@ fn valid_product(bytes: &[u8], definition: &EffectDefinition, format: EffectShad
     )
 }
 
-fn sgx(
+fn gxp(
     cache: &Path,
     source: &str,
-    compiler: &mut Option<pvr_compiler::Compiler>,
+    compiler: &Compiler,
+    compiler_identity: &[u8; 32],
 ) -> io::Result<Vec<u8>> {
     let key = identity(&[
-        b"effect-sgx543-fragment-v1",
-        env!("REEL_EFFECT_COMPILER").as_bytes(),
+        b"effect-gxp-fragment-v1",
+        compiler_identity,
         source.as_bytes(),
     ]);
-    let path = cache.join(format!("effect-code-{key}.sgx"));
+    let path = cache.join(format!("effect-code-{key}.gxp"));
     // The cached binary carries a digest, so an interrupted or damaged cache is
     // rebuilt before it can enter a new typed shader envelope.
     if let Some(bytes) = cached(&path)?
@@ -219,27 +278,14 @@ fn sgx(
     {
         return Ok(bytes[32..].to_vec());
     }
-    if compiler.is_none() {
-        *compiler = Some(pvr_compiler::Compiler::new().map_err(io::Error::other)?);
+    let binary = compiler.compile(Stage::Fragment, source)?;
+    if binary.len() > MAX_SHADER_BYTES - 32 {
+        return Err(io::Error::other("effect GXP binary exceeds its byte limit"));
     }
-    let result = compiler
-        .as_mut()
-        .unwrap()
-        .compile_binary(pvr_compiler::Stage::Fragment, source)
-        .map_err(io::Error::other)?;
-    if !result.success || result.binary.is_empty() {
-        return Err(io::Error::other(format!(
-            "effect SGX compilation failed: {}",
-            result.log
-        )));
-    }
-    if result.binary.len() > MAX_SHADER_BYTES - 32 {
-        return Err(io::Error::other("effect SGX binary exceeds its byte limit"));
-    }
-    let mut bytes = blake3::hash(&result.binary).as_bytes().to_vec();
-    bytes.extend_from_slice(&result.binary);
+    let mut bytes = blake3::hash(&binary).as_bytes().to_vec();
+    bytes.extend_from_slice(&binary);
     publish(&path, &bytes)?;
-    Ok(result.binary)
+    Ok(binary)
 }
 
 fn cached(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -330,7 +376,7 @@ mod tests {
             let error = diagnostic(
                 &story.effects,
                 definition,
-                EffectShaderFormat::Sgx543,
+                EffectShaderFormat::Gxp,
                 input,
                 io::Error::new(io::ErrorKind::InvalidData, original),
             );
@@ -338,7 +384,7 @@ mod tests {
             let text = error.to_string();
             assert!(text.ends_with(original));
             assert!(
-                text.contains("main::sample (effect ") && text.contains(", sgx)"),
+                text.contains("main::sample (effect ") && text.contains(", gxp)"),
                 "{text}"
             );
             if profile == crate::BuildProfile::Debug {

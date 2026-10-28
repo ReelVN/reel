@@ -1,6 +1,58 @@
 use aside_vm::*;
 
 #[test]
+fn sparse_historical_ranges_skip_holes_without_allocation_or_losing_live_roots() {
+    let mut h = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    let mut f = FrameSlots::new(
+        &mut h,
+        FrameSlotsLimits {
+            initial_capacity: 4096,
+            max_capacity: 4096,
+            max_window_len: 1,
+        },
+    )
+    .unwrap();
+    let mut ranges = Vec::new();
+    for _ in 0..4096 {
+        let range = f
+            .open(&mut h, RootOwner(1), RootKind::TaskFrame, 1)
+            .unwrap();
+        f.write(&mut h, at(range, 0), Value::NULL).unwrap();
+        ranges.push(range);
+    }
+    let first = h.alloc_cell(Value::int(11)).unwrap();
+    let last = h.alloc_cell(Value::int(29)).unwrap();
+    f.write(&mut h, at(ranges[0], 0), first).unwrap();
+    f.write(&mut h, at(ranges[4095], 0), last).unwrap();
+    for &range in &ranges[1..4095] {
+        f.release(&mut h, range).unwrap();
+    }
+    h.begin_collection().unwrap();
+    let (mut holes, mut blocks, mut descriptors, mut values) = (0, 0, 0, 0);
+    while h.phase() != GcPhase::Idle {
+        let progress = step(&mut h, &f, one());
+        holes += progress.range_holes;
+        blocks += progress.range_hole_blocks;
+        descriptors += progress.range_descriptors;
+        values += progress.range_values;
+    }
+    assert_eq!((holes, descriptors, values), (4095, 2, 2));
+    assert_eq!(blocks, 65);
+    assert_eq!(h.cell_read(first).unwrap().as_int(), Some(11));
+    assert_eq!(h.cell_read(last).unwrap().as_int(), Some(29));
+    assert_eq!(h.stats().live_objects, 2);
+    println!(
+        "range historical_slots=4097 live=2 holes={holes} hole_scan_units={blocks} root_scan_units={}",
+        blocks + descriptors + values
+    );
+    for range in [ranges[0], ranges[4095]] {
+        f.release(&mut h, range).unwrap();
+    }
+    collect(&mut h, &f);
+    assert_eq!(h.stats().live_objects, 0);
+}
+
+#[test]
 fn growing_range_descriptors_preserve_windows_and_incremental_gc() {
     let mut h = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
     let mut f = FrameSlots::new(
@@ -108,7 +160,7 @@ fn step(h: &mut Heap, f: &FrameSlots, budget: GcBudget) -> GcProgress {
     );
     assert_eq!(
         p.roots,
-        p.single_root_slots + p.range_descriptors + p.range_holes + p.range_values
+        p.single_root_slots + p.range_descriptors + p.range_hole_blocks + p.range_values
     );
     p
 }

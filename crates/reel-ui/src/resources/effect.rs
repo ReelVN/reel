@@ -23,17 +23,17 @@ impl std::error::Error for EffectShaderPayloadError {}
 /// Prepared fragment representation selected by the asset host for its backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EffectShaderFormat {
-    GlslEs100,
+    /// WGSL source loaded by the desktop WGPU renderer.
     Wgsl,
-    Sgx543,
+    /// Native Sony GXM program compiled offline from typed Cg source.
+    Gxp,
 }
 impl EffectShaderFormat {
     /// Target representation suffix used by the logical prepared-asset path.
     pub const fn suffix(self) -> &'static str {
         match self {
-            Self::GlslEs100 => "glsl",
             Self::Wgsl => "wgsl",
-            Self::Sgx543 => "sgx",
+            Self::Gxp => "gxp",
         }
     }
     /// Stable logical asset path shared by exporters and asynchronous hosts.
@@ -66,6 +66,9 @@ pub struct EffectShaderDescriptor {
     pub source_sampler: bool,
     /// Float is scalar coverage; Vec4 is linear premultiplied RGBA.
     pub output: EffectType,
+    /// Byte offset of the optional fixed alpha-coverage variant; the prefix is ordinary code.
+    /// Only color effects with a spare portable sampler carry this variant.
+    pub coverage_offset: Option<u32>,
 }
 impl EffectShaderDescriptor {
     /// Build the canonical code identity for an exported target fragment.
@@ -98,12 +101,35 @@ impl EffectShaderDescriptor {
             textures,
             source_sampler,
             output,
+            coverage_offset: None,
         };
         if !descriptor.is_valid() || raw.is_empty() {
             return Err(EffectShaderPayloadError::Invalid);
         }
         descriptor.shader_key = descriptor.content_key(raw);
         Ok(descriptor)
+    }
+    /// Attach the offline coverage variant and bind both segments into the content key.
+    pub fn with_coverage_variant(
+        mut self,
+        offset: u32,
+        raw: &[u8],
+    ) -> Result<Self, EffectShaderPayloadError> {
+        self.coverage_offset = Some(offset);
+        if !self.is_valid() || offset as usize >= raw.len() {
+            return Err(EffectShaderPayloadError::Invalid);
+        }
+        self.shader_key = self.content_key(raw);
+        Ok(self)
+    }
+    /// Borrow the selected immutable code segment without allocating or compiling shaders.
+    pub fn code<'a>(&self, raw: &'a [u8], coverage: bool) -> Option<&'a [u8]> {
+        match (self.coverage_offset, coverage) {
+            (Some(offset), false) => raw.get(..offset as usize),
+            (Some(offset), true) => raw.get(offset as usize..),
+            (None, false) => Some(raw),
+            (None, true) => None,
+        }
     }
     fn content_key(&self, raw: &[u8]) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
@@ -113,6 +139,7 @@ impl EffectShaderDescriptor {
         hash.update(&(self.parameters.len() as u32).to_le_bytes());
         hash.update(&self.textures.to_le_bytes());
         hash.update(&[u8::from(self.source_sampler)]);
+        hash.update(&self.coverage_offset.unwrap_or(0).to_le_bytes());
         for ty in &self.parameters {
             hash.update(&[type_byte(*ty)]);
         }
@@ -121,15 +148,20 @@ impl EffectShaderDescriptor {
     }
     /// Verify bytes once when entering the prepared resource registry.
     pub fn matches_bytes(&self, raw: &[u8]) -> bool {
-        self.is_valid() && !raw.is_empty() && self.shader_key == self.content_key(raw)
+        self.is_valid()
+            && !raw.is_empty()
+            && self
+                .coverage_offset
+                .is_none_or(|o| (o as usize) < raw.len())
+            && self.shader_key == self.content_key(raw)
     }
     /// Encode the version-one little-endian prepared shader envelope. The header
     /// carries this descriptor followed by the complete target fragment bytes.
     pub fn encode_payload(&self, raw: &[u8]) -> Result<Vec<u8>, EffectShaderPayloadError> {
-        if !self.is_valid() || raw.is_empty() {
+        if !self.matches_bytes(raw) {
             return Err(EffectShaderPayloadError::Invalid);
         }
-        let capacity = 96usize
+        let capacity = 100usize
             .checked_add(self.parameters.len())
             .and_then(|v| v.checked_add(raw.len()))
             .ok_or(EffectShaderPayloadError::Limit)?;
@@ -144,6 +176,7 @@ impl EffectShaderDescriptor {
         bytes.extend_from_slice(&self.shader_key);
         bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&self.textures.to_le_bytes());
+        bytes.extend_from_slice(&self.coverage_offset.unwrap_or(0).to_le_bytes());
         bytes.extend(self.parameters.iter().copied().map(type_byte));
         bytes.extend_from_slice(raw);
         Ok(bytes)
@@ -161,15 +194,14 @@ impl EffectShaderDescriptor {
         if bytes.len() > max_payload_bytes {
             return Err(Limit);
         }
-        if bytes.len() < 96 || &bytes[..8] != b"REELSHD1" || (bytes[14] > 1 || bytes[15] != 0) {
+        if bytes.len() < 100 || &bytes[..8] != b"REELSHD1" || (bytes[14] > 1 || bytes[15] != 0) {
             return Err(Invalid);
         }
         let source_sampler = bytes[14] != 0;
         let abi = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         let format = match bytes[12] {
-            0 => EffectShaderFormat::GlslEs100,
             1 => EffectShaderFormat::Wgsl,
-            2 => EffectShaderFormat::Sgx543,
+            3 => EffectShaderFormat::Gxp,
             _ => return Err(Invalid),
         };
         let output = byte_type(bytes[13]).ok_or(Invalid)?;
@@ -179,14 +211,19 @@ impl EffectShaderDescriptor {
         let size = usize::try_from(u64::from_le_bytes(bytes[84..92].try_into().unwrap()))
             .map_err(|_| Invalid)?;
         let textures = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
-        let start = 96usize.checked_add(count).ok_or(Invalid)?;
+        let offset = u32::from_le_bytes(bytes[96..100].try_into().unwrap());
+        let coverage_offset = (offset != 0).then_some(offset);
+        if coverage_offset.is_some_and(|v| v as usize >= size) {
+            return Err(Invalid);
+        }
+        let start = 100usize.checked_add(count).ok_or(Invalid)?;
         if size == 0 || start.checked_add(size) != Some(bytes.len()) {
             return Err(Invalid);
         }
         if abi != EFFECT_SHADER_ABI || !matches!(output, EffectType::Float | EffectType::Vec4) {
             return Err(Invalid);
         }
-        let parameters = bytes[96..start]
+        let parameters = bytes[100..start]
             .iter()
             .map(|&v| byte_type(v).ok_or(Invalid))
             .collect::<Result<Vec<_>, _>>()?;
@@ -200,6 +237,7 @@ impl EffectShaderDescriptor {
                 textures,
                 source_sampler,
                 output,
+                coverage_offset,
             },
             start..bytes.len(),
         ))
@@ -207,6 +245,11 @@ impl EffectShaderDescriptor {
     /// Validate the portable interface before registering its immutable bytes.
     pub fn is_valid(&self) -> bool {
         self.abi == EFFECT_SHADER_ABI
+            && self.coverage_offset.is_none_or(|offset| {
+                offset > 0
+                    && self.output == EffectType::Vec4
+                    && self.textures.saturating_add(u32::from(self.source_sampler)) < 16
+            })
             && self.parameters.len() <= u32::MAX as usize
             && matches!(self.output, EffectType::Float | EffectType::Vec4)
     }
@@ -244,9 +287,8 @@ fn type_byte(ty: EffectType) -> u8 {
 }
 fn format_byte(format: EffectShaderFormat) -> u8 {
     match format {
-        EffectShaderFormat::GlslEs100 => 0,
         EffectShaderFormat::Wgsl => 1,
-        EffectShaderFormat::Sgx543 => 2,
+        EffectShaderFormat::Gxp => 3,
     }
 }
 fn byte_type(value: u8) -> Option<EffectType> {
@@ -264,10 +306,75 @@ fn byte_type(value: u8) -> Option<EffectType> {
 mod tests {
     use super::*;
     #[test]
+    fn gxp_envelopes_have_a_distinct_native_format_identity() {
+        let raw = b"GXP\0test-program";
+        let gxp = EffectShaderDescriptor::new(
+            [1; 32],
+            EffectShaderFormat::Gxp,
+            vec![EffectType::Float],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap();
+        let wgsl = EffectShaderDescriptor::new(
+            [1; 32],
+            EffectShaderFormat::Wgsl,
+            vec![EffectType::Float],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap();
+        assert_ne!(gxp.shader_key, wgsl.shader_key);
+        let bytes = gxp.encode_payload(raw).unwrap();
+        assert_eq!(bytes[12], 3);
+        let (decoded, range) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
+        assert_eq!(decoded, gxp);
+        assert_eq!(&bytes[range], raw);
+        assert!(decoded.matches_bytes(raw));
+        assert_eq!(wgsl.encode_payload(raw).unwrap()[12], 1);
+        for retired in [0, 2] {
+            let mut retired_payload = bytes.clone();
+            retired_payload[12] = retired;
+            assert_eq!(
+                EffectShaderDescriptor::decode_payload(&retired_payload, retired_payload.len()),
+                Err(EffectShaderPayloadError::Invalid)
+            );
+        }
+        assert!(
+            EffectShaderFormat::Gxp
+                .asset_path([1; 32])
+                .ends_with("/gxp.reel-effect")
+        );
+    }
+    #[test]
+    fn coverage_code_segments_are_bounded_and_content_keyed() {
+        let raw = b"ordinarymasked";
+        let base = EffectShaderDescriptor::new(
+            [1; 32],
+            EffectShaderFormat::Wgsl,
+            vec![],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap();
+        let descriptor = base.clone().with_coverage_variant(8, raw).unwrap();
+        assert_ne!(base.shader_key, descriptor.shader_key);
+        assert_eq!(descriptor.code(raw, false), Some(&b"ordinary"[..]));
+        assert_eq!(descriptor.code(raw, true), Some(&b"masked"[..]));
+        let bytes = descriptor.encode_payload(raw).unwrap();
+        let (decoded, range) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
+        assert!(decoded.matches_bytes(&bytes[range]));
+        assert!(base.clone().with_coverage_variant(0, raw).is_err());
+        assert!(base.with_coverage_variant(raw.len() as u32, raw).is_err());
+        let mut invalid = bytes.clone();
+        invalid[96..100].copy_from_slice(&(raw.len() as u32).to_le_bytes());
+        assert!(EffectShaderDescriptor::decode_payload(&invalid, invalid.len()).is_err());
+    }
+    #[test]
     fn prepared_envelope_preserves_schema_and_raw_range() {
         let descriptor = EffectShaderDescriptor::new(
             [17; 32],
-            EffectShaderFormat::GlslEs100,
+            EffectShaderFormat::Wgsl,
             vec![
                 EffectType::Bool,
                 EffectType::Float,
@@ -276,17 +383,17 @@ mod tests {
                 EffectType::Vec4,
             ],
             EffectType::Vec4,
-            b"void main() {}",
+            b"fn main() {}",
         )
         .unwrap();
-        let bytes = descriptor.encode_payload(b"void main() {}").unwrap();
+        let bytes = descriptor.encode_payload(b"fn main() {}").unwrap();
         let (decoded, range) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
         assert_eq!(decoded, descriptor);
-        assert_eq!(&bytes[range], b"void main() {}");
+        assert_eq!(&bytes[range], b"fn main() {}");
         let mut other = descriptor.clone();
         other.definition = [99; 32];
-        assert!(other.matches_bytes(b"void main() {}"));
-        assert!(!other.matches_bytes(b"void main() { discard; }"));
+        assert!(other.matches_bytes(b"fn main() {}"));
+        assert!(!other.matches_bytes(b"fn main() { discard; }"));
         assert_eq!(
             EffectShaderDescriptor::decode_payload(&bytes, bytes.len() - 1),
             Err(EffectShaderPayloadError::Limit)

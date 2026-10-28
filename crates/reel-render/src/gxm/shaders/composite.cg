@@ -1,0 +1,72 @@
+// Native GXM counterpart of the shared renderer algorithm.
+// Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
+varying float4 fragment_position : WPOS;
+varying out float4 reel_output : COLOR;
+uniform float4 reel_clip_rect;
+void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
+varying float2 v_source_uv : TEXCOORD0;
+varying float2 v_mask_uv : TEXCOORD1;
+varying float2 v_backdrop_uv : TEXCOORD2;
+varying float2 v_expression_uv : TEXCOORD3;
+uniform sampler2D u_source : TEXUNIT0;
+uniform sampler2D u_mask : TEXUNIT1;
+uniform sampler2D u_backdrop : TEXUNIT2;
+uniform sampler2D u_expression : TEXUNIT3;
+uniform float4 u_params;
+uniform float u_invert,u_blend,u_has_expression;
+
+float4 sample_source(){return tex2D(u_source,v_source_uv);}
+float3 encode(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
+float3 linear(float3 x){return lerp(pow((x+0.055)/1.055,float3(2.4)),x/12.92,step(x,float3(0.04045)));}
+#ifdef REEL_SOURCE_OVER_ONLY
+void main(){
+ reel_clip();half4 color=tex2D(u_source,v_source_uv);half opacity=half(u_params.x);reel_output=color*opacity;}
+#elif defined(REEL_ALPHA_MASK_ONLY)
+void main(){
+ reel_clip();half4 color=tex2D(u_source,v_source_uv);half coverage=tex2D(u_mask,v_mask_uv).a;half opacity=half(u_params.x);reel_output=color*coverage*opacity;}
+#else
+#ifdef REEL_EXTENDED_BLEND
+// W3C separable blend functions on straight linear RGB; linear burn extends this set.
+float3 overlay(float3 b, float3 s){return lerp(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(float3(0.5), b));}
+float3 hard_light(float3 b, float3 s){return lerp(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(float3(0.5), s));}
+// Keep the divisor finite at source one; backdrop zero takes priority.
+float3 color_dodge(float3 b, float3 s){return max(min(float3(1.0), b / max(1.0 - s, step(float3(1.0), s))), step(float3(1.0), s)) * sign(b);}
+float3 lighten(float3 b, float3 s){return max(b, s);}
+float3 difference(float3 b, float3 s){return abs(b - s);}
+float3 soft_curve(float3 b){return lerp(((16.0 * b - 12.0) * b + 4.0) * b, sqrt(b), step(float3(0.25), b));}
+float3 soft_light(float3 b, float3 s){return lerp(b - (1.0 - 2.0 * s) * b * (1.0 - b), b + (2.0 * s - 1.0) * (soft_curve(b) - b), step(float3(0.5), s));}
+float3 linear_burn(float3 b, float3 s){return max(b + s - 1.0, float3(0.0));}
+float4 separable(float4 s,float4 d){
+ if(s.a==0.0)return d;
+ if(d.a==0.0)return s;
+ float3 b=clamp(d.rgb/d.a,0.0,1.0),c=clamp(s.rgb/s.a,0.0,1.0),blended;
+ if(u_blend==5.0)blended=overlay(b,c);
+ else if(u_blend==6.0)blended=hard_light(b,c);
+ else if(u_blend==7.0)blended=color_dodge(b,c);
+ else if(u_blend==8.0)blended=lighten(b,c);
+ else if(u_blend==9.0)blended=difference(b,c);
+ else if(u_blend==10.0)blended=soft_light(b,c);
+ else blended=linear_burn(b,c);
+ return float4(s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a) + s.a * d.a * blended, s.a + d.a * (1.0 - s.a));
+}
+#endif
+void main(){
+ reel_clip();
+ float4 s=sample_source(),m=tex2D(u_mask,v_mask_uv);
+ if(u_invert!=0.0&&s.a>0.0){float3 encoded=encode(clamp(s.rgb/s.a,0.0,1.0));s.rgb=linear(lerp(encoded,1.0-encoded,u_invert))*s.a;}
+ float expression=u_has_expression>0.5?tex2D(u_expression,v_expression_uv).r:1.0;
+ if(u_params.y==3.0)s=lerp(s,m,u_params.z);
+ else if(u_params.y==4.0)s=u_params.z<=0.0?s:(u_params.z>=1.0?m:lerp(s,m,clamp(expression,0.0,1.0)));
+ else {float coverage=1.0;if(u_params.y==1.0)coverage=clamp(m.a,0.0,1.0);if(u_params.y==2.0)coverage=clamp(dot(m.rgb,float3(0.2126,0.7152,0.0722)),0.0,1.0);s*=coverage*u_params.x*expression;}
+#ifdef REEL_EXTENDED_BLEND
+ reel_output=separable(s,tex2D(u_backdrop,v_backdrop_uv));
+#else
+ if(u_blend==0.0){reel_output=s;return;}
+ float4 d=tex2D(u_backdrop,v_backdrop_uv);float alpha=s.a+d.a*(1.0-s.a);
+ if(u_blend==1.0)reel_output=min(s+d,1.0);
+ else if(u_blend==4.0)reel_output=float4(max(d.rgb-s.rgb,float3(0.0)),d.a);
+ else if(u_blend==2.0)reel_output=float4(s.rgb*d.rgb+s.rgb*(1.0-d.a)+d.rgb*(1.0-s.a),alpha);
+ else reel_output=float4(s.rgb+d.rgb-s.rgb*d.rgb,alpha);
+#endif
+}
+#endif

@@ -153,7 +153,23 @@ fn real_rpk_cursor_reports_io_and_throughput_without_repacking() {
     let selected = std::env::var("REEL_RPK_ENTRY").ok();
     let entry = selected
         .as_deref()
-        .map(|name| index.get(name).unwrap())
+        .map(|name| {
+            if name == "@media" {
+                index
+                    .entries()
+                    .filter(|entry| {
+                        [
+                            ".mp4", ".ogg", ".opus", ".wav", ".mp3", ".flac", ".webm", ".m4a",
+                        ]
+                        .iter()
+                        .any(|extension| entry.path.ends_with(extension))
+                    })
+                    .max_by_key(|entry| entry.length)
+                    .expect("archive has media")
+            } else {
+                index.get(name).unwrap()
+            }
+        })
         .unwrap_or_else(|| {
             index
                 .entries()
@@ -162,13 +178,14 @@ fn real_rpk_cursor_reports_io_and_throughput_without_repacking() {
                 .unwrap()
         });
     let mut output = vec![0; entry.length as usize];
-    for continued in [false, true] {
+    for (continued, read_ahead) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut durations = Vec::new();
         let mut stats = None;
         for _ in 0..5 {
             let mut reader = Counted::new(File::open(&path).unwrap(), &entry);
             let mut scratch = ReadScratch::new();
             let mut cursor = entry.read_cursor(0, output.len()).unwrap();
+            cursor.set_read_ahead(read_ahead);
             let start = Instant::now();
             if continued {
                 for (block, slice) in output.chunks_mut(BLOCK_BYTES).enumerate() {
@@ -184,9 +201,21 @@ fn real_rpk_cursor_reports_io_and_throughput_without_repacking() {
                         .unwrap();
                 }
             } else {
-                entry
-                    .read_range(&mut reader, 0, &mut output, &mut scratch, || false)
-                    .unwrap();
+                for (block, slice) in output.chunks_mut(BLOCK_BYTES).enumerate() {
+                    let offset = (block * BLOCK_BYTES) as u64;
+                    let mut cursor = entry.read_cursor(offset, slice.len()).unwrap();
+                    cursor.set_read_ahead(read_ahead);
+                    entry
+                        .read_range_with_cursor(
+                            &mut reader,
+                            offset,
+                            slice,
+                            &mut scratch,
+                            &mut cursor,
+                            || false,
+                        )
+                        .unwrap();
+                }
             }
             durations.push(start.elapsed().as_micros());
             assert_eq!(blake3::hash(&output).as_bytes(), &entry.version);
@@ -199,7 +228,7 @@ fn real_rpk_cursor_reports_io_and_throughput_without_repacking() {
         }
         durations.sort_unstable();
         eprintln!(
-            "real RPK path={path:?} entry={:?} logical={} stored={} continued={continued} median_us={} reads,directory_reads,seeks,bytes={:?} cursor_bytes={}",
+            "real RPK path={path:?} entry={:?} logical={} stored={} continued={continued} read_ahead={read_ahead} median_us={} reads,directory_reads,seeks,bytes={:?} cursor_bytes={}",
             entry.path,
             entry.length,
             entry.stored_length,
@@ -208,4 +237,59 @@ fn real_rpk_cursor_reports_io_and_throughput_without_repacking() {
             size_of::<reel_package::archive::ReadCursor>()
         );
     }
+}
+
+#[test]
+fn adjacent_payload_windows_reduce_physical_reads_for_independent_media_requests() {
+    let payload: Vec<u8> = (0..16 * BLOCK_BYTES)
+        .map(|i| (i / BLOCK_BYTES) as u8)
+        .collect();
+    let mut writer = ArchiveWriter::new(Cursor::new(Vec::new()), ArchiveKind::Resources).unwrap();
+    writer.add("stream", &mut payload.as_slice()).unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    let index = ArchiveIndex::read(&mut Cursor::new(&bytes)).unwrap();
+    let entry = index.get("stream").unwrap();
+    let mut results = Vec::new();
+    for read_ahead in [false, true] {
+        let mut reader = Counted::new(Cursor::new(&bytes), &entry);
+        let mut scratch = ReadScratch::new();
+        let mut result = vec![0; payload.len()];
+        for (block, output) in result.chunks_mut(BLOCK_BYTES).enumerate() {
+            let offset = (block * BLOCK_BYTES) as u64;
+            let mut cursor = entry.read_cursor(offset, output.len()).unwrap();
+            cursor.set_read_ahead(read_ahead);
+            entry
+                .read_range_with_cursor(
+                    &mut reader,
+                    offset,
+                    output,
+                    &mut scratch,
+                    &mut cursor,
+                    || false,
+                )
+                .unwrap();
+        }
+        assert_eq!(result, payload);
+        // Cancellation wins even when the requested bytes are already cached.
+        let before = reader.reads;
+        assert_eq!(
+            entry
+                .read_range(&mut reader, 0, &mut [0; 1], &mut scratch, || true)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(reader.reads, before);
+        results.push((reader.reads, reader.directories, reader.bytes));
+    }
+    assert_eq!(results[0].0, 32);
+    assert_eq!(results[1].0, 2);
+    assert_eq!(results[0].1, 16);
+    assert_eq!(results[1].1, 1);
+    println!(
+        "16 independent 64KiB media reads: no-ahead={:?}, merged={:?}; scratch={}B",
+        results[0],
+        results[1],
+        reel_package::archive::SCRATCH_BYTES
+    );
 }

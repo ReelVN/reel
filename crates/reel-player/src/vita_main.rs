@@ -1,7 +1,7 @@
 //! Native distribution entry; all package/resource interpretation remains shared.
 #[cfg(target_os = "vita")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    reel_player::platform::vita::Runtime::run(std::path::Path::new("app0:/module"), |runtime| {
+    reel_player::platform::vita::Runtime::run(|runtime| {
         runtime.run_launcher(std::path::Path::new("ux0:/data/reel"))
     })
 }

@@ -65,6 +65,7 @@ enum BuildPhase {
     ErrorValue,
     Envelope,
     Stack(u32),
+    CompactScriptStack(u32),
     Cause,
     Awaited,
     Complete,
@@ -157,6 +158,7 @@ enum ArgSource {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ScriptPhase {
+    CompactBegin,
     GeneratorCreate,
     GeneratorCapture {
         part: u32,
@@ -271,6 +273,9 @@ enum ExitReason {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct ScriptFrame {
+    // The original native bridge keeps its logical stack identity while its roots
+    // are deferred until the standard derived commit boundary. env[3] owns output.
+    derived_bridge: Option<(FrameId, ModuleInstanceId, Effects)>,
     id: FrameId,
     code: CodeRef,
     module: ModuleInstanceId,
@@ -303,6 +308,13 @@ struct ScriptFrame {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum NativePhase {
+    PlannedCheck {
+        source: ArgSource,
+    },
+    PlannedCopy {
+        source: ArgSource,
+        index: u32,
+    },
     Copy {
         source: ArgSource,
         index: u32,
@@ -346,6 +358,9 @@ enum NativePhase {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct NativeFrame {
+    // A standard derived commit borrows its sole argument from callback root 1.
+    inline_argument: bool,
+    argument_plan: Option<u32>,
     id: FrameId,
     native: NativeId,
     signature: SignatureId,
@@ -1024,7 +1039,11 @@ impl Vm {
                 if s.generator {
                     self.generator_abandon(s)?;
                 }
-                self.abort_class(s)?;
+                if s.derived_bridge.is_some() {
+                    self.heap.end_derived(self.value(s.env, 3)?)?;
+                } else {
+                    self.abort_class(s)?;
+                }
                 for r in [s.regs, s.env, s.args, s.bound] {
                     self.slots.release(&mut self.heap, r)?;
                 }
@@ -1312,3 +1331,8 @@ fn test_pc(vm: &Vm, function: u32, ordinal: u32) -> Pc {
         |item| item.unwrap().0,
     ) as u32)
 }
+
+#[cfg(test)]
+mod native_plan_tests;
+
+mod compact_derived;

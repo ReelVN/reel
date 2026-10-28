@@ -111,7 +111,7 @@ fn write_synced(
     fill: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> io::Result<()> {
     #[cfg(target_os = "vita")]
-    let mut file = pvr_psp2_sys::platform::fs::File::create_new(path)?;
+    let mut file = vita_native::app::fs::File::create_new(path)?;
     #[cfg(not(target_os = "vita"))]
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -133,7 +133,7 @@ fn write_synced(
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "vita")]
     {
-        pvr_psp2_sys::platform::fs::rename_no_replace(from, to)
+        vita_native::app::fs::rename_no_replace(from, to)
     }
     #[cfg(not(target_os = "vita"))]
     {

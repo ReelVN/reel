@@ -10,6 +10,8 @@ use reel_core::{
 use std::{ops::RangeInclusive, sync::Arc};
 mod curve;
 pub use curve::ParticleCurve;
+mod sampling;
+pub use sampling::ParticleSampler;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleConfig {
@@ -79,6 +81,7 @@ struct BatchStorage {
     // Data drops before the reservation, including when the last view is on
     // another thread or outlives its originating VM.
     entries: Vec<ParticleEmission>,
+    pool: BudgetPool,
     _ticket: BudgetTicket,
 }
 #[derive(Clone, Debug, Default)]
@@ -124,6 +127,7 @@ impl ParticleBatches {
         assert_eq!(data.len(), count, "trusted particle projection length");
         Ok(Self(Some(Arc::new(BatchStorage {
             entries: data,
+            pool: pool.clone(),
             _ticket: ticket,
         }))))
     }
@@ -222,12 +226,11 @@ impl ParticleConfig {
     }
 
     fn sample_at(&self, frame: ParticleFrame, index: u64, age: f64, lifetime: f64) -> Sprite {
+        self.birth(frame, index, lifetime).sample(self, frame, age)
+    }
+
+    fn birth(&self, frame: ParticleFrame, index: u64, lifetime: f64) -> sampling::Birth {
         let random = |lane| self.random(index, lane);
-        let progress = if lifetime == 0. {
-            1.
-        } else {
-            (age / lifetime).clamp(0., 1.)
-        };
         let size = self.size + (2. * random(4) - 1.) * self.size_spread;
         let radial = self.radial_speed + (2. * random(8) - 1.) * self.radial_spread;
         let radial_velocity = if radial == 0. {
@@ -238,41 +241,18 @@ impl ParticleConfig {
             let (sin, cos) = angle.sin_cos();
             [radial * cos, radial * sin]
         };
-        // Integrate dv/dt = acceleration - damping * velocity analytically.
-        let (travel, accelerated) = if self.damping == 0. {
-            (age, 0.5 * age * age)
-        } else {
-            let x = self.damping * age;
-            if x.abs() < 1e-4 {
-                (
-                    age * (1. - x / 2. + x * x / 6.),
-                    age * age * (0.5 - x / 6. + x * x / 24.),
-                )
-            } else {
-                let travel = -(-x).exp_m1() / self.damping;
-                (travel, (age - travel) / self.damping)
-            }
-        };
-        let size = size + (self.size_end.unwrap_or(size) - size) * progress;
-        Sprite {
-            position: std::array::from_fn(|axis| {
-                frame.origin[axis]
-                    + random(axis as u64) * frame.extent[axis]
-                    + (self.velocity[axis]
-                        + radial_velocity[axis]
-                        + (2. * random(axis as u64 + 2) - 1.) * self.spread[axis])
-                        * travel
-                    + self.acceleration[axis] * accelerated
+        sampling::Birth {
+            time: self.birth_time(index),
+            lifetime,
+            offset: std::array::from_fn(|axis| random(axis as u64) * frame.extent[axis]),
+            velocity: std::array::from_fn(|axis| {
+                self.velocity[axis]
+                    + radial_velocity[axis]
+                    + (2. * random(axis as u64 + 2) - 1.) * self.spread[axis]
             }),
-            size: size
-                * self
-                    .size_curve
-                    .as_ref()
-                    .map_or(1., |curve| curve.sample(progress).max(0.)),
-            opacity: self.opacity[0] + (self.opacity[1] - self.opacity[0]) * progress,
-            rotation: self.angle
-                + (2. * random(7) - 1.) * self.angle_spread
-                + (self.spin + (2. * random(5) - 1.) * self.spin_spread) * age,
+            size,
+            angle: self.angle + (2. * random(7) - 1.) * self.angle_spread,
+            spin: self.spin + (2. * random(5) - 1.) * self.spin_spread,
         }
     }
 }

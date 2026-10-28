@@ -3,21 +3,14 @@ use crate::{
     output::{Callback, DrivenOutput, Driver, output_methods},
     *,
 };
-use pvr_psp2_sys::platform::audio;
 use reel_core::{clock::MonoTime, result::Rejected, wake::WakeSignal};
+use vita_native::audio;
 
 struct VitaDriver {
     retired: Option<audio::Stream>,
 }
-fn error(error: pvr_psp2_sys::platform::Error) -> AudioError {
-    AudioError::new(
-        if error.operation == "AudioOut configuration changed" {
-            AudioErrorKind::ReconfigureRequired
-        } else {
-            AudioErrorKind::DeviceFailure
-        },
-        error.to_string(),
-    )
+fn error(error: vita_native::app::Error) -> AudioError {
+    AudioError::new(AudioErrorKind::DeviceFailure, error.to_string())
 }
 impl VitaDriver {
     fn release_retired(&mut self) -> Result<(), AudioError> {
@@ -69,8 +62,6 @@ impl Driver for VitaDriver {
             move |fault| {
                 if fault.operation == "audio realtime scheduling denied" {
                     shared.realtime_denied();
-                } else if fault.operation == "AudioOut configuration changed" {
-                    shared.fail(AudioErrorKind::ReconfigureRequired);
                 } else {
                     shared.fail(AudioErrorKind::DeviceFailure);
                 }

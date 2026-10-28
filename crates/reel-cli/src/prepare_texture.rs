@@ -7,6 +7,7 @@ use reel_core::texture::{
     ColorEncoding, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
 use std::path::Path;
+mod mips;
 mod quality;
 
 /// `Auto` uses BC1 for opaque images and BC3 for images with transparency.
@@ -51,6 +52,10 @@ pub struct Options {
     pub max_size: Option<[u32; 2]>,
     /// Pad each stored axis to a power of two, with a minimum of eight texels.
     pub power_of_two: bool,
+    /// Generate a complete mip chain in linear premultiplied color; default is one level.
+    pub mipmaps: bool,
+    /// Prepare BC blocks in GXM Morton order for a Vita target package.
+    pub gxm_layout: bool,
     pub format: Format,
     /// Stable RGB dithering for RGBA8 texture conversion; disabled by default.
     /// Coordinates refer to the complete resized image, with edge-repeated padding.
@@ -135,7 +140,7 @@ pub(crate) fn prepare_scaled_bounded(
     let content = scaled_content_size(logical, options.max_size, scale)?;
     let mut storage = content;
     for axis in &mut storage {
-        *axis = if options.power_of_two {
+        *axis = if options.power_of_two || options.gxm_layout {
             (*axis)
                 .max(8)
                 .checked_next_power_of_two()
@@ -172,8 +177,19 @@ pub(crate) fn prepare_scaled_bounded(
     } else {
         0
     };
-    let workspace = u64::try_from(cast.max(resize).max(quantize).max(encode) + (1 << 20))
-        .map_err(|_| "image workspace size overflow")?;
+    let mip_workspace = if options.mipmaps {
+        stored_pixels * 48 + bc_workspace(storage, storage)
+    } else {
+        0
+    };
+    let workspace = u64::try_from(
+        cast.max(resize)
+            .max(quantize)
+            .max(encode)
+            .max(mip_workspace)
+            + (1 << 20),
+    )
+    .map_err(|_| "image workspace size overflow")?;
     let pool = BudgetPool::new(
         BudgetCategory::Temporary,
         QueueLimits {
@@ -215,12 +231,7 @@ fn prepare_decoded_scaled(
     scale: f64,
 ) -> Result<TextureHeader, String> {
     let (descriptor, linear) = prepare_linear(pixels, options, scale)?;
-    let blocks = match descriptor.format {
-        TextureFormat::Rgba8 => quantized_pixels(&linear, descriptor, options.dither).into_raw(),
-        TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => quality::encode(&linear, descriptor)?,
-        _ => unreachable!("offline conversion selects RGBA8, BC1 or BC3"),
-    };
-    drop(linear);
+    let blocks = mips::encode(linear, descriptor, options.dither)?;
     let header = TextureHeader::new(descriptor, TextureCodec::Raw, blocks.len() as u64)
         .map_err(|e| e.to_string())?;
     let parent = output
@@ -322,7 +333,7 @@ fn prepare_linear(
     }
     let mut storage_size = content_size;
     for axis in &mut storage_size {
-        *axis = if options.power_of_two {
+        *axis = if options.power_of_two || options.gxm_layout {
             (*axis)
                 .max(8)
                 .checked_next_power_of_two()
@@ -335,6 +346,16 @@ fn prepare_linear(
         };
     }
     let descriptor = TextureDescriptor {
+        storage_layout: if options.gxm_layout && format.is_compressed() {
+            reel_core::texture::TextureStorageLayout::GxmBcMorton
+        } else {
+            reel_core::texture::TextureStorageLayout::Linear
+        },
+        mip_count: if options.mipmaps {
+            32 - storage_size.into_iter().max().unwrap().leading_zeros()
+        } else {
+            1
+        },
         format,
         source_encoding: ColorEncoding::Srgb,
         layout: TextureLayout {
@@ -395,6 +416,89 @@ fn quantize(pixel: [f32; 4], dither: Dither, coordinates: [u32; 2]) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "offline package measurement"]
+    fn morton_archive_measurement() {
+        use reel_core::texture::TextureStorageLayout;
+        use reel_package::archive::{ArchiveKind, ArchiveWriter, EntryStorage};
+        use std::io::Cursor;
+        let mut linear = vec![0u8; 1024 * 1024];
+        let mut morton = linear.clone();
+        for y in 0..256u32 {
+            for x in 0..256u32 {
+                let at = (y as usize * 256 + x as usize) * 16;
+                // Deterministic repeated 8x8-block material patches, not a photo corpus.
+                linear[at..at + 16].fill(((x / 8) * 7 + y / 8) as u8);
+                let dst = TextureStorageLayout::GxmBcMorton.block_offset([1024, 1024], 16, x, y);
+                morton[dst..dst + 16].copy_from_slice(&linear[at..at + 16]);
+            }
+        }
+        for (name, bytes) in [("linear", linear), ("morton", morton)] {
+            let mut writer =
+                ArchiveWriter::new(Cursor::new(Vec::new()), ArchiveKind::Resources).unwrap();
+            let entry = writer
+                .add("image.reel-texture", &mut bytes.as_slice())
+                .unwrap();
+            assert!(matches!(entry.storage, EntryStorage::Blocks { .. }));
+            let file = writer.finish().unwrap().into_inner();
+            eprintln!(
+                "{name}: logical {} bytes, block archive {} bytes",
+                bytes.len(),
+                file.len()
+            );
+        }
+    }
+
+    #[test]
+    fn gxm_offline_blocks_match_linear_blocks_and_alpha_coverage() {
+        use reel_core::{image_coverage::ImageCoverage, texture::TextureStorageLayout};
+        let dir = tempfile::tempdir().unwrap();
+        let pixels = RgbaImage::from_fn(32, 16, |x, y| {
+            image::Rgba([
+                (x * 7) as u8,
+                (y * 13) as u8,
+                80,
+                if x < 8 || y > 8 { 255 } else { 0 },
+            ])
+        });
+        let mut outputs = Vec::new();
+        for gxm_layout in [false, true] {
+            let file = dir.path().join(format!("{gxm_layout}.reel-texture"));
+            let header = prepare_decoded(
+                pixels.clone().into(),
+                &file,
+                Options {
+                    format: Format::Bc3,
+                    power_of_two: true,
+                    gxm_layout,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            outputs.push((
+                header.descriptor(),
+                std::fs::read(file).unwrap()[TextureHeader::LEN..].to_vec(),
+            ));
+        }
+        let [(linear, a), (morton, b)] = outputs.as_slice() else {
+            unreachable!()
+        };
+        assert_eq!(linear.storage_layout, TextureStorageLayout::Linear);
+        assert_eq!(morton.storage_layout, TextureStorageLayout::GxmBcMorton);
+        for y in 0..4 {
+            for x in 0..8 {
+                let src = linear.storage_layout.block_offset([32, 16], 16, x, y);
+                let dst = morton.storage_layout.block_offset([32, 16], 16, x, y);
+                assert_eq!(a[src..src + 16], b[dst..dst + 16]);
+            }
+        }
+        assert_eq!(
+            ImageCoverage::texture(*linear, a),
+            ImageCoverage::texture(*morton, b)
+        );
+        assert_eq!(a.len(), b.len());
+    }
 
     #[test]
     fn prepared_formats_publish_upload_ready_payloads() {
@@ -548,6 +652,8 @@ mod tests {
             original.into(),
             Options {
                 max_size: Some([1, 1]),
+                gxm_layout: false,
+                mipmaps: false,
                 power_of_two: true,
                 format: Format::Rgba8,
                 dither: Dither::None,

@@ -323,11 +323,29 @@ impl Vm {
             has_defaults,
             needs_cells,
         } = self.native_parameters.data[native.index()];
-        let values = 3 + u64::from(count) * 2 + u64::from(n) * (1 + u64::from(needs_cells));
+        let argument_plan = if receiver.is_none() {
+            if let ArgSource::Caller { frame, descriptor } = source {
+                let Frame::Script(caller) = self.active.frames.data[self.index(frame)?] else {
+                    unreachable!()
+                };
+                self.program
+                    .native_call_plan(caller.code.function, descriptor)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let argument_slots = if argument_plan.is_some() {
+            0
+        } else {
+            count * 2
+        };
+        let values = 3 + u64::from(argument_slots) + u64::from(n) * (1 + u64::from(needs_cells));
         self.slots
             .admit_windows(&mut self.heap, 3 + usize::from(needs_cells), values)?;
         let id = FrameId(self.serial()?);
-        let args = self.open(site.owner, RootKind::Arguments, count * 2)?;
+        let args = self.open(site.owner, RootKind::Arguments, argument_slots)?;
         let bound = match self.open(site.owner, RootKind::Arguments, n) {
             Ok(r) => r,
             Err(e) => {
@@ -366,6 +384,8 @@ impl Vm {
             }
         };
         self.active.frames.data.push(Frame::Native(NativeFrame {
+            inline_argument: false,
+            argument_plan,
             id,
             await_activation: matches!(source, ArgSource::Await { .. }).then_some(id.0),
             native,
@@ -396,13 +416,21 @@ impl Vm {
             derived_output: None,
             fault_count: 0,
             pending_fault: None,
-            phase: NativePhase::Copy { source, index: 0 },
+            phase: if argument_plan.is_some() {
+                NativePhase::PlannedCheck { source }
+            } else {
+                NativePhase::Copy { source, index: 0 }
+            },
         }));
         Ok(())
     }
     pub fn host_arguments(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
         let n = self.ticket(ticket)?;
-        Ok(self.slots.borrow_initialized(n.bound)?)
+        Ok(if n.inline_argument {
+            self.slots.borrow_initialized_window(n.roots, 1, 1)?
+        } else {
+            self.slots.borrow_initialized(n.bound)?
+        })
     }
     /// Borrow only supplied arguments; omission remains distinct from explicit null.
     pub fn host_provided_arguments(
@@ -411,7 +439,22 @@ impl Vm {
     ) -> Result<ProvidedArguments<'_>, VmError> {
         let n = self.ticket(ticket)?;
         Ok(ProvidedArguments {
-            values: self.slots.borrow_initialized(n.args)?,
+            values: if n.inline_argument {
+                self.slots.borrow_initialized_window(n.roots, 1, 1)?
+            } else {
+                self.slots
+                    .borrow_initialized(if n.argument_plan.is_some() {
+                        n.bound
+                    } else {
+                        n.args
+                    })?
+            },
+            positions: if n.inline_argument {
+                Some(&[0])
+            } else {
+                n.argument_plan
+                    .and_then(|plan| self.program.native_call_slots(plan))
+            },
         })
     }
     /// Split the existing argument roots from mutable heap access for a native
@@ -421,9 +464,24 @@ impl Vm {
         ticket: HostTicket,
         body: impl FnOnce(&mut Heap, ProvidedArguments<'_>) -> T,
     ) -> Result<T, VmError> {
-        let args = self.ticket(ticket)?.args;
+        let n = self.ticket(ticket)?;
         let provided = ProvidedArguments {
-            values: self.slots.borrow_initialized(args)?,
+            values: if n.inline_argument {
+                self.slots.borrow_initialized_window(n.roots, 1, 1)?
+            } else {
+                self.slots
+                    .borrow_initialized(if n.argument_plan.is_some() {
+                        n.bound
+                    } else {
+                        n.args
+                    })?
+            },
+            positions: if n.inline_argument {
+                Some(&[0])
+            } else {
+                n.argument_plan
+                    .and_then(|plan| self.program.native_call_slots(plan))
+            },
         };
         Ok(body(&mut self.heap, provided))
     }
@@ -537,7 +595,7 @@ impl Vm {
         self.select_task(ticket.task)
             .map_err(|_| VmError::InvalidTicket)?;
         let mut n = self.ticket(ticket)?;
-        self.prepare_native_response(n, ticket, &response)?;
+        self.prepare_native_response(&mut n, ticket, &response)?;
         match response {
             HostResponse::Ready(v) => {
                 self.put(n.roots, 0, v)?;

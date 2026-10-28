@@ -94,8 +94,7 @@ pub(super) fn decode(
     };
     shared.state.lock().unwrap().info = Some(info.clone());
     shared.wake.wake();
-    let plane_bytes = u64::from(info.width) * u64::from(info.height)
-        + 2 * u64::from(info.width.div_ceil(2)) * u64::from(info.height.div_ceil(2));
+    let plane_bytes = decoder.video_output_bytes();
     let end = options.end.map_or(f64::INFINITY, |e| e.as_secs_f64());
     let mut pending: Option<PendingAudio> = None;
     let mut eof = false;
@@ -104,10 +103,34 @@ pub(super) fn decode(
         if shared.transport.cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
+        if let Some(deadline) = &options.io_deadline {
+            if shared.transport.paused.load(Ordering::Acquire) || options.poster {
+                deadline.clear();
+            } else {
+                let video_seconds = {
+                    let state = shared.state.lock().unwrap();
+                    state.frames.back().map_or(0., |frame| {
+                        (frame.frame.pts + frame.frame.duration - state.position).max(0.)
+                    })
+                };
+                let seconds = if !decoder.audio_finished()
+                    && let Some((producer, _, _)) = audio.as_mut()
+                {
+                    video_seconds.min(
+                        options.queued_audio_frames.saturating_sub(producer.slots()) as f64
+                            / f64::from(info.audio_sample_rate.unwrap()),
+                    )
+                } else {
+                    video_seconds
+                };
+                deadline.buffered(Duration::from_secs_f64(seconds));
+            }
+        }
         if let Some(packet) = pending.as_mut() {
             let (producer, _, position) = audio.as_mut().unwrap();
             if packet.publish(producer, position, end) {
-                pending = None;
+                let returned = pending.take().unwrap();
+                decoder.recycle_audio(returned.packet, returned._storage);
             }
         }
         if pending.is_none() && decoder.audio_finished() {

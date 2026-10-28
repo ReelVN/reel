@@ -25,6 +25,8 @@ pub(crate) enum DerivedSlot {
     Arguments,
     State,
     Suspended,
+    // Standard derive may replace its entry bridge with a proven expression frame.
+    Compact,
 }
 
 impl Heap {
@@ -36,6 +38,7 @@ impl Heap {
             fields,
             &[
                 closure,
+                Value::NULL,
                 Value::NULL,
                 Value::NULL,
                 Value::NULL,

@@ -167,6 +167,7 @@ pub(crate) enum OpaquePaint {
     Solid,
 }
 pub struct Mesh {
+    pub(crate) bounded_color: super::precision::BoundedColor,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     allocation: Allocation,
@@ -303,6 +304,7 @@ impl Allocation {
 impl Mesh {
     pub(crate) fn cache_copy(&self) -> Self {
         Self {
+            bounded_color: self.bounded_color,
             vertices: self.vertices.clone(),
             indices: self.indices.clone(),
             error: None,
@@ -389,6 +391,7 @@ impl Mesh {
         })
     }
     /// Append already transformed geometry without changing primitive order.
+    #[cfg(test)]
     pub(crate) fn append(&mut self, mesh: &Self) -> Result<std::ops::Range<u32>, GpuError> {
         let vertex_start = u32::try_from(self.vertices.len()).map_err(|_| GpuError::InvalidSize)?;
         let start = u32::try_from(self.indices.len()).map_err(|_| GpuError::InvalidSize)?;
@@ -410,6 +413,11 @@ impl Mesh {
             .grow(&mut self.vertices, mesh.vertices.len())?;
         self.allocation
             .grow(&mut self.indices, mesh.indices.len())?;
+        self.bounded_color = if vertex_start == 0 {
+            mesh.bounded_color
+        } else {
+            self.bounded_color.intersect(mesh.bounded_color)
+        };
         self.vertices.extend_from_slice(&mesh.vertices);
         self.indices
             .extend(mesh.indices.iter().map(|&index| vertex_start + index));
@@ -430,6 +438,7 @@ impl Mesh {
             return Ok(None);
         }
         let mut output = Self::new(allocation);
+        output.bounded_color = self.bounded_color;
         output.identity = self.identity;
         output.clip_identity = Some(clip);
         for triangle in self.indices.as_chunks::<3>().0 {
@@ -439,12 +448,11 @@ impl Mesh {
                 *vertex = self.vertices[*index as usize];
             }
             let mut count = 3;
-            for edge in 0..4 {
+            for (edge, &bound) in clip.bounds.iter().enumerate() {
                 if count == 0 {
                     break;
                 }
                 let axis = edge % 2;
-                let bound = clip.bounds[edge];
                 let inside = |vertex: Vertex| {
                     if edge < 2 {
                         vertex.position[axis] >= bound
@@ -513,6 +521,7 @@ impl Mesh {
     }
     pub(crate) fn new(allocation: Allocation) -> Self {
         Self {
+            bounded_color: super::precision::BoundedColor::UNKNOWN,
             vertices: Vec::new(),
             indices: Vec::new(),
             allocation,
@@ -525,6 +534,15 @@ impl Mesh {
         self.allocation.grow(&mut self.vertices, vertices.len())?;
         self.allocation.grow(&mut self.indices, vertices.len())?;
         let start = self.vertices.len() as u32;
+        let mut proof = if self.vertices.is_empty() {
+            super::precision::BoundedColor::new([1.; 4])
+        } else {
+            self.bounded_color
+        };
+        for vertex in vertices {
+            proof = proof.intersect(super::precision::BoundedColor::new(vertex.color));
+        }
+        self.bounded_color = proof;
         self.vertices.extend_from_slice(vertices);
         self.indices.extend(start..start + vertices.len() as u32);
         Ok(())
@@ -561,6 +579,12 @@ impl Mesh {
     ) -> Result<(), GpuError> {
         let start = self.vertices.len();
         self.quad(rect, rect)?;
+        let proof = super::precision::BoundedColor::new(paint.color);
+        self.bounded_color = if start == 0 {
+            proof
+        } else {
+            self.bounded_color.intersect(proof)
+        };
         paint.sampling.apply(&mut self.vertices[start..]);
         transform_vertices(
             &mut self.vertices[start..],
@@ -875,6 +899,7 @@ fn transform_mesh(
     color: [f32; 4],
     at: RecordLocation,
 ) -> Result<(), GpuError> {
+    mesh.bounded_color = super::precision::BoundedColor::new(color);
     transform_vertices(&mut mesh.vertices, transform, size, uv, color, at)
 }
 fn transform_vertices(
@@ -910,6 +935,74 @@ fn transform_vertices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_color_proof_follows_images_cache_clip_and_mixed_batches() {
+        let limits = super::super::GpuLimits::default();
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let allocation = || Allocation::new(&shared, &local, limits.transient_bytes, 1 << 20);
+        let at = RecordLocation {
+            fragment: 0,
+            command: 0,
+            mask_depth: 0,
+            owner: reel_ui::widgets::Label::new("").prepare().id(),
+        };
+        let mut mesh = Mesh::new(allocation());
+        let bounded = |mesh: &Mesh| {
+            mesh.bounded_color.paint(
+                Some(DirectPaint::Rgba),
+                Some(reel_core::texture::TextureFormat::Rgba8),
+            )
+        };
+        for color in [[0.5; 4], [1.; 4], [1.1; 4]] {
+            mesh.image_quad(
+                Rect::new(0., 0., 10., 10.),
+                Affine::IDENTITY,
+                Affine::IDENTITY,
+                [10; 2],
+                ImagePaint {
+                    color,
+                    sampling: ImageSampling::new(None, [10; 2], [false; 2]),
+                },
+                at,
+            )
+            .unwrap();
+            assert_eq!(bounded(&mesh), color[0] <= 1.);
+            assert_eq!(bounded(&mesh.cache_copy()), bounded(&mesh));
+        }
+        transform(
+            &mut mesh,
+            Affine::IDENTITY,
+            [10; 2],
+            Affine::IDENTITY,
+            [0.5; 4],
+            at,
+        )
+        .unwrap();
+        assert!(bounded(&mesh));
+        let clipped = mesh
+            .clipped(
+                RectClip {
+                    bounds: [-0.95, -0.95, -0.85, -0.85],
+                },
+                allocation(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(bounded(&clipped));
+        let mut other = Mesh::new(allocation());
+        other
+            .triangles(
+                &[Vertex {
+                    color: [2.; 4],
+                    ..mesh.vertices[0]
+                }; 3],
+            )
+            .unwrap();
+        mesh.append(&other).unwrap();
+        assert!(!bounded(&mesh));
+    }
 
     #[test]
     fn mesh_growth_charges_relocation_peak_and_rolls_back_both_ledgers() {

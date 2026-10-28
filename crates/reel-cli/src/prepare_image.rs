@@ -45,6 +45,12 @@ pub fn prepare_bounded(
     texture_options: crate::prepare_texture::Options,
     memory_bytes: u64,
 ) -> Result<(PreparedImage, u64), String> {
+    if texture_options.mipmaps {
+        return Err(
+            "mipmaps belongs to texture conversion; tiled images already own a level pyramid"
+                .into(),
+        );
+    }
     if texture_options.dither != crate::prepare_texture::Dither::None {
         return Err(
             "ordered dithering is supported by texture conversion, not tiled images".into(),
@@ -175,7 +181,7 @@ fn workspace(
         Encoding::ReelTexture => {
             let content = [width, height];
             let [width, height] = content.map(|axis| {
-                if options.power_of_two {
+                if options.power_of_two || options.gxm_layout {
                     axis.max(8).checked_next_power_of_two()
                 } else {
                     axis.checked_add(3).map(|value| value / 4 * 4)
@@ -395,6 +401,8 @@ mod tests {
             .with_first_level(1)
             .unwrap();
         let options = crate::prepare_texture::Options {
+            gxm_layout: false,
+            mipmaps: false,
             power_of_two: true,
             ..Default::default()
         };
@@ -419,6 +427,8 @@ mod tests {
         .save(&original)
         .unwrap();
         let options = crate::prepare_texture::Options {
+            gxm_layout: false,
+            mipmaps: false,
             power_of_two: true,
             format: crate::prepare_texture::Format::Rgba8,
             max_size: None,

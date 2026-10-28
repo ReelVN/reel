@@ -13,6 +13,7 @@ use reel_ui::{
 /// coordinates, including positioned glyphs, synthesis and raster coverage.
 pub(crate) trait Prepare {
     fn reserve(&mut self, bytes: u64) -> Result<(), GpuError>;
+    fn finish(&mut self) -> Result<(), GpuError>;
     fn run(
         &mut self,
         drawing: &FrameDrawing,
@@ -277,6 +278,9 @@ impl Plan {
                                 };
                                 padding(transformed(ink, *transform), outer)
                             }
+                            FrameDraw::Sprites(s) => {
+                                padding(transformed(s.ink_bounds(), s.transform), outer)
+                            }
                             FrameDraw::BlurredRoundedRect(_) => InkBounds::Unbounded,
                         };
                         if let Some(scope) = scopes.last_mut()
@@ -306,6 +310,7 @@ impl Plan {
             }
         }
         plan.groups.truncate(written);
+        prepare.finish()?;
         Ok(plan)
     }
 

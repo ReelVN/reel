@@ -1,0 +1,5 @@
+void main(float2 a_position : POSITION, float2 a_uv : TEXCOORD0,
+          float4 a_color : TEXCOORD1, out float4 position : POSITION,
+          out float2 v_uv : TEXCOORD0, out float2 reel_implicit_source_uv : TEXCOORD1) {
+    position=float4(a_position,0.0,1.0); v_uv=a_color.xy; reel_implicit_source_uv=a_uv;
+}

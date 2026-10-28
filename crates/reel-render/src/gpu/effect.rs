@@ -1,4 +1,4 @@
-//! Prepared WGSL products with the same source/parameter ABI as GLES.
+//! Prepared WGSL products with the same source/parameter ABI as GXM.
 use super::{Gpu, GpuError, Quality, pipeline, replay::Context, targets::Target};
 use crate::common::{effect_cache, effect_plan};
 use reel_core::budget::{BudgetPool, BudgetTicket};
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
 #[derive(Default)]
-pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 2]>);
+pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 8]>);
 pub(super) struct Compiled {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -23,11 +23,17 @@ impl Cache {
             cache.prune();
         }
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "compiled effect variants and their budget owner"
+    )]
     fn get(
         &self,
         gpu: &Gpu,
         quality: Quality,
         padded: bool,
+        terminal: bool,
+        masked: bool,
         shader: &effect_plan::Shader<'_>,
         budget: &BudgetPool,
         at: RecordLocation,
@@ -54,6 +60,7 @@ impl Cache {
         if descriptor
             .textures
             .saturating_add(u32::from(descriptor.source_sampler))
+            .saturating_add(u32::from(masked))
             > gpu.device.limits().max_sampled_textures_per_shader_stage
             || descriptor.textures as u64 * 32 > gpu.device.limits().max_uniform_buffer_binding_size
         {
@@ -63,7 +70,8 @@ impl Cache {
             });
         }
         let mut caches = self.0.lock().unwrap();
-        let cache = &mut caches[usize::from(padded)];
+        let cache =
+            &mut caches[usize::from(padded) + 2 * usize::from(terminal) + 4 * usize::from(masked)];
         if let Some(compiled) = cache.get(
             descriptor.shader_key,
             lease,
@@ -72,6 +80,12 @@ impl Cache {
         )? {
             return Ok(compiled);
         }
+        let bytes = descriptor
+            .code(bytes, masked)
+            .ok_or(GpuError::InvalidRecord {
+                at,
+                record: "missing effect variant",
+            })?;
         let source = std::str::from_utf8(bytes).map_err(|_| GpuError::InvalidRecord {
             at,
             record: "effect WGSL encoding",
@@ -84,7 +98,8 @@ impl Cache {
         let entry_capacity = 3
             + usize::from(descriptor.source_sampler)
             + usize::from(descriptor.textures != 0)
-            + descriptor.textures as usize;
+            + descriptor.textures as usize
+            + usize::from(masked);
         let _layout_storage = effect_cache::reserve(
             budget,
             entry_capacity * size_of::<wgpu::BindGroupLayoutEntry>(),
@@ -107,6 +122,9 @@ impl Cache {
                 entries.push(pipeline::uniform(4));
                 entries.extend((0..descriptor.textures).map(|i| pipeline::texture(5 + i)));
             }
+            if masked {
+                entries.push(pipeline::texture(5 + descriptor.textures));
+            }
             let layout = gpu
                 .device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -121,7 +139,7 @@ impl Cache {
                 (padded, if padded { "vertex_padded" } else { "vertex" }),
                 pipeline::FragmentOutput {
                     entry: "fragment",
-                    blend: None,
+                    blend: terminal.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 },
                 #[cfg(test)]
                 None,
@@ -156,7 +174,7 @@ impl Context<'_> {
         source: &Target,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
-        self.effect_draw(drawing, effect, transform, source, None, at)
+        self.effect_draw(drawing, effect, transform, source, None, None, at)
     }
     /// Multiply the complete local source by scalar coverage in one pass.
     pub(super) fn effect_mask(
@@ -174,9 +192,44 @@ impl Context<'_> {
             transform,
             source,
             Some(source_frame_to_pixels),
+            None,
             at,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "terminal effect retains its source and destination domains"
+    )]
+    pub(super) fn effect_into(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        target: &Target,
+        opacity: f32,
+        coverage: Option<(&Target, bool)>,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            source,
+            None,
+            Some(effect_plan::Terminal {
+                target,
+                opacity,
+                coverage,
+            }),
+            at,
+        )
+        .map(|_| ())
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one prepared effect and optional terminal composite"
+    )]
     fn effect_draw(
         &mut self,
         drawing: &FrameDrawing,
@@ -184,9 +237,13 @@ impl Context<'_> {
         transform: Affine,
         source: &Target,
         source_view: Option<Affine>,
+        terminal: Option<effect_plan::Terminal<'_, Target>>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         self.flush_draws()?;
+        let coverage = terminal.as_ref().and_then(|output| output.coverage);
+        let nested = coverage.is_some_and(|(_, nested)| nested);
+        let coverage = coverage.map(|(mask, _)| mask);
         let shader = effect_plan::shader(drawing, effect, at)?;
         let padded = shader.descriptor.output == reel_ui::stage::effect::EffectType::Float
             && source.size != source.storage_size();
@@ -194,11 +251,17 @@ impl Context<'_> {
             self.gpu,
             self.quality,
             padded,
+            terminal.is_some(),
+            coverage.is_some(),
             &shader,
             &self.budgets.resources,
             at,
         )?;
-        let output = self.target()?;
+        let output = if let Some(output) = &terminal {
+            output.target.clone()
+        } else {
+            self.target()?
+        };
         let Some(mut context) = effect_plan::context(effect, transform, self.size, source.size)
         else {
             return Ok(output);
@@ -207,9 +270,25 @@ impl Context<'_> {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
-        effect_plan::map_storage(&mut context, source.size, source.storage_size(), false);
+        if let Some(effect_plan::Terminal { opacity, .. }) = terminal {
+            context[1][3] = if self.quality.format == wgpu::TextureFormat::Rgba16Float {
+                2.0
+            } else {
+                1.0
+            };
+            context[2][3] = opacity;
+            context[3][3] = f32::from(nested);
+        }
+        effect_plan::map_storage(&mut context, source.size, source.storage_size());
+        if let Some(mask) = coverage {
+            context[9] =
+                crate::common::source_view::uv_mapping(self.size, mask.storage_size(), [0; 2]);
+        }
         if self.scissor.empty() {
             return Ok(output);
+        }
+        if let Some(mask) = coverage {
+            self.ensure_sampled(&mask.view);
         }
         if shader.descriptor.source_sampler {
             self.ensure_sampled(&source.view);
@@ -219,7 +298,8 @@ impl Context<'_> {
         let entry_capacity = 3
             + usize::from(shader.descriptor.source_sampler)
             + usize::from(!effect.images.is_empty())
-            + effect.images.len();
+            + effect.images.len()
+            + usize::from(coverage.is_some());
         let metadata_capacity = effect.images.len() * 2;
         self.transient(
             (2 * parameter_bytes
@@ -268,6 +348,12 @@ impl Context<'_> {
             entries.push(wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&source.view),
+            });
+        }
+        if let Some(mask) = coverage {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 5 + shader.descriptor.textures,
+                resource: wgpu::BindingResource::TextureView(&mask.view),
             });
         }
         let mut metadata = Vec::with_capacity(metadata_capacity);
@@ -373,3 +459,6 @@ impl Context<'_> {
         Ok(output)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,94 @@
+// Native GXM counterpart of the shared renderer algorithm.
+// Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
+varying float4 fragment_position : WPOS;
+varying out float4 reel_output : COLOR;
+uniform float4 reel_clip_rect;
+void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
+float reel_mod(float x,float y){return x-y*floor(x/y);}
+#ifndef REEL_MASK_FETCHES
+#define REEL_MASK_FETCHES 2
+#endif
+#ifndef REEL_MASK_MATH
+#define REEL_MASK_MATH 16
+#endif
+uniform sampler2D u_image0 : TEXUNIT0;
+uniform sampler2D u_image1 : TEXUNIT1;
+uniform float4 u_ops[REEL_MASK_MATH];
+uniform float4 u_coordinates[REEL_MASK_FETCHES],u_fetches[REEL_MASK_FETCHES];
+uniform float4 u_texels[REEL_MASK_FETCHES],u_dimensions[REEL_MASK_FETCHES];
+uniform float4 u_seed0,u_seed1,u_uv0,u_uv1,u_flags;
+uniform float2 u_output_size;
+float4 bank0,bank1;
+
+float read_lane(float4 value,float lane){
+ if(lane<0.5)return value.x;
+ if(lane<1.5)return value.y;
+ if(lane<2.5)return value.z;
+ return value.w;
+}
+float read_node(float index){
+ if(index<4.0)return read_lane(bank0,index);
+ return read_lane(bank1,index-4.0);
+}
+float4 write_lane(float4 bank,float lane,float value){
+ if(lane<0.5)bank.x=value;
+ else if(lane<1.5)bank.y=value;
+ else if(lane<2.5)bank.z=value;
+ else bank.w=value;
+ return bank;
+}
+void write_node(float index,float value){
+ if(index<4.0)bank0=write_lane(bank0,index,value);
+ else bank1=write_lane(bank1,index-4.0,value);
+}
+float3 encoded(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
+float smooth_mask(float a,float b,float x){if(a==b)return step(a,x);float t=clamp((x-a)/(b-a),0.0,1.0);return t*t*(3.0-2.0*t);}
+float2 coordinates(float2 uv,float4 c,float repeat,float4 texels,float2 dimensions){
+ float2 at=uv*c.zw+c.xy;
+ if(reel_mod(repeat,2.0)>0.5)at.x=frac(at.x);
+ if(repeat>1.5)at.y=frac(at.y);
+ float2 half_texel=0.5/dimensions;
+ return clamp(at*texels.xy,half_texel,texels.xy-half_texel);
+}
+void sampled(float4 color,float4 texels,float4 fetch){
+ if(texels.w==1.0)color.a=1.0;
+ if(texels.w==2.0)color.rgb=min(color.rgb,float3(color.a));
+ if(fetch.y>=0.0)write_node(fetch.y,color.a);
+#ifndef REEL_MASK_ALPHA_ONLY
+ if(fetch.z>=0.0){
+  float3 rgb=color.a>0.0?clamp(color.rgb/color.a,0.0,1.0):float3(0.0);
+  if(texels.z==0.0)rgb=encoded(rgb);
+  write_node(fetch.z,dot(rgb,float3(0.2126,0.7152,0.0722)));
+ }
+#endif
+}
+float evaluate(float4 a){
+ int op=int(a.x);
+ if(op==4)return read_node(a.y)+read_node(a.z);
+ if(op==5)return read_node(a.y)-read_node(a.z);
+ if(op==6)return read_node(a.y)*read_node(a.z);
+ if(op==7)return a.z==0.0?1.0:pow(max(read_node(a.y),0.0),a.z);
+ if(op==8)return clamp(read_node(a.y),a.z,a.w);
+ return smooth_mask(read_node(a.y),read_node(a.z),read_node(a.w));
+}
+void main(){
+ reel_clip();
+ float3 position=float3(fragment_position.xy,1.0);
+ float2 uv=float2(dot(u_uv0.xyz,position),dot(u_uv1.xyz,position));
+ if(any((uv<float2(0.0)))||any((uv>float2(1.0)))){reel_output=float4(0.0);return;}
+ bank0=u_seed0;bank1=u_seed1;
+ // Fixed sampler and metadata slots remove sampling from opcode dispatch.
+ sampled(tex2D(u_image0,coordinates(uv,u_coordinates[0],u_fetches[0].x,u_texels[0],u_dimensions[0].xy)),u_texels[0],u_fetches[0]);
+#if REEL_MASK_FETCHES > 1
+ sampled(tex2D(u_image1,coordinates(uv,u_coordinates[1],u_fetches[1].x,u_texels[1],u_dimensions[1].xy)),u_texels[1],u_fetches[1]);
+#endif
+ for(int i=0;i<REEL_MASK_MATH;i++){
+  if(float(i)>=u_flags.x)break;
+  float4 instruction=u_ops[i];
+  float destination=floor(instruction.x/16.0);
+  instruction.x-=destination*16.0;
+  float value=evaluate(instruction);
+  write_node(destination,value);
+ }
+ reel_output=float4(clamp(read_node(u_flags.y),0.0,1.0));
+}

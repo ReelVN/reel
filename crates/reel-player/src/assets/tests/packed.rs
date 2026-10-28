@@ -99,6 +99,7 @@ impl Requests {
         priority: Priority,
     ) -> ReadRequest {
         ReadRequest {
+            deadline: None,
             resource: source(key, version),
             offset,
             len,
@@ -496,6 +497,7 @@ fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
     )
     .unwrap();
     let read = |key: &str, length: usize, priority| ReadRequest {
+        deadline: None,
         resource: source(key, None),
         offset: 0,
         len: length as u32,

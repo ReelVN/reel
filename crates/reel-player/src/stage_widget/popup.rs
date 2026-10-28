@@ -31,6 +31,7 @@ impl PopupSource {
             identity: parent.identity.clone(),
             root: Some(self.root.clone()),
             popups: None,
+            image_index: Arc::default(),
             resources: Arc::from([]),
         }
     }

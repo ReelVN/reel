@@ -41,6 +41,8 @@ reel export --release --resource-target vita --runtime path/to/vita-runtime
 
 Use the platform's packaging tool to turn that directory into an installable package. A Vita runtime consumes prepared Opus audio and block textures; hardware movies use H.264/AAC with even dimensions up to 960 × 544.
 
+Vita exports compile effects to GXP with the official SDK host tool `psp2cgc`. Set `REEL_PSP2CGC` to the compiler executable or `SCE_PSP2_SDK_DIR` to the SDK directory. The runtime embeds its builtin programs and uses the system GXM API.
+
 With the Reel launcher installed, export each game as data:
 
 ```sh
@@ -446,6 +448,8 @@ reel prepare-texture original.png --output resources/background.reel-texture --s
 ```
 
 Display it with `image("background.reel-texture")` or use it for particles and image masks. The tool preserves aspect ratio and only reduces dimensions. Opaque images use BC1 by default; images with transparency use BC3. `--format rgba8` keeps uncompressed storage for detailed UI artwork and masks; `--power-of-two` pads edges for devices requiring power-of-two dimensions. `prepare-image` generates compressed texture tiles by default; `--tile-encoding png` selects PNG tiles. BC formats require device support and upload as compressed blocks at runtime. See [prepare_texture](../../crates/reel-cli/src/prepare_texture.rs) for the conversion API.
+
+For standalone images often displayed at smaller sizes, add `--mipmaps` or set `mipmaps = true` in a texture conversion rule to generate the complete prefiltered chain. The default keeps one level. Extra levels increase package size and texture residency; linear filtering blends adjacent levels. Atlases generate levels for the whole image, so neighboring regions need sufficient gutters. Tiled images use their existing level pyramid.
 
 ```aside
 let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {

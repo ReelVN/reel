@@ -119,6 +119,11 @@ impl Scope {
         scope
     }
 }
+#[cfg(not(feature = "profiling"))]
+impl Drop for Scope {
+    #[inline]
+    fn drop(&mut self) {}
+}
 #[cfg(feature = "profiling")]
 mod enabled {
     use super::*;

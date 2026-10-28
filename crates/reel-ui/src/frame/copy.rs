@@ -268,7 +268,8 @@ pub(super) fn initial_ink(op: &FrameOp) -> InkBounds {
 }
 pub(super) fn draw_ink(op: &FrameOp, ink: InkBounds, aa: f64) -> InkBounds {
     match op {
-        FrameOp::Draw(FrameDraw::Fill { transform, .. }) => {
+        FrameOp::Draw(FrameDraw::Sprites(FrameSprites { transform, .. }))
+        | FrameOp::Draw(FrameDraw::Fill { transform, .. }) => {
             inflate_aa(ink.transformed(*transform), aa)
         }
         FrameOp::Draw(FrameDraw::Stroke {

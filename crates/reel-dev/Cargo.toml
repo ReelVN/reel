@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish = false
 
 [features]
-vita-probe = ["dep:reel-core", "dep:reel-ui", "dep:reel-render", "dep:reel-player", "dep:reel-storage", "dep:pvr-psp2-sys", "dep:pvr-compiler"]
+vita-probe = ["dep:reel-core", "dep:reel-ui", "dep:reel-render", "dep:reel-player", "dep:reel-storage", "dep:vita-native"]
 
 [dependencies]
 anyhow = "=1.0.104"
@@ -16,17 +16,18 @@ serde_json = "=1.0.154"
 reel-storage = { path = "../reel-storage", optional = true }
 reel-core = { path = "../reel-core", features = ["profiling"], optional = true }
 reel-ui = { workspace = true, optional = true }
-reel-render = { path = "../reel-render", features = ["gles2", "profiling"], optional = true }
+reel-render = { path = "../reel-render", features = ["profiling"], optional = true }
 reel-player = { path = "../reel-player", features = ["profiling"], optional = true }
-pvr-psp2-sys = { workspace = true, features = ["graphics", "platform"], optional = true }
+vita-native = { workspace = true, features = ["app"], optional = true }
 
 [target.'cfg(target_os = "vita")'.dependencies]
+reel-render = { path = "../reel-render", features = ["gxm"], optional = true }
+vita-native = { workspace = true, features = ["graphics"], optional = true }
 reel-player = { path = "../reel-player", features = ["vita", "profiling"], optional = true }
 
 [build-dependencies]
 reel-ui = { workspace = true, optional = true }
 reel-render = { path = "../reel-render", default-features = false, optional = true }
-pvr-compiler = { git = "https://github.com/jhq223/pvr-compiler.git", rev = "21f382885f7250149ff9fde4d21ad17769cda325", optional = true }
 
 [[bin]]
 name = "reel-gpu-probe"

@@ -364,6 +364,7 @@ impl Assets {
             io,
             stream_input,
             completion,
+            metadata,
             ..
         } = &mut *service;
         streams.create(
@@ -371,6 +372,7 @@ impl Assets {
             io.as_ref().unwrap().as_ref(),
             stream_input.clone(),
             completion.clone(),
+            metadata.clone(),
             chunk,
         )
     }
@@ -771,6 +773,7 @@ impl Service {
                     return Ok(());
                 };
                 match self.io.as_mut().unwrap().read(ReadRequest {
+                    deadline: None,
                     resource: load.source.clone(),
                     offset: 0,
                     len,

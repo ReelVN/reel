@@ -34,7 +34,7 @@ fn main() -> Result<()> {
             maintenance::measure(Path::new(build), target, &args[3..])?
         }
         _ => bail!(
-            "Usage: cargo run -p reel-dev -- <check|deps|audio-regression [--release]|audio-probe|vita-assets --modules DIR --font FILE --font-license FILE|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
+            "Usage: cargo run -p reel-dev -- <check|deps|audio-regression [--release]|audio-probe|vita-assets --font FILE --font-license FILE|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
             root().display()
         ),
     }

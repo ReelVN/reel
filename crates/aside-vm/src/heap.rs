@@ -1,4 +1,6 @@
+mod changes;
 mod model;
+pub use changes::ChangeCursor;
 mod properties;
 mod reactive;
 pub(crate) mod snapshot;
@@ -315,6 +317,7 @@ pub(crate) struct Object {
     pub dying: bool,
     pub content_version: u64,
     pub structure_version: u64,
+    pub watched: bool,
     pub charged: u64,
 }
 pub(crate) struct Root {
@@ -334,6 +337,7 @@ pub struct Heap {
     pub(crate) root_scan_len: usize,
     pub(crate) ranges: Slots<RangeKey, RangeDescriptor>,
     pub(crate) range_index: Vec<Option<RangeKey>>,
+    pub(crate) range_occupied: Vec<u64>,
     pub(crate) range_scan_len: usize,
     pub(crate) next_attachment: u64,
     pub(crate) usage: HeapBudgetUsage,
@@ -358,6 +362,7 @@ pub struct Heap {
     evaluation: u64,
     binding_revision: u64,
     pub(crate) mutation_revision: u64,
+    pub(crate) changes: changes::Changes,
     host_retirement_revision: u64,
     property_proposal: Option<Value>,
     pub(crate) limits: HeapLimits,
@@ -401,6 +406,7 @@ impl Heap {
             + (initial_roots as u64 + 1) * std::mem::size_of::<Option<RootKey>>() as u64
             + (initial_ranges as u64 + 1)
                 * (range_stride as u64 + std::mem::size_of::<Option<RangeKey>>() as u64)
+            + ((initial_ranges + 1).div_ceil(64) * size_of::<u64>()) as u64
             + BOOK_BYTES
             + std::mem::size_of::<Self>() as u64;
         if estimate > limits.max_bytes {
@@ -430,6 +436,7 @@ impl Heap {
             root_scan_len: 0,
             ranges: Slots::new(initial_ranges, limits.max_root_ranges as usize, retirement),
             range_index: vec![None; initial_ranges + 1],
+            range_occupied: vec![0; (initial_ranges + 1).div_ceil(64)],
             range_scan_len: 0,
             next_attachment: 0,
             usage,
@@ -454,6 +461,7 @@ impl Heap {
             evaluation: 0,
             binding_revision: 1,
             mutation_revision: 0,
+            changes: Default::default(),
             host_retirement_revision: 0,
             property_proposal: None,
             limits,
@@ -469,6 +477,7 @@ impl Heap {
             + (heap.root_index.capacity() * std::mem::size_of::<Option<RootKey>>()) as u64
             + heap.ranges.reserved_bytes()
             + (heap.range_index.capacity() * std::mem::size_of::<Option<RangeKey>>()) as u64
+            + (heap.range_occupied.capacity() * size_of::<u64>()) as u64
             + BOOK_BYTES
             + ((heap.allocations.capacity()
                 + heap.gray.capacity()
@@ -669,6 +678,7 @@ impl Heap {
             dying: false,
             content_version: 0,
             structure_version: 0,
+            watched: false,
             charged,
         });
         self.allocations.push_back(key);
@@ -858,6 +868,7 @@ impl Heap {
         };
         values.set(index + 4, value);
         object.content_version = object.content_version.wrapping_add(1);
+        self.changes.record(key, object.watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
@@ -1083,6 +1094,7 @@ impl Heap {
             _ => unreachable!(),
         }
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.changes.record(key, obj.watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         self.invalidate_reactive(target, None)?;
         Ok(())
@@ -1108,6 +1120,7 @@ impl Heap {
         }
         obj.charged += extra;
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.changes.record(key, obj.watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         self.invalidate_reactive(target, None)?;
@@ -1152,6 +1165,7 @@ impl Heap {
         values.push(value);
         obj.charged += extra;
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.changes.record(key, obj.watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         Ok(())
@@ -1180,6 +1194,7 @@ impl Heap {
         };
         obj.charged -= freed;
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.changes.record(key, obj.watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         self.freed(freed);
@@ -1202,6 +1217,7 @@ impl Heap {
             values.set(b, left);
         }
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.changes.record(key, obj.watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         self.invalidate_reactive(target, None)?;
@@ -1236,6 +1252,7 @@ impl Heap {
         obj.charged += chunks * BYTE_CHUNK_BYTES;
         if !input.is_empty() {
             obj.content_version = obj.content_version.wrapping_add(1);
+            self.changes.record(key, obj.watched);
             self.mutation_revision = self.mutation_revision.wrapping_add(1);
         }
         self.invalidate_reactive(target, None)?;
@@ -1451,6 +1468,7 @@ impl Drop for Heap {
         self.ranges.drop_storage();
         drop(std::mem::take(&mut self.root_index));
         drop(std::mem::take(&mut self.range_index));
+        drop(std::mem::take(&mut self.range_occupied));
         drop(std::mem::take(&mut self.allocations));
         drop(std::mem::take(&mut self.gray));
         drop(std::mem::take(&mut self.release));

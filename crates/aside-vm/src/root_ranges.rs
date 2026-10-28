@@ -307,12 +307,14 @@ impl Heap {
         }
         let key = self.ranges.insert(RangeDescriptor { owner, kind, len });
         self.range_index[index(key)] = Some(key);
+        self.range_occupied[index(key) / 64] |= 1 << (index(key) % 64);
         self.range_scan_len = self.range_scan_len.max(index(key) + 1);
         Ok(RootRangeToken::new(self, key))
     }
     pub(crate) fn unregister_range(&mut self, token: RootRangeToken) -> Result<(), HeapError> {
         self.range_descriptor(token)?;
         self.range_index[index(token.key)] = None;
+        self.range_occupied[index(token.key) / 64] &= !(1 << (index(token.key) % 64));
         self.ranges
             .remove(token.key)
             .expect("checked range descriptor");

@@ -219,6 +219,9 @@ pub struct PrepareTexture {
     /// Pad stored dimensions to powers of two, with a minimum of eight texels.
     #[arg(long)]
     pub power_of_two: bool,
+    /// Generate all mip levels; enable only for artwork whose sampling may cross source regions.
+    #[arg(long)]
+    pub mipmaps: bool,
     /// Auto selects BC1 for opaque artwork and BC3 for transparent artwork.
     #[arg(long, value_enum, default_value = "auto")]
     pub format: reel_cli::prepare_texture::Format,

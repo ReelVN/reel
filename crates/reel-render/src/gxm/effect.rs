@@ -1,0 +1,385 @@
+//! Prepared asset programs and shared effect execution.
+use super::{GpuError, native, programs, replay::Context, resources::Target};
+use crate::common::{effect_cache, effect_plan};
+use reel_core::budget::BudgetPool;
+use reel_ui::{
+    frame::{FrameDrawing, FrameEffect, RecordLocation},
+    kurbo::Affine,
+};
+use std::rc::Rc;
+
+#[derive(Default)]
+pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 4]);
+impl Cache {
+    pub fn prune(&mut self) {
+        for cache in &mut self.0 {
+            cache.prune();
+        }
+    }
+}
+pub(super) struct Compiled {
+    program: native::Program,
+    source: Option<native::Uniform>,
+    coverage: Option<native::Uniform>,
+    context: Option<native::Uniform>,
+    parameters: Vec<Option<native::Uniform>>,
+    textures: Vec<Option<native::Uniform>>,
+    texture_meta: Option<native::Uniform>,
+    _storage: super::ownership::NativeTicket,
+}
+
+fn compile(
+    gpu: &super::ownership::Device,
+    shader: &effect_plan::Shader<'_>,
+    budget: &BudgetPool,
+    limit: u64,
+    at: RecordLocation,
+    padded: bool,
+    masked: bool,
+) -> Result<Rc<Compiled>, GpuError> {
+    let effect_plan::Shader {
+        lease,
+        descriptor,
+        bytes,
+    } = *shader;
+    let count = descriptor.parameters.len();
+    let format = descriptor.format;
+    if descriptor
+        .textures
+        .saturating_add(u32::from(descriptor.source_sampler))
+        .saturating_add(u32::from(masked))
+        > gpu.capabilities().max_texture_units
+    {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "effect textures exceed the device capacity",
+        });
+    }
+    let bytes = descriptor
+        .code(bytes, masked)
+        .ok_or(GpuError::InvalidRecord {
+            at,
+            record: "missing effect variant",
+        })?;
+    let code = super::super::effect_code(format, bytes, at)?;
+    let storage = effect_cache::reserve(
+        budget,
+        size_of::<Compiled>()
+            + 2 * size_of::<usize>()
+            + (count + descriptor.textures as usize) * size_of::<Option<native::Uniform>>(),
+        limit,
+    )?;
+    let storage = gpu.ticket(storage);
+    let program = programs::create_program(
+        gpu,
+        code,
+        descriptor.output == reel_ui::stage::effect::EffectType::Float || masked,
+        padded,
+    )
+    .map_err(|error| GpuError::Shader {
+        at,
+        asset: lease.version().key.0.clone(),
+        source: Box::new(error),
+    })?;
+    let source = program.uniform("reel_source");
+    let context = program.uniform("reel_context[0]");
+    let parameters = (0..count)
+        .map(|i| program.uniform(&format!("reel_parameter_{i}")))
+        .collect();
+    Ok(Rc::new(Compiled {
+        source,
+        coverage: program.uniform("reel_composite_mask"),
+        context,
+        parameters,
+        textures: (0..descriptor.textures)
+            .map(|i| program.uniform(&format!("reel_texture_{i}")))
+            .collect(),
+        texture_meta: program.uniform("reel_texture_meta[0]"),
+        program,
+        _storage: storage,
+    }))
+}
+
+impl Context<'_> {
+    pub(super) fn effect(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        at: RecordLocation,
+    ) -> Result<Target, GpuError> {
+        self.effect_draw(drawing, effect, transform, source, None, None, at)
+    }
+    /// Multiply the complete local source by scalar coverage in one pass.
+    pub(super) fn effect_mask(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        source_frame_to_pixels: Affine,
+        at: RecordLocation,
+    ) -> Result<Target, GpuError> {
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            source,
+            Some(source_frame_to_pixels),
+            None,
+            at,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "terminal effect retains its source and destination domains"
+    )]
+    pub(super) fn effect_into(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        target: &Target,
+        opacity: f32,
+        coverage: Option<(&Target, bool)>,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            source,
+            None,
+            Some(effect_plan::Terminal {
+                target,
+                opacity,
+                coverage,
+            }),
+            at,
+        )
+        .map(|_| ())
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one prepared effect and optional terminal composite"
+    )]
+    fn effect_draw(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        source_view: Option<Affine>,
+        terminal: Option<effect_plan::Terminal<'_, Target>>,
+        at: RecordLocation,
+    ) -> Result<Target, GpuError> {
+        self.flush_draws()?;
+        let coverage = terminal.as_ref().and_then(|output| output.coverage);
+        let nested = coverage.is_some_and(|(_, nested)| nested);
+        let coverage = coverage.map(|(mask, _)| mask);
+        let shader = effect_plan::shader(drawing, effect, at)?;
+        let effect_plan::Shader {
+            lease, descriptor, ..
+        } = shader;
+        let padded = descriptor.output == reel_ui::stage::effect::EffectType::Float
+            && source.size != source.view.size();
+        let cache =
+            &mut self.effect_cache.0[usize::from(padded) + 2 * usize::from(coverage.is_some())];
+        let compiled = if let Some(compiled) = cache.get(
+            descriptor.shader_key,
+            lease,
+            &self.budgets.resources,
+            self.limits.resource_bytes,
+        )? {
+            compiled
+        } else {
+            let compiled = compile(
+                self.gpu,
+                &shader,
+                &self.budgets.resources,
+                self.limits.resource_bytes,
+                at,
+                padded,
+                coverage.is_some(),
+            )?;
+            cache.insert(
+                descriptor.shader_key,
+                lease,
+                compiled.clone(),
+                &self.budgets.resources,
+                self.limits.resource_bytes,
+            )?;
+            compiled
+        };
+        let output = if let Some(output) = &terminal {
+            output.target.clone()
+        } else {
+            self.target()?
+        };
+        let Some(mut context) = effect_plan::context(effect, transform, self.size, source.size)
+        else {
+            return Ok(output);
+        };
+        if let Some(view) = source_view {
+            context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
+            effect_plan::map_source(&mut context, effect, transform, view, source.size);
+        }
+        if let Some(effect_plan::Terminal { opacity, .. }) = terminal {
+            context[1][3] = 1.0;
+            context[2][3] = opacity;
+            context[3][3] = f32::from(nested);
+        }
+        effect_plan::map_storage(&mut context, source.size, source.view.size());
+        if let Some(mask) = coverage {
+            context[9] =
+                crate::common::source_view::uv_mapping(self.size, mask.view.size(), [0; 2]);
+        }
+        if self.scissor.empty() {
+            return Ok(output);
+        }
+        if let Some(mask) = coverage {
+            self.ensure_sampled(&mask.view)?;
+        }
+        if descriptor.source_sampler {
+            self.ensure_sampled(&source.view)?;
+        }
+        self.ensure_target(&output)?;
+        let mut held = std::mem::take(&mut self.effects);
+        let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {
+            self.transient(bytes)
+        });
+        self.effects = held;
+        retained?;
+        let image_capacity = effect.images.len()
+            + usize::from(descriptor.source_sampler)
+            + usize::from(coverage.is_some());
+        let metadata_capacity = effect.images.len() * 2;
+        let value_capacity =
+            effect.values.len() + 3 + effect.images.len() + usize::from(coverage.is_some());
+        self.transient(
+            (image_capacity * size_of::<&native::Texture>()
+                + metadata_capacity * size_of::<[f32; 4]>()
+                + value_capacity * size_of::<native::UniformValue<'_>>()) as u64,
+        )?;
+        let mut images = Vec::with_capacity(image_capacity);
+        if descriptor.source_sampler {
+            images.push(&source.view);
+        }
+        let mut metadata = Vec::with_capacity(metadata_capacity);
+        let mut values = Vec::with_capacity(value_capacity);
+        for (index, handle) in effect.images.iter().enumerate() {
+            let image = self.images.get(handle).ok_or(GpuError::InvalidRecord {
+                at,
+                record: "effect texture is not resident",
+            })?;
+            values.extend(
+                compiled.textures[index]
+                    .as_ref()
+                    .map(|u| native::UniformValue::Int(u, images.len() as i32)),
+            );
+            images.push(&image.texture);
+            metadata.extend(effect_plan::texture_metadata(
+                image.layout,
+                image.encoding,
+                image.format,
+            ));
+        }
+        if let Some(mask) = coverage {
+            let unit = images.len() as i32;
+            images.push(&mask.view);
+            values.extend(
+                compiled
+                    .coverage
+                    .as_ref()
+                    .map(|u| native::UniformValue::Int(u, unit)),
+            );
+        }
+        values.extend(
+            compiled
+                .texture_meta
+                .as_ref()
+                .map(|u| native::UniformValue::Vec4Array(u, &metadata)),
+        );
+        values.extend(
+            compiled
+                .source
+                .as_ref()
+                .map(|u| native::UniformValue::Int(u, 0)),
+        );
+        values.extend(
+            compiled
+                .context
+                .as_ref()
+                .map(|u| native::UniformValue::Vec4Array(u, &context)),
+        );
+        for (uniform, value) in compiled.parameters.iter().zip(&effect.values) {
+            values.extend(
+                uniform
+                    .as_ref()
+                    .map(|u| native::UniformValue::Vec4(u, effect_plan::slot(*value))),
+            );
+        }
+        let mesh = if padded {
+            let vertices =
+                effect_plan::implicit_mesh::vertices(&context).ok_or(GpuError::InvalidSize)?;
+            let mut mesh = crate::common::mesh::Mesh::new(self.mesh_allocation());
+            mesh.triangles(&vertices)?;
+            let batch = crate::common::draw_batch::Batch::new(mesh, ())?;
+            let (storage, local, metadata) = super::geometry::upload_batch(
+                self.geometry_cache,
+                self.gpu,
+                self.budgets,
+                &self.budget_scope,
+                self.limits,
+                &batch,
+            )?;
+            self.tickets.push(crate::common::renderer::Reservation {
+                _shared: None,
+                _local: local,
+            });
+            if let Some(local) = metadata {
+                self.tickets.push(crate::common::renderer::Reservation {
+                    _shared: None,
+                    _local: local,
+                });
+            }
+            let mut held = std::mem::take(&mut self.buffers);
+            let result = crate::common::scopes::push_stack(&mut held, storage, |bytes| {
+                self.tickets.push(crate::common::renderer::reserve(
+                    &self.budgets.transient,
+                    &self.budget_scope.transient,
+                    bytes,
+                    self.limits.transient_bytes,
+                    "effect mesh metadata",
+                )?);
+                Ok(())
+            });
+            self.buffers = held;
+            result?;
+            Some(&self.buffers.last().unwrap().storage)
+        } else {
+            None
+        };
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
+        let _draw = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
+        self.gpu.draw(native::Draw {
+            target: native::Target::Framebuffer(&output.framebuffer),
+            size: self.size,
+            program: &compiled.program,
+            vertices: mesh.map_or(&self.programs.vertices, |mesh| &mesh.vertices),
+            indices: Some(mesh.map_or(&self.programs.indices, |mesh| &mesh.indices)),
+            range: 0..if padded { 54 } else { 6 },
+            textures: &images,
+            uniforms: &values,
+            blend: if terminal.is_some() {
+                native::Blend::Premultiplied
+            } else {
+                native::Blend::Replace
+            },
+            scissor: self.native_scissor(),
+        })?;
+        Ok(output)
+    }
+}

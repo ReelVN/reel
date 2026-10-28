@@ -146,6 +146,28 @@ impl Cache {
 fn offset_version(heap: &Heap, token: Value) -> Result<u64, HeapError> {
     Ok(heap.info(heap.host_fields(token)?)?.content_version)
 }
+pub(super) fn visit_dependencies(
+    heap: &mut Heap,
+    node: Value,
+    mut visit: impl FnMut(&mut Heap, Value) -> Result<(), AdapterError>,
+) -> Result<(), AdapterError> {
+    let state = heap.host_payload(node, NODE_SLOT)?;
+    let selected = heap.sequence_get(state, SELECTED)?;
+    if heap.sequence_len(heap.sequence_get(state, LAYERS)?)? != 0 {
+        for index in 0..COUNT as u32 {
+            let reference = heap.sequence_get(selected, index)?;
+            if reference.tag() != ValueTag::Null {
+                let property = heap.property_ref(reference)?.0;
+                visit(heap, heap.host_fields(property.host)?)?;
+            }
+        }
+    }
+    let offsets = heap.sequence_get(state, OFFSETS)?;
+    for index in 0..heap.sequence_len(offsets)? {
+        visit(heap, heap.host_fields(heap.sequence_get(offsets, index)?)?)?;
+    }
+    Ok(())
+}
 pub(super) fn offset_count(heap: &Heap, node: Value) -> Result<usize, HeapError> {
     let state = heap.host_payload(node, NODE_SLOT)?;
     if state.tag() == ValueTag::Null {

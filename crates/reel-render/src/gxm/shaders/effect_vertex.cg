@@ -1,0 +1,9 @@
+uniform float4 reel_context[10];
+void main(float2 a_position : POSITION, float2 a_uv : TEXCOORD0,
+          out float4 position : POSITION, out float2 v_uv : TEXCOORD0,
+          out float2 reel_implicit_source_uv : TEXCOORD1, out float2 reel_mask_uv : TEXCOORD2) {
+    reel_mask_uv=a_uv*reel_context[9].xy+reel_context[9].zw;
+    position=float4(a_position,0.0,1.0); v_uv=a_uv;
+    float3 p=float3(a_uv,1.0);
+    reel_implicit_source_uv=float2(dot(reel_context[7].xyz,p),dot(reel_context[8].xyz,p));
+}

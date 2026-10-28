@@ -9,6 +9,7 @@ pub(crate) mod effect_cache;
 pub(crate) mod effect_plan;
 pub(crate) mod glyph;
 pub(crate) mod glyph_plan;
+pub(crate) mod glyph_upload;
 pub(crate) mod gradient;
 pub(crate) mod image_coverage;
 pub(crate) mod image_plan;
@@ -20,6 +21,7 @@ pub(crate) mod retained;
 pub(crate) mod scopes;
 
 pub(crate) mod offscreen;
+pub(crate) mod precision;
 pub(crate) mod scissor;
 pub(crate) mod source_view;
 pub(crate) mod target_cache;
@@ -33,3 +35,5 @@ pub(crate) mod geometry;
 pub(crate) mod glyph_key;
 pub(crate) mod indices;
 pub(crate) mod recording_cache;
+
+mod sprites;

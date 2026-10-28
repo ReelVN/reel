@@ -3,25 +3,20 @@
 //! Build on Linux/WSL with nightly Rust, `rust-src` and VitaSDK on `PATH`:
 //!
 //! ```sh
-//! cargo run -p reel-dev -- vita-assets --modules path/to/module \
-//!     --font path/to/font.ttf --font-license path/to/license.txt
+//! cargo run -p reel-dev -- vita-assets --font path/to/font.ttf --font-license path/to/license.txt
 //! cargo +nightly vita build vpk --locked --release \
 //!     -p reel-player --bin reel-vita --no-default-features --features vita
 //! ```
 //!
 //! Set the target's `CC`, `CXX` and `AR` to the VitaSDK cross tools. The render
-//! build compiles GLSL to embedded SGX binaries with the pinned host compiler.
+//! build compiles Cg to embedded GXP programs with the official SDK tool selected
+//! by `REEL_PSP2CGC` or `SCE_PSP2_SDK_DIR`.
 //! `cargo-vita` packages the ELF, platform metadata and `runtime/vita/`.
-//! Its VPK contains `eboot.bin`, the four matching PVR modules under `module/`
-//! and `launcher.rpk`, which contains the launcher font at `fonts/body.ttf`.
+//! Its VPK contains `eboot.bin` and `launcher.rpk`, which contains the launcher
+//! font at `fonts/body.ttf`. Graphics uses the system GXM API.
 use crate::{
     hal::{DisplayMetrics, Host, PlatformHost, WindowControl},
     player::{Player, PlayerOptions},
-};
-use pvr_psp2_sys::platform::{
-    self as native,
-    power::{PowerEvents, PowerKind},
-    wake::Wake,
 };
 use reel_core::{
     budget::QueueLimits,
@@ -29,7 +24,7 @@ use reel_core::{
     wake::WakeSignal,
     window::{WindowCapabilities, WindowConfiguration, WindowInfo, WindowPlatform, WindowSize},
 };
-use reel_render::gles2::{GlesBackend, GlesOptions};
+use reel_render::gxm::{GxmBackend, GxmOptions};
 use reel_ui::app::RenderRootSignal;
 use std::{
     cell::{Cell, RefCell},
@@ -37,6 +32,11 @@ use std::{
     rc::Rc,
     sync::Arc,
     time::Duration,
+};
+use vita_native::app::{
+    self as native,
+    power::{PowerEvents, PowerKind},
+    wake::Wake,
 };
 mod input;
 type Error = Box<dyn std::error::Error>;
@@ -181,20 +181,17 @@ impl Host for VitaHost {
 
 /// One native event loop and graphics device shared by successive sessions.
 /// Session resources retire at each boundary; device programs survive until
-/// `run` closes the application. Native module loading occurs once per run.
+/// `run` closes the application. The GXM device is initialized once per run.
 pub struct Runtime {
     native: NativeLoop,
-    backend: GlesBackend,
+    backend: GxmBackend,
 }
 
 impl Runtime {
     /// Create the native device, run the application, and close it explicitly.
     /// Shutdown errors retain the application's original error when both fail.
-    pub fn run<T>(
-        module_directory: &Path,
-        application: impl FnOnce(&mut Self) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        let (native, backend) = NativeLoop::new(module_directory)?;
+    pub fn run<T>(application: impl FnOnce(&mut Self) -> Result<T, Error>) -> Result<T, Error> {
+        let (native, backend) = NativeLoop::new()?;
         #[cfg(feature = "profiling")]
         let _live_probe = crate::probe::Live::start()?;
         let mut runtime = Self { native, backend };
@@ -204,7 +201,7 @@ impl Runtime {
 
     /// Borrow the application's renderer for native drawing. A subsequent
     /// player session drains submitted work and retires these session resources.
-    pub fn renderer(&mut self) -> &mut GlesBackend {
+    pub fn renderer(&mut self) -> &mut GxmBackend {
         &mut self.backend
     }
 
@@ -244,7 +241,7 @@ impl Runtime {
 fn run_launcher_on(
     game_root: &Path,
     native: &mut NativeLoop,
-    backend: &mut GlesBackend,
+    backend: &mut GxmBackend,
 ) -> Result<(), Error> {
     let mut error = std::fs::create_dir_all(game_root)
         .err()
@@ -273,19 +270,21 @@ fn run_launcher_on(
 fn run_library(
     game_root: &Path,
     native: &mut NativeLoop,
-    backend: &mut GlesBackend,
+    backend: &mut GxmBackend,
     error: Option<String>,
 ) -> Result<crate::launcher::Outcome, Error> {
-    let mut options = PlayerOptions::default();
-    options.assets = crate::assets::AssetOptions {
-        root: "app0:/".into(),
-        resident_bytes: 32 << 20,
-        metadata_bytes: 32 << 20,
-        input_bytes: 32 << 20,
-        decode_bytes: 1 << 20,
+    let options = PlayerOptions {
+        assets: crate::assets::AssetOptions {
+            root: "app0:/".into(),
+            resident_bytes: 32 << 20,
+            metadata_bytes: 32 << 20,
+            input_bytes: 32 << 20,
+            decode_bytes: 1 << 20,
+        },
+        frame_bytes: 4 << 20,
+        canvas_size: Some([960, 544]),
+        ..Default::default()
     };
-    options.frame_bytes = 4 << 20;
-    options.canvas_size = Some([960, 544]);
     let launcher = crate::launcher::Launcher::new(
         game_root,
         crate::assets::Assets::packaged(
@@ -320,7 +319,7 @@ fn run_package_on(
     package: &Path,
     save_directory: &Path,
     native: &mut NativeLoop,
-    backend: &mut GlesBackend,
+    backend: &mut GxmBackend,
 ) -> Result<(), Error> {
     let loading = reel_core::profile::Scope::new(reel_core::profile::Phase::Load);
     let loaded = crate::distribution::load(package, None)?;
@@ -346,7 +345,9 @@ fn run_package_on(
     options.media.video.decoded_bytes = 24 << 20;
     options.media.video.queued_pictures = 2;
     options.media.video.queued_audio_frames = 4096;
-    options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory));
+    options.media.video_decoder = Some(Arc::new(
+        reel_media::video::VitaVideoDecoderFactory::default(),
+    ));
     let story = crate::distribution::story_from_package(loaded.package)?;
     drop(loading);
     run_story_on(story, options, native, backend)
@@ -356,7 +357,7 @@ fn run_story_on(
     story: reel_engine::aside::source::CompiledStory,
     mut options: PlayerOptions,
     native: &mut NativeLoop,
-    backend: &mut GlesBackend,
+    backend: &mut GxmBackend,
 ) -> Result<(), Error> {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
     let mounting = reel_core::profile::Scope::new(reel_core::profile::Phase::Mount);
@@ -427,7 +428,7 @@ fn run_story_on(
 }
 
 fn reset_after_session<T>(
-    backend: &mut GlesBackend,
+    backend: &mut GxmBackend,
     result: &Result<T, Error>,
 ) -> Result<(), Error> {
     backend.reset_session().map_err(|failure| {
@@ -440,7 +441,7 @@ fn reset_after_session<T>(
     })
 }
 
-fn close_backend<T>(result: Result<T, Error>, backend: GlesBackend) -> Result<T, Error> {
+fn close_backend<T>(result: Result<T, Error>, backend: GxmBackend) -> Result<T, Error> {
     match (result, backend.close()) {
         (result, Ok(())) => result,
         (Ok(_), Err(failure)) => Err(format!("Vita graphics shutdown: {failure}").into()),
@@ -458,7 +459,7 @@ struct NativeLoop {
 }
 
 impl NativeLoop {
-    fn begin_session(&mut self, backend: &GlesBackend) {
+    fn begin_session(&mut self, backend: &GxmBackend) {
         #[cfg(feature = "profiling")]
         let _ = reel_core::profile::Sample::take();
         // Signals and deadlines belong to the departed player, unlike native input,
@@ -466,17 +467,11 @@ impl NativeLoop {
         self.host = VitaHost::new(backend.output_size(), self.wake.clone());
     }
 
-    fn new(module_directory: &Path) -> Result<(Self, GlesBackend), Error> {
+    fn new() -> Result<(Self, GxmBackend), Error> {
         let wake = Wake::new()?;
         let power = PowerEvents::new(wake.clone())?;
         let controls = native::input::Input::new()?;
-        let mut gles = GlesOptions::default();
-        gles.module_directory = module_directory
-            .to_str()
-            .ok_or("Vita module directory must be UTF-8")?
-            .into();
-        gles.vsync = true;
-        let backend = GlesBackend::new(gles)?;
+        let backend = GxmBackend::new(GxmOptions::default())?;
         let host = VitaHost::new(backend.output_size(), wake.clone());
         Ok((
             Self {
@@ -491,7 +486,7 @@ impl NativeLoop {
 
     fn drive(
         &mut self,
-        player: &mut Player<&mut GlesBackend>,
+        player: &mut Player<&mut GxmBackend>,
         return_to_library: bool,
     ) -> Result<(), Error> {
         let Self {
@@ -533,12 +528,10 @@ impl NativeLoop {
                     }
                     host.event_time = None;
                 }
-                if host.signals.exit.get() || player.exit_requested() {
-                    if !closing {
-                        text.cancel(|event| player.text_event(event).map(|_| ()))?;
-                        player.close()?;
-                        closing = true;
-                    }
+                if (host.signals.exit.get() || player.exit_requested()) && !closing {
+                    text.cancel(|event| player.text_event(event).map(|_| ()))?;
+                    player.close()?;
+                    closing = true;
                 }
                 if closing {
                     player.tick(host)?;

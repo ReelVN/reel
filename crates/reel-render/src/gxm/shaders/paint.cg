@@ -1,0 +1,157 @@
+// Native GXM counterpart of the shared renderer algorithm.
+// Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
+varying out float4 reel_output : COLOR;
+varying float4 fragment_position : WPOS;
+#ifdef REEL_UNCLIPPED
+void reel_clip(){}
+#else
+uniform float4 reel_clip_rect;
+void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
+#endif
+#ifndef REEL_SOURCE_KIND
+#define REEL_SOURCE_KIND 0
+#endif
+#ifndef REEL_STYLE
+#define REEL_STYLE 0
+#endif
+varying float2 v_uv : TEXCOORD0;
+#ifdef REEL_BOUNDED
+#define REEL_COLOR half4
+#define REEL_RGB half3
+#else
+#define REEL_COLOR float4
+#define REEL_RGB float3
+#endif
+varying REEL_COLOR v_color : TEXCOORD1;
+varying float4 v_window : TEXCOORD2;
+#ifdef REEL_DIRECT
+#if REEL_DIRECT == 4
+void main(){
+ reel_clip();reel_output=v_color;}
+#else
+uniform sampler2D u_image : TEXUNIT0;
+#ifdef REEL_REGIONAL
+uniform float2 u_dimensions;
+#endif
+void main(){
+ reel_clip();
+#ifdef REEL_REGIONAL
+ float2 half_texel=0.5/u_dimensions,span=v_window.zw;
+ float2 inset=min(half_texel,span*0.5);
+ float2 uv=clamp(clamp(v_uv,v_window.xy+inset,v_window.xy+span-inset),half_texel,float2(1.0)-half_texel);
+ REEL_COLOR color=tex2D(u_image,uv);
+#else
+ REEL_COLOR color=tex2D(u_image,v_uv);
+#endif
+#if REEL_DIRECT == 1
+ color.a=1.0;
+#elif REEL_DIRECT == 2
+ color.rgb=min(color.rgb,REEL_RGB(color.a));
+#elif REEL_DIRECT == 3
+ color=float4(color.r);
+#endif
+ reel_output=color*v_color;
+}
+#endif
+#else
+uniform sampler2D u_image : TEXUNIT0;
+uniform sampler2D u_chroma_u : TEXUNIT1;
+uniform sampler2D u_chroma_v : TEXUNIT2;
+uniform float2 u_dimensions,u_output_size,u_repeat;
+uniform float4 u_appearance[9],u_video[4];
+uniform float u_video_kind,u_image_flip,u_coverage;
+float3 linear_srgb(float3 x){return lerp(pow((x+0.055)/1.055,float3(2.4)),x/12.92,step(x,float3(0.04045)));}
+float3 encoded_srgb(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
+float2 flip_uv(float2 uv){if(u_image_flip>0.5)uv.y=1.0-uv.y;return uv;}
+float2 source_uv(){
+ float2 low=v_window.xy,span=abs(v_window.zw),half_texel=0.5/u_dimensions;
+ float2 high=float2(1.0)-half_texel;
+ if(u_appearance[4].w>=3.0)high.y=u_appearance[8].y*0.5-half_texel.y;
+ float2 uv=v_uv;
+ if(any((span<=float2(0.0)))){
+  if(u_repeat.x>0.5)uv.x=frac(uv.x);if(u_repeat.y>0.5)uv.y=frac(uv.y);
+  if(u_appearance[4].w>=3.0)uv=clamp(uv,half_texel,high);
+ }else{
+  if(v_window.z<0.0)uv.x=low.x+frac((uv.x-low.x)/span.x)*span.x;
+  if(v_window.w<0.0)uv.y=low.y+frac((uv.y-low.y)/span.y)*span.y;
+  float2 inset=min(half_texel,span*0.5);
+  uv=clamp(clamp(uv,low+inset,low+span-inset),half_texel,high);
+ }
+ return uv;
+}
+#if REEL_SOURCE_KIND == 3
+float encoded_red(float4 color){
+ float value=0.0;
+ if(color.a>0.0){
+  float red=max(color.r/color.a,0.0);
+  if(u_appearance[4].w==4.0)value=red;
+  else value=red<=0.0031308?12.92*red:1.055*pow(red,1.0/2.4)-0.055;
+ }
+ return clamp(value,0.0,1.0);
+}
+float alpha_sample(float2 uv){
+ if(u_appearance[8].w==1.0)return encoded_red(tex2D(u_image,flip_uv(uv)));
+ float2 pixel=uv*u_dimensions-0.5,base=floor(pixel),t=frac(pixel);
+ float2 a=(clamp(base,float2(0.0),u_dimensions-1.0)+0.5)/u_dimensions;
+ float2 b=(clamp(base+1.0,float2(0.0),u_dimensions-1.0)+0.5)/u_dimensions;
+ return lerp(lerp(encoded_red(tex2D(u_image,flip_uv(a))),encoded_red(tex2D(u_image,flip_uv(float2(b.x,a.y)))),t.x),lerp(encoded_red(tex2D(u_image,flip_uv(float2(a.x,b.y)))),encoded_red(tex2D(u_image,flip_uv(b))),t.x),t.y);
+}
+#endif
+#if REEL_SOURCE_KIND == 2
+float2 chroma(float2 uv){
+ float4 sample=tex2D(u_chroma_u,uv);float2 value;
+ if(u_video_kind>1.5)value=sample.ra;
+ else value=float2(sample.r,tex2D(u_chroma_v,uv).r);
+ return value;
+}
+#endif
+float4 source(float2 uv){
+#if REEL_SOURCE_KIND == 2
+ float4 yuv=float4(tex2D(u_image,uv).r,chroma(uv),1.0);
+ float3 rgb=clamp(float3(dot(u_video[0],yuv),dot(u_video[1],yuv),dot(u_video[2],yuv)),0.0,1.0);
+ float3 linear=linear_srgb(rgb);
+ if(u_video[3].x<0.5)linear=lerp(pow((rgb+0.099)/1.099,float3(1.0/0.45)),rgb/4.5,step(rgb,float3(0.081)));
+ float alpha=1.0;
+ if(u_appearance[4].w==3.0){float2 at=uv+float2(0.0,0.5);alpha=clamp(dot(u_video[0],float4(tex2D(u_image,at).r,chroma(at),1.0)),0.0,1.0);}
+ return float4(linear*alpha,alpha);
+#elif REEL_SOURCE_KIND == 1
+ float alpha=tex2D(u_image,uv).r;return float4(float3(alpha),alpha);
+#else
+ float4 color=tex2D(u_image,flip_uv(uv));
+ if(u_appearance[8].z==1.0)color.a=1.0;
+ if(u_appearance[8].z==2.0)color.rgb=min(color.rgb,float3(color.a));
+#if REEL_SOURCE_KIND == 3
+ float alpha=alpha_sample(uv+float2(0.0,u_appearance[8].y*0.5));color=float4(color.a>0.0?color.rgb/color.a*alpha:float3(0.0),alpha);
+#endif
+ return color;
+#endif
+}
+#if REEL_STYLE == 2
+float4 gradient(float2 position){
+ float t=dot(u_appearance[4].xyz,float3(position,1.0));
+ if(u_appearance[5].x==1.0)t=frac(t);else if(u_appearance[5].x==2.0)t=1.0-abs(t-2.0*floor(t*0.5)-1.0);else t=clamp(t,0.0,1.0);
+ float start=u_appearance[6].x,end=u_appearance[6].y;
+ float u=start==end?step(end,t):clamp((t-start)/(end-start),0.0,1.0);
+ float4 color=lerp(u_appearance[0],u_appearance[1],u);
+ if(color.a==0.0)color=float4(0.0);
+ else if(u_appearance[5].y!=0.0||u_appearance[5].z==0.0){
+  if(u_appearance[5].z!=0.0)color.rgb/=color.a;
+  if(u_appearance[5].y!=0.0)color.rgb=sign(color.rgb)*linear_srgb(abs(color.rgb));
+  color.rgb*=color.a;
+ }
+ return color;
+}
+#endif
+void main(){
+ reel_clip();
+ float4 color=source(source_uv())*v_color;
+ float2 position=fragment_position.xy;
+#if REEL_STYLE == 2
+ color*=gradient(position);
+#elif REEL_STYLE == 1
+ if(u_appearance[5].w!=0.0){float3 p=float3(position,1.0);float x=clamp(dot(u_appearance[4].xyz,p),0.0,1.0),y=clamp(dot(u_appearance[5].xyz,p),0.0,1.0);color*=lerp(lerp(u_appearance[0],u_appearance[1],x),lerp(u_appearance[3],u_appearance[2],x),y);}
+ if(u_appearance[7].w!=0.0&&color.a>0.0){float3 rgb=encoded_srgb(max(color.rgb/color.a,float3(0.0)));float gray=dot(rgb,float3(0.2126,0.7152,0.0722));rgb=float3(gray)+u_appearance[6].w*(rgb-float3(gray));rgb=clamp(rgb*u_appearance[6].xyz+u_appearance[7].xyz,0.0,1.0);color.rgb=linear_srgb(rgb)*color.a;}
+#endif
+ reel_output=color;
+}
+#endif

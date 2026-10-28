@@ -15,6 +15,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, Weak},
 };
+mod upload;
 
 pub(super) use crate::common::glyph_key::{Key, RunKey};
 pub(super) struct Page {
@@ -75,8 +76,21 @@ pub(super) struct Preparation<'a> {
     pub local: &'a Budgets,
     pub tickets: &'a mut Vec<Reservation>,
     pub images: &'a super::image_cache::ImageCache,
+    pub uploads: crate::common::glyph_upload::Batch<Arc<Glyph>>,
 }
 impl crate::common::glyph_plan::Prepare for Preparation<'_> {
+    fn finish(&mut self) -> Result<(), GpuError> {
+        upload::flush(
+            self.gpu,
+            self.encoder,
+            &mut self.uploads,
+            self.budgets,
+            self.local,
+            self.tickets,
+            self.images,
+            self.cache,
+        )
+    }
     fn reserve(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.tickets.push(reserve(
             &self.budgets.transient,
@@ -116,6 +130,7 @@ impl crate::common::glyph_plan::Prepare for Preparation<'_> {
                         self.local,
                         self.tickets,
                         self.images,
+                        &mut self.uploads,
                     )?,
                 };
                 GlyphCache::charge(
@@ -210,6 +225,7 @@ impl GlyphCache {
         local: &Budgets,
         tickets: &mut Vec<Reservation>,
         images: &super::image_cache::ImageCache,
+        uploads: &mut crate::common::glyph_upload::Batch<Arc<Glyph>>,
     ) -> Result<Arc<Glyph>, GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
         let source = ResourceSource::new(
@@ -325,76 +341,20 @@ impl GlyphCache {
             offset: [bitmap.x, bitmap.y],
             source,
         });
-        let Glyph::Image { page, origin, .. } = glyph.as_ref() else {
+        let Glyph::Image { origin, .. } = glyph.as_ref() else {
             unreachable!()
         };
-        // Upload the transparent border too: a recycled rectangle may contain old glyph pixels.
-        let row = (requested.width as u32).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let cost = u64::from(row) * requested.height as u64;
-        images.make_room(&budgets.resources, cost, gpu.limits.resource_bytes);
-        self.make_room(&budgets.resources, cost, gpu.limits.resource_bytes);
-        tickets.push(reserve(
-            &budgets.resources,
-            &local.resources,
-            cost,
-            gpu.limits.resource_bytes,
-            "glyph upload",
-        )?);
-        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("glyph atlas upload"),
-            size: cost,
-            usage: wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: true,
-        });
-        {
-            let mut mapping = staging
-                .slice(..)
-                .get_mapped_range_mut()
-                .map_err(|error| GpuError::Device(error.to_string()))?;
-            let mut bytes = mapping.slice(..);
-            bytes.fill(0);
-            bitmap.padded_rows(row as usize, |start, source| {
-                bytes
-                    .slice(start..start + source.len())
-                    .copy_from_slice(source)
-            });
+        let origin = [origin[0] - 1, origin[1] - 1];
+        if uploads.full(&bitmap) {
+            upload::flush(gpu, encoder, uploads, budgets, local, tickets, images, self)?;
         }
-        staging.unmap();
-        encoder.copy_buffer_to_texture(
-            wgpu::TexelCopyBufferInfo {
-                buffer: &staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row),
-                    rows_per_image: None,
-                },
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &page.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: origin[0] - 1,
-                    y: origin[1] - 1,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: requested.width as u32,
-                height: requested.height as u32,
-                depth_or_array_layers: 1,
-            },
-        );
-        #[cfg(test)]
-        {
-            gpu.upload_creations
-                .staging
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            gpu.upload_creations
-                .copies
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        uploads.push(
+            glyph.clone(),
+            origin,
+            bitmap,
+            &budgets.transient,
+            gpu.limits.transient_bytes,
+        )?;
         Ok(glyph)
     }
 }

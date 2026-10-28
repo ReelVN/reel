@@ -11,8 +11,8 @@ opus = ["dep:opus", "dep:symphonia", "reel-audio/ogg"]
 decode = ["reel-audio/wav", "reel-audio/pcm", "reel-audio/ogg", "reel-audio/vorbis", "reel-audio/flac", "reel-audio/mp3", "opus"]
 encode = ["decode", "dep:ogg", "dep:rubato"]
 video = []
-vita = ["video", "dep:h264-reader", "pvr-psp2-sys/video"]
-vita-output = ["pvr-psp2-sys/platform"]
+vita = ["video", "dep:h264-reader", "vita-native/video"]
+vita-output = ["vita-native/audio"]
 video-software = ["video", "dep:openh264", "dep:symphonia", "symphonia/aac", "dep:mp4", "dep:h264-reader"]
 
 [dependencies]
@@ -34,7 +34,7 @@ rubato = { version = "=5.0.1", default-features = false, optional = true }
 cpal = { version = "=0.18.2", default-features = false, features = ["realtime"], optional = true }
 
 [target.'cfg(target_os = "vita")'.dependencies]
-pvr-psp2-sys = { workspace = true, features = ["platform"] }
+vita-native = { workspace = true, features = ["app"] }
 
 [lints]
 workspace = true

@@ -616,7 +616,8 @@ impl VmRestore<'_> {
             RecordKind::Frame => {
                 let mut frame: Frame = record.read()?;
                 rebase_frame(&mut frame, &self.map, &self.vm.program)?;
-                self.constant_validation = validate_frame(&frame, &self.vm)?;
+                let parent = self.task_mut(record.key)?.frames.data.last().copied();
+                self.constant_validation = validate_frame(&frame, &self.vm, parent)?;
                 append(&mut self.task_mut(record.key)?.frames, record.offset, frame)?;
             }
             RecordKind::Unwind => {
@@ -822,7 +823,11 @@ fn rebase_frame(
     }
     Ok(())
 }
-fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, SnapshotError> {
+fn validate_frame(
+    frame: &Frame,
+    vm: &Vm,
+    parent: Option<Frame>,
+) -> Result<Option<ConstantValidation>, SnapshotError> {
     match frame {
         Frame::Script(frame) => {
             let code = vm
@@ -838,6 +843,67 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
                 || vm.heap.range_descriptor(frame.regs)?.len != code.register_count
             {
                 return Err(SnapshotError::Invalid("script frame code/registers".into()));
+            }
+            if let Some((bridge, module, _)) = frame.derived_bridge {
+                let output = vm.value(frame.env, 3)?;
+                let closure = vm.value(frame.env, 0)?;
+                if !vm.program.compact_derived(frame.code.function)
+                    || !vm.compact_output(output)?
+                    || vm.closure_function(closure)? != frame.code.function
+                    || !vm.heap.derived_closure(output)?.same_bits(closure)
+                    || module.0 as usize >= vm.program.package().modules.len()
+                    || bridge.0 >= frame.id.0
+                    || frame.argument_count != 0
+                {
+                    return Err(SnapshotError::Invalid("compact derived frame".into()));
+                }
+                let registered = vm
+                    .heap
+                    .host_payload(output, crate::heap::DerivedSlot::Function as u32)?
+                    .as_int()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .and_then(|id| vm.program.package().functions.get(id as usize));
+                let origin = vm
+                    .heap
+                    .host_payload(output, crate::heap::DerivedSlot::Origin as u32)?
+                    .as_int()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .and_then(|id| vm.program.package().functions.get(id as usize));
+                let pc = vm
+                    .heap
+                    .host_payload(output, crate::heap::DerivedSlot::CallPc as u32)?
+                    .as_int()
+                    .and_then(|n| u32::try_from(n).ok());
+                let standard = registered.is_some_and(|function| {
+                    let FunctionKind::Native(native) = function.kind else {
+                        return false;
+                    };
+                    let signature = &vm.program.package().signatures[function.signature.index()];
+                    signature.parameters.len() == 1
+                        && signature.rest.is_none()
+                        && !vm.native_parameters.data[native.index()].needs_cells
+                });
+                let arguments = vm
+                    .heap
+                    .host_payload(output, crate::heap::DerivedSlot::Arguments as u32)?;
+                if !standard
+                    || vm.heap.sequence_len(arguments)? != 1
+                    || !vm.heap.sequence_get(arguments, 0)?.same_bits(closure)
+                    || !origin
+                        .zip(pc)
+                        .is_some_and(|(f, pc)| f.code.is_boundary(pc as usize))
+                    || !frame.context.derived
+                    || !frame.context.no_wait
+                    || vm.heap.range_descriptor(frame.env)?.len != 4
+                    // A rejected callback response can have admitted one window.
+                    // Until materialization completes, root 1 owns the argument.
+                    || !matches!(vm.heap.range_descriptor(frame.args)?.len, 0 | 2)
+                    || !matches!(vm.heap.range_descriptor(frame.bound)?.len, 0 | 1)
+                {
+                    return Err(SnapshotError::Invalid("compact derived bridge".into()));
+                }
+            } else if matches!(frame.phase, ScriptPhase::CompactBegin) {
+                return Err(SnapshotError::Invalid("compact derived entry".into()));
             }
             generators::validate_generator_frame(vm, *frame)?;
             match frame.phase {
@@ -885,6 +951,82 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
                 || frame.continuation_len > vm.limits.max_continuation_values
             {
                 return Err(SnapshotError::Invalid("native continuation schema".into()));
+            }
+            if frame.inline_argument {
+                let signature = &vm.program.package().signatures[frame.signature.index()];
+                if frame.argument_plan.is_some()
+                    || frame.argument_count != 1
+                    || frame.receiver
+                    || frame.bindings.is_some()
+                    || signature.parameters.len() != 1
+                    || signature.rest.is_some()
+                    // A rejected callback response can have admitted one window.
+                    // Until materialization completes, root 1 owns the argument.
+                    || !matches!(vm.heap.range_descriptor(frame.args)?.len, 0 | 2)
+                    || !matches!(vm.heap.range_descriptor(frame.bound)?.len, 0 | 1)
+                {
+                    return Err(SnapshotError::Invalid(
+                        "inline native argument schema".into(),
+                    ));
+                }
+                let output = frame
+                    .derived_output
+                    .ok_or_else(|| SnapshotError::Invalid("inline native observer".into()))?;
+                if !vm.compact_output(output)?
+                    || !vm
+                        .value(frame.roots, 1)?
+                        .same_bits(vm.heap.derived_closure(output)?)
+                {
+                    return Err(SnapshotError::Invalid(
+                        "inline native argument value".into(),
+                    ));
+                }
+            }
+            if let Some(plan) = frame.argument_plan {
+                let positions = vm
+                    .program
+                    .native_call_slots(plan)
+                    .ok_or_else(|| SnapshotError::Invalid("native argument plan".into()))?;
+                let (function, descriptor, native) = vm.program.native_call_identity(plan).unwrap();
+                if native != frame.native {
+                    return Err(SnapshotError::Invalid("native argument plan callee".into()));
+                }
+                if let NativePhase::PlannedCopy { source, .. }
+                | NativePhase::PlannedCheck { source } = frame.phase
+                {
+                    let ArgSource::Caller {
+                        frame: caller,
+                        descriptor: actual,
+                    } = source
+                    else {
+                        return Err(SnapshotError::Invalid("native argument plan source".into()));
+                    };
+                    let Some(Frame::Script(parent)) = parent.filter(|f| f.id() == caller) else {
+                        return Err(SnapshotError::Invalid("native argument plan caller".into()));
+                    };
+                    if parent.code.function != function || actual != descriptor {
+                        return Err(SnapshotError::Invalid(
+                            "native argument plan callsite".into(),
+                        ));
+                    }
+                }
+                if positions.len() != frame.argument_count as usize
+                    || frame.receiver
+                    || frame.bindings.is_some()
+                    || vm.heap.range_descriptor(frame.args)?.len != 0
+                {
+                    return Err(SnapshotError::Invalid("native argument plan schema".into()));
+                }
+            }
+            if matches!(frame.phase, NativePhase::PlannedCheck { .. })
+                && frame.argument_plan.is_none()
+            {
+                return Err(SnapshotError::Invalid("native argument plan entry".into()));
+            }
+            if let NativePhase::PlannedCopy { index, .. } = frame.phase
+                && (frame.argument_plan.is_none() || index > frame.argument_count)
+            {
+                return Err(SnapshotError::Invalid("native argument plan cursor".into()));
             }
             let len = vm.heap.range_descriptor(frame.roots)?.len;
             let mut required = 3.max(2 + frame.continuation_len);

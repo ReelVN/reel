@@ -1,4 +1,6 @@
 //! Worker-owned video decoding and bounded playback using portable frames.
+#[cfg(any(test, all(feature = "vita", target_os = "vita")))]
+mod pcm_pool;
 mod playback;
 pub use playback::*;
 #[cfg(any(feature = "video-software", all(feature = "vita", target_os = "vita")))]
@@ -6,7 +8,7 @@ mod h264;
 #[cfg(feature = "video-software")]
 mod software;
 pub use crate::decode::MediaRead;
-use reel_core::budget::BudgetPool;
+use reel_core::budget::{BudgetPool, BudgetTicket};
 #[cfg(feature = "video-software")]
 pub use software::{MovieDecoder, SoftwareVideoDecoderFactory};
 #[cfg(all(feature = "vita", target_os = "vita"))]
@@ -22,6 +24,10 @@ pub use reel_core::image::{Yuv420Layout, YuvColor, YuvMatrix, YuvTransfer};
 /// Owned top-down 8-bit YUV 4:2:0; no decoder-owned pointers escape.
 #[derive(Debug)]
 pub struct VideoFrame {
+    /// Optional immutable owned storage. When present, it owns its budget and
+    /// supplies the planes; the vector slots are empty. Native handles remain
+    /// behind the portable YUV storage interface.
+    pub storage: Option<Arc<dyn reel_core::image::Yuv420Storage>>,
     pub pts: f64,
     pub duration: f64,
     pub width: u32,
@@ -71,6 +77,14 @@ pub struct VideoInfo {
 pub trait VideoDecoder {
     /// Source picture dimensions, duration and optional PCM sample rate.
     fn info(&self) -> &VideoInfo;
+    /// Picture vector capacity the playback worker must reserve before polling.
+    /// Adapters whose returned immutable storage carries its own complete ticket
+    /// return zero; their allocations remain charged by the adapter's pool.
+    fn video_output_bytes(&self) -> u64 {
+        let info = self.info();
+        u64::from(info.width) * u64::from(info.height)
+            + 2 * u64::from(info.width.div_ceil(2)) * u64::from(info.height.div_ceil(2))
+    }
     /// Whether no further audio packets remain, including delayed codec output.
     fn audio_finished(&self) -> bool;
     /// Limit decoded output to an exclusive source-time endpoint in seconds.
@@ -89,13 +103,19 @@ pub trait VideoDecoder {
     /// no packet ready; Ready(None) means all tracks have ended. The worker owns
     /// readiness waits. Codec work observes the factory's shared stop flag.
     fn poll_packet(&mut self, demand: DecodeDemand) -> Result<Poll<Option<DecodedPacket>>, String>;
+    /// Return a PCM packet after its initialized samples have entered the bounded
+    /// sample queue. Called only on the decode worker; the ticket charges the
+    /// vector capacity until a pooling decoder reuses or releases that storage.
+    /// Decoders without retained output storage release both arguments here.
+    fn recycle_audio(&mut self, _packet: AudioFrames, _storage: BudgetTicket) {}
     /// Seek on the source timeline, retaining picture preroll and trimming PCM
     /// before the requested position. No previous packet storage is mutated.
     fn seek(&mut self, seconds: f64) -> Result<(), String>;
 }
 
-/// Opens a decoder on the playback worker. The worker separately charges returned
-/// picture storage and PCM queues; adapters charge additional owned buffers to
+/// Opens a decoder on the playback worker. The worker charges returned vector
+/// picture storage and PCM queues; optional owned picture storage and adapter
+/// buffers carry their own reservations from
 /// the supplied pool. The shared stop flag covers initialization, decode and waits.
 pub trait VideoDecoderFactory: std::fmt::Debug + Send + Sync {
     /// Own the seekable resource stream until the decoder has fenced its native

@@ -1,6 +1,5 @@
 //! Portable, linear-premultiplied texture storage and its offline file envelope.
-//! BC payloads contain standard little-endian blocks in row-major order. Native
-//! device layouts belong to platform adapters, never to this shared format.
+//! BC payloads carry an explicit block layout selected by offline target preparation.
 use crate::budget::OwnedBytes;
 /// Original source-channel transfer function, retained for numeric coverage.
 /// Prepared texture storage itself is always linear premultiplied.
@@ -82,6 +81,40 @@ impl TextureFormat {
         }
     }
 }
+/// Physical ordering of the payload's storage blocks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TextureStorageLayout {
+    /// Standard row-major pixels or BC blocks.
+    #[default]
+    Linear,
+    /// GXM BC blocks with y in the low Morton bit; rectangular axes interleave
+    /// until the shorter axis is exhausted, then append the longer axis bits.
+    GxmBcMorton,
+}
+impl TextureStorageLayout {
+    /// Byte offset of a validated base-level compressed block.
+    pub fn block_offset(self, size: [u32; 2], block_bytes: usize, x: u32, y: u32) -> usize {
+        let [width, height] = size.map(|n| n.div_ceil(4));
+        let index = match self {
+            Self::Linear => y as usize * width as usize + x as usize,
+            Self::GxmBcMorton => {
+                let (mut address, mut bit) = (0usize, 0);
+                for axis in 0..width.ilog2().max(height.ilog2()) {
+                    if axis < height.ilog2() {
+                        address |= (((y >> axis) & 1) as usize) << bit;
+                        bit += 1;
+                    }
+                    if axis < width.ilog2() {
+                        address |= (((x >> axis) & 1) as usize) << bit;
+                        bit += 1;
+                    }
+                }
+                address
+            }
+        };
+        index * block_bytes
+    }
+}
 /// Author coordinates, visible texels and allocated texels are independent.
 /// Visible content starts at zero; any padding extends its right/bottom edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -114,6 +147,10 @@ impl TextureLayout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Format, coordinate mapping and source transfer metadata for prepared storage.
 pub struct TextureDescriptor {
+    /// Explicit storage order, shared by each mip level.
+    pub storage_layout: TextureStorageLayout,
+    /// Number of packed mip levels, beginning at the base storage extent.
+    pub mip_count: u32,
     /// Native sample storage; all prepared color channels are linear premultiplied.
     pub format: TextureFormat,
     /// Author coordinates and visible/allocated texture extents.
@@ -141,6 +178,25 @@ impl TextureDescriptor {
     /// Validate dimensions and return the exact unwrapped byte extent.
     pub fn byte_len(self) -> Result<u64, TextureError> {
         let l = self.layout;
+        if self.mip_count == 0
+            || self.mip_count
+                > 32 - l
+                    .storage_size
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0)
+                    .leading_zeros()
+        {
+            return Err(TextureError::Dimensions);
+        }
+        if self.storage_layout == TextureStorageLayout::GxmBcMorton
+            && (!self.format.is_compressed()
+                || l.storage_size
+                    .iter()
+                    .any(|&n| n < 4 || !n.is_power_of_two()))
+        {
+            return Err(TextureError::Dimensions);
+        }
         if l.logical_size.contains(&0)
             || l.content_size.contains(&0)
             || l.storage_size.contains(&0)
@@ -151,10 +207,28 @@ impl TextureDescriptor {
         {
             return Err(TextureError::Dimensions);
         }
-        self.format
-            .byte_len(l.storage_size)
-            .filter(|&n| n <= isize::MAX as u64)
+        (0..self.mip_count)
+            .try_fold(0u64, |total, level| {
+                total
+                    .checked_add(self.format.byte_len(self.mip_size(level))?)
+                    .filter(|&n| n <= isize::MAX as u64)
+            })
             .ok_or(TextureError::Length)
+    }
+    /// Stored texel extent at a level; each axis halves with a minimum of one.
+    pub fn mip_size(self, level: u32) -> [u32; 2] {
+        self.layout
+            .storage_size
+            .map(|axis| axis.checked_shr(level).unwrap_or(0).max(1))
+    }
+    /// Packed byte offset of a level in the validated contiguous payload.
+    pub fn mip_offset(self, level: u32) -> Option<u64> {
+        if level >= self.mip_count {
+            return None;
+        }
+        (0..level).try_fold(0u64, |sum, i| {
+            sum.checked_add(self.format.byte_len(self.mip_size(i))?)
+        })
     }
     /// Validate actual bytes at the resource boundary without decoding pixels.
     pub fn validate(self, bytes: usize) -> Result<(), TextureError> {
@@ -188,7 +262,8 @@ impl TexturePayload {
 pub enum TextureCodec {
     /// The file stores the descriptor's exact packed pixel/block extent.
     Raw,
-    /// bc-crunch range coding; only BC1 and BC3 descriptors accept this codec.
+    /// bc-crunch range coding; accepts one linear BC1/BC3 level.
+    /// Mip chains use Raw storage and the enclosing archive compression.
     BcCrunch,
 }
 /// REELTEX1: fixed little-endian metadata followed by exactly payload_len bytes.
@@ -201,7 +276,7 @@ pub struct TextureHeader {
 }
 impl TextureHeader {
     /// Encoded v1 header extent in bytes.
-    pub const LEN: usize = 60;
+    pub const LEN: usize = 68;
     /// Identifies the portable prepared-texture file envelope.
     pub const MAGIC: &'static [u8; 8] = b"REELTEX1";
     /// Validate a descriptor and its on-disk payload extent before serialization.
@@ -220,7 +295,11 @@ impl TextureHeader {
         }
         match codec {
             TextureCodec::Raw if payload_len != decoded => return Err(TextureError::Length),
-            TextureCodec::BcCrunch if !descriptor.format.is_compressed() => {
+            TextureCodec::BcCrunch
+                if !descriptor.format.is_compressed()
+                    || descriptor.mip_count != 1
+                    || descriptor.storage_layout != TextureStorageLayout::Linear =>
+            {
                 return Err(TextureError::Codec);
             }
             _ => {}
@@ -274,7 +353,13 @@ impl TextureHeader {
                 .expect("validated descriptor")
                 .to_le_bytes(),
         );
-        out[52..].copy_from_slice(&self.payload_len.to_le_bytes());
+        out[52..60].copy_from_slice(&self.payload_len.to_le_bytes());
+        let layout: u32 = match self.descriptor.storage_layout {
+            TextureStorageLayout::Linear => 0,
+            TextureStorageLayout::GxmBcMorton => 1,
+        };
+        out[60..64].copy_from_slice(&layout.to_le_bytes());
+        out[64..68].copy_from_slice(&self.descriptor.mip_count.to_le_bytes());
         out
     }
     /// Parse exactly one header, including format, codec and allocation limits.
@@ -284,6 +369,12 @@ impl TextureHeader {
         }
         let word = |at| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
         let descriptor = TextureDescriptor {
+            storage_layout: match word(60) {
+                0 => TextureStorageLayout::Linear,
+                1 => TextureStorageLayout::GxmBcMorton,
+                _ => return Err(TextureError::Format),
+            },
+            mip_count: word(64),
             format: TextureFormat::from_code(word(8))?,
             source_encoding: match word(16) {
                 0 => ColorEncoding::Srgb,
@@ -324,8 +415,77 @@ impl TextureHeader {
 mod tests {
     use super::*;
     #[test]
+    fn morton_order_is_explicit_validated_and_rectangular() {
+        let layout = TextureStorageLayout::GxmBcMorton;
+        assert_eq!(
+            (0..4)
+                .map(|x| layout.block_offset([16, 8], 8, x, 0))
+                .collect::<Vec<_>>(),
+            [0, 16, 32, 48]
+        );
+        assert_eq!(
+            (0..4)
+                .map(|x| layout.block_offset([16, 8], 8, x, 1))
+                .collect::<Vec<_>>(),
+            [8, 24, 40, 56]
+        );
+        let mut d = TextureDescriptor {
+            format: TextureFormat::Bc1Rgb,
+            storage_layout: layout,
+            mip_count: 1,
+            source_encoding: ColorEncoding::Linear,
+            layout: TextureLayout::identity([16, 8]),
+        };
+        let h = TextureHeader::new(d, TextureCodec::Raw, 64).unwrap();
+        assert_eq!(TextureHeader::decode(&h.encode()), Ok(h));
+        assert_eq!(
+            TextureHeader::new(d, TextureCodec::BcCrunch, 10),
+            Err(TextureError::Codec)
+        );
+        d.layout.storage_size = [12, 8];
+        assert_eq!(d.byte_len(), Err(TextureError::Dimensions));
+        let mut bytes = h.encode();
+        bytes[60] = 2;
+        assert_eq!(TextureHeader::decode(&bytes), Err(TextureError::Format));
+    }
+
+    #[test]
+    #[ignore = "CPU measurement; run in release mode"]
+    fn morton_upload_measurement() {
+        let size = [1024, 1024];
+        let bytes = 1024 * 1024;
+        let source = vec![19u8; bytes];
+        let mut dest = vec![0u8; bytes];
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            for y in 0..256 {
+                for x in 0..256 {
+                    let from = (y as usize * 256 + x as usize) * 16;
+                    let to = TextureStorageLayout::GxmBcMorton.block_offset(size, 16, x, y);
+                    dest[to..to + 16].copy_from_slice(&source[from..from + 16]);
+                }
+            }
+            std::hint::black_box(&dest);
+        }
+        let reorder = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            dest.copy_from_slice(std::hint::black_box(&source));
+            std::hint::black_box(&dest);
+        }
+        eprintln!(
+            "100 x 1MiB CPU upload: runtime Morton {:?}, offline direct copy {:?}; source+destination 2MiB in both",
+            reorder,
+            start.elapsed()
+        );
+        assert_eq!(source, dest);
+    }
+
+    #[test]
     fn prepared_block_layout_and_file_envelope_use_exact_extents() {
         let d = TextureDescriptor {
+            storage_layout: crate::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format: TextureFormat::Bc3Rgba,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout {
@@ -346,5 +506,44 @@ mod tests {
         assert_eq!(TextureHeader::parse(&file), Err(TextureError::Length));
         file.resize(TextureHeader::LEN + (1 << 20), 0);
         assert_eq!(TextureHeader::parse(&file).unwrap().1.len(), 1 << 20);
+    }
+}
+
+#[cfg(test)]
+mod mip_tests {
+    use super::*;
+    #[test]
+    fn packed_chain_offsets_and_envelope_validate_every_level() {
+        for (size, format, count, expected) in [
+            ([7, 3], TextureFormat::Rgba8, 3, 100),
+            ([16, 8], TextureFormat::Bc3Rgba, 5, 208),
+            ([8, 16], TextureFormat::Bc1Rgb, 5, 104),
+        ] {
+            let d = TextureDescriptor {
+                storage_layout: Default::default(),
+                mip_count: count,
+                format,
+                layout: TextureLayout::identity(size),
+                source_encoding: ColorEncoding::Linear,
+            };
+            assert_eq!(d.byte_len().unwrap(), expected);
+            let h = TextureHeader::new(d, TextureCodec::Raw, expected).unwrap();
+            assert_eq!(TextureHeader::decode(&h.encode()).unwrap().descriptor(), d);
+            let mut offset = 0;
+            for level in 0..count {
+                assert_eq!(d.mip_offset(level), Some(offset));
+                offset += format.byte_len(d.mip_size(level)).unwrap();
+            }
+            assert_eq!(offset, expected);
+            assert!(d.validate(expected as usize - 1).is_err());
+            assert!(
+                TextureDescriptor {
+                    mip_count: count + 1,
+                    ..d
+                }
+                .byte_len()
+                .is_err()
+            );
+        }
     }
 }

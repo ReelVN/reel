@@ -1,0 +1,78 @@
+// Native GXM counterpart of the shared renderer algorithm.
+// Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
+varying float4 fragment_position : WPOS;
+varying out float4 reel_output : COLOR;
+uniform float4 reel_clip_rect;
+void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
+float reel_mod(float x,float y){return x-y*floor(x/y);}
+uniform sampler2D u_image : TEXUNIT0;
+uniform float4 u_texels,u_uv0,u_uv1,u_values,u_flags,u_coordinates;
+uniform float2 u_dimensions,u_output_size,u_sample_flags;
+#ifdef REEL_MASK_COMPOSITE
+varying float2 v_source_uv : TEXCOORD0;
+uniform sampler2D u_source : TEXUNIT1;
+uniform float4 u_params;
+#endif
+#ifndef REEL_MASK_THRESHOLD
+uniform float4 u_step0,u_step1,u_step2,u_step3,u_step4,u_step5,u_step6,u_step7;
+float chain_step(float value,float4 operation){
+ if(operation.x==0.0)return value;
+ if(operation.x==1.0)return value+operation.y;
+ if(operation.x==2.0)return value-operation.y;
+ if(operation.x==3.0)return operation.y-value;
+ if(operation.x==4.0)return value*operation.y;
+ if(operation.x==5.0)return clamp(value,operation.y,operation.z);
+ return value;
+}
+#endif
+float3 encoded(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
+float mask_coverage(){
+ float3 position=float3(fragment_position.xy,1.0);
+ float2 uv=float2(dot(u_uv0.xyz,position),dot(u_uv1.xyz,position));
+ if(any((uv<float2(0.0)))||any((uv>float2(1.0))))return 0.0;
+#ifdef REEL_MASK_THRESHOLD
+ if(u_values.x<=0.0)return 0.0;
+ if(u_values.x>=1.0)return 1.0;
+#endif
+ float2 at=uv*u_coordinates.zw+u_coordinates.xy;
+ if(reel_mod(u_sample_flags.y,2.0)>0.5)at.x=frac(at.x);
+ if(u_sample_flags.y>1.5)at.y=frac(at.y);
+ float2 half_texel=0.5/u_dimensions;
+ at=clamp(at*u_texels.xy,half_texel,u_texels.xy-half_texel);
+ float4 color=tex2D(u_image,at);
+ if(u_texels.w==1.0)color.a=1.0;
+ if(u_texels.w==2.0)color.rgb=min(color.rgb,float3(color.a));
+ float value=color.a;
+#ifndef REEL_MASK_THRESHOLD
+ if(u_sample_flags.x>0.5){
+#endif
+  float3 rgb=color.a>0.0?clamp(color.rgb/color.a,0.0,1.0):float3(0.0);
+  if(u_texels.z==0.0)rgb=encoded(rgb);
+  value=dot(rgb,float3(0.2126,0.7152,0.0722));
+#ifndef REEL_MASK_THRESHOLD
+ }
+ value=chain_step(value,u_step0);
+ value=chain_step(value,u_step1);
+ value=chain_step(value,u_step2);
+ value=chain_step(value,u_step3);
+ value=chain_step(value,u_step4);
+ value=chain_step(value,u_step5);
+ value=chain_step(value,u_step6);
+ value=chain_step(value,u_step7);
+#else
+ if(u_flags.x!=0.0)value=1.0-value;
+ float threshold=step(value,u_values.x);
+ if(u_values.y>0.0)threshold=clamp((u_values.x*(1.0+u_values.y)-value)/u_values.y,0.0,1.0);
+ value=color.a*threshold;
+#endif
+ return clamp(value,0.0,1.0);
+}
+void main(){
+ reel_clip();
+#ifdef REEL_MASK_COMPOSITE
+ // Keep coverage in highp until the final linear-premultiplied blend, as on WGPU.
+ reel_output=tex2D(u_source,v_source_uv)*(u_params.x*mask_coverage());
+#else
+ reel_output=float4(mask_coverage());
+#endif
+}

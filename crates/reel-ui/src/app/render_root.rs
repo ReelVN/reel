@@ -247,6 +247,13 @@ pub struct RenderRootOptions {
 
 /// Objects emitted by the [`RenderRoot`] to signal that something has changed or require external actions.
 #[derive(Debug)]
+#[cfg_attr(
+    target_pointer_width = "64",
+    expect(
+        clippy::large_enum_variant,
+        reason = "NewLayer transfers the widget and its construction state"
+    )
+)]
 pub enum RenderRootSignal {
     /// A widget has emitted an action.
     Action(ErasedAction, WidgetId),

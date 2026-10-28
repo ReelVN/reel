@@ -14,6 +14,9 @@ use reel_ui::{
 
 struct NoGlyphs;
 impl crate::common::glyph_plan::Prepare for NoGlyphs {
+    fn finish(&mut self) -> Result<(), GpuError> {
+        Ok(())
+    }
     fn reserve(&mut self, _: u64) -> Result<(), GpuError> {
         Ok(())
     }
@@ -59,11 +62,10 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
     )
     .unwrap();
     let fragment =
-        crate::effect::compile_fragment(&program, crate::effect::Language::GlslEs100, 16384)
-            .unwrap();
+        crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 16384).unwrap();
     let descriptor = EffectShaderDescriptor::with_textures(
         [4; 32],
-        EffectShaderFormat::GlslEs100,
+        EffectShaderFormat::Wgsl,
         vec![],
         0,
         true,
@@ -154,7 +156,12 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                     )
                     .unwrap();
                     let expected = if transform == Affine::IDENTITY {
-                        160 * 120 * if opacity == 1. { 3 } else { depth + 2 }
+                        160 * 120
+                            * if opacity == 1. {
+                                if depth == 1 { 2 } else { 3 }
+                            } else {
+                                depth + 1
+                            }
                     } else {
                         let [a, b, c, d, _, _] = transform.as_coeffs();
                         let local =
@@ -164,9 +171,9 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                         } else if opacity == 1. {
                             2
                         } else {
-                            depth + 1
+                            depth
                         };
-                        2 * 160 * 120 + count * local
+                        160 * 120 + count * local
                     };
                     assert_eq!(
                         pixels, expected,
@@ -199,11 +206,10 @@ fn scalar_masks_keep_two_local_sources_and_project_plain_groups_into_the_parent(
     )
     .unwrap();
     let fragment =
-        crate::effect::compile_fragment(&program, crate::effect::Language::GlslEs100, 16384)
-            .unwrap();
+        crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 16384).unwrap();
     let descriptor = EffectShaderDescriptor::with_textures(
         [3; 32],
-        EffectShaderFormat::GlslEs100,
+        EffectShaderFormat::Wgsl,
         vec![],
         0,
         true,

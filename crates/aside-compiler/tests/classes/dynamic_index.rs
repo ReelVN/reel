@@ -451,7 +451,7 @@ fn model_indices_share_bind_locations_and_replace_derived_dependencies() {
                     if ticket.native == bc::NativeId(0) {
                         vm.respond_model(ticket, 1).unwrap();
                     } else {
-                        *evaluations += usize::from(ticket.input == NativeInput::Entry);
+                        *evaluations += usize::from(ticket.input == NativeInput::CallbackReturned);
                         vm.respond_derive(ticket).unwrap();
                     }
                 }

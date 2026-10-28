@@ -296,6 +296,7 @@ impl SceneWidget {
             } else {
                 None
             },
+            particle_sampler: Default::default(),
             particle_image: matches!(view.node.kind, NodeKind::Particles(_))
                 .then(|| view.images.image_resource.clone())
                 .flatten(),

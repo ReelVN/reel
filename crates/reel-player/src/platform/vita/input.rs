@@ -1,6 +1,5 @@
 //! Controller actions and stable touch identities on the common input path.
-use super::{Error, GlesBackend, Player};
-use pvr_psp2_sys::platform::input as native;
+use super::{Error, GxmBackend, Player};
 use reel_core::clock::MonoTime;
 use reel_ui::{
     core::*,
@@ -8,6 +7,7 @@ use reel_ui::{
     input::{self, Control, GamepadAxis, GamepadButton, InputDeviceId, InputEvent},
 };
 use std::time::Duration;
+use vita_native::app::input as native;
 
 #[derive(Default)]
 pub(super) struct Input {
@@ -60,7 +60,7 @@ impl Input {
         control: Control,
         value: f32,
         now: MonoTime,
-        player: &mut Player<&mut GlesBackend>,
+        player: &mut Player<&mut GxmBackend>,
     ) -> Result<(), Error> {
         let event = InputEvent::Value {
             device: InputDeviceId::Gamepad(1),
@@ -84,7 +84,7 @@ impl Input {
         }
         Ok(())
     }
-    pub fn cancel(&mut self, player: &mut Player<&mut GlesBackend>) -> Result<(), Error> {
+    pub fn cancel(&mut self, player: &mut Player<&mut GxmBackend>) -> Result<(), Error> {
         self.blocked_buttons = self.last.buttons;
         for (blocked, axis) in self.blocked_axes.iter_mut().zip(self.last.axes) {
             *blocked = axis.abs() > 0.2;
@@ -107,7 +107,7 @@ impl Input {
         sample: native::Sample,
         now: MonoTime,
         size: [u32; 2],
-        player: &mut Player<&mut GlesBackend>,
+        player: &mut Player<&mut GxmBackend>,
     ) -> Result<(), Error> {
         if !self.connected {
             player.text_event(TextEvent::Input(InputEvent::Connected {
