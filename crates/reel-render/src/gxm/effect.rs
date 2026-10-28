@@ -481,6 +481,7 @@ impl Context<'_> {
             size: self.size,
             program: &compiled.program,
             vertices: mesh.map_or(&self.programs.vertices, |mesh| &mesh.vertices),
+            instances: None,
             indices: Some(mesh.map_or(&self.programs.indices, |mesh| &mesh.indices)),
             range: 0..if padded { index_count } else { 6 },
             textures: &images,

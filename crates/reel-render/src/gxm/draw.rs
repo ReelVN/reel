@@ -1209,6 +1209,7 @@ impl Context<'_> {
                     size: self.size,
                     program: &shader.program,
                     vertices,
+                    instances: None,
                     indices: Some(indices),
                     range: entry.range,
                     textures: &[

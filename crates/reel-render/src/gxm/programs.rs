@@ -301,6 +301,7 @@ impl Programs {
             size,
             program: &shader.program,
             vertices: &self.vertices,
+            instances: None,
             indices: Some(&self.indices),
             range: 0..6,
             textures,

@@ -110,6 +110,7 @@ fn create_program(
         bindings,
         stride: 12,
         attributes,
+        instance: None,
         clip_uniform: clipped.then_some("reel_clip_rect"),
         output: native::FragmentOutput::Patched,
     })
