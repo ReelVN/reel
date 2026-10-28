@@ -11,7 +11,7 @@ use reel_core::budget::{
     BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, OwnedBytes, QueueLimits,
 };
 pub use reel_core::identity::ResourceVersion;
-use reel_core::texture::{TextureDescriptor, TexturePayload};
+use reel_core::texture::{ImageView, TextureDescriptor, TexturePayload};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
@@ -42,6 +42,12 @@ pub enum ResourceData {
         image: ImageData,
         encoding: ColorEncoding,
     },
+    /// A logical image view retaining one separately identified physical texture.
+    AtlasView {
+        image: ImageView,
+        encoding: ColorEncoding,
+        backing: ResourceLease,
+    },
     Yuv420(reel_core::image::Yuv420Image),
     Font(Blob<u8>),
     External {
@@ -55,7 +61,7 @@ impl ResourceData {
             Self::Texture { bytes, .. } => Some(bytes),
             Self::Image { image, .. } => Some(&image.data),
             Self::Font(font) => Some(font),
-            Self::External { .. } | Self::Yuv420(_) => None,
+            Self::External { .. } | Self::Yuv420(_) | Self::AtlasView { .. } => None,
         }
     }
     fn same_source(&self, other: &Self) -> bool {
@@ -90,6 +96,18 @@ impl ResourceData {
                     encoding: be,
                 },
             ) => ae == be && same_image(a, b),
+            (
+                Self::AtlasView {
+                    image: a,
+                    encoding: ae,
+                    backing: ab,
+                },
+                Self::AtlasView {
+                    image: b,
+                    encoding: be,
+                    backing: bb,
+                },
+            ) => a == b && ae == be && ab.handle() == bb.handle(),
             (Self::Font(a), Self::Font(b)) => same_blob(a, b),
             (Self::Yuv420(a), Self::Yuv420(b)) => a.same_storage(b),
             (Self::External { token: a }, Self::External { token: b }) => a == b,
@@ -107,6 +125,7 @@ impl ResourceData {
             Self::Texture { descriptor, .. } => Some(descriptor.layout.logical_size),
             Self::Image { image, .. } => Some([image.width, image.height]),
             Self::Yuv420(image) => Some(image.size()),
+            Self::AtlasView { image, .. } => Some(image.logical_size),
             _ => None,
         }
     }
@@ -257,6 +276,15 @@ pub enum ResourceView<'a> {
         /// Decoded size, channel and color information.
         image: ImageDescriptor,
     },
+    /// Logical coordinates and encoding of a separately retained physical page.
+    AtlasView {
+        /// The logical image's extent and page-local texel rectangle.
+        image: ImageView,
+        /// Original encoding of the image channels.
+        encoding: ColorEncoding,
+        /// Physical texture, shared with other page views.
+        backing: &'a ResourceLease,
+    },
     /// Producer-owned planar video pixels.
     Yuv420(&'a reel_core::image::Yuv420Image),
     /// Immutable font bytes.
@@ -292,6 +320,15 @@ impl ResourceLease {
                 ResourceView::EffectShader { descriptor, bytes }
             }
             StoredResource::Other(ResourceData::Yuv420(image)) => ResourceView::Yuv420(image),
+            StoredResource::Other(ResourceData::AtlasView {
+                image,
+                encoding,
+                backing,
+            }) => ResourceView::AtlasView {
+                image: *image,
+                encoding: *encoding,
+                backing,
+            },
             StoredResource::Other(ResourceData::Font(font)) => ResourceView::Font(font),
             StoredResource::Other(ResourceData::External { token }) => {
                 ResourceView::External { token: *token }
@@ -312,6 +349,9 @@ impl ResourceLease {
     pub fn texture_descriptor(&self) -> Option<TextureDescriptor> {
         match self.0.data {
             StoredResource::Texture(descriptor) => Some(descriptor),
+            StoredResource::Other(ResourceData::AtlasView { ref backing, .. }) => {
+                backing.texture_descriptor()
+            }
             _ => None,
         }
     }
@@ -321,6 +361,22 @@ impl ResourceLease {
             ResourceView::Image { image } => Some([image.width, image.height]),
             ResourceView::Texture { descriptor } => Some(descriptor.layout.logical_size),
             ResourceView::Yuv420(image) => Some(image.size()),
+            ResourceView::AtlasView { image, .. } => Some(image.logical_size),
+            _ => None,
+        }
+    }
+    /// Physical image whose pixel ownership is shared by this logical view.
+    pub fn image_backing(&self) -> &ResourceLease {
+        match self.view() {
+            ResourceView::AtlasView { backing, .. } => backing,
+            _ => self,
+        }
+    }
+    /// Logical-to-physical texture mapping for a prepared texture or atlas view.
+    pub fn image_view(&self) -> Option<ImageView> {
+        match self.view() {
+            ResourceView::AtlasView { image, .. } => Some(image),
+            ResourceView::Texture { descriptor } => Some(ImageView::from_layout(descriptor.layout)),
             _ => None,
         }
     }
@@ -360,6 +416,7 @@ impl ResourceLease {
                 (1, (u64::from(width) << 32) | u64::from(height))
             }
             ResourceView::External { token } => (2, token),
+            ResourceView::AtlasView { backing, .. } => (3, backing.source_blob_id().unwrap_or(0)),
             _ => (0, self.source_blob_id().expect("blob-backed resource")),
         }
     }
@@ -647,6 +704,34 @@ impl ResourceRegistry {
         let (descriptor, bytes) = payload.into_parts();
         let bytes = self.owned_blob(bytes)?;
         self.register_inner(version, ResourceData::Texture { descriptor, bytes }, None)
+    }
+    /// Register a logical atlas view that retains its exact physical texture lease.
+    /// The page and view remain independently identified and budgeted.
+    pub fn register_atlas_view(
+        &mut self,
+        version: ResourceVersion,
+        image: ImageView,
+        encoding: ColorEncoding,
+        backing: ResourceLease,
+    ) -> Result<ResourceHandle, ResourceError> {
+        if backing.is_retired() {
+            return Err(ResourceError::RetiredOrForeign);
+        }
+        let ResourceView::Texture { descriptor } = backing.view() else {
+            return Err(ResourceError::InvalidData);
+        };
+        image
+            .validate(descriptor.layout.storage_size)
+            .map_err(|_| ResourceError::InvalidData)?;
+        self.register_inner(
+            version,
+            ResourceData::AtlasView {
+                image,
+                encoding,
+                backing,
+            },
+            None,
+        )
     }
     /// Transfer a complete platform shader into the ordinary immutable resource
     /// ledger. Every lease and cloned blob retains its original byte reservation.

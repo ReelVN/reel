@@ -415,3 +415,62 @@ fn reloadable_pixels_release_only_after_readers_and_restore_identity() {
         "restored reader remains live"
     );
 }
+
+#[test]
+fn atlas_views_with_shared_page_keep_distinct_snapshot_identity() {
+    use reel_core::texture::{
+        ImageView, TextureDescriptor, TextureFormat, TextureLayout, TexturePayload,
+    };
+    let p = pool();
+    let mut registry = ResourceRegistry::new(32, 1 << 20).unwrap();
+    let descriptor = TextureDescriptor {
+        storage_layout: Default::default(),
+        mip_count: 1,
+        format: TextureFormat::Rgba8,
+        layout: TextureLayout::identity([128, 8]),
+        source_encoding: ColorEncoding::Srgb,
+    };
+    let bytes = vec![255; 128 * 8 * 4];
+    let size = bytes.len() as u64;
+    let page = registry
+        .register_texture(
+            version(0),
+            TexturePayload::new(
+                descriptor,
+                OwnedBytes::new(bytes, p.reserve(size).unwrap()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let page = registry.acquire(page).unwrap();
+    let mut views = Vec::new();
+    for i in 0..20 {
+        let image = ImageView {
+            logical_size: [4, 4],
+            content_origin: [i * 4, 0],
+            content_size: [4, 4],
+        };
+        let h = registry
+            .register_atlas_view(
+                version(i as usize + 1),
+                image,
+                ColorEncoding::Srgb,
+                page.clone(),
+            )
+            .unwrap();
+        views.push(registry.acquire(h).unwrap());
+    }
+    let snapshot = capture(&views, &p).unwrap();
+    assert_eq!(snapshot.leases().len(), 20);
+    assert!(
+        snapshot
+            .leases()
+            .iter()
+            .all(|view| view.image_backing().handle() == page.handle())
+    );
+    assert_eq!(snapshot.leases()[0].image_size(), Some([4, 4]));
+    assert_eq!(
+        capture(&[views[0].clone(), views[0].clone()], &p).unwrap_err(),
+        ResourceError::ConflictingVersion
+    );
+}

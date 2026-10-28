@@ -550,3 +550,101 @@ fn image_color_appearance_restores_with_one_shared_resource() {
         assert_eq!(image.image.source_rect, Some(Rect::new(16., 8., 32., 24.)));
     }
 }
+
+#[test]
+fn atlas_views_archive_one_page_and_restore_distinct_origins() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion},
+        texture::{ImageView, TextureDescriptor, TextureFormat, TextureLayout, TexturePayload},
+    };
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(4, 1 << 20).unwrap();
+    let version = |name: &str| ResourceVersion {
+        key: AssetKey(name.into()),
+        version: ContentVersion([0; 32]),
+    };
+    let descriptor = TextureDescriptor {
+        storage_layout: Default::default(),
+        mip_count: 1,
+        format: TextureFormat::Rgba8,
+        layout: TextureLayout::identity([16, 8]),
+        source_encoding: ColorEncoding::Srgb,
+    };
+    let bytes = vec![255; 16 * 8 * 4];
+    let payload = TexturePayload::new(
+        descriptor,
+        OwnedBytes::new(bytes, pool.reserve(512).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let page = registry.register_texture(version("page"), payload).unwrap();
+    let page = registry.acquire(page).unwrap();
+    let view = |x| ImageView {
+        logical_size: [4, 4],
+        content_origin: [x, 2],
+        content_size: [4, 4],
+    };
+    let a = registry
+        .register_atlas_view(version("a"), view(1), ColorEncoding::Srgb, page.clone())
+        .unwrap();
+    let b = registry
+        .register_atlas_view(version("b"), view(9), ColorEncoding::Srgb, page.clone())
+        .unwrap();
+    let scene = retained(
+        &pool,
+        vec![registry.acquire(a).unwrap(), registry.acquire(b).unwrap()],
+        vec![],
+    );
+    let assets = scene
+        .snapshot(|lease| {
+            Some(RetainedAsset {
+                version: lease.version().clone(),
+                kind: RetainedAssetKind::Image,
+            })
+        })
+        .unwrap();
+    assert_eq!(assets.0.resources.len(), 2);
+    let expected = assets
+        .0
+        .resources
+        .iter()
+        .map(|r| {
+            512 + match &r.kind {
+                SavedResourceKind::Asset(asset) => asset.version.key.0.capacity() as u64,
+                _ => 0,
+            }
+        })
+        .sum::<u64>()
+        + 512;
+    assert_eq!(
+        assets.0.resources.iter().map(|r| r.live_bytes).sum::<u64>(),
+        expected
+    );
+    let saved = scene.snapshot(|_| None).unwrap();
+    assert_eq!(saved.0.resources.len(), 3);
+    assert_eq!(
+        saved
+            .0
+            .resources
+            .iter()
+            .filter(|r| matches!(
+                r.kind,
+                SavedResourceKind::Inline(InlineResource::Texture { .. })
+            ))
+            .count(),
+        1
+    );
+    let restored = restore(&saved).unwrap();
+    let leases = restored.drawing.resources.leases();
+    assert_eq!(leases.len(), 2);
+    assert_eq!(
+        leases[0].image_backing().handle(),
+        leases[1].image_backing().handle()
+    );
+    let mut origins: Vec<_> = leases
+        .iter()
+        .map(|lease| lease.image_view().unwrap().content_origin)
+        .collect();
+    origins.sort();
+    assert_eq!(origins, [[1, 2], [9, 2]]);
+}

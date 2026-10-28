@@ -81,6 +81,11 @@ impl InlineResource {
 enum SavedResourceKind {
     Asset(RetainedAsset),
     Inline(InlineResource),
+    InlineView {
+        image: reel_core::texture::ImageView,
+        encoding: ColorEncoding,
+        backing: u32,
+    },
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct SavedResource {
@@ -221,6 +226,7 @@ impl RetainedScene {
         let mut nodes = Vec::new();
         let mut resources = Vec::new();
         let mut resource_ids = BTreeMap::new();
+        let mut view_backings = BTreeMap::new();
         let mut node_ids = BTreeMap::new();
         let mut pending = Vec::new();
         snapshot_reserve(&mut pending, 1, &mut workspace)?;
@@ -267,54 +273,127 @@ impl RetainedScene {
                         ticket
                             .resize(ticket.bytes() - key_bytes as u64)
                             .map_err(|_| retained::error(BuildErrorKind::Bytes))?;
-                        SavedResourceKind::Inline(if let Some(image) = lease.image_descriptor() {
-                            let pixels = lease
-                                .read_pixels()
-                                .ok_or_else(|| retained::error(BuildErrorKind::InvalidRecord))?;
-                            InlineResource::Image {
-                                image: peniko::ImageData {
-                                    data: pixels.blob(),
-                                    format: image.format,
-                                    alpha_type: image.alpha_type,
-                                    width: image.width,
-                                    height: image.height,
-                                },
-                                encoding: image.encoding,
-                            }
-                        } else if let Some(descriptor) = lease.texture_descriptor() {
-                            let pixels = lease
-                                .read_pixels()
-                                .ok_or_else(|| retained::error(BuildErrorKind::InvalidRecord))?;
-                            InlineResource::Texture {
-                                descriptor,
-                                bytes: pixels.blob(),
+                        if let ResourceView::AtlasView {
+                            image,
+                            encoding,
+                            backing,
+                        } = lease.view()
+                        {
+                            let backing_slot = if let Some(slot) =
+                                resource_ids.get(&backing.handle())
+                            {
+                                *slot
+                            } else {
+                                snapshot_reserve(&mut resources, 1, &mut ticket)?;
+                                snapshot_charge(&mut workspace, 512)?;
+                                let backing_kind = if let Some(asset) = describe(backing) {
+                                    if asset.version != *backing.version()
+                                        || !asset_matches(&asset, backing)
+                                    {
+                                        return Err(retained::error(BuildErrorKind::InvalidRecord));
+                                    }
+                                    snapshot_charge(&mut ticket, asset.version.key.0.capacity())?;
+                                    SavedResourceKind::Asset(asset)
+                                } else {
+                                    let descriptor =
+                                        backing.texture_descriptor().ok_or_else(|| {
+                                            retained::error(BuildErrorKind::InvalidRecord)
+                                        })?;
+                                    let pixels = backing.read_pixels().ok_or_else(|| {
+                                        retained::error(BuildErrorKind::InvalidRecord)
+                                    })?;
+                                    SavedResourceKind::Inline(InlineResource::Texture {
+                                        descriptor,
+                                        bytes: pixels.blob(),
+                                    })
+                                };
+                                let slot = u32::try_from(resources.len())
+                                    .map_err(|_| retained::error(BuildErrorKind::Capacity))?;
+                                resources.push(SavedResource {
+                                    handle: backing.handle(),
+                                    kind: backing_kind,
+                                    live_bytes: 512
+                                        + backing.version().key.0.capacity() as u64
+                                        + backing.pixel_byte_len().unwrap_or(0) as u64,
+                                });
+                                resource_ids.insert(backing.handle(), slot);
+                                slot
+                            };
+                            SavedResourceKind::InlineView {
+                                image,
+                                encoding,
+                                backing: backing_slot,
                             }
                         } else {
-                            match lease.view() {
-                                ResourceView::EffectShader { descriptor, bytes } => {
-                                    snapshot_charge(
-                                        &mut ticket,
-                                        descriptor.parameters.len()
-                                            * size_of::<crate::stage::effect::EffectType>(),
-                                    )?;
-                                    InlineResource::EffectShader {
-                                        descriptor: descriptor.clone(),
-                                        bytes: bytes.clone(),
+                            SavedResourceKind::Inline(
+                                if let Some(image) = lease.image_descriptor() {
+                                    let pixels = lease.read_pixels().ok_or_else(|| {
+                                        retained::error(BuildErrorKind::InvalidRecord)
+                                    })?;
+                                    InlineResource::Image {
+                                        image: peniko::ImageData {
+                                            data: pixels.blob(),
+                                            format: image.format,
+                                            alpha_type: image.alpha_type,
+                                            width: image.width,
+                                            height: image.height,
+                                        },
+                                        encoding: image.encoding,
                                     }
-                                }
-                                ResourceView::Texture { .. } | ResourceView::Image { .. } => {
-                                    unreachable!()
-                                }
-                                ResourceView::Font(font) => InlineResource::Font(font.clone()),
-                                ResourceView::Yuv420(image) => InlineResource::Yuv(image.clone()),
-                                ResourceView::External { .. } => {
-                                    return Err(retained::error(BuildErrorKind::UnsupportedRecord));
-                                }
-                            }
-                        })
+                                } else if let Some(descriptor) = lease.texture_descriptor() {
+                                    let pixels = lease.read_pixels().ok_or_else(|| {
+                                        retained::error(BuildErrorKind::InvalidRecord)
+                                    })?;
+                                    InlineResource::Texture {
+                                        descriptor,
+                                        bytes: pixels.blob(),
+                                    }
+                                } else {
+                                    match lease.view() {
+                                        ResourceView::EffectShader { descriptor, bytes } => {
+                                            snapshot_charge(
+                                                &mut ticket,
+                                                descriptor.parameters.len()
+                                                    * size_of::<crate::stage::effect::EffectType>(),
+                                            )?;
+                                            InlineResource::EffectShader {
+                                                descriptor: descriptor.clone(),
+                                                bytes: bytes.clone(),
+                                            }
+                                        }
+                                        ResourceView::Texture { .. }
+                                        | ResourceView::Image { .. }
+                                        | ResourceView::AtlasView { .. } => {
+                                            unreachable!()
+                                        }
+                                        ResourceView::Font(font) => {
+                                            InlineResource::Font(font.clone())
+                                        }
+                                        ResourceView::Yuv420(image) => {
+                                            InlineResource::Yuv(image.clone())
+                                        }
+                                        ResourceView::External { .. } => {
+                                            return Err(retained::error(
+                                                BuildErrorKind::UnsupportedRecord,
+                                            ));
+                                        }
+                                    }
+                                },
+                            )
+                        }
                     };
                     let slot = u32::try_from(resources.len())
                         .map_err(|_| retained::error(BuildErrorKind::Capacity))?;
+                    if matches!(kind, SavedResourceKind::Asset(_))
+                        && let ResourceView::AtlasView { backing, .. } = lease.view()
+                        && !view_backings.contains_key(&backing.handle())
+                    {
+                        snapshot_charge(&mut workspace, 512)?;
+                        view_backings.insert(
+                            backing.handle(),
+                            (slot, backing.pixel_byte_len().unwrap_or(0) as u64),
+                        );
+                    }
                     resources.push(SavedResource {
                         handle: lease.handle(),
                         kind,
@@ -332,6 +411,7 @@ impl RetainedScene {
                                     }
                                     ResourceView::Font(font) => font.len() as u64,
                                     ResourceView::Yuv420(image) => image.byte_len() as u64,
+                                    ResourceView::AtlasView { .. } => 0,
                                     _ => unreachable!(),
                                 }
                             },
@@ -365,6 +445,15 @@ impl RetainedScene {
                 transitions,
             });
         }
+        for (handle, (slot, bytes)) in view_backings {
+            if !resource_ids.contains_key(&handle) {
+                let entry = &mut resources[slot as usize];
+                entry.live_bytes = entry
+                    .live_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| retained::error(BuildErrorKind::Bytes))?;
+            }
+        }
         drop((pending, resource_ids, node_ids));
         drop(workspace);
         Ok(SavedRetainedScene(Arc::new(Archive {
@@ -379,7 +468,9 @@ impl RetainedScene {
 fn asset_matches(asset: &RetainedAsset, lease: &ResourceLease) -> bool {
     match asset.kind {
         RetainedAssetKind::Image => {
-            lease.image_descriptor().is_some() || lease.texture_descriptor().is_some()
+            lease.image_descriptor().is_some()
+                || lease.texture_descriptor().is_some()
+                || matches!(lease.view(), ResourceView::AtlasView { .. })
         }
         RetainedAssetKind::Font => matches!(lease.view(), ResourceView::Font(_)),
         RetainedAssetKind::EffectShader => {
@@ -458,6 +549,7 @@ impl SavedRetainedScene {
                     resource.live_bytes.max(data.bytes() as u64 + 512)
                         + data.metadata_bytes() as u64
                 }
+                SavedResourceKind::InlineView { .. } => resource.live_bytes,
             });
         std::iter::once(archive).chain(nodes).chain(resources)
     }
@@ -611,6 +703,33 @@ impl RetainedRestore {
                     let handle = self
                         .registry
                         .register(version, data.data(), ticket)
+                        .map_err(|_| retained::error(BuildErrorKind::InvalidRecord))?;
+                    self.leases[index] = Some(
+                        self.registry
+                            .acquire(handle)
+                            .map_err(|_| retained::error(BuildErrorKind::InvalidRecord))?,
+                    );
+                    self.registry.release(handle);
+                }
+                if let SavedResourceKind::InlineView {
+                    image,
+                    encoding,
+                    backing,
+                } = &resource.kind
+                {
+                    let backing = self
+                        .leases
+                        .get(*backing as usize)
+                        .and_then(Option::as_ref)
+                        .ok_or_else(|| retained::error(BuildErrorKind::InvalidRecord))?
+                        .clone();
+                    let version = ResourceVersion {
+                        key: reel_core::identity::AssetKey(format!("retained/{index}")),
+                        version: reel_core::identity::ContentVersion([0; 32]),
+                    };
+                    let handle = self
+                        .registry
+                        .register_atlas_view(version, *image, *encoding, backing)
                         .map_err(|_| retained::error(BuildErrorKind::InvalidRecord))?;
                     self.leases[index] = Some(
                         self.registry
