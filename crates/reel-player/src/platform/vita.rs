@@ -39,6 +39,8 @@ use vita_native::app::{
     wake::Wake,
 };
 mod input;
+#[cfg(feature = "profiling")]
+mod profiling;
 type Error = Box<dyn std::error::Error>;
 
 #[derive(Default)]
@@ -590,10 +592,7 @@ impl NativeLoop {
                     );
                     if now >= next_memory_sample {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
-                        eprintln!(
-                            "[reel-profile] gpu_memory renderer={usage:?} native={:?}",
-                            player.backend.native_memory_usage()
-                        );
+                        profiling::record_device(&mut recording, player.backend);
                     }
                 }
                 let now = host.monotonic_now();
@@ -613,6 +612,8 @@ impl NativeLoop {
             }
             Ok(())
         })();
+        #[cfg(feature = "profiling")]
+        profiling::record_device(&mut recording, player.backend);
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;

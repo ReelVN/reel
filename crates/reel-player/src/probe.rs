@@ -12,6 +12,9 @@ use std::{
 const WINDOWS: usize = 512;
 const SLOW: usize = 64;
 const SEGMENTS: usize = 64;
+mod device;
+#[cfg(any(target_os = "vita", test))]
+pub(crate) use device::DeviceSample;
 static SERIAL: AtomicU32 = AtomicU32::new(0);
 static VM_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -254,6 +257,7 @@ pub(crate) struct Recording {
     slow: VecDeque<Row>,
     segment: (String, Row),
     segments: VecDeque<(String, Row)>,
+    device: device::DeviceSamples,
 }
 impl Recording {
     pub(crate) fn new() -> Self {
@@ -275,7 +279,14 @@ impl Recording {
             slow: VecDeque::with_capacity(SLOW),
             segment: (String::new(), Row::default()),
             segments: VecDeque::with_capacity(SEGMENTS),
+            device: device::DeviceSamples::default(),
         }
+    }
+
+    #[cfg(any(target_os = "vita", test))]
+    pub(crate) fn record_device(&mut self, sample: DeviceSample) {
+        self.device
+            .record(self.started.elapsed().as_micros() as u64, sample);
     }
 
     pub(crate) fn record(
@@ -373,6 +384,7 @@ impl Recording {
                     .map(|(label, _)| label.capacity())
                     .sum::<usize>()
                 + self.segment.0.capacity()
+                + self.device.bytes()
         )?;
         writeln!(
             out,
@@ -428,6 +440,7 @@ impl Recording {
             row(&mut out, "slow", "", r)?;
         }
         out.flush()?;
+        self.device.write(&path)?;
         Ok(path)
     }
 }

@@ -90,13 +90,14 @@ fn recording_keeps_bounded_history_and_writes_complete_totals() {
     assert_eq!(recording.total.loops, 600);
     assert_eq!(recording.segments[0].1.loops, 300);
     assert_eq!(recording.segment.1.loops, 300);
+    recording.record_device([77; device::NAMES.len()]);
     assert_eq!(
         recording.total.phases.calls[reel_core::profile::Phase::Draw as usize],
         600
     );
     let root = std::env::temp_dir().join(format!("reel-probe-check-{}", std::process::id()));
     let path = recording
-        .write(&root, "Window\tlight", 1, "closed")
+        .write(&root, "Window\tlight", 1, "Device failure")
         .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     let rows: Vec<_> = text.lines().skip(5).collect();
@@ -118,6 +119,14 @@ fn recording_keeps_bounded_history_and_writes_complete_totals() {
             .count(),
         SLOW
     );
+    let device_path = path.with_extension("device.tsv");
+    let device_text = std::fs::read_to_string(&device_path).unwrap();
+    let rows: Vec<_> = device_text.lines().skip(1).collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].split('\t').count(), device::NAMES.len() + 1);
+    assert_eq!(rows[1].split('\t').count(), device::NAMES.len() + 1);
+    assert!(rows[1].ends_with("\t77"));
+    std::fs::remove_file(device_path).unwrap();
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(root).unwrap();
     drop(live);
