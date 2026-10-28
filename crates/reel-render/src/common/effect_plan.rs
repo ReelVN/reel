@@ -451,6 +451,13 @@ pub(crate) fn slot(value: EffectValue) -> [f32; 4] {
     }
 }
 
+/// Borrowed output domain; coverage's flag preserves an outer clip attachment store.
+pub(crate) struct Terminal<'a, T> {
+    pub target: &'a T,
+    pub opacity: f32,
+    pub coverage: Option<(&'a T, bool)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,11 +678,4 @@ mod tests {
             }
         }
     }
-}
-
-/// Borrowed output domain; coverage's flag preserves an outer clip attachment store.
-pub(crate) struct Terminal<'a, T> {
-    pub target: &'a T,
-    pub opacity: f32,
-    pub coverage: Option<(&'a T, bool)>,
 }

@@ -922,7 +922,12 @@ impl Context<'_> {
                     self.pipelines.opaque_draws[opaque as usize]
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                if entry.state.bounded && self.pipelines.bounded.is_some() {
+                if let Some(bounded) = self
+                    .pipelines
+                    .bounded
+                    .as_ref()
+                    .filter(|_| entry.state.bounded)
+                {
                     let index = if index == 7 { 3 } else { index };
                     if let Some(opaque) = entry.state.opaque {
                         let index = if matches!(opaque, mesh::OpaquePaint::Solid) {
@@ -932,7 +937,7 @@ impl Context<'_> {
                         };
                         &self.pipelines.bounded_opaque.as_ref().unwrap()[index]
                     } else {
-                        &self.pipelines.bounded.as_ref().unwrap()[index]
+                        &bounded[index]
                     }
                 } else if let Some(opaque) = entry.state.opaque {
                     &self.pipelines.opaque[opaque as usize]

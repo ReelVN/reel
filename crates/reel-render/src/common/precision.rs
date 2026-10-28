@@ -121,7 +121,6 @@ mod tests {
         assert!(maximum[0] <= 2. / 4096.);
         assert!(maximum[1] <= 4. / 4096.);
         // Independent color and alpha errors contribute at most 8/4096 in source-over.
-        assert!(8. / 4096. < 1. / 255.);
         eprintln!("bounded paint interpolation/product maximum absolute error: {maximum:?}");
     }
     #[cfg(feature = "wgpu")]
