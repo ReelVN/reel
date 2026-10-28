@@ -17,10 +17,13 @@ fn measure<T>(work: impl FnOnce() -> T) -> (T, allocation_counter::AllocationInf
 /// Run with REEL_PROFILE_PACKAGE pointing at game.asb and --ignored --nocapture.
 /// REEL_PROFILE_FRAMES optionally advances its clock at 60 Hz after startup.
 /// REEL_PROFILE_RESOURCES optionally supplies an existing distribution's asset paths.
+/// REEL_PROFILE_ENTRY optionally selects an existing module-level function.
 /// REEL_PROFILE_HEAP_MIB overrides the 24 MiB heap allowance beyond retained code.
 /// REEL_PROFILE_LAYOUT adds a CPU layout/presentation host, runs real elapsed time,
 /// and observes one second without VM work (up to 15 seconds). It records no pixels.
 /// REEL_PROFILE_SLICE_US optionally sets a wall deadline for each layout tick.
+/// REEL_PROFILE_LAYOUT_FRAMES runs fixed 60 Hz clock frames through the CPU host.
+/// A frame advances only after its script batch, resources, and publication settle.
 #[test]
 #[ignore = "requires an external release distribution"]
 fn distribution_startup_cost() {
@@ -73,7 +76,22 @@ fn distribution_startup_cost_inner() {
             .map_err(|error| error.to_string())
         },
     );
-    let story = reel_player::distribution::story_from_package(loaded.package).unwrap();
+    let mut story = reel_player::distribution::story_from_package(loaded.package).unwrap();
+    if let Ok(entry) = std::env::var("REEL_PROFILE_ENTRY") {
+        let (module, name) = entry.rsplit_once("::").unwrap();
+        let package = story.program.package();
+        let index = package
+            .functions
+            .iter()
+            .position(|function| {
+                package.symbols[function.name.index()] == name
+                    && package.symbols[package.modules[function.module.index()].path.index()]
+                        == module
+            })
+            .expect("profile entry exists");
+        story.entry = aside_vm::bytecode::FunctionId(index.try_into().unwrap());
+        story.validate().unwrap();
+    }
     let mut limits = VmLimits::default();
     let heap_mib = std::env::var("REEL_PROFILE_HEAP_MIB")
         .map(|value| value.parse::<u64>().unwrap())
@@ -145,6 +163,14 @@ fn distribution_startup_cost_inner() {
         .unwrap();
         (bridge, root, 0u64)
     });
+    let frame_limit = std::env::var("REEL_PROFILE_LAYOUT_FRAMES")
+        .ok()
+        .map(|value| value.parse::<u64>().unwrap());
+    assert!(frame_limit.is_none() || layout.is_some());
+    let mut clock_frames = 0u64;
+    let mut premature_projections = 0u64;
+    let mut tick_ns = 0u128;
+    let mut sync_ns = 0u128;
     let mut runtime = StoryRuntime::new(session)
         .with_saves(reel_player::saves::RuntimeSaves::new(saves, 64 << 20));
     let started = Instant::now();
@@ -157,6 +183,10 @@ fn distribution_startup_cost_inner() {
         .ok()
         .filter(|_| layout.is_some())
         .map(|n| n.parse::<u64>().unwrap() * 1000);
+    assert!(
+        frame_limit.is_none() || slice_ns.is_none(),
+        "fixed frames use instruction limits"
+    );
     for steps in 1..1_000_000 {
         let tick = Instant::now();
         let budget = SliceBudget {
@@ -164,15 +194,24 @@ fn distribution_startup_cost_inner() {
             ..Default::default()
         };
         let result = runtime.tick(budget, || {
-            if layout.is_some() {
+            if frame_limit.is_some() {
+                clock_frames * 16_666_667
+            } else if layout.is_some() {
                 started.elapsed().as_nanos() as u64
             } else {
                 0
             }
         });
+        tick_ns += tick.elapsed().as_nanos();
+        let sync_started = Instant::now();
         if let Some((bridge, root, frames)) = &mut layout {
             let driver = runtime.driver_mut().unwrap();
+            let blocked =
+                !driver.adapter().stage_ready() && !driver.adapter().virtual_feedback_boundary();
+            let before = driver.adapter().stage().revision();
             driver.sync(bridge, *root).unwrap();
+            premature_projections +=
+                u64::from(blocked && driver.adapter().stage().revision() != before);
             let id = reel_core::identity::FrameId(*frames + 1);
             let stamp = driver.projection_stamp();
             if accepted_stamp != Some(stamp)
@@ -189,6 +228,7 @@ fn distribution_startup_cost_inner() {
             }
             runtime.wake_input();
         }
+        sync_ns += sync_started.elapsed().as_nanos();
         max_tick_ns = max_tick_ns.max(tick.elapsed().as_nanos());
         let elapsed_ms = started.elapsed().as_millis();
         if layout.is_some() {
@@ -204,7 +244,20 @@ fn distribution_startup_cost_inner() {
                 runtime.driver().adapter().vm().heap().stats()
             );
         }
-        let settled = if let Some((_, _, count)) = &layout {
+        let settled = if let Some(limit) = frame_limit {
+            if runtime.driver().adapter().stage_ready()
+                && !runtime.driver().ui().images_pending()
+                && !runtime.driver().has_runnable_tasks()
+                && !runtime.driver().activities_pending()
+                && !runtime.driver().transitions_pending()
+                && !runtime.driver().cleanup_pending()
+                && runtime.driver().adapter().vm().heap().phase() == GcPhase::Idle
+                && accepted_stamp == Some(runtime.driver().projection_stamp())
+            {
+                clock_frames += 1;
+            }
+            clock_frames >= limit
+        } else if let Some((_, _, count)) = &layout {
             !runtime.driver().adapter().activities_pending()
                 && runtime.driver().adapter().stage_ready()
                 && *count > 0
@@ -234,7 +287,10 @@ fn distribution_startup_cost_inner() {
                     })
                     .collect();
                 eprintln!(
-                    "layout_frames={frames} ready={} feedback={} nodes={} virtual_rows={rows:?} location={:?}",
+                    "layout_frames={frames} clock_frames={clock_frames} interval={:?} images_pending={} accepted={} ready={} feedback={} nodes={} virtual_rows={rows:?} location={:?}",
+                    runtime.tick_interval(),
+                    runtime.driver().ui().images_pending(),
+                    accepted_stamp == Some(runtime.driver().projection_stamp()),
                     vm.stage_ready(),
                     vm.virtual_feedback_ready(),
                     vm.stage().nodes().count(),
@@ -249,6 +305,9 @@ fn distribution_startup_cost_inner() {
             "layout probe did not settle"
         );
         if settled {
+            eprintln!(
+                "host_cost clock_frames={clock_frames} tick_ns={tick_ns} sync_ns={sync_ns} premature_projections={premature_projections}"
+            );
             assert_eq!(
                 runtime.driver().adapter().vm().heap().phase(),
                 GcPhase::Idle

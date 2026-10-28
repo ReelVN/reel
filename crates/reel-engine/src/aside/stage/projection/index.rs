@@ -6,6 +6,8 @@ pub(in crate::aside::stage) struct Index {
     cursor: Option<ChangeCursor>,
     topology: u64,
     dependencies: Vec<(u64, NodeId)>,
+    changed: Vec<u64>,
+    changed_charge: HeapReservation,
     pub pending: Vec<NodeId>,
     virtuals: Vec<NodeId>,
     dependency_charge: HeapReservation,
@@ -19,6 +21,8 @@ impl Index {
             cursor: None,
             topology: 0,
             dependencies: Vec::new(),
+            changed: Vec::new(),
+            changed_charge: heap.budget_usage().reserve(0)?,
             pending: Vec::new(),
             virtuals: Vec::new(),
             dependency_charge: heap.budget_usage().reserve(0)?,
@@ -36,12 +40,19 @@ impl Index {
         let Some(changes) = self.cursor.and_then(|cursor| heap.changes_since(cursor)) else {
             return Ok(false);
         };
+        // The bounded write history can contain many writes to the same shared
+        // effect or override. Visit each dependency range only once per batch.
+        self.changed.clear();
         for handle in changes {
-            let start = self
-                .dependencies
-                .partition_point(|(key, _)| *key < handle.key);
+            reserve(heap, &mut self.changed, &mut self.changed_charge)?;
+            self.changed.push(handle.key);
+        }
+        self.changed.sort_unstable();
+        self.changed.dedup();
+        for &changed in &self.changed {
+            let start = self.dependencies.partition_point(|(key, _)| *key < changed);
             for &(key, id) in &self.dependencies[start..] {
-                if key != handle.key {
+                if key != changed {
                     break;
                 }
                 if let Err(at) = self.pending.binary_search(&id) {
@@ -58,6 +69,8 @@ impl Index {
                 }
             }
         }
+        // Keep the pending allocation bounded by unique nodes while different
+        // changed sources can share every dependent node.
         Ok(true)
     }
     pub fn is_current(&self, heap: &Heap, stage: &Stage) -> Option<bool> {
@@ -160,4 +173,57 @@ fn reserve<T>(
     *values = next;
     *charge = next_charge;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_sources_keep_pending_storage_bounded_by_unique_nodes() {
+        let limits = aside_vm::HeapLimits::default();
+        let mut heap = Heap::new(aside_vm::SessionEpoch(1), limits).unwrap();
+        let stage = Stage::default();
+        let mut index = Index::new(&heap).unwrap();
+        let mut sources = Vec::new();
+        for _ in 0..256 {
+            let source = heap.alloc_array(&[Value::int(0)]).unwrap();
+            for node in 0..64 {
+                index.watch(&mut heap, source, NodeId(node)).unwrap();
+            }
+            sources.push(source);
+        }
+        index.dependencies.sort_unstable();
+        index.topology = stage.topology_revision();
+        index.invalid = false;
+        index.accept(&heap);
+        // Warm both bounded buffers using repeated writes to one shared source.
+        for write in 0..256 {
+            heap.set_field(sources[0], 0, Value::int(write)).unwrap();
+        }
+        assert!(index.collect(&heap, &stage).unwrap());
+        index.accept(&heap);
+        let capacity = index.pending.capacity();
+        let charge = heap.budget_usage().charged_bytes();
+        let _remaining = heap
+            .budget_usage()
+            .reserve(limits.max_bytes - charge - 256)
+            .unwrap();
+        let charged = heap.budget_usage().charged_bytes();
+        let started = std::time::Instant::now();
+        for frame in 1..=100 {
+            for &source in &sources {
+                heap.set_field(source, 0, Value::int(frame)).unwrap();
+            }
+            assert!(index.collect(&heap, &stage).unwrap());
+            assert_eq!(index.pending.len(), 64);
+            assert_eq!(index.pending.capacity(), capacity);
+            assert_eq!(heap.budget_usage().charged_bytes(), charged);
+            index.accept(&heap);
+        }
+        println!(
+            "overlapping_projection sources=256 nodes=64 batches=100 pending_capacity={capacity} extra_charged=0 elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+    }
 }

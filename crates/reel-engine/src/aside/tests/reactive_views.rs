@@ -885,3 +885,24 @@ fn retiring_the_input_scope_clears_skipping_even_when_its_cancel_callback_cannot
         );
     }
 }
+
+#[test]
+fn stable_reading_controls_skip_heap_publication_and_publish_changed_fields() {
+    let (mut session, mut vm) = models::prepared(
+        "fn opening(){ game.reading(); narrator(\"ready\"); }",
+        false,
+    );
+    models::drive(&mut vm, &mut session, false);
+    let before = vm.narrative.as_ref().unwrap().reading_publishes;
+    for _ in 0..4096 {
+        vm.sync_narrative(&session).unwrap();
+    }
+    assert_eq!(vm.narrative.as_ref().unwrap().reading_publishes, before);
+    println!(
+        "reading_controls syncs=4096 publications={}",
+        vm.narrative.as_ref().unwrap().reading_publishes - before
+    );
+    session.set_skip_reading(true, true, true);
+    vm.sync_narrative(&session).unwrap();
+    assert_eq!(vm.narrative.as_ref().unwrap().reading_publishes - before, 3);
+}

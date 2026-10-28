@@ -44,6 +44,9 @@ pub(crate) struct Images {
     pending: Vec<Pending>,
     failure: Option<String>,
     closed: bool,
+    settled: bool,
+    #[cfg(test)]
+    poll_scans: usize,
     #[cfg(test)]
     pub(crate) loads: u64,
     #[cfg(test)]
@@ -78,6 +81,9 @@ impl Images {
             pending: Vec::new(),
             failure: None,
             closed: false,
+            settled: false,
+            #[cfg(test)]
+            poll_scans: 0,
             #[cfg(test)]
             loads: 0,
             #[cfg(test)]
@@ -171,6 +177,7 @@ impl Images {
         self.reconcile_requests();
     }
     fn reconcile_requests(&mut self) {
+        self.settled = false;
         self.pending.retain(|pending| {
             let retain = self.wanted.contains_key(&pending.source)
                 || self
@@ -205,6 +212,13 @@ impl Images {
         }
         if let Some(failure) = &self.failure {
             return Err(failure.clone());
+        }
+        if self.settled {
+            return Ok(true);
+        }
+        #[cfg(test)]
+        {
+            self.poll_scans += 1;
         }
         let mut index = 0;
         while index < self.pending.len() {
@@ -295,6 +309,14 @@ impl Images {
             false
         };
         self.assets.maintain();
+        // Loaded leases stay owned until demand changes. Optional tiles denied
+        // by the resident budget remain unsettled so released capacity is retried.
+        self.settled = ready
+            && self.pending.is_empty()
+            && self
+                .tiles
+                .keys()
+                .all(|source| self.loaded.contains_key(source) || self.skipped.contains(source));
         Ok(ready)
     }
     fn is_loading(&self, source: &str) -> bool {
@@ -338,6 +360,9 @@ impl Images {
             self.tile_requests += 1;
         }
         let changed = self.tiles != tiles;
+        if changed {
+            self.settled = false;
+        }
         self.pending.retain(|pending| {
             let retain =
                 self.wanted.contains_key(&pending.source) || tiles.contains_key(&pending.source);

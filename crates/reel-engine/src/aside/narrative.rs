@@ -325,6 +325,11 @@ pub(super) struct Narrative {
     root: RootToken,
     reading: Value,
     auto_condition: Value,
+    #[serde(skip)]
+    reading_values: Option<[Value; 7]>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) reading_publishes: usize,
     history: Option<history::History>,
 }
 
@@ -509,13 +514,16 @@ impl Narrative {
             root,
             reading,
             auto_condition,
+            reading_values: None,
+            #[cfg(test)]
+            reading_publishes: 0,
             history: None,
         })
     }
 
-    fn sync_reading(&self, heap: &mut Heap, session: &Session) -> Result<(), AdapterError> {
+    fn sync_reading(&mut self, heap: &mut Heap, session: &Session) -> Result<(), AdapterError> {
         let reading = session.reading();
-        for (field, value) in [
+        let fields = [
             (ReadingField::Auto, Value::bool(reading.automatic())),
             (ReadingField::AutoReady, Value::bool(reading.auto_ready())),
             (ReadingField::Paused, Value::bool(reading.paused())),
@@ -529,9 +537,21 @@ impl Narrative {
                 ReadingField::Delay,
                 Value::float(reading.delay().as_secs_f64()),
             ),
-        ] {
-            publish(heap, self.reading, field as u32, value)?;
+        ];
+        let values = fields.map(|(_, value)| value);
+        for (index, (field, value)) in fields.into_iter().enumerate() {
+            if self
+                .reading_values
+                .is_none_or(|previous| !previous[index].same_bits(value))
+            {
+                publish(heap, self.reading, field as u32, value)?;
+                #[cfg(test)]
+                {
+                    self.reading_publishes += 1;
+                }
+            }
         }
+        self.reading_values = Some(values);
         Ok(())
     }
 

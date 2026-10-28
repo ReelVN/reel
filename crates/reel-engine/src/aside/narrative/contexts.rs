@@ -112,8 +112,8 @@ impl SessionVm {
         &mut self,
         session: &mut Session,
     ) -> Result<(), AdapterError> {
-        for frame in &self.narrative_contexts.frames {
-            if let Some(model) = &frame.model {
+        for frame in &mut self.narrative_contexts.frames {
+            if let Some(model) = &mut frame.model {
                 let ready = model.condition(self.vm.heap())?;
                 session.with_reading(frame.parent, |session| {
                     session.set_auto_condition(ready);
@@ -191,7 +191,7 @@ impl SessionVm {
         let previous = session.reading_data.control;
         session.reading_data.control = crate::reading::ReadingControl::default();
         session.reading_data.control.activate_after(previous);
-        if let Some(model) = self.narrative.take() {
+        if let Some(mut model) = self.narrative.take() {
             let heap = self.vm.heap_mut();
             // Disconnect the voice/scene condition before the scene's nodes retire.
             heap.retire_host(model.auto_condition)?;
@@ -311,11 +311,11 @@ impl SessionVm {
         &mut self,
         session: &mut Session,
     ) -> Result<(), AdapterError> {
-        if let Some(model) = &self.narrative {
+        if let Some(model) = &mut self.narrative {
             model.sync_reading(self.vm.heap_mut(), session)?;
         }
-        for frame in &self.narrative_contexts.frames {
-            if let Some(model) = &frame.model {
+        for frame in &mut self.narrative_contexts.frames {
+            if let Some(model) = &mut frame.model {
                 session.with_reading(frame.parent, |session| {
                     model.sync_reading(self.vm.heap_mut(), session)
                 })??;

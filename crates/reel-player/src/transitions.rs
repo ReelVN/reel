@@ -64,6 +64,12 @@ pub(crate) struct Transitions {
     restoring: Vec<Restoring>,
     masks: Option<crate::images::Images>,
     wanted_masks: BTreeMap<String, Option<String>>,
+    mask_programs: Vec<Arc<reel_ui::stage::MaskProgram>>,
+    gate_stamp: Option<(u64, crate::session::ProjectionStamp, WidgetId)>,
+    #[cfg(test)]
+    mask_rebuilds: usize,
+    #[cfg(test)]
+    gate_refreshes: usize,
     resources: Vec<ResourceLease>,
     masks_ready: bool,
     gates: Vec<WidgetId>,
@@ -198,25 +204,13 @@ impl Transitions {
                 index += 1;
             }
         }
-        let wanted = vm
-            .transition_views()
-            .filter(|view| view.previous.is_some())
-            .flat_map(|view| {
-                view.mask
-                    .into_iter()
-                    .flat_map(|mask| mask.sources().to_vec())
-            })
-            .map(|source| (source.to_string(), Some("stage.transition".into())))
-            .collect::<BTreeMap<_, _>>();
-        if wanted != self.wanted_masks {
-            let images = self
-                .masks
-                .get_or_insert_with(|| crate::images::Images::new(assets.clone()));
-            images.request(wanted.clone());
-            self.wanted_masks = wanted;
-            self.masks_ready = false;
-            changed = true;
-        }
+        changed |= self.request_masks(
+            || {
+                vm.transition_views()
+                    .filter_map(|view| view.previous.and(view.mask))
+            },
+            assets,
+        );
         if let Some(images) = &mut self.masks
             && !self.masks_ready
             && images.poll()?
@@ -228,12 +222,55 @@ impl Transitions {
         }
         Ok(changed)
     }
+    fn request_masks<I: Iterator<Item = Arc<reel_ui::stage::MaskProgram>>>(
+        &mut self,
+        masks: impl Fn() -> I,
+        assets: &Assets,
+    ) -> bool {
+        let mut previous = self.mask_programs.iter();
+        let unchanged = masks()
+            .all(|mask| previous.next().is_some_and(|old| Arc::ptr_eq(old, &mask)))
+            && previous.next().is_none();
+        if !unchanged {
+            #[cfg(test)]
+            {
+                self.mask_rebuilds += 1;
+            }
+            self.mask_programs.clear();
+            self.mask_programs.extend(masks());
+            let wanted = self
+                .mask_programs
+                .iter()
+                .flat_map(|mask| mask.sources())
+                .map(|source| (source.to_string(), Some("stage.transition".into())))
+                .collect::<BTreeMap<_, _>>();
+            if wanted != self.wanted_masks {
+                let images = self
+                    .masks
+                    .get_or_insert_with(|| crate::images::Images::new(assets.clone()));
+                images.request(wanted.clone());
+                self.wanted_masks = wanted;
+                self.masks_ready = false;
+                return true;
+            }
+        }
+        false
+    }
     pub fn gate(
         &mut self,
         vm: &SessionVm,
         bridge: &mut PresentationBridge,
         root: WidgetId,
+        projection: crate::session::ProjectionStamp,
     ) -> Result<(), Error> {
+        let stamp = (vm.transition_revision(), projection, root);
+        if self.release_gates.is_none() && self.gate_stamp == Some(stamp) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        {
+            self.gate_refreshes += 1;
+        }
         if let Some(gates) = self.release_gates.take() {
             self.gates = gates;
         }
@@ -246,6 +283,7 @@ impl Transitions {
             }
         }
         bridge.set_input_gates(&self.gates)?;
+        self.gate_stamp = Some(stamp);
         Ok(())
     }
     pub fn record(
@@ -357,5 +395,79 @@ impl Transitions {
     }
     pub fn close(&mut self) {
         *self = Self::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_transition_masks_reuse_resource_demand() {
+        let assets = Assets::directory(Default::default());
+        let mut transitions = Transitions::default();
+        let first = reel_ui::stage::MaskProgram::image("first.png".into());
+        assert!(transitions.request_masks(|| [first.clone()].into_iter(), &assets));
+        for _ in 0..4096 {
+            assert!(!transitions.request_masks(|| [first.clone()].into_iter(), &assets));
+        }
+        assert_eq!(transitions.mask_rebuilds, 1);
+        println!(
+            "transition_masks refreshes=4097 demand_rebuilds={}",
+            transitions.mask_rebuilds
+        );
+        assert!(transitions.wanted_masks.contains_key("first.png"));
+        let second = reel_ui::stage::MaskProgram::image("second.png".into());
+        assert!(transitions.request_masks(|| [second.clone()].into_iter(), &assets));
+        assert_eq!(transitions.wanted_masks.len(), 1);
+        assert!(transitions.wanted_masks.contains_key("second.png"));
+        assert!(transitions.request_masks(std::iter::empty, &assets));
+        assert!(transitions.wanted_masks.is_empty());
+    }
+    #[test]
+    fn transition_gates_reuse_stable_projections_and_apply_accepted_releases() {
+        let mut driver = crate::aside_session::AsideSessionUi::from_source(
+            reel_engine::Session::new(reel_engine::SessionId(881), reel_engine::Epoch(1)).unwrap(),
+            "fn main(){stage.replace(stack()); await completion();}",
+            "gate",
+            1,
+            "main",
+            "en",
+            reel_engine::aside::VmLimits::default(),
+        )
+        .unwrap();
+        for _ in 0..1000 {
+            driver
+                .tick(reel_engine::aside::SliceBudget::default(), 256, || 0)
+                .unwrap();
+            if driver.adapter().stage_ready() && !driver.has_runnable_tasks() {
+                break;
+            }
+        }
+        let (mut bridge, root) = crate::session::tests::mount(driver.ui());
+        driver.sync(&mut bridge, root).unwrap();
+        let mut transitions = Transitions::default();
+        let stamp = driver.ui().projection_stamp();
+        for _ in 0..4096 {
+            transitions
+                .gate(driver.adapter(), &mut bridge, root, stamp)
+                .unwrap();
+        }
+        assert_eq!(transitions.gate_refreshes, 1);
+        println!(
+            "transition_gates refreshes=4096 widget_search_rounds={}",
+            transitions.gate_refreshes
+        );
+        transitions
+            .accepted_projection(driver.adapter_mut(), &TransitionReceipt::default(), 0.)
+            .unwrap();
+        transitions
+            .gate(driver.adapter(), &mut bridge, root, stamp)
+            .unwrap();
+        assert_eq!(transitions.gate_refreshes, 2);
+        transitions
+            .gate(driver.adapter(), &mut bridge, root, stamp)
+            .unwrap();
+        assert_eq!(transitions.gate_refreshes, 2);
     }
 }

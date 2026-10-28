@@ -26,7 +26,7 @@ fn say(session: &mut Session, text: &str) -> InteractionId {
         )
         .unwrap()
 }
-pub(super) fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
+pub(crate) fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
     mount_with_font(ui, None)
 }
 pub(super) fn mount_with_font(
@@ -994,4 +994,85 @@ fn existing_owner_count_does_not_block_choice_projection() {
     assert!(ui.session.create_owner().is_ok());
     assert_eq!(ui.choice_owners.len(), 1);
     assert!(ui.session.is_owner_live(ui.source_owner));
+}
+
+fn transaction_projection_work(nodes: usize) -> (usize, u128) {
+    let code = format!(
+        r#"fn main() {{
+        let root=stack(); let nodes=[];
+        for i in 0..{nodes} {{ let child=stack(width:1,height:1); root.add(child); nodes.append(child); }}
+        stage.replace(root);
+        let gate=completion(); gate.resolve(); await gate;
+        for pass in 1..=4 {{ for node in nodes {{ node.x=pass; node.y=pass; }} }}
+        await completion();
+    }}"#
+    );
+    let mut driver = crate::aside_session::AsideSessionUi::from_source(
+        session(),
+        &code,
+        "transaction_projection",
+        1,
+        "main",
+        "en",
+        reel_engine::aside::VmLimits::default(),
+    )
+    .unwrap();
+    let (mut bridge, root) = mount(driver.ui());
+    let mut premature = 0;
+    let mut sync_us = 0;
+    let mut settled = false;
+    for _ in 0..100_000 {
+        driver
+            .tick(
+                reel_engine::aside::SliceBudget {
+                    instructions: 32,
+                    ..Default::default()
+                },
+                256,
+                || 0,
+            )
+            .unwrap();
+        assert!(!matches!(
+            driver.state(),
+            crate::aside_session::StoryState::Faulted(_)
+                | crate::aside_session::StoryState::HostFailed(_)
+        ));
+        let blocked =
+            !driver.adapter().stage_ready() && !driver.adapter().virtual_feedback_boundary();
+        let before = driver.adapter().stage().revision();
+        let started = std::time::Instant::now();
+        driver.sync(&mut bridge, root).unwrap();
+        sync_us += started.elapsed().as_micros();
+        premature += usize::from(blocked && driver.adapter().stage().revision() != before);
+        if driver.adapter().stage_ready() && !driver.has_runnable_tasks() {
+            let stage = driver.adapter().stage();
+            let Some(root) = stage.root() else {
+                continue;
+            };
+            let children = &stage.node(root).unwrap().children;
+            if children.len() == nodes
+                && children.iter().all(|id| {
+                    let props = &stage.node(*id).unwrap().props;
+                    props.x == 4. && props.y == 4.
+                })
+            {
+                settled = true;
+                break;
+            }
+        }
+    }
+    assert!(settled, "complete transaction was not published");
+    (premature, sync_us)
+}
+
+#[test]
+fn unfinished_script_transactions_defer_property_projection() {
+    assert_eq!(transaction_projection_work(16).0, 0);
+}
+
+#[test]
+#[ignore = "release CPU measurement of UI synchronization across script budget slices"]
+fn transaction_projection_cost() {
+    let (premature, sync_us) = transaction_projection_work(512);
+    println!("transaction_projection nodes=512 passes=4 premature={premature} sync_us={sync_us}");
 }

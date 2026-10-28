@@ -134,6 +134,8 @@ struct Service {
     streams: stream::Streams,
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
+    #[cfg(test)]
+    pumps: usize,
 }
 /// Cloneable main-thread handle. Closing it cancels all consumers using this service.
 /// Dropping a clone leaves other consumers and their immutable leases alive.
@@ -306,6 +308,8 @@ impl Assets {
             streams: stream::Streams::default(),
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
+            #[cfg(test)]
+            pumps: 0,
         })))
     }
     pub fn set_waker(&self, notify: Arc<dyn Fn() + Send + Sync>) {
@@ -594,6 +598,16 @@ impl Service {
     fn pump(&mut self) {
         if self.io.is_none() {
             return;
+        }
+        // Cancelled requests keep their completion tickets until workers drain.
+        // Their cleanup remains live even after the last consumer was removed.
+        if self.loads.is_empty() && !self.wake.is_pending() && self.completion.usage().tickets == 0
+        {
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.pumps += 1;
         }
         self.wake.acknowledge();
         let progress = self.executor.as_mut().unwrap().advance(WorkBudget {

@@ -52,7 +52,11 @@ fn continuation_and_collection_wakes_do_not_oversample_a_running_clock() {
     );
     settle(&mut story, 33_333_334);
     assert_eq!(story.logical_ns, 33_333_334);
-    assert!(story.driver().adapter().vm().stats().native_entries > before.native_entries);
+    let stage = story.driver().adapter().stage();
+    let x = stage.node(stage.root().unwrap()).unwrap().props.x;
+    assert_eq!(x, 2. / 60.);
+    // Compact derived reads need no native entry; the projected elapsed time
+    // proves that the next producer deadline was actually sampled.
 }
 
 #[test]
@@ -168,4 +172,106 @@ fn maintenance_progress_keeps_the_clock_turn_pending_for_ready_script() {
     settle(&mut story, 16_000_000);
     assert!(matches!(story.driver().ui().session().view().interaction,
         Some(reel_engine::InteractionView::Dialogue(dialogue)) if dialogue.text()=="done"));
+}
+
+#[test]
+fn budgeted_reactive_continuations_keep_one_sample_and_publish_the_whole_batch() {
+    use reel_core::clock::MonoTime;
+    use std::cell::Cell;
+    let mut story = runtime(
+        r#"
+        use std::math::curve;
+        fn main() {
+            let timer = clock(interval: 1.0 / 60);
+            let motion = curve([{time: 0.0, value: 0.0}, {time: 10.0, value: 10.0}]);
+            let root = stack();
+            for i in 0..128 { root.add(stack(x: derive(|| motion.sample(timer.elapsed)))); }
+            stage.replace(root);
+            narrator("waiting");
+        }
+    "#,
+    );
+    settle(&mut story, 0);
+    let before = story.driver().adapter().vm().stats();
+    // Charge deterministic CPU time to each budget check. The host still regains
+    // control after each 2 ms slice and publishes only a complete reactive batch.
+    let now = Cell::new(16_666_667u64);
+    let mut sample = None;
+    let mut delayed = 0;
+    let mut wait_ns = 0;
+    let mut turns = 0;
+    loop {
+        assert!(turns < 1000, "reactive clock batch failed to settle");
+        turns += 1;
+        story
+            .tick(
+                SliceBudget {
+                    deadline_ns: Some(now.get() + 2_000_000),
+                    ..Default::default()
+                },
+                || {
+                    let value = now.get();
+                    now.set(value + 10_000);
+                    value
+                },
+            )
+            .unwrap();
+        assert_eq!(*sample.get_or_insert(story.logical_ns), story.logical_ns);
+        if !story.needs_work() {
+            break;
+        }
+        let deadline = story.wake_deadline(MonoTime(now.get())).unwrap();
+        let delay = deadline.0.saturating_sub(now.get());
+        delayed += usize::from(delay != 0);
+        wait_ns += delay;
+        now.set(now.get() + delay);
+        if story.driver().adapter().stage_ready() {
+            let stage = story.driver().adapter().stage();
+            for &child in &stage.node(stage.root().unwrap()).unwrap().children {
+                assert!((stage.node(child).unwrap().props.x - 1.0 / 60.0).abs() < 1e-9);
+            }
+        }
+    }
+    assert!(turns > 1, "exercise multiple bounded host turns");
+    assert_eq!(
+        wait_ns, 0,
+        "ready continuations do not sleep between host turns"
+    );
+    assert!(story.driver().adapter().stage_ready());
+    let stage = story.driver().adapter().stage();
+    let root = stage.node(stage.root().unwrap()).unwrap();
+    assert_eq!(root.children.len(), 128);
+    for &child in &root.children {
+        assert!((stage.node(child).unwrap().props.x - 1.0 / 60.0).abs() < 1e-9);
+    }
+    let stats = story.driver().adapter().vm().stats();
+    println!(
+        "reactive_schedule nodes=128 host_turns={turns} delayed_turns={delayed} wait_ns={wait_ns} vm_slices={} native_entries={} sample_ns={}",
+        stats.slices - before.slices,
+        stats.native_entries - before.native_entries,
+        sample.unwrap()
+    );
+}
+
+#[test]
+fn ready_collection_wakes_immediately_but_external_waits_and_future_clocks_sleep() {
+    use reel_core::clock::MonoTime;
+    for code in [
+        "fn main() { await completion(); }",
+        "fn main() { let timer=clock(interval:1); await completion(); }",
+    ] {
+        let mut story = runtime(code);
+        settle(&mut story, 0);
+        let future = story.wake_deadline(MonoTime(100));
+        assert!(future.is_none_or(|deadline| deadline.0 > 100));
+        story.driver_mut().unwrap().begin_collection().unwrap();
+        story.collecting = true;
+        assert_eq!(story.wake_deadline(MonoTime(100)), Some(MonoTime(100)));
+        settle(&mut story, 100);
+        assert_eq!(story.wake_deadline(MonoTime(100)), future);
+        story.driver_mut().unwrap().begin_collection().unwrap();
+        story.collecting = true;
+        story.suspend(100).unwrap();
+        assert_eq!(story.wake_deadline(MonoTime(100)), None);
+    }
 }
