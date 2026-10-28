@@ -1,3 +1,4 @@
+mod array;
 mod changes;
 mod model;
 pub use changes::ChangeCursor;

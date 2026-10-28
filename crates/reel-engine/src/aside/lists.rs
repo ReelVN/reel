@@ -1,5 +1,5 @@
 //! Keyed reconciliation. Persistent and in-flight values live in the VM heap;
-//! only the sorting workspace is Rust-owned, with a scoped heap reservation.
+//! key indexing and reconciliation resume through the same native roots.
 use super::keys::compare;
 
 aside_host::native_documentation! {
@@ -11,7 +11,10 @@ aside_host::native_documentation! {
         /// With `virtual: true`, mount the scroll view's requested window and navigation
         /// targets, retiring rows outside that window. Keep persistent row state in the
         /// item model because remounting creates fresh row nodes. The returned
-        /// VirtualListNode exposes scroll_to(key, align: "nearest").
+        /// VirtualListNode exposes scroll_to(key, align: "nearest"). Key indexing
+        /// and duplicate validation use bounded native continuations, including
+        /// long string comparisons. Source changes invalidate the private index;
+        /// snapshots resume its cursors without repeating completed key callbacks.
         "reel::list";
         /// Locate a keyed virtual row, scroll it into view, then return its mounted node
         /// after presentation. Align accepts nearest, start, center or end. Removing the
@@ -25,6 +28,7 @@ use super::*;
 use aside_vm::executor::{Continuation, FaultRetention};
 use aside_vm::{Heap, ObjectKind, ValueTag};
 use std::cmp::Ordering;
+mod sort;
 pub(super) mod virtualized;
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
@@ -88,6 +92,7 @@ enum Phase {
     Build,
     Built,
     Publish,
+    Sort,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -141,45 +146,6 @@ impl Work {
 
 fn entry(heap: &Heap, value: Value, field: Entry) -> Result<Value, HeapError> {
     heap.sequence_get(value, field as u32)
-}
-
-fn sorted(heap: &mut Heap, entries: Value, chunk: usize) -> Result<Value, AdapterError> {
-    let count = heap.sequence_len(entries)? as usize;
-    let _reservation = heap
-        .budget_usage()
-        .reserve((count * size_of::<Value>()) as u64)?;
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(count)
-        .map_err(|_| AdapterError::Allocation)?;
-    for i in 0..count {
-        values.push(heap.sequence_get(entries, i as u32)?);
-    }
-    values.sort_unstable_by(|&a, &b| {
-        compare(
-            heap,
-            entry(heap, a, Entry::Key).unwrap(),
-            entry(heap, b, Entry::Key).unwrap(),
-            chunk,
-        )
-        .expect("validated immutable list keys")
-    });
-    for pair in values.windows(2) {
-        if compare(
-            heap,
-            entry(heap, pair[0], Entry::Key)?,
-            entry(heap, pair[1], Entry::Key)?,
-            chunk,
-        )? == Ordering::Equal
-        {
-            return Err(AdapterError::Input("list keys must be unique"));
-        }
-    }
-    let result = heap.alloc_array(&[])?;
-    for &value in &values {
-        heap.array_push(result, value)?;
-    }
-    Ok(result)
 }
 
 fn find(
@@ -251,15 +217,8 @@ impl SessionVm {
             let key = self.vm.host_arguments(ticket)?[1];
             self.list_call(ticket, &work, Phase::Key, key, item)
         } else {
-            work.sorted = sorted(self.vm.heap_mut(), work.entries, self.read_limit)?;
-            let node = self
-                .vm
-                .heap()
-                .sequence_get(work.state, State::Node as u32)?;
-            self.vm.heap_mut().commit_derived(work.output, node)?;
-            self.vm.heap_mut().begin_untracked(work.output)?;
-            work.index = 0;
-            self.list_continue(ticket, &work, Phase::Build)
+            work.sorted = Value::NULL;
+            self.list_continue(ticket, &work, Phase::Sort)
         }
     }
 
@@ -281,13 +240,66 @@ impl SessionVm {
         self.list_continue(ticket, &work, Phase::Build)
     }
 
-    pub(super) fn dispatch_list(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+    pub(super) fn dispatch_list(
+        &mut self,
+        ticket: HostTicket,
+        budget: NativeBudget,
+    ) -> Result<NativeDispatch, AdapterError> {
+        if matches!(budget, NativeBudget::Exact(0)) {
+            return Ok(NativeDispatch::BudgetYield {
+                work: 0,
+                required_work: 1,
+            });
+        }
         if self.vm.host_arguments(ticket)?[3]
             .as_bool()
             .ok_or(AdapterError::Input("list virtual must be bool"))?
         {
-            return self.dispatch_virtual_list(ticket);
+            return self.dispatch_virtual_list(ticket, budget);
         }
+        if ticket.input != NativeInput::Entry
+            && ticket.continuation.unwrap().stage == Phase::Sort as u64
+        {
+            let mut work = Work::load(self.vm.host_continuation(ticket)?);
+            work.check_source(self.vm.heap())?;
+            let used = match sort::advance(
+                self.vm.heap_mut(),
+                work.entries,
+                work.sorted,
+                budget,
+                self.read_limit,
+            )? {
+                sort::Step::Budget { required_work } => {
+                    return Ok(NativeDispatch::BudgetYield {
+                        work: 0,
+                        required_work,
+                    });
+                }
+                sort::Step::More { state, work: used } => {
+                    work.sorted = state;
+                    self.list_continue(ticket, &work, Phase::Sort)?;
+                    used
+                }
+                sort::Step::Ready { result, work: used } => {
+                    work.sorted = result;
+                    let node = self
+                        .vm
+                        .heap()
+                        .sequence_get(work.state, State::Node as u32)?;
+                    self.vm.heap_mut().commit_derived(work.output, node)?;
+                    self.vm.heap_mut().begin_untracked(work.output)?;
+                    work.index = 0;
+                    self.list_continue(ticket, &work, Phase::Build)?;
+                    used
+                }
+            };
+            self.issued = None;
+            return Ok(NativeDispatch::Ready { work: used });
+        }
+        self.dispatch_list_work(ticket)?;
+        Ok(NativeDispatch::Ready { work: 1 })
+    }
+    fn dispatch_list_work(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
         if ticket.input == NativeInput::Entry {
             let args = self.vm.host_arguments(ticket)?.to_vec();
             let (output, state) = if let Some(output) = self.vm.reactive_output(ticket)? {

@@ -58,6 +58,7 @@ const INDEX_HEIGHTS: u64 = 3;
 const WINDOW: u64 = 4;
 const BUILT: u64 = 5;
 const PREPARE_WINDOW: u64 = 6;
+const SORT: u64 = 7;
 
 fn get(h: &Heap, s: Value, f: S) -> Result<Value, HeapError> {
     h.sequence_get(s, f as u32)
@@ -193,13 +194,21 @@ impl SessionVm {
                 self.vm.heap().sequence_get(w.source, w.index)?,
             )
         } else {
-            w.sorted = sorted(self.vm.heap_mut(), w.entries, self.read_limit)?;
-            w.index = 0;
-            self.virtual_continue(t, &w, INDEX_ROWS)
+            w.sorted = Value::NULL;
+            self.virtual_continue(t, &w, SORT)
         }
     }
-    pub(super) fn dispatch_virtual_list(&mut self, t: HostTicket) -> Result<(), AdapterError> {
-        let result = self.dispatch_virtual_list_work(t);
+    pub(super) fn dispatch_virtual_list(
+        &mut self,
+        t: HostTicket,
+        budget: NativeBudget,
+    ) -> Result<NativeDispatch, AdapterError> {
+        let result = if t.input != NativeInput::Entry && t.continuation.unwrap().stage == SORT {
+            self.virtual_sort(t, budget)
+        } else {
+            self.dispatch_virtual_list_work(t)
+                .map(|()| NativeDispatch::Ready { work: 1 })
+        };
         if result.is_err() && t.input != NativeInput::Entry {
             let w = Work::load(self.vm.host_continuation(t)?);
             if w.output.same_bits(get(self.vm.heap(), w.state, S::Window)?)
@@ -209,6 +218,42 @@ impl SessionVm {
             }
         }
         result
+    }
+
+    fn virtual_sort(
+        &mut self,
+        t: HostTicket,
+        budget: NativeBudget,
+    ) -> Result<NativeDispatch, AdapterError> {
+        let mut w = Work::load(self.vm.host_continuation(t)?);
+        w.check_source(self.vm.heap())?;
+        let used = match sort::advance(
+            self.vm.heap_mut(),
+            w.entries,
+            w.sorted,
+            budget,
+            self.read_limit,
+        )? {
+            sort::Step::Budget { required_work } => {
+                return Ok(NativeDispatch::BudgetYield {
+                    work: 0,
+                    required_work,
+                });
+            }
+            sort::Step::More { state, work } => {
+                w.sorted = state;
+                self.virtual_continue(t, &w, SORT)?;
+                work
+            }
+            sort::Step::Ready { result, work } => {
+                w.sorted = result;
+                w.index = 0;
+                self.virtual_continue(t, &w, INDEX_ROWS)?;
+                work
+            }
+        };
+        self.issued = None;
+        Ok(NativeDispatch::Ready { work: used })
     }
 
     fn dispatch_virtual_list_work(&mut self, t: HostTicket) -> Result<(), AdapterError> {
