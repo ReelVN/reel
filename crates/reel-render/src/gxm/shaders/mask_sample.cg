@@ -7,7 +7,7 @@ void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_po
 float reel_mod(float x,float y){return x-y*floor(x/y);}
 uniform sampler2D u_image : TEXUNIT0;
 uniform float4 u_texels,u_uv0,u_uv1,u_values,u_flags,u_coordinates;
-uniform float2 u_dimensions,u_output_size,u_sample_flags;
+uniform float2 u_dimensions,u_output_size,u_sample_flags,u_origin;
 #ifdef REEL_MASK_COMPOSITE
 varying float2 v_source_uv : TEXCOORD0;
 uniform sampler2D u_source : TEXUNIT1;
@@ -38,7 +38,7 @@ float mask_coverage(){
  if(reel_mod(u_sample_flags.y,2.0)>0.5)at.x=frac(at.x);
  if(u_sample_flags.y>1.5)at.y=frac(at.y);
  float2 half_texel=0.5/u_dimensions;
- at=clamp(at*u_texels.xy,half_texel,u_texels.xy-half_texel);
+ at=clamp(u_origin+at*u_texels.xy,u_origin+half_texel,u_origin+u_texels.xy-half_texel);
  float4 color=tex2D(u_image,at);
  if(u_texels.w==1.0)color.a=1.0;
  if(u_texels.w==2.0)color.rgb=min(color.rgb,float3(color.a));

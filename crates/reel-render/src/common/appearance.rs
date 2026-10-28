@@ -1,6 +1,6 @@
 use reel_ui::frame::ImageAppearance;
-pub(crate) fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 9] {
-    let mut values = [[0.; 4]; 9];
+pub(crate) fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 10] {
+    let mut values = [[0.; 4]; 10];
     // The ordinary shader path keeps its first branch and reads no other fields.
     let mode = if appearance.alpha_layout == reel_ui::frame::ImageAlphaLayout::TopBottom {
         3.

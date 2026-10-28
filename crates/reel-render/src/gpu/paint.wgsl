@@ -26,6 +26,8 @@ struct ImageAppearance {
     offset_enabled: vec4<f32>,
     // Visible/storage extent; z selects BC1 (1) or BC3 (2); w selects nearest (1).
     texel_layout: vec4<f32>,
+    // Logical image origin and extent within the physical page; zero means full texture.
+    view_bounds: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> appearance: ImageAppearance;
 // Stops interpolate in their declared space before entering linear composition.
@@ -90,9 +92,14 @@ fn source_uv(v: VertexOut, dimensions: vec2<u32>) -> vec2<f32> {
     let high = low + span;
     let packed_alpha = appearance.x.w >= 3.0;
     let half_texel = 0.5 / vec2<f32>(dimensions);
-    let texture_high = vec2<f32>(1.0, select(1.0, appearance.texel_layout.y * 0.5, packed_alpha)) - half_texel;
+    let has_view = all(appearance.view_bounds.zw > vec2<f32>(0.0));
+    let view_low = select(vec2<f32>(0.0), appearance.view_bounds.xy, has_view);
+    let view_extent = select(vec2<f32>(1.0), appearance.view_bounds.zw, has_view);
+    var texture_high = view_low + view_extent - half_texel;
+    if packed_alpha { texture_high.y = view_low.y + appearance.texel_layout.y * 0.5 - half_texel.y; }
+    let texture_low = view_low + half_texel;
     if any(span <= vec2<f32>(0.0)) {
-        if packed_alpha { return clamp(v.uv, half_texel, texture_high); }
+        if packed_alpha || has_view { return clamp(v.uv, texture_low, texture_high); }
         return v.uv;
     }
     var uv = v.uv;
@@ -103,7 +110,7 @@ fn source_uv(v: VertexOut, dimensions: vec2<u32>) -> vec2<f32> {
     let inset = min(half_texel, span * 0.5);
     // Regional repetition is already resolved above. Even a repeating sampler
     // must pad the physical texture when the authored region crosses its edge.
-    return clamp(clamp(uv, low + inset, high - inset), half_texel, texture_high);
+    return clamp(clamp(uv, low + inset, high - inset), texture_low, texture_high);
 }
 // RGBA textures store linear premultiplied pixels. Recover each mask texel's
 // encoded red before interpolation so coverage keeps its original linear scale.
@@ -115,14 +122,17 @@ fn encoded_red(pixel: vec4<f32>) -> f32 {
 }
 fn image_alpha(uv: vec2<f32>) -> f32 {
     let size = vec2<i32>(textureDimensions(image));
+    let has_view = all(appearance.view_bounds.zw > vec2<f32>(0.0));
+    let view_low = select(vec2<i32>(0), vec2<i32>(round(appearance.view_bounds.xy * vec2<f32>(size))), has_view);
+    let view_high = select(size - 1, vec2<i32>(round((appearance.view_bounds.xy + appearance.view_bounds.zw) * vec2<f32>(size))) - 1, has_view);
     if appearance.texel_layout.w == 1.0 {
-        let at = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), vec2<i32>(0), size - 1);
+        let at = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), view_low, view_high);
         return encoded_red(textureLoad(image, at, 0));
     }
     let pixel = uv * vec2<f32>(size) - 0.5;
     let base = vec2<i32>(floor(pixel));
-    let low = clamp(base, vec2<i32>(0), size - 1);
-    let high = clamp(base + 1, vec2<i32>(0), size - 1);
+    let low = clamp(base, view_low, view_high);
+    let high = clamp(base + 1, view_low, view_high);
     let t = fract(pixel);
     return mix(mix(encoded_red(textureLoad(image, low, 0)),
                    encoded_red(textureLoad(image, vec2<i32>(high.x, low.y), 0)), t.x),

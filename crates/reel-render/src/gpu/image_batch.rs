@@ -105,9 +105,10 @@ impl Context<'_> {
                         self.size,
                         mesh::ImagePaint {
                             color: quad.brush.image.color.map(|channel| channel * quad.alpha),
-                            sampling: mesh::ImageSampling::with_layout(
+                            sampling: mesh::ImageSampling::with_origin(
                                 quad.brush.image.source_rect,
                                 image.layout,
+                                image.normalized_origin(),
                                 [
                                     quad.brush.sampler.x_extend == Extend::Repeat,
                                     quad.brush.sampler.y_extend == Extend::Repeat,

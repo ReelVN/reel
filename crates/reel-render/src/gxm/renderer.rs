@@ -452,6 +452,28 @@ impl Backend {
                 &mut touched,
             )
         };
+        let upload = upload.and_then(|ready| {
+            if !ready || plan.aliases.is_empty() {
+                return Ok(ready);
+            }
+            images.reserve(plan.aliases.len());
+            for alias in &plan.aliases {
+                let backing = images
+                    .get(&alias.backing.handle())
+                    .ok_or(GpuError::InvalidSize)?
+                    .clone();
+                let storage = crate::common::renderer::reserve(
+                    &self.budgets.transient,
+                    &local.transient,
+                    (size_of::<resources::Image>() + 2 * size_of::<usize>() + 128) as u64,
+                    limits.transient_bytes,
+                    "image plan",
+                )?;
+                let image = resources::Image::atlas(backing, alias.source, storage)?;
+                images.insert(alias.source.handle(), Rc::new(image));
+            }
+            Ok(ready)
+        });
         drop(plan);
         drop(plan_tickets);
         let ready = match upload {

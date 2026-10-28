@@ -530,7 +530,7 @@ impl Renderer {
             }
             // Cold image uploads may yield Busy. Complete that admission before
             // preparing glyphs so retries cannot discard and rerasterize their work.
-            let images = self.images.prepare(
+            let mut images = self.images.prepare(
                 &self.gpu,
                 &plan.images,
                 &self.budgets,
@@ -538,6 +538,32 @@ impl Renderer {
                 &self.admission,
                 &self.glyphs,
             )?;
+            if !plan.aliases.is_empty() {
+                let bytes = (plan.aliases.len() * 128) as u64;
+                tickets.push(reserve(
+                    &self.budgets.transient,
+                    &budget_scope.transient,
+                    bytes,
+                    self.gpu.limits.transient_bytes,
+                    "image plan",
+                )?);
+                images.reserve(plan.aliases.len());
+                for alias in &plan.aliases {
+                    let backing = images
+                        .get(&alias.backing.handle())
+                        .ok_or(GpuError::InvalidSize)?
+                        .clone();
+                    let storage = reserve(
+                        &self.budgets.transient,
+                        &budget_scope.transient,
+                        (size_of::<super::resources::Image>() + 2 * size_of::<usize>()) as u64,
+                        self.gpu.limits.transient_bytes,
+                        "image plan",
+                    )?;
+                    let image = super::resources::Image::atlas(backing, alias.source, storage)?;
+                    images.insert(alias.source.handle(), Arc::new(image));
+                }
+            }
             let transform = Affine::scale_non_uniform(
                 f64::from(size[0]) / frame.info().logical_size[0],
                 f64::from(size[1]) / frame.info().logical_size[1],
@@ -665,6 +691,9 @@ impl Renderer {
                 )?;
             }
             for image in images.values() {
+                if image.backing.is_some() {
+                    continue;
+                }
                 tickets.push(Reservation {
                     _shared: None,
                     _local: super::image_cache::reserve_local(

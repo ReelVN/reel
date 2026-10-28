@@ -145,7 +145,7 @@ fn texture_functions(
             binding + usize::from(source_sampler)
         )
         .unwrap();
-        writeln!(source, "float4 reel_texture_{binding}_read(float2 uv){{float4 t=reel_texture_meta[{}];float2 h=reel_texture_meta[{}].xy;float4 s=tex2Dlod(reel_texture_{binding},float4(clamp(uv*t.xy,h,t.xy-h),0.0,0.0));if(t.w==1.0)s.a=1.0;if(t.w==2.0)s.rgb=min(s.rgb,float3(s.a));return s;}}", binding*2,binding*2+1).unwrap();
+        writeln!(source, "float4 reel_texture_{binding}_read(float2 uv){{float4 t=reel_texture_meta[{}];float4 m=reel_texture_meta[{}];float2 h=m.xy,o=m.zw;float4 s=tex2Dlod(reel_texture_{binding},float4(clamp(o+uv*t.xy,o+h,o+t.xy-h),0.0,0.0));if(t.w==1.0)s.a=1.0;if(t.w==2.0)s.rgb=min(s.rgb,float3(s.a));return s;}}", binding*2,binding*2+1).unwrap();
         if usage & 1 != 0 {
             writeln!(source,"float4 reel_texture_{binding}_color(float2 uv){{return reel_texture_{binding}_read(uv);}}").unwrap();
         }

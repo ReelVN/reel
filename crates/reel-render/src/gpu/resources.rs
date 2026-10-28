@@ -42,6 +42,7 @@ pub struct Image {
     pub(super) texture: wgpu::Texture,
     pub size: [u32; 2],
     pub(super) layout: TextureLayout,
+    pub(super) origin: [u32; 2],
     pub(super) texture_format: Option<TextureFormat>,
     /// Original channel encoding, retained for packed alpha coverage.
     pub(super) encoding: ColorEncoding,
@@ -50,11 +51,55 @@ pub struct Image {
     pub(super) source: Option<ResourceSource>,
     pub(super) reuse_count: u8,
     pub(super) discard_pending: std::sync::atomic::AtomicBool,
+    pub(super) backing: Option<std::sync::Arc<Image>>,
+    pub(super) _view_storage: Option<super::renderer::Reservation>,
 }
 impl Image {
+    pub(super) fn normalized_origin(&self) -> [f64; 2] {
+        std::array::from_fn(|i| f64::from(self.origin[i]) / f64::from(self.layout.storage_size[i]))
+    }
     pub(super) fn uv_transform(&self) -> reel_ui::kurbo::Affine {
         let [x, y] = self.layout.uv_scale();
-        reel_ui::kurbo::Affine::scale_non_uniform(x, y)
+        let offset = self.origin.map(|v| v as f64);
+        reel_ui::kurbo::Affine::translate((
+            offset[0] / f64::from(self.size[0]),
+            offset[1] / f64::from(self.size[1]),
+        )) * reel_ui::kurbo::Affine::scale_non_uniform(x, y)
+    }
+    pub(super) fn atlas(
+        backing: std::sync::Arc<Image>,
+        source: &ResourceLease,
+        storage: super::renderer::Reservation,
+    ) -> Result<Self, GpuError> {
+        let reel_ui::resources::ResourceView::AtlasView {
+            image, encoding, ..
+        } = source.view()
+        else {
+            return Err(GpuError::InvalidSize);
+        };
+        image
+            .validate(backing.size)
+            .map_err(|_| GpuError::InvalidSize)?;
+        Ok(Self {
+            view: backing.view.clone(),
+            texture: backing.texture.clone(),
+            size: backing.size,
+            layout: TextureLayout {
+                logical_size: image.logical_size,
+                content_size: image.content_size,
+                storage_size: backing.size,
+            },
+            origin: image.content_origin,
+            texture_format: backing.texture_format,
+            encoding,
+            yuv: None,
+            residency: None,
+            source: None,
+            reuse_count: 0,
+            discard_pending: std::sync::atomic::AtomicBool::new(false),
+            backing: Some(backing),
+            _view_storage: Some(storage),
+        })
     }
 }
 pub(super) fn image_rows(
@@ -158,6 +203,7 @@ pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError>
         texture,
         size,
         layout: TextureLayout::identity(size),
+        origin: [0; 2],
         texture_format: None,
         encoding: ColorEncoding::Linear,
         yuv: None,
@@ -165,6 +211,8 @@ pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError>
         source: None,
         reuse_count: 0,
         discard_pending: std::sync::atomic::AtomicBool::new(false),
+        backing: None,
+        _view_storage: None,
     })
 }
 
@@ -234,6 +282,7 @@ pub(super) fn create_texture(
         texture,
         size,
         layout: upload.layout,
+        origin: [0; 2],
         texture_format: Some(descriptor.format),
         encoding: descriptor.source_encoding,
         yuv: None,
@@ -241,6 +290,8 @@ pub(super) fn create_texture(
         source: None,
         reuse_count: 0,
         discard_pending: std::sync::atomic::AtomicBool::new(false),
+        backing: None,
+        _view_storage: None,
     })
 }
 /// Copy whole format block rows, retaining compressed bytes throughout staging.

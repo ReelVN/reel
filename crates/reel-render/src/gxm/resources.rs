@@ -13,6 +13,7 @@ pub(super) struct Image {
     pub video: [[f32; 4]; 4],
     pub kind: f32,
     pub layout: TextureLayout,
+    pub origin: [u32; 2],
     pub format: Option<TextureFormat>,
     pub encoding: ColorEncoding,
     pub coverage: bool,
@@ -20,12 +21,57 @@ pub(super) struct Image {
     reuse_count: u8,
     pub discard_pending: std::cell::Cell<bool>,
     pub source: Option<ResourceSource>,
-    _storage: super::ownership::NativeTicket,
+    _storage: Option<super::ownership::NativeTicket>,
+    pub(super) _backing: Option<Rc<Image>>,
+    _view_storage: Option<crate::common::renderer::Reservation>,
 }
 impl Image {
+    pub(super) fn normalized_origin(&self) -> [f64; 2] {
+        std::array::from_fn(|i| f64::from(self.origin[i]) / f64::from(self.layout.storage_size[i]))
+    }
     pub fn uv_transform(&self) -> reel_ui::kurbo::Affine {
         let [x, y] = self.layout.uv_scale();
-        reel_ui::kurbo::Affine::scale_non_uniform(x, y)
+        reel_ui::kurbo::Affine::translate((
+            f64::from(self.origin[0]) / f64::from(self.layout.storage_size[0]),
+            f64::from(self.origin[1]) / f64::from(self.layout.storage_size[1]),
+        )) * reel_ui::kurbo::Affine::scale_non_uniform(x, y)
+    }
+    pub(super) fn atlas(
+        backing: Rc<Image>,
+        source: &ResourceLease,
+        storage: crate::common::renderer::Reservation,
+    ) -> Result<Self, GpuError> {
+        let reel_ui::resources::ResourceView::AtlasView {
+            image, encoding, ..
+        } = source.view()
+        else {
+            return Err(GpuError::InvalidSize);
+        };
+        image
+            .validate(backing.layout.storage_size)
+            .map_err(|_| GpuError::InvalidSize)?;
+        Ok(Self {
+            texture: backing.texture.clone(),
+            planes: Vec::new(),
+            video: backing.video,
+            kind: backing.kind,
+            layout: TextureLayout {
+                logical_size: image.logical_size,
+                content_size: image.content_size,
+                storage_size: backing.layout.storage_size,
+            },
+            origin: image.content_origin,
+            format: backing.format,
+            encoding,
+            coverage: false,
+            native_import: false,
+            reuse_count: 0,
+            discard_pending: std::cell::Cell::new(false),
+            source: None,
+            _storage: None,
+            _backing: Some(backing),
+            _view_storage: Some(storage),
+        })
     }
 }
 
@@ -54,12 +100,12 @@ impl Images {
         let cached = self
             .entries
             .values()
-            .map(|image| image._storage.bytes())
+            .map(|image| image._storage.as_ref().expect("physical image").bytes())
             .sum();
         let mut retired = 0;
         let mut readers = 0;
         for image in self.retired.iter() {
-            let bytes = image._storage.bytes();
+            let bytes = image._storage.as_ref().expect("physical image").bytes();
             retired += bytes;
             if Rc::strong_count(image) > 1
                 || image
@@ -217,6 +263,7 @@ impl Images {
             video: [[0.; 4]; 4],
             kind: 0.,
             layout: TextureLayout::identity([1, 1]),
+            origin: [0; 2],
             format: None,
             encoding: ColorEncoding::Linear,
             coverage: false,
@@ -224,7 +271,9 @@ impl Images {
             reuse_count: 0,
             discard_pending: std::cell::Cell::new(false),
             source: None,
-            _storage: storage,
+            _storage: Some(storage),
+            _backing: None,
+            _view_storage: None,
         });
         self.white = Some(image.clone());
         Ok(image)
@@ -302,7 +351,7 @@ impl Images {
             .and_then(Rc::into_inner);
         let (storage, recycled_textures, reuse_count) = if let Some(image) = recycled {
             (
-                image._storage,
+                image._storage.expect("physical image"),
                 Some((image.texture, image.planes)),
                 image.reuse_count.saturating_add(1),
             )
@@ -395,6 +444,7 @@ impl Images {
             video,
             kind,
             layout,
+            origin: [0; 2],
             format,
             encoding,
             coverage: false,
@@ -405,7 +455,9 @@ impl Images {
                 version: source.version().clone(),
                 lease: source.downgrade(),
             }),
-            _storage: storage,
+            _storage: Some(storage),
+            _backing: None,
+            _view_storage: None,
         });
         Ok(Pending {
             source: source.clone(),
@@ -474,7 +526,14 @@ impl Images {
                     .format
                     .is_some_and(TextureFormat::is_compressed)
                 {
-                    *quota = quota.saturating_sub(pending.image._storage.bytes());
+                    *quota = quota.saturating_sub(
+                        pending
+                            .image
+                            ._storage
+                            .as_ref()
+                            .expect("physical image")
+                            .bytes(),
+                    );
                     touched.push(pending.image.clone());
                     self.entries.insert(source.handle(), pending.image.clone());
                     output.insert(source.handle(), pending.image);
@@ -565,7 +624,7 @@ fn recyclable(
     // Flights and prepared frames retain their Image references through the
     // completion fence. The final reader and source lease must both be gone.
     reusable(image)
-        && image._storage.bytes() == bytes
+        && image._storage.as_ref().expect("physical image").bytes() == bytes
         && !image.coverage
         && !image.native_import
         && !matches!(item.source.view(), reel_ui::resources::ResourceView::Yuv420(source) if native_frame(source).is_some())

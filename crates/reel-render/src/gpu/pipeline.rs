@@ -555,11 +555,11 @@ impl Pipelines {
         let nearest_samplers = create_samplers(wgpu::FilterMode::Nearest);
         let plain_appearance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("plain image appearance"),
-            contents: &[0u8; 144],
+            contents: &[0u8; 160],
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let block_appearance = std::array::from_fn(|index| {
-            let mut values = [[0f32; 4]; 9];
+            let mut values = [[0f32; 4]; 10];
             values[8][2] = (index + 1) as f32;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("fixed block texture appearance"),

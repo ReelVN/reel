@@ -21,7 +21,15 @@ impl<'a> Paint<'a> {
         {
             return None;
         }
-        let mut values = appearance.map(appearance_uniform).unwrap_or([[0.; 4]; 9]);
+        let mut values = appearance.map(appearance_uniform).unwrap_or([[0.; 4]; 10]);
+        if image._backing.is_some() {
+            values[9] = [
+                image.origin[0] as f32 / image.layout.storage_size[0] as f32,
+                image.origin[1] as f32 / image.layout.storage_size[1] as f32,
+                image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
+                image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
+            ];
+        }
         values[8] = [
             image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
             image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,

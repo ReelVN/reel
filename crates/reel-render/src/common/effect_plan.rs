@@ -435,6 +435,7 @@ pub(crate) fn projected_source(
 /// Common fixed image metadata: content scale/encoding/format plus texel centers.
 pub(crate) fn texture_metadata(
     layout: reel_core::texture::TextureLayout,
+    origin: [u32; 2],
     encoding: reel_ui::resources::ColorEncoding,
     format: Option<reel_core::texture::TextureFormat>,
 ) -> [[f32; 4]; 2] {
@@ -453,8 +454,8 @@ pub(crate) fn texture_metadata(
         [
             0.5 / layout.storage_size[0] as f32,
             0.5 / layout.storage_size[1] as f32,
-            0.0,
-            0.0,
+            origin[0] as f32 / layout.storage_size[0] as f32,
+            origin[1] as f32 / layout.storage_size[1] as f32,
         ],
     ]
 }

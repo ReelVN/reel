@@ -97,7 +97,7 @@ impl Slot {
                 .images
                 .iter()
                 .zip(images)
-                .all(|(a, b)| Arc::ptr_eq(a, b))
+                .all(|(a, b)| a.view == b.view)
     }
     pub(super) fn group(&self) -> &wgpu::BindGroup {
         self.group.as_ref().expect("effect group prepared")
@@ -416,6 +416,7 @@ impl Cache {
             let start = layout.metadata as usize + index * 32;
             let metadata = crate::common::effect_plan::texture_metadata(
                 image.layout,
+                image.origin,
                 image.encoding,
                 image.texture_format,
             );
@@ -511,6 +512,7 @@ pub(super) fn fallback(
         });
         metadata.extend(crate::common::effect_plan::texture_metadata(
             image.layout,
+            image.origin,
             image.encoding,
             image.texture_format,
         ));

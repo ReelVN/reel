@@ -29,7 +29,7 @@ struct Paint<'a> {
     kind: f32,
     video: &'a [[f32; 4]; 4],
     dimensions: [u32; 2],
-    appearance: [[f32; 4]; 9],
+    appearance: [[f32; 4]; 10],
     repeat: [bool; 2],
     coverage: bool,
     format: Option<PixelFormat>,
@@ -48,7 +48,7 @@ struct PaintState {
     kind: f32,
     video: [[f32; 4]; 4],
     dimensions: [u32; 2],
-    appearance: [[f32; 4]; 9],
+    appearance: [[f32; 4]; 10],
     repeat: [bool; 2],
     quality: ImageQuality,
     coverage: bool,
@@ -402,7 +402,7 @@ impl Context<'_> {
                 kind: 0.,
                 video: &[[0.; 4]; 4],
                 dimensions: source.view.size(),
-                appearance: [[0.; 4]; 9],
+                appearance: [[0.; 4]; 10],
                 repeat: [false; 2],
                 coverage: false,
                 format: None,
@@ -483,7 +483,7 @@ impl Context<'_> {
                 kind: 0.,
                 video: &[[0.; 4]; 4],
                 dimensions: [1, 1],
-                appearance: [[0.; 4]; 9],
+                appearance: [[0.; 4]; 10],
                 repeat: [false; 2],
                 coverage: false,
                 format: None,
@@ -628,8 +628,12 @@ impl Context<'_> {
                     brush.sampler.x_extend == Extend::Repeat,
                     brush.sampler.y_extend == Extend::Repeat,
                 ];
-                let sampling =
-                    mesh::ImageSampling::with_layout(brush.image.source_rect, image.layout, repeat);
+                let sampling = mesh::ImageSampling::with_origin(
+                    brush.image.source_rect,
+                    image.layout,
+                    image.normalized_origin(),
+                    repeat,
+                );
                 let color = brush
                     .image
                     .color
@@ -795,9 +799,10 @@ impl Context<'_> {
                             .image
                             .color
                             .map(|c| c * composite.alpha * brush.sampler.alpha),
-                        sampling: mesh::ImageSampling::with_layout(
+                        sampling: mesh::ImageSampling::with_origin(
                             brush.image.source_rect,
                             image.layout,
+                            image.normalized_origin(),
                             repeat,
                         ),
                     },
@@ -983,7 +988,7 @@ impl Context<'_> {
                 kind: 0.,
                 video: &[[0.; 4]; 4],
                 dimensions: page.size,
-                appearance: paint.unwrap_or([[0.; 4]; 9]),
+                appearance: paint.unwrap_or([[0.; 4]; 10]),
                 repeat: [false; 2],
                 coverage: true,
                 format: None,

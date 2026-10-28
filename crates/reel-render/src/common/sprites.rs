@@ -34,7 +34,9 @@ impl Mesh {
             batch.brush.sampler.x_extend == Extend::Repeat,
             batch.brush.sampler.y_extend == Extend::Repeat,
         ];
-        let sampling = ImageSampling::with_layout(batch.brush.image.source_rect, layout, repeat);
+        let [_, _, _, _, x, y] = uv.as_coeffs();
+        let sampling =
+            ImageSampling::with_origin(batch.brush.image.source_rect, layout, [x, y], repeat);
         let outer = outer * batch.transform;
         let viewport = Rect::new(0., 0., f64::from(size[0]), f64::from(size[1]));
         for instance in &batch.instances {

@@ -89,6 +89,9 @@ impl ImageCache {
     fn publish(&self, images: &HashMap<ResourceHandle, Arc<Image>>) {
         let mut cache = self.images.lock().unwrap();
         for (&handle, image) in images {
+            if image.backing.is_some() {
+                continue;
+            }
             if !image.source.as_ref().unwrap().lease.is_released() {
                 cache.insert(handle, image.clone());
             }

@@ -395,7 +395,12 @@ impl Context<'_> {
             }
         };
         let sampling = if let Brush::Image(brush) = brush {
-            mesh::ImageSampling::with_layout(brush.image.source_rect, image.layout, repeat)
+            mesh::ImageSampling::with_origin(
+                brush.image.source_rect,
+                image.layout,
+                image.normalized_origin(),
+                repeat,
+            )
         } else {
             Default::default()
         };
@@ -862,7 +867,7 @@ impl Context<'_> {
                 + materials()
                     .filter(|(_, entry)| entry.state.appearance.is_some())
                     .count()
-                    * 144) as u64,
+                    * size_of::<crate::common::gradient::Uniform>()) as u64,
         )?;
         let index_format = match batch.geometry.capacity().index_format {
             crate::common::indices::Format::U16 => wgpu::IndexFormat::Uint16,
@@ -1003,8 +1008,19 @@ fn image_appearance(
     appearance: Option<ImageAppearance>,
     quality: ImageQuality,
 ) -> Option<super::gradient::Uniform> {
-    appearance.map(|appearance| {
-        let mut uniform = appearance_uniform(appearance);
+    if appearance.is_none() && image.backing.is_none() {
+        return None;
+    }
+    Some({
+        let mut uniform = appearance.map(appearance_uniform).unwrap_or([[0.; 4]; 10]);
+        if image.backing.is_some() {
+            uniform[9] = [
+                image.origin[0] as f32 / image.size[0] as f32,
+                image.origin[1] as f32 / image.size[1] as f32,
+                image.layout.content_size[0] as f32 / image.size[0] as f32,
+                image.layout.content_size[1] as f32 / image.size[1] as f32,
+            ];
+        }
         uniform[8] = [
             image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
             image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
@@ -1049,7 +1065,10 @@ mod tests {
         for corners in [None, Some(gradient)] {
             let appearance = ImageAppearance::new(corners, adjustment, Default::default()).unwrap();
             let uniform = appearance_uniform(appearance);
-            assert_eq!(size_of_val(&uniform), 144);
+            assert_eq!(
+                size_of_val(&uniform),
+                size_of::<crate::common::gradient::Uniform>()
+            );
             assert_eq!(uniform[4][3], 1.);
             assert_eq!(uniform[5][3], f32::from(corners.is_some()));
             assert_eq!(uniform[6], [1.2, 0.8, 0.5, 0.4]);

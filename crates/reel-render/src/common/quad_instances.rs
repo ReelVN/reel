@@ -122,9 +122,11 @@ impl<'a> Input<'a> {
             return Ok(None);
         }
         let local = mesh::quad_local(batch.bounds);
-        let window = ImageSampling::with_layout(
+        let [_, _, _, _, x, y] = uv.as_coeffs();
+        let window = ImageSampling::with_origin(
             batch.brush.image.source_rect,
             layout,
+            [x, y],
             [
                 batch.brush.sampler.x_extend == Extend::Repeat,
                 batch.brush.sampler.y_extend == Extend::Repeat,
@@ -245,7 +247,7 @@ impl Batch {
         &self,
         source: mesh::PaintSource,
         repeat: [bool; 2],
-        appearance: Option<&[[f32; 4]; 9]>,
+        appearance: Option<&[[f32; 4]; 10]>,
         format: Option<reel_core::texture::TextureFormat>,
     ) -> Option<mesh::DirectPaint> {
         mesh::direct_paint(
@@ -257,7 +259,10 @@ impl Batch {
         )
     }
     #[cfg(all(feature = "gxm", target_os = "vita"))]
-    pub fn direct_coverage(&self, appearance: Option<&[[f32; 4]; 9]>) -> Option<mesh::DirectPaint> {
+    pub fn direct_coverage(
+        &self,
+        appearance: Option<&[[f32; 4]; 10]>,
+    ) -> Option<mesh::DirectPaint> {
         (self.direct_paint(mesh::PaintSource::Texture, [false; 2], appearance, None)
             == Some(mesh::DirectPaint::Rgba))
         .then_some(mesh::DirectPaint::Coverage)

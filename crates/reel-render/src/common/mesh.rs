@@ -88,13 +88,23 @@ impl ImageSampling {
     pub(crate) fn window(self) -> [f32; 4] {
         self.window
     }
+    #[cfg(test)]
     pub(crate) fn with_layout(
         rect: Option<Rect>,
         layout: reel_core::texture::TextureLayout,
         repeat: [bool; 2],
     ) -> Self {
+        Self::with_origin(rect, layout, [0.; 2], repeat)
+    }
+    /// `origin` is the normalized page origin; source rectangles remain logical.
+    pub(crate) fn with_origin(
+        rect: Option<Rect>,
+        layout: reel_core::texture::TextureLayout,
+        origin: [f64; 2],
+        repeat: [bool; 2],
+    ) -> Self {
         let rect = rect.or_else(|| {
-            (layout.content_size != layout.storage_size).then(|| {
+            (layout.content_size != layout.storage_size || origin != [0.; 2]).then(|| {
                 Rect::from_origin_size(
                     (0., 0.),
                     (
@@ -110,8 +120,8 @@ impl ImageSampling {
         let scale = layout.uv_scale();
         Self {
             window: [
-                (rect.x0 * scale[0]) as f32,
-                (rect.y0 * scale[1]) as f32,
+                (origin[0] + rect.x0 * scale[0]) as f32,
+                (origin[1] + rect.y0 * scale[1]) as f32,
                 (rect.width() * scale[0]) as f32 * if repeat[0] { -1. } else { 1. },
                 (rect.height() * scale[1]) as f32 * if repeat[1] { -1. } else { 1. },
             ],
@@ -341,7 +351,7 @@ impl Mesh {
     /// Gradient or adjusted brushes retain their existing color operations.
     pub(crate) fn direct_coverage(
         &self,
-        appearance: Option<&[[f32; 4]; 9]>,
+        appearance: Option<&[[f32; 4]; 10]>,
     ) -> Option<DirectPaint> {
         (self.direct_paint(PaintSource::Texture, [false; 2], appearance, None)
             == Some(DirectPaint::Rgba))
@@ -363,7 +373,7 @@ impl Mesh {
         &self,
         source: PaintSource,
         repeat: [bool; 2],
-        appearance: Option<&[[f32; 4]; 9]>,
+        appearance: Option<&[[f32; 4]; 10]>,
         format: Option<reel_core::texture::TextureFormat>,
     ) -> Option<DirectPaint> {
         direct_paint(
@@ -898,13 +908,16 @@ pub(crate) fn opaque_paint(direct: Option<DirectPaint>, opaque: bool) -> Option<
 pub(crate) fn direct_paint(
     source: PaintSource,
     repeat: [bool; 2],
-    appearance: Option<&[[f32; 4]; 9]>,
+    appearance: Option<&[[f32; 4]; 10]>,
     format: Option<reel_core::texture::TextureFormat>,
     windows: impl Iterator<Item = [f32; 4]>,
 ) -> Option<DirectPaint> {
     if repeat != [false; 2]
         || appearance.is_some_and(|values| {
-            !matches!(values[4][3], 0. | 1.) || values[5][3] != 0. || values[7][3] != 0.
+            !matches!(values[4][3], 0. | 1.)
+                || values[5][3] != 0.
+                || values[7][3] != 0.
+                || values[9] != [0.; 4]
         })
     {
         return None;
@@ -1232,7 +1245,7 @@ mod tests {
             mesh.direct_paint(PaintSource::Texture, [false, true], None, None),
             None
         );
-        let mut appearance = [[0.; 4]; 9];
+        let mut appearance = [[0.; 4]; 10];
         appearance[4][3] = 1.;
         assert_eq!(
             mesh.direct_paint(PaintSource::Texture, [false; 2], Some(&appearance), None),

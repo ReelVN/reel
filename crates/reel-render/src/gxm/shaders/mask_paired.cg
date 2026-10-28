@@ -7,7 +7,7 @@ void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_po
 float reel_mod(float x,float y){return x-y*floor(x/y);}
 uniform sampler2D u_image0 : TEXUNIT0;
 uniform sampler2D u_image1 : TEXUNIT1;
-uniform float4 u_coordinates[2],u_texels[2],u_dimensions[2];
+uniform float4 u_coordinates[2],u_texels[2],u_dimensions[2],u_origins[2];
 uniform float4 u_ops[8];
 uniform float4 u_uv0,u_uv1,u_flags;
 uniform float2 u_output_size;
@@ -28,12 +28,12 @@ float chain_step(float value,float4 operation){
  if(operation.x==6.0)return clamp(value,operation.y,operation.z);
  return smooth_mask(operation.y,operation.z,value);
 }
-float2 coordinates(float2 uv,float4 c,float4 texels,float4 dimensions){
+float2 coordinates(float2 uv,float4 c,float4 texels,float4 dimensions,float2 origin){
  float2 at=uv*c.zw+c.xy;
  if(reel_mod(dimensions.z,2.0)>0.5)at.x=frac(at.x);
  if(dimensions.z>1.5)at.y=frac(at.y);
  float2 half_texel=0.5/dimensions.xy;
- return clamp(at*texels.xy,half_texel,texels.xy-half_texel);
+ return clamp(origin+at*texels.xy,origin+half_texel,origin+texels.xy-half_texel);
 }
 float alpha(float4 color,float4 texels){return texels.w==1.0?1.0:color.a;}
 float gray(float4 color,float4 texels){
@@ -49,13 +49,13 @@ void main(){
  float3 position=float3(fragment_position.xy,1.0);
  float2 uv=float2(dot(u_uv0.xyz,position),dot(u_uv1.xyz,position));
  if(any((uv<float2(0.0)))||any((uv>float2(1.0)))){reel_output=float4(0.0);return;}
- float4 first=tex2D(u_image0,coordinates(uv,u_coordinates[0],u_texels[0],u_dimensions[0]));
+ float4 first=tex2D(u_image0,coordinates(uv,u_coordinates[0],u_texels[0],u_dimensions[0],u_origins[0].xy));
 #ifdef REEL_MASK_FIRST_GRAY
  float a=gray(first,u_texels[0]);
 #else
  float a=alpha(first,u_texels[0]);
 #endif
- float4 second=tex2D(u_image1,coordinates(uv,u_coordinates[1],u_texels[1],u_dimensions[1]));
+ float4 second=tex2D(u_image1,coordinates(uv,u_coordinates[1],u_texels[1],u_dimensions[1],u_origins[1].xy));
 #ifdef REEL_MASK_SECOND_GRAY
  float b=gray(second,u_texels[1]);
 #else

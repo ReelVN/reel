@@ -13,6 +13,11 @@ pub(crate) struct Required<'a> {
     pub(crate) texture: Option<super::resources::TextureUploadLayout>,
 }
 
+/// Logical image handle resolved through a separately planned physical page.
+pub(crate) struct Alias<'a> {
+    pub(crate) source: &'a ResourceLease,
+    pub(crate) backing: &'a ResourceLease,
+}
 pub(crate) struct Mask<'a> {
     pub(crate) definition: &'a FrameImageMask,
     pub(crate) at: RecordLocation,
@@ -20,6 +25,7 @@ pub(crate) struct Mask<'a> {
 
 pub(crate) struct Plan<'a> {
     pub(crate) images: Vec<Required<'a>>,
+    pub(crate) aliases: Vec<Alias<'a>>,
     pub(crate) masks: Vec<Mask<'a>>,
 }
 
@@ -32,9 +38,11 @@ pub(crate) fn collect<'a>(
 ) -> Result<Plan<'a>, GpuError> {
     let mut plan = Plan {
         images: Vec::new(),
+        aliases: Vec::new(),
         masks: Vec::new(),
     };
     let mut seen = HashSet::new();
+    let mut seen_backings = HashSet::new();
     let mut drawings = Vec::new();
     let mut visited_drawings = HashSet::new();
     for frame in frames {
@@ -57,7 +65,7 @@ pub(crate) fn collect<'a>(
         reserve(
             (leases.len()
                 * (size_of::<Required<'_>>()
-                    + 4 * size_of::<ResourceHandle>()
+                    + 6 * size_of::<ResourceHandle>()
                     + 2 * size_of::<&ResourceLease>())
                 + (frame.masks().len() + frame.transitions().len() + 1) * 96) as u64,
         )?;
@@ -184,6 +192,14 @@ pub(crate) fn collect<'a>(
                 at,
                 record: "missing image lease",
             })?;
+            let backing = source.image_backing();
+            if backing.handle() != source.handle() {
+                push_stack(&mut plan.aliases, Alias { source, backing }, &mut reserve)?;
+            }
+            if !seen_backings.insert(backing.handle()) {
+                continue;
+            }
+            let source = backing;
             let mut texture = None;
             let size = if let Some(descriptor) = source.texture_descriptor() {
                 let upload = super::resources::TextureUploadLayout::new(descriptor)?;

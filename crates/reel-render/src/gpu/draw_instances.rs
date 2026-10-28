@@ -165,7 +165,7 @@ impl Context<'_> {
         self.transient(
             (size_of::<wgpu::BindGroup>()
                 + if pending.state.appearance.is_some() {
-                    144
+                    size_of::<crate::common::gradient::Uniform>()
                 } else {
                     0
                 }) as u64,

@@ -14,6 +14,7 @@ use reel_ui::{
 };
 use std::time::Instant;
 
+mod atlas;
 mod nine_slice;
 
 mod synthesis;

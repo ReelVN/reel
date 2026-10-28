@@ -418,6 +418,7 @@ impl Context<'_> {
             images.push(&image.texture);
             metadata.extend(effect_plan::texture_metadata(
                 image.layout,
+                image.origin,
                 image.encoding,
                 image.format,
             ));

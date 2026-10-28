@@ -19,6 +19,9 @@ use reel_ui::{
 };
 
 fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
+    if variant == 10 {
+        return effect_frame(lease, pool);
+    }
     let mut bridge = if matches!(variant, 5 | 8) {
         use reel_ui::{
             imaging::Composite,
@@ -68,6 +71,9 @@ fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
             3 => widget.with_pattern([true, true], 1., None),
             4 => widget.with_alpha_layout(ImageAlphaLayout::TopBottom),
             6 => widget.with_color(reel_ui::peniko::Color::from_rgba8(255, 255, 255, 128)),
+            9 => widget
+                .with_source_rect(Some(Rect::new(-2., -1., 6., 7.)))
+                .with_pattern([true, true], 1., None),
             7 => widget
                 .with_source_rect(Some(Rect::new(0., 0., 24., 16.)))
                 .with_color(reel_ui::peniko::Color::from_rgba8(255, 255, 255, 128)),
@@ -782,4 +788,363 @@ fn mip_chains_submit_every_level_with_exact_residency() {
             .unwrap();
         renderer.poll().unwrap();
     }
+}
+
+#[test]
+#[ignore = "requires graphics adapter; compares synthetic numeric textures"]
+fn atlas_views_match_standalone_crop_repeat_slices_alpha_and_mask() {
+    use reel_core::texture::ImageView;
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 128,
+            max_bytes: 8 << 20,
+        },
+    );
+    let mut registry = ResourceRegistry::new(3, 1 << 20).unwrap();
+    let version = |name: &str| ResourceVersion {
+        key: AssetKey(name.into()),
+        version: ContentVersion([1; 32]),
+    };
+    let desc = |size| TextureDescriptor {
+        storage_layout: TextureStorageLayout::Linear,
+        mip_count: 1,
+        format: TextureFormat::Rgba8,
+        source_encoding: ColorEncoding::Linear,
+        layout: TextureLayout::identity(size),
+    };
+    let mut single = Vec::new();
+    for y in 0..4 {
+        for x in 0..4 {
+            single.extend([x * 60, y * 60, 255 - x * 50, 255]);
+        }
+    }
+    let mut page = vec![0; 12 * 12 * 4];
+    for pixel in page.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[0, 255, 0, 255]);
+    }
+    for y in 0..4 {
+        for x in 0..4 {
+            let from = (y * 4 + x) * 4;
+            let to = ((y + 4) * 12 + x + 4) * 4;
+            page[to..to + 4].copy_from_slice(&single[from..from + 4]);
+        }
+    }
+    let make = |registry: &mut ResourceRegistry, name: &str, size, bytes: Vec<u8>| {
+        let n = bytes.len() as u64;
+        registry
+            .register_texture(
+                version(name),
+                TexturePayload::new(
+                    desc(size),
+                    OwnedBytes::new(bytes, pool.reserve(n).unwrap()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    };
+    let single_handle = make(&mut registry, "single", [4, 4], single);
+    let page_handle = make(&mut registry, "page", [12, 12], page);
+    let backing = registry.acquire(page_handle).unwrap();
+    let alias_handle = registry
+        .register_atlas_view(
+            version("alias"),
+            ImageView {
+                logical_size: [4, 4],
+                content_origin: [4, 4],
+                content_size: [4, 4],
+            },
+            ColorEncoding::Linear,
+            backing,
+        )
+        .unwrap();
+    let mut renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(1),
+            GpuLimits::default(),
+        ))
+        .unwrap(),
+    );
+    for variant in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
+        let a = frame(registry.acquire(single_handle).unwrap(), variant, &pool);
+        let b = frame(registry.acquire(alias_handle).unwrap(), variant, &pool);
+        let ra = renderer.readback(renderer.prepare(&a).unwrap()).unwrap();
+        let rb = renderer.readback(renderer.prepare(&b).unwrap()).unwrap();
+        if matches!(variant, 5 | 10) {
+            assert!(
+                ra.iter().any(|pixel| pixel[0..3].iter().any(|v| *v > 0.05)),
+                "variant {variant} produced no sampled color"
+            );
+        }
+        let max = ra
+            .iter()
+            .zip(&rb)
+            .flat_map(|(a, b)| a.iter().zip(b).map(|(x, y)| (x - y).abs()))
+            .fold(0f32, f32::max);
+        assert!(max < 0.012, "variant {variant}: max difference {max}");
+    }
+    // Fresh logical wrappers on the same physical page must retain the R5
+    // effect binding; per-draw origin metadata remains independently updated.
+    use std::sync::atomic::Ordering;
+    let effect = frame(registry.acquire(alias_handle).unwrap(), 10, &pool);
+    for iteration in 0..2 {
+        renderer.effect_results.clear();
+        let before = renderer
+            .gpu
+            .upload_creations
+            .effect_bind_groups
+            .load(Ordering::Relaxed);
+        let prepared = renderer.prepare(&effect).unwrap();
+        let after = renderer
+            .gpu
+            .upload_creations
+            .effect_bind_groups
+            .load(Ordering::Relaxed);
+        if iteration == 1 {
+            assert_eq!(
+                after, before,
+                "the same physical page reuses its bind group"
+            );
+        }
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+}
+
+#[test]
+#[ignore = "requires graphics adapter; compares synthetic numeric textures"]
+fn odd_atlas_views_match_standalone_sampling() {
+    use reel_core::texture::ImageView;
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 128,
+            max_bytes: 8 << 20,
+        },
+    );
+    let mut registry = ResourceRegistry::new(3, 1 << 20).unwrap();
+    let version = |name: &str| ResourceVersion {
+        key: AssetKey(name.into()),
+        version: ContentVersion([1; 32]),
+    };
+    let desc = |size| TextureDescriptor {
+        storage_layout: TextureStorageLayout::Linear,
+        mip_count: 1,
+        format: TextureFormat::Rgba8,
+        source_encoding: ColorEncoding::Linear,
+        layout: TextureLayout::identity(size),
+    };
+    let mut single = Vec::with_capacity(5 * 7 * 4);
+    for y in 0..7 {
+        for x in 0..5 {
+            single.extend([x * 40, y * 30, 255 - x * 40, 255]);
+        }
+    }
+    let mut page = vec![0; 16 * 16 * 4];
+    for pixel in page.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[0, 255, 0, 255]);
+    }
+    for y in 0..7 {
+        for x in 0..5 {
+            let from = (y * 5 + x) * 4;
+            let to = ((y + 4) * 16 + x + 4) * 4;
+            page[to..to + 4].copy_from_slice(&single[from..from + 4]);
+        }
+    }
+    let make = |registry: &mut ResourceRegistry, name: &str, size, bytes: Vec<u8>| {
+        let n = bytes.len() as u64;
+        registry
+            .register_texture(
+                version(name),
+                TexturePayload::new(
+                    desc(size),
+                    OwnedBytes::new(bytes, pool.reserve(n).unwrap()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    };
+    let single_handle = make(&mut registry, "single", [5, 7], single);
+    let page_handle = make(&mut registry, "page", [16, 16], page);
+    let backing = registry.acquire(page_handle).unwrap();
+    let alias_handle = registry
+        .register_atlas_view(
+            version("alias"),
+            ImageView {
+                logical_size: [5, 7],
+                content_origin: [4, 4],
+                content_size: [5, 7],
+            },
+            ColorEncoding::Linear,
+            backing,
+        )
+        .unwrap();
+    let mut renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(1),
+            GpuLimits::default(),
+        ))
+        .unwrap(),
+    );
+    for variant in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
+        let a = frame(registry.acquire(single_handle).unwrap(), variant, &pool);
+        let b = frame(registry.acquire(alias_handle).unwrap(), variant, &pool);
+        let ra = renderer.readback(renderer.prepare(&a).unwrap()).unwrap();
+        let rb = renderer.readback(renderer.prepare(&b).unwrap()).unwrap();
+        if matches!(variant, 5 | 10) {
+            assert!(
+                ra.iter().any(|pixel| pixel[0..3].iter().any(|v| *v > 0.05)),
+                "variant {variant} produced no sampled color"
+            );
+        }
+        let max = ra
+            .iter()
+            .zip(&rb)
+            .flat_map(|(a, b)| a.iter().zip(b).map(|(x, y)| (x - y).abs()))
+            .fold(0f32, f32::max);
+        assert!(max < 0.012, "variant {variant}: max difference {max}");
+    }
+    // Fresh logical wrappers on the same physical page must retain the R5
+    // effect binding; per-draw origin metadata remains independently updated.
+    use std::sync::atomic::Ordering;
+    let effect = frame(registry.acquire(alias_handle).unwrap(), 10, &pool);
+    for iteration in 0..2 {
+        renderer.effect_results.clear();
+        let before = renderer
+            .gpu
+            .upload_creations
+            .effect_bind_groups
+            .load(Ordering::Relaxed);
+        let prepared = renderer.prepare(&effect).unwrap();
+        let after = renderer
+            .gpu
+            .upload_creations
+            .effect_bind_groups
+            .load(Ordering::Relaxed);
+        if iteration == 1 {
+            assert_eq!(
+                after, before,
+                "the same physical page reuses its bind group"
+            );
+        }
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+}
+
+fn effect_frame(lease: ResourceLease, pool: &BudgetPool) -> RenderFrame {
+    use reel_ui::{
+        core::PaintEffect,
+        imaging::{
+            Composite,
+            record::{Draw, Geometry, Scene},
+        },
+        kurbo::Affine,
+        peniko::{Brush, Color},
+        resources::{EffectShaderDescriptor, EffectShaderFormat},
+        stage::effect::*,
+    };
+    let program = EffectProgram::with_textures(
+        vec![],
+        vec![EffectTextureParameter { name: "ink".into() }],
+        vec![
+            EffectNode {
+                ty: EffectType::Vec2,
+                op: EffectOp::Input(EffectInput::Uv),
+            },
+            EffectNode {
+                ty: EffectType::Vec4,
+                op: EffectOp::TextureSample {
+                    binding: 0,
+                    uv: EffectNodeId(0),
+                    channel: EffectTextureChannel::Color,
+                },
+            },
+        ],
+        EffectNodeId(1),
+    )
+    .unwrap();
+    let fragment =
+        crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 16384).unwrap();
+    let desc = EffectShaderDescriptor::with_textures(
+        [9; 32],
+        EffectShaderFormat::Wgsl,
+        vec![],
+        1,
+        fragment.source_sampler,
+        EffectType::Vec4,
+        fragment.source.as_bytes(),
+    )
+    .unwrap();
+    let mut registry = ResourceRegistry::new(1, 1 << 20).unwrap();
+    let data = fragment.source.as_bytes().to_vec();
+    let bytes = data.len() as u64;
+    let shader = registry
+        .register_effect_shader(
+            ResourceVersion {
+                key: AssetKey("effect".into()),
+                version: ContentVersion(desc.shader_key),
+            },
+            desc,
+            OwnedBytes::new(data, pool.reserve(bytes).unwrap()).unwrap(),
+        )
+        .unwrap();
+    let shader = registry.acquire(shader).unwrap();
+    let bounds = Rect::new(0., 0., 64., 48.);
+    let mut scene = Scene::new();
+    scene.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Solid(Color::WHITE),
+        brush_transform: None,
+        shape: Geometry::Rect(bounds),
+        composite: Composite::default(),
+    });
+    let mut widget = r01_fixture::RecordWidget::new(scene);
+    widget.clip = false;
+    widget.effect = Some(PaintEffect {
+        instance: EffectInstance::with_textures([9; 32], program, vec![], vec!["ink".into()])
+            .unwrap(),
+        shader: shader.clone(),
+        images: vec![lease.clone()],
+        bounds,
+        coverage_invert: false,
+    });
+    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+    let resources = ResourceSnapshot::capture([Ok(lease), Ok(shader)].into_iter(), pool).unwrap();
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
+        resources,
+        FrameInfo {
+            logical_size: [64., 48.],
+            physical_size: [64, 48],
+        },
+        BuildLimits { max_bytes: 1 << 20 },
+        pool,
+    )
+    .unwrap();
+    while !build
+        .step(StepBudget {
+            max_commands: 128,
+            max_units: 65536,
+            max_bytes: 1 << 20,
+        })
+        .unwrap()
+        .complete
+    {}
+    build.finish().unwrap()
 }

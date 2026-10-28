@@ -17,6 +17,7 @@ pub(super) struct Required<'a> {
 }
 pub(super) struct Plan<'a> {
     pub(super) images: Vec<Required<'a>>,
+    pub(super) aliases: Vec<image_plan::Alias<'a>>,
     pub(super) masks: Vec<image_plan::Mask<'a>>,
 }
 pub(super) fn collect<'a>(
@@ -61,6 +62,7 @@ pub(super) fn collect<'a>(
         .collect::<Result<_, GpuError>>()?;
     Ok(Plan {
         images,
+        aliases: plan.aliases,
         masks: plan.masks,
     })
 }
