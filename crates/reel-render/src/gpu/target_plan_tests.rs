@@ -464,6 +464,13 @@ fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
     sibling_frame_with_hidden(barrier, excluded, false)
 }
 fn interleaved_source_frame(special: bool, scope_change: bool) -> RenderFrame {
+    interleaved_source_frame_with_inline(special, scope_change, false)
+}
+fn interleaved_source_frame_with_inline(
+    special: bool,
+    scope_change: bool,
+    inline_before_draw: bool,
+) -> RenderFrame {
     let mut scene = Scene::new();
     let fill = |scene: &mut Scene, left, color, composite| {
         scene.draw(Draw::Fill {
@@ -477,6 +484,9 @@ fn interleaved_source_frame(special: bool, scope_change: bool) -> RenderFrame {
     };
     for index in 0..2 {
         if index == 1 {
+            if inline_before_draw {
+                scene.push_group(Group::default());
+            }
             fill(
                 &mut scene,
                 50.,
@@ -514,7 +524,7 @@ fn interleaved_source_frame(special: bool, scope_change: bool) -> RenderFrame {
             Default::default(),
         );
         scene.pop_group();
-        if index == 1 && scope_change {
+        if index == 1 && (scope_change || inline_before_draw) {
             scene.pop_group();
         }
     }
@@ -646,6 +656,33 @@ fn source_windows_stop_at_backdrop_reads_and_parent_scope_changes() {
         let (plan, _) = interleaved_plan(&frame, u64::MAX);
         assert!(plan.is_empty());
     }
+}
+
+#[test]
+fn inline_parent_before_the_first_deferred_draw_keeps_its_draw_in_the_tape() {
+    use crate::common::offscreen::ParentStep;
+    let frame = interleaved_source_frame_with_inline(false, false, true);
+    let (plan, _) = interleaved_plan(&frame, u64::MAX);
+    let entries: Vec<_> = (0..frame.commands().len())
+        .filter_map(|index| plan.entry(index))
+        .collect();
+    assert_eq!(entries.len(), 2);
+    let expected: Vec<_> = (entries[0].end..entries[1].push)
+        .filter(|&index| matches!(frame.commands()[index].op, FrameOp::Draw(_)))
+        .collect();
+    assert_eq!(expected.len(), 1);
+    let mut cursor = plan.parent_cursor(entries[0].push);
+    let mut tape = Vec::new();
+    while let Some(step) = plan.next_parent(frame.commands(), &mut cursor) {
+        match step {
+            ParentStep::Sources(range) => tape.extend(range.map(|index| (0, entries[index].push))),
+            ParentStep::Draws(range) => tape.extend(range.map(|index| (1, index))),
+        }
+    }
+    assert_eq!(
+        tape,
+        [(0, entries[0].push), (1, expected[0]), (0, entries[1].push)]
+    );
 }
 
 fn sibling_frame_with_hidden(barrier: bool, excluded: bool, hidden: bool) -> RenderFrame {

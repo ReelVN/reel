@@ -87,15 +87,18 @@ fn skip_metadata(commands: &[FrameCommand], next: &mut usize, end: usize) {
             // delayed parent draws use the final source's exact parent state.
             FrameOp::PushGroup(_) => {
                 let mut depth = 1;
-                *next += 1;
-                while depth != 0 && *next < end {
-                    match commands[*next].op {
+                let mut close = *next + 1;
+                while depth != 0 {
+                    match commands[close].op {
                         FrameOp::PushGroup(_) => depth += 1,
                         FrameOp::PopGroup => depth -= 1,
                         _ => {}
                     }
-                    *next += 1;
+                    close += 1;
                 }
+                // An inline group enclosing the next source can contain parent
+                // draws before it. Enter that metadata rather than skip its body.
+                *next = if close > end { *next + 1 } else { close };
             }
             _ => *next += 1,
         }
