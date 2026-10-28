@@ -13,13 +13,15 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(());
         }
-        // The source and backdrop share the same integer parent-pixel grid and
-        // capacity class; only their initialized content is sampled later.
+        // Allocation capacity follows the common plan; the copy keeps the source
+        // grid and initializes only the pixels sampled by the final blend.
         let size = self.size;
         let scissor = self.scissor;
+        self.size = self.offscreen.backdrop_size(view.storage_size, size);
+        let mut backdrop = self.target()?;
+        backdrop.size = view.storage_size;
         self.size = view.storage_size;
         self.scissor = view.source_rect;
-        let backdrop = self.target()?;
         self.composition(
             &backdrop,
             Composition {

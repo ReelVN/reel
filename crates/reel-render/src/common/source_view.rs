@@ -139,21 +139,24 @@ mod tests {
         .unwrap();
         let origin = view.origin();
         let copy = uv_mapping(view.storage_size, parent_storage, origin.map(|v| -v));
-        let blend = uv_mapping(parent, source_storage, origin);
-        for offset in [0.125, 0.375, 0.5, 0.875] {
-            for x in [0, view.source_rect.width - 1] {
-                for y in [0, view.source_rect.height - 1] {
-                    let local = [x as f32 + offset, y as f32 + offset];
-                    for axis in 0..2 {
-                        let original = local[axis] + origin[axis] as f32;
-                        let copied = (local[axis] / view.storage_size[axis] as f32 * copy[axis]
-                            + copy[axis + 2])
-                            * parent_storage[axis] as f32;
-                        let sampled = (original / parent[axis] as f32 * blend[axis]
-                            + blend[axis + 2])
-                            * source_storage[axis] as f32;
-                        assert!((copied - original).abs() < 0.0001);
-                        assert!((sampled - local[axis]).abs() < 0.0001);
+        for backdrop_storage in [source_storage, parent_storage] {
+            let blend = uv_mapping(parent, backdrop_storage, origin);
+            for offset in [0.125, 0.375, 0.5, 0.875] {
+                for x in [0, view.source_rect.width - 1] {
+                    for y in [0, view.source_rect.height - 1] {
+                        let local = [x as f32 + offset, y as f32 + offset];
+                        for axis in 0..2 {
+                            let original = local[axis] + origin[axis] as f32;
+                            let copied = (local[axis] / view.storage_size[axis] as f32
+                                * copy[axis]
+                                + copy[axis + 2])
+                                * parent_storage[axis] as f32;
+                            let sampled = (original / parent[axis] as f32 * blend[axis]
+                                + blend[axis + 2])
+                                * backdrop_storage[axis] as f32;
+                            assert!((copied - original).abs() < 0.0001);
+                            assert!((sampled - local[axis]).abs() < 0.0001);
+                        }
                     }
                 }
             }

@@ -27,6 +27,7 @@ pub(crate) struct Plan {
     groups: Option<(usize, usize, std::sync::Arc<super::scopes::Cached>)>,
     storage: super::target_storage::Plan,
     requirements: super::target_plan::Requirements,
+    stable_backdrop: bool,
 }
 
 impl Plan {
@@ -53,6 +54,12 @@ impl Plan {
     }
     pub(crate) fn storage_size(&self, logical: [u32; 2]) -> [u32; 2] {
         self.storage.storage_size(logical)
+    }
+
+    /// Backdrop allocation can keep the parent's stable capacity while its copy
+    /// still uses the finite source viewport, scissor and integer translation.
+    pub(crate) fn backdrop_size(&self, source: [u32; 2], parent: [u32; 2]) -> [u32; 2] {
+        if self.stable_backdrop { parent } else { source }
     }
 
     /// The second output of a whole-frame crossfade shares storage lifetimes,
@@ -188,6 +195,9 @@ impl Plan {
             let share_backdrops = bytes <= byte_limit
                 && measured.as_ref().unwrap().reusable
                 && measured.as_ref().unwrap().local_backdrop;
+            let single_backdrop_class = bytes <= byte_limit
+                && !measured.as_ref().unwrap().reusable
+                && measured.as_ref().unwrap().local_backdrop;
             let mut storage_tickets = Vec::new();
             if bytes > byte_limit && measured.as_ref().unwrap().reusable {
                 drop(measured.take());
@@ -274,6 +284,68 @@ impl Plan {
                             plan.storage = storage;
                             storage_tickets = tickets;
                         }
+                    }
+                }
+                // With one finite scratch class, source and backdrop overlap.
+                // An affordable parent allocation avoids duplicating every
+                // source-size bucket over time. This also applies to static
+                // sources: stable capacity takes priority over minimum bytes.
+                if single_backdrop_class {
+                    plan.stable_backdrop = true;
+                    let candidate = (|| -> Result<_, GpuError> {
+                        let mut temporary = Vec::new();
+                        let measured = super::target_plan::Input {
+                            frame,
+                            second,
+                            size,
+                            capture,
+                            samples,
+                            max_dimension,
+                            glyphs,
+                            schedule: &plan,
+                            masks,
+                            selection,
+                            cost,
+                        }
+                        .measure(|bytes| {
+                            temporary.push(reserve(bytes)?);
+                            Ok(())
+                        })?;
+                        if measured.bytes > byte_limit {
+                            return Ok(None);
+                        }
+                        let mut tickets = Vec::new();
+                        let requirements = measured.requirements(|bytes| {
+                            tickets.push(reserve(bytes)?);
+                            Ok(())
+                        })?;
+                        let padded = super::target_storage::Plan::capacities(
+                            &requirements,
+                            size,
+                            max_dimension,
+                            capacity_limit,
+                            cost,
+                            &mut reserve,
+                        );
+                        if let Ok(Some((storage, padded_tickets))) = padded {
+                            let bytes = storage.bytes() + selection.persistent_bytes();
+                            Ok(Some((storage, Default::default(), bytes, padded_tickets)))
+                        } else {
+                            Ok(Some((
+                                Default::default(),
+                                requirements,
+                                measured.bytes,
+                                tickets,
+                            )))
+                        }
+                    })();
+                    if let Ok(Some((storage, requirements, selected_bytes, tickets))) = candidate {
+                        plan.storage = storage;
+                        plan.requirements = requirements;
+                        bytes = selected_bytes;
+                        storage_tickets = tickets;
+                    } else {
+                        plan.stable_backdrop = false;
                     }
                 }
                 retained.extend(storage_tickets);

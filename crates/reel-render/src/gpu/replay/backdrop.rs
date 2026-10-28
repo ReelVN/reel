@@ -15,11 +15,12 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(());
         }
-        // Reuse the common source grid, including its admitted capacity class.
-        // The integer copy offset preserves parent texels and MSAA sample positions.
+        // Allocation capacity follows the common plan; the copy keeps the source
+        // grid, preserving parent texels and MSAA sample positions.
         let size = self.size;
-        self.size = view.storage_size;
-        let backdrop = self.target()?;
+        self.size = self.offscreen.backdrop_size(view.storage_size, size);
+        let mut backdrop = self.target()?;
+        backdrop.size = view.storage_size;
         self.size = size;
         self.transient(super::super::pipeline::COMPOSITE_BYTES * 2)?;
         self.ensure_sampled(&target.view);

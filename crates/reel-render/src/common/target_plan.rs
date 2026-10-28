@@ -828,7 +828,12 @@ impl Input<'_> {
                                         group.composite.blend != Default::default()
                                     });
                                     scratch.local_backdrop |= backdrop;
-                                    scratch.composite(source, backdrop, false, &mut reserve)?;
+                                    scratch.composite(
+                                        schedule.backdrop_size(source, current.size),
+                                        backdrop,
+                                        false,
+                                        &mut reserve,
+                                    )?;
                                     scratch.release(source, &mut reserve)?;
                                 }
                                 continue;

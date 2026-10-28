@@ -84,6 +84,10 @@ fn frame_groups(domains: &[[u32; 2]], nested: bool) -> RenderFrame {
 }
 
 fn choose(frame: &RenderFrame) -> (offscreen::Plan, u64) {
+    choose_limit(frame, LIMIT)
+}
+
+fn choose_limit(frame: &RenderFrame, limit: u64) -> (offscreen::Plan, u64) {
     let (plan, bytes, _) = offscreen::Plan::choose(
         frame,
         None,
@@ -92,7 +96,7 @@ fn choose(frame: &RenderFrame) -> (offscreen::Plan, u64) {
         1,
         4096,
         &glyph_plan::Plan::default(),
-        LIMIT,
+        limit,
         &cost,
         target_plan::MaskExecution::Sampled,
         &Default::default(),
@@ -248,54 +252,102 @@ fn animated_blends_share_ordinary_budget_pool_and_preserve_overlapping_sources()
 }
 
 #[test]
-fn single_animated_add_source_records_creation_residency_and_copy_tradeoff() {
-    let mut old = Residency::new();
-    let mut cropped = Residency::new();
-    let mut copy_pixels = 0;
-    for phase in 0..384 {
-        let frame = frame_groups(&[[544 + phase.min(383 - phase), 472]], false);
-        let (plan, _) = choose(&frame);
-        let previous: Vec<_> = plan
-            .requirements()
-            .iter()
-            .map(|(size, count)| {
-                if size == ROOT {
-                    (size, count + 1)
-                } else {
-                    assert_eq!(count, 2);
-                    copy_pixels += u64::from(size[0]) * u64::from(size[1]);
-                    (size, count - 1)
-                }
-            })
-            .collect();
-        let previous =
-            target_plan::Requirements::collect(previous.into_iter(), |_| Ok(())).unwrap();
-        old.submit(&previous);
-        cropped.submit(plan.requirements());
+fn single_add_sources_use_stable_parent_capacity_when_affordable() {
+    for animated in [false, true] {
+        let mut old = Residency::new();
+        let mut cropped = Residency::new();
+        let mut stable = Residency::new();
+        let mut copy_pixels = 0;
+        for phase in 0..384 {
+            let domain = if animated {
+                [544 + phase.min(383 - phase), 472]
+            } else {
+                [60, 24]
+            };
+            let frame = frame_groups(&[domain], false);
+            let (cropped_requirements, cropped_bytes) = separate(&frame);
+            let (plan, stable_bytes) = choose(&frame);
+            let (tight, tight_bytes) = choose_limit(&frame, cropped_bytes);
+            assert_eq!(tight_bytes, cropped_bytes);
+            assert_eq!(tight.backdrop_size([64, 32], ROOT), [64, 32]);
+            assert_eq!(plan.backdrop_size([64, 32], ROOT), ROOT);
+            assert!(stable_bytes > cropped_bytes);
+            // Copy area comes from the actual source scissor, independently of the
+            // physical backdrop capacity selected by either budget tier.
+            let view = frame
+                .commands()
+                .iter()
+                .find_map(|command| {
+                    let reel_ui::frame::FrameOp::PushGroup(group) = &command.op else {
+                        return None;
+                    };
+                    (group.composite.blend != Default::default()).then(|| {
+                        crate::common::source_view::SourceView::group(
+                            group,
+                            group.ink_bounds,
+                            Affine::IDENTITY,
+                            ROOT,
+                            crate::common::scissor::Scissor::full(ROOT),
+                            false,
+                            4096,
+                        )
+                        .unwrap()
+                    })
+                })
+                .unwrap();
+            copy_pixels += u64::from(view.source_rect.width) * u64::from(view.source_rect.height);
+            let previous: Vec<_> = cropped_requirements
+                .iter()
+                .map(|(size, count)| {
+                    if size == ROOT {
+                        (size, count + 1)
+                    } else {
+                        assert_eq!(count, 2);
+                        (size, count - 1)
+                    }
+                })
+                .collect();
+            let previous =
+                target_plan::Requirements::collect(previous.into_iter(), |_| Ok(())).unwrap();
+            assert_eq!(
+                previous.iter().collect::<Vec<_>>(),
+                plan.requirements().iter().collect::<Vec<_>>()
+            );
+            old.submit(&previous);
+            cropped.submit(&cropped_requirements);
+            stable.submit(plan.requirements());
+        }
+        println!(
+            "single_add animated={animated} frames=384 full_backdrop_created={} cropped_created={} stable_created={} full_backdrop_peak={} cropped_peak={} stable_peak={} full_copy_pixels={} selected_copy_pixels={copy_pixels}",
+            old.created,
+            cropped.created,
+            stable.created,
+            old.data.usage().peak_bytes,
+            cropped.data.usage().peak_bytes,
+            stable.data.usage().peak_bytes,
+            384 * u64::from(ROOT[0]) * u64::from(ROOT[1]),
+        );
+        assert_eq!(cropped.created, 2 * (old.created - 2) + 1);
+        assert_eq!(stable.created, old.created);
+        assert_eq!(stable.data.usage().peak_bytes, old.data.usage().peak_bytes);
+        assert!(copy_pixels < 384 * u64::from(ROOT[0]) * u64::from(ROOT[1]));
+        old.retire();
+        cropped.retire();
+        stable.retire();
     }
-    println!(
-        "single_add frames=384 full_backdrop_created={} cropped_created={} full_backdrop_peak={} cropped_peak={} full_copy_pixels={} cropped_copy_capacity_pixels={copy_pixels}",
-        old.created,
-        cropped.created,
-        old.data.usage().peak_bytes,
-        cropped.data.usage().peak_bytes,
-        384 * u64::from(ROOT[0]) * u64::from(ROOT[1]),
-    );
-    // Both simultaneously live images need separate allocations. This case has
-    // no second scratch class to share; it remains an explicit measured tradeoff.
-    assert_eq!(cropped.created, 2 * (old.created - 2) + 1);
-    assert!(copy_pixels < 384 * u64::from(ROOT[0]) * u64::from(ROOT[1]));
-    old.retire();
-    cropped.retire();
 }
 
 #[test]
 #[ignore = "release-mode planning cost probe; run explicitly with nocapture"]
 fn animated_blend_planning_cost() {
-    for groups in [3, 24, 64] {
+    for groups in [1, 3, 24, 64] {
         let frames: Vec<_> = (264..456)
             .map(|width| {
-                let mut domains = vec![[728, 408]];
+                let mut domains = vec![if groups == 1 {
+                    [width + 280, 472]
+                } else {
+                    [728, 408]
+                }];
                 domains.extend(
                     (1..groups).map(|index| [width + (index * 7) % 200, 120 + (index * 11) % 192]),
                 );
@@ -368,4 +420,52 @@ fn animated_shared_backdrops_submit_without_exceeding_the_selected_pool() {
         "animated_shared_backdrops submissions=32 targets={}",
         renderer.usage().targets
     );
+}
+
+#[test]
+#[cfg(feature = "wgpu")]
+#[ignore = "actual adapter submission; no capture or pixel readback"]
+fn single_backdrop_budget_tiers_submit_the_same_finite_copy() {
+    let frame = frame_groups(&[[60, 24]], false);
+    for limit in [(960 * 544 + 2 * 64 * 32) * 8, LIMIT] {
+        let gpu = pollster::block_on(crate::gpu::Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            crate::gpu::DeviceGeneration(1),
+            crate::gpu::GpuLimits {
+                target_bytes: limit,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let mut renderer = crate::gpu::Renderer::new(gpu);
+        renderer.prepare_pipelines().unwrap();
+        for _ in 0..8 {
+            let prepared = renderer.prepare(&frame).unwrap();
+            let quality = prepared.quality();
+            assert_eq!(quality.format, wgpu::TextureFormat::Rgba16Float);
+            let samples = if quality.samples == 1 {
+                1
+            } else {
+                quality.samples + 1
+            };
+            let pixels = if limit == LIMIT {
+                2 * 960 * 544 + 64 * 32
+            } else {
+                960 * 544 + 2 * 64 * 32
+            };
+            assert_eq!(renderer.usage().targets, pixels * 8 * u64::from(samples));
+            let submission = renderer.submit(prepared).unwrap();
+            renderer
+                .gpu()
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            assert!(renderer.poll().unwrap().contains(&submission));
+        }
+        println!(
+            "single_backdrop limit={limit} submissions=8 targets={}",
+            renderer.usage().targets
+        );
+    }
 }
