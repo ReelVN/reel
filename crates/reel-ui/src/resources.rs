@@ -157,6 +157,8 @@ struct Resource {
     handle: ResourceHandle,
     version: ResourceVersion,
     data: ResourceData,
+    // Remains stable when pixel residency changes; Blob IDs are lookup hints.
+    source_blob_id: Option<u64>,
     image_coverage: Option<reel_core::image_coverage::ImageCoverage>,
     retired: AtomicBool,
     // Opaque imported producer storage has its own accounting domain. This reservation
@@ -235,6 +237,22 @@ impl ResourceLease {
             ResourceData::Texture { bytes, .. } => Some(ResourcePixels(bytes.clone())),
             _ => None,
         }
+    }
+    fn source_blob_id(&self) -> Option<u64> {
+        self.0.source_blob_id
+    }
+    fn snapshot_source_key(&self) -> (u8, u64) {
+        match &self.0.data {
+            ResourceData::Yuv420(image) => {
+                let [width, height] = image.size();
+                (1, (u64::from(width) << 32) | u64::from(height))
+            }
+            ResourceData::External { token } => (2, *token),
+            _ => (0, self.source_blob_id().expect("blob-backed resource")),
+        }
+    }
+    fn lookup_same_source(&self, other: &Self) -> bool {
+        lookup_same_source(&self.0.data, &other.0.data)
     }
     /// Cached conservative alpha support in visible texels, including the
     /// filtering border. Registration computes this once from immutable RGBA
@@ -516,10 +534,12 @@ impl ResourceRegistry {
             }
             _ => None,
         };
+        let source_blob_id = data.blob().map(Blob::id);
         let lease = ResourceLease(Arc::new(Resource {
             handle,
             version,
             data,
+            source_blob_id,
             image_coverage,
             retired: AtomicBool::new(false),
             _reference_ticket: ticket,
@@ -575,19 +595,6 @@ impl ResourceRegistry {
         ResourceSnapshot::capture(handles.iter().map(|&handle| self.acquire(handle)), pool)
     }
 }
-// Equal lookup sources must have the same key. Actual equality is still checked
-// within each key range: Blob IDs are hints, and YUV storage is producer-owned.
-fn snapshot_source_key(data: &ResourceData) -> (u8, u64) {
-    match data {
-        ResourceData::Yuv420(image) => {
-            let [width, height] = image.size();
-            (1, (u64::from(width) << 32) | u64::from(height))
-        }
-        ResourceData::External { token } => (2, *token),
-        _ => (0, data.blob().expect("blob-backed resource").id()),
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
@@ -607,8 +614,8 @@ impl ResourceSnapshot {
             .map_err(|_| ResourceError::Bytes)?;
         leases.sort_unstable_by_key(|r| {
             (
-                r.data().blob().is_none(),
-                r.data().blob().map_or(0, Blob::id),
+                r.source_blob_id().is_none(),
+                r.source_blob_id().unwrap_or(0),
                 r.handle(),
             )
         });
@@ -639,26 +646,22 @@ impl ResourceSnapshot {
                 return Err(ResourceError::RetiredOrForeign);
             }
             if indexed {
-                let key = snapshot_source_key(lease.data());
-                let start = leases.partition_point(|other: &ResourceLease| {
-                    snapshot_source_key(other.data()) < key
-                });
+                let key = lease.snapshot_source_key();
+                let start = leases
+                    .partition_point(|other: &ResourceLease| other.snapshot_source_key() < key);
                 let end = start
-                    + leases[start..]
-                        .partition_point(|other| snapshot_source_key(other.data()) == key);
+                    + leases[start..].partition_point(|other| other.snapshot_source_key() == key);
                 // A handle belongs to one immutable Resource, so the same handle
                 // necessarily has the same source key. Blob IDs remain hints.
                 if leases[start..end].iter().any(|other| {
-                    other.handle() == lease.handle()
-                        || lookup_same_source(other.data(), lease.data())
+                    other.handle() == lease.handle() || other.lookup_same_source(&lease)
                 }) {
                     return Err(ResourceError::ConflictingVersion);
                 }
                 leases.insert(end, lease);
             } else {
                 if leases.iter().any(|other: &ResourceLease| {
-                    other.handle() == lease.handle()
-                        || lookup_same_source(other.data(), lease.data())
+                    other.handle() == lease.handle() || other.lookup_same_source(&lease)
                 }) {
                     return Err(ResourceError::ConflictingVersion);
                 }
@@ -667,8 +670,8 @@ impl ResourceSnapshot {
         }
         leases.sort_unstable_by_key(|r| {
             (
-                r.data().blob().is_none(),
-                r.data().blob().map_or(0, Blob::id),
+                r.source_blob_id().is_none(),
+                r.source_blob_id().unwrap_or(0),
                 r.handle(),
             )
         });
@@ -680,21 +683,21 @@ impl ResourceSnapshot {
     fn matching(
         &self,
         blob: &Blob<u8>,
-        matches: impl Fn(&ResourceData) -> bool,
+        matches: impl Fn(&ResourceLease) -> bool,
     ) -> Option<ResourceHandle> {
         let start = self
             .leases
-            .partition_point(|r| r.data().blob().is_some_and(|b| b.id() < blob.id()));
+            .partition_point(|r| r.source_blob_id().is_some_and(|id| id < blob.id()));
         self.leases[start..]
             .iter()
-            .take_while(|r| r.data().blob().is_some_and(|b| b.id() == blob.id()))
-            .find(|r| matches(r.data()))
+            .take_while(|r| r.source_blob_id().is_some_and(|id| id == blob.id()))
+            .find(|r| matches(r))
             .map(ResourceLease::handle)
     }
     pub(crate) fn image(&self, image: &ImageData) -> Option<ResourceHandle> {
         self.matching(
             &image.data,
-            |data| matches!(data,ResourceData::Image {image:other,..} if same_image(image,other)),
+            |lease| matches!(lease.data(),ResourceData::Image {image:other,..} if same_image(image,other)),
         )
     }
     pub(crate) fn contains_image(&self, handle: ResourceHandle) -> bool {
@@ -705,7 +708,7 @@ impl ResourceSnapshot {
     pub(crate) fn font(&self, font: &FontData) -> Option<ResourceHandle> {
         self.matching(
             &font.data,
-            |data| matches!(data, ResourceData::Font(other) if same_blob(&font.data, other)),
+            |lease| matches!(lease.data(), ResourceData::Font(other) if same_blob(&font.data, other)),
         )
     }
     pub(crate) fn external(&self, token: u64) -> Option<ResourceHandle> {
