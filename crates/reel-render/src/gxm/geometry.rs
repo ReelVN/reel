@@ -116,6 +116,10 @@ impl Cache {
             + self.shapes.bytes()
             + self.glyphs.bytes()
     }
+    pub fn begin_replay(&mut self) {
+        self.shapes.begin_replay();
+        self.glyphs.begin_replay();
+    }
     pub fn clear(&mut self) {
         self.pool.clear();
         self.shapes.clear();

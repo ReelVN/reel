@@ -143,12 +143,16 @@ impl<D, T> Entry<D, T> {
 pub(crate) struct Cache<D, T> {
     entries: [Option<Arc<Entry<D, T>>>; 128],
     next: usize,
+    lookup: usize,
+    high_water: usize,
 }
 impl<D, T> Default for Cache<D, T> {
     fn default() -> Self {
         Self {
             entries: std::array::from_fn(|_| None),
             next: 0,
+            lookup: 0,
+            high_water: 0,
         }
     }
 }
@@ -180,23 +184,40 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
         origin: CommandOrigin,
         dependency: &D,
     ) -> Option<Arc<Entry<D, T>>> {
-        let recording = frame.recording(origin);
-        for entry in &mut self.entries {
-            if entry.as_ref().is_some_and(|entry| !entry.source.is_live()) {
-                *entry = None;
-            }
-            if let Some((source, local)) = recording
-                && let Some(entry) = entry
-                && entry.source == *source
+        let Some((source, local)) = frame.recording(origin) else {
+            self.begin_replay();
+            return None;
+        };
+        let matches = |entry: &Arc<Entry<D, T>>| {
+            entry.source == *source
                 && entry.local == local
                 && entry.dependency == *dependency
                 && entry.value.is_some()
-            {
-                return Some(entry.clone());
+        };
+        let index = if self.entries[self.lookup].as_ref().is_some_and(&matches) {
+            self.lookup
+        } else {
+            self.entries[..self.high_water]
+                .iter()
+                .position(|entry| entry.as_ref().is_some_and(&matches))?
+        };
+        self.lookup = (index + 1) % self.entries.len();
+        self.entries[index].clone()
+    }
+    /// Retire expired recordings once before replay, including entries outside
+    /// the next draw's search prefix. Frame/flight references keep their payloads.
+    pub(crate) fn begin_replay(&mut self) {
+        for entry in &mut self.entries[..self.high_water] {
+            if entry.as_ref().is_some_and(|entry| !entry.source.is_live()) {
+                *entry = None;
             }
         }
-        None
+        while self.high_water != 0 && self.entries[self.high_water - 1].is_none() {
+            self.high_water -= 1;
+        }
+        self.lookup = 0;
     }
+
     /// Optional admission cannot turn an otherwise admissible draw into failure.
     /// Callers reserve variable payload storage separately before allocating it.
     pub fn insert(
@@ -248,6 +269,7 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
                     .is_some_and(|entry| entry.source == *source && entry.local == local)
             })
             .unwrap_or(self.next);
+        self.high_water = self.high_water.max(index + 1);
         self.entries[index] = Some(Arc::new(Entry {
             source: source.clone(),
             local,
@@ -261,6 +283,9 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
     }
     pub fn clear(&mut self) {
         self.entries.fill_with(|| None);
+        self.next = 0;
+        self.lookup = 0;
+        self.high_water = 0;
     }
     pub fn bytes(&self) -> u64 {
         self.entries
@@ -387,3 +412,6 @@ impl Cache<ShapeDependency, Arc<Mesh>> {
         Ok(mesh.into())
     }
 }
+
+#[cfg(test)]
+mod tests;

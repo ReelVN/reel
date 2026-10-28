@@ -139,6 +139,7 @@ pub(super) fn prepare(
         retained: retained_cache,
     } = caches;
     glyph_cache.begin_preparation();
+    geometry_cache.begin_replay();
     let mut context = Context {
         capture,
         gpu,
