@@ -270,6 +270,98 @@ fn grouped_peak_follows_overlap_and_shared_bytes_release_once() {
 }
 
 #[test]
+fn transfer_within_full_group_moves_one_allocation_and_rolls_back_rejection() {
+    let group = BudgetGroup::new(64);
+    let input = group.pool(BudgetCategory::CpuInput, limits(2, 64));
+    let blocked = group.pool(BudgetCategory::CpuOutput, limits(1, 63));
+    let output = group.pool(BudgetCategory::CpuOutput, limits(2, 64));
+    let data = vec![7; 64];
+    let address = data.as_ptr();
+    let mut bytes = OwnedBytes::new(data, input.reserve(64).unwrap()).unwrap();
+    let before = (input.usage(), blocked.usage(), group.usage());
+    assert_eq!(
+        bytes.transfer_to(&blocked).unwrap_err().code,
+        RejectCode::Busy
+    );
+    assert_eq!((input.usage(), blocked.usage(), group.usage()), before);
+    assert_eq!(bytes.as_slice().as_ptr(), address);
+    bytes.transfer_to(&output).unwrap();
+    assert_eq!(bytes.as_slice().as_ptr(), address);
+    assert_eq!(bytes.ticket().category(), BudgetCategory::CpuOutput);
+    assert_eq!(input.usage().bytes, 0);
+    assert_eq!(output.usage().bytes, 64);
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 1,
+            bytes: 64,
+            peak_bytes: 64
+        }
+    );
+    let shared = Arc::new(bytes);
+    let other = shared.clone();
+    drop(shared);
+    assert_eq!(group.usage().bytes, 64);
+    drop(other);
+    assert_eq!(group.usage().bytes, 0);
+}
+
+#[test]
+fn opposing_transfers_are_atomic_and_use_a_consistent_lock_order() {
+    let group = BudgetGroup::new(64);
+    let left = group.pool(BudgetCategory::CpuInput, limits(2, 64));
+    let right = group.pool(BudgetCategory::CpuOutput, limits(2, 64));
+    let mut a = left.reserve(32).unwrap();
+    let mut b = right.reserve(32).unwrap();
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let worker_gate = gate.clone();
+    let worker_target = right.clone();
+    let main_target = left.clone();
+    let worker = std::thread::spawn(move || {
+        worker_gate.wait();
+        for _ in 0..1000 {
+            a.transfer_to(&worker_target).unwrap();
+            a.transfer_to(&left).unwrap();
+        }
+        a
+    });
+    gate.wait();
+    for _ in 0..1000 {
+        b.transfer_to(&main_target).unwrap();
+        b.transfer_to(&right).unwrap();
+    }
+    let a = worker.join().unwrap();
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 2,
+            bytes: 64,
+            peak_bytes: 64
+        }
+    );
+    drop((a, b));
+    assert_eq!(group.usage().bytes, 0);
+}
+
+#[test]
+fn transfer_between_unrelated_groups_preserves_old_ticket_on_failure() {
+    let a = BudgetGroup::new(40);
+    let b = BudgetGroup::new(16);
+    let source = a.pool(BudgetCategory::CpuInput, limits(1, 40));
+    let target = b.pool(BudgetCategory::CpuOutput, limits(1, 40));
+    let mut ticket = source.reserve(32).unwrap();
+    assert_eq!(
+        ticket.transfer_to(&target).unwrap_err().code,
+        RejectCode::Busy
+    );
+    assert_eq!(a.usage().bytes, 32);
+    assert_eq!(b.usage().bytes, 0);
+    assert_eq!(ticket.category(), BudgetCategory::CpuInput);
+    drop(ticket);
+    assert_eq!(a.usage().bytes, 0);
+}
+
+#[test]
 fn grouped_zero_byte_tickets_and_byte_overflow_preserve_accounting() {
     let group = BudgetGroup::new(u64::MAX);
     let a = group.pool(BudgetCategory::CpuInput, limits(1, u64::MAX));

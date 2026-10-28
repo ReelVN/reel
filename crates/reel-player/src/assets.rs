@@ -813,15 +813,11 @@ impl Service {
             }
             Phase::Decode if matches!(load.kind, AssetKind::Font | AssetKind::EffectShader) => {
                 let input = load.input.take().unwrap();
-                let ticket = self
-                    .output
-                    .reserve(input.as_slice().len() as u64)
+                let mut bytes =
+                    Arc::try_unwrap(input).expect("undecoded resource input has one owner");
+                bytes
+                    .transfer_to(&self.output)
                     .map_err(|e| format!("asset resident budget: {}", e.message))?;
-                let (bytes, old_ticket) = Arc::try_unwrap(input)
-                    .expect("undecoded resource input has one owner")
-                    .into_parts();
-                let bytes = OwnedBytes::new(bytes, ticket).map_err(|e| e.reason.message)?;
-                drop(old_ticket);
                 let result = register(load, bytes);
                 if load.reloadable
                     && let Ok(lease) = &result
@@ -882,10 +878,8 @@ impl Service {
                         return Ok(());
                     }
                     if header.codec() == TextureCodec::Raw
-                        && Arc::strong_count(load.input.as_ref().unwrap()) == 1
-                        && let Ok(ticket) = self
-                            .output
-                            .reserve(load.input.as_ref().unwrap().capacity() as u64)
+                        && let Some(input) = Arc::get_mut(load.input.as_mut().unwrap())
+                        && input.transfer_to(&self.output).is_ok()
                     {
                         // Preserve the original allocation and expose its
                         // payload range. Retaining the small file header is
@@ -896,8 +890,6 @@ impl Service {
                         let end = input.as_slice().len();
                         let data = input
                             .into_slice(TextureHeader::LEN..end)
-                            .map_err(|e| e.reason.message)?
-                            .with_ticket(ticket)
                             .map_err(|e| e.reason.message)?;
                         let result = register(load, data);
                         if load.reloadable

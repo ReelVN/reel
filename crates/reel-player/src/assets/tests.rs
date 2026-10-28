@@ -264,6 +264,86 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
 }
 
 #[test]
+fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
+    use reel_core::texture::*;
+    let descriptor = TextureDescriptor {
+        storage_layout: TextureStorageLayout::Linear,
+        mip_count: 1,
+        format: TextureFormat::Rgba8,
+        source_encoding: ColorEncoding::Srgb,
+        layout: TextureLayout::identity([8, 8]),
+    };
+    let payload = vec![3; descriptor.byte_len().unwrap() as usize];
+    let mut encoded = TextureHeader::new(descriptor, TextureCodec::Raw, payload.len() as u64)
+        .unwrap()
+        .encode()
+        .to_vec();
+    encoded.extend_from_slice(&payload);
+    let limit = encoded.len() as u64;
+    let group = BudgetGroup::new(limit);
+    let limits = QueueLimits {
+        max_requests: 32,
+        max_bytes: limit,
+    };
+    let assets = memory_assets();
+    {
+        let mut service = assets.0.borrow_mut();
+        service.input = group.pool(BudgetCategory::CpuInput, limits);
+        service.output = group.pool(BudgetCategory::CpuOutput, limits);
+    }
+    let id = assets.request_encoded("raw".into(), &encoded).unwrap();
+    let address = assets.0.borrow().loads[&id]
+        .input
+        .as_ref()
+        .unwrap()
+        .as_slice()
+        .as_ptr();
+    let lease = load_until_done(&assets, id).unwrap();
+    let ResourceData::Texture { bytes, .. } = lease.data() else {
+        panic!("expected texture")
+    };
+    assert_eq!(
+        bytes.data().as_ptr(),
+        address.wrapping_add(TextureHeader::LEN)
+    );
+    assert_eq!(group.usage().bytes, limit);
+    assert_eq!(group.usage().peak_bytes, limit);
+    drop(lease);
+    assert_eq!(group.usage().bytes, 0);
+
+    let mut service = assets.0.borrow_mut();
+    let content = vec![5; 128];
+    let address = content.as_ptr();
+    let mut load = Load {
+        source: AssetSource {
+            key: AssetKey("font".into()),
+            version: Some(ContentVersion([1; 32])),
+        },
+        reloadable: false,
+        kind: AssetKind::Font,
+        phase: Phase::Decode,
+        input: Some(Arc::new(
+            OwnedBytes::new(content, service.input.reserve(128).unwrap()).unwrap(),
+        )),
+        size: [0, 0],
+        texture: None,
+        output: 0,
+        temporary: 0,
+    };
+    service.advance(&mut load).unwrap();
+    let Phase::Done(Ok(lease)) = load.phase else {
+        panic!("font was not prepared")
+    };
+    let ResourceData::Font(font) = lease.data() else {
+        panic!("expected font")
+    };
+    assert_eq!(font.data().as_ptr(), address);
+    assert_eq!(group.usage().bytes, 128);
+    drop(lease);
+    assert_eq!(group.usage().bytes, 0);
+}
+
+#[test]
 fn small_png_metadata_uses_the_configured_decoder_budget() {
     use image::ImageEncoder;
     let pixels = vec![128; 19 * 5 * 4];
