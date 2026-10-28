@@ -14,6 +14,7 @@
 //! `cargo-vita` packages the ELF, platform metadata and `runtime/vita/`.
 //! Its VPK contains `eboot.bin` and `launcher.rpk`, which contains the launcher
 //! font at `fonts/body.ttf`. Graphics uses the system GXM API.
+use super::vita_signals::Signals;
 use crate::{
     hal::{DisplayMetrics, Host, PlatformHost, WindowControl},
     player::{Player, PlayerOptions},
@@ -26,13 +27,7 @@ use reel_core::{
 };
 use reel_render::gxm::{GxmBackend, GxmOptions};
 use reel_ui::app::RenderRootSignal;
-use std::{
-    cell::{Cell, RefCell},
-    path::Path,
-    rc::Rc,
-    sync::Arc,
-    time::Duration,
-};
+use std::{path::Path, rc::Rc, sync::Arc, time::Duration};
 use vita_native::app::{
     self as native,
     power::{PowerEvents, PowerKind},
@@ -43,14 +38,6 @@ mod input;
 mod profiling;
 type Error = Box<dyn std::error::Error>;
 
-#[derive(Default)]
-struct Signals {
-    redraw: Cell<bool>,
-    exit: Cell<bool>,
-    visible: Cell<bool>,
-    title: RefCell<String>,
-    text: super::vita_text::Signals,
-}
 /// Fixed-display host. Native controller, wake and power objects stay in the
 /// platform adapter; author code sees the ordinary stage and window capabilities.
 pub struct VitaHost {
@@ -84,8 +71,7 @@ impl Clock for VitaHost {
 }
 impl PlatformHost for VitaHost {
     fn request_redraw(&mut self) {
-        self.signals.redraw.set(true);
-        let _ = self.wake.signal();
+        self.signals.request_redraw();
     }
     fn set_wake_deadline(&mut self, when: Option<MonoTime>) {
         self.deadline = when;
@@ -158,25 +144,10 @@ impl Host for VitaHost {
     fn ui_signal_handler(&self) -> impl FnMut(RenderRootSignal) + 'static {
         let signals = self.signals.clone();
         let wake = self.wake.clone();
-        move |signal| match signal {
-            RenderRootSignal::RequestRedraw | RenderRootSignal::RequestAnimFrame => {
-                signals.redraw.set(true);
+        move |signal| {
+            signals.receive(signal, || {
                 let _ = wake.signal();
-            }
-            RenderRootSignal::Exit => {
-                signals.exit.set(true);
-                let _ = wake.signal();
-            }
-            RenderRootSignal::SetTitle(title) => {
-                *signals.title.borrow_mut() = title;
-            }
-            signal @ (RenderRootSignal::StartIme
-            | RenderRootSignal::EndIme
-            | RenderRootSignal::ImeMoved(..)) => {
-                signals.text.receive(&signal);
-                let _ = wake.signal();
-            }
-            _ => {}
+            });
         }
     }
 }
@@ -584,7 +555,7 @@ impl NativeLoop {
                 player.poll_completions()?;
                 player.tick(host)?;
                 player.prepare_initial_frame(host)?;
-                if host.signals.redraw.replace(false) || player.needs_redraw() {
+                if host.signals.take_redraw() || player.needs_redraw() {
                     player.render(host)?;
                 }
                 #[cfg(feature = "profiling")]
@@ -600,6 +571,12 @@ impl NativeLoop {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
                         profiling::record_device(&mut recording, player.backend);
                     }
+                }
+                // UI signals run on this thread. Rendering may request another
+                // turn after the earlier redraw was consumed; service it before
+                // waiting without consuming any asynchronous completion token.
+                if host.signals.has_redraw() {
+                    continue;
                 }
                 let now = host.monotonic_now();
                 let deadline = player
