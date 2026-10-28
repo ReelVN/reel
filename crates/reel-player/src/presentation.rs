@@ -264,10 +264,10 @@ impl Presentation {
             ok => ok,
         };
         if matches!(result, Ok(PresentOutcome::Preparing))
-            || continuing
-                && result
-                    .as_ref()
-                    .is_err_and(|error| error.kind() == FailureKind::Pressure)
+            || result
+                .as_ref()
+                .is_err_and(|error| error.kind() == FailureKind::Pressure)
+                && backend.has_pending()
         {
             self.preparing = Some(PreparingFrame {
                 frame,
@@ -316,7 +316,12 @@ impl Presentation {
                 Ok(PresentationResult::default())
             }
             Err(error) => {
-                let kind = error.kind();
+                let kind = match error.kind() {
+                    // Without an outstanding completion, waiting cannot make
+                    // this pressure retryable. Retire the candidate and report it.
+                    FailureKind::Pressure if !backend.has_pending() => FailureKind::Refused,
+                    kind => kind,
+                };
                 if !matches!(kind, FailureKind::Pressure | FailureKind::Refused) {
                     return Err(Box::new(error));
                 }

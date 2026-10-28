@@ -204,6 +204,7 @@ fn gpu_preparation_keeps_candidate_until_completion_then_publishes_newer_model()
     );
     f.complete();
     f.backend.refusal = Some(RenderError::Busy);
+    f.backend.resources_available = true;
     let pressured = f.render();
     assert!(!pressured.accepted && pressured.refused.is_none());
     assert!(f.view.is_preparing());
@@ -226,6 +227,106 @@ fn gpu_preparation_keeps_candidate_until_completion_then_publishes_newer_model()
     assert!(f.backend.cancelled.is_empty());
 }
 
+#[test]
+fn busy_frame_is_built_once_and_new_animation_state_follows_its_acceptance() {
+    let mut f = Fixture::new();
+    f.sync(0);
+    assert!(f.render().accepted);
+    // Leave the accepted submission in flight so the one-slot backend returns Busy.
+    let accepted = f.view.bridge.accepted_key().unwrap().clone();
+    f.sync(0);
+    f.sync(250_000_000);
+    let before = f.builds;
+    let refused = f.render();
+    assert!(!refused.accepted && refused.refused.is_none());
+    let candidate = f.receipt.as_ref().unwrap().key();
+    assert!(f.view.is_preparing());
+    assert_eq!(f.view.bridge.accepted_key(), Some(&accepted));
+    assert_eq!(f.view.bridge.pending_count(), 1);
+    assert_eq!(f.builds, before + 1);
+    for ns in [500_000_000, 750_000_000] {
+        f.sync(ns);
+        for _ in 0..8 {
+            assert!(!f.view.needs_redraw());
+            assert!(!f.render().accepted);
+        }
+    }
+    assert_eq!(
+        f.builds,
+        before + 1,
+        "busy polls must not rebuild the candidate"
+    );
+    assert_eq!(
+        f.story
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .next()
+            .unwrap()
+            .props
+            .x,
+        150.
+    );
+    f.complete();
+    assert!(f.render().accepted);
+    assert_eq!(f.view.bridge.accepted_key(), Some(&candidate));
+    assert_eq!(f.builds, before + 1, "completion resumes the same frame");
+    assert!(f.view.needs_redraw(), "later animation must remain pending");
+    f.complete();
+    assert!(f.render().accepted);
+    assert_eq!(f.builds, before + 2);
+    assert!(f.view.bridge.accepted_key().unwrap().frame_id() > candidate.frame_id());
+    assert_eq!(f.view.bridge.pending_count(), 0);
+    eprintln!("busy candidate: 16 waits, 1 initial build, 0 retry builds, 1 updated build");
+}
+
+#[test]
+fn busy_without_a_pending_completion_reports_refusal_and_retires_candidate() {
+    let mut f = Fixture::new();
+    f.sync(0);
+    assert!(f.render().accepted);
+    f.complete();
+    let accepted = f.view.bridge.accepted_key().unwrap().clone();
+    f.sync(250_000_000);
+    f.backend.refusal = Some(RenderError::Busy);
+    let result = f.render();
+    assert!(result.refused.is_some());
+    assert!(!f.view.is_preparing());
+    assert_eq!(f.view.bridge.pending_count(), 0);
+    assert_eq!(f.view.bridge.accepted_key(), Some(&accepted));
+}
+#[test]
+fn busy_candidate_cancelled_on_surface_change_cannot_publish_geometry() {
+    let mut f = Fixture::new();
+    f.sync(0);
+    assert!(f.render().accepted);
+    f.sync(250_000_000);
+    assert!(!f.render().accepted);
+    assert!(f.view.is_preparing());
+    let candidate = f.receipt.as_ref().unwrap().key();
+    f.view.cancel_preparation(&mut f.backend);
+    let info = SurfaceInfo {
+        surface_epoch: SurfaceEpoch(2),
+        ..f.view.surface_info()
+    };
+    assert!(f.view.replace_surface(info));
+    f.backend.configure(info).unwrap();
+    f.complete();
+    assert_eq!(f.backend.cancelled, [candidate.frame_id()]);
+    assert_eq!(f.view.bridge.pending_count(), 0);
+    assert_eq!(
+        f.view
+            .bridge
+            .resolve(reel_ui::bridge::PresentationNotice::new(
+                candidate.clone(),
+                candidate.surface_epoch(),
+                reel_ui::bridge::PresentationOutcome::Accepted(candidate.frame_id()),
+            )),
+        reel_ui::bridge::NoticeResult::StaleOrForeign
+    );
+    assert!(f.view.bridge.accepted_key().is_none());
+}
 #[test]
 fn preparing_accepted_repaint_waits_for_gpu_despite_new_model_changes() {
     let mut f = Fixture::new();
@@ -337,6 +438,7 @@ impl BackendError for PixelTestError {
 struct PixelBackend<'a> {
     inner: &'a mut Backend,
     demand: Option<PixelDemand>,
+    busy_once: bool,
 }
 impl RenderBackend for PixelBackend<'_> {
     type Error = PixelTestError;
@@ -354,6 +456,9 @@ impl RenderBackend for PixelBackend<'_> {
         frame: &RenderFrame,
         before: impl FnOnce(),
     ) -> Result<PresentOutcome, Self::Error> {
+        if std::mem::take(&mut self.busy_once) {
+            return Err(PixelTestError::Other(RenderError::Busy));
+        }
         if let Some(demand) = self.demand.take() {
             return Err(PixelTestError::Missing(demand));
         }
@@ -366,11 +471,18 @@ impl RenderBackend for PixelBackend<'_> {
     fn retire(&mut self, versions: &[ResourceVersion]) {
         self.inner.retire(versions);
     }
-    fn poll(&mut self, _: &mut Vec<RenderEvent<Self::Error>>, _: usize) -> Result<(), Self::Error> {
+    fn poll(
+        &mut self,
+        out: &mut Vec<RenderEvent<Self::Error>>,
+        limit: usize,
+    ) -> Result<(), Self::Error> {
+        if limit != 0 && std::mem::take(&mut self.inner.resources_available) {
+            out.push(RenderEvent::ResourcesAvailable);
+        }
         Ok(())
     }
     fn has_pending(&self) -> bool {
-        false
+        self.inner.has_pending()
     }
     fn suspend(&mut self) {
         self.inner.suspend();
@@ -387,7 +499,6 @@ fn pixel_demand_retains_the_exact_candidate_and_accepted_geometry() {
     let mut f = Fixture::new();
     f.sync(0);
     assert!(f.render().accepted);
-    f.complete();
     let accepted = f.view.bridge.accepted_key().unwrap().clone();
     let mut registry = ResourceRegistry::new(1, 65536).unwrap();
     let h = registry
@@ -415,6 +526,7 @@ fn pixel_demand_retains_the_exact_candidate_and_accepted_geometry() {
     let mut backend = PixelBackend {
         inner: &mut f.backend,
         demand: Some(demand),
+        busy_once: true,
     };
     f.view.invalidate();
     let pending = f
@@ -448,7 +560,22 @@ fn pixel_demand_retains_the_exact_candidate_and_accepted_geometry() {
             Ok(Some(build.finish().unwrap()))
         })
         .unwrap();
-    let (key, demand) = pending.pixels.unwrap();
+    assert!(pending.pixels.is_none());
+    let key = f.view.preparing_key().unwrap();
+    assert_eq!(f.view.bridge.accepted_key(), Some(&accepted));
+    if let Some(id) = backend.inner.inner.last_submission() {
+        backend.inner.inner.complete_render(id);
+    }
+    backend.inner.resources_available = true;
+    f.view.poll(&mut backend, &mut Vec::new(), 8).unwrap();
+    let missing = f
+        .view
+        .render(&mut backend, &mut f.host, |_, _, _| {
+            panic!("busy candidate must not be rebuilt before pixel demand")
+        })
+        .unwrap();
+    let (pixel_key, demand) = missing.pixels.unwrap();
+    assert_eq!(pixel_key, key);
     assert_eq!(demand.resources()[0].handle(), h);
     assert_eq!(f.view.bridge.accepted_key(), Some(&accepted));
     assert!(!f.view.needs_redraw());
