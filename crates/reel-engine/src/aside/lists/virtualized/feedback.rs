@@ -132,6 +132,17 @@ impl SessionVm {
             changed = true;
         }
         let mounted = get(self.vm.heap(), s, S::Mounted)?;
+        let _measurement_storage = self
+            .vm
+            .heap()
+            .budget_usage()
+            .reserve((event.measurements.len() * size_of::<usize>()) as u64)?;
+        let mut measurement_order = Vec::new();
+        measurement_order
+            .try_reserve_exact(event.measurements.len())
+            .map_err(|_| AdapterError::Allocation)?;
+        measurement_order.extend(0..event.measurements.len());
+        measurement_order.sort_unstable_by_key(|&i| (event.measurements[i].node, i));
         let mut retained = Vec::new();
         for i in 0..self.vm.heap().sequence_len(mounted)? {
             let e = self.vm.heap().sequence_get(mounted, i)?;
@@ -140,7 +151,12 @@ impl SessionVm {
             if event.retained.contains(&id) {
                 retained.push(entry(self.vm.heap(), e, Entry::Key)?);
             }
-            if let Some(measurement) = event.measurements.iter().find(|m| m.node == id) {
+            let found = measurement_order.partition_point(|&i| event.measurements[i].node < id);
+            if let Some(measurement) = measurement_order
+                .get(found)
+                .map(|&i| &event.measurements[i])
+                .filter(|m| m.node == id)
+            {
                 if !measurement.height.is_finite() || measurement.height <= 0. {
                     put(self.vm.heap_mut(), s, S::Fault, Value::bool(true))?;
                     changed = true;

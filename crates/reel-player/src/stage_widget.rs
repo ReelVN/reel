@@ -41,7 +41,9 @@ mod selection;
 #[cfg(test)]
 mod tests;
 mod virtual_images;
+mod virtual_list;
 use input::NodeInput;
+use virtual_list::VirtualListState;
 
 #[derive(Clone, Default)]
 pub(crate) struct StageView {
@@ -1052,56 +1054,6 @@ impl Widget for StageWidget {
     }
     fn accepts_pointer_interaction(&self) -> bool {
         false
-    }
-}
-
-#[derive(Default)]
-struct VirtualListState {
-    measurements: Arc<[VirtualRowMeasurement]>,
-    feedback: Option<NodeVirtualList>,
-    retained: Vec<NodeId>,
-    children: Vec<VirtualChild>,
-    navigation: Option<VirtualListNavigation>,
-    placement_pending: bool,
-    viewport_start: f64,
-    placement: Vec<(NodeId, f64)>,
-}
-impl VirtualListState {
-    // Keep one projected row fixed while packing its contiguous logical segment
-    // with this layout's real measurements. This also runs for a distant jump:
-    // the first painted window never exposes estimated gaps/overlapping rows.
-    fn place_measured(&mut self, view: &reel_ui::stage::VirtualListView, gap: f64) {
-        if !self.placement_pending {
-            return;
-        }
-        self.placement_pending = false;
-        self.placement.clear();
-        self.placement
-            .extend(view.rows.iter().map(|row| (row.node, row.offset)));
-        let height = |i: usize| {
-            self.measurements
-                .iter()
-                .find(|m| m.node == view.rows[i].node)
-                .expect("every mounted row was measured")
-                .height
-        };
-        let mut start = 0;
-        while start < view.rows.len() {
-            let mut end = start + 1;
-            while end < view.rows.len() && view.rows[end].index == view.rows[end - 1].index + 1 {
-                end += 1;
-            }
-            let anchor = (start..end)
-                .rfind(|&i| view.rows[i].offset <= self.viewport_start)
-                .unwrap_or(start);
-            for i in anchor + 1..end {
-                self.placement[i].1 = self.placement[i - 1].1 + height(i - 1) + gap;
-            }
-            for i in (start..anchor).rev() {
-                self.placement[i].1 = self.placement[i + 1].1 - height(i) - gap;
-            }
-            start = end;
-        }
     }
 }
 

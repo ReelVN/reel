@@ -147,12 +147,8 @@ impl StageWidget {
                     .transform_rect_bbox(scroll.size.to_rect());
                 let mut segment: Option<(usize, f64)> = None;
                 let mut covered = view.total_rows == 0;
-                for row in view.rows.iter() {
-                    let child = node
-                        .children
-                        .iter()
-                        .find(|child| child.node.id == row.node)
-                        .unwrap();
+                for (index, row) in view.rows.iter().enumerate() {
+                    let child = &node.children[state.child_indices[index]];
                     let ready =
                         StageView::image_requests_for(Some(child), format).is_ok_and(|requests| {
                             requests
@@ -172,18 +168,8 @@ impl StageWidget {
                     {
                         return false;
                     }
-                    let top = state
-                        .placement
-                        .iter()
-                        .find(|(id, _)| *id == row.node)
-                        .map(|(_, y)| *y)
-                        .unwrap();
-                    let height = state
-                        .measurements
-                        .iter()
-                        .find(|r| r.node == row.node)
-                        .map(|r| r.height)
-                        .unwrap();
+                    let top = state.placement[index];
+                    let height = state.measurements[index].height;
                     if !ready {
                         segment = None;
                         continue;
