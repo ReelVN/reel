@@ -92,11 +92,11 @@ mod tests {
             }
         );
         let origin = view.origin();
-        for axis in 0..2 {
+        for (axis, offset) in origin.into_iter().enumerate() {
             for edge in [0, region.extent[axis] - 1] {
                 let parent = region.source_origin[axis] + edge;
                 let copied = region.destination_origin[axis] + edge;
-                assert_eq!(parent as i64 - i64::from(origin[axis]), i64::from(copied));
+                assert_eq!(parent as i64 - i64::from(offset), i64::from(copied));
             }
         }
         assert!(!region.overwrites_destination(view.storage_size));
