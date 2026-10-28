@@ -3,8 +3,7 @@ use super::*;
 use crate::common::source_view::SourceView;
 
 impl Context<'_> {
-    /// Copy an initialized parent grid into a distinct scratch target. Partial
-    /// writes retain transparent physical padding, including filter neighbours.
+    /// Copy an initialized parent grid into an untouched, fully covered target.
     pub(super) fn copy_backdrop(
         &mut self,
         source: &Target,
@@ -46,12 +45,16 @@ impl Context<'_> {
         ) else {
             return false;
         };
-        self.ensure_sampled(&source.view);
-        if region.overwrites_destination(destination_storage) {
-            self.target_writes.take(destination.slot);
-        } else {
-            self.ensure_sampled(&destination.view);
+        // An untouched target can be replaced only when every physical pixel
+        // is covered. Partial initialization keeps clear and draw in one pass;
+        // an already-written destination may contribute to source-over blending.
+        if !region.overwrites_destination(destination_storage)
+            || !self.target_writes.pending(destination.slot)
+        {
+            return false;
         }
+        self.ensure_sampled(&source.view);
+        self.target_writes.take(destination.slot);
         let origin = |p: [u32; 2]| wgpu::Origin3d {
             x: p[0],
             y: p[1],
@@ -268,7 +271,7 @@ mod tests {
                         .upload_creations
                         .backdrop_copies
                         .load(Ordering::Relaxed);
-                    assert_eq!(count, usize::from(!legacy && stride != 40));
+                    assert_eq!(count, usize::from(!legacy && stride != 40 && !cropped));
                     #[cfg(feature = "profiling")]
                     {
                         let profile = reel_core::profile::Sample::snapshot().delta(before);
@@ -292,7 +295,7 @@ mod tests {
                     .fold(0f32, f32::max);
                 assert!(max <= 0.005, "cropped={cropped} stride={stride} max={max}");
                 assert_eq!(new_targets, old_targets);
-                if stride == 40 {
+                if stride == 40 || cropped {
                     assert_eq!(
                         (new_passes, new_clears, new_transient),
                         (old_passes, old_clears, old_transient)
@@ -302,11 +305,7 @@ mod tests {
                         new_transient < old_transient,
                         "{new_transient} vs {old_transient}"
                     );
-                    if cropped {
-                        assert_eq!((new_passes, new_clears), (old_passes, old_clears));
-                    } else {
-                        assert_eq!((new_passes + 1, new_clears + 1), (old_passes, old_clears));
-                    }
+                    assert_eq!((new_passes + 1, new_clears + 1), (old_passes, old_clears));
                 }
                 eprintln!(
                     "passes={old_passes}->{new_passes} attachment_clear_requests={old_clears}->{new_clears}"
