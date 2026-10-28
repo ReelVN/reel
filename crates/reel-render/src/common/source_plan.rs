@@ -36,16 +36,10 @@ impl Plan {
             return Ok(plan);
         }
         let mut capacity = 0;
-        for frame in frames.clone().filter(|frame| {
-            frame.drawing().transitions().is_empty()
-                && frame.drawing().capture_exclusions().is_empty()
-        }) {
-            for command in frame.commands() {
-                if let FrameOp::PushGroup(group) = &command.op
-                    && replaces_source(frame.drawing(), group, command.origin.at)?
-                {
-                    capacity += 1;
-                }
+        for frame in frames.clone() {
+            for entry in Candidates::new(frame.drawing()) {
+                entry?;
+                capacity += 1;
             }
         }
         if capacity == 0 {
@@ -60,48 +54,14 @@ impl Plan {
         )?);
         plan.entries = Vec::with_capacity(capacity);
         for frame in frames {
-            let drawing = frame.drawing();
-            if !drawing.transitions().is_empty() || !drawing.capture_exclusions().is_empty() {
-                continue;
-            }
-            let commands = drawing.commands();
-            let mut next = 0;
-            while let Some(command) = commands.get(next) {
-                let push = next;
-                next += 1;
-                // Enclosing coverage can delay a child's effect across its own
-                // stores. Keep those consumers on their existing replay path.
-                if matches!(command.op, FrameOp::PushClip(_)) {
-                    next = scope_end(commands, push).unwrap_or(commands.len());
-                    continue;
-                }
-                let FrameOp::PushGroup(group) = &command.op else {
-                    continue;
-                };
-                if !ordinary(group) {
-                    next = scope_end(commands, push).unwrap_or(commands.len());
-                    continue;
-                }
-                if !replaces_source(drawing, group, command.origin.at)? {
-                    continue;
-                }
-                if let Some(end) = scope_end(commands, push) {
-                    plan.entries.push(Entry {
-                        drawing: drawing as *const _ as usize,
-                        push,
-                        end,
-                    });
-                    next = end;
-                }
+            for entry in Candidates::new(frame.drawing()) {
+                plan.entries.push(entry?);
             }
         }
         plan.entries
             .sort_unstable_by_key(|entry| (entry.drawing, entry.push));
         plan.entries
             .dedup_by_key(|entry| (entry.drawing, entry.push));
-        if plan.entries.is_empty() {
-            return Ok(Self::default());
-        }
         Ok(plan)
     }
     fn preceding(&self, drawing: &FrameDrawing, command: usize) -> Option<Entry> {
@@ -122,6 +82,61 @@ impl Plan {
     pub(crate) fn selected(&self, drawing: &FrameDrawing, command: usize) -> bool {
         self.preceding(drawing, command)
             .is_none_or(|entry| command == entry.push || command >= entry.end - 1)
+    }
+}
+
+/// Count and publish the same outermost balanced ranges without scratch storage.
+/// Enclosing coverage can delay a child's effect across its own stores, so the
+/// iterator preserves those consumers and never visits their internal candidates.
+struct Candidates<'a> {
+    drawing: &'a FrameDrawing,
+    next: usize,
+}
+impl<'a> Candidates<'a> {
+    fn new(drawing: &'a FrameDrawing) -> Self {
+        Self {
+            drawing,
+            next: if drawing.transitions().is_empty() && drawing.capture_exclusions().is_empty() {
+                0
+            } else {
+                drawing.commands().len()
+            },
+        }
+    }
+}
+impl Iterator for Candidates<'_> {
+    type Item = Result<Entry, GpuError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let commands = self.drawing.commands();
+        while let Some(command) = commands.get(self.next) {
+            let push = self.next;
+            self.next += 1;
+            if matches!(command.op, FrameOp::PushClip(_)) {
+                self.next = scope_end(commands, push).unwrap_or(commands.len());
+                continue;
+            }
+            let FrameOp::PushGroup(group) = &command.op else {
+                continue;
+            };
+            if !ordinary(group) {
+                self.next = scope_end(commands, push).unwrap_or(commands.len());
+                continue;
+            }
+            match replaces_source(self.drawing, group, command.origin.at) {
+                Err(error) => return Some(Err(error)),
+                Ok(false) => continue,
+                Ok(true) => {}
+            }
+            if let Some(end) = scope_end(commands, push) {
+                self.next = end;
+                return Some(Ok(Entry {
+                    drawing: self.drawing as *const _ as usize,
+                    push,
+                    end,
+                }));
+            }
+        }
+        None
     }
 }
 fn replaces_source(

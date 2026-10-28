@@ -209,13 +209,26 @@ fn frame(sampled: bool, scalar: bool, variant: u8) -> RenderFrame {
         Affine::IDENTITY,
         Default::default(),
     ));
-    if variant == 6 {
+    if matches!(variant, 6..=9) {
         let pattern = widget.effect.as_ref().unwrap().images[0].clone();
-        let parent_paint = paint(&mut registry, &pool, true, false, Some(pattern));
-        handles.push(parent_paint.shader.handle());
+        let parent_paint = if variant == 9 {
+            widget.effect.as_ref().unwrap().clone()
+        } else {
+            let parent = paint(&mut registry, &pool, true, false, Some(pattern));
+            handles.push(parent.shader.handle());
+            parent
+        };
         let mut parent = f::RecordWidget::new(Scene::new());
         parent.clip = false;
-        parent.effect = Some(parent_paint);
+        if matches!(variant, 6 | 9) {
+            parent.effect = Some(parent_paint);
+        }
+        if variant == 7 {
+            parent.blend = reel_ui::peniko::Mix::Screen.into();
+        }
+        if variant == 8 {
+            parent.clip = true;
+        }
         parent
             .inner
             .add(widget.prepare(), Point::ZERO, Size::new(160., 120.));
@@ -396,6 +409,39 @@ fn sampled_scalar_clipped_special_and_capture_dependencies_keep_their_producers(
                 .all(|(index, _)| selected.sources.selected(frame.drawing(), index))
         );
     }
+}
+
+#[test]
+fn excluded_ancestors_need_no_source_plan_budget() {
+    for variant in [1, 7, 8] {
+        let frame = frame(false, false, variant);
+        let limits = crate::common::GpuLimits {
+            transient_bytes: 0,
+            ..Default::default()
+        };
+        let budgets = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let plan = Plan::collect(std::iter::once(&frame), false, &budgets, &local, 0).unwrap();
+        assert!(plan.entries.is_empty());
+        assert!(plan._storage.is_none());
+        assert_eq!(budgets.transient.usage().bytes, 0);
+        assert_eq!(local.transient.usage().bytes, 0);
+    }
+    let frame = frame(false, false, 9);
+    let bytes = size_of::<Entry>() as u64;
+    let limits = crate::common::GpuLimits {
+        transient_bytes: bytes,
+        ..Default::default()
+    };
+    let budgets = Budgets::new(limits);
+    let local = Budgets::new(limits);
+    let plan = Plan::collect(std::iter::once(&frame), false, &budgets, &local, bytes).unwrap();
+    assert_eq!(
+        plan.entries.len(),
+        1,
+        "outer replacement already removes the inner candidate"
+    );
+    assert_eq!(budgets.transient.usage().bytes, bytes);
 }
 
 #[test]
