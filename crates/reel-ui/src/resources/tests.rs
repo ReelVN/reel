@@ -39,7 +39,7 @@ fn linear(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot, 
             return Err(ResourceError::RetiredOrForeign);
         }
         if leases.iter().any(|other: &ResourceLease| {
-            other.handle() == lease.handle() || lookup_same_source(other.data(), lease.data())
+            other.handle() == lease.handle() || other.lookup_same_source(&lease)
         }) {
             return Err(ResourceError::ConflictingVersion);
         }
@@ -47,8 +47,8 @@ fn linear(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot, 
     }
     leases.sort_unstable_by_key(|r| {
         (
-            r.data().blob().is_none(),
-            r.data().blob().map_or(0, Blob::id),
+            r.source_blob_id().is_none(),
+            r.source_blob_id().unwrap_or(0),
             r.handle(),
         )
     });
@@ -333,4 +333,70 @@ fn image_pixel_reader_retains_original_storage_after_resource_retirement() {
     assert_eq!(reader.bytes(), &[17; 16]);
     drop(reader);
     assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
+fn reloadable_pixels_release_only_after_readers_and_restore_identity() {
+    let p = pool();
+    let mut first = ResourceRegistry::new(8, 1 << 20).unwrap();
+    let mut second = ResourceRegistry::new(8, 1 << 20).unwrap();
+    let register = |registry: &mut ResourceRegistry, fill| {
+        registry
+            .register_image(
+                version(42),
+                OwnedBytes::new(vec![fill; 16], p.reserve(16).unwrap()).unwrap(),
+                [2, 2],
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Srgb,
+            )
+            .unwrap()
+    };
+    let handle = register(&mut first, 7);
+    let image = first.acquire(handle).unwrap();
+    assert!(
+        !image.discard_uploaded_pixels(),
+        "generated content remains resident"
+    );
+    image.permit_pixel_reload();
+    let reader = image.read_pixels().unwrap();
+    let id = reader.blob().id();
+    assert!(
+        !image.discard_uploaded_pixels(),
+        "active reader owns pixel bytes"
+    );
+    drop(reader);
+    assert!(image.discard_uploaded_pixels());
+    assert_eq!(p.usage().bytes, 0);
+    assert!(image.read_pixels().is_none());
+    assert_eq!(image.image_size(), Some([2, 2]));
+    let wrong_handle = second
+        .register_image(
+            version(43),
+            OwnedBytes::new(vec![7; 16], p.reserve(16).unwrap()).unwrap(),
+            [2, 2],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let wrong = second.acquire(wrong_handle).unwrap();
+    assert_eq!(
+        image.restore_pixels(&wrong),
+        Err(ResourceError::ConflictingVersion)
+    );
+    assert!(image.read_pixels().is_none());
+    second.release(wrong_handle);
+    drop(wrong);
+    let replacement_handle = register(&mut second, 7);
+    let replacement = second.acquire(replacement_handle).unwrap();
+    image.restore_pixels(&replacement).unwrap();
+    let restored = image.read_pixels().unwrap();
+    assert_eq!(restored.bytes(), &[7; 16]);
+    assert_eq!(restored.blob().id(), id);
+    assert_eq!(image.handle(), handle);
+    assert!(
+        !image.discard_uploaded_pixels(),
+        "restored reader remains live"
+    );
 }

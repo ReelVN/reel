@@ -308,8 +308,8 @@ mod tests {
             }
         }
         assert!(full_glyphs > first_glyphs);
-        assert_eq!(first.resources().leases().iter().filter(|lease| matches!(lease.data(), ResourceData::Texture { descriptor, .. } if descriptor.format == TextureFormat::Bc1Rgb)).count(), 1);
-        assert_eq!(first.resources().leases().iter().filter(|lease| matches!(lease.data(), ResourceData::Texture { descriptor, .. } if descriptor.format == TextureFormat::Bc3Rgba)).count(), 2);
+        assert_eq!(first.resources().leases().iter().filter(|lease| matches!(lease.view(), reel_ui::resources::ResourceView::Texture { descriptor, .. } if descriptor.format == TextureFormat::Bc1Rgb)).count(), 1);
+        assert_eq!(first.resources().leases().iter().filter(|lease| matches!(lease.view(), reel_ui::resources::ResourceView::Texture { descriptor, .. } if descriptor.format == TextureFormat::Bc3Rgba)).count(), 2);
         println!(
             "vn_text reveal_frames={} warm_frames=8 first_glyphs={first_glyphs} full_glyphs={full_glyphs} cpu_pool={:?}",
             LINE.len(),

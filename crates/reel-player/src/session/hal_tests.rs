@@ -321,7 +321,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     // The recording consumer requires explicit upload completion, just as its
     // presentation contract requires explicit completion of submitted frames.
     let font = player.resources[0].clone();
-    let reel_ui::resources::ResourceData::Font(data) = font.data() else {
+    let reel_ui::resources::ResourceView::Font(data) = font.view() else {
         panic!("font resource");
     };
     let bytes = OwnedBytes::new(

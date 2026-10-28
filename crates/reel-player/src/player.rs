@@ -478,7 +478,7 @@ where
                     self.fonts.insert(path.clone(), index);
                     index
                 };
-                let reel_ui::resources::ResourceData::Font(font) = self.resources[index].data()
+                let reel_ui::resources::ResourceView::Font(font) = self.resources[index].view()
                 else {
                     unreachable!()
                 };

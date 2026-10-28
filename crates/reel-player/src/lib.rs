@@ -17,6 +17,8 @@ mod probe;
 pub mod story_runtime;
 #[cfg(test)]
 mod test_cost;
+#[cfg(test)]
+mod test_image;
 
 pub mod aside_session;
 pub mod assets;

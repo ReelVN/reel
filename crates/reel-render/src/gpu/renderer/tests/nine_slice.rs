@@ -10,7 +10,7 @@ use reel_ui::{
     kurbo::{Insets, Point, Size},
     peniko::{ImageAlphaType, ImageBrush, ImageFormat},
     properties::ObjectFit,
-    resources::{ColorEncoding, ResourceData, ResourceRegistry, ResourceSnapshot},
+    resources::{ColorEncoding, ResourceRegistry, ResourceSnapshot},
     widgets::{Image, ImageTile},
 };
 
@@ -229,9 +229,7 @@ fn sliced_frame(pool: &BudgetPool) -> RenderFrame {
         )
         .unwrap();
     let lease = registry.acquire(handle).unwrap();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
+    let image = crate::test_support::image_data(&lease);
     let mut background = Scene::new();
     fill(&mut background, Color::BLACK);
     // A path image takes the generic mesh route rather than rectangle batching.
@@ -338,9 +336,7 @@ fn singular_painter_image_transform_is_rejected_at_frame_conversion() {
         )
         .unwrap();
     let lease = registry.acquire(handle).unwrap();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
+    let image = crate::test_support::image_data(&lease);
     let mut scene = Scene::new();
     scene.draw(Draw::Fill {
         transform: Affine::IDENTITY,

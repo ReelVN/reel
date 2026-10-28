@@ -21,7 +21,7 @@ use reel_ui::{
     dpi::PhysicalSize,
     frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, RenderFrame, StepBudget},
     peniko::Brush,
-    resources::{ColorEncoding, ResourceData, ResourceSnapshot},
+    resources::{ColorEncoding, ResourceSnapshot},
 };
 use std::{
     path::Path,
@@ -213,16 +213,15 @@ fn images(frame: &RenderFrame) -> Vec<ImageDraw> {
                 .iter()
                 .find(|lease| lease.handle() == brush.image.resource)
                 .expect("image handle must have a pixel lease");
-            let ResourceData::Image { image, encoding } = lease.data() else {
-                panic!("expected image pixels")
-            };
-            assert_eq!(*encoding, ColorEncoding::Srgb);
-            blob_ids.push(image.data.id());
+            let image = lease.image_descriptor().expect("expected image metadata");
+            let pixels = lease.read_pixels().expect("expected image pixels");
+            assert_eq!(image.encoding, ColorEncoding::Srgb);
+            blob_ids.push(pixels.blob().id());
             Some(ImageDraw {
                 version: lease.version().clone(),
                 transform: transform.as_coeffs(),
                 dimensions: [image.width, image.height],
-                pixels: image.data.as_ref().to_vec(),
+                pixels: pixels.bytes().to_vec(),
             })
         })
         .collect();
@@ -340,10 +339,13 @@ fn cursor_source_and_asb_use_ordinary_image_resource_leases_after_owner_drop() {
                     .iter()
                     .find(|lease| lease.handle() == image.image.resource)
                     .unwrap();
-                let ResourceData::Image { image, .. } = lease.data() else {
-                    panic!("cursor image lease");
-                };
-                assert!(!image.data.is_empty());
+                assert!(
+                    !lease
+                        .read_pixels()
+                        .expect("cursor image lease")
+                        .bytes()
+                        .is_empty()
+                );
                 count += 1;
             }
         }

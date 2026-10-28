@@ -191,7 +191,7 @@ impl SceneNode {
             .images
             .image_resource
             .as_ref()
-            .and_then(|r| r.data().image_size())
+            .and_then(|r| r.image_size())
             .map(|[w, h]| Size::new(w.into(), h.into()))
             .or(self.images.tiled_size)
             .unwrap_or(Size::ZERO);

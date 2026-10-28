@@ -1007,7 +1007,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         Some(Size::new(4096., 2048.))
     );
     let sprite = root.children[1].images.image_resource.as_ref().unwrap();
-    assert_eq!(sprite.data().image_size(), Some([160, 90]));
+    assert_eq!(sprite.image_size(), Some([160, 90]));
     assert_eq!(view.resources.len(), 1);
     assert_eq!(
         view.resources[0].handle(),
@@ -1256,7 +1256,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
         let snapshot =
             ResourceSnapshot::capture(f.ui.image_resources().iter().cloned().map(Ok), &frames)
                 .unwrap();
-        let ResourceData::Yuv420(image) = snapshot.leases()[0].data() else {
+        let reel_ui::resources::ResourceView::Yuv420(image) = snapshot.leases()[0].view() else {
             panic!("planar image expected")
         };
         assert_eq!(image.plane(0).as_ptr(), pointer);
@@ -1407,7 +1407,9 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
             "only first retained frame plus current frame own pixels"
         );
     }
-    let ResourceData::Yuv420(image) = first.as_ref().unwrap().resources().leases()[0].data() else {
+    let reel_ui::resources::ResourceView::Yuv420(image) =
+        first.as_ref().unwrap().resources().leases()[0].view()
+    else {
         panic!()
     };
     assert_eq!(

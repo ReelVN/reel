@@ -103,7 +103,7 @@ fn video_shares_output_restores_paused_transport_and_terminal_poster_without_sou
         }
         frame.is_some() && player.position(id).unwrap() > Duration::from_millis(20)
     });
-    let ResourceData::Yuv420(image) = frame.as_ref().unwrap().data() else {
+    let reel_ui::resources::ResourceView::Yuv420(image) = frame.as_ref().unwrap().view() else {
         panic!("native YUV lease")
     };
     assert_eq!(image.size(), [64, 48]);

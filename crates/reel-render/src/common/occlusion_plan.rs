@@ -180,7 +180,6 @@ fn plan_drawing(
             .image_coverage()
             .is_some_and(|coverage| coverage.is_opaque())
             || lease
-                .data()
                 .texture_descriptor()
                 .is_some_and(|desc| desc.format == TextureFormat::Bc1Rgb)
         {

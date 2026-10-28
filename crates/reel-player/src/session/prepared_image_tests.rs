@@ -161,7 +161,7 @@ fn bc_tiles_load_as_blocks_and_bind_each_visible_draw() {
     use reel_ui::{
         frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget},
         peniko::Brush,
-        resources::{ResourceData, ResourceSnapshot},
+        resources::ResourceSnapshot,
     };
     let (mut ui, mut bridge, widget, _, _, wake, _) =
         fixture_with_encoding(TileEncoding::ReelTexture);
@@ -193,7 +193,7 @@ fn bc_tiles_load_as_blocks_and_bind_each_visible_draw() {
         manifest.width.div_ceil(manifest.tile_edge) as usize,
         "an effect can sample source tiles beyond its parent's visible clip"
     );
-    assert!(ui.images.loaded.values().all(|lease|matches!(lease.data(),ResourceData::Texture{descriptor,..} if descriptor.format.is_compressed())));
+    assert!(ui.images.loaded.values().all(|lease|matches!(lease.view(),reel_ui::resources::ResourceView::Texture{descriptor,..} if descriptor.format.is_compressed())));
     assert!(
         ui.images.pool.usage().bytes < 30_000,
         "only native BC blocks of visible tiles and neighbors are resident"

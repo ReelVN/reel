@@ -554,7 +554,7 @@ impl Widget for SceneWidget {
             }
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
-            let [width, height] = image.data().image_size().expect("particle image resource");
+            let [width, height] = image.image_size().expect("particle image resource");
             let insets = batch.batches.iter().fold(Insets::ZERO, |insets, emission| {
                 let frame = emission.frame;
                 let config = &emission.config;
@@ -949,7 +949,7 @@ impl Widget for SceneWidget {
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
             use reel_ui::{kurbo::Affine, peniko::ImageSampler};
-            let [width, height] = image.data().image_size().expect("particle image resource");
+            let [width, height] = image.image_size().expect("particle image resource");
             let instances = self.particle_sampler.record(batch);
             ctx.draw_resource_sprites(
                 painter,

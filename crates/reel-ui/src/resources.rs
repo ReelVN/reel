@@ -152,11 +152,47 @@ impl AsRef<[u8]> for AccountedBlob {
         self.bytes.as_slice()
     }
 }
+type PixelStorage = dyn AsRef<[u8]> + Send + Sync;
+
+#[derive(Debug)]
+struct PixelState {
+    // A weak reference preserves producer identity without retaining its bytes.
+    storage: Weak<PixelStorage>,
+    resident: Option<Blob<u8>>,
+    metadata: BudgetPool,
+    weak_storage: Option<BudgetTicket>,
+    reloadable: bool,
+}
+impl PixelState {
+    fn new(blob: Blob<u8>, metadata: BudgetPool) -> Self {
+        let (storage, _) = blob.clone().into_raw_parts();
+        Self {
+            storage: Arc::downgrade(&storage),
+            resident: Some(blob),
+            metadata,
+            weak_storage: None,
+            reloadable: false,
+        }
+    }
+    fn matches(&self, blob: &Blob<u8>) -> bool {
+        let (storage, _) = blob.clone().into_raw_parts();
+        Weak::ptr_eq(&self.storage, &Arc::downgrade(&storage))
+    }
+}
+
+#[derive(Debug)]
+enum StoredResource {
+    Image(ImageDescriptor),
+    Texture(TextureDescriptor),
+    Other(ResourceData),
+}
+
 #[derive(Debug)]
 struct Resource {
     handle: ResourceHandle,
     version: ResourceVersion,
-    data: ResourceData,
+    data: StoredResource,
+    pixels: Option<Mutex<PixelState>>,
     // Remains stable when pixel residency changes; Blob IDs are lookup hints.
     source_blob_id: Option<u64>,
     pixel_bytes: Option<usize>,
@@ -244,53 +280,47 @@ impl ResourceLease {
     pub fn version(&self) -> &ResourceVersion {
         &self.0.version
     }
-    pub fn data(&self) -> &ResourceData {
-        &self.0.data
-    }
     /// Return the resource metadata without taking ownership of image pixels.
     pub fn view(&self) -> ResourceView<'_> {
         match &self.0.data {
-            ResourceData::EffectShader { descriptor, bytes } => {
-                ResourceView::EffectShader { descriptor, bytes }
-            }
-            ResourceData::Texture { descriptor, .. } => ResourceView::Texture {
+            StoredResource::Image(image) => ResourceView::Image { image: *image },
+            StoredResource::Texture(descriptor) => ResourceView::Texture {
                 descriptor: *descriptor,
             },
-            ResourceData::Image { .. } => ResourceView::Image {
-                image: self.image_descriptor().expect("image metadata"),
-            },
-            ResourceData::Yuv420(image) => ResourceView::Yuv420(image),
-            ResourceData::Font(font) => ResourceView::Font(font),
-            ResourceData::External { token } => ResourceView::External { token: *token },
+            StoredResource::Other(ResourceData::EffectShader { descriptor, bytes }) => {
+                ResourceView::EffectShader { descriptor, bytes }
+            }
+            StoredResource::Other(ResourceData::Yuv420(image)) => ResourceView::Yuv420(image),
+            StoredResource::Other(ResourceData::Font(font)) => ResourceView::Font(font),
+            StoredResource::Other(ResourceData::External { token }) => {
+                ResourceView::External { token: *token }
+            }
+            StoredResource::Other(ResourceData::Image { .. } | ResourceData::Texture { .. }) => {
+                unreachable!()
+            }
         }
     }
     /// Return decoded image metadata without retaining its pixel allocation.
     pub fn image_descriptor(&self) -> Option<ImageDescriptor> {
-        match &self.0.data {
-            ResourceData::Image { image, encoding } => Some(ImageDescriptor {
-                width: image.width,
-                height: image.height,
-                format: image.format,
-                alpha_type: image.alpha_type,
-                encoding: *encoding,
-            }),
+        match self.0.data {
+            StoredResource::Image(image) => Some(image),
             _ => None,
         }
     }
     /// Return prepared texture metadata without retaining its block allocation.
     pub fn texture_descriptor(&self) -> Option<TextureDescriptor> {
-        self.0.data.texture_descriptor()
+        match self.0.data {
+            StoredResource::Texture(descriptor) => Some(descriptor),
+            _ => None,
+        }
     }
     /// Logical dimensions of an image, texture, or video resource.
     pub fn image_size(&self) -> Option<[u32; 2]> {
-        if let Some(image) = self.image_descriptor() {
-            Some([image.width, image.height])
-        } else if let Some(texture) = self.texture_descriptor() {
-            Some(texture.layout.logical_size)
-        } else if let ResourceView::Yuv420(image) = self.view() {
-            Some(image.size())
-        } else {
-            None
+        match self.view() {
+            ResourceView::Image { image } => Some([image.width, image.height]),
+            ResourceView::Texture { descriptor } => Some(descriptor.layout.logical_size),
+            ResourceView::Yuv420(image) => Some(image.size()),
+            _ => None,
         }
     }
     /// Declared image or texture payload length, independent of residency.
@@ -300,27 +330,151 @@ impl ResourceLease {
     /// Acquire an owning CPU reader for decoded image or texture pixels.
     /// Other resource kinds have their own data and return `None`.
     pub fn read_pixels(&self) -> Option<ResourcePixels> {
-        match &self.0.data {
-            ResourceData::Image { image, .. } => Some(ResourcePixels(image.data.clone())),
-            ResourceData::Texture { bytes, .. } => Some(ResourcePixels(bytes.clone())),
-            _ => None,
-        }
+        self.0
+            .pixels
+            .as_ref()?
+            .lock()
+            .expect("image pixels poisoned")
+            .resident
+            .clone()
+            .map(ResourcePixels)
     }
     fn source_blob_id(&self) -> Option<u64> {
         self.0.source_blob_id
     }
     fn snapshot_source_key(&self) -> (u8, u64) {
-        match &self.0.data {
-            ResourceData::Yuv420(image) => {
+        match self.view() {
+            ResourceView::Yuv420(image) => {
                 let [width, height] = image.size();
                 (1, (u64::from(width) << 32) | u64::from(height))
             }
-            ResourceData::External { token } => (2, *token),
+            ResourceView::External { token } => (2, token),
             _ => (0, self.source_blob_id().expect("blob-backed resource")),
         }
     }
     fn lookup_same_source(&self, other: &Self) -> bool {
-        lookup_same_source(&self.0.data, &other.0.data)
+        match (self.view(), other.view()) {
+            (ResourceView::Image { image: a }, ResourceView::Image { image: b }) => {
+                a.width == b.width
+                    && a.height == b.height
+                    && a.format == b.format
+                    && a.alpha_type == b.alpha_type
+                    && self.same_pixels(other)
+            }
+            (ResourceView::Texture { descriptor: a }, ResourceView::Texture { descriptor: b }) => {
+                a == b && self.same_pixels(other)
+            }
+            _ => match (&self.0.data, &other.0.data) {
+                (StoredResource::Other(a), StoredResource::Other(b)) => lookup_same_source(a, b),
+                _ => false,
+            },
+        }
+    }
+    fn same_pixels(&self, other: &Self) -> bool {
+        if self.source_blob_id() != other.source_blob_id() {
+            return false;
+        }
+        let Some(a) = &self.0.pixels else {
+            return false;
+        };
+        let Some(b) = &other.0.pixels else {
+            return false;
+        };
+        let a = a.lock().expect("image pixels poisoned").storage.clone();
+        let b = b.lock().expect("image pixels poisoned").storage.clone();
+        Weak::ptr_eq(&a, &b)
+    }
+    fn same_input_pixels(&self, blob: &Blob<u8>) -> bool {
+        self.source_blob_id() == Some(blob.id())
+            && self.0.pixels.as_ref().is_some_and(|identity| {
+                identity
+                    .lock()
+                    .expect("image pixels poisoned")
+                    .matches(blob)
+            })
+    }
+    fn same_input_source(&self, data: &ResourceData) -> bool {
+        match (self.view(), data) {
+            (ResourceView::Image { image: a }, ResourceData::Image { image: b, encoding }) => {
+                a.width == b.width
+                    && a.height == b.height
+                    && a.format == b.format
+                    && a.alpha_type == b.alpha_type
+                    && a.encoding == *encoding
+                    && self.same_input_pixels(&b.data)
+            }
+            (
+                ResourceView::Texture { descriptor: a },
+                ResourceData::Texture {
+                    descriptor: b,
+                    bytes,
+                },
+            ) => a == *b && self.same_input_pixels(bytes),
+            _ => match &self.0.data {
+                StoredResource::Other(existing) => existing.same_source(data),
+                _ => false,
+            },
+        }
+    }
+    /// Mark pixels as reconstructible from this resource's fixed asset version.
+    /// The asset owner must retain a path that can asynchronously restore them.
+    pub fn permit_pixel_reload(&self) {
+        if let Some(pixels) = &self.0.pixels {
+            pixels.lock().expect("image pixels poisoned").reloadable = true;
+        }
+    }
+    /// Release reconstructible pixels after the same version is resident on the
+    /// consumer. Returns false while a CPU reader or producer alias holds them.
+    pub fn discard_uploaded_pixels(&self) -> bool {
+        let Some(pixels) = &self.0.pixels else {
+            return false;
+        };
+        let mut pixels = pixels.lock().expect("image pixels poisoned");
+        if !pixels.reloadable
+            || pixels
+                .resident
+                .as_ref()
+                .is_none_or(|blob| blob.strong_count() != 1)
+        {
+            return false;
+        }
+        // The producer's blob ticket ends with the last strong reference; its
+        // Arc control block remains until our source-identity weak reference ends.
+        let Ok(storage) = pixels.metadata.reserve((2 * size_of::<usize>()) as u64) else {
+            return false;
+        };
+        pixels.weak_storage = Some(storage);
+        pixels.resident = None;
+        true
+    }
+    /// Restore the same fixed version and descriptor into this resource identity.
+    /// Existing readers keep their own backing until they are dropped.
+    pub fn restore_pixels(&self, source: &ResourceLease) -> Result<(), ResourceError> {
+        if self.version() != source.version()
+            || self.image_descriptor() != source.image_descriptor()
+            || self.texture_descriptor() != source.texture_descriptor()
+            || self.pixel_byte_len() != source.pixel_byte_len()
+        {
+            return Err(ResourceError::ConflictingVersion);
+        }
+        let replacement = source.read_pixels().ok_or(ResourceError::InvalidData)?;
+        let Some(state) = &self.0.pixels else {
+            return Err(ResourceError::InvalidData);
+        };
+        let mut state = state.lock().expect("image pixels poisoned");
+        if !state.reloadable {
+            return Err(ResourceError::InvalidData);
+        }
+        if state.resident.is_none() {
+            let (backing, _) = replacement.0.into_raw_parts();
+            let blob =
+                Blob::from_raw_parts(backing, self.source_blob_id().expect("pixel identity"));
+            let (backing, _) = blob.clone().into_raw_parts();
+            state.storage = Arc::downgrade(&backing);
+            state.resident = Some(blob);
+            state.weak_storage = None;
+        }
+        Ok(())
     }
     /// Cached conservative alpha support in visible texels, including the
     /// filtering border. Registration computes this once from immutable RGBA
@@ -547,7 +701,7 @@ impl ResourceRegistry {
                 if existing.retired.load(Ordering::Acquire) {
                     return Err(ResourceError::RetiredOrForeign);
                 }
-                return if existing.data.same_source(&data) {
+                return if ResourceLease(existing.clone()).same_input_source(&data) {
                     Ok(existing.handle)
                 } else {
                     Err(ResourceError::ConflictingVersion)
@@ -608,10 +762,31 @@ impl ResourceRegistry {
             ResourceData::Texture { bytes, .. } => Some(bytes.len()),
             _ => None,
         };
+        let (data, pixels) = match data {
+            ResourceData::Image { image, encoding } => (
+                StoredResource::Image(ImageDescriptor {
+                    width: image.width,
+                    height: image.height,
+                    format: image.format,
+                    alpha_type: image.alpha_type,
+                    encoding,
+                }),
+                Some(Mutex::new(PixelState::new(
+                    image.data,
+                    self.descriptors.clone(),
+                ))),
+            ),
+            ResourceData::Texture { descriptor, bytes } => (
+                StoredResource::Texture(descriptor),
+                Some(Mutex::new(PixelState::new(bytes, self.descriptors.clone()))),
+            ),
+            other => (StoredResource::Other(other), None),
+        };
         let lease = ResourceLease(Arc::new(Resource {
             handle,
             version,
             data,
+            pixels,
             source_blob_id,
             pixel_bytes,
             image_coverage,

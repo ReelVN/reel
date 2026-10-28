@@ -295,18 +295,24 @@ impl State {
             let lease = registry
                 .acquire(image_handle)
                 .map_err(|e| format!("image lease: {e:?}"))?;
-            let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
-                unreachable!()
+            let descriptor = lease.image_descriptor().expect("diagnostic image");
+            let pixels = lease.read_pixels().expect("diagnostic pixels");
+            let image = reel_ui::peniko::ImageData {
+                data: pixels.blob(),
+                format: descriptor.format,
+                alpha_type: descriptor.alpha_type,
+                width: descriptor.width,
+                height: descriptor.height,
             };
-            resources.push(lease.clone());
-            Some(image.clone())
+            resources.push(lease);
+            Some(image)
         } else {
             None
         };
         let mut fonts = std::collections::BTreeMap::new();
         let font = if let Some(path) = &font_path {
             let lease = crate::fonts::load(path, &pool)?;
-            let reel_ui::resources::ResourceData::Font(font) = lease.data() else {
+            let reel_ui::resources::ResourceView::Font(font) = lease.view() else {
                 unreachable!()
             };
             let font = font.clone();

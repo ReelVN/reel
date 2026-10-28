@@ -4,7 +4,7 @@ use reel_core::{
     result::Rejected,
     test_support::{MemoryAsset, MemoryAssetIo},
 };
-use reel_ui::resources::ResourceData;
+
 use std::{
     sync::mpsc,
     time::{Duration, Instant},
@@ -132,16 +132,11 @@ fn prepared_texture_preserves_blocks_and_uses_bounded_workspace() {
                 .request_encoded("prepared.reel-texture".into(), &bytes)
                 .unwrap();
             let lease = load_until_done(&assets, id).unwrap();
-            let ResourceData::Texture {
-                descriptor: actual,
-                bytes: data,
-            } = lease.data()
-            else {
-                panic!("prepared texture must retain its block resource kind")
-            };
-            assert_eq!(*actual, descriptor);
-            assert_eq!(data.data(), blocks);
-            assert_eq!(lease.data().image_size(), Some([192, 108]));
+            let actual = lease.texture_descriptor().expect("prepared texture");
+            let data = lease.read_pixels().expect("prepared texture bytes");
+            assert_eq!(actual, descriptor);
+            assert_eq!(data.bytes(), blocks);
+            assert_eq!(lease.image_size(), Some([192, 108]));
             assert!(assets.temporary_pool().usage().peak_bytes <= 65536);
             assert_eq!(
                 assets.output_pool().usage().bytes,
@@ -151,6 +146,7 @@ fn prepared_texture_preserves_blocks_and_uses_bounded_workspace() {
                     blocks.len() as u64
                 }
             );
+            drop(data);
             drop(lease);
             assets.cancel(id);
             assets.maintain();
@@ -243,14 +239,12 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
             .as_slice()
             .as_ptr();
         let lease = load_until_done(&assets, id).unwrap();
-        let ResourceData::Texture { bytes, .. } = lease.data() else {
-            unreachable!()
-        };
-        assert_eq!(bytes.data(), blocks);
+        let bytes = lease.read_pixels().expect("prepared texture bytes");
+        assert_eq!(bytes.bytes(), blocks);
         assert_eq!(jobs.load(Ordering::Relaxed), expected_jobs);
         if codec == TextureCodec::Raw && !exact_budget {
             assert_eq!(
-                bytes.data().as_ptr(),
+                bytes.bytes().as_ptr(),
                 address.wrapping_add(TextureHeader::LEN),
                 "raw payload retains the original read allocation"
             );
@@ -299,15 +293,14 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
         .as_slice()
         .as_ptr();
     let lease = load_until_done(&assets, id).unwrap();
-    let ResourceData::Texture { bytes, .. } = lease.data() else {
-        panic!("expected texture")
-    };
+    let bytes = lease.read_pixels().expect("expected texture");
     assert_eq!(
-        bytes.data().as_ptr(),
+        bytes.bytes().as_ptr(),
         address.wrapping_add(TextureHeader::LEN)
     );
     assert_eq!(group.usage().bytes, limit);
     assert_eq!(group.usage().peak_bytes, limit);
+    drop(bytes);
     drop(lease);
     assert_eq!(group.usage().bytes, 0);
 
@@ -334,7 +327,7 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
     let Phase::Done(Ok(lease)) = load.phase else {
         panic!("font was not prepared")
     };
-    let ResourceData::Font(font) = lease.data() else {
+    let reel_ui::resources::ResourceView::Font(font) = lease.view() else {
         panic!("expected font")
     };
     assert_eq!(font.data().as_ptr(), address);
@@ -368,9 +361,7 @@ fn small_png_metadata_uses_the_configured_decoder_budget() {
         let result = load_until_done(&assets, id);
         if succeeds {
             let lease = result.unwrap();
-            let ResourceData::Image { image, .. } = lease.data() else {
-                panic!("image resource");
-            };
+            let image = crate::test_image::data(&lease);
             assert_eq!([image.width, image.height], [19, 5]);
             assert_eq!(image.data.as_ref(), pixels);
             drop(lease);
@@ -467,7 +458,10 @@ fn prepared_versions_share_only_live_matching_kinds_and_respect_explicit_retirem
         assets.request("assets/panels.png", AssetKind::Font),
     )
     .unwrap();
-    assert!(matches!(font.data(), ResourceData::Font(_)));
+    assert!(matches!(
+        font.view(),
+        reel_ui::resources::ResourceView::Font(_)
+    ));
     assert_ne!(first.handle(), font.handle());
     first.prohibit_new_leases();
     assert!(weak.upgrade().is_none());
@@ -522,7 +516,7 @@ fn loose_resources_share_within_a_launch_and_reopen_on_the_next_launch() {
     )
     .unwrap();
     assert_eq!(*changed.version(), identity);
-    assert_eq!(changed.data().image_size(), Some([96, 96]));
+    assert_eq!(changed.image_size(), Some([96, 96]));
     drop(changed);
     assert_eq!(assets.output_pool().usage().bytes, 0);
     drop(assets);
@@ -605,9 +599,7 @@ fn concurrent_images_share_decode_capacity_and_source_identities() {
             .collect::<Vec<_>>();
         versions.push(actual);
         for (lease, size) in leases.iter().zip([[160, 90], [96, 96]]) {
-            let ResourceData::Image { image, .. } = lease.data() else {
-                panic!("image expected")
-            };
+            let image = crate::test_image::data(lease);
             assert_eq!([image.width, image.height], size);
         }
         let output = assets.output_pool();

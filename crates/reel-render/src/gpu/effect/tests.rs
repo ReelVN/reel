@@ -370,7 +370,7 @@ fn static_image_effect_chain_reuses_materialized_passes() {
         imaging::Composite,
         kurbo::{Point, Size},
         peniko::{ImageAlphaType, ImageBrush, ImageFormat},
-        resources::{ColorEncoding, ResourceData},
+        resources::ColorEncoding,
     };
     let pool = r01_fixture::pool();
     let program = EffectProgram::with_textures(
@@ -464,9 +464,7 @@ fn static_image_effect_chain_reuses_materialized_passes() {
         )
         .unwrap();
     let image_lease = registry.acquire(image).unwrap();
-    let ResourceData::Image { image: pixels, .. } = image_lease.data() else {
-        panic!("image")
-    };
+    let pixels = crate::test_support::image_data(&image_lease);
     let bounds = Rect::new(0., 0., 160., 120.);
     let mut scene = Scene::new();
     scene.draw(Draw::Fill {

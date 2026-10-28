@@ -107,7 +107,9 @@ impl Origins {
                 .then(|| weak.upgrade())
                 .flatten()
                 .filter(|lease| {
-                    lease.version().key == load.source.key && lease.version().version == version
+                    lease.version().key == load.source.key
+                        && lease.version().version == version
+                        && (kind != RetainedAssetKind::Image || lease.read_pixels().is_some())
                 })
         };
         if self.items.len() >= 16
@@ -125,6 +127,9 @@ impl Origins {
     }
     pub(super) fn remember(&mut self, asset_kind: AssetKind, lease: &ResourceLease) {
         let kind = kind(asset_kind).expect("bytes do not have resource leases");
+        if kind == RetainedAssetKind::Image {
+            lease.permit_pixel_reload();
+        }
         self.items.retain(|_, (weak, _)| !weak.is_released());
         if let Some(index) = &mut self.index {
             index.entries.retain(|entry| {

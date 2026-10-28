@@ -1,6 +1,6 @@
 use super::*;
 use crate::assets::AssetOptions;
-use reel_ui::resources::{ColorEncoding, ResourceData};
+use reel_ui::resources::ColorEncoding;
 use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver},
@@ -38,12 +38,12 @@ fn ready(images: &mut Images, wake: &Receiver<()>) -> Result<(), String> {
             .expect("decoder must wake its host");
     }
 }
-fn pixels(lease: &ResourceLease) -> &reel_ui::peniko::ImageData {
-    let ResourceData::Image { image, encoding } = lease.data() else {
-        panic!("expected image")
-    };
-    assert_eq!(*encoding, ColorEncoding::Srgb);
-    image
+fn pixels(lease: &ResourceLease) -> reel_ui::peniko::ImageData {
+    assert_eq!(
+        lease.image_descriptor().expect("expected image").encoding,
+        ColorEncoding::Srgb
+    );
+    crate::test_image::data(lease)
 }
 
 #[test]
@@ -65,6 +65,7 @@ fn real_images_share_storage_replace_atomically_and_release_after_frame_leases()
         panel.data.id()
     );
     assert_eq!(images.pool.usage().bytes, 160 * 90 * 4);
+    drop(panel);
 
     images.request(wanted(&["assets/sun.jpg"]));
     assert!(!images.poll().unwrap());
@@ -93,6 +94,7 @@ fn real_images_share_storage_replace_atomically_and_release_after_frame_leases()
             "JPEG pixel={actual:?}, expected={expected:?}"
         );
     }
+    drop(sun);
     images.commit();
     assert_eq!(images.loads, 2);
     assert!(!submitted_frame.is_retired());

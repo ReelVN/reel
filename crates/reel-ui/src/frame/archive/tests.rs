@@ -359,16 +359,8 @@ fn snapshot_metadata_refunds_workspace_and_counts_shared_resident_pixels_once() 
     else {
         panic!()
     };
-    let ResourceData::Image {
-        image: original, ..
-    } = lease.data()
-    else {
-        panic!()
-    };
-    assert_eq!(
-        image.data.as_ref().as_ptr(),
-        original.data.as_ref().as_ptr()
-    );
+    let original = lease.read_pixels().unwrap();
+    assert_eq!(image.data.as_ref().as_ptr(), original.bytes().as_ptr());
     let metadata = size_of::<Archive>()
         + 2 * size_of::<usize>()
         + saved.0.nodes.capacity() * size_of::<SavedNode>()

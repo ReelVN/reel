@@ -360,12 +360,12 @@ impl SceneWidget {
                 .widget
                 .particle_image
                 .as_ref()
-                .and_then(|i| i.data().image_size())
+                .and_then(|i| i.image_size())
                 != view
                     .images
                     .image_resource
                     .as_ref()
-                    .and_then(|i| i.data().image_size())
+                    .and_then(|i| i.image_size())
             {
                 this.ctx.request_layout();
             }

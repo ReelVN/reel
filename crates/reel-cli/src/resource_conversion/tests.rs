@@ -412,14 +412,9 @@ fn prepared_logical_paths_reach_the_player_and_both_export_profiles() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     };
-    assert_eq!(image.data().image_size(), Some([12, 6]));
+    assert_eq!(image.image_size(), Some([12, 6]));
     assert_eq!(
-        image
-            .data()
-            .texture_descriptor()
-            .unwrap()
-            .layout
-            .content_size,
+        image.texture_descriptor().unwrap().layout.content_size,
         [6, 3]
     );
     live.close();

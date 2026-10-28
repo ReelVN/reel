@@ -372,9 +372,7 @@ fn image_linear_upload_retirement_and_actual_parley_glyphs() {
         .unwrap();
     let lease = registry.acquire(h).unwrap();
     let weak = lease.downgrade();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
+    let image = test_image_data(&lease);
     let mut scene = Scene::new();
     scene.draw(Draw::Fill {
         transform: Affine::IDENTITY,
@@ -714,9 +712,7 @@ fn rgba_encodings_and_alpha_modes_match_independent_linear_pixels() {
                 )
                 .unwrap();
             let lease = registry.acquire(handle).unwrap();
-            let ResourceData::Image { image, .. } = lease.data() else {
-                unreachable!()
-            };
+            let image = test_image_data(&lease);
             scene.draw(Draw::Fill {
                 transform: Affine::IDENTITY,
                 fill_rule: Default::default(),
@@ -1007,4 +1003,15 @@ fn retained_transition_hidden_target_keeps_empty_subtree_boundary() {
     assert!(empty.drawing().commands().is_empty());
     // The accepted intermediate content is retained through its nested transition.
     assert_eq!(empty.drawing().transitions().len(), 1);
+}
+
+fn test_image_data(lease: &reel_ui::resources::ResourceLease) -> reel_ui::peniko::ImageData {
+    let image = lease.image_descriptor().unwrap();
+    reel_ui::peniko::ImageData {
+        data: lease.read_pixels().unwrap().blob(),
+        format: image.format,
+        alpha_type: image.alpha_type,
+        width: image.width,
+        height: image.height,
+    }
 }
