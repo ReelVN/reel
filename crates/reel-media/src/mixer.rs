@@ -1,6 +1,6 @@
 use crate::maintenance::{
     AudioReclaimService, DeferredManager, DeferredRenderer, Envelope, Job, RetirementSignal,
-    TeardownCredit, try_producer,
+    SourceOwner, TeardownCredit, try_producer,
 };
 use crate::retirement::PhysicalRelease;
 use crate::{AudioError, AudioErrorKind, AudioFormat, AudioGroup, PcmFill};
@@ -291,6 +291,7 @@ struct ObservedData<D>(D, Arc<RetirementSignal>);
 struct ObservedSound {
     sound: Box<dyn Sound>,
     signal: Arc<RetirementSignal>,
+    _source: SourceOwner,
 }
 #[cfg(feature = "video")]
 impl<D: SoundData> SoundData for ObservedData<D> {
@@ -301,6 +302,7 @@ impl<D: SoundData> SoundData for ObservedData<D> {
         Ok((
             Box::new(ObservedSound {
                 sound,
+                _source: SourceOwner::new(&self.1),
                 signal: self.1,
             }),
             handle,
@@ -324,10 +326,10 @@ impl Sound for ObservedSound {
     }
 }
 struct BudgetedSound {
-    // Rust drops fields in declaration order: native Sound/PCM FIRST, ticket
-    // SECOND. The private frame Arc has no externally held Weak references.
+    // Native Sound/PCM fields drop before the source-count evidence.
     sound: Box<dyn Sound>,
     signal: Arc<RetirementSignal>,
+    _source: SourceOwner,
 }
 impl Sound for BudgetedSound {
     fn on_start_processing(&mut self) {
@@ -352,6 +354,7 @@ impl SoundData for BudgetedData {
         Ok((
             Box::new(BudgetedSound {
                 sound,
+                _source: SourceOwner::new(&self.signal),
                 signal: self.signal,
             }),
             (handle, queue),
@@ -452,7 +455,10 @@ impl KiraMixer {
             .and_then(|voices| voices.checked_add(service.limits().queued_work as u64))
             .and_then(|voices| voices.checked_add(1))
             .and_then(|voices| {
-                voices.checked_mul(reel_audio::sound::static_sound::STREAM_CACHE_BYTES as u64)
+                voices.checked_mul(
+                    (reel_audio::sound::static_sound::STREAM_CACHE_BYTES + size_of::<SourceOwner>())
+                        as u64,
+                )
             })
             .ok_or_else(|| {
                 AudioError::new(
@@ -572,7 +578,7 @@ impl KiraMixer {
             }
         }
         if needs_maintenance || transferred_sounds != 0 {
-            signal.shared.notify();
+            signal.shared.notify_control();
         }
         ReclaimProgress {
             transferred_sounds,
@@ -687,7 +693,7 @@ impl KiraMixer {
                     Job::AcceptedData(sound, retired_queue),
                     &signal,
                 )));
-                signal.shared.notify();
+                signal.shared.notify_control();
                 let mut history = std::collections::VecDeque::with_capacity(self.max_sounds + 1);
                 history.push_back((0, bounds));
                 Ok(Playback {
@@ -773,7 +779,7 @@ impl KiraMixer {
             Job::AcceptedData(sound, None),
             &signal,
         )));
-        signal.shared.notify();
+        signal.shared.notify_control();
         Ok(())
     }
     pub(crate) fn queue_bytes(&self) -> u64 {

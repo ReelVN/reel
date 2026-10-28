@@ -17,6 +17,7 @@ mod contracts;
 pub mod decode;
 #[cfg(feature = "encode")]
 pub mod encode;
+mod idle;
 mod maintenance;
 mod mixer;
 mod output;

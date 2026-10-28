@@ -158,6 +158,9 @@ impl Drop for CallGuard<'_> {
 }
 
 struct Notifier {
+    armed: Arc<AtomicBool>,
+    #[cfg(test)]
+    waits: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
     available: Arc<crate::worker_event::WorkerEvent>,
     thread: Option<JoinHandle<()>>,
@@ -166,6 +169,12 @@ impl Notifier {
     fn new(metrics: Arc<Telemetry>, wake: WakeSignal) -> Result<Self, AudioError> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let quitting = shutdown.clone();
+        let armed = Arc::new(AtomicBool::new(false));
+        let watching = armed.clone();
+        #[cfg(test)]
+        let waits = Arc::new(AtomicUsize::new(0));
+        #[cfg(test)]
+        let waited = waits.clone();
         let available = Arc::new(
             crate::worker_event::WorkerEvent::new()
                 .map_err(|error| AudioError::new(AudioErrorKind::Unavailable, error))?,
@@ -176,11 +185,16 @@ impl Notifier {
         let builder = builder.stack_size(128 << 10);
         let thread = builder
             .spawn(move || {
+                let mut wait = crate::idle::QuietWait::new();
                 while !quitting.load(Ordering::Acquire) {
-                    if metrics.dirty.swap(false, Ordering::AcqRel) {
+                    let dirty = metrics.dirty.swap(false, Ordering::AcqRel);
+                    if dirty {
                         wake.wake();
                     }
-                    if event.wait(Some(Duration::from_millis(2))).is_err() {
+                    let timeout = wait.timeout(dirty, !watching.load(Ordering::Acquire));
+                    #[cfg(test)]
+                    waited.fetch_add(1, Ordering::Relaxed);
+                    if event.wait(timeout).is_err() {
                         metrics.notify_failed.store(true, Ordering::Release);
                         wake.wake();
                         break;
@@ -189,10 +203,23 @@ impl Notifier {
             })
             .map_err(|e| AudioError::new(AudioErrorKind::Unavailable, e.to_string()))?;
         Ok(Self {
+            armed,
+            #[cfg(test)]
+            waits,
             shutdown,
             available,
             thread: Some(thread),
         })
+    }
+}
+impl Notifier {
+    fn arm(&self) -> Result<(), AudioError> {
+        // Build may synchronously publish faults. Wake before allowing any native
+        // producer; retain polling thereafter for callbacks surviving native stop.
+        self.armed.store(true, Ordering::Release);
+        self.available
+            .signal()
+            .map_err(|error| AudioError::new(AudioErrorKind::DeviceFailure, error))
     }
 }
 impl Drop for Notifier {
@@ -475,6 +502,9 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
             clock_in,
             self.driver.capabilities().clock,
         );
+        if let Err(error) = self._notifier.arm() {
+            return Err(Self::reject(fill, error));
+        }
         // fill has NOT been moved into the slot. Early native callbacks are silent.
         let stream = match self.driver.build(&format, callback) {
             Ok(s) => s,
@@ -706,10 +736,21 @@ impl OfflineOutput {
             self.inner.shared.fail(AudioErrorKind::ReconfigureRequired);
         }
     }
+    /// Inject a device fault from control, including before native start.
     pub fn fail_device(&mut self) {
         self.inner.shared.fail(AudioErrorKind::DeviceFailure);
+        self.inner.wake.wake();
     }
+    /// Register an external PCM metric producer from control before callback use.
     pub fn underrun_signal(&self) -> UnderrunSignal {
+        if self.inner._notifier.arm().is_err() {
+            self.inner
+                .shared
+                .metrics
+                .notify_failed
+                .store(true, Ordering::Release);
+            self.inner.wake.wake();
+        }
         UnderrunSignal::from_shared(self.inner.shared.clone())
     }
 }
