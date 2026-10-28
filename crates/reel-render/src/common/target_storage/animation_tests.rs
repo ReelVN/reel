@@ -22,6 +22,10 @@ fn cost(size: [u32; 2]) -> Result<u64, GpuError> {
 }
 
 fn frame(width: u32) -> RenderFrame {
+    frame_domains([[width, 384], [400, 380]])
+}
+
+fn frame_domains(domains: [[u32; 2]; 2]) -> RenderFrame {
     let pool = fixture::pool();
     let program = EffectProgram::new(
         vec![],
@@ -72,7 +76,7 @@ fn frame(width: u32) -> RenderFrame {
     // Two sequential two-pass sources: the second fits in the first's storage,
     // while each chain needs two sources alive together. These are complete local
     // effect domains, just as in the probe's nested source filters.
-    for size in [[width, 384], [400, 380]] {
+    for size in domains {
         let bounds = Rect::new(0., 0., f64::from(size[0]), f64::from(size[1]));
         let effect = PaintEffect {
             instance: EffectInstance::new([7; 32], program.clone(), vec![]).unwrap(),
@@ -229,5 +233,85 @@ fn pressured_effect_frames_keep_capacity_through_lifetime_sharing_and_retire_rea
         cache.release_idle(|owner| Arc::strong_count(owner) == 1);
         assert_eq!(data.usage().bytes, 0);
         assert_eq!(metadata.usage().bytes, 0);
+    }
+}
+
+#[test]
+fn thin_animated_effect_sources_keep_bounded_axis_capacities() {
+    let root = [960, 544];
+    // Thin 775x100 local domains occur in the showcase's projectile layers.
+    // Vary another thin domain by one physical pixel per accepted frame.
+    for masks in [
+        target_plan::MaskExecution::Inline,
+        target_plan::MaskExecution::Sampled,
+    ] {
+        let data = pool(8 << 20);
+        let metadata = pool(u64::MAX);
+        let mut cache = target_cache::Cache::<Arc<BudgetTicket>>::default();
+        let mut created = 0;
+        let mut previous_flight = Vec::new();
+        for width in 641..=672 {
+            let domains = [[width, 100], [775, 100]];
+            let frame = frame_domains(domains);
+            let (plan, bytes, _) = offscreen::Plan::choose(
+                &frame,
+                None,
+                root,
+                false,
+                1,
+                4096,
+                &glyph_plan::Plan::default(),
+                8 << 20,
+                &cost,
+                masks,
+                &Default::default(),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(plan.storage_size(root), root);
+            assert_eq!(plan.storage_size(domains[0]), [672, 100]);
+            for domain in domains {
+                let storage = plan.storage_size(domain);
+                assert!(storage[0] >= domain[0] && storage[1] >= domain[1]);
+                assert!(cost(storage).unwrap() <= cost(domain).unwrap() * 9 / 8);
+                // The old square bucket exceeds its byte allowance, so it used
+                // a fresh exact-width storage class on every frame.
+                let square = domain.map(|value| value.div_ceil(32) * 32);
+                assert!(cost(square).unwrap() > cost(domain).unwrap() * 9 / 8);
+            }
+            let mut flight = Vec::new();
+            for (size, count) in plan.requirements().iter() {
+                for index in 0..count as usize {
+                    let owner = if let Some(owner) = cache.get(size, index) {
+                        owner.clone()
+                    } else {
+                        let owner = Arc::new(data.reserve(cost(size).unwrap()).unwrap());
+                        cache.reserve(1, &metadata, u64::MAX).unwrap();
+                        assert!(cache.insert(size, owner.clone()));
+                        created += 1;
+                        owner
+                    };
+                    flight.push((size, owner));
+                }
+            }
+            cache.submitted();
+            for (size, owner) in &flight {
+                cache.mark_used(*size, |cached| Arc::ptr_eq(cached, owner));
+            }
+            cache.prune_cold(|owner| Arc::strong_count(owner) == 1);
+            previous_flight = flight;
+            assert_eq!(data.usage().bytes, bytes);
+        }
+        assert_eq!(
+            created, 5,
+            "two scratch targets per domain plus one exact output"
+        );
+        println!(
+            "thin_effect frames=32 old_exact_scratch_classes=33 created_targets={created} peak_bytes={}",
+            data.usage().peak_bytes
+        );
+        drop(previous_flight);
+        cache.release_idle(|owner| Arc::strong_count(owner) == 1);
+        assert_eq!(data.usage().bytes, 0);
     }
 }

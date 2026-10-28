@@ -106,29 +106,11 @@ impl Plan {
         };
         let mut tickets = Vec::new();
         for (size, count) in required.iter().filter(|(size, _)| *size != root) {
-            let largest = size[0].max(size[1]);
-            let quantum = largest
-                .checked_next_power_of_two()
-                .ok_or(GpuError::InvalidSize)?
-                / 32;
-            let quantum = quantum.max(32);
-            let extent = |value: u32| {
-                value
-                    .div_ceil(quantum)
-                    .checked_mul(quantum)
-                    .ok_or(GpuError::InvalidSize)
+            let Some((storage, total_extra)) =
+                padded_size(size, count, max_dimension, spare, cost)?
+            else {
+                continue;
             };
-            let storage = [extent(size[0])?, extent(size[1])?];
-            if storage == size || storage[0] > max_dimension || storage[1] > max_dimension {
-                continue;
-            }
-            let before = cost(size)?;
-            let after = cost(storage)?;
-            let extra = after.checked_sub(before).ok_or(GpuError::InvalidSize)?;
-            let total_extra = extra.checked_mul(count).ok_or(GpuError::InvalidSize)?;
-            if extra > before / 8 || total_extra > spare {
-                continue;
-            }
             spare -= total_extra;
             plan.bytes += total_extra;
             push_stack(
@@ -156,6 +138,61 @@ impl Plan {
             },
         )?;
         Ok(Some((plan, tickets)))
+    }
+}
+
+/// Keep an already affordable square bucket. A rejected thin/small source tries
+/// axis-sized buckets, reducing the more inflated axis until the same byte cap
+/// admits it. Exact sizing is the final candidate, with no changed quality tier.
+fn padded_size(
+    size: [u32; 2],
+    count: u64,
+    max_dimension: u32,
+    spare: u64,
+    cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+) -> Result<Option<([u32; 2], u64)>, GpuError> {
+    let before = cost(size)?;
+    let bucket = |value: u32, divisor: u32| {
+        value
+            .checked_next_power_of_two()
+            .map(|power| (power / divisor).max(1))
+            .ok_or(GpuError::InvalidSize)
+    };
+    let square = bucket(size[0].max(size[1]), 32)?.max(32);
+    let mut quantum = [square; 2];
+    let mut square_candidate = true;
+    loop {
+        let round = |axis: usize| {
+            size[axis]
+                .div_ceil(quantum[axis])
+                .checked_mul(quantum[axis])
+                .ok_or(GpuError::InvalidSize)
+        };
+        let storage = [round(0)?, round(1)?];
+        if storage == size {
+            return Ok(None);
+        }
+        if storage.iter().all(|&extent| extent <= max_dimension) {
+            let extra = cost(storage)?
+                .checked_sub(before)
+                .ok_or(GpuError::InvalidSize)?;
+            let total = extra.checked_mul(count).ok_or(GpuError::InvalidSize)?;
+            if extra <= before / 8 && total <= spare {
+                return Ok(Some((storage, total)));
+            }
+        }
+        if square_candidate {
+            quantum = [bucket(size[0], 32)?, bucket(size[1], 32)?];
+            square_candidate = false;
+        } else {
+            let inflation = [
+                u64::from(storage[0] - size[0]) * u64::from(size[1]),
+                u64::from(storage[1] - size[1]) * u64::from(size[0]),
+            ];
+            let axis = usize::from(inflation[1] > inflation[0]);
+            let axis = if quantum[axis] > 1 { axis } else { 1 - axis };
+            quantum[axis] = (quantum[axis] / 2).max(1);
+        }
     }
 }
 
@@ -295,10 +332,15 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let (limited, _) = Plan::capacities(&inputs, root, 500, u64::MAX, &cost, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(limited.storage_size(size), [496, 384]);
         assert!(
-            Plan::capacities(&inputs, root, 500, u64::MAX, &cost, |_| Ok(()))
-                .unwrap()
-                .is_none()
+            limited
+                .storage_size(size)
+                .iter()
+                .all(|&extent| extent <= 500)
         );
         let small = required(&[([1, 1], 1)]);
         assert!(
