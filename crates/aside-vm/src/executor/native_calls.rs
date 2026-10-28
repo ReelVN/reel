@@ -330,9 +330,16 @@ impl Vm {
                 };
                 self.program
                     .native_call_plan(caller.code.function, descriptor)
+                    .map(NativeArgumentPlan::Fixed)
             } else {
                 None
             }
+        } else if !needs_cells
+            && sig.rest.is_none()
+            && sig.parameters.len() == count as usize + 1
+            && self.positional_native_source(source, count)
+        {
+            Some(NativeArgumentPlan::PositionalReceiver)
         } else {
             None
         };
@@ -424,6 +431,28 @@ impl Vm {
         }));
         Ok(())
     }
+    pub(super) fn positional_native_source(&self, source: ArgSource, count: u32) -> bool {
+        #[cfg(test)]
+        if !self.program.positional_native_plans() {
+            return false;
+        }
+        let ArgSource::Caller { frame, descriptor } = source else {
+            return false;
+        };
+        let Ok(index) = self.index(frame) else {
+            return false;
+        };
+        let Frame::Script(caller) = self.active.frames.data[index] else {
+            return false;
+        };
+        let Descriptor::Call(call) = &self.program.package().functions
+            [caller.code.function.index()]
+        .descriptors[descriptor.index()] else {
+            return false;
+        };
+        call.names.is_empty()
+            && matches!(call.arguments, Arguments::Window(window) if window.len == count)
+    }
     pub fn host_arguments(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
         let n = self.ticket(ticket)?;
         Ok(if n.inline_argument {
@@ -449,11 +478,18 @@ impl Vm {
                         n.args
                     })?
             },
+            positional_start: matches!(
+                n.argument_plan,
+                Some(NativeArgumentPlan::PositionalReceiver)
+            )
+            .then_some(1),
             positions: if n.inline_argument {
                 Some(&[0])
             } else {
-                n.argument_plan
-                    .and_then(|plan| self.program.native_call_slots(plan))
+                n.argument_plan.and_then(|plan| match plan {
+                    NativeArgumentPlan::Fixed(plan) => self.program.native_call_slots(plan),
+                    NativeArgumentPlan::PositionalReceiver => None,
+                })
             },
         })
     }
@@ -476,11 +512,18 @@ impl Vm {
                         n.args
                     })?
             },
+            positional_start: matches!(
+                n.argument_plan,
+                Some(NativeArgumentPlan::PositionalReceiver)
+            )
+            .then_some(1),
             positions: if n.inline_argument {
                 Some(&[0])
             } else {
-                n.argument_plan
-                    .and_then(|plan| self.program.native_call_slots(plan))
+                n.argument_plan.and_then(|plan| match plan {
+                    NativeArgumentPlan::Fixed(plan) => self.program.native_call_slots(plan),
+                    NativeArgumentPlan::PositionalReceiver => None,
+                })
             },
         };
         Ok(body(&mut self.heap, provided))

@@ -357,10 +357,15 @@ enum NativePhase {
     Release(bool),
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum NativeArgumentPlan {
+    Fixed(u32),
+    PositionalReceiver,
+}
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct NativeFrame {
     // A standard derived commit borrows its sole argument from callback root 1.
     inline_argument: bool,
-    argument_plan: Option<u32>,
+    argument_plan: Option<NativeArgumentPlan>,
     id: FrameId,
     native: NativeId,
     signature: SignatureId,

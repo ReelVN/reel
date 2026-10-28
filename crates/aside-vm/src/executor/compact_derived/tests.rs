@@ -5,6 +5,13 @@ fn prepared(generic: bool) -> (Vm, Value, Value, RuntimeSupport) {
     prepared_expression(generic, false)
 }
 fn prepared_expression(generic: bool, calls: bool) -> (Vm, Value, Value, RuntimeSupport) {
+    prepared_options(generic, calls, false)
+}
+fn prepared_options(
+    generic: bool,
+    calls: bool,
+    generic_parameters: bool,
+) -> (Vm, Value, Value, RuntimeSupport) {
     let mut p = fixtures::helper_native();
     p.signatures[0].parameters[0].ty = TypeId(0);
     p.signatures[0].return_type = TypeId(0);
@@ -107,6 +114,11 @@ fn prepared_expression(generic: bool, calls: bool) -> (Vm, Value, Value, Runtime
     let program = verify(p, Limits::default()).unwrap();
     let program = if generic {
         program.without_compact_derived_plans()
+    } else {
+        program
+    };
+    let program = if generic_parameters {
+        program.without_native_call_plans()
     } else {
         program
     };

@@ -96,17 +96,28 @@ pub struct HostTicket {
 pub struct ProvidedArguments<'a> {
     pub(super) values: &'a [Value],
     pub(super) positions: Option<&'a [u32]>,
+    pub(super) positional_start: Option<u32>,
 }
 
 impl ProvidedArguments<'_> {
     pub fn len(&self) -> usize {
-        self.positions.map_or(self.values.len() / 2, |p| p.len())
+        self.positional_start.map_or_else(
+            || self.positions.map_or(self.values.len() / 2, |p| p.len()),
+            |start| self.values.len() - start as usize,
+        )
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     /// Read an argument without allocating or repeating name binding.
     pub fn get(&self, index: usize) -> Option<(u32, Value)> {
+        if let Some(start) = self.positional_start {
+            let position = (start as usize).checked_add(index)?;
+            return self
+                .values
+                .get(position)
+                .map(|value| (position as u32, *value));
+        }
         if let Some(positions) = self.positions {
             let position = *positions.get(index)?;
             return Some((position, self.values[position as usize]));

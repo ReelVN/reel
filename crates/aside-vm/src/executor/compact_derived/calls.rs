@@ -266,3 +266,92 @@ fn native_binding_set_remains_weak_and_rejects_collected_generations() {
     assert!(vm.heap.info(receiver).is_err());
     assert!(vm.bind_native(receiver, FunctionId(4)).is_err());
 }
+
+#[test]
+fn positional_receiver_plan_restores_admission_and_preserves_provided_arguments() {
+    for stop in 0..=1 {
+        let (mut vm, output, _, support) = prepared_expression(false, true);
+        let mut task = vm.start_derived(output, RootOwner(1)).unwrap();
+        loop {
+            if matches!(vm.active.frames.data.last(), Some(Frame::Native(n)) if n.native == NativeId(1) && match n.phase { NativePhase::PlannedCheck { .. } => stop == 0, NativePhase::Resume(NativeInput::Entry) => stop == 1, _ => false })
+            {
+                break;
+            }
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work: vm.last_usage.required_work.max(1),
+                        allocation_bytes: vm.last_usage.required_allocation,
+                        ..Default::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            assert!(matches!(outcome, RunOutcome::BudgetYield(_)), "{outcome:?}");
+        }
+        review_tests::collect(&mut vm);
+        let registry = SnapshotRegistry::default();
+        let mut capture = vm.snapshot_begin(&registry).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let image = capture.finish().unwrap();
+        let mut restore = Vm::restore_begin(
+            &image,
+            vm.program().clone(),
+            support,
+            vm.limits,
+            SessionEpoch(2),
+            &registry,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (restored, map) = restore.finish().unwrap();
+        vm = restored;
+        task = map.task(task).unwrap();
+        let ticket = sample_ticket(&mut vm, task);
+        let frame = vm.ticket(ticket).unwrap();
+        assert!(matches!(
+            frame.argument_plan,
+            Some(NativeArgumentPlan::PositionalReceiver)
+        ));
+        assert_eq!(vm.slots.len(frame.args).unwrap(), 0);
+        let supplied = vm.host_provided_arguments(ticket).unwrap();
+        assert_eq!(supplied.len(), 1);
+        assert_eq!(supplied.get(0).unwrap().0, 1);
+        assert_eq!(supplied.get(0).unwrap().1.as_int(), Some(41));
+        assert!(supplied.get(1).is_none());
+        assert!(supplied.get(usize::MAX).is_none());
+        vm.with_host_provided_arguments(ticket, |_, args| assert_eq!(args.iter().count(), 1))
+            .unwrap();
+        vm.respond(ticket, HostResponse::Ready(Value::int(41)))
+            .unwrap();
+        assert!(matches!(
+            drive(&mut vm, task, true).0,
+            RunOutcome::Returned(_)
+        ));
+    }
+}
+
+#[test]
+#[ignore = "release differential bound-native positional argument measurement"]
+fn positional_native_call_cost() {
+    for generic_parameters in [true, false] {
+        let (mut vm, output, _, _) = prepared_options(false, true, generic_parameters);
+        let mut work = 0;
+        let start = std::time::Instant::now();
+        for _ in 0..50000 {
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let (result, w, _, _, _, _) = drive(&mut vm, task, false);
+            work += w;
+            let RunOutcome::Returned(delivery) = result else {
+                panic!("derive");
+            };
+            vm.discard_delivery(delivery).unwrap();
+        }
+        eprintln!(
+            "positional_native generic={generic_parameters} evaluations=50000 elapsed_us={} work={work}",
+            start.elapsed().as_micros()
+        );
+    }
+}
