@@ -96,7 +96,7 @@ impl Images {
         let mut pending_staging = 0;
         let mut claimed = [false; 64];
         for item in required {
-            if let ResourceData::Texture { descriptor, .. } = item.source.data() {
+            if let Some(descriptor) = item.source.texture_descriptor() {
                 if match descriptor.format {
                     TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => !caps.bc,
                     TextureFormat::Bgra8 => !caps.bgra,
@@ -336,9 +336,7 @@ impl Images {
                 }
             } else if format.is_some_and(TextureFormat::is_compressed) {
                 // Compressed allocation is inseparable from its complete mip upload.
-                let ResourceData::Texture { descriptor, .. } = source.data() else {
-                    unreachable!()
-                };
+                let descriptor = source.texture_descriptor().expect("compressed texture");
                 let blocks = pixels.as_ref().expect("texture pixel reader");
                 let texture = if let Some((texture, _)) = recycled_textures {
                     texture
@@ -493,38 +491,35 @@ fn plane_format(image: &reel_core::image::Yuv420Image, index: usize) -> native::
 /// Use the same native footprint for admission and allocation. CPU upload rows
 /// retain their portable stride, independently of the mapped texture pitch.
 fn costs(item: &crate::common::image_plan::Required<'_>) -> Result<(u64, u64), GpuError> {
-    match item.source.data() {
-        ResourceData::Image { image, .. } => Ok((
+    if let Some(image) = item.source.image_descriptor() {
+        Ok((
             super::super::texture_bytes([image.width, image.height], native::TextureFormat::Rgba8)?,
             u64::from(image.width) * 4,
-        )),
-        ResourceData::Texture { descriptor, .. } => {
-            let upload = item.texture.expect("planned texture");
-            Ok((
-                native::mip_texture_layout(
-                    upload.layout.storage_size,
-                    native_format(descriptor.format),
-                    descriptor.mip_count,
-                )?
-                .bytes as u64,
-                0,
-            ))
+        ))
+    } else if let Some(descriptor) = item.source.texture_descriptor() {
+        let upload = item.texture.expect("planned texture");
+        Ok((
+            native::mip_texture_layout(
+                upload.layout.storage_size,
+                native_format(descriptor.format),
+                descriptor.mip_count,
+            )?
+            .bytes as u64,
+            0,
+        ))
+    } else if let ResourceData::Yuv420(image) = item.source.data() {
+        if native_frame(image).is_some() {
+            return Ok((0, 0));
         }
-        ResourceData::Yuv420(image) => {
-            if native_frame(image).is_some() {
-                return Ok((0, 0));
-            }
-            let mut bytes = 0_u64;
-            for index in 0..image.plane_count() {
-                let plane = super::super::texture_bytes(
-                    image.plane_size(index),
-                    plane_format(image, index),
-                )?;
-                bytes = bytes.checked_add(plane).ok_or(GpuError::InvalidSize)?;
-            }
-            Ok((bytes, 0))
+        let mut bytes = 0_u64;
+        for index in 0..image.plane_count() {
+            let plane =
+                super::super::texture_bytes(image.plane_size(index), plane_format(image, index))?;
+            bytes = bytes.checked_add(plane).ok_or(GpuError::InvalidSize)?;
         }
-        _ => unreachable!("common image demand validates resource kinds"),
+        Ok((bytes, 0))
+    } else {
+        unreachable!("common image demand validates resource kinds")
     }
 }
 
@@ -548,30 +543,27 @@ fn recyclable(
         && !image.coverage
         && !image.native_import
         && !matches!(item.source.data(), ResourceData::Yuv420(source) if native_frame(source).is_some())
-        && match item.source.data() {
-            ResourceData::Image { image: source, .. } => {
-                image.kind == 0.
-                    && image.format.is_none()
-                    && image.layout.storage_size == [source.width, source.height]
-            }
-            ResourceData::Texture { descriptor, .. } => {
-                image.kind == 0.
-                    && image.format == Some(descriptor.format)
-                    && image.texture.mip_count() == descriptor.mip_count
-                    && image.layout.storage_size
-                        == item.texture.expect("planned texture").layout.storage_size
-            }
-            ResourceData::Yuv420(source) => {
-                image.layout.storage_size == source.size()
-                    && image.planes.len() + 1 == source.plane_count()
-                    && image.kind
-                        == if source.layout() == reel_core::image::Yuv420Layout::Nv12 {
-                            2.
-                        } else {
-                            1.
-                        }
-            }
-            _ => false,
+        && if let Some(source) = item.source.image_descriptor() {
+            image.kind == 0.
+                && image.format.is_none()
+                && image.layout.storage_size == [source.width, source.height]
+        } else if let Some(descriptor) = item.source.texture_descriptor() {
+            image.kind == 0.
+                && image.format == Some(descriptor.format)
+                && image.texture.mip_count() == descriptor.mip_count
+                && image.layout.storage_size
+                    == item.texture.expect("planned texture").layout.storage_size
+        } else if let ResourceData::Yuv420(source) = item.source.data() {
+            image.layout.storage_size == source.size()
+                && image.planes.len() + 1 == source.plane_count()
+                && image.kind
+                    == if source.layout() == reel_core::image::Yuv420Layout::Nv12 {
+                        2.
+                    } else {
+                        1.
+                    }
+        } else {
+            false
         }
 }
 
