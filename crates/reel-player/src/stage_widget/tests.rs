@@ -1020,25 +1020,24 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         "metadata path reuses the one decoded sprite"
     );
 
-    {
-        let root = Arc::make_mut(view.root.as_mut().unwrap());
-        let background = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[0]);
-        let NodeKind::Image { source_rect, .. } = &mut Arc::make_mut(&mut background.node).kind
-        else {
-            unreachable!()
-        };
+    let original_kind = stage.node(background).unwrap().kind.clone();
+    let original_props = stage.node(background).unwrap().props.clone();
+    let mut region = original_kind.clone();
+    if let NodeKind::Image { source_rect, .. } = &mut region {
         *source_rect = Some(Rect::new(0., 0., 64., 64.));
     }
+    stage
+        .update(background, region, original_props.clone())
+        .unwrap();
+    view = StageView::update(&stage, Some(&view));
     assert!(
         view.image_requests(EffectShaderFormat::Wgsl).is_ok(),
         "prepared atlas regions share image geometry"
     );
-    let root = Arc::make_mut(view.root.as_mut().unwrap());
-    let background = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[0]);
-    let NodeKind::Image { source_rect, .. } = &mut Arc::make_mut(&mut background.node).kind else {
-        unreachable!()
-    };
-    *source_rect = None;
+    stage
+        .update(background, original_kind.clone(), original_props.clone())
+        .unwrap();
+    view = StageView::update(&stage, Some(&view));
 
     let manifest = images.manifests["background.reel-image"];
     images.manifests.insert("atlas.png".into(), manifest);
@@ -1046,17 +1045,15 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         .into_iter()
         .enumerate()
     {
-        let mut invalid = view.clone();
-        let root = Arc::make_mut(invalid.root.as_mut().unwrap());
-        let background = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[0]);
-        let node = Arc::make_mut(&mut background.node);
+        let mut kind = original_kind.clone();
+        let mut props = original_props.clone();
         let NodeKind::Image {
             source,
             alpha_layout,
             slice,
             repeat,
             ..
-        } = &mut node.kind
+        } = &mut kind
         else {
             unreachable!()
         };
@@ -1066,10 +1063,12 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
             1 => *slice = Some(Insets::uniform(1.)),
             2 => *repeat = [true; 2],
             _ => {
-                node.props.mask = Some(reel_ui::stage::MaskProgram::image("atlas.png".into()));
-                node.props.appearance_origin = Some("snow.aside:11:5".into());
+                props.mask = Some(reel_ui::stage::MaskProgram::image("atlas.png".into()));
+                props.appearance_origin = Some("snow.aside:11:5".into());
             }
         }
+        stage.update(background, kind, props).unwrap();
+        let mut invalid = StageView::update(&stage, Some(&view));
         assert!(
             invalid.image_requests(EffectShaderFormat::Wgsl).is_ok(),
             "filename extensions do not classify images"
@@ -1083,12 +1082,17 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         );
     }
 
-    let root = Arc::make_mut(view.root.as_mut().unwrap());
-    let child = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[1]);
-    let NodeKind::Particles(batch) = &mut Arc::make_mut(&mut child.node).kind else {
+    stage
+        .update(background, original_kind, original_props)
+        .unwrap();
+    let mut kind = stage.node(particle).unwrap().kind.clone();
+    let NodeKind::Particles(batch) = &mut kind else {
         unreachable!()
     };
     batch.source = "atlas.png".into();
+    let props = stage.node(particle).unwrap().props.clone();
+    stage.update(particle, kind, props).unwrap();
+    view = StageView::update(&stage, Some(&view));
     images
         .manifests
         .insert("background.reel-image".into(), manifest);
