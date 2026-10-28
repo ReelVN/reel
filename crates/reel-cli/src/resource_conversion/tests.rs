@@ -501,6 +501,31 @@ fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
         PreparedAtlasView::decode(&fs::read(&first.files["images/room.png"]).unwrap()).unwrap();
     let ui = PreparedAtlasView::decode(&fs::read(&first.files["images/ui.png"]).unwrap()).unwrap();
     assert_eq!(room.page, ui.page);
+    // Exercise the real selected-file resolver with offline-generated manifests.
+    let assets =
+        reel_player::assets::Assets::selected(Default::default(), first.files.clone(), None)
+            .unwrap();
+    let room_load = assets.request("images/room.png", reel_player::assets::AssetKind::Image);
+    let ui_load = assets.request("images/ui.png", reel_player::assets::AssetKind::Image);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut loaded = [None, None];
+    while loaded.iter().any(Option::is_none) {
+        assets.maintain();
+        for (slot, id) in loaded.iter_mut().zip([room_load, ui_load]) {
+            if slot.is_none() {
+                *slot = assets.poll(id).unwrap();
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "atlas load timed out");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let [room_lease, ui_lease] = loaded.map(Option::unwrap);
+    assert_eq!(
+        room_lease.image_backing().handle(),
+        ui_lease.image_backing().handle()
+    );
+    assert_eq!(room_lease.image_size(), Some([12, 6]));
+    assert_eq!(ui_lease.image_size(), Some([4, 2]));
     assert_eq!(room.image.logical_size, [12, 6]);
     assert_eq!(room.image.content_size, [6, 3]);
     assert_eq!(ui.image.logical_size, [4, 2]);

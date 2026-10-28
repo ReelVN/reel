@@ -87,6 +87,17 @@ The first matching rule applies; unmatched files retain their original content. 
 
 For smooth gradients, place a texture rule with `format = "rgba8"` and `dither = "ordered"` before the general texture rule. Dithering distributes color quantization error and preserves alpha; RGBA8 uses eight times the texture memory of BC1. For a single file, run `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`.
 
+For small images used together, put an explicit atlas cohort before the general texture rule:
+
+```toml
+[[targets.vita]]
+match = "images/ui/**/*.{png,jpg,jpeg}"
+convert = "atlas"
+page_size = [1024, 1024]
+format = "auto"
+```
+
+Each rule packs one shared-residency page; split unrelated groups into separate rules. The original image paths, dimensions and crop coordinates remain usable. Pages contain one mip level with filtered edges and block-aligned members. A group that cannot fit fails preparation; increase `page_size` or split the group. The rule accepts `scale`, `format` and `dither`.
 For long images or atlases, place a `convert = "tiles"` rule before the general texture rule. `tile_size = 510` leaves room for gutters in a 512-pixel texture; `first_level = 1` stores half density and smaller levels. The rule also accepts `format` and `power_of_two`. The original logical path and atlas crop coordinates remain usable, while loading follows the visible tiles.
 
 ```sh
@@ -95,7 +106,7 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource at a time; `prepare-resources --memory-bytes` selects its workspace limit.
+`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource or explicit atlas cohort at a time; `prepare-resources --memory-bytes` selects its workspace limit.
 
 Video conversion uses `ffmpeg` and `ffprobe` from PATH to produce H.264/AAC MP4, preserving the frame rate and fitting within `size`. Movies with color and alpha stacked vertically use `alpha_layout = "top_bottom"`. Video workspace is estimated from dimensions; codec subprocesses allocate their own memory.
 
