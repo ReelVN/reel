@@ -86,30 +86,33 @@ pub fn check_sources(
     inputs: &[aside_compiler::semantic::SourceModule],
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<Checked, Failure> {
-    check_sources_with_progress(inputs, aliases, &mut |_| {})
+    check_sources_with_progress(inputs, aliases, std::env::consts::OS, &mut |_| {})
 }
 
 /// Run the same pipeline while reporting completed stages and modules.
 pub fn check_sources_with_progress(
     inputs: &[aside_compiler::semantic::SourceModule],
     aliases: &std::collections::BTreeMap<String, String>,
+    target: &str,
     progress: &mut dyn FnMut(aside_compiler::Progress),
 ) -> Result<Checked, Failure> {
     let ProjectSourceCompilation {
         compilation,
         catalogs,
         effects,
-    } = source::compile_project_with_progress(inputs, aliases, 1, progress).map_err(|failure| {
-        let mut failure = source_failure(failure);
-        for diagnostic in &mut failure.diagnostics {
-            if let Some(module) = diagnostic.source.as_deref()
-                && let Some(input) = inputs.iter().find(|input| input.canonical_path == module)
-            {
-                diagnostic.source = input.source_path.clone().or_else(|| Some(module.into()));
+    } = source::compile_project_with_progress(inputs, aliases, 1, target, progress).map_err(
+        |failure| {
+            let mut failure = source_failure(failure);
+            for diagnostic in &mut failure.diagnostics {
+                if let Some(module) = diagnostic.source.as_deref()
+                    && let Some(input) = inputs.iter().find(|input| input.canonical_path == module)
+                {
+                    diagnostic.source = input.source_path.clone().or_else(|| Some(module.into()));
+                }
             }
-        }
-        failure
-    })?;
+            failure
+        },
+    )?;
     let metadata = compilation
         .modules
         .iter()

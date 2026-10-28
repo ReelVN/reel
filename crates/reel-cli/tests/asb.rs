@@ -216,7 +216,7 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
     assert_eq!(d.name, "main");
     assert_eq!(
         m.modules[0].functions[d.source_function_id as usize].output,
-        entry.function_id
+        Some(entry.function_id)
     );
     assert_eq!(
         p.symbols[p.functions[entry.function_id as usize].name.index()],

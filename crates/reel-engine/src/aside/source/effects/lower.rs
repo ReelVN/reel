@@ -9,6 +9,27 @@ enum Action {
 }
 
 impl Compiler<'_> {
+    fn condition(&mut self, frame: &mut Frame, node: h::NodeId) -> Result<Value, EffectDiagnostic> {
+        let (constant, stats) = aside_compiler::lowering::fold_condition(
+            &self.modules[frame.module],
+            node,
+            aside_compiler::lowering::Limits {
+                max_work: (self.limits.work - self.work) as u64,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| EffectDiagnostic {
+            module: self.modules[frame.module].source_path().into(),
+            span: error.span,
+            message: error.detail,
+        })?;
+        self.work += stats.work_units as usize;
+        match constant {
+            Some(value) => Ok(Value::Bool(value)),
+            None => self.expression(frame, node),
+        }
+    }
+
     pub(super) fn function(
         &mut self,
         identity: EffectFunction,
@@ -127,7 +148,7 @@ impl Compiler<'_> {
                         otherwise,
                     },
                 ) => {
-                    let condition = self.expression(frame, condition)?;
+                    let condition = self.condition(frame, condition)?;
                     let mut yes = self.actions(frame.module, body, finish);
                     let mut no = otherwise
                         .map(|body| self.actions(frame.module, body, finish))
@@ -404,14 +425,15 @@ impl Compiler<'_> {
                 body,
                 otherwise: Some(otherwise),
             } if kind == H::If => {
-                let condition = self.expression(frame, condition)?;
-                self.value_block_admission(Site(frame.module, body))?;
-                self.value_block_admission(Site(frame.module, otherwise))?;
+                let condition = self.condition(frame, condition)?;
                 if let Value::Bool(value) = condition {
-                    let actions =
-                        self.actions(frame.module, if value { body } else { otherwise }, true);
+                    let selected = if value { body } else { otherwise };
+                    self.value_block_admission(Site(frame.module, selected))?;
+                    let actions = self.actions(frame.module, selected, true);
                     return self.execute(frame, &actions);
                 }
+                self.value_block_admission(Site(frame.module, body))?;
+                self.value_block_admission(Site(frame.module, otherwise))?;
                 let mut yes_frame = frame.clone();
                 let mut no_frame = frame.clone();
                 let yes_actions = self.actions(frame.module, body, true);

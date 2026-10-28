@@ -56,7 +56,7 @@ fn project_discovery_fixes_entry_and_source_root_from_nested_directories() {
         project::load_with_progress(&root.join("src/ui"), &mut |event| progress.push(event))
             .unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded
-        .check_with_progress(&mut |event| progress.push(event))
+        .check_with_progress(std::env::consts::OS, &mut |event| progress.push(event))
         .unwrap();
     use aside_compiler::ProgressStage::{Analyze, Discover, Lower, Parse, Verify};
     let mut stages = Vec::new();

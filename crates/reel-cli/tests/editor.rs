@@ -988,9 +988,10 @@ mod editor_services {
     use serde_json::{Value, json};
     use support::Server;
 
-    const SERVICES: [&str; 9] = [
+    const SERVICES: [&str; 10] = [
         "assets",
         "audio",
+        "build",
         "game",
         "localization",
         "mask",
@@ -1207,7 +1208,7 @@ mod editor_services {
 
     #[test]
     fn global_services_and_standard_module_aliases_hover_and_navigate_in_the_real_lsp() {
-        let source = "use std::time as clock;\nfn main(){\n game.configure(title: \"Example\", width: 960, height: 540);\n stage.replace(text(\"Hello\"));\n assets.read(\"data.bin\");\n audio.play(\"sound.ogg\");\n localization.locale();\n saves.list();\n persistent.read(\"setting\");\n window.info();\n mask.gray(\"mask.png\");\n clock.now();\n}";
+        let source = "use std::time as clock;\nfn main(){\n game.configure(title: \"Example\", width: 960, height: 540);\n stage.replace(text(\"Hello\"));\n assets.read(\"data.bin\");\n audio.play(\"sound.ogg\");\n localization.locale();\n saves.list();\n persistent.read(\"setting\");\n window.info();\n mask.gray(\"mask.png\");\n clock.now();\n build.target;\n}";
         let executable = std::env::var_os("REEL_LSP_EXECUTABLE")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_reel-lsp").into());
         let mut client = Server::start(executable);
@@ -1264,6 +1265,25 @@ mod editor_services {
                 );
             }
         }
+        let target = query(source, "target;");
+        let hover = client.request(id, "textDocument/hover", target.clone());
+        id += 1;
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("string")
+        );
+        let definition = client.request(id, "textDocument/definition", target);
+        id += 1;
+        let document = client.request(id, "aside/nativeDocument", json!({"uri":definition["uri"]}));
+        id += 1;
+        assert!(
+            document["text"]
+                .as_str()
+                .unwrap()
+                .contains("pub let target: string =")
+        );
         let text = reel_engine::aside::source::api().native("reel::text");
         let signature = text.symbol.signature.as_ref().unwrap();
         let hidden_properties = signature

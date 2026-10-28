@@ -61,6 +61,14 @@ pub enum SourceCommand {
     Dev(Dev),
 }
 impl SourceCommand {
+    pub fn target(&self) -> &str {
+        match self {
+            Self::Check(v) => &v.resource_target,
+            Self::Build(v) => &v.resource_target,
+            Self::Export(v) => &v.resource_target,
+            Self::Dev(v) => &v.playback.resource_target,
+        }
+    }
     pub fn format(&self) -> Format {
         match self {
             Self::Check(v) => v.format,
@@ -85,6 +93,9 @@ impl Format {
 
 #[derive(Args)]
 pub struct Check {
+    /// Select the compile-time build target.
+    #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
+    pub resource_target: String,
     #[arg(long, value_enum, default_value = "human")]
     pub format: Format,
 }
@@ -108,6 +119,9 @@ impl BuildSettings {
 }
 #[derive(Args)]
 pub struct Build {
+    /// Select the compile-time build target and effect program format.
+    #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
+    pub resource_target: String,
     #[command(flatten)]
     pub settings: BuildSettings,
     /// Destination ASB file; defaults to build/debug/game.asb (build/release with --release).
@@ -284,7 +298,14 @@ mod tests {
             ])
             .is_err()
         );
-        for command in ["dev", "run", "export", "prepare-resources"] {
+        for command in [
+            "check",
+            "build",
+            "dev",
+            "run",
+            "export",
+            "prepare-resources",
+        ] {
             assert!(Cli::try_parse_from(["reel", command, "--resource-target", "vita"]).is_ok());
             assert!(Cli::try_parse_from(["reel", command]).is_ok());
             for invalid in ["Vita", "../vita", "@vita", "vita/game", ""] {

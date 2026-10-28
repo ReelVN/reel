@@ -1,7 +1,7 @@
 use super::*;
 
 fn analyzed(code: &str) -> h::AnalyzedModule {
-    let (mut resolver, hosts) = super::super::environment();
+    let (mut resolver, hosts) = super::super::environment(std::env::consts::OS);
     aside_compiler::analyze_module(
         code,
         &aside_compiler::AnalysisOptions {
@@ -179,7 +179,7 @@ fn imported_helpers_follow_canonical_module_and_export_identities() {
         SourceModule { canonical_path: "game::math".into(), source_path: Some("src/math.aside".into()), version: "1".into(), source: "pub fn double(value: float) -> float { value * 2.0 }".into() },
         SourceModule { canonical_path: "game::surface".into(), source_path: Some("src/surface.aside".into()), version: "1".into(), source: "use game::math::double as scale; fn surface(pixel, time: float) { (scale(time),0.0,0.0,1.0) }".into() },
     ];
-    let (mut resolver, hosts) = super::super::environment();
+    let (mut resolver, hosts) = super::super::environment(std::env::consts::OS);
     let modules = analyze_project(
         &sources,
         &aside_compiler::AnalysisOptions {

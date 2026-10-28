@@ -22,6 +22,7 @@ pub struct Cache {
     root: PathBuf,
     tool: PathBuf,
     key: String,
+    target: String,
 }
 
 fn collect(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -61,13 +62,15 @@ fn hash_file(path: &Path, buffer: &mut [u8]) -> io::Result<blake3::Hash> {
     Ok(hash.finalize())
 }
 
-fn fingerprint(root: &Path, tool: &Path) -> io::Result<String> {
+fn fingerprint(root: &Path, tool: &Path, target: &str) -> io::Result<String> {
     let mut files = Vec::new();
     collect(&root.join("src"), &mut files)?;
     files.sort();
     let mut buffer = [0; 64 * 1024];
     let mut hash = blake3::Hasher::new();
     hash.update(b"Reel development cache v1\0");
+    hash.update(&(target.len() as u64).to_le_bytes());
+    hash.update(target.as_bytes());
     hash.update(hash_file(tool, &mut buffer)?.as_bytes());
     for file in files {
         let name = file
@@ -89,14 +92,19 @@ impl Cache {
     }
 
     /// Fingerprint source contents and the running tool without parsing the project.
-    pub fn probe(directory: &Path) -> io::Result<Self> {
-        Self::with_tool(directory, std::env::current_exe()?)
+    pub fn probe(directory: &Path, target: &str) -> io::Result<Self> {
+        Self::with_tool(directory, std::env::current_exe()?, target)
     }
 
-    fn with_tool(directory: &Path, tool: PathBuf) -> io::Result<Self> {
+    fn with_tool(directory: &Path, tool: PathBuf, target: &str) -> io::Result<Self> {
         let root = project::locate(directory)?.root;
-        let key = fingerprint(&root, &tool)?;
-        Ok(Self { root, tool, key })
+        let key = fingerprint(&root, &tool, target)?;
+        Ok(Self {
+            root,
+            tool,
+            key,
+            target: target.into(),
+        })
     }
 
     /// Loose assets remain live across source-cache hits.
@@ -128,7 +136,7 @@ impl Cache {
     /// Publish a debug ASB and its catalog index after successful compilation.
     /// A source edit during compilation leaves the previous cache untouched.
     pub fn store(&self, checked: &Checked) -> io::Result<()> {
-        if fingerprint(&self.root, &self.tool)? != self.key {
+        if fingerprint(&self.root, &self.tool, &self.target)? != self.key {
             return Ok(());
         }
         let artifact = artifact::build(checked, Some(project::ENTRY))
@@ -181,7 +189,7 @@ mod tests {
     #[test]
     fn cached_story_keeps_program_source_maps_and_inline_languages() {
         let (dir, tool) = fixture();
-        let cache = Cache::with_tool(dir.path(), tool).unwrap();
+        let cache = Cache::with_tool(dir.path(), tool, std::env::consts::OS).unwrap();
         assert!(cache.read().is_none());
         let checked = checked(dir.path());
         cache.store(&checked).unwrap();
@@ -204,9 +212,12 @@ mod tests {
             "new live resource",
         )
         .unwrap();
-        let next = Cache::with_tool(dir.path(), cache.tool.clone()).unwrap();
+        let next = Cache::with_tool(dir.path(), cache.tool.clone(), std::env::consts::OS).unwrap();
         assert_eq!(next.key, cache.key);
         assert!(next.read().is_some());
+        let other = Cache::with_tool(dir.path(), cache.tool.clone(), "vita").unwrap();
+        assert_ne!(other.key, cache.key);
+        assert!(other.read().is_none());
         assert_eq!(
             next.assets(),
             dir.path().canonicalize().unwrap().join("resources")
@@ -216,7 +227,7 @@ mod tests {
     #[test]
     fn source_and_tool_changes_invalidate_cache_while_partial_writes_rebuild() {
         let (dir, tool) = fixture();
-        let cache = Cache::with_tool(dir.path(), tool.clone()).unwrap();
+        let cache = Cache::with_tool(dir.path(), tool.clone(), std::env::consts::OS).unwrap();
         let original = checked(dir.path());
         cache.store(&original).unwrap();
         let main = dir.path().join("src/main.aside");
@@ -230,7 +241,7 @@ mod tests {
             .set_times(fs::FileTimes::new().set_modified(modified))
             .unwrap();
         assert!(
-            Cache::with_tool(dir.path(), tool.clone())
+            Cache::with_tool(dir.path(), tool.clone(), std::env::consts::OS)
                 .unwrap()
                 .read()
                 .is_none()
@@ -239,21 +250,21 @@ mod tests {
         let added = dir.path().join("src/added.aside");
         fs::write(&added, "pub fn f() { 1 }").unwrap();
         assert!(
-            Cache::with_tool(dir.path(), tool.clone())
+            Cache::with_tool(dir.path(), tool.clone(), std::env::consts::OS)
                 .unwrap()
                 .read()
                 .is_none()
         );
         fs::remove_file(added).unwrap();
         assert!(
-            Cache::with_tool(dir.path(), tool.clone())
+            Cache::with_tool(dir.path(), tool.clone(), std::env::consts::OS)
                 .unwrap()
                 .read()
                 .is_some()
         );
         fs::write(&tool, "compiler two").unwrap();
         assert!(
-            Cache::with_tool(dir.path(), tool.clone())
+            Cache::with_tool(dir.path(), tool.clone(), std::env::consts::OS)
                 .unwrap()
                 .read()
                 .is_none()

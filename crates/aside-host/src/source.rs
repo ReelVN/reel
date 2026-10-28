@@ -51,6 +51,23 @@ pub struct PropertyParameterGroup {
     pub parameters: Vec<String>,
 }
 impl Declaration {
+    /// Describe a typed immutable host value embedded during compilation.
+    pub fn constant(
+        module: &str,
+        version: &str,
+        name: &str,
+        value: aside_compiler::semantic::CompileConstant,
+        documentation: &str,
+    ) -> Self {
+        let mut declaration = Self::namespace(module, version, documentation);
+        declaration.symbol =
+            ExternalSymbol::constant(name, value).with_reference(SymbolReference {
+                module: module.into(),
+                version: version.into(),
+                export: Some(name.into()),
+            });
+        declaration
+    }
     /// Describe a registered module using the compiler's namespace table semantics.
     pub fn namespace(module: &str, version: &str, documentation: &str) -> Self {
         let mut symbol =
@@ -368,6 +385,8 @@ pub struct Api {
     pub modules: Vec<ModuleInterface>,
     pub types: Vec<NamedType>,
     pub functions: Vec<Declaration>,
+    /// Typed compile-time values with the same declaration and navigation metadata.
+    pub constants: Vec<Declaration>,
     /// Module descriptions retain canonical namespace identities and English docs.
     pub namespaces: Vec<Declaration>,
 }
@@ -570,7 +589,7 @@ impl Api {
             document_references.push(references);
         }
         let mut modules: BTreeMap<&str, Vec<&Declaration>> = BTreeMap::new();
-        for declaration in &self.functions {
+        for declaration in self.functions.iter().chain(&self.constants) {
             let reference = declaration
                 .symbol
                 .reference
@@ -872,6 +891,17 @@ fn append_declaration(
         if let Some(default) = &declaration.property_default {
             text.push_str(" = ");
             text.push_str(&constant(default));
+        } else if let Some(value) = symbol.constant.as_deref() {
+            use aside_compiler::semantic::CompileConstant as C;
+            let value = match value {
+                C::Null => aside_vm::bytecode::Const::Null,
+                C::Bool(v) => aside_vm::bytecode::Const::Bool(*v),
+                C::Int(v) => aside_vm::bytecode::Const::Int(*v),
+                C::FloatBits(v) => aside_vm::bytecode::Const::FloatBits(*v),
+                C::Utf8(v) => aside_vm::bytecode::Const::Utf8(v.clone()),
+            };
+            text.push_str(" = ");
+            text.push_str(&constant(&value));
         }
         text.push_str(";\n");
         locations.push(Location {

@@ -184,8 +184,9 @@ pub struct Metadata {
 }
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionMetadata {
-    /// Indexed by the source HIR FunctionId, excluding emitted default thunks.
-    pub output: bc::FunctionId,
+    /// Indexed by the source HIR FunctionId. None means its enclosing branch
+    /// was eliminated at compilation; default thunks are recorded separately.
+    pub output: Option<bc::FunctionId>,
     pub declared_context: hir::DeclaredContext,
     pub known_wait: bool,
     pub dynamic_calls: bool,
@@ -238,4 +239,38 @@ pub fn compile(
     options: Options,
 ) -> Result<Compilation, Box<Error>> {
     lower(module, linkage, options)?.emit()
+}
+
+/// Source nodes retained after folding pure compile-time conditions.
+/// Use the same selection for host-generated products such as shader programs.
+pub struct BranchSelection {
+    nodes: Vec<u8>,
+}
+impl BranchSelection {
+    pub fn contains(&self, node: hir::NodeId) -> bool {
+        self.nodes[node.0 as usize] != 0
+    }
+}
+/// Select executable branches while retaining the analyzer's diagnostics.
+pub fn select_branches(
+    module: &hir::AnalyzedModule,
+    limits: Limits,
+) -> Result<BranchSelection, Box<Error>> {
+    let mut budget = budget::Budget::new(limits);
+    Ok(BranchSelection {
+        nodes: build::constants::selection(module, &mut budget)?,
+    })
+}
+
+/// Fold a pure condition using resolved host constants and ordinary scalar
+/// semantics. Runtime values return None. Host compilers charge the returned
+/// work when sharing this evaluator with another source expansion pass.
+pub fn fold_condition(
+    module: &hir::AnalyzedModule,
+    node: hir::NodeId,
+    limits: Limits,
+) -> Result<(Option<bool>, Stats), Box<Error>> {
+    let mut budget = budget::Budget::new(limits);
+    let value = build::constants::condition(module, node, &mut budget)?;
+    Ok((value, budget.stats))
 }

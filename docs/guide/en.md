@@ -33,6 +33,14 @@ reel export --release --resource-target vita
 
 These commands preview and export the selected assets using the current platform player. Development exports copy selected files; release exports package them under their logical paths.
 
+Use `build.target` to choose platform settings or effects in ordinary code. The same `--resource-target` option selects its value for `check`, `build`, `dev` and `export`. Compilation keeps the selected branch, including its nested functions; both branches receive source diagnostics. The editor provides its type and declaration through the generated API.
+
+```aside
+let particle_count = if build.target == "vita" { 80 } else { 320 };
+```
+
+Keep the logical canvas when sharing a layout; use resource scaling and effect settings to adjust rendering cost. `window.info().platform` reports the player currently running the game.
+
 To export with another platform's runtime, pass its directory with `--runtime`. Its executable, native modules and platform metadata keep their relative paths beside `game.asb`:
 
 ```sh

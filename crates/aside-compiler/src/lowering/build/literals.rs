@@ -1,7 +1,7 @@
 //! One literal decoder for ordinary expressions and direct parameter defaults.
 use super::*;
 
-impl Lowerer<'_> {
+impl super::constants::Evaluator<'_, '_> {
     pub(super) fn literal_constant(
         &mut self,
         mut node: h::NodeId,
@@ -100,5 +100,35 @@ impl Lowerer<'_> {
         text.append_to(&mut bytes)
             .map_err(|_| self.b.error(ErrorKind::InvalidIr, "analyzed string escape"))?;
         Ok(String::from_utf8(bytes).expect("decoded unicode"))
+    }
+}
+
+impl Lowerer<'_> {
+    pub(super) fn literal_constant(
+        &mut self,
+        node: h::NodeId,
+    ) -> Result<Option<bc::Const>, Box<Error>> {
+        super::constants::Evaluator {
+            m: self.m,
+            b: &mut self.b,
+        }
+        .literal_constant(node)
+    }
+    pub(super) fn number(&mut self, text: &str, negative: bool) -> Result<bc::Const, Box<Error>> {
+        super::constants::Evaluator {
+            m: self.m,
+            b: &mut self.b,
+        }
+        .number(text, negative)
+    }
+    pub(super) fn string_piece(
+        &mut self,
+        text: crate::strings::StringText<'_>,
+    ) -> Result<String, Box<Error>> {
+        super::constants::Evaluator {
+            m: self.m,
+            b: &mut self.b,
+        }
+        .string_piece(text)
     }
 }

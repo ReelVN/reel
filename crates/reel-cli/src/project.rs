@@ -122,14 +122,16 @@ impl Loaded {
         self.project_root.join("resources")
     }
     pub fn check(&self) -> Result<Checked, Failure> {
-        self.check_with_progress(&mut |_| {})
+        self.check_with_progress(std::env::consts::OS, &mut |_| {})
     }
     /// Compile the loaded graph while reporting its real stage/module boundaries.
     pub fn check_with_progress(
         &self,
+        target: &str,
         progress: &mut dyn FnMut(aside_compiler::Progress),
     ) -> Result<Checked, Failure> {
-        let checked = super::check_sources_with_progress(&self.sources, &self.aliases, progress)?;
+        let checked =
+            super::check_sources_with_progress(&self.sources, &self.aliases, target, progress)?;
         super::artifact::select_entry(&checked, Some(ENTRY))?;
         Ok(checked)
     }

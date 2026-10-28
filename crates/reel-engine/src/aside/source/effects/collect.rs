@@ -13,7 +13,18 @@ pub fn collect_effects(
     let mut entries = HashSet::new();
     let mut output = Vec::new();
     for (module_index, module) in modules.iter().enumerate() {
-        for node in &module.hir().nodes {
+        let selected =
+            lowering::select_branches(module, lowering::Limits::default()).map_err(|error| {
+                EffectDiagnostic {
+                    module: module.source_path().into(),
+                    span: error.span,
+                    message: error.detail,
+                }
+            })?;
+        for (index, node) in module.hir().nodes.iter().enumerate() {
+            if !selected.contains(h::NodeId(index as u32)) {
+                continue;
+            }
             let Form::Call {
                 callee,
                 arguments,
@@ -91,7 +102,7 @@ pub(in crate::aside::source) fn collect_registered(
         &contract.reference(),
         EffectCompileLimits::default(),
     )?;
-    entries.extend(super::masks::collect(modules));
+    entries.extend(super::masks::collect(modules)?);
     Ok(entries)
 }
 
@@ -111,6 +122,7 @@ pub(in crate::aside::source) fn bind_single(
                 )
             })?
             .output;
+        let Some(function) = function else { continue };
         products.insert(&compiled.program, function, entry.program, entry.mask)?;
     }
     Ok(products)
@@ -140,6 +152,7 @@ pub(in crate::aside::source) fn bind_project(
                 )
             })?
             .output;
+        let Some(function) = function else { continue };
         products.insert(&compiled.program, function, entry.program, entry.mask)?;
     }
     Ok(products)

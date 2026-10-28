@@ -59,7 +59,7 @@ pub struct TranslationHole {
 pub fn analyze_translations(
     module: aside_compiler::editor::EditorModule<'_>,
 ) -> TranslationAnalysis {
-    extract_views(&[module], false).2
+    extract_views(&[module], None).2
 }
 fn translation_site(
     context: &Context<'_>,
@@ -334,7 +334,19 @@ pub fn extract_translations(
         .iter()
         .map(aside_compiler::editor::EditorModule::from)
         .collect::<Vec<_>>();
-    let (products, expansions, analysis) = extract_views(&views, true);
+    let selected = modules
+        .iter()
+        .map(|module| {
+            aside_compiler::lowering::select_branches(module, Default::default()).map_err(|error| {
+                TranslationDiagnostic {
+                    module: module.source_path().into(),
+                    span: error.span,
+                    message: error.detail,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let (products, expansions, analysis) = extract_views(&views, Some(&selected));
     if let Some(error) = analysis.diagnostics.into_iter().next() {
         return Err(error);
     }
@@ -342,7 +354,7 @@ pub fn extract_translations(
 }
 fn extract_views(
     modules: &[aside_compiler::editor::EditorModule<'_>],
-    emit: bool,
+    selected: Option<&[aside_compiler::lowering::BranchSelection]>,
 ) -> (
     CatalogProducts,
     Vec<Vec<CallExpansion>>,
@@ -352,7 +364,7 @@ fn extract_views(
     let mut products = CatalogProducts::default();
     let mut catalog_messages: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     let mut expansions = Vec::new();
-    for module in modules {
+    for (module_index, module) in modules.iter().enumerate() {
         let context = Context { module: *module };
         if let Err(error) = context.validate_reference_uses() {
             analysis.diagnostics.push(error);
@@ -372,7 +384,8 @@ fn extract_views(
                 continue;
             }
             let call = h::NodeId(i as u32);
-            if !emit {
+            let emit = selected.is_some_and(|selection| selection[module_index].contains(call));
+            if selected.is_none() {
                 analysis
                     .calls
                     .push(translation_site(&context, call, arguments));

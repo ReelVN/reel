@@ -354,6 +354,19 @@ fn build_api() -> Api {
         })
         .collect::<Vec<_>>();
     let mut resolver = MemoryResolver::default();
+    let target = Declaration::constant(
+        "reel::build",
+        "1",
+        "target",
+        aside_compiler::semantic::CompileConstant::Utf8(std::env::consts::OS.into()),
+        "The build target selected by --resource-target, such as windows, linux, macos or vita. Use ordinary if conditions to select platform effects or settings at compilation; unselected branches produce no executable body. Resource overlays use the same target. window.info().platform reports the running player instead.",
+    );
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel::build".into(),
+        version: "1".into(),
+        exports: vec![target.symbol.clone()],
+    });
+    api.constants.push(target);
     for module in aside_std::modules() {
         resolver.insert(module);
     }
@@ -386,6 +399,13 @@ fn build_api() -> Api {
         "bind",
         aside_compiler::semantic::Intrinsic::Bind,
     ));
+    let build = Declaration::namespace(
+        "reel::build",
+        "1",
+        "Values fixed when the game is compiled.",
+    );
+    prelude.push(build.symbol.clone());
+    api.namespaces.push(build);
     for (module, documentation) in [
         (
             "reel::assets",
@@ -544,11 +564,19 @@ impl aside_compiler::semantic::ModuleResolver for SourceEnvironment {
         aside_compiler::semantic::ModuleResolver::resolve(&mut self.0, request)
     }
 }
-fn environment() -> (SourceEnvironment, Vec<ExternalSymbol>) {
+fn environment(target: &str) -> (SourceEnvironment, Vec<ExternalSymbol>) {
     let mut resolver = MemoryResolver::default();
     for module in &api().modules {
         resolver.insert(module.clone());
     }
+    resolver
+        .modules
+        .get_mut("reel::build")
+        .expect("registered build module")
+        .exports[0]
+        .constant = Some(Arc::new(aside_compiler::semantic::CompileConstant::Utf8(
+        target.into(),
+    )));
     (SourceEnvironment(resolver), api().globals.clone())
 }
 
@@ -558,7 +586,7 @@ pub fn compile_module(
     source_path: &str,
     content_version: u64,
 ) -> Result<SourceCompilation, SourceError> {
-    let (mut resolver, prelude) = environment();
+    let (mut resolver, prelude) = environment(std::env::consts::OS);
     let options = AnalysisOptions {
         module: module_path.into(),
         source_path: Some(source_path.into()),
@@ -632,7 +660,9 @@ pub fn compile_story(
         .iter()
         .position(|function| module.facts()[function.node.0 as usize].symbol == Some(declared))
         .ok_or(SourceError::Entry)?;
-    let entry = compiled.metadata.functions[function_index].output;
+    let entry = compiled.metadata.functions[function_index]
+        .output
+        .ok_or(SourceError::Entry)?;
     let story = CompiledStory {
         program: compiled.program,
         initializer: compiled.entry,
@@ -649,7 +679,13 @@ pub fn compile_project(
     aliases: &std::collections::BTreeMap<String, String>,
     content_version: u64,
 ) -> Result<ProjectSourceCompilation, SourceError> {
-    compile_project_with_progress(inputs, aliases, content_version, &mut |_| {})
+    compile_project_with_progress(
+        inputs,
+        aliases,
+        content_version,
+        std::env::consts::OS,
+        &mut |_| {},
+    )
 }
 
 /// Run the same pipeline while reporting completed stages and modules.
@@ -657,9 +693,10 @@ pub fn compile_project_with_progress(
     inputs: &[aside_compiler::semantic::SourceModule],
     aliases: &std::collections::BTreeMap<String, String>,
     content_version: u64,
+    target: &str,
     progress: &mut dyn FnMut(aside_compiler::Progress),
 ) -> Result<ProjectSourceCompilation, SourceError> {
-    let (mut resolver, prelude) = environment();
+    let (mut resolver, prelude) = environment(target);
 
     resolver.0.aliases = aliases.clone();
     let options = AnalysisOptions {

@@ -34,6 +34,11 @@ impl FunctionBuilder<'_, '_> {
         let form = self.l.m.hir().node(n).form;
         let depth = depth + 1;
         if matches!(kind, H::Name | H::Member)
+            && let Some(value) = self.l.external_constant(n)?
+        {
+            return self.constant(value, n).map(Some);
+        }
+        if matches!(kind, H::Name | H::Member)
             && let Some(native) = self.l.native(n)?
         {
             return self.native_reference(native, n).map(Some);
@@ -535,6 +540,12 @@ impl FunctionBuilder<'_, '_> {
         no: Option<h::NodeId>,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
+        if let Some(selected) = self.l.constant_condition(condition)? {
+            return match if selected { Some(yes) } else { no } {
+                Some(branch) => self.expr(branch, depth),
+                None => self.constant(bc::Const::Null, n).map(Some),
+            };
+        }
         let Some(condition) = self.value(condition, depth)? else {
             return Ok(None);
         };

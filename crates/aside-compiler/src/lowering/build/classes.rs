@@ -113,7 +113,7 @@ impl FunctionBuilder<'_, '_> {
                         &mut methods,
                         bc::ClassMethod {
                             name,
-                            function: self.l.outputs[function.0 as usize],
+                            function: self.l.outputs[function.0 as usize].expect("selected method"),
                             is_static,
                             captures,
                         },
@@ -154,7 +154,9 @@ impl FunctionBuilder<'_, '_> {
                             ty,
                             mutable,
                             is_static,
-                            initializer: function.map(|f| self.l.outputs[f.0 as usize]),
+                            initializer: function.map(|f| {
+                                self.l.outputs[f.0 as usize].expect("selected initializer")
+                            }),
                             captures,
                         },
                     )?;

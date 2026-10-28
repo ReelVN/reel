@@ -33,6 +33,14 @@ reel export --release --resource-target vita
 
 这两个命令使用当前平台播放器预览、导出选定素材。开发版复制所选资源，发布版打包为统一逻辑路径。
 
+用 `build.target` 在普通代码中选择平台配置或效果。`check`、`build`、`dev` 和 `export` 通过同一个 `--resource-target` 参数选择它的值。编译器保留选中分支及其内部函数，两侧源码都接受诊断检查。编辑器通过生成的 API 提供类型和定义跳转。
+
+```aside
+let particle_count = if build.target == "vita" { 80 } else { 320 };
+```
+
+共用布局时保留逻辑画布，通过素材缩放和效果配置调整绘制成本。`window.info().platform` 报告当前运行游戏的播放器平台。
+
 使用其他平台的运行时导出时，通过 `--runtime` 指定其目录。可执行文件、原生模块与平台元数据保留相对路径，与 `game.asb` 放在一起：
 
 ```sh
