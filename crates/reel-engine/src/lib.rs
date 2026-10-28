@@ -20,7 +20,6 @@ pub mod video;
 pub use reading::{ReadProgress, ReadingState};
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
-use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SessionIdentity {
@@ -1240,18 +1239,7 @@ impl Session {
                 interaction_id: id,
                 index,
             };
-            let total_count = line.text.graphemes(true).count();
-            let mut boundaries = reserved_vec(
-                total_count
-                    .checked_add(1)
-                    .ok_or(SessionError::AllocationFailed)?,
-            )?;
-            boundaries.push(0);
-            boundaries.extend(
-                line.text
-                    .grapheme_indices(true)
-                    .map(|(offset, grapheme)| offset + grapheme.len()),
-            );
+            let boundaries = dialogue_stream::boundaries(&line.text, &[])?;
             let content = copy_content(line)?;
             owned_lines.push(DialogueLine {
                 id: line_id,

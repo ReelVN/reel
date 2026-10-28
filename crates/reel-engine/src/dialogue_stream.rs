@@ -3,38 +3,31 @@ use crate::*;
 use reel_core::text::Text;
 
 fn joined(prefix: &Text, suffix: &Text) -> Result<Text, SessionError> {
-    let rich = prefix.markup().is_some() || suffix.markup().is_some();
-    let mut body = String::new();
-    for part in [prefix, suffix] {
-        let source: &str = part.markup().map_or(part.as_ref(), |value| value.as_ref());
-        let extra = if rich && part.markup().is_none() {
-            source.bytes().filter(|b| *b == b'[').count()
-        } else {
-            0
-        };
-        body.try_reserve(
-            source
-                .len()
-                .checked_add(extra)
-                .ok_or(SessionError::AllocationFailed)?,
-        )
-        .map_err(|_| SessionError::AllocationFailed)?;
-        if rich && part.markup().is_none() {
-            for ch in source.chars() {
-                body.push(ch);
-                if ch == '[' {
-                    body.push('[');
-                }
-            }
-        } else {
-            body.push_str(source);
+    prefix
+        .concat(suffix)
+        .map_err(|_| SessionError::AllocationFailed)
+}
+
+pub(crate) fn boundaries(text: &str, previous: &[usize]) -> Result<Vec<usize>, SessionError> {
+    // Only the former terminal grapheme can absorb newly appended code points.
+    // The cursor still sees the full body for Unicode pre-context (RI, ZWJ, Indic).
+    let keep = previous.len().saturating_sub(1);
+    let mut output = reserved_vec(keep.max(16))?;
+    output.extend_from_slice(&previous[..keep]);
+    if output.is_empty() {
+        output.push(0);
+    }
+    let start = *output.last().unwrap();
+    let mut cursor = unicode_segmentation::GraphemeCursor::new(start, text.len(), true);
+    while let Some(end) = cursor.next_boundary(text, 0).expect("complete UTF-8 body") {
+        if output.len() == output.capacity() {
+            output
+                .try_reserve(1)
+                .map_err(|_| SessionError::AllocationFailed)?;
         }
+        output.push(end);
     }
-    if rich {
-        Text::parse(body).map_err(|_| SessionError::InvalidTextComposition)
-    } else {
-        Ok(body.into())
-    }
+    Ok(output)
 }
 
 impl Session {
@@ -118,19 +111,7 @@ impl Session {
         }
         let line = &dialogue.lines[0];
         let joined = joined(line.content.styled(), suffix)?;
-        let mut boundaries = reserved_vec(
-            joined
-                .graphemes(true)
-                .count()
-                .checked_add(1)
-                .ok_or(SessionError::AllocationFailed)?,
-        )?;
-        boundaries.push(0);
-        boundaries.extend(
-            joined
-                .grapheme_indices(true)
-                .map(|(offset, g)| offset + g.len()),
-        );
+        let boundaries = boundaries(&joined, &line.grapheme_boundaries)?;
         // Appended combining marks may extend the last visible grapheme. Keep that
         // whole grapheme visible rather than hiding its already displayed base.
         let revealed = boundaries.partition_point(|&b| b < line.reveal().visible_bytes.end);
@@ -205,6 +186,96 @@ impl Session {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use unicode_segmentation::UnicodeSegmentation;
+
+    #[test]
+    fn incremental_boundaries_match_full_unicode_segmentation_at_every_append() {
+        for text in [
+            "中文对白\r\n下一行",
+            "e\u{301}\u{308} 👩🏽‍🚀👨‍👩‍👧‍👦",
+            "🇦🇧🇨🇩🇪🇫🇬",
+            "\u{600}A\u{903}B",
+            "क्षक्ष\u{94d}क",
+            "한글",
+        ] {
+            let mut previous = vec![0];
+            for end in text.char_indices().map(|(i, ch)| i + ch.len_utf8()) {
+                let body = &text[..end];
+                let incremental = boundaries(body, &previous).unwrap();
+                let full: Vec<_> = std::iter::once(0)
+                    .chain(body.grapheme_indices(true).map(|(i, g)| i + g.len()))
+                    .collect();
+                assert_eq!(incremental, full, "{body:?}");
+                previous = incremental;
+            }
+        }
+    }
+
+    #[test]
+    fn appending_a_combining_mark_keeps_the_displayed_base_visible() {
+        let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+        let owner = session.root_owner();
+        let id = session
+            .begin_open_say(
+                owner,
+                &[DialogueLineInput {
+                    speaker_id: None,
+                    speaker_name: "",
+                    content_id: "first",
+                    text: "A".into(),
+                    history: HistoryInput::Display,
+                }],
+                "en",
+                false,
+            )
+            .unwrap();
+        session.reveal_more(owner, id, 1).unwrap();
+        session
+            .append_dialogue(
+                owner,
+                id,
+                &Text::parse("[b]\u{301}B[/b]").unwrap(),
+                "second",
+                HistoryInput::Display,
+            )
+            .unwrap();
+        let line = &session.open_dialogue(id).unwrap().lines()[0];
+        assert_eq!(line.visible_text(), "A\u{301}");
+        assert_eq!(line.grapheme_boundaries(), [0, 3, 4]);
+        assert!(line.content.styled().style_at(1).unwrap().bold);
+    }
+
+    #[test]
+    #[ignore = "host text append cost comparison"]
+    fn incremental_rich_append_cost() {
+        use std::{hint::black_box, time::Instant};
+        let suffix = Text::parse("[ruby=ほし]星[/ruby][b]中文 e\u{301} 👩🏽‍🚀[/b]").unwrap();
+        for incremental in [false, true] {
+            let start = Instant::now();
+            let mut text = Text::default();
+            let mut offsets = vec![0];
+            for _ in 0..512 {
+                if incremental {
+                    text = text.concat(&suffix).unwrap();
+                    offsets = boundaries(&text, &offsets).unwrap();
+                } else {
+                    let mut source = text.markup().map_or(String::new(), |s| s.to_string());
+                    source.push_str(suffix.markup().unwrap());
+                    text = Text::parse(source).unwrap();
+                    offsets = Vec::with_capacity(text.graphemes(true).count() + 1);
+                    offsets.push(0);
+                    offsets.extend(text.grapheme_indices(true).map(|(i, g)| i + g.len()));
+                }
+                black_box((&text, &offsets));
+            }
+            eprintln!(
+                "rich_append incremental={incremental} bytes={} graphemes={} elapsed_us={}",
+                text.len(),
+                offsets.len() - 1,
+                start.elapsed().as_micros()
+            );
+        }
+    }
 
     #[test]
     fn append_preserves_pending_rich_pause_and_cleared_history() {
