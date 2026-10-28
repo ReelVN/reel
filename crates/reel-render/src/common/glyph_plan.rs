@@ -58,6 +58,20 @@ impl Plan {
         let mut plan = Self::default();
         let mut streams = Vec::new();
         for frame in frames {
+            let drawing = frame.drawing();
+            // FrameBuild already supplies finite ink for ordinary visual-only
+            // streams. No raster preparation or scope reconstruction is needed
+            // unless glyphs, unknown ink or an auxiliary drawing can add bounds.
+            if drawing.transitions().is_empty()
+                && drawing.masks().is_empty()
+                && drawing.commands().iter().all(|command| match &command.op {
+                    FrameOp::Draw(FrameDraw::GlyphRun(_)) => false,
+                    FrameOp::PushGroup(group) => !matches!(group.ink_bounds, InkBounds::Unbounded),
+                    _ => true,
+                })
+            {
+                continue;
+            }
             push_stack(
                 &mut streams,
                 Stream {
