@@ -1044,6 +1044,13 @@ impl SessionUi {
         self.image_demand_dirty = self.pending_stage.is_some() || self.stage.is_some();
         self.image_layout_pending = false;
     }
+    pub(crate) fn image_restore_diagnostic(
+        &self,
+        lease: &reel_ui::resources::ResourceLease,
+        error: &str,
+    ) -> String {
+        self.images.restore_diagnostic(lease, error)
+    }
     pub fn assets(&self) -> crate::assets::Assets {
         self.images.assets.clone()
     }

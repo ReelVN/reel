@@ -7,7 +7,7 @@ use reel_ui::{
 };
 use std::sync::Arc;
 
-pub(super) fn session() -> Session {
+pub(crate) fn session() -> Session {
     Session::new(SessionId(42), Epoch(3)).unwrap()
 }
 fn say(session: &mut Session, text: &str) -> InteractionId {

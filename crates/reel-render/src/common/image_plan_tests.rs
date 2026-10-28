@@ -207,3 +207,29 @@ fn transition_zero_demand_includes_previous_target_and_mask_without_unused_lease
     );
     assert_eq!(plan.masks.len(), 1);
 }
+
+#[test]
+fn missing_pixel_demand_retains_only_absent_sources_and_charges_capacity() {
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(2, 65536).unwrap();
+    let present = image(&mut registry, 1, &pool);
+    let missing = image(&mut registry, 2, &pool);
+    let before = pool.usage().bytes;
+    assert!(
+        missing_pixels([&present, &missing].into_iter(), &pool, u64::MAX)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(pool.usage().bytes, before);
+    missing.permit_pixel_reload();
+    assert!(missing.discard_uploaded_pixels());
+    let before = pool.usage().bytes;
+    let demand = missing_pixels([&present, &missing].into_iter(), &pool, u64::MAX)
+        .unwrap()
+        .unwrap();
+    assert_eq!(demand.resources().len(), 1);
+    assert_eq!(demand.resources()[0].handle(), missing.handle());
+    assert!(pool.usage().bytes > before);
+    drop(demand);
+    assert_eq!(pool.usage().bytes, before);
+}

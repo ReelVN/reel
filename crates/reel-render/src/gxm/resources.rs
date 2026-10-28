@@ -18,6 +18,7 @@ pub(super) struct Image {
     pub coverage: bool,
     native_import: bool,
     reuse_count: u8,
+    pub discard_pending: std::cell::Cell<bool>,
     pub source: Option<ResourceSource>,
     _storage: super::ownership::NativeTicket,
 }
@@ -221,6 +222,7 @@ impl Images {
             coverage: false,
             native_import: false,
             reuse_count: 0,
+            discard_pending: std::cell::Cell::new(false),
             source: None,
             _storage: storage,
         });
@@ -235,7 +237,15 @@ impl Images {
         item: &crate::common::image_plan::Required<'_>,
     ) -> Result<Pending, GpuError> {
         let source = item.source;
-        let pixels = source.read_pixels();
+        let pixels = if source.pixel_byte_len().is_some() {
+            Some(crate::common::image_plan::required_pixels(
+                source,
+                &budgets.transient,
+                limits.transient_bytes,
+            )?)
+        } else {
+            None
+        };
         let metadata = reserve(
             &budgets.transient,
             (size_of::<Pending>() + 4 * size_of::<ResourceHandle>()) as u64,
@@ -390,6 +400,7 @@ impl Images {
             coverage: false,
             native_import,
             reuse_count,
+            discard_pending: std::cell::Cell::new(source.pixel_discard_pending()),
             source: Some(ResourceSource {
                 version: source.version().clone(),
                 lease: source.downgrade(),
@@ -428,8 +439,24 @@ impl Images {
         for item in required {
             let source = item.source;
             if let Some(image) = self.entries.get(&source.handle()) {
+                if source.pixel_discard_pending() {
+                    image.discard_pending.set(true);
+                }
                 output.insert(source.handle(), image.clone());
             }
+        }
+        if let Some(demand) = crate::common::image_plan::missing_pixels(
+            required
+                .iter()
+                .filter(|item| {
+                    !output.contains_key(&item.source.handle())
+                        && !self.pending.contains_key(&item.source.handle())
+                })
+                .map(|item| item.source),
+            &budgets.transient,
+            limits.transient_bytes,
+        )? {
+            return Err(GpuError::PixelsNeeded(demand));
         }
         for item in required {
             let source = item.source;

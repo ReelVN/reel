@@ -352,6 +352,17 @@ impl Images {
             .keys()
             .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source))
     }
+    pub(crate) fn restore_diagnostic(&self, lease: &ResourceLease, error: &str) -> String {
+        if let Some((source, _)) = self
+            .loaded
+            .iter()
+            .find(|(_, candidate)| candidate.handle() == lease.handle())
+        {
+            self.diagnostic(source, error)
+        } else {
+            format!("image {:?}: {error}", lease.version().key.0)
+        }
+    }
     fn diagnostic(&self, source: &str, error: &str) -> String {
         let owner = self
             .tiles

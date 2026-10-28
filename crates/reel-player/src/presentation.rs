@@ -22,6 +22,8 @@ pub struct PresentationResult {
     /// Only a new, actually presented candidate can install new input geometry.
     pub accepted: bool,
     pub refused: Option<Error>,
+    /// Missing pixels for the exact retained candidate.
+    pub(crate) pixels: Option<(reel_ui::bridge::CandidateKey, reel_render::PixelDemand)>,
 }
 
 pub struct Presentation {
@@ -125,6 +127,43 @@ impl Presentation {
                 .as_ref()
                 .map_or_else(|| self.demand.has_work(), |frame| frame.ready)
     }
+    /// Continue only the candidate whose missing pixels have been restored.
+    pub(crate) fn pixels_ready(&mut self, key: &reel_ui::bridge::CandidateKey) -> bool {
+        if let Some(preparing) = &mut self.preparing
+            && &preparing.frame.key() == key
+        {
+            preparing.ready = true;
+            self.demand.completed(true);
+            return true;
+        }
+        false
+    }
+    pub(crate) fn pixels_failed(
+        &mut self,
+        key: &reel_ui::bridge::CandidateKey,
+        backend: &mut impl RenderBackend,
+    ) {
+        if self
+            .preparing
+            .as_ref()
+            .is_some_and(|pending| &pending.frame.key() == key)
+        {
+            let pending = self.preparing.take().unwrap();
+            backend.cancel_preparation(&pending.frame);
+            if pending.draw == Draw::Current {
+                self.bridge
+                    .resolve(reel_ui::bridge::PresentationNotice::new(
+                        pending.frame.key(),
+                        self.info.surface_epoch,
+                        reel_ui::bridge::PresentationOutcome::Error,
+                    ));
+            }
+            self.demand.refused(pending.draw, FailureKind::Refused);
+        }
+    }
+    pub(crate) fn preparing_key(&self) -> Option<reel_ui::bridge::CandidateKey> {
+        self.preparing.as_ref().map(|pending| pending.frame.key())
+    }
     /// The caller owns a reusable result buffer and routes resource completion events.
     pub fn poll<B: RenderBackend>(
         &mut self,
@@ -204,7 +243,26 @@ impl Presentation {
                 }
             }
         };
-        let result = backend.render_present(&frame, || host.before_present());
+        let result = match backend.render_present(&frame, || host.before_present()) {
+            Err(error) => match error.into_pixel_demand() {
+                Ok(demand) => {
+                    let key = frame.key();
+                    self.preparing = Some(PreparingFrame {
+                        frame,
+                        draw,
+                        invalidated,
+                        ready: false,
+                    });
+                    self.demand.waiting_for_pixels(draw);
+                    return Ok(PresentationResult {
+                        pixels: Some((key, demand)),
+                        ..Default::default()
+                    });
+                }
+                Err(error) => Err(error),
+            },
+            ok => ok,
+        };
         if matches!(result, Ok(PresentOutcome::Preparing))
             || continuing
                 && result
@@ -245,6 +303,7 @@ impl Presentation {
                 Ok(PresentationResult {
                     accepted,
                     refused: None,
+                    pixels: None,
                 })
             }
             Ok(PresentOutcome::SurfaceUnavailable) => Ok(PresentationResult::default()),
@@ -274,6 +333,7 @@ impl Presentation {
                 Ok(PresentationResult {
                     accepted: false,
                     refused: Some(Box::new(error)),
+                    pixels: None,
                 })
             }
         }

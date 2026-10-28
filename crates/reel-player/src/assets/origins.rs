@@ -109,7 +109,7 @@ impl Origins {
                 .filter(|lease| {
                     lease.version().key == load.source.key
                         && lease.version().version == version
-                        && (kind != RetainedAssetKind::Image || lease.read_pixels().is_some())
+                        && (kind != RetainedAssetKind::Image || lease.pixels_resident())
                 })
         };
         if self.items.len() >= 16
@@ -151,11 +151,15 @@ impl Origins {
 mod tests {
     use super::*;
     use crate::assets::{Phase, ResourceRegistry};
+    use reel_core::budget::OwnedBytes;
     use reel_core::{
         budget::{BudgetCategory, QueueLimits},
         identity::{AssetSource, ResourceVersion},
     };
-    use reel_ui::resources::ResourceData;
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::ColorEncoding,
+    };
 
     fn pool(bytes: u64) -> BudgetPool {
         BudgetPool::new(
@@ -196,10 +200,13 @@ mod tests {
                 version: ContentVersion([i as u8; 32]),
             };
             let handle = registry
-                .register(
+                .register_image(
                     version,
-                    ResourceData::External { token: i as u64 },
-                    data.reserve(0).unwrap(),
+                    OwnedBytes::new(vec![i as u8; 4], data.reserve(4).unwrap()).unwrap(),
+                    [1, 1],
+                    ImageFormat::Rgba8,
+                    ImageAlphaType::Alpha,
+                    ColorEncoding::Srgb,
                 )
                 .unwrap();
             let lease = registry.acquire(handle).unwrap();

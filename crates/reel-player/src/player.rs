@@ -21,6 +21,7 @@ use reel_ui::{
 use std::sync::Arc;
 type Error = Box<dyn std::error::Error>;
 mod display;
+pub(crate) mod pixel_recovery;
 pub(crate) mod session;
 use session::PlayerSession;
 
@@ -118,6 +119,7 @@ pub struct Player<B: RenderBackend + CaptureBackend> {
     pub(crate) closing: bool,
     pub(crate) first_frame_pending: bool,
     pub(crate) completions: Vec<RenderEvent<<B as RenderBackend>::Error>>,
+    pub(crate) pixel_recovery: pixel_recovery::PixelRecovery,
     pub(crate) captures: crate::capture::CaptureService<B::Capture>,
     pub(crate) window_state: Arc<reel_core::window::WindowInfo>,
     pub(crate) window_request: Option<reel_engine::aside::window::WindowRequestId>,
@@ -220,6 +222,7 @@ where
             closing: false,
             first_frame_pending: true,
             completions: Vec::new(),
+            pixel_recovery: pixel_recovery::PixelRecovery::default(),
             captures: crate::capture::CaptureService::new(
                 options.assets.input_bytes,
                 reel_core::wake::WakeSignal::new(move || notify()),
@@ -273,6 +276,7 @@ where
             .handle_text_event(TextEvent::WindowFocusChange(false));
         self.presentation.bridge.cancel_pointer_inputs();
         self.pointer_event(PointerKind::Cancel)?;
+        self.reset_pixel_recovery();
         self.presentation.cancel_preparation(&mut self.backend);
         self.presentation.suspend();
         self.backend.suspend();
@@ -298,6 +302,7 @@ where
         Ok(())
     }
     pub(crate) fn invalidate_surface(&mut self, metrics: DisplayMetrics) -> Result<(), Error> {
+        self.reset_pixel_recovery();
         self.presentation.cancel_preparation(&mut self.backend);
         let [width, height] = metrics.physical_size;
         self.size = PhysicalSize::new(width, height);
@@ -345,6 +350,7 @@ where
         self.publish_pointer_info()?;
         self.maintain_window_requests(host)?;
         self.maintain_captures()?;
+        self.maintain_pixel_recovery()?;
         let Some(session) = &mut self.session else {
             return Ok(());
         };
@@ -364,6 +370,7 @@ where
             session.tick(budget, now)?;
         }
         if identity != session.ui().session().identity() {
+            self.pixel_recovery.cancel(&session.ui().assets());
             self.presentation.cancel_preparation(&mut self.backend);
             self.recorded_projection = None;
         }
@@ -408,6 +415,91 @@ where
                 story.wake_input();
             }
         }
+        if let Some((id, key, demand)) = self.captures.take_pixel_demand() {
+            self.request_pixels(Some(id), key, demand)?;
+        }
+        Ok(())
+    }
+
+    fn reset_pixel_recovery(&mut self) {
+        if let Some(session) = &self.session {
+            self.pixel_recovery.cancel(&session.ui().assets());
+        }
+        if let Some((id, key)) = self.captures.waiting_pixels() {
+            self.captures.pixels_ready(id, &key);
+        }
+    }
+
+    fn request_pixels(
+        &mut self,
+        capture_id: Option<reel_engine::aside::capture::CaptureId>,
+        key: reel_ui::bridge::CandidateKey,
+        demand: reel_render::PixelDemand,
+    ) -> Result<(), Error> {
+        if self.session.is_none() {
+            return Err("pixel restore requires an active session".into());
+        }
+        if let Err(error) = self.pixel_recovery.request(
+            capture_id,
+            key.clone(),
+            self.backend.device_generation(),
+            demand,
+            &self.pool,
+        ) {
+            let assets = self.session.as_ref().unwrap().ui().assets();
+            if let Some(id) = capture_id {
+                self.pixel_recovery.cancel_capture(&assets);
+                self.captures.pixels_failed(id, &key, error);
+            } else {
+                self.pixel_recovery.cancel_frame(&assets);
+                self.presentation.pixels_failed(&key, &mut self.backend);
+                eprintln!("image restore admission failed; keeping last accepted view: {error}");
+            }
+            return Ok(());
+        }
+        self.maintain_pixel_recovery()
+    }
+
+    fn maintain_pixel_recovery(&mut self) -> Result<(), Error> {
+        if !self.pixel_recovery.active() {
+            return Ok(());
+        }
+        let Some(session) = self.session.as_ref() else {
+            return Ok(());
+        };
+        let assets = session.ui().assets();
+        let frame = self.presentation.preparing_key();
+        let capture = self.captures.waiting_pixels();
+        let ready = match self.pixel_recovery.poll(
+            &assets,
+            self.backend.device_generation(),
+            frame.as_ref(),
+            capture.as_ref().map(|(id, key)| (*id, key)),
+        ) {
+            Ok(ready) => ready,
+            Err(failure) => {
+                let error = session
+                    .ui()
+                    .image_restore_diagnostic(&failure.source, &failure.error);
+                if let Some((id, key)) = failure.capture {
+                    self.captures.pixels_failed(id, &key, error.clone());
+                }
+                if let Some(key) = failure.frame {
+                    self.presentation.pixels_failed(&key, &mut self.backend);
+                    eprintln!("image restore failed; keeping last accepted view: {error}");
+                }
+                return Ok(());
+            }
+        };
+        if ready.cancel_frame {
+            self.presentation.cancel_preparation(&mut self.backend);
+        }
+        if let Some(key) = ready.frame {
+            self.presentation.pixels_ready(&key);
+        }
+        if let Some((id, key)) = ready.capture {
+            self.captures.pixels_ready(id, &key);
+        }
         Ok(())
     }
 
@@ -440,6 +532,8 @@ where
             old.fonts != settings.fonts || old.canvas_size != settings.canvas_size
         });
         if layout_changed {
+            self.pixel_recovery
+                .cancel_frame(&self.session.as_ref().unwrap().ui().assets());
             self.presentation.cancel_preparation(&mut self.backend);
             self.session.as_mut().unwrap().ui_mut()?.clear_presented();
         }
@@ -526,6 +620,7 @@ where
         self.presentation.cancel_preparation(&mut self.backend);
         self.presentation.suspend();
         if let Some(session) = &mut self.session {
+            self.pixel_recovery.cancel(&session.ui().assets());
             session.ui_mut()?.close_resources();
             session.close()?;
         }
@@ -609,6 +704,9 @@ where
             )
         });
         let result = result?;
+        if let Some((key, demand)) = result.pixels {
+            self.request_pixels(None, key, demand)?;
+        }
         if result.accepted
             && !self.settings_pending()
             && let (Some(session), Some(stamp)) = (&mut self.session, &self.recorded_projection)
@@ -805,6 +903,7 @@ pub enum PointerKind {
 impl<B: RenderBackend + CaptureBackend> Drop for Player<B> {
     fn drop(&mut self) {
         if let Some(session) = &mut self.session {
+            self.pixel_recovery.cancel(&session.ui().assets());
             let _ = session.close();
         }
         self.presentation.suspend();

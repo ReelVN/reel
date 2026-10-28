@@ -308,3 +308,158 @@ fn cancelled_gpu_preparation_cannot_publish_input_after_surface_change_or_suspen
         }
     }
 }
+
+#[derive(Debug)]
+enum PixelTestError {
+    Missing(PixelDemand),
+    Other(RenderError),
+}
+impl std::fmt::Display for PixelTestError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "{self:?}")
+    }
+}
+impl std::error::Error for PixelTestError {}
+impl BackendError for PixelTestError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Other(error) => error.kind(),
+            Self::Missing(_) => FailureKind::Refused,
+        }
+    }
+    fn into_pixel_demand(self) -> Result<PixelDemand, Self> {
+        match self {
+            Self::Missing(demand) => Ok(demand),
+            error => Err(error),
+        }
+    }
+}
+struct PixelBackend<'a> {
+    inner: &'a mut Backend,
+    demand: Option<PixelDemand>,
+}
+impl RenderBackend for PixelBackend<'_> {
+    type Error = PixelTestError;
+    fn capabilities(&self) -> RenderCaps {
+        self.inner.capabilities()
+    }
+    fn configure(&mut self, info: SurfaceInfo) -> Result<(), Self::Error> {
+        self.inner.configure(info).map_err(PixelTestError::Other)
+    }
+    fn upload(&mut self, batch: UploadBatch) -> Result<UploadId, Rejected<UploadBatch>> {
+        self.inner.upload(batch)
+    }
+    fn render_present(
+        &mut self,
+        frame: &RenderFrame,
+        before: impl FnOnce(),
+    ) -> Result<PresentOutcome, Self::Error> {
+        if let Some(demand) = self.demand.take() {
+            return Err(PixelTestError::Missing(demand));
+        }
+        before();
+        Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
+    }
+    fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        self.inner.cancel_preparation(frame);
+    }
+    fn retire(&mut self, versions: &[ResourceVersion]) {
+        self.inner.retire(versions);
+    }
+    fn poll(&mut self, _: &mut Vec<RenderEvent<Self::Error>>, _: usize) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn has_pending(&self) -> bool {
+        false
+    }
+    fn suspend(&mut self) {
+        self.inner.suspend();
+    }
+}
+
+#[test]
+fn pixel_demand_retains_the_exact_candidate_and_accepted_geometry() {
+    use reel_core::identity::{AssetKey, ContentVersion};
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::{ResourceLease, ResourceRegistry},
+    };
+    let mut f = Fixture::new();
+    f.sync(0);
+    assert!(f.render().accepted);
+    f.complete();
+    let accepted = f.view.bridge.accepted_key().unwrap().clone();
+    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let h = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("restore-test".into()),
+                version: ContentVersion([1; 32]),
+            },
+            OwnedBytes::new(vec![255; 4], f.pool.reserve(4).unwrap()).unwrap(),
+            [1, 1],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let source = registry.acquire(h).unwrap();
+    source.permit_pixel_reload();
+    assert!(source.discard_uploaded_pixels());
+    let resources = vec![source.clone()];
+    let ticket = f
+        .pool
+        .reserve((resources.capacity() * size_of::<ResourceLease>()) as u64)
+        .unwrap();
+    let demand = PixelDemand::new(resources, ticket).unwrap();
+    let mut backend = PixelBackend {
+        inner: &mut f.backend,
+        demand: Some(demand),
+    };
+    f.view.invalidate();
+    let pending = f
+        .view
+        .render(&mut backend, &mut f.host, |bridge, id, info| {
+            let recorded = bridge.record(id).unwrap();
+            let mut build = FrameBuild::new(
+                recorded,
+                ResourceSnapshot::capture(std::iter::once(Ok(source.clone())), &f.pool).unwrap(),
+                FrameInfo {
+                    logical_size: [640., 420.],
+                    physical_size: info.physical_size,
+                },
+                BuildLimits { max_bytes: 8 << 20 },
+                &f.pool,
+            )
+            .unwrap();
+            let mut budget = StepBudget {
+                max_commands: 64,
+                max_units: 8192,
+                max_bytes: 64 << 10,
+            };
+            loop {
+                let progress = build.step(budget).unwrap();
+                if progress.complete {
+                    break;
+                }
+                budget.max_units = budget.max_units.max(progress.minimum_units);
+                budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+            }
+            Ok(Some(build.finish().unwrap()))
+        })
+        .unwrap();
+    let (key, demand) = pending.pixels.unwrap();
+    assert_eq!(demand.resources()[0].handle(), h);
+    assert_eq!(f.view.bridge.accepted_key(), Some(&accepted));
+    assert!(!f.view.needs_redraw());
+    drop(demand);
+    assert!(f.view.pixels_ready(&key));
+    let result = f
+        .view
+        .render(&mut backend, &mut f.host, |_, _, _| {
+            panic!("candidate must not be rebuilt")
+        })
+        .unwrap();
+    assert!(result.accepted);
+    assert_eq!(f.view.bridge.accepted_key(), Some(&key));
+}

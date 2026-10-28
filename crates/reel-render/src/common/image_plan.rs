@@ -222,6 +222,67 @@ pub(crate) fn collect<'a>(
     Ok(plan)
 }
 
+/// Retain exact missing identities and charge their full vector capacity.
+pub(crate) fn missing_pixels<'a>(
+    sources: impl Iterator<Item = &'a ResourceLease> + Clone,
+    pool: &reel_core::budget::BudgetPool,
+    limit: u64,
+) -> Result<Option<crate::PixelDemand>, GpuError> {
+    let missing =
+        |source: &&ResourceLease| source.pixel_byte_len().is_some() && !source.pixels_resident();
+    if !sources.clone().any(|source| missing(&source)) {
+        return Ok(None);
+    }
+    // Residency can change between the scan and collection. Reserve the
+    // iterator's full bound so a concurrent eviction cannot grow the vector.
+    let capacity = sources.size_hint().1.ok_or(GpuError::InvalidSize)?;
+    let bytes = capacity
+        .checked_mul(size_of::<ResourceLease>())
+        .ok_or(GpuError::InvalidSize)?;
+    let mut storage = pool.reserve(bytes as u64).map_err(|_| GpuError::Pressure {
+        domain: "pixel demand metadata",
+        requested: bytes as u64,
+        available: limit.saturating_sub(pool.usage().bytes),
+    })?;
+    let mut resources = Vec::new();
+    resources
+        .try_reserve_exact(capacity)
+        .map_err(|_| GpuError::InvalidSize)?;
+    storage
+        .resize((resources.capacity() * size_of::<ResourceLease>()) as u64)
+        .map_err(|_| GpuError::Pressure {
+            domain: "pixel demand metadata",
+            requested: (resources.capacity() * size_of::<ResourceLease>()) as u64,
+            available: limit.saturating_sub(pool.usage().bytes),
+        })?;
+    resources.extend(sources.filter(missing).cloned());
+    if resources.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        crate::PixelDemand::new(resources, storage).map_err(|_| GpuError::InvalidSize)?,
+    ))
+}
+
+/// Acquire a pixel reader or report a concurrently evicted source.
+pub(crate) fn required_pixels(
+    source: &ResourceLease,
+    pool: &reel_core::budget::BudgetPool,
+    limit: u64,
+) -> Result<reel_ui::resources::ResourcePixels, GpuError> {
+    loop {
+        if let Some(reader) = source.read_pixels() {
+            return Ok(reader);
+        }
+        if let Some(demand) = missing_pixels(std::iter::once(source), pool, limit)? {
+            return Err(GpuError::PixelsNeeded(demand));
+        }
+        if source.pixel_byte_len().is_none() {
+            return Err(GpuError::InvalidSize);
+        }
+    }
+}
+
 /// Every demanded image coexists; only the largest indivisible upload overlaps.
 pub(crate) fn peak(images: impl Iterator<Item = (u64, u64)>, limit: u64) -> Result<u64, GpuError> {
     let mut resident = 0u64;

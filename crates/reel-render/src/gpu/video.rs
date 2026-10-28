@@ -111,6 +111,7 @@ pub(super) fn upload(
             residency: None,
             source: None,
             reuse_count: 0,
+            discard_pending: std::sync::atomic::AtomicBool::new(false),
         }
     };
     let (_, staging_size) = costs(image);

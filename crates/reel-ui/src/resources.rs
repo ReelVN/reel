@@ -198,6 +198,7 @@ struct Resource {
     pixel_bytes: Option<usize>,
     image_coverage: Option<reel_core::image_coverage::ImageCoverage>,
     retired: AtomicBool,
+    pixel_discard_pending: AtomicBool,
     // Opaque imported producer storage has its own accounting domain. This reservation
     // covers the frozen reference's declared extent; owned blobs carry their own ticket.
     _reference_ticket: Option<BudgetTicket>,
@@ -339,6 +340,16 @@ impl ResourceLease {
             .clone()
             .map(ResourcePixels)
     }
+    /// Whether a decoded image or texture currently has CPU pixels.
+    pub fn pixels_resident(&self) -> bool {
+        self.0.pixels.as_ref().is_some_and(|pixels| {
+            pixels
+                .lock()
+                .expect("image pixels poisoned")
+                .resident
+                .is_some()
+        })
+    }
     fn source_blob_id(&self) -> Option<u64> {
         self.0.source_blob_id
     }
@@ -420,8 +431,16 @@ impl ResourceLease {
     /// The asset owner must retain a path that can asynchronously restore them.
     pub fn permit_pixel_reload(&self) {
         if let Some(pixels) = &self.0.pixels {
-            pixels.lock().expect("image pixels poisoned").reloadable = true;
+            let mut pixels = pixels.lock().expect("image pixels poisoned");
+            pixels.reloadable = true;
+            self.0
+                .pixel_discard_pending
+                .store(pixels.resident.is_some(), Ordering::Release);
         }
+    }
+    /// Whether a completed consumer should attempt to release these pixels.
+    pub fn pixel_discard_pending(&self) -> bool {
+        self.0.pixel_discard_pending.load(Ordering::Acquire)
     }
     /// Release reconstructible pixels after the same version is resident on the
     /// consumer. Returns false while a CPU reader or producer alias holds them.
@@ -445,6 +464,7 @@ impl ResourceLease {
         };
         pixels.weak_storage = Some(storage);
         pixels.resident = None;
+        self.0.pixel_discard_pending.store(false, Ordering::Release);
         true
     }
     /// Restore the same fixed version and descriptor into this resource identity.
@@ -473,6 +493,7 @@ impl ResourceLease {
             state.storage = Arc::downgrade(&backing);
             state.resident = Some(blob);
             state.weak_storage = None;
+            self.0.pixel_discard_pending.store(true, Ordering::Release);
         }
         Ok(())
     }
@@ -791,6 +812,7 @@ impl ResourceRegistry {
             pixel_bytes,
             image_coverage,
             retired: AtomicBool::new(false),
+            pixel_discard_pending: AtomicBool::new(false),
             _reference_ticket: ticket,
             descriptor_ticket: Arc::new(descriptor),
         }));

@@ -140,9 +140,25 @@ impl ImageCache {
             let cache = self.images.lock().unwrap();
             for item in required {
                 if let Some(image) = cache.get(&item.source.handle()) {
+                    if item.source.pixel_discard_pending() {
+                        image.discard_pending.store(true, Ordering::Relaxed);
+                    }
                     images.insert(item.source.handle(), image.clone());
                 }
             }
+        }
+        if let Some(demand) = crate::common::image_plan::missing_pixels(
+            required
+                .iter()
+                .filter(|item| {
+                    !images.contains_key(&item.source.handle())
+                        && !partial.contains_key(&item.source.handle())
+                })
+                .map(|item| item.source),
+            &budgets.transient,
+            gpu.limits.transient_bytes,
+        )? {
+            return Err(GpuError::PixelsNeeded(demand));
         }
         let limit = gpu.limits.resource_bytes;
         let pool = &budgets.resources;
@@ -279,16 +295,20 @@ impl ImageCache {
                     };
                     image.layout = reel_core::texture::TextureLayout::identity(image.size);
                     image.encoding = source.encoding;
+                    image
+                        .discard_pending
+                        .store(item.source.pixel_discard_pending(), Ordering::Relaxed);
                     image.source = Some(resources::ResourceSource {
                         version: item.source.version().clone(),
                         lease: item.source.downgrade(),
                     });
                     entry.insert(Partial {
                         image: Arc::new(image),
-                        pixels: item.source.read_pixels().ok_or(GpuError::Unsupported {
-                            at: item.at,
-                            record: "missing image pixels",
-                        })?,
+                        pixels: crate::common::image_plan::required_pixels(
+                            item.source,
+                            &budgets.transient,
+                            gpu.limits.transient_bytes,
+                        )?,
                         next_row: 0,
                         total_rows: source.height,
                         _storage: storage,
@@ -383,16 +403,20 @@ impl ImageCache {
                     };
                     image.layout = layout.layout;
                     image.encoding = descriptor.source_encoding;
+                    image
+                        .discard_pending
+                        .store(item.source.pixel_discard_pending(), Ordering::Relaxed);
                     image.source = Some(resources::ResourceSource {
                         version: item.source.version().clone(),
                         lease: item.source.downgrade(),
                     });
                     entry.insert(Partial {
                         image: Arc::new(image),
-                        pixels: item.source.read_pixels().ok_or(GpuError::Unsupported {
-                            at: item.at,
-                            record: "missing image pixels",
-                        })?,
+                        pixels: crate::common::image_plan::required_pixels(
+                            item.source,
+                            &budgets.transient,
+                            gpu.limits.transient_bytes,
+                        )?,
                         next_row: 0,
                         total_rows: layout.rows,
                         _storage: storage,
@@ -524,6 +548,30 @@ impl ImageCache {
                 Err(error)
             }
             None => Ok(images),
+        }
+    }
+
+    pub(super) fn discard_uploaded_pixels(&self, submitted: &HashMap<ResourceHandle, Arc<Image>>) {
+        let cached = self.images.lock().unwrap();
+        for (handle, image) in submitted {
+            if !image.discard_pending.load(Ordering::Relaxed) {
+                continue;
+            }
+            if !cached
+                .get(handle)
+                .is_some_and(|current| Arc::ptr_eq(current, image))
+            {
+                continue;
+            }
+            let source = image
+                .source
+                .as_ref()
+                .and_then(|source| source.lease.upgrade());
+            if source.is_none_or(|source| {
+                !source.pixel_discard_pending() || source.discard_uploaded_pixels()
+            }) {
+                image.discard_pending.store(false, Ordering::Relaxed);
+            }
         }
     }
 

@@ -96,6 +96,9 @@ pub(super) struct Prepared {
     _work: Work,
 }
 impl Prepared {
+    pub fn images(&self) -> &HashMap<ResourceHandle, Rc<Image>> {
+        &self._work._images
+    }
     pub fn take_effect_pending(&self) -> Vec<crate::common::effect_result::Pending<Target>> {
         std::mem::take(&mut *self._work.effect_pending.borrow_mut())
     }

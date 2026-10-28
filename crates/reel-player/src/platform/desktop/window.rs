@@ -391,6 +391,7 @@ impl State {
             closing: false,
             first_frame_pending,
             completions: Vec::new(),
+            pixel_recovery: Default::default(),
             window_state: Arc::new(Default::default()),
             window_request: None,
             input_hints: Default::default(),

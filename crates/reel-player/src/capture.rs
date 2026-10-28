@@ -10,7 +10,10 @@ use reel_engine::aside::{
     AdapterError,
     capture::{CaptureId, CaptureRequest},
 };
-use reel_render::capture::{CaptureBackend, CapturedPixels};
+use reel_render::{
+    BackendError, PixelDemand,
+    capture::{CaptureBackend, CapturedPixels},
+};
 use reel_ui::frame::RenderFrame;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +60,8 @@ struct EncodeResult {
 }
 enum Phase<C> {
     Waiting,
+    WaitingPixels,
+    FailedPixels(String),
     Reading(C),
     Encoding(u64),
 }
@@ -72,6 +77,7 @@ pub struct CaptureService<C> {
     pool: BudgetPool,
     wake: WakeSignal,
     serial: u64,
+    pixel_demand: Option<(CaptureId, reel_ui::bridge::CandidateKey, PixelDemand)>,
 }
 impl<C> CaptureService<C> {
     pub fn new(max_bytes: u64, wake: WakeSignal) -> Self {
@@ -117,10 +123,47 @@ impl<C> CaptureService<C> {
             pool,
             wake,
             serial: 0,
+            pixel_demand: None,
         }
     }
     pub fn busy(&self) -> bool {
         self.active.is_some() || !self.worker.is_idle()
+    }
+    pub(crate) fn take_pixel_demand(
+        &mut self,
+    ) -> Option<(CaptureId, reel_ui::bridge::CandidateKey, PixelDemand)> {
+        self.pixel_demand.take()
+    }
+    pub(crate) fn waiting_pixels(&self) -> Option<(CaptureId, reel_ui::bridge::CandidateKey)> {
+        self.active.as_ref().and_then(|pending| {
+            matches!(pending.phase, Phase::WaitingPixels)
+                .then(|| (pending.request.id, pending.frame.key()))
+        })
+    }
+    pub(crate) fn pixels_ready(&mut self, id: CaptureId, key: &reel_ui::bridge::CandidateKey) {
+        if let Some(active) = &mut self.active
+            && active.request.id == id
+            && &active.frame.key() == key
+            && matches!(active.phase, Phase::WaitingPixels)
+        {
+            active.phase = Phase::Waiting;
+            self.wake.wake();
+        }
+    }
+    pub(crate) fn pixels_failed(
+        &mut self,
+        id: CaptureId,
+        key: &reel_ui::bridge::CandidateKey,
+        error: String,
+    ) {
+        if let Some(active) = &mut self.active
+            && active.request.id == id
+            && &active.frame.key() == key
+            && matches!(active.phase, Phase::WaitingPixels)
+        {
+            active.phase = Phase::FailedPixels(error);
+            self.wake.wake();
+        }
     }
     pub fn drive<B: CaptureBackend<Capture = C>>(
         &mut self,
@@ -155,6 +198,7 @@ impl<C> CaptureService<C> {
                 self.worker.cancel(id);
             }
             self.active = None;
+            self.pixel_demand = None;
         }
         if self.active.is_none()
             && self.worker.is_idle()
@@ -204,9 +248,19 @@ impl<C> CaptureService<C> {
                         active.phase = Phase::Reading(capture);
                         Ok(())
                     }
-                    Err(error) => Err(error.to_string()),
+                    Err(error) => match error.into_pixel_demand() {
+                        Ok(demand) => {
+                            self.pixel_demand =
+                                Some((active.request.id, active.frame.key(), demand));
+                            active.phase = Phase::WaitingPixels;
+                            Ok(())
+                        }
+                        Err(error) => Err(error.to_string()),
+                    },
                 }
             }
+            Phase::WaitingPixels => Ok(()),
+            Phase::FailedPixels(error) => Err(error.clone()),
             Phase::Reading(capture) => match backend.poll_capture(capture) {
                 Ok(Some(pixels)) => {
                     self.serial += 1;

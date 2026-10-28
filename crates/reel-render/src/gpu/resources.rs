@@ -49,6 +49,7 @@ pub struct Image {
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
     pub(super) source: Option<ResourceSource>,
     pub(super) reuse_count: u8,
+    pub(super) discard_pending: std::sync::atomic::AtomicBool,
 }
 impl Image {
     pub(super) fn uv_transform(&self) -> reel_ui::kurbo::Affine {
@@ -163,6 +164,7 @@ pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError>
         residency: None,
         source: None,
         reuse_count: 0,
+        discard_pending: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -238,6 +240,7 @@ pub(super) fn create_texture(
         residency: None,
         source: None,
         reuse_count: 0,
+        discard_pending: std::sync::atomic::AtomicBool::new(false),
     })
 }
 /// Copy whole format block rows, retaining compressed bytes throughout staging.

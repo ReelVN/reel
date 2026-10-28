@@ -317,3 +317,123 @@ fn retired_image_cooling_keeps_source_leases_until_the_last_reader_retires() {
     assert_eq!(renderer.usage().retired_images, 0);
     empty(&renderer);
 }
+
+#[test]
+#[ignore = "requires graphics adapter; no pixel readback"]
+fn submitted_cached_images_release_and_restore_before_reupload() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::{ColorEncoding, ResourceRegistry},
+    };
+    fn prepare_full(
+        renderer: &mut Renderer,
+        frame: &RenderFrame,
+        source: &reel_ui::resources::ResourceLease,
+    ) -> Prepared {
+        loop {
+            match renderer.prepare(frame) {
+                Ok(prepared) => return prepared,
+                Err(GpuError::Pressure { .. }) => {
+                    renderer
+                        .gpu
+                        .device
+                        .poll(wgpu::PollType::wait_indefinitely())
+                        .unwrap();
+                    renderer.poll().unwrap();
+                    assert!(
+                        source.pixels_resident(),
+                        "partial upload must retain the CPU reader"
+                    );
+                }
+                Err(error) => panic!("image preparation: {error}"),
+            }
+        }
+    }
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let version = ResourceVersion {
+        key: AssetKey("reloadable-test".into()),
+        version: ContentVersion([9; 32]),
+    };
+    let create = |registry: &mut ResourceRegistry| {
+        registry
+            .register_image(
+                version.clone(),
+                OwnedBytes::new(
+                    vec![255; 4 * 1024 * 1024],
+                    pool.reserve(4 * 1024 * 1024).unwrap(),
+                )
+                .unwrap(),
+                [1024, 1024],
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Srgb,
+            )
+            .unwrap()
+    };
+    let handle = create(&mut registry);
+    let lease = registry.acquire(handle).unwrap();
+    lease.permit_pixel_reload();
+    let mut widget = RecordWidget::new(Scene::new());
+    widget.resource_draws.push((
+        lease.clone(),
+        Rect::new(0., 0., 400., 300.),
+        Affine::IDENTITY,
+        Default::default(),
+    ));
+    let frame = frame_from_widget(widget, registry.freeze(&[handle], &pool).unwrap(), &pool);
+    let before = pool.usage().bytes;
+    let mut renderer = renderer(Default::default());
+    let prepared = prepare_full(&mut renderer, &frame, &lease);
+    renderer.submit(prepared).unwrap();
+    assert!(
+        lease.pixels_resident(),
+        "submitted work must retain pixels before completion"
+    );
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert!(
+        !lease.pixels_resident(),
+        "completed cached texture releases reloadable pixels"
+    );
+    let released = before - pool.usage().bytes;
+    assert_eq!(released, 1024 * 1024 * 4);
+    eprintln!(
+        "completed 1024x1024 image: CPU bytes before={before}, after={}, released={released}",
+        pool.usage().bytes
+    );
+    assert!(
+        renderer.prepare(&frame).is_ok(),
+        "cached GPU image needs no CPU reload"
+    );
+    renderer.images.retain_demand(&[]);
+    let demand = match renderer.prepare(&frame) {
+        Err(GpuError::PixelsNeeded(demand)) => demand,
+        _ => panic!("cache miss must request exact source pixels"),
+    };
+    assert_eq!(demand.resources()[0].handle(), handle);
+    drop(demand);
+    let mut replacement_registry = ResourceRegistry::new(1, 65536).unwrap();
+    let replacement_handle = create(&mut replacement_registry);
+    let replacement = replacement_registry.acquire(replacement_handle).unwrap();
+    lease.restore_pixels(&replacement).unwrap();
+    drop(replacement);
+    drop(replacement_registry);
+    let prepared = prepare_full(&mut renderer, &frame, &lease);
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert!(!lease.pixels_resident());
+}

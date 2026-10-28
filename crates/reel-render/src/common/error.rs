@@ -50,6 +50,8 @@ pub enum GpuError {
     /// Internal GPU work is continuing preparation of this exact candidate.
     /// Retry the same frame after `ResourcesAvailable`; it has not been presented.
     Preparing,
+    /// CPU pixels must be asynchronously restored before this attempt can continue.
+    PixelsNeeded(crate::PixelDemand),
     /// Other prepared/in-flight submissions occupy quota needed by this request.
     /// Later records can still exceed the preparation's own quota on retry.
     Pressure {
@@ -104,12 +106,19 @@ impl std::error::Error for GpuError {
 }
 
 impl crate::BackendError for GpuError {
+    fn into_pixel_demand(self) -> Result<crate::PixelDemand, Self> {
+        match self {
+            Self::PixelsNeeded(demand) => Ok(demand),
+            other => Err(other),
+        }
+    }
     fn kind(&self) -> crate::FailureKind {
         use crate::FailureKind;
         match self {
             Self::Shader { source, .. } => source.kind(),
             Self::Busy | Self::Preparing | Self::Pressure { .. } => FailureKind::Pressure,
-            Self::Budget { .. }
+            Self::PixelsNeeded(_)
+            | Self::Budget { .. }
             | Self::Unsupported { .. }
             | Self::InvalidRecord { .. }
             | Self::Geometry { .. }

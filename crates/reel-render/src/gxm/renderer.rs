@@ -72,6 +72,7 @@ pub struct Backend {
     info: Option<SurfaceInfo>,
     suspended: bool,
     next_submission: u64,
+    device_generation: u64,
     flights: VecDeque<Flight>,
     events: VecDeque<RenderEvent<GpuError>>,
     failed_work: Vec<replay::Work>,
@@ -97,6 +98,14 @@ impl Backend {
         if options.limits.max_inflight == 0 || options.limits.image_upload_bytes_per_prepare == 0 {
             return Err(GpuError::InvalidSize);
         }
+        static NEXT_DEVICE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let device_generation = NEXT_DEVICE
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |generation| generation.checked_add(1),
+            )
+            .map_err(|_| GpuError::IdentityExhausted)?;
         let context = ownership::Device::new(context);
         let group = BudgetGroup::new(options.limits.total_bytes);
         let pool = |category, bytes| {
@@ -132,6 +141,7 @@ impl Backend {
             info: None,
             suspended: false,
             next_submission: 1,
+            device_generation,
             flights: VecDeque::new(),
             events: VecDeque::new(),
             failed_work: Vec::new(),
@@ -447,6 +457,9 @@ impl Backend {
         let ready = match upload {
             Ok(ready) => ready,
             Err(error) => {
+                if matches!(error, GpuError::PixelsNeeded(_)) && touched.is_empty() {
+                    return Err(error);
+                }
                 self.images.release_idle();
                 if !self.drain_error() {
                     self.failed_images.extend(touched);
@@ -602,6 +615,9 @@ impl Backend {
     }
 }
 impl RenderBackend for Backend {
+    fn device_generation(&self) -> u64 {
+        self.device_generation
+    }
     type Error = GpuError;
     fn vsync(&self) -> Option<bool> {
         Some(self.context.vsync())
@@ -762,6 +778,28 @@ impl RenderBackend for Backend {
             }
             let flight = self.flights.pop_front().unwrap();
             if let Some(prepared) = &flight._prepared {
+                for (handle, image) in prepared.images() {
+                    if !image.discard_pending.get() {
+                        continue;
+                    }
+                    if !self
+                        .images
+                        .entries
+                        .get(handle)
+                        .is_some_and(|current| Rc::ptr_eq(current, image))
+                    {
+                        continue;
+                    }
+                    let source = image
+                        .source
+                        .as_ref()
+                        .and_then(|source| source.lease.upgrade());
+                    if source.is_none_or(|source| {
+                        !source.pixel_discard_pending() || source.discard_uploaded_pixels()
+                    }) {
+                        image.discard_pending.set(false);
+                    }
+                }
                 prepared.recycle_geometry(&mut self.geometry);
             }
             if let Some(token) = flight.retained {

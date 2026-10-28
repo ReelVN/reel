@@ -276,6 +276,7 @@ impl Renderer {
                         s._frames.last().expect("submission owns its output frame"),
                     );
                 }
+                self.images.discard_uploaded_pixels(&s._images);
                 self.geometry.recycle(&mut s.geometry);
                 self.effect_uniforms
                     .recycle(&mut s.effect_uniform_slots, &self.budgets.transient);

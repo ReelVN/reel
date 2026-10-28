@@ -134,8 +134,51 @@ pub enum FailureKind {
     DeviceLost,
     Fatal,
 }
+/// Budgeted missing CPU pixels required by an exact render or capture attempt.
+#[derive(Debug)]
+pub struct PixelDemand {
+    resources: Vec<ResourceLease>,
+    _storage: BudgetTicket,
+}
+impl PixelDemand {
+    /// Admit a nonempty, capacity-accounted list, deduplicated by resource handle.
+    /// Rejection returns the original vector and ticket to the producer.
+    pub fn new(
+        mut resources: Vec<ResourceLease>,
+        storage: BudgetTicket,
+    ) -> Result<Self, (Vec<ResourceLease>, BudgetTicket)> {
+        let capacity = resources.capacity().checked_mul(size_of::<ResourceLease>());
+        if resources.is_empty() || capacity.is_none_or(|bytes| bytes as u64 > storage.bytes()) {
+            return Err((resources, storage));
+        }
+        resources.sort_unstable_by_key(ResourceLease::handle);
+        resources.dedup_by_key(|resource| resource.handle());
+        Ok(Self {
+            resources,
+            _storage: storage,
+        })
+    }
+    /// Test whether the demand includes this immutable resource identity.
+    pub fn contains(&self, handle: ResourceHandle) -> bool {
+        self.resources
+            .binary_search_by_key(&handle, ResourceLease::handle)
+            .is_ok()
+    }
+    /// The immutable source identities that must be restored before retrying.
+    pub fn resources(&self) -> &[ResourceLease] {
+        &self.resources
+    }
+}
+
 pub trait BackendError: std::error::Error {
     fn kind(&self) -> FailureKind;
+    /// Extract an asynchronous pixel demand while preserving every other error.
+    fn into_pixel_demand(self) -> Result<PixelDemand, Self>
+    where
+        Self: Sized,
+    {
+        Err(self)
+    }
 }
 impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -190,6 +233,10 @@ pub enum RenderEvent<E = RenderError> {
 }
 pub mod capture;
 pub trait RenderBackend {
+    /// Identity of the current device; a replacement device uses a new value.
+    fn device_generation(&self) -> u64 {
+        0
+    }
     /// Some reports the current setting when this backend can change synchronization.
     fn vsync(&self) -> Option<bool> {
         None
@@ -223,6 +270,9 @@ pub trait RenderBackend {
 /// A player may borrow a process-owned device without taking its lifetime.
 impl<B: RenderBackend + ?Sized> RenderBackend for &mut B {
     type Error = B::Error;
+    fn device_generation(&self) -> u64 {
+        (**self).device_generation()
+    }
     fn vsync(&self) -> Option<bool> {
         (**self).vsync()
     }
