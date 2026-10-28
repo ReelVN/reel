@@ -530,9 +530,6 @@ impl Mesh {
             clip_identity: None,
         }
     }
-    pub(crate) fn triangles(&mut self, vertices: &[Vertex]) -> Result<(), GpuError> {
-        self.indexed_triangles(vertices, 0..vertices.len() as u32)
-    }
     /// Append trusted triangle indices with shared vertices from an internal planner.
     pub(crate) fn indexed_triangles(
         &mut self,
@@ -1001,11 +998,12 @@ mod tests {
         assert!(bounded(&clipped));
         let mut other = Mesh::new(allocation());
         other
-            .triangles(
+            .indexed_triangles(
                 &[Vertex {
                     color: [2.; 4],
                     ..mesh.vertices[0]
                 }; 3],
+                0..3,
             )
             .unwrap();
         mesh.append(&other).unwrap();
