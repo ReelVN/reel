@@ -920,6 +920,19 @@ fn export_anonymous_effect_fragments() {
                 &generated.source,
             )
             .unwrap();
+            let full = compile_fragment_variant(
+                &program,
+                language,
+                OutputTail::Ordinary,
+                FragmentCoverage::FullTarget,
+                16384,
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join(format!("{name}-full.{extension}")),
+                full.source,
+            )
+            .unwrap();
             let masked =
                 compile_fragment_with_tail(&program, language, OutputTail::AlphaCoverage, 16384)
                     .unwrap();
@@ -1023,3 +1036,6 @@ fn independent_coverage_tail_preserves_typed_author_program_and_sampler_bound() 
 
 #[path = "effect_reduction_tests.rs"]
 mod reduction_tests;
+
+#[path = "effect_coverage_tests.rs"]
+mod coverage_tests;

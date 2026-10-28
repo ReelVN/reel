@@ -8,6 +8,7 @@ pub(super) fn compile(
     program: &EffectProgram,
     generated: GeneratedEffect,
     tail: OutputTail,
+    coverage: FragmentCoverage,
     limit: usize,
 ) -> Result<EffectFragment, GenerateError> {
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
@@ -66,7 +67,9 @@ float4 reel_output(float4 color, float coverage) {
     } else {
         source.push_str("float reel_tail_coverage = 1.0;\n");
     }
-    source.push_str("if (any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)) discard;\n");
+    if coverage == FragmentCoverage::Local {
+        source.push_str("if (any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)) discard;\n");
+    }
     if generated.output_type == EffectType::Float {
         source.push_str(
             "float4 reel_implicit_source = tex2D(reel_source, reel_implicit_source_uv);\n",
@@ -76,10 +79,16 @@ float4 reel_output(float4 color, float coverage) {
         r#"
     float3 p = float3(v_uv * reel_context[5].xy, 1.0);
     float2 uv = float2(dot(reel_context[0].xyz, p), dot(reel_context[1].xyz, p));
-    if (any(uv < float2(0.0)) || any(uv > float2(1.0))) discard;
-    float2 position = reel_context[4].xy + uv * reel_context[4].zw;
 "#,
     );
+    if coverage == FragmentCoverage::Local {
+        source.push_str("    if (any(uv < float2(0.0)) || any(uv > float2(1.0))) discard;\n");
+    } else {
+        source.push_str(
+            "    if (any(uv < float2(0.0)) || any(uv > float2(1.0))) return float4(0.0);\n",
+        );
+    }
+    source.push_str("    float2 position = reel_context[4].xy + uv * reel_context[4].zw;\n");
     if generated.output_type == EffectType::Float {
         source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { return reel_output(float4(coverage), reel_tail_coverage); } return reel_output(reel_implicit_source * coverage, reel_tail_coverage);\n}\n");
     } else {

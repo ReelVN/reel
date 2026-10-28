@@ -6,6 +6,7 @@ pub(super) fn compile(
     program: &EffectProgram,
     generated: GeneratedEffect,
     tail: OutputTail,
+    coverage: FragmentCoverage,
     max_source_bytes: usize,
 ) -> Result<EffectFragment, GenerateError> {
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
@@ -106,10 +107,17 @@ fn reel_output(color: vec4<f32>, coverage: f32) -> vec4<f32> {
         r#"
     let p = vec3(v.position.xy, 1.0);
     let uv = vec2(dot(reel_context.slots[0].xyz, p), dot(reel_context.slots[1].xyz, p));
-    if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) { discard; }
-    let position = reel_context.slots[4].xy + uv * reel_context.slots[4].zw;
 "#,
     );
+    if coverage == FragmentCoverage::Local {
+        source.push_str("    if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) { discard; }\n");
+    } else {
+        source.push_str(
+            "    if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) { return vec4<f32>(0.0); }\n",
+        );
+    }
+    source
+        .push_str("    let position = reel_context.slots[4].xy + uv * reel_context.slots[4].zw;\n");
     if generated.output_type == EffectType::Float {
         source.push_str("var coverage = clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0); let mode = reel_context.slots[0].w; if mode >= 2.0 { coverage = 1.0 - coverage; } if mode == 1.0 || mode == 2.0 { return reel_output(vec4(coverage), reel_tail_coverage); } return reel_output(reel_implicit_source * coverage, reel_tail_coverage);\n}\n");
     } else {

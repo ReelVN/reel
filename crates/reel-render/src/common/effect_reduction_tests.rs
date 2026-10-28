@@ -82,19 +82,25 @@ fn loop_blocks_preserve_body_and_complete_wrapper_source_admission() {
         .unwrap();
         assert_eq!(admitted.function, baseline.function);
         assert_eq!(admitted.parameters, baseline.parameters);
-        for tail in [OutputTail::Ordinary, OutputTail::AlphaCoverage] {
+        for (tail, coverage) in [
+            (OutputTail::Ordinary, FragmentCoverage::Local),
+            (OutputTail::AlphaCoverage, FragmentCoverage::Local),
+            (OutputTail::Ordinary, FragmentCoverage::FullTarget),
+        ] {
             let generated = generate_inner(&program, language, 1 << 20, false).unwrap();
             let original = match language {
-                Language::Cg => cg::compile(&program, generated, tail, 1 << 20),
-                Language::Wgsl => wgsl::compile(&program, generated, tail, 1 << 20),
+                Language::Cg => cg::compile(&program, generated, tail, coverage, 1 << 20),
+                Language::Wgsl => wgsl::compile(&program, generated, tail, coverage, 1 << 20),
             }
             .unwrap();
-            assert!(
-                blocked.function.len() + blocked.declarations.len() < original.source.len(),
-                "the wrapper, rather than the function, exercises fallback"
-            );
+            if coverage == FragmentCoverage::Local {
+                assert!(
+                    blocked.function.len() + blocked.declarations.len() < original.source.len(),
+                    "the wrapper, rather than the function, exercises fallback"
+                );
+            }
             let admitted =
-                compile_fragment_with_tail(&program, language, tail, original.source.len())
+                compile_fragment_variant(&program, language, tail, coverage, original.source.len())
                     .unwrap();
             assert_eq!(admitted.source, original.source);
             assert_eq!(admitted.parameters, original.parameters);

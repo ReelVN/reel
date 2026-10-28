@@ -64,6 +64,18 @@ impl OutputTail {
     }
 }
 
+/// Raster coverage guaranteed by the caller's shared render plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FragmentCoverage {
+    /// Keep the logical UV domain check and native pixel-scissor discard.
+    Local,
+    /// The ordinary output covers the physical attachment. The caller proves
+    /// the complete viewport, scissor and output bounds. The original UV check
+    /// returns transparent color outside its domain, preserving clear followed
+    /// by local discard; native pixel-scissor discard is omitted.
+    FullTarget,
+}
+
 /// Complete prepared shader source; runtime backends load this product verbatim.
 #[derive(Clone, Debug)]
 pub struct EffectFragment {
@@ -116,6 +128,30 @@ pub fn compile_fragment_with_tail(
     tail: OutputTail,
     max_source_bytes: usize,
 ) -> Result<EffectFragment, GenerateError> {
+    compile_fragment_variant(
+        program,
+        language,
+        tail,
+        FragmentCoverage::Local,
+        max_source_bytes,
+    )
+}
+
+/// Generate one coverage-qualified variant of the unchanged author program.
+/// `FullTarget` requires a full-attachment proof and accepts only the ordinary
+/// tail. UV-domain rejection returns transparent color. Source/image sampling,
+/// parameters and attachment quantization retain the local variant's behavior.
+/// Both variants retain single-tap source-limit fallback.
+pub fn compile_fragment_variant(
+    program: &EffectProgram,
+    language: Language,
+    tail: OutputTail,
+    coverage: FragmentCoverage,
+    max_source_bytes: usize,
+) -> Result<EffectFragment, GenerateError> {
+    if coverage == FragmentCoverage::FullTarget && tail != OutputTail::Ordinary {
+        return Err(GenerateError::UnsupportedTail);
+    }
     let compile = |blocks| -> Result<_, GenerateError> {
         let generated = generate_inner(program, language, max_source_bytes, blocks)?;
         if tail == OutputTail::AlphaCoverage
@@ -128,8 +164,8 @@ pub fn compile_fragment_with_tail(
             return Err(GenerateError::UnsupportedTail);
         }
         match language {
-            Language::Wgsl => wgsl::compile(program, generated, tail, max_source_bytes),
-            Language::Cg => cg::compile(program, generated, tail, max_source_bytes),
+            Language::Wgsl => wgsl::compile(program, generated, tail, coverage, max_source_bytes),
+            Language::Cg => cg::compile(program, generated, tail, coverage, max_source_bytes),
         }
     };
     match compile(true) {
