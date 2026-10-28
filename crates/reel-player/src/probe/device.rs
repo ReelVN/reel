@@ -1,13 +1,14 @@
-//! Bounded native snapshots written after playback, including failed sessions.
+//! Native counters published to the existing live sampler without file IO.
+#[cfg(test)]
+use std::io::{self, Write};
 use std::{
     collections::VecDeque,
-    io::{self, Write},
-    path::Path,
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
-#[cfg(any(target_os = "vita", test))]
+#[cfg(test)]
 const CAPACITY: usize = 256;
-pub(super) const NAMES: [&str; 51] = [
+pub(super) const NAMES: &[&str] = &[
     "renderer_resources",
     "renderer_targets",
     "renderer_transient",
@@ -59,9 +60,112 @@ pub(super) const NAMES: [&str; 51] = [
     "contiguous_kernel_peak_admitted",
     "cdram_physical_committed",
     "cdram_physical_capacity",
+    "host_wait_calls",
+    "host_wait_requested_us",
+    "host_wait_notified_calls",
+    "host_wait_notified_us",
+    "host_wait_timed_out_calls",
+    "host_wait_timed_out_us",
+    "host_wait_deadline_overrun_us",
+    "host_wait_max_deadline_overrun_us",
+    "host_wait_immediate_calls",
+    "sample_monotonic_us",
+    "scene_end_thread_samples",
+    "scene_end_sampled_wall_us",
+    "scene_end_thread_run_us",
+    "thread_query_calls",
+    "thread_query_wall_us",
+    "thread_query_failures",
+    "thread_query_last_error",
+    "thread_clock_regressions",
+    "scenes_per_target",
+    "scene_end_slow_calls",
+    "scene_end_max_wall_us",
+    "scene_clock_regressions",
+    "notification_submissions",
+    "notification_observations",
+    "notification_observed_age_us",
+    "notification_max_observed_age_us",
+    "notification_last_submit_us",
+    "notification_last_submit_generation",
+    "notification_last_observed_us",
+    "notification_last_observed_generation",
+    "notification_pending",
+    "notification_oldest_pending_us",
+    "notification_peak_pending",
+    "notification_peak_same_target",
+    "display_callback_calls",
+    "display_callback_us",
+    "display_set_calls",
+    "display_set_us",
+    "display_wait_calls",
+    "display_wait_us",
+    "display_max_callback_us",
+    "display_last_entered_us",
+    "display_last_completed_us",
+    "slow_scene_present",
+    "slow_scene_generation",
+    "slow_scene_target",
+    "slow_scene_width",
+    "slow_scene_height",
+    "slow_scene_draw_calls",
+    "slow_scene_indices",
+    "slow_scene_triangles",
+    "slow_scene_entered_us",
+    "slow_scene_exited_us",
+    "slow_scene_thread_sampled",
+    "slow_scene_thread_run_us",
+    "slow_scene_sampled_wall_us",
+    "slow_scene_query_error",
+    "slow_scene_before_pending",
+    "slow_scene_before_same_target",
+    "slow_scene_before_oldest_us",
+    "slow_scene_after_pending",
+    "slow_scene_after_same_target",
+    "slow_scene_after_oldest_us",
+    "slow_scene_result",
 ];
 
 pub(crate) type DeviceSample = [u64; NAMES.len()];
+
+static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+static AT_US: AtomicU64 = AtomicU64::new(0);
+static SAMPLE: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+
+#[cfg(target_os = "vita")]
+fn publish(elapsed_us: u64, values: DeviceSample) {
+    SEQUENCE.fetch_add(1, Ordering::AcqRel);
+    for (slot, value) in SAMPLE.iter().zip(values) {
+        slot.store(value, Ordering::Relaxed);
+    }
+    AT_US.store(elapsed_us, Ordering::Relaxed);
+    SEQUENCE.fetch_add(1, Ordering::Release);
+}
+
+/// Copy scalar observations; the sampler never accesses the native graphics context.
+pub(super) fn append_live(line: &mut String) -> bool {
+    use std::fmt::Write as _;
+    let sequence = SEQUENCE.load(Ordering::Acquire);
+    if sequence == 0 || !sequence.is_multiple_of(2) {
+        return false;
+    }
+    let values: DeviceSample = std::array::from_fn(|i| SAMPLE[i].load(Ordering::Relaxed));
+    let at = AT_US.load(Ordering::Relaxed);
+    std::sync::atomic::fence(Ordering::Acquire);
+    if sequence != SEQUENCE.load(Ordering::Acquire) {
+        return false;
+    }
+    line.clear();
+    let _ = write!(
+        line,
+        "[reel-device] sample={} elapsed_us={at}",
+        sequence / 2
+    );
+    for (name, value) in NAMES.iter().zip(values) {
+        let _ = write!(line, " {name}={value}");
+    }
+    true
+}
 
 #[derive(Default)]
 pub(super) struct DeviceSamples {
@@ -71,26 +175,31 @@ pub(super) struct DeviceSamples {
 impl DeviceSamples {
     #[cfg(any(target_os = "vita", test))]
     pub(super) fn record(&mut self, elapsed_us: u64, values: DeviceSample) {
-        if self.rows.is_empty() {
-            self.rows.reserve_exact(CAPACITY);
+        #[cfg(target_os = "vita")]
+        {
+            publish(elapsed_us, values);
         }
-        if self.rows.len() == CAPACITY {
-            self.rows.pop_front();
+        #[cfg(not(target_os = "vita"))]
+        {
+            if self.rows.is_empty() {
+                self.rows.reserve_exact(CAPACITY);
+            }
+            if self.rows.len() == CAPACITY {
+                self.rows.pop_front();
+            }
+            self.rows.push_back((elapsed_us, values));
         }
-        self.rows.push_back((elapsed_us, values));
     }
 
     pub(super) fn bytes(&self) -> usize {
         self.rows.capacity() * std::mem::size_of::<(u64, DeviceSample)>()
     }
 
-    pub(super) fn write(&self, session_path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    pub(super) fn write(&self, output: &mut impl Write) -> io::Result<()> {
         if self.rows.is_empty() {
             return Ok(());
         }
-        let mut output = io::BufWriter::new(std::fs::File::create(
-            session_path.with_extension("device.tsv"),
-        )?);
         writeln!(
             output,
             "timing\tCumulative SDK CPU microseconds, including blocking; not GPU execution time"

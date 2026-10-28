@@ -14,7 +14,6 @@ use reel_render::{AlphaMode, PresentOutcome, RenderBackend, RenderEvent, Surface
 use reel_ui::resources::ColorEncoding;
 use std::{
     collections::VecDeque,
-    io::Write,
     path::PathBuf,
     sync::{
         Arc,
@@ -66,33 +65,14 @@ fn directory() -> PathBuf {
     PathBuf::from("ux0:/data/reel-probe")
 }
 
-fn marker(case: &str, state: &str) -> Result {
-    // Disk work occurs only at case boundaries. A frozen start survives reboot.
-    let directory = directory();
-    std::fs::create_dir_all(&directory)?;
-    let line = format!("case={case} state={state}\n");
-    reel_storage::publish(&directory.join("status.txt"), true, |file| {
-        file.write_all(line.as_bytes())
-    })?;
-    let mut history = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join("cases.log"))?;
-    history.write_all(line.as_bytes())?;
-    history.flush()?;
-    drop(history);
-    Ok(())
+fn marker(case: &str, state: &str) {
+    log(format_args!("case={case} state={state}"));
 }
 
-fn checkpoint(enabled: bool, case: &str, frame: usize, step: &str) -> Result {
+fn checkpoint(enabled: bool, case: &str, frame: usize, step: &str) {
     if enabled {
-        let line = format!("case={case} frame={frame} step={step}\n");
-        reel_storage::publish(&directory().join("checkpoint.txt"), true, |file| {
-            file.write_all(line.as_bytes())
-        })?;
-        log(line.trim_end());
+        log(format_args!("case={case} frame={frame} step={step}"));
     }
-    Ok(())
 }
 
 struct Sampler {
@@ -100,7 +80,7 @@ struct Sampler {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Sampler {
-    fn start(trace: bool) -> Result<Self> {
+    fn start() -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::Builder::new()
@@ -137,15 +117,6 @@ impl Sampler {
                         work.join(",")
                     );
                     log(&line);
-                    if trace
-                        && let Err(error) =
-                            reel_storage::publish(&directory().join("active.txt"), true, |file| {
-                                file.write_all(line.as_bytes())
-                            })
-                    {
-                        log(format_args!("sample publication failed: {error}"));
-                        break;
-                    }
                 }
             })?;
         Ok(Self {
@@ -274,7 +245,7 @@ fn renderer_case(
             }
             waiting += wait.elapsed();
         }
-        checkpoint(trace, case, index, "build")?;
+        checkpoint(trace, case, index, "build");
         let build_start = Instant::now();
         let frame = assets.frame(case, index)?;
         if index == 0 {
@@ -287,7 +258,7 @@ fn renderer_case(
             })?;
         }
         let built = Instant::now();
-        checkpoint(trace, case, index, "render")?;
+        checkpoint(trace, case, index, "render");
         let (submit, present) = loop {
             let start = Instant::now();
             let mut present_start = start;
@@ -326,7 +297,7 @@ fn renderer_case(
             drop(frame);
             assets.retire();
         }
-        checkpoint(trace, case, index, "submitted")?;
+        checkpoint(trace, case, index, "submitted");
         let uploads = reel_core::profile::GeometryUploads::snapshot();
         if index >= warm_after {
             let delta = uploads.delta(geometry_uploads);
@@ -402,13 +373,13 @@ fn render_cases(
             || *case == selected
     }) {
         let label = format!("{case}-vsync{}-flights{flights}", u8::from(vsync));
-        marker(&label, "START")?;
+        marker(&label, "START");
         log(format_args!("CASE {label} START"));
         let before = reel_core::profile::Sample::snapshot();
-        checkpoint(trace, case, 0, "reset_session")?;
+        checkpoint(trace, case, 0, "reset_session");
         renderer.reset_session()?;
         let result = renderer_case(renderer, case, frames, trace, vsync, flights);
-        marker(&label, if result.is_ok() { "PASS" } else { "ERROR" })?;
+        marker(&label, if result.is_ok() { "PASS" } else { "ERROR" });
         let delta = reel_core::profile::Sample::snapshot().delta(before);
         for (index, name) in reel_core::profile::NAMES.iter().enumerate() {
             if delta.calls[index] != 0 {
@@ -435,7 +406,7 @@ fn render_cases(
 #[cfg(target_os = "vita")]
 fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) -> Result {
     use reel_player::saves::{DirectorySaves, SaveStorage};
-    marker(case, "START")?;
+    marker(case, "START");
     log(format_args!(
         "MEMORY {case} start heap={:?} free={:?}",
         vita_native::allocator::stats(),
@@ -467,7 +438,7 @@ fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) 
         vita_native::allocator::stats(),
         vita_native::app::memory::free_memory()
     ));
-    marker(case, if result.is_ok() { "PASS" } else { "ERROR" })?;
+    marker(case, if result.is_ok() { "PASS" } else { "ERROR" });
     result
 }
 
@@ -521,18 +492,18 @@ fn run() -> Result {
         .into());
     }
     log(format_args!(
-        "BEGIN title=REELP0002 case={selected} frames={frames} trace={trace} vsync={vsync} flights={flights} source={} dirty={} no_readback=true",
+        "BEGIN title=REELP0002 case={selected} render_frames={frames} trace={trace} render_vsync={vsync} render_flights={flights} source={} dirty={} no_readback=true",
         env!("REEL_PROBE_REVISION"),
         env!("REEL_PROBE_DIRTY")
     ));
     // Package sessions use the player's sampler, including VM task locations.
     let _sampler = (selected != "authored")
-        .then(|| Sampler::start(trace))
+        .then(|| Sampler::start())
         .transpose()?;
     if matches!(selected.as_str(), "clear_swap" | "fence") {
-        marker(&selected, "START")?;
+        marker(&selected, "START");
         let result = native_case(&selected, frames);
-        marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" })?;
+        marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
         result?;
     } else {
         reel_player::platform::vita::Runtime::run(|runtime| {

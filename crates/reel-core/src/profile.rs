@@ -47,8 +47,12 @@ pub enum Phase {
     HostCall,
     /// Ordered copies between GPU-resident textures; includes submission CPU time.
     TextureCopy,
+    /// Sampling native controller and touch state, before input dispatch.
+    ControlPoll,
+    /// Host event wait, including timeout and scheduler wake latency.
+    HostWait,
 }
-pub const NAMES: [&str; 36] = [
+pub const NAMES: [&str; 38] = [
     "input",
     "tick",
     "session",
@@ -85,6 +89,8 @@ pub const NAMES: [&str; 36] = [
     "vm_slice",
     "host_call",
     "texture_copy",
+    "control_poll",
+    "host_wait",
 ];
 
 /// Record retained-result reuse and the dependency bytes encoded for its key.

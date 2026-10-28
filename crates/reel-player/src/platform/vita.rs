@@ -502,6 +502,8 @@ impl NativeLoop {
         let mut recording = crate::probe::Recording::new();
         #[cfg(feature = "profiling")]
         let mut next_memory_sample = MonoTime(0);
+        #[cfg(feature = "profiling")]
+        let mut waits = profiling::Waits::default();
         let result = (|| -> Result<(), Error> {
             input = input::Input::new(controls.sample()?);
             loop {
@@ -547,7 +549,11 @@ impl NativeLoop {
                 #[cfg(feature = "profiling")]
                 let probe_started = std::time::Instant::now();
                 let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
-                let sample = controls.sample()?;
+                let sample = {
+                    let _timing =
+                        reel_core::profile::Scope::new(reel_core::profile::Phase::ControlPoll);
+                    controls.sample()?
+                };
                 let keyboard_was_active = text.active();
                 if !keyboard_was_active && return_to_library && input.return_to_library(&sample) {
                     host.signals.exit.set(true);
@@ -587,13 +593,18 @@ impl NativeLoop {
                     );
                     if now >= next_memory_sample {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
-                        profiling::record_device(&mut recording, player.backend, video_contiguous);
+                        profiling::record_device(
+                            &mut recording,
+                            player.backend,
+                            video_contiguous,
+                            &waits,
+                        );
                     }
                 }
-                // UI signals run on this thread. Rendering may request another
-                // turn after the earlier redraw was consumed; service it before
-                // waiting without consuming any asynchronous completion token.
-                if host.signals.has_redraw() {
+                // Accepting a retained frame can expose a newer model after its
+                // UI signal was consumed. Service eligible work before sleeping;
+                // preparation under GPU pressure remains blocked until completion.
+                if host.signals.has_redraw() || player.needs_redraw() {
                     continue;
                 }
                 let now = host.monotonic_now();
@@ -609,12 +620,20 @@ impl NativeLoop {
                 // bounded 60 Hz. Time spent in rendering/vsync already contributes
                 // to this interval, so continuous animation receives no second cap.
                 let timeout = Duration::from_nanos(deadline.0.saturating_sub(now.0));
-                wake.wait(Some(timeout))?;
+                {
+                    let _timing =
+                        reel_core::profile::Scope::new(reel_core::profile::Phase::HostWait);
+                    #[cfg(feature = "profiling")]
+                    let started = std::time::Instant::now();
+                    let _result = wake.wait(Some(timeout))?;
+                    #[cfg(feature = "profiling")]
+                    waits.record(timeout, started.elapsed(), _result);
+                }
             }
             Ok(())
         })();
         #[cfg(feature = "profiling")]
-        profiling::record_device(&mut recording, player.backend, video_contiguous);
+        profiling::record_device(&mut recording, player.backend, video_contiguous, &waits);
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;
@@ -640,12 +659,7 @@ impl NativeLoop {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "closed".into());
             let title = host.signals.title.borrow();
-            let logged = recording.write(
-                Path::new("ux0:/data/reel/performance"),
-                &title,
-                native::time::unix_millis().unwrap_or(0) as u64,
-                &outcome,
-            );
+            let logged = recording.print(&title, &outcome);
             if let Err(error) = logged {
                 return result.and(Err(format!("Probe log: {error}").into()));
             }

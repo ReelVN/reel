@@ -1,4 +1,4 @@
-use super::{Result, directory, log};
+use super::{Result, log};
 use std::{io::Write, time::Duration};
 
 pub struct Frames(Vec<[u64; 5]>);
@@ -11,9 +11,8 @@ impl Frames {
             .push(durations.map(|duration| duration.as_micros() as u64));
     }
     pub fn report(&self, case: &str, warm_after: usize) -> Result {
-        let mut file = std::io::BufWriter::new(std::fs::File::create(
-            directory().join(format!("{case}.tsv")),
-        )?);
+        let mut file = std::io::stderr().lock();
+        writeln!(file, "[reel-render-report] case={case}")?;
         writeln!(
             file,
             "frame\tbuild_us\tsubmit_us\tpresent_us\tqueue_wait_us\ttotal_us"
