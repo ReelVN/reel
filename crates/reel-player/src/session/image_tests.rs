@@ -1,6 +1,8 @@
 use super::*;
 #[path = "image_motion.rs"]
 mod motion;
+#[path = "image_playback.rs"]
+mod playback;
 use crate::{
     aside_session::{AsideSessionUi, StoryProgress, StoryState},
     assets::AssetOptions,
