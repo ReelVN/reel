@@ -487,6 +487,7 @@ fn legacy_entry_rejects_missing_provider_in_all_phases_and_weak_cutoff_is_shared
     let white = h.alloc_cell(Value::int(1)).unwrap();
     let live = h.alloc_cell(Value::int(2)).unwrap();
     let weak = h.downgrade(white).unwrap();
+    h.alloc_weakref(white).unwrap();
     let r = f
         .open(&mut h, RootOwner(1), RootKind::TaskFrame, 1)
         .unwrap();
@@ -623,6 +624,7 @@ fn dropping_a_live_pool_refuses_collection_and_reattachment_in_every_phase() {
         let mut f = pool(&mut h);
         let r = f.open(&mut h, RootOwner(1), RootKind::Delivery, 1).unwrap();
         let v = h.alloc_cell(Value::int(23)).unwrap();
+        h.alloc_weakref(v).unwrap();
         f.write(&mut h, at(r, 0), v).unwrap();
         if phase != GcPhase::Idle {
             h.begin_collection().unwrap();

@@ -123,3 +123,63 @@ fn finite_byte_quota_reclaims_inline_objects_before_storage_growth_fails() {
         }
     }
 }
+
+#[test]
+fn weak_work_tracks_references_and_retires_cleared_entries_without_gc_allocation() {
+    let mut heap = heap();
+    let ordinary = heap.alloc_array(&[]).unwrap();
+    heap.add_root(RootOwner(1), RootKind::Host, ordinary)
+        .unwrap();
+    for _ in 0..10_000 {
+        let cell = heap.alloc_cell(Value::NULL).unwrap();
+        heap.array_push(ordinary, cell).unwrap();
+    }
+    let target = heap.alloc_cell(Value::int(42)).unwrap();
+    let target_root = heap.add_root(RootOwner(1), RootKind::Host, target).unwrap();
+    let live = heap.alloc_weakref(target).unwrap();
+    heap.add_root(RootOwner(1), RootKind::Host, live).unwrap();
+    let dead_target = heap.alloc_cell(Value::NULL).unwrap();
+    let cleared = heap.alloc_weakref(dead_target).unwrap();
+    heap.add_root(RootOwner(1), RootKind::Host, cleared)
+        .unwrap();
+    heap.alloc_weakref(target).unwrap();
+
+    heap.begin_collection().unwrap();
+    while heap.phase() == GcPhase::Mark {
+        heap.gc_step(GcBudget {
+            weak: 0,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    assert_eq!(heap.phase(), GcPhase::Weak);
+    // A reference published after the cutoff belongs to the next cycle.
+    let late = heap.alloc_weakref(target).unwrap();
+    heap.add_root(RootOwner(1), RootKind::Host, late).unwrap();
+    let finish_count = |heap: &mut Heap| {
+        let mut weak = 0;
+        let allocations = allocation_counter::measure(|| {
+            while heap.phase() != GcPhase::Idle {
+                let progress = heap.gc_step(GcBudget::default()).unwrap();
+                weak += progress.weak;
+                assert!(progress.units <= 256 && progress.bytes <= 16_384);
+            }
+        });
+        assert_eq!(allocations.count_total, 0);
+        weak
+    };
+    assert_eq!(finish_count(&mut heap), 3);
+    assert!(heap.upgrade_weakref(cleared).unwrap().is_none());
+    assert!(heap.upgrade_weakref(late).unwrap().is_some());
+    heap.begin_collection().unwrap();
+    assert_eq!(finish_count(&mut heap), 2);
+
+    heap.release_root(target_root).unwrap();
+    heap.begin_collection().unwrap();
+    assert_eq!(finish_count(&mut heap), 2);
+    assert!(heap.upgrade_weakref(live).unwrap().is_none());
+    assert!(heap.upgrade_weakref(late).unwrap().is_none());
+    heap.begin_collection().unwrap();
+    assert_eq!(finish_count(&mut heap), 0);
+    assert_eq!(heap.stats().live_objects, 10_004);
+}

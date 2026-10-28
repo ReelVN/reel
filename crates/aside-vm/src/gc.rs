@@ -75,7 +75,7 @@ pub(crate) struct Collector {
     range_slot: usize,
     range_key: Option<RangeKey>,
     range_offset: u32,
-    weak_cursor: usize,
+    weak_remaining: usize,
     cutoff_len: usize,
     sweep_remaining: usize,
 }
@@ -219,14 +219,14 @@ impl Heap {
                     } else {
                         // This safe point is the single weak-liveness cutoff.
                         self.gc.cutoff_len = self.allocations.len();
-                        self.gc.weak_cursor = 0;
+                        self.gc.weak_remaining = self.weak_refs.len();
                         self.gc.sweep_remaining = self.gc.cutoff_len;
                         self.gc.phase = GcPhase::Weak;
                         self.mutation_revision = self.mutation_revision.wrapping_add(1);
                     }
                 }
                 GcPhase::Weak => {
-                    if self.gc.weak_cursor == self.gc.cutoff_len {
+                    if self.gc.weak_remaining == 0 {
                         self.gc.phase = GcPhase::Sweep;
                         continue;
                     }
@@ -234,19 +234,22 @@ impl Heap {
                         p.blocked = true;
                         break;
                     }
-                    // Stable indexed pass: don't rotate the allocation queue here.
-                    // New allocations append after cutoff_len and wait for the next cycle.
-                    let key = self.allocations[self.gc.weak_cursor];
+                    // This queue contains only weak objects. Its fixed prefix is
+                    // consumed once; new entries and surviving targets append.
+                    let key = self.weak_refs.pop_front().expect("weak queue cutoff");
                     let obj = self
                         .objects
                         .get(key)
                         .expect("allocation record corresponds to slot");
+                    let live = obj.mark == self.gc.cycle;
                     let target = obj.weak;
                     if target.is_some_and(|h| !self.weak_confirmed(h)) {
                         self.objects.get_mut(key).unwrap().weak = None;
                         self.mutation_revision = self.mutation_revision.wrapping_add(1);
+                    } else if live && target.is_some() {
+                        self.weak_refs.push_back(key);
                     }
-                    self.gc.weak_cursor += 1;
+                    self.gc.weak_remaining -= 1;
                     p.weak += 1;
                     p.units += 1;
                 }
