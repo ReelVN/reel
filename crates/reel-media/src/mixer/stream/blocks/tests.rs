@@ -28,6 +28,7 @@ fn fixture(capacity: usize, length: usize) -> (Arc<Lease>, Writer, BudgetPool) {
         wanted: AtomicUsize::new(0),
         serial: AtomicU64::new(0),
         stopped: Arc::new(AtomicBool::new(false)),
+        control: Arc::new(Control::new().unwrap()),
         _residency: budget,
     });
     let (reader, writer) = channels(capacity);

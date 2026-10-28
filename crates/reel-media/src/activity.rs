@@ -692,6 +692,7 @@ impl AudioActivityService {
             if let Some(e) = &mut self.entries[self.maintenance_cursor]
                 && e.terminal.is_none()
             {
+                e.playback.sync_decode();
                 let terminal = if let Some(reason) = self.failed {
                     Some(AudioActivityTerminal::Failed(reason))
                 } else if e.playback.error().is_some() {

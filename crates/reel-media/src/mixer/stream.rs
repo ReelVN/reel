@@ -22,7 +22,9 @@ pub struct DecodeLimits {
 }
 
 mod blocks;
+pub(super) mod control;
 use atomic_refcell::AtomicRefCell;
+pub(super) use control::Control;
 use sync_wrapper::SyncWrapper;
 
 struct Window {
@@ -34,6 +36,7 @@ struct Window {
     wanted: AtomicUsize,
     serial: AtomicU64,
     stopped: Arc<AtomicBool>,
+    control: Arc<Control>,
     _residency: Arc<Residency>,
 }
 struct Lease {
@@ -45,6 +48,7 @@ struct Lease {
 impl Drop for Lease {
     fn drop(&mut self) {
         self.window.stopped.store(true, Ordering::Release);
+        self.window.control.stop();
         (self.cancel)();
     }
 }
@@ -147,12 +151,14 @@ impl Window {
                     if !decoded {
                         if filling.as_ref().is_some_and(|block| block.len != 0) {
                             writer.publish(filling.take().expect("partial PCM owner"));
+                            self.control.publish(serial);
                         }
                         self.needs_block.store(false, Ordering::Release);
                         self.status.set_len(next);
                         if next == 0 {
                             return Err("audio contains no PCM frames".into());
                         }
+                        self.control.publish(serial);
                         eof = true;
                         continue;
                     }
@@ -188,6 +194,7 @@ impl Window {
                     next += count;
                     if block.len == block.frames.len() {
                         writer.publish(block);
+                        self.control.publish(serial);
                     } else {
                         // Pack small codec packets into the same owned block.
                         // EOF or the actual window boundary publishes its tail.
@@ -199,11 +206,12 @@ impl Window {
             } else {
                 if filling.as_ref().is_some_and(|block| block.len != 0) {
                     writer.publish(filling.take().expect("window tail PCM owner"));
+                    self.control.publish(serial);
                 }
                 self.needs_block.store(false, Ordering::Release);
             }
-            // Preserve the existing bounded decoder refill cadence. Only block
-            // ownership, not a per-sample atomic cursor, makes space available.
+            // Non-RT control wakes held/paused windows. Active and admitted
+            // future streams retain bounded polling for atomic-only PCM demand.
             if deadline_published {
                 if let Some(deadline) = &self.io_deadline {
                     deadline.clear();
@@ -212,7 +220,7 @@ impl Window {
             }
             let idle = wanted == last_idle_wanted;
             last_idle_wanted = wanted;
-            std::thread::sleep(Duration::from_millis(if idle { 8 } else { 1 }));
+            self.control.wait(!idle)?;
         }
         Ok(())
     }
@@ -222,6 +230,11 @@ impl DecodedSound {
     /// Unknown or large PCM uses the same queued transport with a bounded block
     /// window. Every preparation owns independent decoder/reader endpoints;
     /// temporary aliases retain that ownership without adding another consumer.
+    /// Preparation waits off the realtime/control thread for the first complete
+    /// PCM block or terminal error. The borrowed cancellation flag is checked at
+    /// most every 10 ms during this initialization wait; IO cancellation retains
+    /// its reader-specific contract. Held/paused windows then wait for control;
+    /// active and queued windows poll atomic PCM demand within 8/16 ms.
     pub fn prepare(
         reader: impl MediaRead + 'static,
         length: u64,
@@ -322,6 +335,7 @@ impl DecodedSound {
                     settings: Default::default(),
                     slice: None,
                 },
+                control: None,
                 budget: Arc::new(Residency {
                     ticket,
                     release: Mutex::new(None),
@@ -334,7 +348,9 @@ impl DecodedSound {
         let bytes = blocks::storage_bytes(window_frames)
             .and_then(|bytes| {
                 bytes.checked_add(
-                    (size_of::<Window>()
+                    (size_of::<Control>()
+                        + 2 * size_of::<usize>()
+                        + size_of::<Window>()
                         + size_of::<Lease>()
                         + size_of::<StreamStatus>()
                         + size_of::<Residency>()
@@ -347,6 +363,7 @@ impl DecodedSound {
             ticket,
             release: Mutex::new(None),
         });
+        let control = Arc::new(Control::new()?);
         let window = Arc::new(Window {
             io_deadline,
             sample_rate,
@@ -356,6 +373,7 @@ impl DecodedSound {
             wanted: AtomicUsize::new(0),
             serial: AtomicU64::new(0),
             stopped,
+            control: control.clone(),
             _residency: budget.clone(),
         });
         let (reader, writer) = blocks::channels(window_frames);
@@ -364,6 +382,7 @@ impl DecodedSound {
             window: window.clone(),
             cancel,
         });
+        control.bind_source(Arc::downgrade(&lease));
         std::thread::Builder::new()
             .name("reel-audio-stream".into())
             .stack_size(512 << 10)
@@ -376,9 +395,12 @@ impl DecodedSound {
                 if let Some(deadline) = &window.io_deadline {
                     deadline.clear();
                 }
+                window.control.finish();
             })
             .map_err(|e| e.to_string())?;
+        control.wait_initial(cancelled)?;
         Ok(Self {
+            control: Some(Arc::downgrade(&control)),
             data: StaticSoundData {
                 sample_rate,
                 frames: FrameStorage::Stream(lease),
@@ -420,7 +442,7 @@ mod tests {
         assert_eq!(reference.len(), 6576);
         drop(decoder);
         for threshold in [0, 1 << 20] {
-            let sound = DecodedSound::prepare(
+            let mut sound = DecodedSound::prepare(
                 std::io::Cursor::new(bytes),
                 bytes.len() as u64,
                 pool.clone(),
@@ -436,7 +458,7 @@ mod tests {
             .unwrap();
             assert_eq!(sound.data.frames.len(), reference.len());
             for target in [0, 2000, 0, 2000, 0] {
-                sound.data.frames.seek(target);
+                sound.seek(Duration::from_secs_f64(target as f64 / 48000.));
                 let deadline = std::time::Instant::now() + Duration::from_secs(3);
                 loop {
                     if let Some(actual) = sound.data.frames.frame(target) {
@@ -488,8 +510,10 @@ mod tests {
             wanted: AtomicUsize::new(expected + 100_000),
             serial: AtomicU64::new(1),
             stopped: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(Control::new().unwrap()),
             _residency: residency,
         });
+        window.control.mode(true, false);
         let (reader, writer) = blocks::channels(64);
         let worker = window.clone();
         drop(decoder);
