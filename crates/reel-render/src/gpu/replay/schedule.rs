@@ -2,6 +2,82 @@
 use super::*;
 use crate::common::offscreen::ParentStep;
 impl Context<'_> {
+    pub(super) fn combine_view(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        view: crate::common::source_view::SourceView,
+        alpha: f32,
+        invert: f32,
+    ) -> Result<(), GpuError> {
+        self.flush_draws()?;
+        if self.scissor.empty() {
+            return Ok(());
+        }
+        self.transient(super::pipeline::COMPOSITE_BYTES)?;
+        self.ensure_sampled(&source.view);
+        self.pipelines.composite(
+            &self.gpu.device,
+            &mut self.encoder,
+            target,
+            super::pipeline::CompositeInputs {
+                source: &source.view,
+                mask: &source.view,
+                backdrop: &source.view,
+            },
+            super::pipeline::CompositeParams {
+                clear: self.target_writes.take(target.slot),
+                scissor: self.scissor,
+                opacity: alpha,
+                invert,
+                operation: CompositeOperation::SourceOver,
+                blend: 0,
+                source_origin: view.origin(),
+                backdrop_origin: [0; 2],
+            },
+        );
+        Ok(())
+    }
+}
+impl Context<'_> {
+    fn combine_views(
+        &mut self,
+        target: &Target,
+        pending: &[DeferredComposite],
+    ) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
+        self.flush_draws()?;
+        self.transient(super::pipeline::COMPOSITE_BYTES * pending.len() as u64)?;
+        let clear = self.target_writes.take(target.slot);
+        self.pipelines.composite_batch(
+            &self.gpu.device,
+            &mut self.encoder,
+            target,
+            clear,
+            pending.iter().map(|item| {
+                (
+                    super::pipeline::CompositeInputs {
+                        source: &item.source.view,
+                        mask: &item.source.view,
+                        backdrop: &item.source.view,
+                    },
+                    super::pipeline::CompositeParams {
+                        clear: false,
+                        scissor: item.scissor,
+                        opacity: item.opacity,
+                        invert: item.invert,
+                        operation: CompositeOperation::SourceOver,
+                        blend: 0,
+                        source_origin: item.view.origin(),
+                        backdrop_origin: [0; 2],
+                    },
+                )
+            }),
+        );
+        Ok(())
+    }
+}
+impl Context<'_> {
     pub(super) fn scheduled_parent(
         &mut self,
         current: &Stream<'_>,

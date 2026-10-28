@@ -58,6 +58,9 @@ pub(super) struct Context<'a> {
     pub effect_cache: &'a mut super::effect::Cache,
     pub mask_cache: &'a mut crate::common::mask::split::Cache,
     pub effects: Vec<Rc<super::effect::Compiled>>,
+    pub effect_results: &'a crate::common::effect_result::Cache<Target>,
+    pub effect_pending: Vec<crate::common::effect_result::Pending<Target>>,
+    pub effect_pins: Vec<Target>,
     pub target_cache: &'a mut super::target_cache::Cache,
     pub retained_cache: &'a crate::common::retained::Cache<Target, u8>,
     pub selection: std::sync::Arc<crate::common::retained::Plan>,
@@ -80,6 +83,8 @@ pub(super) struct Work {
     _images: HashMap<ResourceHandle, Rc<Image>>,
     _glyphs: Vec<Rc<draw::Glyph>>,
     _effects: Vec<Rc<super::effect::Compiled>>,
+    effect_pending: std::cell::RefCell<Vec<crate::common::effect_result::Pending<Target>>>,
+    _effect_pins: Vec<Target>,
     _targets: Vec<Target>,
     _retained_inputs: Vec<Target>,
     buffers: std::cell::RefCell<Vec<super::geometry::Storage>>,
@@ -90,6 +95,9 @@ pub(super) struct Prepared {
     _work: Work,
 }
 impl Prepared {
+    pub fn take_effect_pending(&self) -> Vec<crate::common::effect_result::Pending<Target>> {
+        std::mem::take(&mut *self._work.effect_pending.borrow_mut())
+    }
     pub fn targets(&self) -> &[Target] {
         &self._work._targets
     }
@@ -103,6 +111,7 @@ pub(super) struct Caches<'a> {
     pub images: &'a mut Images,
     pub glyphs: &'a mut draw::GlyphCache,
     pub effects: &'a mut super::effect::Cache,
+    pub effect_results: &'a crate::common::effect_result::Cache<Target>,
     pub masks: &'a mut crate::common::mask::split::Cache,
     pub targets: &'a mut super::target_cache::Cache,
     pub geometry: &'a mut super::geometry::Cache,
@@ -134,6 +143,7 @@ pub(super) fn prepare(
         images: image_cache,
         glyphs: glyph_cache,
         effects: effect_cache,
+        effect_results,
         masks: mask_cache,
         targets: target_cache,
         geometry: geometry_cache,
@@ -161,6 +171,9 @@ pub(super) fn prepare(
         effect_cache,
         mask_cache,
         effects: Vec::new(),
+        effect_results,
+        effect_pending: Vec::new(),
+        effect_pins: Vec::new(),
         target_cache,
         retained_cache,
         selection: selection.clone(),
@@ -240,6 +253,8 @@ pub(super) fn prepare(
         _images: context.images,
         _glyphs: context.glyphs,
         _effects: context.effects,
+        effect_pending: std::cell::RefCell::new(context.effect_pending),
+        _effect_pins: context.effect_pins,
         _targets: context.targets,
         _retained_inputs: context.retained_inputs,
         buffers: std::cell::RefCell::new(context.buffers),
@@ -829,6 +844,19 @@ impl Context<'_> {
                     };
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
+                    let source_commands = group
+                        .source_input
+                        .filter(|_| {
+                            group.isolated
+                                && !group.shared_source
+                                && group.mask_effect.is_none()
+                                && group.delayed.is_none()
+                                && !self.capture
+                                && current.drawing.transitions().is_empty()
+                                && current.drawing.capture_exclusions().is_empty()
+                        })
+                        .zip(current.offset)
+                        .map(|((push, raster), offset)| (push..offset + current.next, raster));
                     if group.isolated {
                         self.flush_draws()?;
                     }
@@ -857,6 +885,7 @@ impl Context<'_> {
                                 effect,
                                 view.parent_to_source * to_parent,
                                 &source,
+                                None,
                                 entry.at,
                             )?;
                             self.recycle_target(source)?;
@@ -896,6 +925,7 @@ impl Context<'_> {
                             effect,
                             effect_transform,
                             &source,
+                            source_commands,
                             entry.at,
                         )?;
                         self.recycle_target(source)?;
@@ -1019,8 +1049,14 @@ impl Context<'_> {
                         {
                             terminal_effect = Some((effect, transform, entry.at));
                         } else {
-                            let processed =
-                                self.effect(current.drawing, effect, transform, &source, entry.at)?;
+                            let processed = self.effect(
+                                current.drawing,
+                                effect,
+                                transform,
+                                &source,
+                                source_commands,
+                                entry.at,
+                            )?;
                             self.recycle_target(source)?;
                             source = processed;
                         }
@@ -1278,44 +1314,6 @@ impl Context<'_> {
                 blend: 0,
                 expression: None,
                 source_origin: [0; 2],
-            },
-        )
-    }
-    fn combine_views(
-        &mut self,
-        target: &Target,
-        pending: &[DeferredComposite],
-    ) -> Result<(), GpuError> {
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
-        let scissor = self.scissor;
-        for item in pending {
-            self.scissor = item.scissor;
-            self.combine_view(target, &item.source, item.view, item.opacity, item.invert)?;
-        }
-        self.scissor = scissor;
-        Ok(())
-    }
-    fn combine_view(
-        &mut self,
-        target: &Target,
-        source: &Target,
-        view: crate::common::source_view::SourceView,
-        alpha: f32,
-        invert: f32,
-    ) -> Result<(), GpuError> {
-        self.composition(
-            target,
-            Composition {
-                source,
-                mask: source,
-                backdrop: source,
-                backdrop_origin: [0; 2],
-                alpha,
-                invert,
-                operation: CompositeOperation::SourceOver,
-                blend: 0,
-                expression: None,
-                source_origin: view.origin(),
             },
         )
     }

@@ -2,6 +2,48 @@
 use super::*;
 use crate::common::offscreen::ParentStep;
 impl Context<'_> {
+    pub(super) fn combine_view(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        view: crate::common::source_view::SourceView,
+        alpha: f32,
+        invert: f32,
+    ) -> Result<(), GpuError> {
+        self.composition(
+            target,
+            Composition {
+                source,
+                mask: source,
+                backdrop: source,
+                backdrop_origin: [0; 2],
+                alpha,
+                invert,
+                operation: CompositeOperation::SourceOver,
+                blend: 0,
+                expression: None,
+                source_origin: view.origin(),
+            },
+        )
+    }
+}
+impl Context<'_> {
+    fn combine_views(
+        &mut self,
+        target: &Target,
+        pending: &[DeferredComposite],
+    ) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
+        let scissor = self.scissor;
+        for item in pending {
+            self.scissor = item.scissor;
+            self.combine_view(target, &item.source, item.view, item.opacity, item.invert)?;
+        }
+        self.scissor = scissor;
+        Ok(())
+    }
+}
+impl Context<'_> {
     pub(super) fn scheduled_parent(
         &mut self,
         current: &Stream<'_>,

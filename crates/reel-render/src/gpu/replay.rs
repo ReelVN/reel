@@ -32,6 +32,9 @@ pub(super) struct Context<'a> {
     pub(super) glyph_plan: crate::common::glyph_plan::Plan,
     pub(super) offscreen: crate::common::offscreen::Plan,
     pub(super) effects: Vec<Arc<super::effect::Compiled>>,
+    pub(super) effect_results: &'a crate::common::effect_result::Cache<super::retained::Output>,
+    pub(super) effect_pending: Vec<crate::common::effect_result::Pending<super::retained::Output>>,
+    pub(super) effect_pins: Vec<Target>,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
     pub(super) retained_cache: &'a crate::common::retained::Cache<super::retained::Output, Quality>,
@@ -148,7 +151,10 @@ impl Context<'_> {
                 self.quality,
                 self.target_allocations
                     .iter()
-                    .filter(|allocation| allocation.target.storage_size() == storage_size)
+                    .filter(|allocation| {
+                        allocation.target.storage_size() == storage_size
+                            && !allocation.target.is_effect_pinned()
+                    })
                     .count(),
                 &self.budgets.targets,
                 cost,
@@ -193,6 +199,9 @@ impl Context<'_> {
     /// All reads have been encoded before recycling. Later passes can overwrite
     /// the texture, but its reservation remains live through queue completion.
     fn recycle_target(&mut self, target: Target) -> Result<(), GpuError> {
+        if target.is_effect_pinned() {
+            return Ok(());
+        }
         if self.available_targets.len() == self.available_targets.capacity() {
             let additional = self.available_targets.capacity().max(1);
             self.transient((additional * size_of::<Target>()) as u64)?;
@@ -707,6 +716,19 @@ impl Context<'_> {
                     };
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
+                    let source_commands = group
+                        .source_input
+                        .filter(|_| {
+                            group.isolated
+                                && !group.shared_source
+                                && group.mask_effect.is_none()
+                                && group.delayed.is_none()
+                                && !self.capture
+                                && current.drawing.transitions().is_empty()
+                                && current.drawing.capture_exclusions().is_empty()
+                        })
+                        .zip(current.offset)
+                        .map(|((push, raster), offset)| (push..offset + current.next, raster));
                     if group.isolated {
                         self.flush_draws()?;
                     }
@@ -735,6 +757,7 @@ impl Context<'_> {
                                 effect,
                                 view.parent_to_source * to_parent,
                                 &source,
+                                None,
                                 entry.at,
                             )?;
                             self.recycle_target(source)?;
@@ -774,6 +797,7 @@ impl Context<'_> {
                             effect,
                             effect_transform,
                             &source,
+                            source_commands,
                             entry.at,
                         )?;
                         self.recycle_target(source)?;
@@ -897,8 +921,14 @@ impl Context<'_> {
                         {
                             terminal_effect = Some((effect, transform, entry.at));
                         } else {
-                            let processed =
-                                self.effect(current.drawing, effect, transform, &source, entry.at)?;
+                            let processed = self.effect(
+                                current.drawing,
+                                effect,
+                                transform,
+                                &source,
+                                source_commands,
+                                entry.at,
+                            )?;
                             self.recycle_target(source)?;
                             source = processed;
                         }
@@ -1164,78 +1194,6 @@ impl Context<'_> {
                 operation,
                 blend: 0,
                 source_origin: [0; 2],
-                backdrop_origin: [0; 2],
-            },
-        );
-        Ok(())
-    }
-    fn combine_views(
-        &mut self,
-        target: &Target,
-        pending: &[DeferredComposite],
-    ) -> Result<(), GpuError> {
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
-        self.flush_draws()?;
-        self.transient(super::pipeline::COMPOSITE_BYTES * pending.len() as u64)?;
-        let clear = self.target_writes.take(target.slot);
-        self.pipelines.composite_batch(
-            &self.gpu.device,
-            &mut self.encoder,
-            target,
-            clear,
-            pending.iter().map(|item| {
-                (
-                    super::pipeline::CompositeInputs {
-                        source: &item.source.view,
-                        mask: &item.source.view,
-                        backdrop: &item.source.view,
-                    },
-                    super::pipeline::CompositeParams {
-                        clear: false,
-                        scissor: item.scissor,
-                        opacity: item.opacity,
-                        invert: item.invert,
-                        operation: CompositeOperation::SourceOver,
-                        blend: 0,
-                        source_origin: item.view.origin(),
-                        backdrop_origin: [0; 2],
-                    },
-                )
-            }),
-        );
-        Ok(())
-    }
-    fn combine_view(
-        &mut self,
-        target: &Target,
-        source: &Target,
-        view: crate::common::source_view::SourceView,
-        alpha: f32,
-        invert: f32,
-    ) -> Result<(), GpuError> {
-        self.flush_draws()?;
-        if self.scissor.empty() {
-            return Ok(());
-        }
-        self.transient(super::pipeline::COMPOSITE_BYTES)?;
-        self.ensure_sampled(&source.view);
-        self.pipelines.composite(
-            &self.gpu.device,
-            &mut self.encoder,
-            target,
-            super::pipeline::CompositeInputs {
-                source: &source.view,
-                mask: &source.view,
-                backdrop: &source.view,
-            },
-            super::pipeline::CompositeParams {
-                clear: self.target_writes.take(target.slot),
-                scissor: self.scissor,
-                opacity: alpha,
-                invert,
-                operation: CompositeOperation::SourceOver,
-                blend: 0,
-                source_origin: view.origin(),
                 backdrop_origin: [0; 2],
             },
         );
