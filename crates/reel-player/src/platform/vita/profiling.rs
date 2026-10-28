@@ -12,7 +12,8 @@ pub(super) fn record_device(
     };
     let renderer = backend.usage();
     let timing = native.submission_timing;
-    let main = backend.native_memory_state().main;
+    let memory = backend.native_memory_state();
+    let main = memory.main;
     let contiguous = contiguous.usage();
     recording.record_device([
         renderer.resources,
@@ -64,5 +65,7 @@ pub(super) fn record_device(
         main.capacity_bytes,
         contiguous.bytes,
         contiguous.peak_bytes,
+        memory.cdram.committed_bytes,
+        memory.cdram.capacity_bytes,
     ]);
 }

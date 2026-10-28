@@ -517,7 +517,17 @@ impl Target {
         })();
         let (view, framebuffer) = match built {
             Ok(value) => value,
-            Err(error) => return Err((error.into(), Some(storage))),
+            Err(error) => {
+                let error = GpuError::from(error);
+                if error.is_memory_pressure() {
+                    // Construction has issued no GPU work. Native owners have
+                    // been dropped; the ticket still preserves a release fault.
+                    drop(storage);
+                    context.check().map_err(|error| (error, None))?;
+                    return Err((error, None));
+                }
+                return Err((error, Some(storage)));
+            }
         };
         Ok(Self {
             slot: 0,

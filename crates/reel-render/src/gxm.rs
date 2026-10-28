@@ -105,6 +105,20 @@ fn effect_code(
 
 fn native_error(error: native::Error) -> GxmError {
     match error {
+        native::Error::Allocation {
+            domain,
+            requested,
+            available,
+            committed,
+            code,
+        } => GxmError::Allocation {
+            domain,
+            requested,
+            available,
+            committed,
+            code,
+            pending: false,
+        },
         native::Error::Budget {
             domain: domain @ ("physical MAIN" | "physical CDRAM"),
             requested,

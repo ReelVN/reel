@@ -59,6 +59,17 @@ pub enum GpuError {
         requested: u64,
         available: u64,
     },
+    /// The kernel could not allocate contiguous pages after native idle reclamation.
+    Allocation {
+        domain: &'static str,
+        requested: u64,
+        /// Total free bytes, when available; they may occupy separate extents.
+        available: Option<u64>,
+        committed: u64,
+        code: i32,
+        /// An outstanding submission may release storage needed by this request.
+        pending: bool,
+    },
     Budget {
         domain: &'static str,
         requested: u64,
@@ -87,7 +98,58 @@ impl GpuError {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Shader { source, .. } => source.is_retryable(),
-            _ => matches!(self, Self::Busy | Self::Preparing | Self::Pressure { .. }),
+            _ => matches!(
+                self,
+                Self::Busy
+                    | Self::Preparing
+                    | Self::Pressure { .. }
+                    | Self::Allocation { pending: true, .. }
+            ),
+        }
+    }
+
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn is_memory_pressure(&self) -> bool {
+        match self {
+            Self::Shader { source, .. } => source.is_memory_pressure(),
+            Self::Pressure { .. } | Self::Allocation { .. } => true,
+            _ => false,
+        }
+    }
+
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn after_reclamation(self, pending: bool) -> Self {
+        match self {
+            Self::Shader { at, asset, source } => Self::Shader {
+                at,
+                asset,
+                source: Box::new(source.after_reclamation(pending)),
+            },
+            Self::Pressure {
+                domain,
+                requested,
+                available,
+            } if !pending => Self::Budget {
+                domain,
+                requested,
+                available,
+            },
+            Self::Allocation {
+                domain,
+                requested,
+                available,
+                committed,
+                code,
+                ..
+            } => Self::Allocation {
+                domain,
+                requested,
+                available,
+                committed,
+                code,
+                pending,
+            },
+            other => other,
         }
     }
 }
@@ -116,8 +178,12 @@ impl crate::BackendError for GpuError {
         use crate::FailureKind;
         match self {
             Self::Shader { source, .. } => source.kind(),
-            Self::Busy | Self::Preparing | Self::Pressure { .. } => FailureKind::Pressure,
+            Self::Busy
+            | Self::Preparing
+            | Self::Pressure { .. }
+            | Self::Allocation { pending: true, .. } => FailureKind::Pressure,
             Self::PixelsNeeded(_)
+            | Self::Allocation { pending: false, .. }
             | Self::Budget { .. }
             | Self::Unsupported { .. }
             | Self::InvalidRecord { .. }
@@ -136,5 +202,61 @@ impl crate::BackendError for GpuError {
             Self::DeviceLost(_) => FailureKind::DeviceLost,
             _ => FailureKind::Fatal,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GpuError;
+    use crate::{BackendError, FailureKind};
+    use reel_ui::core::Widget;
+
+    #[test]
+    fn allocation_pressure_waits_only_for_outstanding_owners() {
+        let error = GpuError::Allocation {
+            domain: "physical CDRAM",
+            requested: 16 << 20,
+            available: Some(24 << 20),
+            committed: 60 << 20,
+            code: 0x80024309u32 as i32,
+            pending: false,
+        };
+        assert!(error.is_memory_pressure());
+        let waiting = error.after_reclamation(true);
+        assert!(waiting.is_retryable());
+        assert_eq!(waiting.kind(), FailureKind::Pressure);
+        let exhausted = waiting.after_reclamation(false);
+        assert!(!exhausted.is_retryable());
+        assert_eq!(exhausted.kind(), FailureKind::Refused);
+        assert!(matches!(exhausted, GpuError::Allocation {
+            requested, available: Some(available), committed, code, pending: false, ..
+        } if requested == 16 << 20 && available == 24 << 20
+            && committed == 60 << 20 && code == 0x80024309u32 as i32));
+    }
+
+    #[test]
+    fn shader_context_preserves_memory_failure_and_unrelated_device_errors() {
+        let error = GpuError::Shader {
+            at: reel_ui::frame::RecordLocation {
+                fragment: 0,
+                command: 0,
+                mask_depth: 0,
+                owner: reel_ui::widgets::Label::new("").prepare().id(),
+            },
+            asset: "effect.gxp".into(),
+            source: Box::new(GpuError::Pressure {
+                domain: "physical MAIN",
+                requested: 4096,
+                available: 0,
+            }),
+        };
+        assert!(error.is_memory_pressure());
+        let exhausted = error.after_reclamation(false);
+        assert_eq!(exhausted.kind(), FailureKind::Refused);
+        assert!(matches!(exhausted, GpuError::Shader { source, .. }
+            if matches!(*source, GpuError::Budget { requested: 4096, .. })));
+        let device = GpuError::Device("invalid native handle".into());
+        assert!(!device.is_memory_pressure());
+        assert_eq!(device.after_reclamation(true).kind(), FailureKind::Fatal);
     }
 }

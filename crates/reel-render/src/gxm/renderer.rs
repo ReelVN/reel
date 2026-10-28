@@ -269,7 +269,12 @@ impl Backend {
                     ..
                 })
             );
-        if (fallback || matches!(result, Err(GpuError::Pressure { .. }))) && !self.drain_failed {
+        if (fallback
+            || result
+                .as_ref()
+                .is_err_and(|error| error.is_memory_pressure()))
+            && !self.drain_failed
+        {
             let cause = result.err().unwrap();
             let resident = self._group.usage().bytes;
             self.effect_results.clear();
@@ -299,22 +304,9 @@ impl Backend {
     }
 
     fn resolve_pressure<T>(&self, result: Result<T, GpuError>) -> Result<T, GpuError> {
-        match result {
-            Err(GpuError::Pressure {
-                domain,
-                requested,
-                available,
-            }) if self.flights.is_empty() => {
-                // Completed work has been polled and idle caches reclaimed. With
-                // no outstanding submission, waiting cannot release more storage.
-                Err(GpuError::Budget {
-                    domain,
-                    requested,
-                    available,
-                })
-            }
-            result => result,
-        }
+        // Completed work has been polled and idle caches reclaimed. Only live
+        // submissions can justify waiting for another release notification.
+        result.map_err(|error| error.after_reclamation(!self.flights.is_empty()))
     }
     fn prepare_cached(
         &mut self,
@@ -396,7 +388,7 @@ impl Backend {
             )?
         };
         if let Some(retry) = retry
-            && matches!(retry.cause, GpuError::Pressure { .. })
+            && retry.cause.is_memory_pressure()
         {
             let resident = self._group.usage().bytes;
             self.images.retain_demand(&plan.images);

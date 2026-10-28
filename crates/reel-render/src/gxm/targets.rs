@@ -101,10 +101,12 @@ impl Context<'_> {
                     &self.budgets.targets,
                     self.limits.target_bytes,
                 );
-                // Only a refused reservation can be retried. An actual native
-                // failure keeps its original owner/ticket retirement path.
+                // Retry capacity failures only after an idle target was released.
+                // Unresolved native owners retain their retirement path.
                 for recent in [false, true] {
-                    while matches!(allocation, Err((GpuError::Pressure { .. }, None))) {
+                    while allocation.as_ref().is_err_and(|(error, storage)| {
+                        error.is_memory_pressure() && storage.is_none()
+                    }) {
                         if cache.reclaim(requirements, recent) {
                             allocation = Target::new(
                                 self.gpu,
