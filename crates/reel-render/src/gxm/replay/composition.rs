@@ -23,11 +23,12 @@ impl Context<'_> {
         ) else {
             return Ok(false);
         };
-        if self.target_writes.pending(target.slot)
-            && !region.overwrites_destination(target.view.size())
+        if !self.target_writes.pending(target.slot)
+            || !region.overwrites_destination(target.view.size())
         {
             // Keep clear and partial draw in one scene instead of storing a
-            // complete clear before transferring the same pixels again.
+            // complete clear before transferring the same pixels again. Only
+            // a fresh target makes the replaced source-over a pure pixel copy.
             return Ok(false);
         }
         self.ensure_sampled(&source.view)?;
