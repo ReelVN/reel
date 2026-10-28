@@ -26,7 +26,7 @@ fn say(session: &mut Session, text: &str) -> InteractionId {
         )
         .unwrap()
 }
-pub(super) fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
+pub(crate) fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
     mount_with_font(ui, None)
 }
 pub(super) fn mount_with_font(

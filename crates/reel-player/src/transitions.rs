@@ -65,8 +65,11 @@ pub(crate) struct Transitions {
     masks: Option<crate::images::Images>,
     wanted_masks: BTreeMap<String, Option<String>>,
     mask_programs: Vec<Arc<reel_ui::stage::MaskProgram>>,
+    gate_stamp: Option<(u64, crate::session::ProjectionStamp, WidgetId)>,
     #[cfg(test)]
     mask_rebuilds: usize,
+    #[cfg(test)]
+    gate_refreshes: usize,
     resources: Vec<ResourceLease>,
     masks_ready: bool,
     gates: Vec<WidgetId>,
@@ -258,7 +261,16 @@ impl Transitions {
         vm: &SessionVm,
         bridge: &mut PresentationBridge,
         root: WidgetId,
+        projection: crate::session::ProjectionStamp,
     ) -> Result<(), Error> {
+        let stamp = (vm.transition_revision(), projection, root);
+        if self.release_gates.is_none() && self.gate_stamp == Some(stamp) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        {
+            self.gate_refreshes += 1;
+        }
         if let Some(gates) = self.release_gates.take() {
             self.gates = gates;
         }
@@ -271,6 +283,7 @@ impl Transitions {
             }
         }
         bridge.set_input_gates(&self.gates)?;
+        self.gate_stamp = Some(stamp);
         Ok(())
     }
     pub fn record(
@@ -410,5 +423,51 @@ mod tests {
         assert!(transitions.wanted_masks.contains_key("second.png"));
         assert!(transitions.request_masks(std::iter::empty, &assets));
         assert!(transitions.wanted_masks.is_empty());
+    }
+    #[test]
+    fn transition_gates_reuse_stable_projections_and_apply_accepted_releases() {
+        let mut driver = crate::aside_session::AsideSessionUi::from_source(
+            reel_engine::Session::new(reel_engine::SessionId(881), reel_engine::Epoch(1)).unwrap(),
+            "fn main(){stage.replace(stack()); await completion();}",
+            "gate",
+            1,
+            "main",
+            "en",
+            reel_engine::aside::VmLimits::default(),
+        )
+        .unwrap();
+        for _ in 0..1000 {
+            driver
+                .tick(reel_engine::aside::SliceBudget::default(), 256, || 0)
+                .unwrap();
+            if driver.adapter().stage_ready() && !driver.has_runnable_tasks() {
+                break;
+            }
+        }
+        let (mut bridge, root) = crate::session::tests::mount(driver.ui());
+        driver.sync(&mut bridge, root).unwrap();
+        let mut transitions = Transitions::default();
+        let stamp = driver.ui().projection_stamp();
+        for _ in 0..4096 {
+            transitions
+                .gate(driver.adapter(), &mut bridge, root, stamp)
+                .unwrap();
+        }
+        assert_eq!(transitions.gate_refreshes, 1);
+        println!(
+            "transition_gates refreshes=4096 widget_search_rounds={}",
+            transitions.gate_refreshes
+        );
+        transitions
+            .accepted_projection(driver.adapter_mut(), &TransitionReceipt::default(), 0.)
+            .unwrap();
+        transitions
+            .gate(driver.adapter(), &mut bridge, root, stamp)
+            .unwrap();
+        assert_eq!(transitions.gate_refreshes, 2);
+        transitions
+            .gate(driver.adapter(), &mut bridge, root, stamp)
+            .unwrap();
+        assert_eq!(transitions.gate_refreshes, 2);
     }
 }

@@ -495,7 +495,8 @@ impl AsideSessionUi {
             self.ui.invalidate_projection();
         }
         if SessionUi::stage_widget(bridge, root).is_some() {
-            self.transitions.gate(&self.vm, bridge, root)?;
+            self.transitions
+                .gate(&self.vm, bridge, root, self.ui.projection_stamp())?;
         }
         if self.vm.activities_pending() {
             return Ok(());
@@ -527,7 +528,8 @@ impl AsideSessionUi {
         }
         self.sync_input(bridge, root)?;
         if SessionUi::stage_widget(bridge, root).is_some() {
-            self.transitions.gate(&self.vm, bridge, root)?;
+            self.transitions
+                .gate(&self.vm, bridge, root, self.ui.projection_stamp())?;
         }
         Ok(())
     }
