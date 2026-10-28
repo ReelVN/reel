@@ -309,3 +309,51 @@ fn freshness_snapshot_rebuilds_cached_aliases_from_remapped_sources() {
     restored.invalidate_reactive(source2, Some(1)).unwrap();
     assert!(!restored.derived_is_current(output, None).unwrap());
 }
+
+#[test]
+fn freshness_shared_ancestors_are_visited_once_and_marks_expire_between_queries() {
+    let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    let source = model(&mut heap);
+    assert!(heap.derived_is_current(source, None).unwrap());
+    let shared = derived(&mut heap, source, 0);
+    let left = derived(&mut heap, shared, 0);
+    let right = derived(&mut heap, shared, 0);
+    let output = heap.alloc_derived(Value::NULL).unwrap();
+    heap.begin_derived(output).unwrap();
+    heap.observe_read(left, Some(0)).unwrap();
+    heap.observe_read(right, Some(0)).unwrap();
+    heap.commit_derived(output, Value::int(0)).unwrap();
+    assert!(heap.derived_is_current(output, None).unwrap());
+    assert_eq!(heap.property_work.len(), 4);
+    let previous = inputs(&heap, shared).freshness_visit;
+    assert!(!heap.derived_is_current(output, Some(shared)).unwrap());
+    assert!(inputs(&heap, shared).freshness_visit > previous);
+    assert!(heap.derived_is_current(output, None).unwrap());
+    heap.invalidate_reactive(source, Some(0)).unwrap();
+    assert!(!heap.derived_is_current(output, None).unwrap());
+}
+
+#[test]
+#[ignore = "release derived freshness traversal measurement"]
+fn derived_freshness_chain_cost() {
+    for depth in [32, 128, 512] {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let source = model(&mut heap);
+        let mut output = source;
+        for _ in 0..depth {
+            output = derived(&mut heap, output, 0);
+        }
+        assert!(heap.derived_is_current(output, None).unwrap());
+        let before = heap.stats();
+        let start = std::time::Instant::now();
+        for _ in 0..256 {
+            assert!(heap.derived_is_current(output, None).unwrap());
+        }
+        eprintln!(
+            "freshness_chain depth={depth} rounds=256 elapsed_us={} added_bytes={} added_chunks={}",
+            start.elapsed().as_micros(),
+            heap.stats().charged_bytes - before.charged_bytes,
+            heap.stats().chunk_allocations - before.chunk_allocations
+        );
+    }
+}

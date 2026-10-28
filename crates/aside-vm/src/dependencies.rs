@@ -17,6 +17,8 @@ pub(crate) struct Dependencies {
     // Non-owning offsets into `values`, rebuilt after binding topology changes.
     pub ancestors: Vec<u32>,
     pub ancestor_revision: u64,
+    // Non-owning mark for one synchronous freshness walk; restored cold.
+    pub freshness_visit: u64,
     pub ancestor_reserved: u64,
 }
 impl Dependencies {

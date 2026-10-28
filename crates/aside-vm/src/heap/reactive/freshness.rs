@@ -150,14 +150,47 @@ impl Heap {
         self.derived_is_current_work(output, evaluating, &mut 0)
     }
 
+    fn queue_freshness_input(&mut self, property: PropertyId) -> Result<(), HeapError> {
+        if !self.object(self.key(property.host)?)?.derived {
+            return self.work_push(property);
+        }
+        let dependencies = self.host_payload(property.host, DerivedSlot::Dependencies as u32)?;
+        let key = if dependencies.same_bits(Value::NULL) {
+            None
+        } else {
+            Some(self.key(dependencies)?)
+        };
+        if let Some(key) = key
+            && self.dependency_payload(key)?.freshness_visit == self.freshness_walk
+        {
+            return Ok(());
+        }
+        // Admission precedes marking, so a failed queue growth publishes no mark.
+        // Each committed dependency payload belongs to exactly one derived output.
+        self.work_push(property)?;
+        if let Some(key) = key {
+            let Payload::Dependencies(dependencies) =
+                &mut self.objects.get_mut(key).unwrap().payload
+            else {
+                unreachable!()
+            };
+            dependencies.freshness_visit = self.freshness_walk;
+        }
+        Ok(())
+    }
+
     fn derived_is_current_work(
         &mut self,
         output: Value,
         evaluating: Option<Value>,
         work: &mut u64,
     ) -> Result<bool, HeapError> {
+        self.freshness_walk = self
+            .freshness_walk
+            .checked_add(1)
+            .ok_or(HeapError::IdentityExhausted)?;
         self.property_work.clear();
-        self.work_push(PropertyId {
+        self.queue_freshness_input(PropertyId {
             host: output,
             field: u32::MAX,
         })?;
@@ -208,12 +241,8 @@ impl Heap {
                 let i = self.dependency_payload(dependency_key)?.ancestors[index];
                 let mut next = self.dependency_source(dependencies, i)?;
                 next.field = u32::MAX;
-                if !self.property_work.iter().any(|p| {
-                    *work += 1;
-                    p.host.same_bits(next.host) && p.field == next.field
-                }) {
-                    self.work_push(next)?;
-                }
+                *work += 1;
+                self.queue_freshness_input(next)?;
             }
         }
         Ok(true)
