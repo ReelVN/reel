@@ -377,17 +377,15 @@ impl RetainedScene {
 }
 
 fn asset_matches(asset: &RetainedAsset, lease: &ResourceLease) -> bool {
-    matches!(
-        (asset.kind, lease.data()),
-        (
-            RetainedAssetKind::Image,
-            ResourceData::Image { .. } | ResourceData::Texture { .. }
-        ) | (RetainedAssetKind::Font, ResourceData::Font(_))
-            | (
-                RetainedAssetKind::EffectShader,
-                ResourceData::EffectShader { .. }
-            )
-    )
+    match asset.kind {
+        RetainedAssetKind::Image => {
+            lease.image_descriptor().is_some() || lease.texture_descriptor().is_some()
+        }
+        RetainedAssetKind::Font => matches!(lease.data(), ResourceData::Font(_)),
+        RetainedAssetKind::EffectShader => {
+            matches!(lease.data(), ResourceData::EffectShader { .. })
+        }
+    }
 }
 
 impl SavedRetainedScene {
@@ -622,17 +620,17 @@ impl RetainedRestore {
                     self.registry.release(handle);
                 }
                 let lease = self.leases[index].as_ref().unwrap();
-                let kind = match lease.data() {
-                    ResourceData::EffectShader { .. } => ResourceKind::EffectShader,
-                    ResourceData::Image { .. } | ResourceData::Texture { .. } => {
+                let kind =
+                    if lease.image_descriptor().is_some() || lease.texture_descriptor().is_some() {
                         ResourceKind::Image
-                    }
-                    ResourceData::Yuv420(_) => ResourceKind::Video,
-                    ResourceData::Font(_) => ResourceKind::Font,
-                    ResourceData::External { .. } => {
-                        return Err(retained::error(BuildErrorKind::UnsupportedRecord));
-                    }
-                };
+                    } else {
+                        match lease.data() {
+                            ResourceData::EffectShader { .. } => ResourceKind::EffectShader,
+                            ResourceData::Yuv420(_) => ResourceKind::Video,
+                            ResourceData::Font(_) => ResourceKind::Font,
+                            _ => return Err(retained::error(BuildErrorKind::UnsupportedRecord)),
+                        }
+                    };
                 if self
                     .handles
                     .insert(

@@ -523,27 +523,25 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
             .checked_add(item.payload.bytes().ticket().bytes())
             .filter(|n| *n <= max_bytes)
             .ok_or(RejectCode::InvalidRequest)?;
-        match (&item.payload, item.resource.data()) {
-            (
-                UploadPayload::Texture { descriptor, bytes },
-                ResourceData::Texture {
-                    descriptor: source, ..
-                },
-            ) => {
-                if descriptor != source || descriptor.validate(bytes.as_slice().len()).is_err() {
+        match &item.payload {
+            UploadPayload::Texture { descriptor, bytes } => {
+                let Some(source) = item.resource.texture_descriptor() else {
+                    return Err(RejectCode::Unsupported);
+                };
+                if *descriptor != source || descriptor.validate(bytes.as_slice().len()).is_err() {
                     return Err(RejectCode::InvalidRequest);
                 }
             }
-            (
-                UploadPayload::Pixels {
-                    size,
-                    stride,
-                    format,
-                    bytes,
-                    ..
-                },
-                ResourceData::Image { image, .. },
-            ) => {
+            UploadPayload::Pixels {
+                size,
+                stride,
+                format,
+                bytes,
+                ..
+            } => {
+                let Some(image) = item.resource.image_descriptor() else {
+                    return Err(RejectCode::Unsupported);
+                };
                 let row = (size[0] as u64)
                     .checked_mul(format.pixel_bytes().ok_or(RejectCode::Unsupported)?)
                     .ok_or(RejectCode::InvalidRequest)?;
@@ -557,12 +555,14 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
                     return Err(RejectCode::InvalidRequest);
                 }
             }
-            (UploadPayload::Font { bytes }, ResourceData::Font(font)) => {
+            UploadPayload::Font { bytes } => {
+                let ResourceData::Font(font) = item.resource.data() else {
+                    return Err(RejectCode::Unsupported);
+                };
                 if bytes.as_slice().len() != font.len() {
                     return Err(RejectCode::InvalidRequest);
                 }
             }
-            _ => return Err(RejectCode::Unsupported),
         }
     }
     Ok(bytes)

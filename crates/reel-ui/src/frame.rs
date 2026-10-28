@@ -1113,11 +1113,8 @@ fn make_op(
                     || value.images.iter().any(|image| {
                         !resources.leases().iter().any(|lease| {
                             lease.handle() == image.handle()
-                                && matches!(
-                                    lease.data(),
-                                    crate::resources::ResourceData::Image { .. }
-                                        | crate::resources::ResourceData::Texture { .. }
-                                )
+                                && (lease.image_descriptor().is_some()
+                                    || lease.texture_descriptor().is_some())
                         })
                     })
                 {
