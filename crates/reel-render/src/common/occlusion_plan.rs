@@ -373,7 +373,16 @@ fn draw_rect(draw: &FrameDraw, outer: Affine) -> Option<(Rect, bool)> {
     };
     let transform = outer * *transform;
     let [a, b, c, d, _, _] = transform.as_coeffs();
-    let rect = transform.transform_rect_bbox(*rect);
+    // Mesh::quad and rectangle tessellation store local positions in f32
+    // before applying the affine. Cancellation of large author coordinates
+    // must use those same quantized edges, for both query and opaque bounds.
+    let rect = Rect::new(
+        rect.x0 as f32 as f64,
+        rect.y0 as f32 as f64,
+        rect.x1 as f32 as f64,
+        rect.y1 as f32 as f64,
+    );
+    let rect = transform.transform_rect_bbox(rect);
     Some((rect, (b == 0. && c == 0.) || (a == 0. && d == 0.)))
 }
 // Integer edges preserve the same complete pixels for 1x and 4x. Fractional

@@ -191,6 +191,40 @@ fn fractional_edges_keep_border_pixels_and_integer_flips_share_the_grid() {
 }
 
 #[test]
+fn bounds_follow_local_float32_vertices_before_large_coordinate_cancellation() {
+    let mut scene = Scene::new();
+    fill(
+        &mut scene,
+        Rect::new(1_000_000_001., 0., 1_000_000_101., 100.),
+        Affine::translate((-1_000_000_000., 0.)),
+        Default::default(),
+    );
+    fill(
+        &mut scene,
+        Rect::new(1., 0., 101., 100.),
+        Affine::IDENTITY,
+        Default::default(),
+    );
+    let frame = frame(scene);
+    assert_eq!(draws(&frame, &selection(&frame)), [true, true]);
+    let draw = frame
+        .commands()
+        .iter()
+        .find_map(|c| {
+            if let FrameOp::Draw(draw) = &c.op {
+                Some(draw)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert_eq!(
+        draw_rect(draw, Affine::IDENTITY),
+        Some((Rect::new(0., 0., 128., 100.), true))
+    );
+}
+
+#[test]
 fn inner_and_outer_bounds_keep_all_single_and_four_sample_positions() {
     for x in [0., 0.125, 0.5, 0.875, 1.] {
         for y in [0., 0.125, 0.5, 0.875, 1.] {
