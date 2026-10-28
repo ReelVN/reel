@@ -283,3 +283,159 @@ fn system_suspend_preserves_a_running_fade_out_instead_of_business_stopping_it()
     assert_eq!(result.unwrap().result, MediaResult::Stopped);
     drain(&mut player, &output);
 }
+struct PendingClose {
+    output: Output,
+    native_closed: Arc<std::sync::atomic::AtomicBool>,
+    fills: Arc<std::sync::Mutex<Vec<usize>>>,
+    owns: bool,
+}
+impl AudioOutput for PendingClose {
+    fn capabilities(&self) -> AudioCaps {
+        self.output.capabilities()
+    }
+    fn configure(&mut self, request: reel_media::AudioRequest) -> Result<AudioFormat, AudioError> {
+        self.output.configure(request)
+    }
+    fn start(&mut self, request: PcmFill) -> Result<(), reel_core::result::Rejected<PcmFill>> {
+        self.fills
+            .lock()
+            .unwrap()
+            .push((&*request as *const dyn FnMut(&mut [f32]) as *const ()) as usize);
+        if !self
+            .native_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(reel_core::result::Rejected {
+                request,
+                reason: reel_core::result::RejectReason::new(
+                    reel_core::result::RejectCode::Busy,
+                    "old native port draining",
+                ),
+            });
+        }
+        self.output.start(request)?;
+        self.owns = true;
+        Ok(())
+    }
+    fn suspend(&mut self) -> Result<(), AudioError> {
+        self.output.suspend()
+    }
+    fn resume(&mut self) -> Result<(), AudioError> {
+        self.output.resume()
+    }
+    fn status(&self) -> AudioStatus {
+        self.output.status()
+    }
+    fn clock_observation(&self) -> AudioClockObservation {
+        self.output.clock_observation()
+    }
+    fn close_complete(&self) -> bool {
+        self.output.status().state == AudioState::Stopped
+            && (!self.owns
+                || self
+                    .native_closed
+                    .load(std::sync::atomic::Ordering::Acquire))
+    }
+    fn stop(&mut self) -> Result<(), AudioError> {
+        if self.owns && self.output.status().state != AudioState::Stopped {
+            self.native_closed
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+        self.output.stop()
+    }
+}
+fn pending_rig(
+    native_closed: Arc<std::sync::atomic::AtomicBool>,
+    fills: Arc<std::sync::Mutex<Vec<usize>>>,
+) -> (MediaPlayer, Output) {
+    let output = Output(Rc::new(RefCell::new(None)));
+    let sink = output.clone();
+    let player = MediaPlayer::new(
+        Assets::directory(AssetOptions {
+            root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+            ..Default::default()
+        }),
+        MediaOptions::default(),
+        WakeSignal::new(|| {}),
+        move |wake| {
+            *sink.0.borrow_mut() = Some(
+                OfflineOutput::new(
+                    AudioDeviceConfig {
+                        sample_rate_hz: 48000,
+                        sample_format: SampleFormat::F32,
+                        layout: ChannelLayout::Stereo,
+                    },
+                    wake,
+                )
+                .unwrap(),
+            );
+            Ok(Box::new(PendingClose {
+                output: sink,
+                native_closed,
+                fills,
+                owns: false,
+            }))
+        },
+    );
+    (player, output)
+}
+#[test]
+fn session_switch_keeps_real_close_pending_and_retries_the_identical_uncalled_fill() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let closed = Arc::new(AtomicBool::new(true));
+    let (mut old, old_output) =
+        pending_rig(closed.clone(), Arc::new(std::sync::Mutex::new(Vec::new())));
+    let first = old.play_audio(request(true), false).unwrap();
+    old.commit_audio(first);
+    until(|| {
+        old.maintain(Duration::ZERO);
+        old_output.render() > 0.1
+    });
+    old.close();
+    assert!(!closed.load(Ordering::Acquire));
+    assert!(
+        old.cleanup_pending(),
+        "logical Stopped must not claim native release"
+    );
+    assert_eq!(old_output.render(), 0.);
+    let fills = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (mut next, output) = pending_rig(closed.clone(), fills.clone());
+    let second = next.play_audio(request(true), false).unwrap();
+    next.commit_audio(second);
+    until(|| {
+        next.maintain(Duration::ZERO);
+        next.pending_fill.is_some()
+    });
+    for _ in 0..8 {
+        next.maintain(Duration::ZERO);
+        assert_eq!(output.render(), 0.);
+    }
+    assert!(next.failure.is_none());
+    assert_eq!(next.playing.len(), 1);
+    assert_eq!(output.clock_observation().generated_frames, 0);
+    let original = fills.lock().unwrap()[0];
+    assert!(
+        fills.lock().unwrap().iter().all(|&fill| fill == original),
+        "Busy must preserve the same renderer ownership"
+    );
+    closed.store(true, Ordering::Release);
+    until(|| {
+        old.maintain(Duration::ZERO);
+        !old.cleanup_pending()
+    });
+    until(|| {
+        next.maintain(Duration::ZERO);
+        output.render() > 0.1
+    });
+    assert!(next.pending_fill.is_none());
+    assert_eq!(next.playing.len(), 1);
+    assert!(fills.lock().unwrap().iter().all(|&fill| fill == original));
+    next.close();
+    assert!(next.cleanup_pending());
+    closed.store(true, Ordering::Release);
+    until(|| {
+        next.maintain(Duration::ZERO);
+        !next.cleanup_pending()
+    });
+    assert_eq!(old.pcm_usage().bytes + next.pcm_usage().bytes, 0);
+}

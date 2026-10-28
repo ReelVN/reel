@@ -66,11 +66,24 @@ impl MediaPlayer {
         let result = match output.status().state {
             AudioState::Stopped => {
                 let fill = self
-                    .service
-                    .as_mut()
-                    .and_then(AudioActivityService::take_fill)
+                    .pending_fill
+                    .take()
+                    .or_else(|| {
+                        self.service
+                            .as_mut()
+                            .and_then(AudioActivityService::take_fill)
+                    })
                     .ok_or_else(|| "audio renderer unavailable".to_owned())?;
-                output.start(fill).map_err(|error| error.reason.message)
+                match output.start(fill) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.reason.code == reel_core::result::RejectCode::Busy => {
+                        // A retiring native port has not accepted this renderer.
+                        // Keep the identical fill and activities for the next turn.
+                        self.pending_fill = Some(error.request);
+                        Ok(())
+                    }
+                    Err(error) => Err(error.reason.message),
+                }
                 // Rejection drops only the DeferredRenderer shell on control;
                 // its reserved credit transfers the real renderer to the worker.
             }
@@ -78,6 +91,9 @@ impl MediaPlayer {
             AudioState::Running => Ok(()),
             AudioState::Failed => Err("audio output failed".into()),
         };
+        if let Some(service) = &mut self.service {
+            service.set_output_suspended(output.status().state != AudioState::Running);
+        }
         if let Err(error) = &result {
             self.failure = Some(error.clone());
         }
@@ -115,6 +131,9 @@ impl MediaPlayer {
         {
             if let Err(error) = output.suspend() {
                 self.failure = Some(error.to_string());
+            }
+            if let Some(service) = &mut self.service {
+                service.set_output_suspended(true);
             }
             self.output_idle.quiet = None;
         }

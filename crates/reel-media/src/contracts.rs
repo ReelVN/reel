@@ -168,8 +168,11 @@ pub struct AudioDeviceConfig {
 pub struct OutputEpoch(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioState {
+    /// Fill is disabled. Native retirement may still be pending; query close_complete.
     Stopped,
+    /// Fill was accepted and is enabled; native startup may still be pending.
     Running,
+    /// Fill is closed and retained; native queued PCM may still be draining.
     Suspended,
     Failed,
 }
@@ -286,7 +289,16 @@ pub trait AudioOutput {
     fn resume(&mut self) -> Result<(), AudioError>;
     fn status(&self) -> AudioStatus;
     fn clock_observation(&self) -> AudioClockObservation;
-    /// Even an error return guarantees no further fill invocation. Never call inside fill.
+    /// True after stop when the actual native output handle and buffers have
+    /// closed. Pending close retains native ownership; software Stopped alone
+    /// does not prove release. Default synchronous drivers complete in stop.
+    /// Control-side polling never waits for native drain or unfinished workers.
+    fn close_complete(&self) -> bool {
+        self.status().state == AudioState::Stopped
+    }
+    /// Even an error return guarantees no further fill invocation. Native release
+    /// may remain pending: retain the output until close_complete, or transfer it
+    /// to the platform's bounded retirement owner. Never call inside fill.
     fn stop(&mut self) -> Result<(), AudioError>;
 }
 

@@ -349,6 +349,9 @@ impl Callback {
 
 /// Native lifecycle boundary. The gate and control-owned slot supply fill
 /// quiescence and disposal independently of native pause or callback lifetime.
+#[cfg(any(test, all(feature = "vita-output", target_os = "vita")))]
+pub(crate) mod port;
+
 pub(crate) trait Driver {
     type Stream;
     fn capabilities(&self) -> AudioCaps;
@@ -360,9 +363,16 @@ pub(crate) trait Driver {
     ) -> Result<Self::Stream, AudioError>;
     fn play(&mut self, stream: &Self::Stream) -> Result<(), AudioError>;
     fn pause(&mut self, stream: &Self::Stream) -> Result<(), AudioError>;
-    /// Finish native release after fill entry has closed. Failure retains any
-    /// native storage still borrowed by the device in the driver.
+    /// Transfer native ownership to closing after fill entry has closed. A
+    /// platform may retain a pending native owner until close_complete is true.
+    /// Failure still retains storage borrowed by the device.
     fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError>;
+    fn close_complete(&self) -> bool {
+        true
+    }
+    fn retry_close(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
     fn verify(&self, format: &AudioFormat) -> Result<(), AudioError>;
 }
 
@@ -608,7 +618,13 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
             observation
         }
     }
+    fn close_complete(&self) -> bool {
+        self.stream.is_none() && self.driver.close_complete()
+    }
     fn stop(&mut self) -> Result<(), AudioError> {
+        if self.stream.is_none() {
+            self.driver.retry_close()?;
+        }
         self.shared.close_and_wait();
         if let Some(slot) = self.fill_slot.take() {
             slot.discard();
@@ -776,6 +792,9 @@ macro_rules! output_methods {
         }
         fn clock_observation(&self) -> AudioClockObservation {
             self.inner.clock_observation()
+        }
+        fn close_complete(&self) -> bool {
+            self.inner.close_complete()
         }
         fn stop(&mut self) -> Result<(), AudioError> {
             self.inner.stop()

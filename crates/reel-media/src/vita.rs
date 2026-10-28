@@ -1,25 +1,31 @@
 //! Native AudioOut through the existing ownership gate and callback telemetry.
+use crate::output::port::{NativePort, RetiringStream};
 use crate::{
     output::{Callback, DrivenOutput, Driver, output_methods},
     *,
 };
 use reel_core::{clock::MonoTime, result::Rejected, wake::WakeSignal};
+use std::sync::{Arc, OnceLock};
 use vita_native::audio;
 
+impl RetiringStream for audio::Stream {
+    fn begin_stop(&self) -> Result<(), AudioError> {
+        self.begin_stop().map_err(error)
+    }
+    fn poll_stop(&mut self) -> Result<bool, AudioError> {
+        self.poll_stop().map_err(error)
+    }
+}
 struct VitaDriver {
-    retired: Option<audio::Stream>,
+    port: Arc<NativePort<audio::Stream>>,
+    generation: Option<u64>,
+}
+fn port() -> Arc<NativePort<audio::Stream>> {
+    static PORT: OnceLock<Arc<NativePort<audio::Stream>>> = OnceLock::new();
+    PORT.get_or_init(|| Arc::new(NativePort::new())).clone()
 }
 fn error(error: vita_native::app::Error) -> AudioError {
     AudioError::new(AudioErrorKind::DeviceFailure, error.to_string())
-}
-impl VitaDriver {
-    fn release_retired(&mut self) -> Result<(), AudioError> {
-        if let Some(stream) = &mut self.retired {
-            stream.stop().map_err(error)?;
-        }
-        self.retired = None;
-        Ok(())
-    }
 }
 impl Driver for VitaDriver {
     type Stream = audio::Stream;
@@ -38,7 +44,6 @@ impl Driver for VitaDriver {
         }
     }
     fn configure(&mut self, request: &AudioRequest) -> Result<AudioFormat, AudioError> {
-        self.release_retired()?;
         negotiate(&self.capabilities(), request)
     }
     fn build(
@@ -46,9 +51,10 @@ impl Driver for VitaDriver {
         _: &AudioFormat,
         mut callback: Callback,
     ) -> Result<Self::Stream, AudioError> {
-        self.release_retired()?;
+        let generation = self.port.reserve()?;
+        self.generation = Some(generation);
         let shared = callback.shared.clone();
-        audio::Stream::new(
+        let stream = audio::Stream::new(
             move |pcm, micros| {
                 callback.render(
                     pcm,
@@ -67,7 +73,11 @@ impl Driver for VitaDriver {
                 }
             },
         )
-        .map_err(error)
+        .map_err(error);
+        if stream.is_err() {
+            self.port.reject_open(generation);
+        }
+        stream
     }
     fn play(&mut self, stream: &Self::Stream) -> Result<(), AudioError> {
         stream.play().map_err(error)
@@ -75,12 +85,15 @@ impl Driver for VitaDriver {
     fn pause(&mut self, stream: &Self::Stream) -> Result<(), AudioError> {
         stream.pause().map_err(error)
     }
-    fn close(&mut self, mut stream: Self::Stream) -> Result<(), AudioError> {
-        if let Err(fault) = stream.stop() {
-            self.retired = Some(stream);
-            return Err(error(fault));
-        }
-        Ok(())
+    fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+        self.port
+            .retire(self.generation.expect("reserved native port"), stream)
+    }
+    fn close_complete(&self) -> bool {
+        self.generation.is_none_or(|id| self.port.closed(id))
+    }
+    fn retry_close(&mut self) -> Result<(), AudioError> {
+        self.generation.map_or(Ok(()), |id| self.port.retry(id))
     }
     fn verify(&self, format: &AudioFormat) -> Result<(), AudioError> {
         if format.sample_rate_hz != audio::SAMPLE_RATE
@@ -102,10 +115,18 @@ pub struct VitaOutput {
     inner: DrivenOutput<VitaDriver>,
 }
 impl VitaOutput {
-    /// Create the control service; `start` opens the fixed 48 kHz stereo port.
+    /// Create the control service. Start requests a fixed 48 kHz stereo port;
+    /// native opening and retirement remain on its output worker. A pending old
+    /// port rejects a new start with Busy and returns the unchanged fill.
     pub fn new(wake: WakeSignal) -> Result<Self, AudioError> {
         Ok(Self {
-            inner: DrivenOutput::new(VitaDriver { retired: None }, wake)?,
+            inner: DrivenOutput::new(
+                VitaDriver {
+                    port: port(),
+                    generation: None,
+                },
+                wake,
+            )?,
         })
     }
 }

@@ -307,7 +307,7 @@ impl AudioActivityService {
     /// Host-only companion to suspending the output gate. Parks stream decoder
     /// producers without changing business pause state, Kira command slots,
     /// fades or content positions. New admissions inherit the flag. Call after
-    /// output suspension completes, and clear before resuming PCM processing.
+    /// output suspension completes, and clear when PCM processing resumes.
     pub fn set_output_suspended(&mut self, suspended: bool) {
         self.output_suspended = suspended;
         for entry in self.entries.iter_mut().flatten() {
