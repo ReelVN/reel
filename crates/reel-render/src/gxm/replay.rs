@@ -253,6 +253,8 @@ pub(super) fn prepare(
 }
 
 struct Scope<'a> {
+    clip_child: Option<&'a reel_ui::frame::FrameGroup>,
+    delayed: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation, f32)>,
     group: Option<&'a reel_ui::frame::FrameGroup>,
     scheduled: Option<bool>,
     shared_source: bool,
@@ -274,6 +276,7 @@ struct Scope<'a> {
     forward_source: bool,
 }
 struct MaskComposition<'a> {
+    terminal_effect: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation)>,
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
     source: Target,
     opacity: f32,
@@ -442,21 +445,34 @@ impl Context<'_> {
                 match parent.pending.take().expect("suspended composition") {
                     Pending::Mask(mask) => {
                         self.scissor = self.scissor.intersect(mask.scissor);
-                        self.combine_group(
-                            &parent.scopes.last().target,
-                            &mask.source,
-                            &finished,
-                            GroupPaint {
-                                source_origin: [0; 2],
-                                composite: reel_ui::frame::GroupComposite {
-                                    alpha: mask.opacity,
-                                    blend: mask.blend,
+                        if let Some((effect, transform, at)) = mask.terminal_effect {
+                            self.effect_into(
+                                parent.drawing,
+                                effect,
+                                transform,
+                                &mask.source,
+                                &parent.scopes.last().target,
+                                mask.opacity,
+                                Some((&finished, false)),
+                                at,
+                            )?;
+                        } else {
+                            self.combine_group(
+                                &parent.scopes.last().target,
+                                &mask.source,
+                                &finished,
+                                GroupPaint {
+                                    source_origin: [0; 2],
+                                    composite: reel_ui::frame::GroupComposite {
+                                        alpha: mask.opacity,
+                                        blend: mask.blend,
+                                    },
+                                    invert: mask.invert,
+                                    operation: mask.operation,
+                                    image_mask: mask.image_mask,
                                 },
-                                invert: mask.invert,
-                                operation: mask.operation,
-                                image_mask: mask.image_mask,
-                            },
-                        )?;
+                            )?;
+                        }
                         self.recycle_target(mask.source)?;
                         self.recycle_target(finished)?;
                     }
@@ -548,6 +564,18 @@ impl Context<'_> {
                         at,
                         Scope {
                             group: None,
+                            clip_child: isolated
+                                .then(|| {
+                                    crate::common::effect_plan::clipped_effect(
+                                        current.drawing,
+                                        current.commands,
+                                        current.next,
+                                        1,
+                                        self.capture || !current.drawing.transitions().is_empty(),
+                                    )
+                                })
+                                .flatten(),
+                            delayed: None,
                             scheduled: None,
                             shared_source: false,
                             target: if !isolated {
@@ -706,6 +734,8 @@ impl Context<'_> {
                         at,
                         Scope {
                             group: Some(group),
+                            clip_child: None,
+                            delayed: None,
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
                             forward_source,
@@ -772,6 +802,21 @@ impl Context<'_> {
                     if group.isolated {
                         self.flush_draws()?;
                     }
+                    let terminal_tail = group.group.and_then(|definition| {
+                        crate::common::effect_plan::terminal_tail(
+                            current.drawing,
+                            definition,
+                            1,
+                            self.capture || !current.drawing.transitions().is_empty(),
+                        )
+                    });
+                    let mut terminal_effect = group
+                        .delayed
+                        .map(|(effect, transform, at, _)| (effect, transform, at));
+                    let terminal_opacity = group
+                        .delayed
+                        .map_or(group.opacity, |(_, _, _, opacity)| opacity);
+                    let nested = group.delayed.is_some();
                     let mut source = group.target;
                     if let Some((coverage, to_parent)) = group.mask_effect {
                         let view = group.source_view.expect("local coverage source");
@@ -904,6 +949,23 @@ impl Context<'_> {
                         source = projected;
                     } else if let Some((effect, transform)) = group.effect {
                         if group.group.is_some_and(|definition| {
+                            current
+                                .scopes
+                                .last()
+                                .clip_child
+                                .is_some_and(|child| std::ptr::eq(child, definition))
+                        }) && crate::common::effect_plan::coverage_retention(
+                            source.size,
+                            self.size,
+                        ) {
+                            let parent = current.scopes.last_mut();
+                            let empty = std::mem::replace(&mut parent.target, source);
+                            parent.delayed = Some((effect, transform, entry.at, group.opacity));
+                            self.recycle_target(empty)?;
+                            continue;
+                        }
+
+                        if group.group.is_some_and(|definition| {
                             crate::common::effect_plan::terminal_composite(
                                 definition,
                                 1,
@@ -917,19 +979,48 @@ impl Context<'_> {
                                 &source,
                                 &current.scopes.last().target,
                                 group.opacity,
+                                None,
                                 entry.at,
                             )?;
                             self.recycle_target(source)?;
                             continue;
                         }
-                        let processed =
-                            self.effect(current.drawing, effect, transform, &source, entry.at)?;
-                        self.recycle_target(source)?;
-                        source = processed;
+                        if terminal_tail == Some(crate::effect::OutputTail::AlphaCoverage)
+                            && crate::common::effect_plan::coverage_retention(
+                                source.size,
+                                self.size,
+                            )
+                        {
+                            terminal_effect = Some((effect, transform, entry.at));
+                        } else {
+                            let processed =
+                                self.effect(current.drawing, effect, transform, &source, entry.at)?;
+                            self.recycle_target(source)?;
+                            source = processed;
+                        }
                     }
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
                         self.clip(&coverage, clip, transform, entry.at)?;
+                        if let Some((effect, effect_transform, at)) = terminal_effect {
+                            if nested {
+                                self.scissor = self.scissor.intersect(group.scissor);
+                            }
+                            self.effect_into(
+                                current.drawing,
+                                effect,
+                                effect_transform,
+                                &source,
+                                &current.scopes.last().target,
+                                terminal_opacity,
+                                Some((&coverage, nested)),
+                                at,
+                            )?;
+                            self.recycle_target(source)?;
+                            self.recycle_target(coverage)?;
+                            continue;
+                        }
+
                         if group.mask.is_none() {
                             // Fold coverage and opacity into the final source-over pass.
                             // No intermediate full-size clipped texture is needed.
@@ -973,6 +1064,7 @@ impl Context<'_> {
                             },
                         )?;
                         current.pending = Some(Pending::Mask(MaskComposition {
+                            terminal_effect,
                             scissor: self.scissor,
                             image_mask: group.image_mask,
                             source,
@@ -1109,6 +1201,8 @@ impl Context<'_> {
             transform,
             scopes: Scopes::new(Scope {
                 group: None,
+                clip_child: None,
+                delayed: None,
                 scheduled: None,
                 shared_source: false,
                 target: self.target()?,
@@ -1307,116 +1401,6 @@ impl Context<'_> {
             },
         )
     }
-    fn combine_group(
-        &mut self,
-        target: &Target,
-        source: &Target,
-        mask: &Target,
-        paint: GroupPaint<'_>,
-    ) -> Result<(), GpuError> {
-        self.flush_draws()?;
-        if self.scissor.empty() {
-            return Ok(());
-        }
-        let GroupPaint {
-            source_origin,
-            composite,
-            invert,
-            operation,
-            image_mask,
-        } = paint;
-        let blend = blend_code(composite.blend)
-            .ok_or(GpuError::Device("unsupported group blend".into()))?;
-        if blend == 0
-            && invert == 0.
-            && matches!(operation, CompositeOperation::SourceOver)
-            && let Some((definition, transform)) = image_mask
-            && self.composite_sample_mask(target, source, definition, transform, composite.alpha)?
-        {
-            return Ok(());
-        }
-        let expression = if let Some((definition, transform)) = image_mask {
-            Some(self.mask_expression(definition, transform)?)
-        } else {
-            None
-        };
-        let backdrop = if blend != 0 {
-            let backdrop = self.target()?;
-            self.combine(
-                &backdrop,
-                target,
-                target,
-                1.,
-                0.,
-                CompositeOperation::SourceOver,
-            )?;
-            Some(backdrop)
-        } else {
-            None
-        };
-        self.composition(
-            target,
-            Composition {
-                source,
-                mask,
-                backdrop: backdrop.as_ref().unwrap_or(source),
-                alpha: composite.alpha,
-                invert,
-                operation,
-                blend,
-                expression: expression.as_ref(),
-                source_origin,
-            },
-        )?;
-        if let Some(backdrop) = backdrop {
-            self.recycle_target(backdrop)?;
-        }
-        if let Some(expression) = expression {
-            self.recycle_target(expression)?;
-        }
-        Ok(())
-    }
-    fn combine_transition(
-        &mut self,
-        target: &Target,
-        old: &Target,
-        new: &Target,
-        transition: &SceneTransition,
-        outer: Affine,
-    ) -> Result<(), GpuError> {
-        let expression = if let Some(definition) = transition
-            .mask
-            .as_ref()
-            .filter(|_| transition.progress > 0. && transition.progress < 1.)
-        {
-            Some(self.mask_expression(definition, outer * transition.mask_to_window)?)
-        } else {
-            None
-        };
-        let operation = if expression.is_some() {
-            CompositeOperation::MaskedTransition(transition.progress)
-        } else {
-            CompositeOperation::Transition(transition.progress)
-        };
-        self.composition(
-            target,
-            Composition {
-                source: old,
-                mask: new,
-                backdrop: old,
-                alpha: 1.,
-                invert: 0.,
-                operation,
-                blend: 0,
-                expression: expression.as_ref(),
-                source_origin: [0; 2],
-            },
-        )?;
-        if let Some(expression) = expression {
-            self.recycle_target(expression)?;
-        }
-        Ok(())
-    }
     pub fn transient(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.tickets.push(reserve(
             &self.budgets.transient,
@@ -1451,3 +1435,6 @@ impl Context<'_> {
     }
 }
 pub(super) use crate::common::blend::code as blend_code;
+
+#[path = "replay/composition.rs"]
+mod composition;

@@ -475,7 +475,7 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
         ));
         match language {
             Language::Cg => {
-                assert!(output.source.contains("uniform float4 reel_context[9]"));
+                assert!(output.source.contains("uniform float4 reel_context[10]"));
                 assert!(
                     output
                         .source
@@ -536,6 +536,19 @@ fn cg_fragments_compile_all_typed_operations() {
             .compile(gxp_compiler::Stage::Fragment, &fragment.source)
             .unwrap_or_else(|error| panic!("{name}: {error}\n{}", fragment.source));
         assert_eq!(&binary[..4], b"GXP\0");
+        if OutputTail::supports_coverage(
+            fragment.output_type,
+            program.textures().len() as u32,
+            fragment.source_sampler,
+        ) {
+            let masked =
+                compile_fragment_with_tail(program, Language::Cg, OutputTail::AlphaCoverage, 65536)
+                    .unwrap();
+            let code = compiler
+                .compile(gxp_compiler::Stage::Fragment, &masked.source)
+                .unwrap_or_else(|e| panic!("{name} masked: {e}"));
+            assert_eq!(&code[..4], b"GXP\0");
+        }
     }
     println!(
         "compiled {} typed Cg operation programs to GXP",
@@ -893,6 +906,14 @@ fn export_anonymous_effect_fragments() {
                 &generated.source,
             )
             .unwrap();
+            let masked =
+                compile_fragment_with_tail(&program, language, OutputTail::AlphaCoverage, 16384)
+                    .unwrap();
+            std::fs::write(
+                directory.join(format!("{name}-masked.{extension}")),
+                masked.source,
+            )
+            .unwrap();
             println!(
                 "{name} {language:?}: generated_bytes={}, parameters={}B",
                 generated.source.len(),
@@ -958,4 +979,30 @@ fn typed_external_textures_emit_fixed_bindings_and_validate_wgsl() {
             }
         }
     }
+}
+
+#[test]
+fn independent_coverage_tail_preserves_typed_author_program_and_sampler_bound() {
+    for language in [Language::Wgsl, Language::Cg] {
+        let program = sampled_program();
+        let ordinary = compile_fragment(&program, language, 16384).unwrap();
+        let masked =
+            compile_fragment_with_tail(&program, language, OutputTail::AlphaCoverage, 16384)
+                .unwrap();
+        assert_eq!(ordinary.parameters, masked.parameters);
+        assert!(masked.source.contains("reel_composite_mask"));
+        assert!(masked.source.contains("stored * coverage *"));
+        assert!(
+            compile_fragment_with_tail(
+                &program,
+                language,
+                OutputTail::AlphaCoverage,
+                masked.source.len() - 1
+            )
+            .is_err()
+        );
+    }
+    assert!(OutputTail::supports_coverage(EffectType::Vec4, 14, true));
+    assert!(!OutputTail::supports_coverage(EffectType::Vec4, 15, true));
+    assert!(!OutputTail::supports_coverage(EffectType::Float, 0, true));
 }

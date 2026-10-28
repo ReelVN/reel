@@ -25,7 +25,7 @@ mod reduction;
 #[path = "effect/wgsl.rs"]
 mod wgsl;
 
-/// The production source binding is nine float32 vec4 slots (144 bytes).
+/// The production source binding is ten float32 vec4 slots (160 bytes).
 /// Slots 0/1 map target pixels to local normalized coordinates; 2/3 map local
 /// normalized coordinates to source texture coordinates. Slot 4 is the logical
 /// rectangle (x, y, width, height); 5 is target size and source storage size;
@@ -41,7 +41,26 @@ mod wgsl;
 /// domain. RGBA8 halfway ties permit one UNORM unit per intermediate channel;
 /// source-over bounds the resulting RGB error by two units and alpha by one.
 /// Terminal output is selected only for single-sample, uninverted source-over.
-pub const CONTEXT_SLOTS: usize = 9;
+/// Slot 3.w requests a second attachment quantization after opacity, before
+/// coverage, preserving an enclosing isolated clip target. Two UNORM tie stages
+/// bound final source-over RGB/alpha differences by four/two UNORM units.
+/// Slot 9 maps normalized output coordinates to the independent coverage texture.
+pub const CONTEXT_SLOTS: usize = 10;
+
+/// Fixed post-effect operation, shared by planning and both shader generators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputTail {
+    /// Ordinary output, or attachment quantization followed by opacity/source-over.
+    Ordinary,
+    /// Attachment quantization, independent clamped alpha coverage, then opacity.
+    AlphaCoverage,
+}
+impl OutputTail {
+    /// Portable GXM/WGPU sampler admission; color output alone accepts coverage.
+    pub fn supports_coverage(output: EffectType, textures: u32, source: bool) -> bool {
+        output == EffectType::Vec4 && textures.saturating_add(u32::from(source)) < 16
+    }
+}
 
 /// Complete prepared shader source; runtime backends load this product verbatim.
 #[derive(Clone, Debug)]
@@ -84,10 +103,28 @@ pub fn compile_fragment(
     language: Language,
     max_source_bytes: usize,
 ) -> Result<EffectFragment, GenerateError> {
+    compile_fragment_with_tail(program, language, OutputTail::Ordinary, max_source_bytes)
+}
+/// Generate one fixed variant without changing the authored effect graph.
+pub fn compile_fragment_with_tail(
+    program: &EffectProgram,
+    language: Language,
+    tail: OutputTail,
+    max_source_bytes: usize,
+) -> Result<EffectFragment, GenerateError> {
     let generated = generate(program, language, max_source_bytes)?;
+    if tail == OutputTail::AlphaCoverage
+        && !OutputTail::supports_coverage(
+            generated.output_type,
+            program.textures().len() as u32,
+            generated.samples_source,
+        )
+    {
+        return Err(GenerateError::UnsupportedTail);
+    }
     match language {
-        Language::Wgsl => wgsl::compile(program, generated, max_source_bytes),
-        Language::Cg => cg::compile(program, generated, max_source_bytes),
+        Language::Wgsl => wgsl::compile(program, generated, tail, max_source_bytes),
+        Language::Cg => cg::compile(program, generated, tail, max_source_bytes),
     }
 }
 
@@ -189,11 +226,15 @@ pub struct GeneratedEffect {
 /// Source expansion is bounded before a driver/compiler sees the generated code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GenerateError {
+    UnsupportedTail,
     SourceLimit { limit: usize },
 }
 impl std::fmt::Display for GenerateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UnsupportedTail => {
+                f.write_str("coverage tail requires color output and one free texture unit")
+            }
             Self::SourceLimit { limit } => {
                 write!(f, "effect shader exceeds its {limit}-byte source limit")
             }

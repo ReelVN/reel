@@ -7,12 +7,22 @@ use std::fmt::Write;
 pub(super) fn compile(
     program: &EffectProgram,
     generated: GeneratedEffect,
+    tail: OutputTail,
     limit: usize,
 ) -> Result<EffectFragment, GenerateError> {
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
     let mut source =
-        String::from("uniform float4 reel_context[9];\nuniform float4 reel_clip_rect;\n");
+        String::from("uniform float4 reel_context[10];\nuniform float4 reel_clip_rect;\n");
+    let masked = tail == OutputTail::AlphaCoverage;
     source.push_str(&generated.declarations);
+    if masked {
+        writeln!(
+            source,
+            "uniform sampler2D reel_composite_mask : TEXUNIT{};",
+            program.textures().len() + usize::from(source_sampler)
+        )
+        .unwrap();
+    }
     if source_sampler {
         source.push_str("uniform sampler2D reel_source : TEXUNIT0;\n");
     }
@@ -29,22 +39,33 @@ float4 reel_source_sample(float2 uv) {
     }
     source.push_str(
         r#"
-float4 reel_output(float4 color) {
+float4 reel_output(float4 color, float coverage) {
     float mode = reel_context[1].w;
     if (mode == 0.0) return color;
     float4 stored = color;
     if (mode == 1.0) stored = floor(clamp(color, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
-    return stored * reel_context[2].w;
+    return stored * coverage * reel_context[2].w;
 }
 "#,
     );
+    if masked {
+        source = source.replace("return stored * coverage * reel_context[2].w;", "if (reel_context[3].w != 0.0) { stored *= reel_context[2].w; stored = floor(clamp(stored, 0.0, 1.0) * 255.0 + 0.5) / 255.0; return stored * coverage; } return stored * coverage * reel_context[2].w;");
+    }
     texture_functions(program, source_sampler, &mut source, limit)?;
     source.push_str(&generated.function);
     source.push_str("\nfloat4 main(float2 v_uv : TEXCOORD0, float4 fragment_position : WPOS");
     if generated.output_type == EffectType::Float {
         source.push_str(", float2 reel_implicit_source_uv : TEXCOORD1");
     }
+    if masked {
+        source.push_str(", float2 reel_mask_uv : TEXCOORD2");
+    }
     source.push_str(") : COLOR {\n");
+    if masked {
+        source.push_str("float reel_tail_coverage = clamp(tex2D(reel_composite_mask,reel_mask_uv).a,0.0,1.0);\n");
+    } else {
+        source.push_str("float reel_tail_coverage = 1.0;\n");
+    }
     source.push_str("if (any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)) discard;\n");
     if generated.output_type == EffectType::Float {
         source.push_str(
@@ -60,9 +81,9 @@ float4 reel_output(float4 color) {
 "#,
     );
     if generated.output_type == EffectType::Float {
-        source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { return reel_output(float4(coverage)); } return reel_output(reel_implicit_source * coverage);\n}\n");
+        source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { return reel_output(float4(coverage), reel_tail_coverage); } return reel_output(reel_implicit_source * coverage, reel_tail_coverage);\n}\n");
     } else {
-        source.push_str("return reel_output(reel_effect(uv, position, reel_context[4].zw));\n}\n");
+        source.push_str("return reel_output(reel_effect(uv, position, reel_context[4].zw), reel_tail_coverage);\n}\n");
     }
     if source.len() > limit {
         return Err(GenerateError::SourceLimit { limit });

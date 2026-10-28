@@ -94,6 +94,46 @@ pub(crate) fn terminal_composite(
         && group.image_mask.is_none()
         && group.filters.is_empty()
 }
+/// Holding the original source through coverage must not exceed the replaced
+/// parent-grid result in shared planned storage. Axis-wise comparison preserves
+/// monotonic row rounding; adapters still admit their actual recycled capacities.
+pub(crate) fn coverage_retention(source: [u32; 2], parent: [u32; 2]) -> bool {
+    source[0] <= parent[0] && source[1] <= parent[1]
+}
+/// Select a fixed output tail without changing authored operations or coverage quantization.
+/// Masks execute in independent streams; combined masks and color-reading effects remain passes.
+pub(crate) fn terminal_tail(
+    drawing: &FrameDrawing,
+    group: &reel_ui::frame::FrameGroup,
+    samples: u32,
+    boundary: bool,
+) -> Option<crate::effect::OutputTail> {
+    use crate::effect::OutputTail;
+    if terminal_composite(group, samples, boundary) {
+        return Some(OutputTail::Ordinary);
+    }
+    if samples != 1
+        || boundary
+        || group.mask_effect.is_some()
+        || group.image_mask.is_some()
+        || group.invert != 0.
+        || group.composite.blend != Default::default()
+        || !group.filters.is_empty()
+    {
+        return None;
+    }
+    match (group.clip.is_some(), group.mask) {
+        (true, None) => {}
+        (false, Some(mask))
+            if drawing
+                .masks()
+                .get(&mask.mask)
+                .is_some_and(|m| m.mode == reel_ui::imaging::MaskMode::Alpha) => {}
+        _ => return None,
+    }
+    coverage_variant(drawing, group).then_some(OutputTail::AlphaCoverage)
+}
+
 pub(crate) fn source_layout(
     effect: &FrameEffect,
     effect_to_frame: Affine,
@@ -206,12 +246,60 @@ pub(crate) fn context(
         [0., 0., 1., 1.],
         implicit_a,
         implicit_b,
+        [0.; 4],
     ];
     slots
         .iter()
         .flatten()
         .all(|v| v.is_finite())
         .then_some(slots)
+}
+
+/// Prove an isolated clip contains only one ordinary effect group. No context,
+/// sibling, retained transition or capture boundary crosses the delayed output.
+pub(crate) fn clipped_effect<'a>(
+    drawing: &FrameDrawing,
+    commands: &'a [reel_ui::frame::FrameCommand],
+    next: usize,
+    samples: u32,
+    boundary: bool,
+) -> Option<&'a reel_ui::frame::FrameGroup> {
+    use reel_ui::frame::FrameOp;
+    let FrameOp::PushGroup(group) = &commands.get(next)?.op else {
+        return None;
+    };
+    if !terminal_composite(group, samples, boundary) || !coverage_variant(drawing, group) {
+        return None;
+    }
+    let mut depth = 1usize;
+    for (index, command) in commands.iter().enumerate().skip(next + 1) {
+        match command.op {
+            FrameOp::PushGroup(_) | FrameOp::PushClip(_) => depth += 1,
+            FrameOp::PopGroup | FrameOp::PopClip => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return matches!(command.op, FrameOp::PopGroup)
+                        .then_some(())
+                        .and_then(|_| {
+                            matches!(
+                                commands.get(index + 1).map(|c| &c.op),
+                                Some(FrameOp::PopClip)
+                            )
+                            .then_some(group)
+                        });
+                }
+            }
+            FrameOp::PushContext(_) | FrameOp::PopContext => return None,
+            _ => {}
+        }
+    }
+    None
+}
+fn coverage_variant(drawing: &FrameDrawing, group: &reel_ui::frame::FrameGroup) -> bool {
+    let Some(effect) = group.effect.as_ref() else {
+        return false;
+    };
+    drawing.resources().leases().iter().any(|lease| lease.handle()==effect.shader && matches!(lease.data(),ResourceData::EffectShader{descriptor,..} if descriptor.coverage_offset.is_some() && crate::effect::OutputTail::supports_coverage(descriptor.output,descriptor.textures,descriptor.source_sampler)))
 }
 
 /// Explicitly map parent frame pixels to the supplied source storage. Coverage
@@ -570,4 +658,11 @@ mod tests {
             }
         }
     }
+}
+
+/// Borrowed output domain; coverage's flag preserves an outer clip attachment store.
+pub(crate) struct Terminal<'a, T> {
+    pub target: &'a T,
+    pub opacity: f32,
+    pub coverage: Option<(&'a T, bool)>,
 }

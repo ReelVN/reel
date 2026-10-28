@@ -194,6 +194,8 @@ impl Scratch {
     }
 }
 struct Scope<'a> {
+    clip_child: Option<&'a FrameGroup>,
+    retained_source: Option<[u32; 2]>,
     defer: bool,
     shared_source: bool,
     end_batch: bool,
@@ -629,6 +631,18 @@ impl Input<'_> {
                                 forward_source: false,
                                 clip: isolated,
                                 group: None,
+                                clip_child: isolated
+                                    .then(|| {
+                                        super::effect_plan::clipped_effect(
+                                            current.drawing,
+                                            current.commands,
+                                            current.next,
+                                            samples,
+                                            capture || !current.drawing.transitions().is_empty(),
+                                        )
+                                    })
+                                    .flatten(),
+                                retained_source: None,
                                 restore: None,
                                 parent_scissor,
                                 source_view: false,
@@ -740,6 +754,8 @@ impl Input<'_> {
                                 isolated,
                                 clip: group.clip.is_some(),
                                 group: Some(group),
+                                clip_child: None,
+                                retained_source: None,
                                 restore,
                                 parent_scissor,
                                 source_view: view.is_some(),
@@ -762,7 +778,7 @@ impl Input<'_> {
                             scratch.release(size, &mut reserve)?;
                             continue;
                         }
-                        let mut source = current.size;
+                        let mut source = scope.retained_source.unwrap_or(current.size);
                         if let Some(group) = scope.group.filter(|group| group.mask_effect.is_some())
                         {
                             // Each effect replaces the complete local source. The
@@ -814,6 +830,22 @@ impl Input<'_> {
                                 scratch.release(source, &mut reserve)?;
                                 continue;
                             }
+                            if scope.group.is_some_and(|definition| {
+                                current
+                                    .scopes
+                                    .last()
+                                    .and_then(|parent| parent.clip_child)
+                                    .is_some_and(|child| std::ptr::eq(child, definition))
+                            }) && super::effect_plan::coverage_retention(source, parent_size)
+                            {
+                                scratch.release(parent_size, &mut reserve)?;
+                                current
+                                    .scopes
+                                    .last_mut()
+                                    .expect("clip parent")
+                                    .retained_source = Some(source);
+                                continue;
+                            }
                             if scope.group.is_some_and(|group| {
                                 super::effect_plan::terminal_composite(
                                     group,
@@ -824,9 +856,21 @@ impl Input<'_> {
                                 scratch.release(source, &mut reserve)?;
                                 continue;
                             }
-                            scratch.acquire(parent_size, &mut reserve)?;
-                            scratch.release(source, &mut reserve)?;
-                            source = parent_size;
+                            let coverage_tail = scope.group.is_some_and(|group| {
+                                super::effect_plan::terminal_tail(
+                                    current.drawing,
+                                    group,
+                                    samples,
+                                    capture || !current.drawing.transitions().is_empty(),
+                                ) == Some(crate::effect::OutputTail::AlphaCoverage)
+                            });
+                            if !coverage_tail
+                                || !super::effect_plan::coverage_retention(source, parent_size)
+                            {
+                                scratch.acquire(parent_size, &mut reserve)?;
+                                scratch.release(source, &mut reserve)?;
+                                source = parent_size;
+                            }
                         }
                         let mask = scope.group.and_then(|group| group.mask);
                         let backdrop = scope

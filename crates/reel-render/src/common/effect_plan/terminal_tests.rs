@@ -92,3 +92,80 @@ fn terminal_half_rounding_preserves_every_finite_attachment_value() {
         }
     }
 }
+
+#[test]
+fn nested_clip_keeps_both_stores_before_independent_coverage() {
+    let up = |v: f64| (v.clamp(0., 1.) * 255. + 0.5).floor() / 255.;
+    let down = |v: f64| (v.clamp(0., 1.) * 255. - 0.5).ceil() / 255.;
+    let mut maximum = [0f64; 2];
+    for color in 0..255 {
+        for alpha in 0..255 {
+            for opacity in [0., 0.01, 0.37, 0.5, 0.75, 1.] {
+                let color_a = up((color + 1) as f64 / 255. * opacity);
+                let color_b = down(color as f64 / 255. * opacity);
+                let alpha_a = down(alpha as f64 / 255. * opacity);
+                let alpha_b = up((alpha + 1) as f64 / 255. * opacity);
+                for coverage in [0., 0.1, 0.5, 0.9, 1.] {
+                    for background in [0., 0.25, 0.5, 0.9, 1.] {
+                        let a = alpha_a * coverage;
+                        let b = alpha_b * coverage;
+                        let rgb =
+                            ((color_a - color_b) * coverage + background * 0.8 * (b - a)).abs();
+                        let alpha =
+                            ((a + background * (1. - a)) - (b + background * (1. - b))).abs();
+                        maximum[0] = maximum[0].max(rgb);
+                        maximum[1] = maximum[1].max(alpha);
+                        assert!(rgb <= 4. / 255. + 1e-14);
+                        assert!(alpha <= 2. / 255. + 1e-14);
+                    }
+                }
+            }
+        }
+    }
+    // Collapsing the two stores changes even an ordinary half-opacity sample.
+    let input = 0.5 / 255.;
+    let opacity = 0.5;
+    let coverage = 0.5;
+    assert_ne!(
+        up(up(input) * opacity) * coverage,
+        up(input) * opacity * coverage
+    );
+    eprintln!("two-store coverage source-over max RGB/alpha: {maximum:?}");
+    for bits in 0..=u16::MAX {
+        let input = half::f16::from_bits(bits);
+        if input.is_finite() {
+            for opacity in [0., 0.37, 1.] {
+                let stored = half::f16::from_f32(input.to_f32() * opacity).to_f32();
+                for coverage in [0., 0.1, 0.5, 1.] {
+                    let original = stored * coverage;
+                    let fused =
+                        half::f16::from_f32(half::f16::from_f32(input.to_f32()).to_f32() * opacity)
+                            .to_f32()
+                            * coverage;
+                    assert_eq!(original.to_bits(), fused.to_bits());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn coverage_tail_accounts_for_replaced_half_composite_products() {
+    let half = |v: f32| half::f16::from_f32(v).to_f32();
+    let mut max = 0f32;
+    for stored in 0..=255 {
+        for coverage in 0..=255 {
+            let stored = stored as f32 / 255.;
+            let coverage = coverage as f32 / 255.;
+            for opacity in [0., 0.01, 0.37, 0.75, 1.] {
+                let original = half(half(half(stored) * half(coverage)) * half(opacity));
+                let fused = stored * coverage * opacity;
+                max = max.max((fused - original).abs());
+                assert!((fused - original).abs() <= 5. / 4096.);
+            }
+        }
+    }
+    eprintln!(
+        "replaced half coverage multiply max channel error={max}; source-over bound RGB=10/4096, alpha=5/4096"
+    );
+}

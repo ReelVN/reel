@@ -9,7 +9,7 @@ use reel_ui::{
 use std::rc::Rc;
 
 #[derive(Default)]
-pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 2]);
+pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 4]);
 impl Cache {
     pub fn prune(&mut self) {
         for cache in &mut self.0 {
@@ -20,6 +20,7 @@ impl Cache {
 pub(super) struct Compiled {
     program: native::Program,
     source: Option<native::Uniform>,
+    coverage: Option<native::Uniform>,
     context: Option<native::Uniform>,
     parameters: Vec<Option<native::Uniform>>,
     textures: Vec<Option<native::Uniform>>,
@@ -34,6 +35,7 @@ fn compile(
     limit: u64,
     at: RecordLocation,
     padded: bool,
+    masked: bool,
 ) -> Result<Rc<Compiled>, GpuError> {
     let effect_plan::Shader {
         lease,
@@ -45,6 +47,7 @@ fn compile(
     if descriptor
         .textures
         .saturating_add(u32::from(descriptor.source_sampler))
+        .saturating_add(u32::from(masked))
         > gpu.capabilities().max_texture_units
     {
         return Err(GpuError::Unsupported {
@@ -52,6 +55,12 @@ fn compile(
             record: "effect textures exceed the device capacity",
         });
     }
+    let bytes = descriptor
+        .code(bytes, masked)
+        .ok_or(GpuError::InvalidRecord {
+            at,
+            record: "missing effect variant",
+        })?;
     let code = super::super::effect_code(format, bytes, at)?;
     let storage = effect_cache::reserve(
         budget,
@@ -64,7 +73,7 @@ fn compile(
     let program = programs::create_program(
         gpu,
         code,
-        descriptor.output == reel_ui::stage::effect::EffectType::Float,
+        descriptor.output == reel_ui::stage::effect::EffectType::Float || masked,
         padded,
     )
     .map_err(|error| GpuError::Shader {
@@ -79,6 +88,7 @@ fn compile(
         .collect();
     Ok(Rc::new(Compiled {
         source,
+        coverage: program.uniform("reel_composite_mask"),
         context,
         parameters,
         textures: (0..descriptor.textures)
@@ -133,6 +143,7 @@ impl Context<'_> {
         source: &Target,
         target: &Target,
         opacity: f32,
+        coverage: Option<(&Target, bool)>,
         at: RecordLocation,
     ) -> Result<(), GpuError> {
         self.effect_draw(
@@ -141,7 +152,11 @@ impl Context<'_> {
             transform,
             source,
             None,
-            Some((target, opacity)),
+            Some(effect_plan::Terminal {
+                target,
+                opacity,
+                coverage,
+            }),
             at,
         )
         .map(|_| ())
@@ -157,17 +172,21 @@ impl Context<'_> {
         transform: Affine,
         source: &Target,
         source_view: Option<Affine>,
-        terminal: Option<(&Target, f32)>,
+        terminal: Option<effect_plan::Terminal<'_, Target>>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         self.flush_draws()?;
+        let coverage = terminal.as_ref().and_then(|output| output.coverage);
+        let nested = coverage.is_some_and(|(_, nested)| nested);
+        let coverage = coverage.map(|(mask, _)| mask);
         let shader = effect_plan::shader(drawing, effect, at)?;
         let effect_plan::Shader {
             lease, descriptor, ..
         } = shader;
         let padded = descriptor.output == reel_ui::stage::effect::EffectType::Float
             && source.size != source.view.size();
-        let cache = &mut self.effect_cache.0[usize::from(padded)];
+        let cache =
+            &mut self.effect_cache.0[usize::from(padded) + 2 * usize::from(coverage.is_some())];
         let compiled = if let Some(compiled) = cache.get(
             descriptor.shader_key,
             lease,
@@ -183,6 +202,7 @@ impl Context<'_> {
                 self.limits.resource_bytes,
                 at,
                 padded,
+                coverage.is_some(),
             )?;
             cache.insert(
                 descriptor.shader_key,
@@ -193,8 +213,8 @@ impl Context<'_> {
             )?;
             compiled
         };
-        let output = if let Some((target, _)) = terminal {
-            target.clone()
+        let output = if let Some(output) = &terminal {
+            output.target.clone()
         } else {
             self.target()?
         };
@@ -206,13 +226,21 @@ impl Context<'_> {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
-        if let Some((_, opacity)) = terminal {
+        if let Some(effect_plan::Terminal { opacity, .. }) = terminal {
             context[1][3] = 1.0;
             context[2][3] = opacity;
+            context[3][3] = f32::from(nested);
         }
         effect_plan::map_storage(&mut context, source.size, source.view.size());
+        if let Some(mask) = coverage {
+            context[9] =
+                crate::common::source_view::uv_mapping(self.size, mask.view.size(), [0; 2]);
+        }
         if self.scissor.empty() {
             return Ok(output);
+        }
+        if let Some(mask) = coverage {
+            self.ensure_sampled(&mask.view)?;
         }
         if descriptor.source_sampler {
             self.ensure_sampled(&source.view)?;
@@ -224,9 +252,12 @@ impl Context<'_> {
         });
         self.effects = held;
         retained?;
-        let image_capacity = effect.images.len() + usize::from(descriptor.source_sampler);
+        let image_capacity = effect.images.len()
+            + usize::from(descriptor.source_sampler)
+            + usize::from(coverage.is_some());
         let metadata_capacity = effect.images.len() * 2;
-        let value_capacity = effect.values.len() + 3 + effect.images.len();
+        let value_capacity =
+            effect.values.len() + 3 + effect.images.len() + usize::from(coverage.is_some());
         self.transient(
             (image_capacity * size_of::<&native::Texture>()
                 + metadata_capacity * size_of::<[f32; 4]>()
@@ -254,6 +285,16 @@ impl Context<'_> {
                 image.encoding,
                 image.format,
             ));
+        }
+        if let Some(mask) = coverage {
+            let unit = images.len() as i32;
+            images.push(&mask.view);
+            values.extend(
+                compiled
+                    .coverage
+                    .as_ref()
+                    .map(|u| native::UniformValue::Int(u, unit)),
+            );
         }
         values.extend(
             compiled
