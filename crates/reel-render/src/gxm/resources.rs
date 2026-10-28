@@ -4,7 +4,7 @@ use crate::common::resources::ResourceSource;
 use reel_core::texture::{TextureFormat, TextureLayout};
 use reel_ui::{
     peniko::{ImageAlphaType, ImageFormat},
-    resources::ResourceData,
+    resources::{ResourceData, ResourcePixels},
 };
 
 pub(super) struct Image {
@@ -30,6 +30,8 @@ impl Image {
 
 struct Pending {
     source: ResourceLease,
+    pixels: Option<ResourcePixels>,
+    _metadata: BudgetTicket,
     image: Rc<Image>,
     plane: usize,
     row: u32,
@@ -233,6 +235,13 @@ impl Images {
         item: &crate::common::image_plan::Required<'_>,
     ) -> Result<Pending, GpuError> {
         let source = item.source;
+        let pixels = source.read_pixels();
+        let metadata = reserve(
+            &budgets.transient,
+            (size_of::<Pending>() + 4 * size_of::<ResourceHandle>()) as u64,
+            limits.transient_bytes,
+            "partial image metadata",
+        )?;
         let at = item.at;
         let native_import =
             matches!(source.data(), ResourceData::Yuv420(image) if native_frame(image).is_some());
@@ -332,13 +341,10 @@ impl Images {
                 }
             } else if format.is_some_and(TextureFormat::is_compressed) {
                 // Compressed allocation is inseparable from its complete mip upload.
-                let ResourceData::Texture {
-                    descriptor,
-                    bytes: blocks,
-                } = source.data()
-                else {
+                let ResourceData::Texture { descriptor, .. } = source.data() else {
                     unreachable!()
                 };
+                let blocks = pixels.as_ref().expect("texture pixel reader");
                 let texture = if let Some((texture, _)) = recycled_textures {
                     texture
                 } else {
@@ -351,10 +357,10 @@ impl Images {
                 };
                 match descriptor.storage_layout {
                     reel_core::texture::TextureStorageLayout::Linear => {
-                        gpu.upload_bc_texture(&texture, blocks.data())?
+                        gpu.upload_bc_texture(&texture, blocks.bytes())?
                     }
                     reel_core::texture::TextureStorageLayout::GxmBcMorton => {
-                        gpu.upload_bc_morton_texture(&texture, blocks.data())?
+                        gpu.upload_bc_morton_texture(&texture, blocks.bytes())?
                     }
                 }
                 texture
@@ -400,6 +406,8 @@ impl Images {
         });
         Ok(Pending {
             source: source.clone(),
+            pixels,
+            _metadata: metadata,
             image,
             plane: 0,
             row: 0,
@@ -588,11 +596,11 @@ fn progress(
             ResourceData::Image { image, .. } => (
                 [image.width, image.height],
                 image.width as usize * 4,
-                image.data.data(),
+                pending.pixels.as_ref().expect("image pixel reader").bytes(),
                 true,
                 image.alpha_type,
             ),
-            ResourceData::Texture { descriptor, bytes } => {
+            ResourceData::Texture { descriptor, .. } => {
                 if pending.plane >= descriptor.mip_count as usize {
                     return Ok(true);
                 }
@@ -607,10 +615,13 @@ fn progress(
                         .format
                         .row_bytes(descriptor.mip_size(pending.plane as u32)[0])
                         .ok_or(GpuError::InvalidSize)? as usize,
-                    &bytes.data()[descriptor
+                    &pending
+                        .pixels
+                        .as_ref()
+                        .expect("texture pixel reader")
+                        .bytes()[descriptor
                         .mip_offset(pending.plane as u32)
-                        .ok_or(GpuError::InvalidSize)?
-                        as usize..],
+                        .ok_or(GpuError::InvalidSize)? as usize..],
                     false,
                     ImageAlphaType::AlphaPremultiplied,
                 )

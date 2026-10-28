@@ -7,7 +7,9 @@ use super::{
     resources::{self, Image},
 };
 use reel_core::budget::{BudgetPool, BudgetTicket};
-use reel_ui::resources::{ResourceData, ResourceHandle, ResourceLease, ResourceVersion};
+use reel_ui::resources::{
+    ResourceData, ResourceHandle, ResourceLease, ResourcePixels, ResourceVersion,
+};
 use std::{
     collections::{HashMap, hash_map::Entry},
     sync::{
@@ -27,6 +29,7 @@ pub(super) struct ImageCache {
 
 struct Partial {
     image: Arc<Image>,
+    pixels: ResourcePixels,
     next_row: u32,
     total_rows: u32,
     _storage: Reservation,
@@ -288,6 +291,10 @@ impl ImageCache {
                     });
                     entry.insert(Partial {
                         image: Arc::new(image),
+                        pixels: item.source.read_pixels().ok_or(GpuError::Unsupported {
+                            at: item.at,
+                            record: "missing image pixels",
+                        })?,
                         next_row: 0,
                         total_rows: source.height,
                         _storage: storage,
@@ -332,7 +339,7 @@ impl ImageCache {
                 resources::image_rows(
                     gpu,
                     &mut encoder,
-                    item.source,
+                    (item.source, &pending.pixels),
                     item.at,
                     &pending.image,
                     pending.next_row..next_row,
@@ -388,6 +395,10 @@ impl ImageCache {
                     });
                     entry.insert(Partial {
                         image: Arc::new(image),
+                        pixels: item.source.read_pixels().ok_or(GpuError::Unsupported {
+                            at: item.at,
+                            record: "missing image pixels",
+                        })?,
                         next_row: 0,
                         total_rows: layout.rows,
                         _storage: storage,
@@ -432,7 +443,7 @@ impl ImageCache {
                 resources::texture_rows(
                     gpu,
                     &mut encoder,
-                    item.source,
+                    (item.source, &pending.pixels),
                     &pending.image,
                     level,
                     level_row..level_row + count,

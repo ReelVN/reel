@@ -167,6 +167,17 @@ struct Resource {
 #[derive(Clone, Debug)]
 pub struct ResourceLease(Arc<Resource>);
 
+/// An owned reader for immutable image pixels. Clones share the producer's
+/// allocation and its budget until the last reader drops.
+#[derive(Clone, Debug)]
+pub struct ResourcePixels(Blob<u8>);
+impl ResourcePixels {
+    /// Pixel or block bytes retained for this reader's lifetime.
+    pub fn bytes(&self) -> &[u8] {
+        self.0.data()
+    }
+}
+
 /// An explicit producer resource used as the brush of this widget's recorded
 /// image fills. No encoded pixels or fabricated RGBA image descriptor is needed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -183,6 +194,15 @@ impl ResourceLease {
     }
     pub fn data(&self) -> &ResourceData {
         &self.0.data
+    }
+    /// Acquire an owning CPU reader for decoded image or texture pixels.
+    /// Other resource kinds have their own data and return `None`.
+    pub fn read_pixels(&self) -> Option<ResourcePixels> {
+        match &self.0.data {
+            ResourceData::Image { image, .. } => Some(ResourcePixels(image.data.clone())),
+            ResourceData::Texture { bytes, .. } => Some(ResourcePixels(bytes.clone())),
+            _ => None,
+        }
     }
     /// Cached conservative alpha support in visible texels, including the
     /// filtering border. Registration computes this once from immutable RGBA

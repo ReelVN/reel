@@ -309,3 +309,28 @@ fn snapshot_capture_cost() {
         }
     }
 }
+
+#[test]
+fn image_pixel_reader_retains_original_storage_after_resource_retirement() {
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let handle = registry
+        .register_image(
+            version(999),
+            OwnedBytes::new(vec![17; 16], pool.reserve(16).unwrap()).unwrap(),
+            [2, 2],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let lease = registry.acquire(handle).unwrap();
+    let reader = lease.read_pixels().unwrap();
+    assert!(registry.retire(handle));
+    drop(lease);
+    drop(registry);
+    assert_eq!(pool.usage().bytes, 16);
+    assert_eq!(reader.bytes(), &[17; 16]);
+    drop(reader);
+    assert_eq!(pool.usage().bytes, 0);
+}

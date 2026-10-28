@@ -59,12 +59,13 @@ impl Image {
 pub(super) fn image_rows(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
-    lease: &ResourceLease,
+    source: (&ResourceLease, &reel_ui::resources::ResourcePixels),
     at: RecordLocation,
     target: &Image,
     rows: std::ops::Range<u32>,
     staging: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
+    let (lease, pixels) = source;
     let ResourceData::Image { image, encoding } = lease.data() else {
         return Err(GpuError::Unsupported {
             at,
@@ -78,7 +79,7 @@ pub(super) fn image_rows(
         });
     }
     upload_rows_with(gpu, encoder, target, rows, staging, |index| {
-        let rgba = &image.data.data()[index * 4..index * 4 + 4];
+        let rgba = &pixels.bytes()[index * 4..index * 4 + 4];
         rgba8_linear_f16(rgba, *encoding, image.alpha_type)
     })
 }
@@ -243,13 +244,14 @@ pub(super) fn create_texture(
 pub(super) fn texture_rows(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
-    source: &ResourceLease,
+    source: (&ResourceLease, &reel_ui::resources::ResourcePixels),
     target: &Image,
     upload: TextureUploadLayout,
     rows: std::ops::Range<u32>,
     reusable: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
-    let ResourceData::Texture { descriptor, bytes } = source.data() else {
+    let (source, pixels) = source;
+    let ResourceData::Texture { descriptor, .. } = source.data() else {
         return Err(GpuError::InvalidSize);
     };
     let row = texture_row_bytes(upload);
@@ -286,7 +288,7 @@ pub(super) fn texture_rows(
             if descriptor.storage_layout == reel_core::texture::TextureStorageLayout::Linear {
                 let src =
                     (upload.offset + u64::from(rows.start + y) * upload.source_row_bytes) as usize;
-                output.copy_from_slice(&bytes.data()[src..src + packed as usize]);
+                output.copy_from_slice(&pixels.bytes()[src..src + packed as usize]);
             } else {
                 let n = descriptor.format.block_bytes() as usize;
                 for x in 0..upload.layout.storage_size[0].div_ceil(4) {
@@ -299,7 +301,7 @@ pub(super) fn texture_rows(
                         );
                     output
                         .slice(x as usize * n..(x as usize + 1) * n)
-                        .copy_from_slice(&bytes.data()[src..src + n]);
+                        .copy_from_slice(&pixels.bytes()[src..src + n]);
                 }
             }
         }
