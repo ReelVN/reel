@@ -315,7 +315,9 @@ fn run_package_on(
     options.media.stream_window_frames = 4096;
     options.media.queue_bytes = 1 << 20;
     options.media.mixer.max_sounds = 16;
-    options.media.video.decoded_bytes = 24 << 20;
+    // Includes AvPlayer's codec buffers, owned NV12 output and PCM. The 960x544
+    // hardware profile reaches the old 24 MiB limit before its output pool fills.
+    options.media.video.decoded_bytes = 32 << 20;
     options.media.video.queued_pictures = 2;
     options.media.video.queued_audio_frames = 4096;
     options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory {

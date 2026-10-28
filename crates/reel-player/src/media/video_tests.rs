@@ -1,6 +1,6 @@
 use super::{tests::*, *};
 use reel_engine::video::{VideoPlaybackState, VideoRequest};
-use reel_ui::resources::ResourceData;
+mod retirement;
 
 fn movie(looping: bool) -> VideoRequest {
     VideoRequest {

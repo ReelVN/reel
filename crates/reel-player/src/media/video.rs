@@ -85,8 +85,8 @@ pub(super) struct Movie {
     pub paused: bool,
     playback: Option<VideoPlayback>,
     retiring: Option<VideoPlayback>,
-    pending_seek: bool,
-    source: StreamControl,
+    pending_open: bool,
+    source: Option<StreamControl>,
     result: Option<MediaResult>,
     pub frame: Option<ResourceLease>,
     position: Duration,
@@ -203,9 +203,6 @@ impl MediaPlayer {
         }
         // A silent movie remains usable without a device. Audio admission below
         // reports an actual output failure only when the container has a track.
-        let (source, playback) = self
-            .open_movie(&request, request.start_position, false, paused)
-            .map_err(|e| format!("{}: {e}", request.source))?;
         self.next = self.next.checked_add(1).ok_or("media identity exhausted")?;
         let id = MediaId(self.next);
         self.movies.entries.insert(
@@ -214,10 +211,10 @@ impl MediaPlayer {
                 position: request.start_position,
                 request,
                 paused,
-                playback: Some(playback),
+                playback: None,
                 retiring: None,
-                pending_seek: false,
-                source,
+                pending_open: true,
+                source: None,
                 result: None,
                 frame: None,
                 poster_result: None,
@@ -232,14 +229,6 @@ impl MediaPlayer {
         if self.active_count() >= self.options.mixer.max_sounds {
             return Err("media activity capacity exhausted".into());
         }
-        let (source, playback) = self
-            .open_movie(
-                &state.request,
-                state.position,
-                state.result.is_some(),
-                state.paused,
-            )
-            .map_err(|e| format!("{}: {e}", state.request.source))?;
         self.next = self.next.checked_add(1).ok_or("media identity exhausted")?;
         let id = MediaId(self.next);
         self.movies.entries.insert(
@@ -248,10 +237,10 @@ impl MediaPlayer {
                 request: state.request,
                 position: state.position,
                 paused: state.paused,
-                playback: Some(playback),
+                playback: None,
                 retiring: None,
-                pending_seek: false,
-                source,
+                pending_open: true,
+                source: None,
                 result: None,
                 frame: None,
                 poster_result: state.result,
@@ -302,7 +291,7 @@ impl MediaPlayer {
                     movie.retiring = Some(playback);
                 }
                 movie.position = position;
-                movie.pending_seek = true;
+                movie.pending_open = true;
                 // The previous displayed frame remains in the stage until the
                 // seek target arrives, without retaining it in this producer.
                 movie.frame = None;
@@ -341,11 +330,23 @@ impl MediaPlayer {
             {
                 movie.retiring = None;
             }
-            if movie.pending_seek && movie.retiring.is_none() && movie.result.is_none() {
-                movie.pending_seek = false;
-                match self.open_movie(&movie.request, movie.position, false, movie.paused) {
+        }
+        let seeking_retirement = entries.values().any(|movie| movie.retiring.is_some());
+        for movie in entries.values_mut() {
+            if movie.pending_open
+                && !seeking_retirement
+                && self.movies.retiring.is_empty()
+                && movie.result.is_none()
+            {
+                movie.pending_open = false;
+                match self.open_movie(
+                    &movie.request,
+                    movie.position,
+                    movie.poster_result.is_some(),
+                    movie.paused,
+                ) {
                     Ok((source, playback)) => {
-                        movie.source = source;
+                        movie.source = Some(source);
                         movie.playback = Some(playback);
                     }
                     Err(error) => {
@@ -388,6 +389,8 @@ impl MediaPlayer {
             if let Some(frame) = playback.take_frame() {
                 let version = movie
                     .source
+                    .as_ref()
+                    .expect("active playback owns its source")
                     .version()
                     .expect("decoded picture has described source");
                 match register_frame(version, frame) {
@@ -407,19 +410,10 @@ impl MediaPlayer {
                 && movie.request.looping
                 && movie.poster_result.is_none()
             {
-                let request = &movie.request;
-                match self.open_movie(request, request.start_position, false, movie.paused) {
-                    Ok((source, playback)) => {
-                        let previous = movie.playback.replace(playback).unwrap();
-                        movie.source = source;
-                        self.movies.retire(previous);
-                    }
-                    Err(error) => {
-                        if let Some(playback) = movie.failed(error) {
-                            self.movies.retire(playback);
-                        }
-                    }
-                }
+                let previous = movie.playback.take().unwrap();
+                self.movies.retire(previous);
+                movie.position = movie.request.start_position;
+                movie.pending_open = true;
                 continue;
             }
             let result = match terminal {
