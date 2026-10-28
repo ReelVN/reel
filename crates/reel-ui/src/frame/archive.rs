@@ -286,15 +286,28 @@ impl RetainedScene {
                             } else {
                                 snapshot_reserve(&mut resources, 1, &mut ticket)?;
                                 snapshot_charge(&mut workspace, 512)?;
+                                let backing_key_bytes = backing.version().key.0.len();
+                                snapshot_charge(&mut ticket, backing_key_bytes)?;
                                 let backing_kind = if let Some(asset) = describe(backing) {
                                     if asset.version != *backing.version()
                                         || !asset_matches(&asset, backing)
                                     {
                                         return Err(retained::error(BuildErrorKind::InvalidRecord));
                                     }
-                                    snapshot_charge(&mut ticket, asset.version.key.0.capacity())?;
+                                    snapshot_charge(
+                                        &mut ticket,
+                                        asset
+                                            .version
+                                            .key
+                                            .0
+                                            .capacity()
+                                            .saturating_sub(backing_key_bytes),
+                                    )?;
                                     SavedResourceKind::Asset(asset)
                                 } else {
+                                    ticket
+                                        .resize(ticket.bytes() - backing_key_bytes as u64)
+                                        .map_err(|_| retained::error(BuildErrorKind::Bytes))?;
                                     let descriptor =
                                         backing.texture_descriptor().ok_or_else(|| {
                                             retained::error(BuildErrorKind::InvalidRecord)
@@ -382,6 +395,9 @@ impl RetainedScene {
                             )
                         }
                     };
+                    // An inline view may have inserted its backing since the first
+                    // reservation. Admit growth again before publishing the view.
+                    snapshot_reserve(&mut resources, 1, &mut ticket)?;
                     let slot = u32::try_from(resources.len())
                         .map_err(|_| retained::error(BuildErrorKind::Capacity))?;
                     if matches!(kind, SavedResourceKind::Asset(_))

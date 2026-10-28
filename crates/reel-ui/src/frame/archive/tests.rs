@@ -577,7 +577,10 @@ fn atlas_views_archive_one_page_and_restore_distinct_origins() {
         OwnedBytes::new(bytes, pool.reserve(512).unwrap()).unwrap(),
     )
     .unwrap();
-    let page = registry.register_texture(version("page"), payload).unwrap();
+    let page_name = "p".repeat(8192);
+    let page = registry
+        .register_texture(version(&page_name), payload)
+        .unwrap();
     let page = registry.acquire(page).unwrap();
     let view = |x| ImageView {
         logical_size: [4, 4],
@@ -620,7 +623,65 @@ fn atlas_views_archive_one_page_and_restore_distinct_origins() {
         assets.0.resources.iter().map(|r| r.live_bytes).sum::<u64>(),
         expected
     );
+    let metadata = |saved: &SavedRetainedScene| {
+        size_of::<Archive>()
+            + 2 * size_of::<usize>()
+            + saved.0.nodes.capacity() * size_of::<SavedNode>()
+            + saved.0.resources.capacity() * size_of::<SavedResource>()
+            + saved
+                .0
+                .nodes
+                .iter()
+                .map(|node| {
+                    node.resources.capacity() * size_of::<u32>()
+                        + node.transitions.capacity() * size_of::<SavedTransition>()
+                })
+                .sum::<usize>()
+            + saved
+                .0
+                .resources
+                .iter()
+                .map(|resource| match &resource.kind {
+                    SavedResourceKind::Asset(asset) => asset.version.key.0.capacity(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+    };
+    let before = pool.usage().bytes;
+    let mut described_backing = false;
+    let asset_backing = scene
+        .snapshot(|lease| {
+            if lease.handle() != page.handle() {
+                return None;
+            }
+            described_backing = true;
+            assert!(
+                pool.usage().bytes >= before + page_name.len() as u64,
+                "backing name must be admitted before the producer can clone it"
+            );
+            let mut version = lease.version().clone();
+            version.key.0.reserve(128);
+            Some(RetainedAsset {
+                version,
+                kind: RetainedAssetKind::Image,
+            })
+        })
+        .unwrap();
+    assert!(described_backing);
+    assert_eq!(asset_backing.0.resources.len(), 3);
+    assert_eq!(
+        asset_backing.0._ticket.as_ref().unwrap().bytes(),
+        metadata(&asset_backing) as u64
+    );
+    assert_eq!(pool.usage().bytes - before, metadata(&asset_backing) as u64);
+    drop(asset_backing);
+    assert_eq!(pool.usage().bytes, before);
     let saved = scene.snapshot(|_| None).unwrap();
+    assert_eq!(
+        saved.0._ticket.as_ref().unwrap().bytes(),
+        metadata(&saved) as u64
+    );
+    assert_eq!(pool.usage().bytes - before, metadata(&saved) as u64);
     assert_eq!(saved.0.resources.len(), 3);
     assert_eq!(
         saved
