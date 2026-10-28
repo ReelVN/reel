@@ -3,6 +3,8 @@ use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
 use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
 #[cfg(test)]
 mod clock_sampling;
+#[cfg(feature = "profiling")]
+mod profile_output;
 #[cfg(test)]
 mod save_cost;
 mod saves;
@@ -670,7 +672,7 @@ impl StoryRuntime {
                         .flatten()
                 })
                 .map(|location| self.location_text(location));
-            eprintln!(
+            profile_output::log(format_args!(
                 "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} binding_hits={} binding_misses={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} stage_batches={} max_stage_batch_ms={:.3} location={location:?}",
                 self.logical_ns,
                 self.driver().adapter().stage_ready(),
@@ -689,7 +691,7 @@ impl StoryRuntime {
                 stats.heap.charged_bytes,
                 self.stage_batches,
                 self.stage_batch_max_ns as f64 / 1_000_000.
-            );
+            ));
         }
         self.stage_batches = 0;
         self.stage_batch_max_ns = 0;
@@ -714,13 +716,13 @@ impl StoryRuntime {
             .stage_batch_max_ns
             .max(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
         if elapsed >= std::time::Duration::from_millis(50) {
-            eprintln!(
+            profile_output::log(format_args!(
                 "[reel-runtime] stage-batch wall_ms={:.3} logical_ns={} native_entries={} vm_slices={}",
                 elapsed.as_secs_f64() * 1000.,
                 self.logical_ns,
                 self.driver().adapter().vm().stats().native_entries,
                 self.driver().adapter().vm().stats().slices,
-            );
+            ));
         }
     }
 
@@ -736,7 +738,7 @@ impl StoryRuntime {
             return;
         }
         let stats = self.driver().adapter().vm().stats();
-        eprintln!(
+        profile_output::log(format_args!(
             "[reel-runtime] clock logical_ns={} wall_ms={:.3} native_entries={} native_resumes={} vm_slices={} collections={} live_objects={} heap_bytes={}",
             self.logical_ns,
             elapsed.as_secs_f64() * 1000.,
@@ -746,7 +748,7 @@ impl StoryRuntime {
             stats.heap.collections - profile.stats.heap.collections,
             stats.heap.live_objects,
             stats.heap.charged_bytes
-        );
+        ));
     }
 
     fn location_text(&self, location: aside_vm::executor::Location) -> String {
