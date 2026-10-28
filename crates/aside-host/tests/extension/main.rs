@@ -438,3 +438,5 @@ mod shared_defaults;
 mod shared_methods;
 
 mod source_optional;
+
+mod script_bindings;

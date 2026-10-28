@@ -30,8 +30,8 @@ use generators::GeneratorAction;
 mod generator_tests;
 mod iterators;
 mod member_hints;
+mod method_bindings;
 mod models;
-mod native_bindings;
 mod native_roots;
 mod reactive;
 pub(crate) mod snapshot;
@@ -559,7 +559,7 @@ pub struct Vm {
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
     member_hints: member_hints::MemberHints,
-    native_bindings: native_bindings::NativeBindings,
+    method_bindings: method_bindings::MethodBindings,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
@@ -567,6 +567,8 @@ pub struct Vm {
     native_entries: u64,
     native_binding_hits: u64,
     native_binding_misses: u64,
+    script_binding_hits: u64,
+    script_binding_misses: u64,
     native_resumes: u64,
     native_null_publications: u64,
     slices: u64,
@@ -670,6 +672,8 @@ impl Vm {
             native_entries: self.native_entries,
             native_binding_hits: self.native_binding_hits,
             native_binding_misses: self.native_binding_misses,
+            script_binding_hits: self.script_binding_hits,
+            script_binding_misses: self.script_binding_misses,
             native_resumes: self.native_resumes,
             native_null_publications: self.native_null_publications,
             slices: self.slices,

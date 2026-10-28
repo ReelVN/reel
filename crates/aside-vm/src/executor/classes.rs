@@ -157,14 +157,32 @@ impl Vm {
         self.heap.array_push(calls, owner)?;
         Ok(())
     }
+    // Reuse only live bindings; the weak cache retains neither receiver nor class.
     fn bind_script(
         &mut self,
         closure: Value,
         receiver: Value,
         owner: Value,
     ) -> Result<Value, HeapError> {
-        self.heap
-            .alloc_record(ObjectKind::BoundScript, &[closure, receiver, owner])
+        let key = method_bindings::MethodKey::script(
+            closure.object_parts().unwrap().1,
+            receiver.object_parts().map_or(0, |(_, key)| key),
+            owner.object_parts().unwrap().1,
+        );
+        if let Some(callable) = self.method_bindings.get(key) {
+            let value = Value::object(self.heap.id(), callable);
+            if self.heap.info(value).is_ok() {
+                self.script_binding_hits += 1;
+                return Ok(value);
+            }
+        }
+        self.script_binding_misses += 1;
+        let value = self
+            .heap
+            .alloc_record(ObjectKind::BoundScript, &[closure, receiver, owner])?;
+        self.method_bindings
+            .remember(key, value.object_parts().unwrap().1);
+        Ok(value)
     }
     pub(super) fn super_ref(&mut self, s: ScriptFrame) -> Result<Value, FaultKind> {
         let method = self.value(s.env, 0).map_err(vm_fault)?;

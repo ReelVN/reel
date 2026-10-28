@@ -336,6 +336,10 @@ pub struct VmStats {
     pub native_binding_hits: u64,
     /// Binding cache misses or values rejected by the GC cutoff; reset on restore.
     pub native_binding_misses: u64,
+    /// Live script method bindings reused from the shared weak cache; reset on restore.
+    pub script_binding_hits: u64,
+    /// Script binding misses or GC-unconfirmed values recreated; reset on restore.
+    pub script_binding_misses: u64,
     pub native_resumes: u64,
     /// Redundant whole-native-window initialization writes (removed in V03).
     pub native_null_publications: u64,

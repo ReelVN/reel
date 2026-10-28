@@ -48,13 +48,16 @@ impl Vm {
 
     /// Bind the receiver of an admitted native callable. The immutable value
     /// traces its receiver and shares ordinary native argument preparation.
-    /// Live bindings may be reused through a bounded weak cache. Collected or
+    /// Live bindings may be reused through the bounded weak cache shared with
+    /// script methods. Collected or
     /// GC-unconfirmed bindings are recreated instead of revived.
     pub fn bind_native(&mut self, receiver: Value, function: FunctionId) -> Result<Value, VmError> {
         self.validate_native_receiver(receiver, function)?;
         let receiver_key = receiver.object_parts().map(|(_, key)| key);
         if let Some(key) = receiver_key
-            && let Some(callable) = self.native_bindings.get(key, function)
+            && let Some(callable) = self
+                .method_bindings
+                .get(method_bindings::MethodKey::native(key, function))
         {
             let value = Value::object(self.heap.id(), callable);
             if self.heap.info(value).is_ok() {
@@ -76,8 +79,10 @@ impl Vm {
             ],
         )?;
         if let Some(key) = receiver_key {
-            self.native_bindings
-                .remember(key, function, value.object_parts().unwrap().1);
+            self.method_bindings.remember(
+                method_bindings::MethodKey::native(key, function),
+                value.object_parts().unwrap().1,
+            );
         }
         Ok(value)
     }
