@@ -23,12 +23,7 @@ impl<'a> Paint<'a> {
         }
         let mut values = appearance.map(appearance_uniform).unwrap_or([[0.; 4]; 10]);
         if image._backing.is_some() {
-            values[9] = [
-                image.origin[0] as f32 / image.layout.storage_size[0] as f32,
-                image.origin[1] as f32 / image.layout.storage_size[1] as f32,
-                image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
-                image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
-            ];
+            values[9] = crate::common::appearance::view_bounds(image.layout, image.origin, repeat);
         }
         values[8] = [
             image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
@@ -70,7 +65,11 @@ impl<'a> Paint<'a> {
             kind: self.kind,
             video: *self.video,
             dimensions: self.dimensions,
-            appearance: self.appearance,
+            appearance: if direct.is_some() {
+                [[0.; 4]; 10]
+            } else {
+                self.appearance
+            },
             repeat: self.repeat,
             quality: self.quality,
             coverage: self.coverage,
@@ -154,6 +153,7 @@ impl Context<'_> {
             image.uv_transform(),
             coverage,
             self.size,
+            image._backing.is_some(),
             at,
         )?
         else {

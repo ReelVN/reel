@@ -515,6 +515,7 @@ impl Context<'_> {
             image.uv_transform(),
             coverage,
             self.size,
+            image._backing.is_some(),
             at,
         )?;
         self.paint_resource(
@@ -628,11 +629,12 @@ impl Context<'_> {
                     brush.sampler.x_extend == Extend::Repeat,
                     brush.sampler.y_extend == Extend::Repeat,
                 ];
-                let sampling = mesh::ImageSampling::with_origin(
+                let sampling = mesh::ImageSampling::for_image(
                     brush.image.source_rect,
                     image.layout,
                     image.normalized_origin(),
                     repeat,
+                    image._backing.is_some(),
                 );
                 let color = brush
                     .image
@@ -799,11 +801,12 @@ impl Context<'_> {
                             .image
                             .color
                             .map(|c| c * composite.alpha * brush.sampler.alpha),
-                        sampling: mesh::ImageSampling::with_origin(
+                        sampling: mesh::ImageSampling::for_image(
                             brush.image.source_rect,
                             image.layout,
                             image.normalized_origin(),
                             repeat,
+                            image._backing.is_some(),
                         ),
                     },
                     command.origin.at,

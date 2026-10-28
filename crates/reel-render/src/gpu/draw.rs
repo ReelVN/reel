@@ -222,6 +222,7 @@ impl Context<'_> {
             image.uv_transform(),
             coverage,
             self.size,
+            image.backing.is_some(),
             at,
         )?;
         self.paint_resource(
@@ -395,11 +396,12 @@ impl Context<'_> {
             }
         };
         let sampling = if let Brush::Image(brush) = brush {
-            mesh::ImageSampling::with_origin(
+            mesh::ImageSampling::for_image(
                 brush.image.source_rect,
                 image.layout,
                 image.normalized_origin(),
                 repeat,
+                image.backing.is_some(),
             )
         } else {
             Default::default()
@@ -662,7 +664,7 @@ impl Context<'_> {
                 source: mesh::PaintSource::Texture,
             },
             repeat,
-            image_appearance(image, appearance, quality),
+            image_appearance(image, appearance, quality, repeat),
         )
     }
 
@@ -717,7 +719,7 @@ impl Context<'_> {
             }),
             repeat,
             quality,
-            appearance,
+            appearance: if direct.is_some() { None } else { appearance },
             scissor: self.scissor.for_vertices(&mesh.vertices, self.size),
         };
         self.expand_instances()?;
@@ -1007,20 +1009,19 @@ fn image_appearance(
     image: &resources::Image,
     appearance: Option<ImageAppearance>,
     quality: ImageQuality,
+    repeat: [bool; 2],
 ) -> Option<super::gradient::Uniform> {
-    if appearance.is_none() && image.backing.is_none() {
+    let bounds = if image.backing.is_some() {
+        crate::common::appearance::view_bounds(image.layout, image.origin, repeat)
+    } else {
+        [0.; 4]
+    };
+    if appearance.is_none() && bounds == [0.; 4] {
         return None;
     }
     Some({
         let mut uniform = appearance.map(appearance_uniform).unwrap_or([[0.; 4]; 10]);
-        if image.backing.is_some() {
-            uniform[9] = [
-                image.origin[0] as f32 / image.size[0] as f32,
-                image.origin[1] as f32 / image.size[1] as f32,
-                image.layout.content_size[0] as f32 / image.size[0] as f32,
-                image.layout.content_size[1] as f32 / image.size[1] as f32,
-            ];
-        }
+        uniform[9] = bounds;
         uniform[8] = [
             image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
             image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,

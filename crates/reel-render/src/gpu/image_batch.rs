@@ -105,7 +105,7 @@ impl Context<'_> {
                         self.size,
                         mesh::ImagePaint {
                             color: quad.brush.image.color.map(|channel| channel * quad.alpha),
-                            sampling: mesh::ImageSampling::with_origin(
+                            sampling: mesh::ImageSampling::for_image(
                                 quad.brush.image.source_rect,
                                 image.layout,
                                 image.normalized_origin(),
@@ -113,6 +113,7 @@ impl Context<'_> {
                                     quad.brush.sampler.x_extend == Extend::Repeat,
                                     quad.brush.sampler.y_extend == Extend::Repeat,
                                 ],
+                                image.backing.is_some(),
                             ),
                         },
                         at,

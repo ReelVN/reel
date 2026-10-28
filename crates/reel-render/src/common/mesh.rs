@@ -85,6 +85,22 @@ pub(crate) struct ImageSampling {
     window: [f32; 4],
 }
 impl ImageSampling {
+    /// A zero atlas window denotes whole-image repetition; view metadata keeps
+    /// its physical bounds and repeat axes. Authored regions retain their own
+    /// signed spans and pad filtering. Ordinary padded images keep their window.
+    pub(crate) fn for_image(
+        rect: Option<Rect>,
+        layout: reel_core::texture::TextureLayout,
+        origin: [f64; 2],
+        repeat: [bool; 2],
+        atlas: bool,
+    ) -> Self {
+        if atlas && rect.is_none() && repeat != [false; 2] {
+            Self::default()
+        } else {
+            Self::with_origin(rect, layout, origin, repeat)
+        }
+    }
     pub(crate) fn window(self) -> [f32; 4] {
         self.window
     }
@@ -914,10 +930,7 @@ pub(crate) fn direct_paint(
 ) -> Option<DirectPaint> {
     if repeat != [false; 2]
         || appearance.is_some_and(|values| {
-            !matches!(values[4][3], 0. | 1.)
-                || values[5][3] != 0.
-                || values[7][3] != 0.
-                || values[9] != [0.; 4]
+            !matches!(values[4][3], 0. | 1.) || values[5][3] != 0. || values[7][3] != 0.
         })
     {
         return None;
@@ -926,12 +939,15 @@ pub(crate) fn direct_paint(
         return Some(DirectPaint::Solid);
     }
     let mut windows = windows.peekable();
+    let view = appearance
+        .map(|values| values[9])
+        .filter(|bounds| *bounds != [0.; 4]);
     let regional = windows.peek().is_some_and(|window| *window != [0.; 4]);
     if windows.any(|window| {
         if regional {
-            window[2] <= 0. || window[3] <= 0.
+            window[2] <= 0. || window[3] <= 0. || view.is_some_and(|bounds| window != bounds)
         } else {
-            window != [0.; 4]
+            window != [0.; 4] || view.is_some()
         }
     }) {
         return None;
@@ -1303,6 +1319,73 @@ mod tests {
         assert_eq!(
             mesh.direct_paint(PaintSource::Texture, [false; 2], None, None),
             None
+        );
+    }
+    #[test]
+    fn atlas_whole_view_fast_path_keeps_crop_and_padded_sampling_boundaries() {
+        use reel_core::texture::TextureLayout;
+        let padded = TextureLayout {
+            logical_size: [7, 5],
+            content_size: [7, 5],
+            storage_size: [8, 8],
+        };
+        let original = ImageSampling::with_layout(None, padded, [true; 2]).window();
+        assert_ne!(original, [0.; 4]);
+        assert_eq!(
+            ImageSampling::for_image(None, padded, [0.; 2], [true; 2], false).window(),
+            original,
+            "standalone padded images retain regional repeat and pad filtering"
+        );
+        let layout = TextureLayout {
+            storage_size: [16, 16],
+            ..padded
+        };
+        let origin = [2. / 16., 3. / 16.];
+        let mut appearance = [[0.; 4]; 10];
+        appearance[9] = super::super::appearance::view_bounds(layout, [2, 3], [false; 2]);
+        let whole = ImageSampling::for_image(None, layout, origin, [false; 2], true).window();
+        assert_eq!(whole, appearance[9]);
+        assert_eq!(
+            direct_paint(
+                PaintSource::Texture,
+                [false; 2],
+                Some(&appearance),
+                None,
+                [whole].into_iter()
+            ),
+            Some(DirectPaint::RegionalRgba)
+        );
+        let crop = Some(Rect::new(-0.25, 0., 7., 5.));
+        let cropped = ImageSampling::for_image(crop, layout, origin, [true; 2], true).window();
+        assert_eq!(
+            cropped,
+            ImageSampling::with_origin(crop, layout, origin, [true; 2]).window()
+        );
+        assert_ne!(cropped, [0.; 4]);
+        let unsafe_direct =
+            ImageSampling::for_image(crop, layout, origin, [false; 2], true).window();
+        assert_eq!(
+            direct_paint(
+                PaintSource::Texture,
+                [false; 2],
+                Some(&appearance),
+                None,
+                [unsafe_direct].into_iter()
+            ),
+            None,
+            "out-of-view crops still require the material view clamp"
+        );
+        assert_eq!(
+            ImageSampling::for_image(None, layout, origin, [true; 2], true).window(),
+            [0.; 4]
+        );
+        assert_eq!(
+            super::super::appearance::view_bounds(
+                TextureLayout::identity([4, 4]),
+                [0; 2],
+                [true; 2]
+            ),
+            [0.; 4]
         );
     }
     use reel_ui::core::Widget;

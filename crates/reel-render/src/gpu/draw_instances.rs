@@ -41,6 +41,7 @@ impl Context<'_> {
             image.uv_transform(),
             coverage,
             self.size,
+            image.backing.is_some(),
             at,
         )?
         else {
@@ -66,7 +67,7 @@ impl Context<'_> {
             batch.brush.sampler.x_extend == Extend::Repeat,
             batch.brush.sampler.y_extend == Extend::Repeat,
         ];
-        let appearance = image_appearance(image, appearance, batch.brush.sampler.quality);
+        let appearance = image_appearance(image, appearance, batch.brush.sampler.quality, repeat);
         let direct = geometry.direct_paint(
             mesh::PaintSource::Texture,
             repeat,
@@ -80,7 +81,7 @@ impl Context<'_> {
             coverage: false,
             repeat,
             quality: batch.brush.sampler.quality,
-            appearance,
+            appearance: if direct.is_some() { None } else { appearance },
             direct,
             bounded: geometry.bounded_color.paint(direct, image.texture_format),
             opaque: geometry.opaque_paint(direct),

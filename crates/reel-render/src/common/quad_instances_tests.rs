@@ -89,7 +89,7 @@ fn instances_and_expanded_fallback_preserve_every_old_vertex_bit() {
     let outer = Affine::new([-1., 0., 0., 1., 150., 7.]);
     let uv = Affine::scale_non_uniform(1. / 32., 1. / 16.);
     let input = |batch| {
-        Input::sprites(batch, outer, layout(), uv, None, [200, 200], at())
+        Input::sprites(batch, outer, layout(), uv, None, [200, 200], false, at())
             .unwrap()
             .unwrap()
     };
@@ -110,7 +110,7 @@ fn instances_and_expanded_fallback_preserve_every_old_vertex_bit() {
     let mut expected = Mesh::new(allocation());
     for batch in [&first, &second] {
         expected
-            .sprites(batch, outer, layout(), uv, None, [200, 200], at())
+            .sprites(batch, outer, layout(), uv, None, [200, 200], false, at())
             .unwrap();
     }
     for format in [
@@ -173,6 +173,7 @@ fn compatible_instance_runs_preserve_the_original_mesh_upload_boundary() {
             Affine::IDENTITY,
             None,
             [200, 200],
+            false,
             at(),
         )
         .unwrap()
@@ -201,6 +202,7 @@ fn sparse_support_and_special_composites_keep_the_existing_expansion() {
             Affine::IDENTITY,
             Some(&coverage),
             [200, 200],
+            false,
             at()
         )
         .unwrap()
@@ -216,6 +218,7 @@ fn sparse_support_and_special_composites_keep_the_existing_expansion() {
             Affine::IDENTITY,
             None,
             [200, 200],
+            false,
             at()
         )
         .unwrap()
@@ -238,6 +241,7 @@ fn instance_admission_keeps_both_budget_ledgers_and_refuses_before_allocation() 
         Affine::IDENTITY,
         None,
         [200, 200],
+        false,
         at(),
     )
     .unwrap()
@@ -264,6 +268,7 @@ fn a_one_visible_quad_fallback_keeps_the_original_exact_byte_quota() {
         Affine::IDENTITY,
         None,
         [200, 200],
+        false,
         at(),
     )
     .unwrap()

@@ -105,6 +105,7 @@ impl<'a> Input<'a> {
         uv: Affine,
         coverage: Option<&ImageCoverage>,
         size: [u32; 2],
+        atlas: bool,
         at: RecordLocation,
     ) -> Result<Option<Self>, GpuError> {
         if batch.brush.sampler.quality == ImageQuality::High
@@ -123,7 +124,7 @@ impl<'a> Input<'a> {
         }
         let local = mesh::quad_local(batch.bounds);
         let [_, _, _, _, x, y] = uv.as_coeffs();
-        let window = ImageSampling::with_origin(
+        let window = ImageSampling::for_image(
             batch.brush.image.source_rect,
             layout,
             [x, y],
@@ -131,6 +132,7 @@ impl<'a> Input<'a> {
                 batch.brush.sampler.x_extend == Extend::Repeat,
                 batch.brush.sampler.y_extend == Extend::Repeat,
             ],
+            atlas,
         )
         .window();
         let vertices = std::array::from_fn(|corner| QuadVertex {

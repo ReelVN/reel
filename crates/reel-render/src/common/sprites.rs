@@ -19,6 +19,7 @@ impl Mesh {
         uv: Affine,
         coverage: Option<&ImageCoverage>,
         size: [u32; 2],
+        atlas: bool,
         at: RecordLocation,
     ) -> Result<(), GpuError> {
         if batch.brush.sampler.quality == ImageQuality::High
@@ -36,7 +37,7 @@ impl Mesh {
         ];
         let [_, _, _, _, x, y] = uv.as_coeffs();
         let sampling =
-            ImageSampling::with_origin(batch.brush.image.source_rect, layout, [x, y], repeat);
+            ImageSampling::for_image(batch.brush.image.source_rect, layout, [x, y], repeat, atlas);
         let outer = outer * batch.transform;
         let viewport = Rect::new(0., 0., f64::from(size[0]), f64::from(size[1]));
         for instance in &batch.instances {
@@ -167,7 +168,7 @@ mod tests {
         };
         let mut actual = Mesh::new(allocation());
         actual
-            .sprites(&batch, outer, layout, uv, None, size, at)
+            .sprites(&batch, outer, layout, uv, None, size, false, at)
             .unwrap();
         let mut reference = Mesh::new(allocation());
         for (s, (sprite_size, rotation)) in
@@ -284,6 +285,7 @@ mod tests {
                         Affine::scale_non_uniform(1. / 16., 1. / 8.),
                         None,
                         [1024, 1024],
+                        false,
                         at,
                     )
                     .unwrap();

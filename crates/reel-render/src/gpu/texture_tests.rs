@@ -1,4 +1,7 @@
-//! Actual-device submission, allocation and authored-coordinate contracts; no readback.
+//! Actual-device submission, allocation and authored-coordinate contracts.
+//! The separate atlas sampling module adds finite numeric readback checks.
+#[path = "atlas_sampling_tests.rs"]
+mod atlas_sampling_tests;
 use super::super::{DeviceGeneration, GpuLimits, resources};
 use super::*;
 use crate::test_support::r01_fixture;
@@ -820,7 +823,7 @@ fn atlas_views_match_standalone_crop_repeat_slices_alpha_and_mask() {
         }
     }
     let mut page = vec![0; 12 * 12 * 4];
-    for pixel in page.chunks_exact_mut(4) {
+    for pixel in page.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[0, 255, 0, 255]);
     }
     for y in 0..4 {
@@ -962,7 +965,7 @@ fn odd_atlas_views_match_standalone_sampling() {
         }
     }
     let mut page = vec![0; 16 * 16 * 4];
-    for pixel in page.chunks_exact_mut(4) {
+    for pixel in page.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[0, 255, 0, 255]);
     }
     for y in 0..7 {
