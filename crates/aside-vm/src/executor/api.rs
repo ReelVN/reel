@@ -340,6 +340,19 @@ pub struct VmStats {
     /// Redundant whole-native-window initialization writes (removed in V03).
     pub native_null_publications: u64,
     pub slices: u64,
+    /// Instructions admitted by completed run_slice calls; reset on restore.
+    pub cumulative_instructions: u64,
+    /// Work admitted by completed run_slice calls; reset on restore.
+    pub cumulative_work: u64,
+    /// Successfully started scheduled or lazy observer recomputations; reset on restore.
+    /// Initial observer construction is excluded.
+    pub derived_starts: u64,
+    /// Recomputation starts using the compact script path; reset on restore.
+    pub compact_derived_starts: u64,
+    /// Standard derived outputs registered successfully by respond_derive; reset on restore.
+    pub derived_outputs: u64,
+    /// Registered standard outputs admitted to compact recomputation; reset on restore.
+    pub compact_derived_outputs: u64,
     pub usage: SliceUsage,
     pub heap: HeapStats,
     pub slots: FrameSlotsStats,

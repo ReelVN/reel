@@ -287,6 +287,13 @@ impl Vm {
             native_resumes: 0,
             native_null_publications: 0,
             slices: 0,
+            cumulative_instructions: 0,
+            cumulative_work: 0,
+            derived_starts: 0,
+            compact_derived_starts: 0,
+            derived_outputs: 0,
+            compact_derived_outputs: 0,
+
             last_usage: SliceUsage::default(),
             #[cfg(test)]
             work_probe: WorkProbe::default(),

@@ -78,6 +78,8 @@ impl Vm {
         script.context.no_wait = true;
         script.phase = ScriptPhase::CompactBegin;
         self.active.frames.data[top] = Frame::Script(script);
+        self.derived_starts += 1;
+        self.compact_derived_starts += 1;
         Ok(())
     }
     pub(super) fn compact_stack_entry(&self, script: ScriptFrame) -> Result<StackEntry, VmError> {

@@ -570,6 +570,13 @@ pub struct Vm {
     native_resumes: u64,
     native_null_publications: u64,
     slices: u64,
+    cumulative_instructions: u64,
+    cumulative_work: u64,
+    derived_starts: u64,
+    compact_derived_starts: u64,
+    derived_outputs: u64,
+    compact_derived_outputs: u64,
+
     last_usage: SliceUsage,
     #[cfg(test)]
     work_probe: WorkProbe,
@@ -666,6 +673,13 @@ impl Vm {
             native_resumes: self.native_resumes,
             native_null_publications: self.native_null_publications,
             slices: self.slices,
+            cumulative_instructions: self.cumulative_instructions,
+            cumulative_work: self.cumulative_work,
+            derived_starts: self.derived_starts,
+            compact_derived_starts: self.compact_derived_starts,
+            derived_outputs: self.derived_outputs,
+            compact_derived_outputs: self.compact_derived_outputs,
+
             usage: self.last_usage,
             heap: self.heap.stats(),
             slots: self.slots.stats(),
@@ -874,6 +888,8 @@ impl Vm {
         };
         let result = self.run(&mut meter, &mut now);
         self.code_window = crate::bytecode::CodeWindow::default();
+        self.cumulative_instructions += u64::from(meter.usage.instructions);
+        self.cumulative_work += meter.usage.work;
         self.last_usage = meter.usage;
         result
     }

@@ -149,6 +149,16 @@ fn compact_external_program_coverage() {
     let path = std::env::var("ASIDE_B01_PATH").expect("ASIDE_B01_PATH");
     let bytes = std::fs::read(path).unwrap();
     let program = VerifiedProgram::decode(&bytes, Limits::default()).unwrap();
+    if let Ok(path) = std::env::var("ASIDE_DISASSEMBLY_OUT") {
+        let eligible = (0..program.package().functions.len())
+            .filter(|&id| program.compact_derived(FunctionId(id as u32)))
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut text = format!("compact-functions\t{eligible}\n");
+        crate::bytecode::disassemble(&program, &mut text).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     let mut admitted = 0;
     let mut called = 0;
     let mut branched = 0;

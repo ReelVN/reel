@@ -53,6 +53,33 @@ fn compact_dynamic_calls_and_branches_keep_budgeted_results_and_dependency_reads
 }
 
 #[test]
+fn cumulative_execution_and_derived_counts_match_completed_slice_usage() {
+    for generic in [false, true] {
+        let (mut vm, output, _, _) = prepared_expression(generic, true);
+        let before = vm.stats();
+        assert_eq!(before.derived_outputs, 1);
+        assert_eq!(before.compact_derived_outputs, u64::from(!generic));
+        assert_eq!(before.derived_starts, 0);
+        let task = vm.start_derived(output, RootOwner(1)).unwrap();
+        let (outcome, work, instructions, _, _, _) = drive(&mut vm, task, true);
+        assert!(matches!(outcome, RunOutcome::Returned(_)));
+        let after = vm.stats();
+        assert_eq!(after.cumulative_work - before.cumulative_work, work);
+        assert_eq!(
+            after.cumulative_instructions - before.cumulative_instructions,
+            instructions
+        );
+        assert_eq!(after.derived_starts, 1);
+        assert_eq!(after.compact_derived_starts, u64::from(!generic));
+        assert_eq!(after.derived_outputs, before.derived_outputs);
+        assert_eq!(
+            after.compact_derived_outputs,
+            before.compact_derived_outputs
+        );
+    }
+}
+
+#[test]
 fn compact_nested_native_snapshot_restores_receiver_output_and_continuation() {
     for generic in [true, false] {
         let (mut vm, output, _, support) = prepared_expression(generic, true);
@@ -74,6 +101,13 @@ fn compact_nested_native_snapshot_restores_receiver_output_and_continuation() {
         .unwrap();
         while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
         let (mut vm, map) = restore.finish().unwrap();
+        let stats = vm.stats();
+        assert_eq!(stats.cumulative_work, 0);
+        assert_eq!(stats.cumulative_instructions, 0);
+        assert_eq!(stats.derived_starts, 0);
+        assert_eq!(stats.compact_derived_starts, 0);
+        assert_eq!(stats.derived_outputs, 0);
+        assert_eq!(stats.compact_derived_outputs, 0);
         let task = map.task(task).unwrap();
         let ticket = map.ticket(ticket).unwrap();
         let output = vm.reactive_task_output(task).unwrap().unwrap();
