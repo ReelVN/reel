@@ -31,7 +31,10 @@ fn prepare_probe() {
     // Retain the player's native startup configuration in the diagnostic binary.
     // reel-player supplies the archive; the linker must keep these process symbols.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita") {
-        for symbol in ["sceUserMainThreadStackSize", "_newlib_heap_size_user"] {
+        for symbol in [
+            "sceUserMainThreadStackSize",
+            "vita_native_process_heap_anchor",
+        ] {
             println!("cargo:rustc-link-arg-bin=reel-gpu-probe=-Wl,--undefined={symbol}");
         }
     }
