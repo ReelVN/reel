@@ -801,7 +801,7 @@ fn atlas_views_match_standalone_crop_repeat_slices_alpha_and_mask() {
             max_bytes: 8 << 20,
         },
     );
-    let mut registry = ResourceRegistry::new(3, 1 << 20).unwrap();
+    let mut registry = ResourceRegistry::new(4, 1 << 20).unwrap();
     let version = |name: &str| ResourceVersion {
         key: AssetKey(name.into()),
         version: ContentVersion([1; 32]),
@@ -855,6 +855,18 @@ fn atlas_views_match_standalone_crop_repeat_slices_alpha_and_mask() {
                 content_size: [4, 4],
             },
             ColorEncoding::Linear,
+            backing.clone(),
+        )
+        .unwrap();
+    let green_handle = registry
+        .register_atlas_view(
+            version("green"),
+            ImageView {
+                logical_size: [4, 4],
+                content_origin: [0, 0],
+                content_size: [4, 4],
+            },
+            ColorEncoding::Linear,
             backing,
         )
         .unwrap();
@@ -888,15 +900,16 @@ fn atlas_views_match_standalone_crop_repeat_slices_alpha_and_mask() {
     // Fresh logical wrappers on the same physical page must retain the R5
     // effect binding; per-draw origin metadata remains independently updated.
     use std::sync::atomic::Ordering;
-    let effect = frame(registry.acquire(alias_handle).unwrap(), 10, &pool);
-    for iteration in 0..2 {
+    let effects = [alias_handle, green_handle]
+        .map(|handle| frame(registry.acquire(handle).unwrap(), 10, &pool));
+    for (iteration, effect) in effects.iter().enumerate() {
         renderer.effect_results.clear();
         let before = renderer
             .gpu
             .upload_creations
             .effect_bind_groups
             .load(Ordering::Relaxed);
-        let prepared = renderer.prepare(&effect).unwrap();
+        let prepared = renderer.prepare(effect).unwrap();
         let after = renderer
             .gpu
             .upload_creations
@@ -908,13 +921,14 @@ fn atlas_views_match_standalone_crop_repeat_slices_alpha_and_mask() {
                 "the same physical page reuses its bind group"
             );
         }
-        renderer.submit(prepared).unwrap();
-        renderer
-            .gpu
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
-        renderer.poll().unwrap();
+        let pixels = renderer.readback(prepared).unwrap();
+        if iteration == 1 {
+            let pixel = pixels[24 * 64 + 32];
+            assert!(
+                pixel[1] > 0.9 && pixel[0] < 0.1 && pixel[2] < 0.1,
+                "{pixel:?}"
+            );
+        }
     }
 }
 

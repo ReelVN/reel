@@ -402,7 +402,7 @@ impl Cache {
             slot.source = source_owner;
             slot.coverage = coverage_owner;
             slot.images.clear();
-            slot.images.extend(images);
+            slot.images.extend(images.iter().cloned());
         }
         slot.pending.fill(0);
         slot.pending[..160].copy_from_slice(bytemuck::cast_slice(context));
@@ -412,7 +412,7 @@ impl Cache {
                 &crate::common::effect_plan::slot(*value),
             ));
         }
-        for (index, image) in slot.images.iter().enumerate() {
+        for (index, image) in images.iter().enumerate() {
             let start = layout.metadata as usize + index * 32;
             let metadata = crate::common::effect_plan::texture_metadata(
                 image.layout,
