@@ -58,6 +58,8 @@ pub struct Backend {
     context: ownership::Device,
     programs: Rc<programs::Programs>,
     options: Options,
+    limits: crate::common::GpuLimits,
+    total_bytes: u64,
     budgets: Budgets,
     _group: BudgetGroup,
     images: Images,
@@ -83,14 +85,13 @@ pub struct Backend {
 impl Backend {
     /// Create the device and notify the host after display completion.
     /// The wake callback only signals the host; graphics work stays on this thread.
-    /// The optional MAIN pool charges kernel blocks, independent of renderer payload limits.
+    /// Physical admission shares MAIN with CPU arenas and accounts CDRAM separately.
     #[cfg(target_os = "vita")]
     pub fn new(
         options: Options,
         wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
-        main_budget: Option<reel_core::budget::BudgetPool>,
     ) -> Result<Self, GpuError> {
-        let context = super::create_context(&options, wake, main_budget).map_err(native_error)?;
+        let context = super::create_context(&options, wake).map_err(native_error)?;
         Self::with_context(context, options)
     }
 
@@ -106,8 +107,10 @@ impl Backend {
                 |generation| generation.checked_add(1),
             )
             .map_err(|_| GpuError::IdentityExhausted)?;
+        let limits = options.limits.common(context.memory_state());
+        let total_bytes = limits.resource_bytes;
         let context = ownership::Device::new(context);
-        let group = BudgetGroup::new(options.limits.total_bytes);
+        let group = BudgetGroup::new(total_bytes);
         let pool = |category, bytes| {
             group.pool(
                 category,
@@ -118,15 +121,17 @@ impl Backend {
             )
         };
         let budgets = Budgets {
-            resources: pool(BudgetCategory::GpuResource, options.limits.resource_bytes),
-            targets: pool(BudgetCategory::Offscreen, options.limits.target_bytes),
-            transient: pool(BudgetCategory::Temporary, options.limits.transient_bytes),
+            resources: pool(BudgetCategory::GpuResource, limits.resource_bytes),
+            targets: pool(BudgetCategory::Offscreen, limits.target_bytes),
+            transient: pool(BudgetCategory::Temporary, limits.transient_bytes),
         };
         let programs = Rc::new(programs::Programs::new(&context, &budgets.resources)?);
         Ok(Self {
             context,
             programs,
             options,
+            limits,
+            total_bytes,
             budgets,
             _group: group,
             images: Default::default(),
@@ -171,6 +176,10 @@ impl Backend {
             cached_geometry: self.geometry.bytes(),
             shared: Some(self._group.usage()),
         }
+    }
+    /// Physical page commitment and capacity, read in constant time.
+    pub fn native_memory_state(&self) -> native::MemoryState {
+        self.context.memory_state()
     }
     /// Explicitly sample native allocator domains, separately from renderer budgets.
     /// Heap snapshots are adjacent observations; registered storage, its device
@@ -284,9 +293,28 @@ impl Backend {
                 }),
             );
             self.geometry.cpu_disabled = false;
-            return result;
+            return self.resolve_pressure(result);
         }
-        result
+        self.resolve_pressure(result)
+    }
+
+    fn resolve_pressure<T>(&self, result: Result<T, GpuError>) -> Result<T, GpuError> {
+        match result {
+            Err(GpuError::Pressure {
+                domain,
+                requested,
+                available,
+            }) if self.flights.is_empty() => {
+                // Completed work has been polled and idle caches reclaimed. With
+                // no outstanding submission, waiting cannot release more storage.
+                Err(GpuError::Budget {
+                    domain,
+                    requested,
+                    available,
+                })
+            }
+            result => result,
+        }
     }
     fn prepare_cached(
         &mut self,
@@ -303,7 +331,7 @@ impl Backend {
                 "GPU failure could not be drained".into(),
             ));
         }
-        let limits = self.options.limits.common();
+        let limits = self.limits;
         if !capture && self.retained.pending(&frame.key()) {
             return Err(GpuError::Preparing);
         }
@@ -383,7 +411,7 @@ impl Backend {
             &plan.images,
             self.context.capabilities(),
             limits,
-            self.options.limits.total_bytes,
+            self.total_bytes,
         )?;
         // Captures need independent outputs; release the ordinary scratch cache
         // before reserving them. New images also take priority under pressure.
@@ -394,7 +422,7 @@ impl Backend {
                 .output_size()
                 .is_some_and(|cached| cached != size)
             || image_growth
-                > self.options.limits.total_bytes.saturating_sub(
+                > self.total_bytes.saturating_sub(
                     self.budgets
                         .resources
                         .usage()
@@ -542,7 +570,7 @@ impl Backend {
             DeviceResources {
                 gpu: &self.context,
                 budgets: &self.budgets,
-                limits: self.options.limits.common(),
+                limits: self.limits,
             },
             &self.programs,
             replay::Caches {
@@ -704,7 +732,7 @@ impl RenderBackend for Backend {
             max_offscreen_size: self.context.capabilities().max_texture_size,
             upload_limits: QueueLimits {
                 max_requests: self.options.limits.max_inflight as u32,
-                max_bytes: self.options.limits.transient_bytes,
+                max_bytes: self.limits.transient_bytes,
             },
         }
     }

@@ -425,12 +425,7 @@ fn close_backend<T>(result: Result<T, Error>, backend: GxmBackend) -> Result<T, 
     }
 }
 
-// Unmanaged SDK allocations remain outside this ledger. Calibrate the reserve
-// from device evidence; zero preserves the currently configured allowance.
-const KERNEL_MAIN_UNMANAGED_RESERVE_BYTES: u64 = 0;
-const CONTIGUOUS_UNMANAGED_RESERVE_BYTES: u64 = 0;
 struct NativeLoop {
-    _kernel_main: BudgetGroup,
     video_contiguous: BudgetPool,
     host: VitaHost,
     wake: Arc<Wake>,
@@ -454,21 +449,8 @@ impl NativeLoop {
         // Existing host-service stacks already reduce free MAIN. Configure before
         // graphics or session/media workers own additional managed blocks.
         vita_native::allocator::configure_main_budget()?;
-        let heap = vita_native::allocator::stats()?;
         let free = native::memory::free_memory()?;
-        let capacity =
-            u64::from(heap.main_limit).saturating_sub(KERNEL_MAIN_UNMANAGED_RESERVE_BYTES);
-        let kernel_main = BudgetGroup::new(capacity);
-        let main_pool = kernel_main.pool(
-            BudgetCategory::GpuResource,
-            QueueLimits {
-                max_requests: u32::MAX,
-                max_bytes: capacity,
-            },
-        );
-        let contiguous_capacity = free
-            .contiguous_bytes
-            .saturating_sub(CONTIGUOUS_UNMANAGED_RESERVE_BYTES);
+        let contiguous_capacity = free.contiguous_bytes;
         let video_contiguous = BudgetGroup::new(contiguous_capacity).pool(
             BudgetCategory::CpuOutput,
             QueueLimits {
@@ -482,12 +464,10 @@ impl NativeLoop {
             Some(Arc::new(move || {
                 let _ = display_wake.signal();
             })),
-            Some(main_pool),
         )?;
         let host = VitaHost::new(backend.output_size(), wake.clone());
         Ok((
             Self {
-                _kernel_main: kernel_main,
                 video_contiguous,
                 host,
                 wake,
@@ -508,11 +488,10 @@ impl NativeLoop {
             wake,
             power,
             controls,
-            _kernel_main: kernel_main,
             video_contiguous,
         } = self;
         #[cfg(not(feature = "profiling"))]
-        let _ = (kernel_main, video_contiguous);
+        let _ = video_contiguous;
         // Carry held input through the boundary until release. A launch-confirm press
         // must not become a second confirmation in the newly mounted game.
         let mut input = input::Input::default();
@@ -608,12 +587,7 @@ impl NativeLoop {
                     );
                     if now >= next_memory_sample {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
-                        profiling::record_device(
-                            &mut recording,
-                            player.backend,
-                            kernel_main,
-                            video_contiguous,
-                        );
+                        profiling::record_device(&mut recording, player.backend, video_contiguous);
                     }
                 }
                 // UI signals run on this thread. Rendering may request another
@@ -640,12 +614,7 @@ impl NativeLoop {
             Ok(())
         })();
         #[cfg(feature = "profiling")]
-        profiling::record_device(
-            &mut recording,
-            player.backend,
-            kernel_main,
-            video_contiguous,
-        );
+        profiling::record_device(&mut recording, player.backend, video_contiguous);
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;

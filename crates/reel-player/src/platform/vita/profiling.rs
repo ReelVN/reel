@@ -5,7 +5,6 @@ use reel_render::gxm::GxmBackend;
 pub(super) fn record_device(
     recording: &mut Recording,
     backend: &GxmBackend,
-    main: &reel_core::budget::BudgetGroup,
     contiguous: &reel_core::budget::BudgetPool,
 ) {
     let Ok(native) = backend.native_memory_usage() else {
@@ -13,7 +12,7 @@ pub(super) fn record_device(
     };
     let renderer = backend.usage();
     let timing = native.submission_timing;
-    let main = main.usage();
+    let main = backend.native_memory_state().main;
     let contiguous = contiguous.usage();
     recording.record_device([
         renderer.resources,
@@ -61,8 +60,8 @@ pub(super) fn record_device(
         u64::from(native.main_textures.blocks),
         native.main_textures.idle_bytes,
         native.display_reserved_bytes,
-        main.bytes,
-        main.peak_bytes,
+        main.committed_bytes,
+        main.capacity_bytes,
         contiguous.bytes,
         contiguous.peak_bytes,
     ]);

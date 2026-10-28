@@ -9,12 +9,12 @@ pub use renderer::{Backend as GxmBackend, Capture as GxmCapture};
 type MemoryUsage = native::MemoryUsage;
 mod limits;
 
-/// Native presentation and simultaneous resource limits.
+/// Native presentation and work concurrency.
 #[derive(Clone, Debug)]
 pub struct GxmOptions {
     /// Synchronize presentation with display refresh.
     pub vsync: bool,
-    /// Simultaneous GPU and transient resource ceilings.
+    /// In-flight and upload work limits; storage follows native physical capacity.
     pub limits: GxmLimits,
 }
 impl Default for GxmOptions {
@@ -33,51 +33,14 @@ macro_rules! shader_code {
 }
 mod renderer;
 
-struct MainBudget(reel_core::budget::BudgetPool);
-impl vita_native::memory::MemoryBudget for MainBudget {
-    fn reserve(
-        &self,
-        class: vita_native::memory::MemoryClass,
-        bytes: u64,
-    ) -> Result<
-        Box<dyn vita_native::memory::MemoryReservation>,
-        vita_native::memory::MemoryBudgetError,
-    > {
-        if class != vita_native::memory::MemoryClass::MainKernel {
-            return Err(vita_native::memory::MemoryBudgetError::Other(
-                "unexpected GXM memory class".into(),
-            ));
-        }
-        self.0
-            .reserve(bytes)
-            .map(|ticket| Box::new(ticket) as Box<dyn vita_native::memory::MemoryReservation>)
-            .map_err(|error| match error.code {
-                reel_core::result::RejectCode::Busy => {
-                    vita_native::memory::MemoryBudgetError::Capacity(error.message)
-                }
-                _ => vita_native::memory::MemoryBudgetError::Other(error.message),
-            })
-    }
-}
-
 /// Create a native device with Reel's offline clear programs. Hosts that issue
 /// native commands directly use the same initialization as the frame executor.
-/// An optional MAIN pool accounts rounded native blocks through physical release.
+/// Native physical admission accounts rounded blocks through physical release.
 pub fn create_context(
     options: &GxmOptions,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
-    main_budget: Option<reel_core::budget::BudgetPool>,
 ) -> Result<native::Context, native::Error> {
-    let config = native::Config {
-        pixel_arena_bytes: options
-            .limits
-            .total_bytes
-            .min(native::Config::default().pixel_arena_bytes),
-        main_texture_arena_bytes: options.limits.resource_bytes,
-        buffer_arena_bytes: options.limits.transient_bytes,
-        upload_staging_bytes: options.limits.transient_bytes.min(4 << 20),
-        ..Default::default()
-    };
+    let config = native::Config::default();
     native::Context::with_config(
         config,
         options.vsync,
@@ -89,10 +52,7 @@ pub fn create_context(
             clip_uniform: "reel_clip_rect",
         },
         wake,
-        main_budget.map(|pool| {
-            std::sync::Arc::new(MainBudget(pool))
-                as std::sync::Arc<dyn vita_native::memory::MemoryBudget>
-        }),
+        None,
     )
 }
 
@@ -145,6 +105,15 @@ fn effect_code(
 
 fn native_error(error: native::Error) -> GxmError {
     match error {
+        native::Error::Budget {
+            domain: domain @ ("physical MAIN" | "physical CDRAM"),
+            requested,
+            limit,
+        } => GxmError::Pressure {
+            domain,
+            requested,
+            available: limit,
+        },
         native::Error::Budget {
             domain,
             requested,

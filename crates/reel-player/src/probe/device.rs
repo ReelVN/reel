@@ -53,8 +53,8 @@ pub(super) const NAMES: [&str; 49] = [
     "main_texture_blocks",
     "main_textures_idle",
     "display_reserved",
-    "main_kernel_admitted",
-    "main_kernel_peak_admitted",
+    "main_physical_committed",
+    "main_physical_capacity",
     "contiguous_kernel_admitted",
     "contiguous_kernel_peak_admitted",
 ];

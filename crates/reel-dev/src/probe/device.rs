@@ -165,7 +165,7 @@ impl Drop for Sampler {
 
 fn native_case(case: &str, frames: usize) -> Result {
     let context = call("native.context", || {
-        let context = reel_render::gxm::create_context(&Default::default(), None, None)?;
+        let context = reel_render::gxm::create_context(&Default::default(), None)?;
         Ok(context)
     })?;
     log(format_args!(

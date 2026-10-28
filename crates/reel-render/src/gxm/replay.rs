@@ -217,6 +217,16 @@ pub(super) fn prepare(
     )
     .and_then(|plan| {
         context.glyph_plan = plan;
+        // Glyph preparation has established this frame's non-target CDRAM
+        // owners. Existing target payload can be reused; other committed pages
+        // remain occupied while choosing the scratch schedule and cache lifetime.
+        let memory = gpu.memory_state();
+        let target_capacity = memory
+            .cdram
+            .available_bytes()
+            .saturating_add(budgets.targets.usage().bytes)
+            .min(limits.target_bytes);
+        context.limits.target_bytes = target_capacity;
         let groups = context
             .target_cache
             .groups
@@ -231,7 +241,7 @@ pub(super) fn prepare(
             1,
             gpu.capabilities().max_texture_size,
             &context.glyph_plan,
-            limits.target_bytes,
+            target_capacity,
             &color_cost,
             Some(&coverage_cost),
             crate::common::target_plan::MaskExecution::Sampled,
@@ -247,16 +257,16 @@ pub(super) fn prepare(
                 )
             },
         )?;
-        if bytes > limits.target_bytes {
+        if bytes > target_capacity {
             return Err(GpuError::Budget {
                 domain: "offscreen targets",
                 requested: bytes,
-                available: limits.target_bytes,
+                available: target_capacity,
             });
         }
         context.effect_admission = crate::common::effect_result::Admission::new(
             bytes,
-            limits.target_bytes,
+            target_capacity,
             effect_results_enabled && !capture,
         );
         context.offscreen = schedule;
