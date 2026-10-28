@@ -74,6 +74,24 @@ pub(super) fn read(heap: &Heap, value: Value, chunk: usize) -> Result<Text, Adap
     let (value, rich) = source(heap, value)?;
     decode(text::read_string(heap, value, chunk)?, rich)
 }
+/// Compare the authored representation, including markup, without parsing or allocation.
+pub(super) fn matches(
+    heap: &Heap,
+    value: Value,
+    expected: &Text,
+    chunk: usize,
+) -> Result<bool, AdapterError> {
+    let (value, rich) = source(heap, value)?;
+    if rich != expected.markup().is_some() {
+        return Ok(false);
+    }
+    text::matches_string(
+        heap,
+        value,
+        expected.markup().map_or(expected.as_ref(), |s| s.as_ref()),
+        chunk,
+    )
+}
 pub(super) fn len(heap: &Heap, value: Value) -> Result<usize, AdapterError> {
     let (_, rich) = source(heap, value)?;
     Ok(heap

@@ -66,6 +66,20 @@ pub(super) fn read_shared_string(
     read_limit: usize,
     previous: &Arc<str>,
 ) -> Result<Arc<str>, AdapterError> {
+    if matches_string(heap, value, previous, read_limit)? {
+        Ok(previous.clone())
+    } else {
+        read_string(heap, value, read_limit).map(Arc::from)
+    }
+}
+
+/// Compare immutable UTF-8 through borrowed heap segments without copying it.
+pub(super) fn matches_string(
+    heap: &Heap,
+    value: Value,
+    expected: &str,
+    read_limit: usize,
+) -> Result<bool, AdapterError> {
     let info = heap.info(value)?;
     if info.kind != ObjectKind::String {
         return Err(AdapterError::Input("expected immutable string"));
@@ -73,24 +87,22 @@ pub(super) fn read_shared_string(
     if read_limit == 0 {
         return Err(AdapterError::Input("string read chunk must be nonzero"));
     }
-    if info.len as usize == previous.len() {
+    if info.len as usize == expected.len() {
         let mut offset = 0;
-        while offset < previous.len() {
+        while offset < expected.len() {
             let bytes = heap.byte_segment(value, offset as u32)?;
             let count = bytes.len().min(read_limit);
             if count == 0 {
                 return Err(AdapterError::Input("short string read"));
             }
-            if bytes[..count] != previous.as_bytes()[offset..offset + count] {
-                break;
+            if bytes[..count] != expected.as_bytes()[offset..offset + count] {
+                return Ok(false);
             }
             offset += count;
         }
-        if offset == previous.len() {
-            return Ok(previous.clone());
-        }
+        return Ok(true);
     }
-    read_string(heap, value, read_limit).map(Arc::from)
+    Ok(false)
 }
 
 /// Construct an immutable VM string through its existing chunked byte buffer.
