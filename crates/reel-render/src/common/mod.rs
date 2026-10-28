@@ -24,6 +24,7 @@ pub(crate) mod scopes;
 pub(crate) mod occlusion_plan;
 pub(crate) mod offscreen;
 pub(crate) mod precision;
+pub(crate) mod quad_instances;
 pub(crate) mod scissor;
 pub(crate) mod source_plan;
 pub(crate) mod source_view;

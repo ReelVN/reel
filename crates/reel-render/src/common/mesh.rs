@@ -85,6 +85,9 @@ pub(crate) struct ImageSampling {
     window: [f32; 4],
 }
 impl ImageSampling {
+    pub(crate) fn window(self) -> [f32; 4] {
+        self.window
+    }
     pub(crate) fn with_layout(
         rect: Option<Rect>,
         layout: reel_core::texture::TextureLayout,
@@ -302,6 +305,18 @@ impl Allocation {
     }
 }
 impl Mesh {
+    pub(crate) fn from_geometry(
+        vertices: Vec<Vertex>,
+        indices: Vec<u32>,
+        bounded_color: super::precision::BoundedColor,
+        allocation: Allocation,
+    ) -> Self {
+        let mut mesh = Self::new(allocation);
+        mesh.vertices = vertices;
+        mesh.indices = indices;
+        mesh.bounded_color = bounded_color;
+        mesh
+    }
     pub(crate) fn cache_copy(&self) -> Self {
         Self {
             bounded_color: self.bounded_color,
@@ -336,16 +351,10 @@ impl Mesh {
     /// authored opacity and analytic edge coverage; multisample coverage stays
     /// with the rasterizer and remains equivalent under per-sample replacement.
     pub(crate) fn opaque_paint(&self, direct: Option<DirectPaint>) -> Option<OpaquePaint> {
-        let paint = match direct? {
-            DirectPaint::Bc1 => OpaquePaint::Bc1,
-            DirectPaint::RegionalBc1 => OpaquePaint::RegionalBc1,
-            DirectPaint::Solid => OpaquePaint::Solid,
-            _ => return None,
-        };
-        self.vertices
-            .iter()
-            .all(|vertex| vertex.color[3] == 1.)
-            .then_some(paint)
+        opaque_paint(
+            direct,
+            self.vertices.iter().all(|vertex| vertex.color[3] == 1.),
+        )
     }
     /// Classify before batching: solid paint uses its prepared vertex color;
     /// texture draws retain their own source windows. Zero windows delegate edge
@@ -357,38 +366,13 @@ impl Mesh {
         appearance: Option<&[[f32; 4]; 9]>,
         format: Option<reel_core::texture::TextureFormat>,
     ) -> Option<DirectPaint> {
-        if repeat != [false; 2]
-            || appearance.is_some_and(|values| {
-                !matches!(values[4][3], 0. | 1.) || values[5][3] != 0. || values[7][3] != 0.
-            })
-        {
-            return None;
-        }
-        if source == PaintSource::Solid {
-            return Some(DirectPaint::Solid);
-        }
-        let regional = self
-            .vertices
-            .first()
-            .is_some_and(|v| v.source_window != [0.; 4]);
-        if self.vertices.iter().any(|v| {
-            if regional {
-                v.source_window[2] <= 0. || v.source_window[3] <= 0.
-            } else {
-                v.source_window != [0.; 4]
-            }
-        }) {
-            return None;
-        }
-        use reel_core::texture::TextureFormat::{Bc1Rgb, Bc3Rgba};
-        Some(match (regional, format) {
-            (false, Some(Bc1Rgb)) => DirectPaint::Bc1,
-            (false, Some(Bc3Rgba)) => DirectPaint::Bc3,
-            (false, _) => DirectPaint::Rgba,
-            (true, Some(Bc1Rgb)) => DirectPaint::RegionalBc1,
-            (true, Some(Bc3Rgba)) => DirectPaint::RegionalBc3,
-            (true, _) => DirectPaint::RegionalRgba,
-        })
+        direct_paint(
+            source,
+            repeat,
+            appearance,
+            format,
+            self.vertices.iter().map(|vertex| vertex.source_window),
+        )
     }
     /// Append already transformed geometry without changing primitive order.
     #[cfg(test)]
@@ -556,15 +540,10 @@ impl Mesh {
         self.allocation.grow(&mut self.vertices, 4)?;
         self.allocation.grow(&mut self.indices, 6)?;
         let start = self.vertices.len() as u32;
-        for (p, t) in [
-            ((rect.x0, rect.y0), (uv.x0, uv.y0)),
-            ((rect.x1, rect.y0), (uv.x1, uv.y0)),
-            ((rect.x1, rect.y1), (uv.x1, uv.y1)),
-            ((rect.x0, rect.y1), (uv.x0, uv.y1)),
-        ] {
+        for (p, t) in quad_local(rect).into_iter().zip(quad_local(uv)) {
             self.vertices.push(Vertex {
-                position: [p.0 as f32, p.1 as f32],
-                uv: [t.0 as f32, t.1 as f32],
+                position: p,
+                uv: t,
                 color: [1.; 4],
                 source_window: [0.; 4],
             });
@@ -907,6 +886,72 @@ fn transform_mesh(
     mesh.bounded_color = super::precision::BoundedColor::new(color);
     transform_vertices(&mut mesh.vertices, transform, size, uv, color, at)
 }
+pub(crate) fn opaque_paint(direct: Option<DirectPaint>, opaque: bool) -> Option<OpaquePaint> {
+    let paint = match direct? {
+        DirectPaint::Bc1 => OpaquePaint::Bc1,
+        DirectPaint::RegionalBc1 => OpaquePaint::RegionalBc1,
+        DirectPaint::Solid => OpaquePaint::Solid,
+        _ => return None,
+    };
+    opaque.then_some(paint)
+}
+pub(crate) fn direct_paint(
+    source: PaintSource,
+    repeat: [bool; 2],
+    appearance: Option<&[[f32; 4]; 9]>,
+    format: Option<reel_core::texture::TextureFormat>,
+    windows: impl Iterator<Item = [f32; 4]>,
+) -> Option<DirectPaint> {
+    if repeat != [false; 2]
+        || appearance.is_some_and(|values| {
+            !matches!(values[4][3], 0. | 1.) || values[5][3] != 0. || values[7][3] != 0.
+        })
+    {
+        return None;
+    }
+    if source == PaintSource::Solid {
+        return Some(DirectPaint::Solid);
+    }
+    let mut windows = windows.peekable();
+    let regional = windows.peek().is_some_and(|window| *window != [0.; 4]);
+    if windows.any(|window| {
+        if regional {
+            window[2] <= 0. || window[3] <= 0.
+        } else {
+            window != [0.; 4]
+        }
+    }) {
+        return None;
+    }
+    use reel_core::texture::TextureFormat::{Bc1Rgb, Bc3Rgba};
+    Some(match (regional, format) {
+        (false, Some(Bc1Rgb)) => DirectPaint::Bc1,
+        (false, Some(Bc3Rgba)) => DirectPaint::Bc3,
+        (false, _) => DirectPaint::Rgba,
+        (true, Some(Bc1Rgb)) => DirectPaint::RegionalBc1,
+        (true, Some(Bc3Rgba)) => DirectPaint::RegionalBc3,
+        (true, _) => DirectPaint::RegionalRgba,
+    })
+}
+pub(crate) fn quad_local(rect: Rect) -> [[f32; 2]; 4] {
+    [
+        [rect.x0 as f32, rect.y0 as f32],
+        [rect.x1 as f32, rect.y0 as f32],
+        [rect.x1 as f32, rect.y1 as f32],
+        [rect.x0 as f32, rect.y1 as f32],
+    ]
+}
+pub(crate) fn project_position(local: [f32; 2], transform: Affine, size: [u32; 2]) -> [f32; 2] {
+    let point = transform * Point::new(f64::from(local[0]), f64::from(local[1]));
+    [
+        (point.x * 2. / f64::from(size[0]) - 1.) as f32,
+        (1. - point.y * 2. / f64::from(size[1])) as f32,
+    ]
+}
+pub(crate) fn project_uv(local: [f32; 2], uv: Affine) -> [f32; 2] {
+    let point = uv * Point::new(f64::from(local[0]), f64::from(local[1]));
+    [point.x as f32, point.y as f32]
+}
 fn transform_vertices(
     vertices: &mut [Vertex],
     transform: Affine,
@@ -916,15 +961,10 @@ fn transform_vertices(
     at: RecordLocation,
 ) -> Result<(), GpuError> {
     for v in vertices {
-        let local = Point::new(f64::from(v.position[0]), f64::from(v.position[1]));
-        let p = transform * local;
-        v.position = [
-            (p.x * 2. / f64::from(size[0]) - 1.) as f32,
-            (1. - p.y * 2. / f64::from(size[1])) as f32,
-        ];
+        let local = v.position;
+        v.position = project_position(local, transform, size);
         if let Some(uv) = uv {
-            let p = uv * local;
-            v.uv = [p.x as f32, p.y as f32];
+            v.uv = project_uv(local, uv);
         }
         v.color = color;
         if v.position.iter().chain(&v.uv).any(|n| !n.is_finite()) {
