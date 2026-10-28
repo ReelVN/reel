@@ -180,6 +180,7 @@ impl StoryRuntime {
         }
         (self.suspended_at.is_none() || self.closing)
             && (self.needs_work()
+                || self.host_work_pending()
                 || self.driver().adapter().has_save_requests()
                 || self.driver().adapter().has_capture_requests()
                 || self.driver().adapter().has_window_requests()
@@ -216,12 +217,18 @@ impl StoryRuntime {
 
     fn needs_work(&self) -> bool {
         self.runnable
-            || self.driver().adapter().capture_results_pending()
-            || self.driver().adapter().asset_reads_need_work()
-            || self.driver().transitions_pending()
             || self.collecting
             || self.driver().cleanup_pending()
             || self.driver().activities_pending()
+    }
+
+    // These continuations advance once at the host boundary (maintenance before
+    // VM execution or projection sync afterwards), rather than in step(). Waiting
+    // for a retained/accepted drawing must not keep an empty VM clock turn alive.
+    fn host_work_pending(&self) -> bool {
+        self.driver().adapter().capture_results_pending()
+            || self.driver().adapter().asset_reads_need_work()
+            || self.driver().transitions_pending()
     }
 
     fn short_poll(&self) -> bool {
@@ -230,6 +237,7 @@ impl StoryRuntime {
             || self.capture.is_some()
             || self.saves.as_ref().is_some_and(|s| s.busy())
             || self.needs_work()
+            || self.host_work_pending()
     }
 
     fn media_interval(&self) -> Option<std::time::Duration> {
@@ -457,9 +465,14 @@ impl StoryRuntime {
                 return Ok(());
             }
             if !self.needs_work() {
-                self.clock_turn_pending = false;
-                #[cfg(feature = "profiling")]
-                self.finish_clock_profile();
+                // External work may still block presentation. Release a settled
+                // producer sample so independent clocks keep running, while an
+                // incomplete VM/reactive batch keeps its original time sample.
+                if stage_ready {
+                    self.clock_turn_pending = false;
+                    #[cfg(feature = "profiling")]
+                    self.finish_clock_profile();
+                }
                 return Ok(());
             }
             if !self.closing && !publication_ready && stage_ready {
