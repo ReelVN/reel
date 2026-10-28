@@ -665,3 +665,27 @@ fn stream_input_headroom_survives_full_ordinary_admission_and_tiny_budgets() {
         drop(held);
     }
 }
+
+#[test]
+fn idle_asset_service_preserves_external_wakes_without_polling_empty_workers() {
+    let assets = Assets::directory(AssetOptions::default());
+    assets.maintain();
+    let before = assets.0.borrow().pumps;
+    for _ in 0..4096 {
+        assets.maintain();
+    }
+    assert_eq!(assets.0.borrow().pumps, before);
+    println!(
+        "idle_assets maintenance_calls=4096 worker_pumps={}",
+        assets.0.borrow().pumps - before
+    );
+    assets.0.borrow().wake.wake();
+    assets.maintain();
+    assert_eq!(assets.0.borrow().pumps, before + 1);
+    let completion = assets.0.borrow().completion.reserve(64).unwrap();
+    assets.maintain();
+    assert_eq!(assets.0.borrow().pumps, before + 2);
+    drop(completion);
+    assets.maintain();
+    assert_eq!(assets.0.borrow().pumps, before + 2);
+}
