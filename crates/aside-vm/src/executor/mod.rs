@@ -30,8 +30,8 @@ use generators::GeneratorAction;
 mod generator_tests;
 mod iterators;
 mod member_hints;
+mod method_bindings;
 mod models;
-mod native_bindings;
 mod native_roots;
 mod reactive;
 pub(crate) mod snapshot;
@@ -357,10 +357,15 @@ enum NativePhase {
     Release(bool),
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum NativeArgumentPlan {
+    Fixed(u32),
+    PositionalReceiver,
+}
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct NativeFrame {
     // A standard derived commit borrows its sole argument from callback root 1.
     inline_argument: bool,
-    argument_plan: Option<u32>,
+    argument_plan: Option<NativeArgumentPlan>,
     id: FrameId,
     native: NativeId,
     signature: SignatureId,
@@ -554,7 +559,7 @@ pub struct Vm {
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
     member_hints: member_hints::MemberHints,
-    native_bindings: native_bindings::NativeBindings,
+    method_bindings: method_bindings::MethodBindings,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
@@ -562,9 +567,18 @@ pub struct Vm {
     native_entries: u64,
     native_binding_hits: u64,
     native_binding_misses: u64,
+    script_binding_hits: u64,
+    script_binding_misses: u64,
     native_resumes: u64,
     native_null_publications: u64,
     slices: u64,
+    cumulative_instructions: u64,
+    cumulative_work: u64,
+    derived_starts: u64,
+    compact_derived_starts: u64,
+    derived_outputs: u64,
+    compact_derived_outputs: u64,
+
     last_usage: SliceUsage,
     #[cfg(test)]
     work_probe: WorkProbe,
@@ -658,9 +672,18 @@ impl Vm {
             native_entries: self.native_entries,
             native_binding_hits: self.native_binding_hits,
             native_binding_misses: self.native_binding_misses,
+            script_binding_hits: self.script_binding_hits,
+            script_binding_misses: self.script_binding_misses,
             native_resumes: self.native_resumes,
             native_null_publications: self.native_null_publications,
             slices: self.slices,
+            cumulative_instructions: self.cumulative_instructions,
+            cumulative_work: self.cumulative_work,
+            derived_starts: self.derived_starts,
+            compact_derived_starts: self.compact_derived_starts,
+            derived_outputs: self.derived_outputs,
+            compact_derived_outputs: self.compact_derived_outputs,
+
             usage: self.last_usage,
             heap: self.heap.stats(),
             slots: self.slots.stats(),
@@ -761,6 +784,16 @@ impl Vm {
     fn read(&self, regs: RootRangeToken, reg: Reg) -> Result<Value, FaultKind> {
         self.slots.read(at(regs, reg.0)).map_err(heap_fault)
     }
+    fn read_pair(
+        &self,
+        regs: RootRangeToken,
+        first: u32,
+        second: u32,
+    ) -> Result<(Value, Value), FaultKind> {
+        self.slots
+            .read_pair(regs, first, second)
+            .map_err(heap_fault)
+    }
     fn write(&mut self, regs: RootRangeToken, reg: Reg, v: Value) -> Result<(), FaultKind> {
         self.slots
             .write(&mut self.heap, at(regs, reg.0), v)
@@ -819,6 +852,7 @@ impl Vm {
         }
         let values = f.register_count as u64
             + 4
+            + u64::from(self.program.compact_derived(function))
             + u64::from(f.kind == FunctionKind::Generator)
             + 2 * f.regions.len() as u64
             + count as u64 * 2
@@ -858,6 +892,8 @@ impl Vm {
         };
         let result = self.run(&mut meter, &mut now);
         self.code_window = crate::bytecode::CodeWindow::default();
+        self.cumulative_instructions += u64::from(meter.usage.instructions);
+        self.cumulative_work += meter.usage.work;
         self.last_usage = meter.usage;
         result
     }
@@ -1040,8 +1076,9 @@ impl Vm {
                     self.generator_abandon(s)?;
                 }
                 if s.derived_bridge.is_some() {
-                    self.heap.end_derived(self.value(s.env, 3)?)?;
-                } else {
+                    self.heap.end_derived(self.value(s.env, 4)?)?;
+                }
+                if s.derived_bridge.is_none() || matches!(s.phase, ScriptPhase::Class(_)) {
                     self.abort_class(s)?;
                 }
                 for r in [s.regs, s.env, s.args, s.bound] {

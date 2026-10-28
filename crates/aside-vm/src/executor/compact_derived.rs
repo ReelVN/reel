@@ -66,7 +66,7 @@ impl Vm {
                 return Err(error);
             }
         };
-        if let Err(error) = self.put(script.env, 3, output) {
+        if let Err(error) = self.put(script.env, 4, output) {
             self.release_frame(Frame::Script(script))?;
             self.active.frames.data.pop();
             return Err(error);
@@ -78,10 +78,12 @@ impl Vm {
         script.context.no_wait = true;
         script.phase = ScriptPhase::CompactBegin;
         self.active.frames.data[top] = Frame::Script(script);
+        self.derived_starts += 1;
+        self.compact_derived_starts += 1;
         Ok(())
     }
     pub(super) fn compact_stack_entry(&self, script: ScriptFrame) -> Result<StackEntry, VmError> {
-        let output = self.value(script.env, 3)?;
+        let output = self.value(script.env, 4)?;
         let (native, location) = self.compact_derived_location(output)?;
         let version = self.program.package().content_version;
         Ok(StackEntry {
@@ -108,10 +110,10 @@ impl Vm {
         // Root 1 already carries the callback closure in ordinary native frames.
         // Borrow it for the one supplied argument instead of copying it into the
         // two empty script argument windows. Reentrant callbacks materialize them.
-        if !meter.take(0, self.release_cost(1) + self.program_lookup_work() + 9, 0) {
+        if !meter.take(0, self.release_cost(1) + self.program_lookup_work() + 10, 0) {
             return Ok(false);
         }
-        let output = self.value(script.env, 3)?;
+        let output = self.value(script.env, 4)?;
         let closure = self.value(script.env, 0)?;
         let value = self.value(script.env, 1)?;
         let (native, location) = self.compact_derived_location(output)?;
@@ -121,6 +123,7 @@ impl Vm {
         self.put(script.env, 0, value)?;
         self.put(script.env, 2, output)?;
         self.put(script.env, 3, Value::bool(true))?;
+        self.clear(script.env, 4)?;
         let signature = self.program.package().natives[native.index()].signature;
         let frame = NativeFrame {
             inline_argument: true,

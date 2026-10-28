@@ -135,9 +135,10 @@ impl Vm {
         frame.phase = NativePhase::Bind(ArgumentBinding::new(0));
         self.active.frames.data[index] = Frame::Native(frame);
         self.heap.claim_derived(read.output)?;
+        self.derived_starts += 1;
         Ok(())
     }
-    /// Implement the standard read-only derived-value contract. Proven straight-line
+    /// Implement the standard read-only derived-value contract. Admitted parameterless
     /// expressions retain their script instructions and may defer the native bridge
     /// until this same commit continuation; custom observers use `call_reactive`.
     pub fn respond_derive(&mut self, ticket: HostTicket) -> Result<(), VmError> {
@@ -153,11 +154,11 @@ impl Vm {
                     self.heap.alloc_derived(closure)?
                 };
                 let signature = &self.program.package().signatures[native.signature.index()];
-                if signature.parameters.len() == 1
+                let compact = signature.parameters.len() == 1
                     && signature.rest.is_none()
                     && native.bindings.is_none()
-                    && self.program.compact_derived(function)
-                {
+                    && self.program.compact_derived(function);
+                if compact {
                     self.heap.set_host_payload(
                         output,
                         DerivedSlot::Compact as u32,
@@ -171,6 +172,10 @@ impl Vm {
                     true,
                     &[output, Value::bool(native.derived_output.is_some())],
                 )?;
+                if native.derived_output.is_none() {
+                    self.derived_outputs += 1;
+                    self.compact_derived_outputs += u64::from(compact);
+                }
             }
             NativeInput::CallbackReturned => {
                 let output = self.host_continuation(ticket)?[0];
@@ -216,7 +221,7 @@ impl Vm {
         Ok(match self.task(task)?.frames.data.first() {
             Some(Frame::Native(frame)) => frame.derived_output,
             Some(Frame::Script(frame)) if frame.derived_bridge.is_some() => {
-                Some(self.value(frame.env, 3)?)
+                Some(self.value(frame.env, 4)?)
             }
             _ => None,
         })
@@ -399,6 +404,7 @@ impl Vm {
         self.put(frame.roots, 2, output)?;
         frame.continuation_len = 1;
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(frame);
+        self.derived_starts += 1;
         Ok(task)
     }
 }

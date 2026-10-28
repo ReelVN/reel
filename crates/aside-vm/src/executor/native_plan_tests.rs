@@ -325,7 +325,7 @@ fn restore_rejects_a_valid_argument_plan_from_another_native() {
     let Frame::Native(frame) = vm.active.frames.data.last_mut().unwrap() else {
         unreachable!()
     };
-    frame.argument_plan = Some(other_plan);
+    frame.argument_plan = Some(NativeArgumentPlan::Fixed(other_plan));
     let registry = SnapshotRegistry::default();
     let mut capture = vm.snapshot_begin(&registry).unwrap();
     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}

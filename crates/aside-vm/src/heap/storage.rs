@@ -49,12 +49,7 @@ impl Heap {
                 .saturating_sub(self.objects.occupied() + self.objects.retired()),
         );
         let mut bytes = self.objects.allocation_bytes(additional);
-        for queue in [
-            &self.allocations,
-            &self.gray,
-            &self.release,
-            &self.reactive_queue,
-        ] {
+        for queue in [&self.allocations, &self.gray, &self.release] {
             let mut capacity = queue.capacity();
             for index in 1..=additional {
                 let needed = self.objects.occupied() + index;
@@ -67,6 +62,7 @@ impl Heap {
         bytes
     }
     pub(crate) fn remove_object(&mut self, key: HeapKey) {
+        self.unlink_derived(key);
         self.changes
             .record(key, self.objects.get(key).unwrap().watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
@@ -86,12 +82,7 @@ impl Heap {
         // A reused identity can still require a fresh entity page or queue space.
         // Prepare by live demand, independently of the generation table's peak.
         let needed = self.objects.occupied() + 1;
-        for queue in [
-            &mut self.allocations,
-            &mut self.gray,
-            &mut self.release,
-            &mut self.reactive_queue,
-        ] {
+        for queue in [&mut self.allocations, &mut self.gray, &mut self.release] {
             if queue.capacity() < needed {
                 let capacity = (queue.capacity() * 2).max(needed);
                 self.reserved += grow_queue(queue, capacity, &self.usage)?;

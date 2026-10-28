@@ -482,7 +482,17 @@ impl Vm {
         let top = self.active.frames.data.len() - 1;
         match n.phase {
             NativePhase::PlannedCheck { source } => {
-                if !m.take(0, 1 + u64::from(n.argument_count), 0) {
+                let direct = matches!(
+                    n.argument_plan,
+                    Some(NativeArgumentPlan::PositionalReceiver)
+                ) && n.argument_count <= 1;
+                let direct_work = if direct {
+                    1 + u64::from(n.argument_count)
+                        * (2 + self.type_checks.argument_extra(n.signature))
+                } else {
+                    0
+                };
+                if !m.take(0, 1 + u64::from(n.argument_count) + direct_work, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 let ArgSource::Caller { frame, descriptor } = source else {
@@ -503,6 +513,29 @@ impl Vm {
                     .slots
                     .borrow_initialized_window(caller.regs, window.start.0, window.len)
                 {
+                    Ok(_) if direct => {
+                        let result = if n.argument_count == 0 {
+                            Ok(())
+                        } else {
+                            let ty = self.program.package().signatures[n.signature.index()]
+                                .parameters[1]
+                                .ty;
+                            self.argument(source, 0)
+                                .map_err(vm_fault)
+                                .and_then(|(_, value)| self.check_type(ty, value).map(|()| value))
+                                .and_then(|value| self.put(n.bound, 1, value).map_err(vm_fault))
+                        };
+                        match result {
+                            Ok(()) => {
+                                n.phase = if n.has_defaults {
+                                    NativePhase::Defaults { parameter: 0 }
+                                } else {
+                                    NativePhase::Resume(NativeInput::Entry)
+                                }
+                            }
+                            Err(kind) => self.native_fault(&mut n, kind)?,
+                        }
+                    }
                     Ok(_) => n.phase = NativePhase::PlannedCopy { source, index: 0 },
                     Err(error) => self.native_fault(&mut n, heap_fault(error))?,
                 }
@@ -512,10 +545,12 @@ impl Vm {
                     if !m.take(0, 2 + self.type_checks.argument_extra(n.signature), 0) {
                         return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                     }
-                    let position = self
-                        .program
-                        .native_call_slots(n.argument_plan.unwrap())
-                        .unwrap()[index as usize];
+                    let position = match n.argument_plan.unwrap() {
+                        NativeArgumentPlan::Fixed(plan) => {
+                            self.program.native_call_slots(plan).unwrap()[index as usize]
+                        }
+                        NativeArgumentPlan::PositionalReceiver => index + 1,
+                    };
                     let ty = self.program.package().signatures[n.signature.index()].parameters
                         [position as usize]
                         .ty;

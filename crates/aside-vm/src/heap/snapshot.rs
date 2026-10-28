@@ -491,7 +491,7 @@ pub(crate) fn connect(
             obj.model_metadata = map.value(meta.model_metadata)?;
             obj.reactive_subscribers = map.value(meta.reactive_subscribers)?;
             obj.derived = meta.derived;
-            obj.derived_dirty = meta.derived_dirty;
+            obj.derived_dirty = false;
             obj.evaluation = meta.evaluation;
             obj.property_generation = meta.property_generation;
             obj.content_version = meta.content_version;
@@ -507,7 +507,7 @@ pub(crate) fn connect(
             }
             heap.evaluation = heap.evaluation.max(meta.evaluation);
             if meta.derived && meta.derived_dirty {
-                heap.reactive_queue.push_back(key);
+                heap.enqueue_derived(key);
             }
         }
         RecordKind::Values | RecordKind::Bytes => {

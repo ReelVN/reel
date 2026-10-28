@@ -6,6 +6,8 @@ pub(super) struct NativeCallPlans {
     // Sorted by (function, descriptor); slots preserve source argument order.
     sites: Vec<(u32, u32, u32, u32)>,
     slots: Vec<u32>,
+    #[cfg(test)]
+    positional: bool,
 }
 impl NativeCallPlans {
     pub(super) fn capacity_bytes(&self) -> usize {
@@ -23,12 +25,15 @@ impl VerifiedProgram {
     }
     #[cfg(test)]
     pub(crate) fn without_native_call_plans(mut self) -> Self {
-        std::sync::Arc::get_mut(&mut self.0)
-            .unwrap()
-            .native_calls
-            .sites
-            .clear();
+        let calls = &mut std::sync::Arc::get_mut(&mut self.0).unwrap().native_calls;
+        calls.sites.clear();
+        calls.positional = false;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn positional_native_plans(&self) -> bool {
+        self.0.native_calls.positional
     }
 
     pub(crate) fn native_call_plan(
@@ -123,6 +128,8 @@ pub(super) fn build(
     }
     u32::try_from(slots).map_err(|_| Error::new(ErrorKind::Limit, "native call slot count"))?;
     let mut plans = NativeCallPlans {
+        #[cfg(test)]
+        positional: true,
         sites: b.vec(sites)?,
         slots: b.vec(slots)?,
     };

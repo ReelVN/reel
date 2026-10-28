@@ -845,7 +845,7 @@ fn validate_frame(
                 return Err(SnapshotError::Invalid("script frame code/registers".into()));
             }
             if let Some((bridge, module, _)) = frame.derived_bridge {
-                let output = vm.value(frame.env, 3)?;
+                let output = vm.value(frame.env, 4)?;
                 let closure = vm.value(frame.env, 0)?;
                 if !vm.program.compact_derived(frame.code.function)
                     || !vm.compact_output(output)?
@@ -894,7 +894,7 @@ fn validate_frame(
                         .is_some_and(|(f, pc)| f.code.is_boundary(pc as usize))
                     || !frame.context.derived
                     || !frame.context.no_wait
-                    || vm.heap.range_descriptor(frame.env)?.len != 4
+                    || vm.heap.range_descriptor(frame.env)?.len != 5
                     // A rejected callback response can have admitted one window.
                     // Until materialization completes, root 1 owns the argument.
                     || !matches!(vm.heap.range_descriptor(frame.args)?.len, 0 | 2)
@@ -982,7 +982,7 @@ fn validate_frame(
                     ));
                 }
             }
-            if let Some(plan) = frame.argument_plan {
+            if let Some(NativeArgumentPlan::Fixed(plan)) = frame.argument_plan {
                 let positions = vm
                     .program
                     .native_call_slots(plan)
@@ -1016,6 +1016,32 @@ fn validate_frame(
                     || vm.heap.range_descriptor(frame.args)?.len != 0
                 {
                     return Err(SnapshotError::Invalid("native argument plan schema".into()));
+                }
+            }
+            if matches!(
+                frame.argument_plan,
+                Some(NativeArgumentPlan::PositionalReceiver)
+            ) {
+                let signature = &vm.program.package().signatures[frame.signature.index()];
+                if !frame.receiver
+                    || frame.bindings.is_some()
+                    || vm.native_parameters.data[frame.native.index()].needs_cells
+                    || signature.rest.is_some()
+                    || signature.parameters.len() != frame.argument_count as usize + 1
+                    || vm.heap.range_descriptor(frame.args)?.len != 0
+                {
+                    return Err(SnapshotError::Invalid(
+                        "positional receiver argument schema".into(),
+                    ));
+                }
+                if let NativePhase::PlannedCopy { source, .. }
+                | NativePhase::PlannedCheck { source } = frame.phase
+                    && (!vm.positional_native_source(source, frame.argument_count)
+                        || !matches!(source, ArgSource::Caller { frame, .. } if parent.is_some_and(|p| p.id() == frame)))
+                {
+                    return Err(SnapshotError::Invalid(
+                        "positional receiver argument source".into(),
+                    ));
                 }
             }
             if matches!(frame.phase, NativePhase::PlannedCheck { .. })

@@ -2,6 +2,24 @@ use super::*;
 use crate::snapshot::{SnapshotBudget, SnapshotRegistry};
 
 fn prepared(generic: bool) -> (Vm, Value, Value, RuntimeSupport) {
+    prepared_expression(generic, false)
+}
+fn prepared_expression(generic: bool, calls: bool) -> (Vm, Value, Value, RuntimeSupport) {
+    prepared_options(generic, calls, false)
+}
+fn prepared_options(
+    generic: bool,
+    calls: bool,
+    generic_parameters: bool,
+) -> (Vm, Value, Value, RuntimeSupport) {
+    prepared_storage(generic, calls, generic_parameters, false)
+}
+fn prepared_storage(
+    generic: bool,
+    calls: bool,
+    generic_parameters: bool,
+    packed: bool,
+) -> (Vm, Value, Value, RuntimeSupport) {
     let mut p = fixtures::helper_native();
     p.signatures[0].parameters[0].ty = TypeId(0);
     p.signatures[0].return_type = TypeId(0);
@@ -46,9 +64,78 @@ fn prepared(generic: bool) -> (Vm, Value, Value, RuntimeSupport) {
     p.functions.push(text);
     let mut support = review_tests::echo_registry();
     support.natives[0].signature = p.signatures[0].clone();
+    if calls {
+        let method = SymbolId(p.symbols.len() as u32);
+        p.symbols.push("sample".into());
+        let native_name = SymbolId(p.symbols.len() as u32);
+        p.symbols.push("host::sample".into());
+        let mut signature = p.signatures[0].clone();
+        let mut parameter = signature.parameters[0].clone();
+        parameter.name = method;
+        signature.parameters.push(parameter);
+        p.signatures.push(signature.clone());
+        let mut native = p.natives[0].clone();
+        native.symbol = native_name;
+        native.signature = SignatureId(2);
+        p.natives.push(native);
+        let mut function = p.functions[1].clone();
+        function.kind = FunctionKind::Native(NativeId(1));
+        function.name = native_name;
+        function.signature = SignatureId(2);
+        p.functions.push(function);
+        let mut registration = support.natives[0].clone();
+        registration.symbol = "host::sample".into();
+        registration.signature = signature;
+        support.natives.push(registration);
+        let f = &mut p.functions[0];
+        f.register_count = 6;
+        f.source_map = vec![SourceMapEntry {
+            pc: Pc(8),
+            span: SourceSpan {
+                file: SourceId(0),
+                start: 12,
+                end: 22,
+            },
+        }];
+        f.code = vec![
+            Instruction::new(Opcode::CaptureRead, 0, 0, 0),
+            Instruction::new(Opcode::MemberGet, 1, 0, 4),
+            Instruction::new(Opcode::LoadConst, 2, 1, 0),
+            Instruction::new(Opcode::Div, 3, 2, 1),
+            Instruction::new(Opcode::LoadConst, 4, 2, 0),
+            Instruction::new(Opcode::Ge, 5, 1, 4),
+            Instruction::new(Opcode::BranchBool, 5, 7, 9),
+            Instruction::new(Opcode::MemberGet, 4, 0, method.0),
+            Instruction::new(Opcode::Call, 3, 0, 0),
+            Instruction::new(Opcode::Return, 3, 0, 0),
+        ];
+        f.descriptors = vec![Descriptor::Call(CallDesc {
+            contract: None,
+            target: CallTarget::Register(Reg(4)),
+            arguments: Arguments::Window(RegWindow {
+                start: Reg(3),
+                len: 1,
+            }),
+            names: Vec::new(),
+        })];
+    }
     let program = verify(p, Limits::default()).unwrap();
+    let program = if packed {
+        VerifiedProgram::decode(
+            program.encode(Limits::default()).unwrap().as_bytes(),
+            Limits::default(),
+        )
+        .unwrap()
+    } else {
+        program
+    };
     let program = if generic {
         program.without_compact_derived_plans()
+    } else {
+        program
+    };
+    let program = if generic_parameters {
+        program.without_native_call_plans()
     } else {
         program
     };
@@ -65,6 +152,11 @@ fn prepared(generic: bool) -> (Vm, Value, Value, RuntimeSupport) {
     vm.heap.table_store(fields, 0, name, Value::int(1)).unwrap();
     let source = vm.heap.alloc_host(fields, &[], None).unwrap();
     vm.heap.observe_host_properties(source, 0, 1).unwrap();
+    if calls {
+        let method = vm.bind_native(source, FunctionId(4)).unwrap();
+        let key = vm.heap.alloc_string("sample").unwrap();
+        vm.heap.table_store(fields, 1, key, method).unwrap();
+    }
     let closure = vm
         .heap
         .alloc_record(
@@ -108,6 +200,10 @@ fn drive(vm: &mut Vm, task: TaskId, tiny: bool) -> (RunOutcome, u64, u64, u32, u
         frames = frames.max(vm.stats().frames);
         values = values.max(vm.stats().slots.active_values);
         match result {
+            RunOutcome::HostCall(ticket) if ticket.native == NativeId(1) => {
+                let value = vm.host_arguments(ticket).unwrap()[1];
+                vm.respond(ticket, HostResponse::Ready(value)).unwrap();
+            }
             RunOutcome::HostCall(ticket) => vm.respond_derive(ticket).unwrap(),
             RunOutcome::BudgetYield(_) => {}
             RunOutcome::Returned(_) | RunOutcome::Fault(_) => {
@@ -520,3 +616,6 @@ fn differential_baseline_keeps_every_recomputation_on_its_selected_path() {
         assert_eq!(vm.native_resumes - commits, 3);
     }
 }
+
+#[path = "calls.rs"]
+mod calls;

@@ -1,0 +1,443 @@
+//! Differential checks for the call and branch shapes used by animated bindings.
+use super::*;
+
+fn sample_ticket(vm: &mut Vm, task: TaskId) -> HostTicket {
+    loop {
+        match vm.run_slice(task, SliceBudget::default(), || 0).unwrap() {
+            RunOutcome::HostCall(ticket) if ticket.native == NativeId(1) => return ticket,
+            RunOutcome::HostCall(ticket) => vm.respond_derive(ticket).unwrap(),
+            RunOutcome::BudgetYield(_) => {}
+            other => panic!("sample call: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn compact_dynamic_calls_and_branches_keep_budgeted_results_and_dependency_reads() {
+    for generic in [true, false] {
+        let (mut vm, output, source, _) = prepared_expression(generic, true);
+        for (input, expected, called) in [(2, 20, true), (-1, -41, false), (1, 41, true)] {
+            vm.heap
+                .publish_host_property(
+                    crate::PropertyId {
+                        host: source,
+                        field: 0,
+                    },
+                    Value::int(input),
+                )
+                .unwrap();
+            assert!(vm.heap.next_derived().unwrap().unwrap().same_bits(output));
+            let entries = vm.native_entries;
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let RunOutcome::Returned(delivery) = drive(&mut vm, task, true).0 else {
+                panic!("derive");
+            };
+            assert_eq!(
+                vm.heap
+                    .host_property(crate::PropertyId {
+                        host: output,
+                        field: 0
+                    })
+                    .unwrap()
+                    .as_int(),
+                Some(expected)
+            );
+            assert_eq!(
+                vm.native_entries - entries,
+                u64::from(generic) + u64::from(called)
+            );
+            vm.discard_delivery(delivery).unwrap();
+            assert!(!vm.heap.reactive_evaluating());
+        }
+    }
+}
+
+#[test]
+fn cumulative_execution_and_derived_counts_match_completed_slice_usage() {
+    for generic in [false, true] {
+        let (mut vm, output, _, _) = prepared_expression(generic, true);
+        let before = vm.stats();
+        assert_eq!(before.derived_outputs, 1);
+        assert_eq!(before.compact_derived_outputs, u64::from(!generic));
+        assert_eq!(before.derived_starts, 0);
+        let task = vm.start_derived(output, RootOwner(1)).unwrap();
+        let (outcome, work, instructions, _, _, _) = drive(&mut vm, task, true);
+        assert!(matches!(outcome, RunOutcome::Returned(_)));
+        let after = vm.stats();
+        assert_eq!(after.cumulative_work - before.cumulative_work, work);
+        assert_eq!(
+            after.cumulative_instructions - before.cumulative_instructions,
+            instructions
+        );
+        assert_eq!(after.derived_starts, 1);
+        assert_eq!(after.compact_derived_starts, u64::from(!generic));
+        assert_eq!(after.derived_outputs, before.derived_outputs);
+        assert_eq!(
+            after.compact_derived_outputs,
+            before.compact_derived_outputs
+        );
+    }
+}
+
+#[test]
+fn compact_nested_native_snapshot_restores_receiver_output_and_continuation() {
+    for generic in [true, false] {
+        let (mut vm, output, _, support) = prepared_expression(generic, true);
+        let task = vm.start_derived(output, RootOwner(1)).unwrap();
+        let ticket = sample_ticket(&mut vm, task);
+        review_tests::collect(&mut vm);
+        let registry = SnapshotRegistry::default();
+        let mut capture = vm.snapshot_begin(&registry).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let image = capture.finish().unwrap();
+        let mut restore = Vm::restore_begin(
+            &image,
+            vm.program().clone(),
+            support,
+            vm.limits,
+            SessionEpoch(2),
+            &registry,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut vm, map) = restore.finish().unwrap();
+        let stats = vm.stats();
+        assert_eq!(stats.cumulative_work, 0);
+        assert_eq!(stats.cumulative_instructions, 0);
+        assert_eq!(stats.derived_starts, 0);
+        assert_eq!(stats.compact_derived_starts, 0);
+        assert_eq!(stats.derived_outputs, 0);
+        assert_eq!(stats.compact_derived_outputs, 0);
+        let task = map.task(task).unwrap();
+        let ticket = map.ticket(ticket).unwrap();
+        let output = vm.reactive_task_output(task).unwrap().unwrap();
+        let args = vm.host_arguments(ticket).unwrap();
+        assert_eq!(vm.heap.info(args[0]).unwrap().kind, ObjectKind::Host);
+        let value = args[1];
+        vm.respond(ticket, HostResponse::Ready(value)).unwrap();
+        assert!(matches!(
+            drive(&mut vm, task, true).0,
+            RunOutcome::Returned(_)
+        ));
+        assert_eq!(
+            vm.heap
+                .host_property(crate::PropertyId {
+                    host: output,
+                    field: 0
+                })
+                .unwrap()
+                .as_int(),
+            Some(41)
+        );
+        assert!(!vm.heap.reactive_evaluating());
+    }
+}
+
+#[test]
+fn compact_nested_native_fault_keeps_source_stack_and_cancellation_ends_capture() {
+    let mut stacks = Vec::new();
+    for generic in [true, false] {
+        let (mut vm, output, _, _) = prepared_expression(generic, true);
+        let task = vm.start_derived(output, RootOwner(1)).unwrap();
+        let ticket = sample_ticket(&mut vm, task);
+        vm.respond_language_error(ticket, FaultKind::Type, Value::NULL)
+            .unwrap();
+        let RunOutcome::Fault(delivery) = drive(&mut vm, task, true).0 else {
+            panic!("nested fault");
+        };
+        let info = vm.delivery_fault(delivery).unwrap().unwrap();
+        let mut cursor = vm.heap.fault_stack(info.id).unwrap();
+        let mut entries = Vec::new();
+        while let Some(entry) = cursor.next(&vm.heap).unwrap() {
+            entries.push((entry.location, entry.module, entry.kind));
+        }
+        stacks.push((info.code, info.location, entries));
+        assert!(!vm.heap.reactive_evaluating());
+        vm.discard_delivery(delivery).unwrap();
+        let task = vm.start_derived(output, RootOwner(1)).unwrap();
+        sample_ticket(&mut vm, task);
+        assert!(vm.heap.reactive_evaluating());
+        vm.cancel_task(task).unwrap();
+        loop {
+            match vm.run_slice(task, SliceBudget::default(), || 0) {
+                Err(VmError::Idle) => break,
+                Ok(RunOutcome::BudgetYield(_)) => {}
+                other => panic!("cancel: {other:?}"),
+            }
+        }
+        assert!(!vm.heap.reactive_evaluating());
+        review_tests::collect(&mut vm);
+        assert!(vm.active.frames.data.is_empty());
+    }
+    assert_eq!(stacks[0], stacks[1]);
+}
+
+#[test]
+#[ignore = "release differential branch and bound-native derived measurement"]
+fn compact_called_derived_cost() {
+    for generic in [true, false] {
+        let (mut vm, output, _, _) = prepared_expression(generic, true);
+        let entries = vm.native_entries;
+        let mut work = 0;
+        let mut instructions = 0;
+        let before = vm.heap.stats();
+        let start = std::time::Instant::now();
+        for _ in 0..20000 {
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let (result, w, i, _, _, _) = drive(&mut vm, task, false);
+            work += w;
+            instructions += i;
+            let RunOutcome::Returned(delivery) = result else {
+                panic!("derive");
+            };
+            vm.discard_delivery(delivery).unwrap();
+        }
+        let elapsed = start.elapsed().as_micros();
+        assert_eq!(
+            vm.native_entries - entries,
+            if generic { 40000 } else { 20000 }
+        );
+        eprintln!(
+            "compact_called_derived generic={generic} evaluations=20000 elapsed_us={elapsed} work={work} instructions={instructions} native_entries={} added_heap_bytes={} added_heap_chunks={}",
+            vm.native_entries - entries,
+            vm.heap.stats().charged_bytes - before.charged_bytes,
+            vm.heap.stats().chunk_allocations - before.chunk_allocations
+        );
+    }
+}
+#[test]
+fn compact_dynamic_builtin_keeps_output_root_during_sliced_search() {
+    for generic in [true, false] {
+        let (mut vm, output, source, _) = prepared_expression(generic, true);
+        let values = (0..128).map(Value::int).collect::<Vec<_>>();
+        let array = vm.heap.alloc_array(&values).unwrap();
+        let method = vm
+            .bound_builtin(array, Builtin::Find, Effects::ALL)
+            .unwrap();
+        let fields = vm.heap.host_fields(source).unwrap();
+        let key = vm.heap.table_entry(fields, 1).unwrap().0;
+        vm.heap.table_store(fields, 1, key, method).unwrap();
+        let entries = vm.native_entries;
+        let task = vm.start_derived(output, RootOwner(1)).unwrap();
+        let RunOutcome::Returned(delivery) = drive(&mut vm, task, true).0 else {
+            panic!("builtin result");
+        };
+        assert_eq!(
+            vm.heap
+                .host_property(crate::PropertyId {
+                    host: output,
+                    field: 0
+                })
+                .unwrap()
+                .as_int(),
+            Some(41)
+        );
+        assert_eq!(vm.native_entries - entries, u64::from(generic));
+        vm.discard_delivery(delivery).unwrap();
+        assert!(!vm.heap.reactive_evaluating());
+    }
+}
+
+#[test]
+#[ignore = "release repeated native receiver binding measurement"]
+fn native_binding_working_set_cost() {
+    for count in [64, 128, 256] {
+        let (mut vm, _, _, _) = prepared_expression(false, true);
+        let mut receivers = Vec::new();
+        for _ in 0..count {
+            let fields = vm.heap.alloc_table().unwrap();
+            receivers.push(vm.heap.alloc_host(fields, &[], None).unwrap());
+        }
+        for &receiver in &receivers {
+            vm.bind_native(receiver, FunctionId(4)).unwrap();
+        }
+        let before = vm.heap.stats();
+        let hits = vm.native_binding_hits;
+        let misses = vm.native_binding_misses;
+        let start = std::time::Instant::now();
+        for _ in 0..128 {
+            for &receiver in &receivers {
+                vm.bind_native(receiver, FunctionId(4)).unwrap();
+            }
+        }
+        eprintln!(
+            "native_bindings count={count} rounds=128 elapsed_us={} hits={} misses={} added_objects={} added_bytes={}",
+            start.elapsed().as_micros(),
+            vm.native_binding_hits - hits,
+            vm.native_binding_misses - misses,
+            vm.heap.stats().live_objects - before.live_objects,
+            vm.heap.stats().charged_bytes - before.charged_bytes
+        );
+    }
+}
+
+#[test]
+fn native_binding_set_remains_weak_and_rejects_collected_generations() {
+    let (mut vm, _, _, _) = prepared_expression(false, true);
+    let fields = vm.heap.alloc_table().unwrap();
+    let receiver = vm.heap.alloc_host(fields, &[], None).unwrap();
+    let root = vm
+        .heap
+        .add_root(RootOwner(1), RootKind::Host, receiver)
+        .unwrap();
+    let first = vm.bind_native(receiver, FunctionId(4)).unwrap();
+    assert!(
+        vm.bind_native(receiver, FunctionId(4))
+            .unwrap()
+            .same_bits(first)
+    );
+    review_tests::collect(&mut vm);
+    assert!(vm.heap.info(first).is_err());
+    let next = vm.bind_native(receiver, FunctionId(4)).unwrap();
+    assert!(!first.same_bits(next));
+    assert!(
+        vm.bind_native(receiver, FunctionId(4))
+            .unwrap()
+            .same_bits(next)
+    );
+    vm.heap.release_root(root).unwrap();
+    review_tests::collect(&mut vm);
+    assert!(vm.heap.info(receiver).is_err());
+    assert!(vm.bind_native(receiver, FunctionId(4)).is_err());
+}
+
+#[test]
+fn positional_receiver_plan_restores_admission_and_preserves_provided_arguments() {
+    for stop in 0..=1 {
+        let (mut vm, output, _, support) = prepared_expression(false, true);
+        let mut task = vm.start_derived(output, RootOwner(1)).unwrap();
+        loop {
+            if matches!(vm.active.frames.data.last(), Some(Frame::Native(n)) if n.native == NativeId(1) && match n.phase { NativePhase::PlannedCheck { .. } => stop == 0, NativePhase::Resume(NativeInput::Entry) => stop == 1, _ => false })
+            {
+                break;
+            }
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work: vm.last_usage.required_work.max(1),
+                        allocation_bytes: vm.last_usage.required_allocation,
+                        ..Default::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            assert!(matches!(outcome, RunOutcome::BudgetYield(_)), "{outcome:?}");
+        }
+        review_tests::collect(&mut vm);
+        let registry = SnapshotRegistry::default();
+        let mut capture = vm.snapshot_begin(&registry).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let image = capture.finish().unwrap();
+        let mut restore = Vm::restore_begin(
+            &image,
+            vm.program().clone(),
+            support,
+            vm.limits,
+            SessionEpoch(2),
+            &registry,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (restored, map) = restore.finish().unwrap();
+        vm = restored;
+        task = map.task(task).unwrap();
+        let ticket = sample_ticket(&mut vm, task);
+        let frame = vm.ticket(ticket).unwrap();
+        assert!(matches!(
+            frame.argument_plan,
+            Some(NativeArgumentPlan::PositionalReceiver)
+        ));
+        assert_eq!(vm.slots.len(frame.args).unwrap(), 0);
+        let supplied = vm.host_provided_arguments(ticket).unwrap();
+        assert_eq!(supplied.len(), 1);
+        assert_eq!(supplied.get(0).unwrap().0, 1);
+        assert_eq!(supplied.get(0).unwrap().1.as_int(), Some(41));
+        assert!(supplied.get(1).is_none());
+        assert!(supplied.get(usize::MAX).is_none());
+        vm.with_host_provided_arguments(ticket, |_, args| assert_eq!(args.iter().count(), 1))
+            .unwrap();
+        vm.respond(ticket, HostResponse::Ready(Value::int(41)))
+            .unwrap();
+        assert!(matches!(
+            drive(&mut vm, task, true).0,
+            RunOutcome::Returned(_)
+        ));
+    }
+}
+
+#[test]
+#[ignore = "release differential bound-native positional argument measurement"]
+fn positional_native_call_cost() {
+    for generic_parameters in [true, false] {
+        let (mut vm, output, _, _) = prepared_options(false, true, generic_parameters);
+        let mut work = 0;
+        let start = std::time::Instant::now();
+        for _ in 0..50000 {
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let (result, w, _, _, _, _) = drive(&mut vm, task, false);
+            work += w;
+            let RunOutcome::Returned(delivery) = result else {
+                panic!("derive");
+            };
+            vm.discard_delivery(delivery).unwrap();
+        }
+        eprintln!(
+            "positional_native generic={generic_parameters} evaluations=50000 elapsed_us={} work={work}",
+            start.elapsed().as_micros()
+        );
+    }
+}
+
+#[test]
+#[ignore = "release differential packed derived and member lookup measurement"]
+fn packed_derived_lookup_cost() {
+    for (generic, identities) in [
+        (true, false),
+        (false, false),
+        (false, true),
+        (false, true),
+        (false, false),
+        (true, false),
+    ] {
+        let (mut vm, output, _, _) = prepared_storage(generic, true, false, true);
+        vm.member_hints.identities = identities;
+        let mut work = 0;
+        let start = std::time::Instant::now();
+        for _ in 0..100000 {
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let (outcome, used, _, _, _, _) = drive(&mut vm, task, false);
+            work += used;
+            let RunOutcome::Returned(delivery) = outcome else {
+                panic!("derive");
+            };
+            vm.discard_delivery(delivery).unwrap();
+        }
+        eprintln!(
+            "packed_derived generic={generic} member_identity={identities} evaluations=100000 elapsed_us={} work={work}",
+            start.elapsed().as_micros()
+        );
+    }
+}
+
+#[test]
+#[ignore = "release differential paired-register derived measurement"]
+fn packed_derived_operand_cost() {
+    for paired in [false, true, true, false] {
+        let (mut vm, output, _, _) = prepared_storage(false, true, false, true);
+        vm.slots.paired_reads = paired;
+        let start = std::time::Instant::now();
+        for _ in 0..100000 {
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let RunOutcome::Returned(delivery) = drive(&mut vm, task, false).0 else {
+                panic!("derive");
+            };
+            vm.discard_delivery(delivery).unwrap();
+        }
+        eprintln!(
+            "packed_derived_operands paired={paired} evaluations=100000 elapsed_us={}",
+            start.elapsed().as_micros()
+        );
+    }
+}

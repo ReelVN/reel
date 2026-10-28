@@ -96,17 +96,28 @@ pub struct HostTicket {
 pub struct ProvidedArguments<'a> {
     pub(super) values: &'a [Value],
     pub(super) positions: Option<&'a [u32]>,
+    pub(super) positional_start: Option<u32>,
 }
 
 impl ProvidedArguments<'_> {
     pub fn len(&self) -> usize {
-        self.positions.map_or(self.values.len() / 2, |p| p.len())
+        self.positional_start.map_or_else(
+            || self.positions.map_or(self.values.len() / 2, |p| p.len()),
+            |start| self.values.len() - start as usize,
+        )
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     /// Read an argument without allocating or repeating name binding.
     pub fn get(&self, index: usize) -> Option<(u32, Value)> {
+        if let Some(start) = self.positional_start {
+            let position = (start as usize).checked_add(index)?;
+            return self
+                .values
+                .get(position)
+                .map(|value| (position as u32, *value));
+        }
         if let Some(positions) = self.positions {
             let position = *positions.get(index)?;
             return Some((position, self.values[position as usize]));
@@ -325,10 +336,27 @@ pub struct VmStats {
     pub native_binding_hits: u64,
     /// Binding cache misses or values rejected by the GC cutoff; reset on restore.
     pub native_binding_misses: u64,
+    /// Live script method bindings reused from the shared weak cache; reset on restore.
+    pub script_binding_hits: u64,
+    /// Script binding misses or GC-unconfirmed values recreated; reset on restore.
+    pub script_binding_misses: u64,
     pub native_resumes: u64,
     /// Redundant whole-native-window initialization writes (removed in V03).
     pub native_null_publications: u64,
     pub slices: u64,
+    /// Instructions admitted by completed run_slice calls; reset on restore.
+    pub cumulative_instructions: u64,
+    /// Work admitted by completed run_slice calls; reset on restore.
+    pub cumulative_work: u64,
+    /// Successfully started scheduled or lazy observer recomputations; reset on restore.
+    /// Initial observer construction is excluded.
+    pub derived_starts: u64,
+    /// Recomputation starts using the compact script path; reset on restore.
+    pub compact_derived_starts: u64,
+    /// Standard derived outputs registered successfully by respond_derive; reset on restore.
+    pub derived_outputs: u64,
+    /// Registered standard outputs admitted to compact recomputation; reset on restore.
+    pub compact_derived_outputs: u64,
     pub usage: SliceUsage,
     pub heap: HeapStats,
     pub slots: FrameSlotsStats,

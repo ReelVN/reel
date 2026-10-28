@@ -401,7 +401,7 @@ impl Vm {
                         if s.derived_bridge.is_some()
                             && matches!(build.phase, BuildPhase::Stack(_)) =>
                     {
-                        let output = self.value(s.env, 3)?;
+                        let output = self.value(s.env, 4)?;
                         let function = FunctionId(
                             self.heap
                                 .host_payload(output, crate::heap::DerivedSlot::Origin as u32)?

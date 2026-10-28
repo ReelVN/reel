@@ -485,10 +485,12 @@ impl Vm {
         let scan = matches!(s.phase, ScriptPhase::TableScan);
         let hint = if scan && !work.matched && work.entry == 0 {
             self.host_member_symbol(s).and_then(|symbol| {
-                let entry = self.member_hints.get(s.code.function, s.pc)?;
+                let (entry, trusted) =
+                    self.member_hints
+                        .get(s.code.function, s.pc, table, work.version)?;
                 let bytes = self.program.package().symbols[symbol.index()].len();
                 (entry < len && bytes <= member_hints::MAX_KEY_BYTES)
-                    .then_some((entry, symbol, bytes))
+                    .then_some((entry, symbol, bytes, trusted))
             })
         } else {
             None
@@ -521,10 +523,10 @@ impl Vm {
             0
         };
         let mut cost = (1, extra);
-        if let Some((_, _, bytes)) = hint {
+        if let Some((_, _, bytes, trusted)) = hint {
             // Bounded metadata reads, short-key bytes and comparison are paid
             // before probing. A mismatch keeps the original ordered scan.
-            cost.0 += 3 + bytes as u64;
+            cost.0 += if trusted { 1 } else { 3 + bytes as u64 };
         }
         let mut host_method = None;
         let mut host_lookup_work = 0;
@@ -607,8 +609,8 @@ impl Vm {
             meter.usage.work += host_lookup_work;
             return Ok(false);
         }
-        if let Some((entry, symbol, _)) = hint
-            && self.member_hint_matches(table, entry, symbol)?
+        if let Some((entry, symbol, _, trusted)) = hint
+            && (trusted || self.member_hint_matches(table, entry, symbol)?)
         {
             let lookup = s.table_work.as_mut().unwrap();
             lookup.entry = entry;
@@ -746,7 +748,7 @@ impl Vm {
             && self.program.package().symbols[symbol.index()].len() <= member_hints::MAX_KEY_BYTES
         {
             self.member_hints
-                .remember(s.code.function, s.pc, work.entry);
+                .remember(s.code.function, s.pc, work.entry, table, work.version);
         }
         match work.action {
             TableAction::Remove(call) => {
