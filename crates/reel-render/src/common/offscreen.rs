@@ -10,10 +10,14 @@ use reel_ui::{
     frame::{FrameDraw, FrameDrawing, FrameOp, RenderFrame},
     kurbo::Affine,
 };
+#[path = "offscreen_schedule.rs"]
+mod schedule;
+pub(crate) use schedule::ParentStep;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Entry {
     pub push: usize,
+    pub end: usize,
     pub first: bool,
     pub last: bool,
     pub shared: bool,
@@ -473,6 +477,7 @@ impl Plan {
         let mut scissors = Vec::new();
         let mut scissor = Scissor::full(size);
         let mut run_start = 0;
+        let mut parent_draw = false;
         let mut next = 0;
         while let Some(command) = commands.get(next) {
             // The build entry guard already excluded active retained/capture boundaries.
@@ -494,6 +499,9 @@ impl Plan {
                     next += 1;
                 }
                 FrameOp::PushGroup(group) if groups.can_inline(next) => {
+                    if parent_draw {
+                        finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                    }
                     push_stack(&mut scissors, scissor, |bytes| {
                         traversal.push(reserve(bytes)?);
                         Ok(())
@@ -503,6 +511,9 @@ impl Plan {
                     next += 1;
                 }
                 FrameOp::PopGroup => {
+                    if parent_draw {
+                        finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                    }
                     scissor = scissors.pop().expect("validated inline group");
                     next += 1;
                 }
@@ -524,19 +535,7 @@ impl Plan {
                             }
                             FrameOp::PushContext(_) | FrameOp::PopContext => {}
                             FrameOp::Draw(draw) => {
-                                leaf &= match draw {
-                                    FrameDraw::Fill { composite, .. }
-                                    | FrameDraw::Stroke { composite, .. } => {
-                                        composite.blend == Default::default()
-                                    }
-                                    FrameDraw::GlyphRun(run) => {
-                                        run.composite.blend == Default::default()
-                                    }
-                                    FrameDraw::Sprites(s) => {
-                                        s.composite.blend == Default::default()
-                                    }
-                                    FrameDraw::BlurredRoundedRect(_) => false,
-                                };
+                                leaf &= ordinary_draw(draw);
                             }
                             _ => leaf = false,
                         }
@@ -563,6 +562,7 @@ impl Plan {
                             &mut entries,
                             Entry {
                                 push: next,
+                                end: end + 1,
                                 first: false,
                                 last: false,
                                 shared: false,
@@ -575,15 +575,15 @@ impl Plan {
                             },
                         )?;
                         if entries.len() - run_start == width {
-                            finish_run(&mut entries, &mut run_start);
+                            finish_run(&mut entries, &mut run_start, &mut parent_draw);
                         }
                     } else {
-                        finish_run(&mut entries, &mut run_start);
+                        finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     }
                     next = end + 1;
                 }
                 FrameOp::PushClip(_) => {
-                    finish_run(&mut entries, &mut run_start);
+                    finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     let mut depth = 1;
                     next += 1;
                     while let Some(command) = commands.get(next) {
@@ -601,13 +601,17 @@ impl Plan {
                         next += 1;
                     }
                 }
+                FrameOp::Draw(draw) if ordinary_draw(draw) => {
+                    parent_draw |= entries.len() > run_start;
+                    next += 1;
+                }
                 _ => {
-                    finish_run(&mut entries, &mut run_start);
+                    finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     next += 1;
                 }
             }
         }
-        finish_run(&mut entries, &mut run_start);
+        finish_run(&mut entries, &mut run_start, &mut parent_draw);
         Ok((
             Self {
                 entries,
@@ -615,6 +619,17 @@ impl Plan {
             },
             retained,
         ))
+    }
+}
+
+fn ordinary_draw(draw: &FrameDraw) -> bool {
+    match draw {
+        FrameDraw::Fill { composite, .. } | FrameDraw::Stroke { composite, .. } => {
+            composite.blend == Default::default()
+        }
+        FrameDraw::GlyphRun(run) => run.composite.blend == Default::default(),
+        FrameDraw::Sprites(sprites) => sprites.composite.blend == Default::default(),
+        FrameDraw::BlurredRoundedRect(_) => false,
     }
 }
 
@@ -666,7 +681,8 @@ fn atlas(entries: &[Entry], max_dimension: u32) -> Option<([u32; 2], [[u32; 2]; 
     best
 }
 
-fn finish_run(entries: &mut Vec<Entry>, start: &mut usize) {
+fn finish_run(entries: &mut Vec<Entry>, start: &mut usize, parent_draw: &mut bool) {
+    *parent_draw = false;
     if entries.len() - *start < 2 {
         entries.truncate(*start);
     } else {

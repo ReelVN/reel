@@ -850,6 +850,9 @@ impl Input<'_> {
                                         )?;
                                     }
                                     if scope.end_batch {
+                                        // All window sources precede parent replay.
+                                        // Interleaved ordinary draws allocate no targets;
+                                        // these same deferred lifetimes cover that phase.
                                         for source in current.deferred.drain(..) {
                                             scratch.release(source, &mut reserve)?;
                                         }

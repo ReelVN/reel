@@ -255,6 +255,7 @@ pub(super) fn prepare(
 }
 
 struct Scope<'a> {
+    source_input: Option<(usize, Affine)>,
     clip_child: Option<&'a reel_ui::frame::FrameGroup>,
     delayed: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation, f32)>,
     group: Option<&'a reel_ui::frame::FrameGroup>,
@@ -297,6 +298,7 @@ enum Pending<'a> {
     },
 }
 struct DeferredComposite {
+    push: usize,
     source: Target,
     view: crate::common::source_view::SourceView,
     opacity: f32,
@@ -565,6 +567,7 @@ impl Context<'_> {
                         Kind::Clip,
                         at,
                         Scope {
+                            source_input: None,
                             group: None,
                             clip_child: isolated
                                 .then(|| {
@@ -757,6 +760,9 @@ impl Context<'_> {
                         Kind::Group,
                         at,
                         Scope {
+                            source_input: current
+                                .offset
+                                .map(|offset| (offset + current.next - 1, current.transform)),
                             group: Some(group),
                             clip_child: None,
                             delayed: None,
@@ -901,6 +907,7 @@ impl Context<'_> {
                             push_stack(
                                 &mut current.deferred,
                                 DeferredComposite {
+                                    push: group.source_input.expect("scheduled source").0,
                                     source,
                                     view,
                                     opacity: group.opacity,
@@ -911,7 +918,7 @@ impl Context<'_> {
                             )?;
                             if last {
                                 let mut pending = std::mem::take(&mut current.deferred);
-                                self.combine_views(&current.scopes.last().target, &pending)?;
+                                self.scheduled_parent(current, &pending)?;
                                 for (index, item) in pending.drain(..).enumerate() {
                                     if !group.shared_source || index == 0 {
                                         self.recycle_target(item.source)?;
@@ -1124,6 +1131,9 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::Draw(draw) => {
+                    if current.scheduled && self.offscreen.defer_draw(current.next - 1) {
+                        continue;
+                    }
                     let mut batch_end = if current.transitions_enabled {
                         current
                             .drawing
@@ -1219,6 +1229,7 @@ impl Context<'_> {
             size: self.size,
             transform,
             scopes: Scopes::new(Scope {
+                source_input: None,
                 group: None,
                 clip_child: None,
                 delayed: None,
@@ -1276,10 +1287,6 @@ impl Context<'_> {
         pending: &[DeferredComposite],
     ) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
-        // Initialize every sampled source before returning to the parent FBO.
-        for item in pending {
-            self.ensure_sampled(&item.source.view)?;
-        }
         let scissor = self.scissor;
         for item in pending {
             self.scissor = item.scissor;
@@ -1463,5 +1470,7 @@ pub(super) use crate::common::blend::code as blend_code;
 
 #[path = "replay/composition.rs"]
 mod composition;
+#[path = "replay/schedule.rs"]
+mod schedule;
 #[path = "replay/source_free.rs"]
 mod source_free;

@@ -463,6 +463,190 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
 fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
     sibling_frame_with_hidden(barrier, excluded, false)
 }
+fn interleaved_source_frame(special: bool, scope_change: bool) -> RenderFrame {
+    let mut scene = Scene::new();
+    let fill = |scene: &mut Scene, left, color, composite| {
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(color),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(left, 20., left + 80., 80.)),
+            composite,
+        });
+    };
+    for index in 0..2 {
+        if index == 1 {
+            fill(
+                &mut scene,
+                50.,
+                Color::from_rgba8(20, 180, 80, 130),
+                Composite {
+                    blend: if special {
+                        reel_ui::peniko::Mix::Screen.into()
+                    } else {
+                        Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            if scope_change {
+                scene.push_group(Group::default());
+            }
+        }
+        scene.push_group(Group {
+            composite: Composite {
+                alpha: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        fill(
+            &mut scene,
+            20. + index as f64 * 40.,
+            Color::from_rgb8(180, 30, 90),
+            Default::default(),
+        );
+        fill(
+            &mut scene,
+            60. + index as f64 * 40.,
+            Color::from_rgba8(60, 80, 220, 150),
+            Default::default(),
+        );
+        scene.pop_group();
+        if index == 1 && scope_change {
+            scene.pop_group();
+        }
+    }
+    let pool = r01_fixture::pool();
+    let mut widget = r01_fixture::RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(11)).unwrap(),
+        r01_fixture::empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [400, 300],
+        },
+        r01_fixture::limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+    build.finish().unwrap()
+}
+fn interleaved_plan(frame: &RenderFrame, limit: u64) -> (offscreen::Plan, u64) {
+    let (plan, bytes, _) = offscreen::Plan::choose(
+        frame,
+        None,
+        [400, 300],
+        false,
+        1,
+        4096,
+        &crate::common::glyph_plan::Plan::default(),
+        limit,
+        &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
+        MaskExecution::Sampled,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    (plan, bytes)
+}
+#[test]
+fn interleaved_parent_draw_replays_between_sources_and_counts_switch_peak_tradeoff() {
+    use crate::common::offscreen::ParentStep;
+    let frame = interleaved_source_frame(false, false);
+    let (plan, bytes) = interleaved_plan(&frame, u64::MAX);
+    let entries: Vec<_> = (0..frame.commands().len())
+        .filter_map(|index| plan.entry(index))
+        .collect();
+    assert_eq!(entries.len(), 2);
+    assert!(entries[0].first && entries[1].last);
+    let parent_draw = entries[0].end..entries[1].push;
+    let expected_draws: Vec<_> = parent_draw
+        .clone()
+        .filter(|index| matches!(frame.commands()[*index].op, FrameOp::Draw(_)))
+        .collect();
+    assert_eq!(expected_draws.len(), 1);
+    assert!(expected_draws.iter().all(|&index| plan.defer_draw(index)));
+    for entry in &entries {
+        assert!((entry.push..entry.end).all(|index| !plan.defer_draw(index)));
+    }
+    let mut cursor = plan.parent_cursor(entries[0].push);
+    let mut order = Vec::new();
+    let mut bound = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        bound.push(if entry.shared { 1 } else { index + 1 });
+    }
+    while let Some(step) = plan.next_parent(frame.commands(), &mut cursor) {
+        match step {
+            ParentStep::Sources(range) => {
+                for index in range {
+                    order.push((0, entries[index].push));
+                    bound.push(0);
+                }
+            }
+            ParentStep::Draws(range) => {
+                for index in range {
+                    order.push((1, index));
+                    bound.push(0);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        order,
+        [
+            (0, entries[0].push),
+            (1, expected_draws[0]),
+            (0, entries[1].push)
+        ]
+    );
+    let scheduled_switches = bound.windows(2).filter(|pair| pair[0] != pair[1]).count();
+    let baseline_switches = 3;
+    assert!(scheduled_switches < baseline_switches);
+    let baseline_pixels = target_pixels(
+        &frame,
+        None,
+        [400, 300],
+        false,
+        1,
+        4096,
+        &crate::common::glyph_plan::Plan::default(),
+        &offscreen::Plan::default(),
+        MaskExecution::Sampled,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let baseline_bytes = baseline_pixels * 4;
+    assert!(
+        bytes > baseline_bytes,
+        "keeping both sources alive has a real budget cost"
+    );
+    let (tight, tight_bytes) = interleaved_plan(&frame, baseline_bytes);
+    assert!(
+        tight.is_empty(),
+        "the immediate path is retained at the original peak budget"
+    );
+    assert_eq!(tight_bytes, baseline_bytes);
+    assert!(!tight.defer_draw(expected_draws[0]));
+    eprintln!(
+        "interleaved sources=2 parent_draws=1 planned_target_switches={baseline_switches}->{scheduled_switches} planned_scenes={}->{} peak_target_bytes={baseline_bytes}->{bytes}; tight_bytes={tight_bytes}",
+        baseline_switches + 1,
+        scheduled_switches + 1
+    );
+}
+#[test]
+fn source_windows_stop_at_backdrop_reads_and_parent_scope_changes() {
+    for (special, scope_change) in [(true, false), (false, true)] {
+        let frame = interleaved_source_frame(special, scope_change);
+        let (plan, _) = interleaved_plan(&frame, u64::MAX);
+        assert!(plan.is_empty());
+    }
+}
 
 fn sibling_frame_with_hidden(barrier: bool, excluded: bool, hidden: bool) -> RenderFrame {
     let mut scene = Scene::new();
