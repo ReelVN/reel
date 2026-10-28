@@ -622,8 +622,10 @@ impl Sound for StaticSound {
 					break;
 				}
 				self.fractional_position -= 1.0;
-				self.fractional_position *=
-					self.resampler.current_sample_rate() as f64 / previous_rate as f64;
+				let next_rate = self.resampler.current_sample_rate();
+				if next_rate != previous_rate {
+					self.fractional_position *= next_rate as f64 / previous_rate as f64;
+				}
 			}
 			if self.fractional_position >= 1.0 {
 				continue;
@@ -661,8 +663,10 @@ impl Sound for StaticSound {
 					break;
 				}
 				self.fractional_position -= 1.0;
-				self.fractional_position *=
-					self.resampler.current_sample_rate() as f64 / previous_rate as f64;
+				let next_rate = self.resampler.current_sample_rate();
+				if next_rate != previous_rate {
+					self.fractional_position *= next_rate as f64 / previous_rate as f64;
+				}
 			}
 			*frame = panning.apply(resampler_out * fade_volume * volume, time_in_chunk);
 		}

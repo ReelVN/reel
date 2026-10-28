@@ -360,7 +360,7 @@ where
         let identity = session.ui().session().identity();
         let frame_was_ready = session.frame_ready();
         {
-            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Vm);
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Session);
             session.tick(budget, now)?;
         }
         if identity != session.ui().session().identity() {

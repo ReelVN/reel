@@ -31,6 +31,16 @@ struct PaintState {
     opaque: Option<mesh::OpaquePaint>,
     scissor: super::targets::Scissor,
 }
+impl PaintState {
+    fn same_material(&self, other: &Self) -> bool {
+        self.image == other.image
+            && self.texture_format == other.texture_format
+            && self.yuv == other.yuv
+            && self.repeat == other.repeat
+            && self.quality == other.quality
+            && self.appearance == other.appearance
+    }
+}
 
 struct SampledImage<'a> {
     view: &'a wgpu::TextureView,
@@ -744,13 +754,24 @@ impl Context<'_> {
         if batch.geometry.capacity().indices == 0 {
             return Ok(());
         }
+        let materials = || {
+            batch
+                .geometry
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(i, entry)| {
+                    *i == 0
+                        || !entry
+                            .state
+                            .same_material(&batch.geometry.entries[*i - 1].state)
+                })
+        };
+        let group_count = materials().count();
         self.transient(
-            (batch.geometry.entries.len() * size_of::<wgpu::BindGroup>()
-                + batch
-                    .geometry
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.state.appearance.is_some())
+            (group_count * size_of::<(usize, wgpu::BindGroup)>()
+                + materials()
+                    .filter(|(_, entry)| entry.state.appearance.is_some())
                     .count()
                     * 144) as u64,
         )?;
@@ -784,8 +805,8 @@ impl Context<'_> {
         let storage = &self.geometry.last().expect("retained geometry").storage;
         let vertices = &storage.vertices;
         let indices = &storage.indices;
-        let mut groups = Vec::with_capacity(batch.geometry.entries.len());
-        for entry in &batch.geometry.entries {
+        let mut groups = Vec::with_capacity(group_count);
+        for (index, entry) in materials() {
             let PaintState {
                 image,
                 texture_format,
@@ -797,10 +818,6 @@ impl Context<'_> {
             } = &entry.state;
             #[cfg(test)]
             {
-                self.gpu
-                    .upload_creations
-                    .draws
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.gpu
                     .upload_creations
                     .brush_groups
@@ -878,7 +895,7 @@ impl Context<'_> {
                     entries: &base,
                 })
             };
-            groups.push(group);
+            groups.push((index, group));
         }
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("reel ordered draw segment"),
@@ -902,9 +919,17 @@ impl Context<'_> {
         );
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), index_format);
-        for (entry, group) in batch.geometry.entries.iter().zip(&groups) {
+        let mut groups = groups.iter().peekable();
+        let mut previous_pipeline = None;
+        let mut previous_scissor = None;
+        for (index, entry) in batch.geometry.entries.iter().enumerate() {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
-            pass.set_pipeline(if entry.state.coverage {
+            #[cfg(test)]
+            self.gpu
+                .upload_creations
+                .draws
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pipeline = if entry.state.coverage {
                 #[cfg(test)]
                 self.pipelines
                     .coverage_draws
@@ -946,9 +971,19 @@ impl Context<'_> {
                 }
             } else {
                 &self.pipelines.paint
-            });
-            entry.state.scissor.apply(&mut pass);
-            pass.set_bind_group(0, group, &[]);
+            };
+            if previous_pipeline != Some(pipeline) {
+                pass.set_pipeline(pipeline);
+                previous_pipeline = Some(pipeline);
+            }
+            if previous_scissor != Some(entry.state.scissor) {
+                entry.state.scissor.apply(&mut pass);
+                previous_scissor = Some(entry.state.scissor);
+            }
+            if groups.peek().is_some_and(|(start, _)| *start == index) {
+                let (_, group) = groups.next().expect("material starts at this draw");
+                pass.set_bind_group(0, group, &[]);
+            }
             pass.draw_indexed(entry.range.clone(), 0, 0..1);
         }
 

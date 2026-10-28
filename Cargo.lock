@@ -4774,7 +4774,7 @@ dependencies = [
 [[package]]
 name = "vita-native"
 version = "1.0.0"
-source = "git+https://github.com/jhq223/vita-native.git?rev=d066447f6b14e8d62f92d1e852b7324700c9d11b#d066447f6b14e8d62f92d1e852b7324700c9d11b"
+source = "git+https://github.com/jhq223/vita-native.git?rev=d2a30b755e15958299cdc422c583f3526a86acfb#d2a30b755e15958299cdc422c583f3526a86acfb"
 dependencies = [
  "vitasdk-sys",
 ]

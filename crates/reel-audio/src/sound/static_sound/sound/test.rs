@@ -1,4 +1,5 @@
 use std::{sync::Arc, time::Duration};
+mod cost;
 mod rate;
 
 use crate::{

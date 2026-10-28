@@ -9,7 +9,8 @@
 pub enum Phase {
     Input,
     Tick,
-    Vm,
+    /// Session scheduling, interpreter slices and native host work.
+    Session,
     UiSync,
     Record,
     Compile,
@@ -40,11 +41,15 @@ pub enum Phase {
     OffscreenPlan,
     CompositeBatch,
     RetainedPlan,
+    /// Interpreter slices, including VM builtins; excludes external host dispatch.
+    VmSlice,
+    /// External native dispatch, including continuation resumes.
+    HostCall,
 }
-pub const NAMES: [&str; 33] = [
+pub const NAMES: [&str; 35] = [
     "input",
     "tick",
-    "vm",
+    "session",
     "ui_sync",
     "record",
     "compile",
@@ -75,6 +80,8 @@ pub const NAMES: [&str; 33] = [
     "offscreen_plan",
     "composite_batch",
     "retained_plan",
+    "vm_slice",
+    "host_call",
 ];
 
 /// Record retained-result reuse and the dependency bytes encoded for its key.
@@ -212,7 +219,12 @@ mod enabled {
     fn tracked(phase: Phase) -> bool {
         !matches!(
             phase,
-            Phase::Draw | Phase::TargetCreate | Phase::BufferCreate | Phase::GlyphRaster
+            Phase::Draw
+                | Phase::TargetCreate
+                | Phase::BufferCreate
+                | Phase::GlyphRaster
+                | Phase::VmSlice
+                | Phase::HostCall
         )
     }
     pub(super) fn begin(phase: Phase, start: std::time::Instant) {
