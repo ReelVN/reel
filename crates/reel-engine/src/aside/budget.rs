@@ -59,7 +59,10 @@ impl SliceMinimum {
                 budget
             }
         };
-        let outcome = vm.run_slice(task, budget, now);
+        let outcome = {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::VmSlice);
+            vm.run_slice(task, budget, now)
+        };
         match &outcome {
             Ok(RunOutcome::BudgetYield(usage))
                 if usage.required_work != 0 || usage.required_allocation != 0 =>

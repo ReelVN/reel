@@ -9,6 +9,7 @@ impl SessionVm {
         locale: &str,
         budget: NativeBudget,
     ) -> Result<NativeDispatch, AdapterError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::HostCall);
         let work = budget.work();
         self.check_ticket(session, ticket)?;
         if let Some(work) = self.standard.dispatch(&mut self.vm, ticket, work)? {
