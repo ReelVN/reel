@@ -112,6 +112,39 @@ fn sampled_program() -> Arc<EffectProgram> {
 fn sampling_program(radius: i32) -> Arc<EffectProgram> {
     sampling_offsets(&(-radius..=radius).map(|n| n as f32).collect::<Vec<_>>())
 }
+#[test]
+fn source_footprints_bound_every_original_tap_and_reject_nonlinear_coordinates() {
+    use reel_ui::resources::EffectSourceFootprint;
+    assert_eq!(
+        source_footprint(&sampling_program(30)),
+        Some(EffectSourceFootprint {
+            logical_halo: [0, 30, 0, 30],
+        })
+    );
+    assert_eq!(
+        source_footprint(&sampling_program(1)),
+        Some(EffectSourceFootprint {
+            logical_halo: [0, 1, 0, 1],
+        })
+    );
+    let asymmetric = sampling_offsets(&[-2.25, 0., 7.5]);
+    assert_eq!(
+        source_footprint(&asymmetric),
+        Some(EffectSourceFootprint {
+            logical_halo: [0, 3, 0, 8],
+        })
+    );
+    assert!(source_footprint(&sampling_offsets_with_complexity(&[-30., 30.], true)).is_none());
+    let mut g = Graph::default();
+    let uv = g.node(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
+    let sample = g.node(EffectType::Vec4, EffectOp::SourceSample { uv });
+    assert_eq!(
+        source_footprint(&g.finish(sample)),
+        Some(EffectSourceFootprint {
+            logical_halo: [0; 4]
+        })
+    );
+}
 
 fn sampling_offsets(offsets: &[f32]) -> Arc<EffectProgram> {
     sampling_offsets_with_complexity(offsets, false)

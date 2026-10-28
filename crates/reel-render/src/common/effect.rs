@@ -20,6 +20,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 mod cg;
 #[path = "effect/emit_reduction.rs"]
 mod emit_reduction;
+#[path = "effect/footprint.rs"]
+mod footprint;
+pub use footprint::source_footprint;
 #[path = "effect/gxp_compiler.rs"]
 pub mod gxp_compiler;
 #[path = "effect/reduction.rs"]

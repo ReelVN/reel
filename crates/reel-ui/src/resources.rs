@@ -6,6 +6,7 @@ mod effect;
 use crate::peniko::{Blob, FontData, ImageAlphaType, ImageData, ImageFormat};
 pub use effect::{
     EFFECT_SHADER_ABI, EffectShaderDescriptor, EffectShaderFormat, EffectShaderPayloadError,
+    EffectSourceFootprint,
 };
 use reel_core::budget::{
     BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, OwnedBytes, QueueLimits,

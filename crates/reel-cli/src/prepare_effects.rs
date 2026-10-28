@@ -226,6 +226,13 @@ pub fn prepare_with_input(
                         } else {
                             descriptor
                         };
+                        let footprint = reel_render::effect::source_footprint(&definition.program)
+                            .filter(|_| {
+                                raw.len() + 120 + descriptor.parameters.len() <= MAX_SHADER_BYTES
+                            });
+                        let descriptor = descriptor
+                            .with_source_footprint(footprint, &raw)
+                            .map_err(io::Error::other)?;
                         let bytes = descriptor.encode_payload(&raw).map_err(io::Error::other)?;
                         if bytes.len() > MAX_SHADER_BYTES {
                             return Err(io::Error::other(
