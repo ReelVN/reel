@@ -3,6 +3,8 @@
     clippy::result_large_err,
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
+#[cfg(any(test, all(feature = "gxm", target_os = "vita")))]
+mod capture_color;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
 mod common;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]

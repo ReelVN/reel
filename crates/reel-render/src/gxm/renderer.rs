@@ -852,18 +852,7 @@ impl crate::capture::CaptureBackend for Backend {
         self.context
             .read_rgba(&prepared.output.framebuffer, &mut rgba)
             .map_err(native_error)?;
-        for pixel in rgba.as_chunks_mut::<4>().0 {
-            for channel in &mut pixel[..3] {
-                let x = f32::from(*channel) / 255.;
-                let s = if x <= 0.0031308 {
-                    12.92 * x
-                } else {
-                    1.055 * x.powf(1. / 2.4) - 0.055
-                };
-                *channel = (s.clamp(0., 1.) * 255.).round() as u8;
-            }
-            pixel[3] = 255;
-        }
+        crate::capture_color::encode_rgba(&mut rgba);
         let rgba =
             OwnedBytes::new(rgba, ticket).map_err(|e| GpuError::Readback(e.reason.message))?;
         Ok(Some(crate::capture::CapturedPixels {
