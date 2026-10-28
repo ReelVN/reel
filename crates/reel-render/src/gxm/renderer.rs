@@ -736,6 +736,9 @@ impl RenderBackend for Backend {
                     .push_back(RenderEvent::RenderFinished { id, frame });
             }
         }
+        // A frame fence represents its last scene. Retire every completed native
+        // scene and transfer before pruning pools or admitting the next frame.
+        self.context.poll().map_err(native_error)?;
         out.extend(self.events.drain(..limit.min(self.events.len())));
         self.images.prune(&[]);
         self.glyphs.prune(&[]);
