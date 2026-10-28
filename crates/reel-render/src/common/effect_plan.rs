@@ -20,6 +20,29 @@ pub(crate) struct SourceLayout {
     pub size: [u32; 2],
     pub frame_to_source: Affine,
 }
+/// Source coordinates remain available when a proved color effect has no pixel
+/// dependency. Sampled effects always retain their actual texture and storage.
+pub(crate) struct Source<'a, T> {
+    pub size: [u32; 2],
+    pub storage_size: [u32; 2],
+    pub pixels: Option<&'a T>,
+}
+impl<'a, T> Source<'a, T> {
+    pub(crate) fn sampled(pixels: &'a T, size: [u32; 2], storage_size: [u32; 2]) -> Self {
+        Self {
+            size,
+            storage_size,
+            pixels: Some(pixels),
+        }
+    }
+    pub(crate) fn unused(size: [u32; 2]) -> Self {
+        Self {
+            size,
+            storage_size: size,
+            pixels: None,
+        }
+    }
+}
 
 /// Nested effects on one authored domain inherit its already rasterized grid.
 /// Recomputing the inverse transform can otherwise round a dimension up again.

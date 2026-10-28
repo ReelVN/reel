@@ -667,6 +667,37 @@ impl Input<'_> {
                             current.next += consumed;
                             continue;
                         }
+                        if let Some(offset) = current.offset
+                            && let Some(end) = selection
+                                .sources
+                                .end(current.drawing, offset + current.next - 1)
+                        {
+                            let parent = current.scopes.last();
+                            let source = super::source_plan::layout(
+                                group,
+                                parent.and_then(|scope| scope.group),
+                                current.transform,
+                                current.size,
+                                max_dimension,
+                                at,
+                            )?;
+                            let forward = current.groups.is_source_child(current.next - 1)
+                                && parent.is_some_and(|scope| scope.isolated)
+                                && super::effect_plan::forwards_source(
+                                    group,
+                                    &source,
+                                    current.transform,
+                                    current.size,
+                                );
+                            if forward
+                                || !super::effect_plan::terminal_composite(group, samples, false)
+                            {
+                                scratch.acquire(current.size, &mut reserve)?;
+                                scratch.release(current.size, &mut reserve)?;
+                            }
+                            current.next = end - offset;
+                            continue;
+                        }
                         if let Some(fill) = crate::common::scopes::inline_group_fill(
                             group,
                             &current.commands[current.next..],

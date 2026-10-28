@@ -13,6 +13,7 @@ use reel_ui::{
 };
 use std::{collections::HashMap, sync::Arc};
 mod backdrop;
+mod source_free;
 pub(super) struct Context<'a> {
     pub(super) capture: bool,
     pub(super) gpu: &'a Gpu,
@@ -493,6 +494,16 @@ impl Context<'_> {
                             || self.capture && !current.drawing.capture_exclusions().is_empty(),
                     ) {
                         current.next += consumed;
+                        continue;
+                    }
+                    if let Some(offset) = current.offset
+                        && let Some(end) = self
+                            .selection
+                            .sources
+                            .end(current.drawing, offset + current.next - 1)
+                    {
+                        self.source_free_group(current, group, at)?;
+                        current.next = end - offset;
                         continue;
                     }
                     if let Some(fill) = crate::common::scopes::inline_group_fill(

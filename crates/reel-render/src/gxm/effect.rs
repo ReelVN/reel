@@ -109,7 +109,15 @@ impl Context<'_> {
         source: &Target,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
-        self.effect_draw(drawing, effect, transform, source, None, None, at)
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            effect_plan::Source::sampled(source, source.size, source.view.size()),
+            None,
+            None,
+            at,
+        )
     }
     /// Multiply the complete local source by scalar coverage in one pass.
     pub(super) fn effect_mask(
@@ -125,7 +133,7 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            source,
+            effect_plan::Source::sampled(source, source.size, source.view.size()),
             Some(source_frame_to_pixels),
             None,
             at,
@@ -150,7 +158,7 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            source,
+            effect_plan::Source::sampled(source, source.size, source.view.size()),
             None,
             Some(effect_plan::Terminal {
                 target,
@@ -165,12 +173,12 @@ impl Context<'_> {
         clippy::too_many_arguments,
         reason = "one prepared effect and optional terminal composite"
     )]
-    fn effect_draw(
+    pub(super) fn effect_draw(
         &mut self,
         drawing: &FrameDrawing,
         effect: &FrameEffect,
         transform: Affine,
-        source: &Target,
+        source: effect_plan::Source<'_, Target>,
         source_view: Option<Affine>,
         terminal: Option<effect_plan::Terminal<'_, Target>>,
         at: RecordLocation,
@@ -184,7 +192,7 @@ impl Context<'_> {
             lease, descriptor, ..
         } = shader;
         let padded = descriptor.output == reel_ui::stage::effect::EffectType::Float
-            && source.size != source.view.size();
+            && source.size != source.storage_size;
         let cache =
             &mut self.effect_cache.0[usize::from(padded) + 2 * usize::from(coverage.is_some())];
         let compiled = if let Some(compiled) = cache.get(
@@ -231,7 +239,7 @@ impl Context<'_> {
             context[2][3] = opacity;
             context[3][3] = f32::from(nested);
         }
-        effect_plan::map_storage(&mut context, source.size, source.view.size());
+        effect_plan::map_storage(&mut context, source.size, source.storage_size);
         if let Some(mask) = coverage {
             context[9] =
                 crate::common::source_view::uv_mapping(self.size, mask.view.size(), [0; 2]);
@@ -243,7 +251,7 @@ impl Context<'_> {
             self.ensure_sampled(&mask.view)?;
         }
         if descriptor.source_sampler {
-            self.ensure_sampled(&source.view)?;
+            self.ensure_sampled(&source.pixels.expect("sampled effect source").view)?;
         }
         self.ensure_target(&output)?;
         let mut held = std::mem::take(&mut self.effects);
@@ -265,7 +273,7 @@ impl Context<'_> {
         )?;
         let mut images = Vec::with_capacity(image_capacity);
         if descriptor.source_sampler {
-            images.push(&source.view);
+            images.push(&source.pixels.expect("sampled effect source").view);
         }
         let mut metadata = Vec::with_capacity(metadata_capacity);
         let mut values = Vec::with_capacity(value_capacity);

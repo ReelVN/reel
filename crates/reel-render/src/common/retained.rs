@@ -487,6 +487,7 @@ pub(crate) struct Entry {
 
 #[derive(Default)]
 pub(crate) struct Plan {
+    pub sources: super::source_plan::Plan,
     enabled: bool,
     pub entries: Vec<Entry>,
     spans: Vec<(usize, Range<usize>)>,
@@ -519,14 +520,20 @@ impl Plan {
         mut lookup: impl FnMut(&Arc<Key>) -> Option<Input>,
         mut allocate: impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<Self, GpuError> {
+        let sources =
+            super::source_plan::Plan::collect(frames.clone(), capture, budgets, local, limit)?;
         if capture
             || frames
                 .clone()
                 .all(|frame| frame.drawing().transitions().is_empty())
         {
-            return Ok(Self::default());
+            return Ok(Self {
+                sources,
+                ..Self::default()
+            });
         }
         let mut plan = Self {
+            sources,
             enabled: true,
             ..Default::default()
         };
@@ -686,6 +693,9 @@ impl Plan {
         self.entries.iter().any(|entry| entry.input.is_some())
     }
     pub(crate) fn selected(&self, drawing: &FrameDrawing, command: usize) -> bool {
+        if !self.sources.selected(drawing, command) {
+            return false;
+        }
         if !self.enabled {
             return true;
         }

@@ -619,6 +619,16 @@ impl Context<'_> {
                         current.next += consumed;
                         continue;
                     }
+                    if let Some(offset) = current.offset
+                        && let Some(end) = self
+                            .selection
+                            .sources
+                            .end(current.drawing, offset + current.next - 1)
+                    {
+                        self.source_free_group(current, group, at)?;
+                        current.next = end - offset;
+                        continue;
+                    }
                     if let Some(fill) = crate::common::scopes::inline_group_fill(
                         group,
                         &current.commands[current.next..],
@@ -1453,3 +1463,5 @@ pub(super) use crate::common::blend::code as blend_code;
 
 #[path = "replay/composition.rs"]
 mod composition;
+#[path = "replay/source_free.rs"]
+mod source_free;

@@ -86,6 +86,7 @@ fn pressure_pool(cause: &GpuError) -> Option<BudgetCategory> {
         | "mesh scratch"
         | "geometry"
         | "retained plan"
+        | "source plan"
         | "retained cache"
         | "retained dependencies"
         | "retained submission"
