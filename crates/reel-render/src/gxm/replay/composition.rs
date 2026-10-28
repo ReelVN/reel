@@ -1,6 +1,158 @@
 use super::*;
 
 impl Context<'_> {
+    pub fn combine(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        mask: &Target,
+        alpha: f32,
+        invert: f32,
+        operation: CompositeOperation,
+    ) -> Result<(), GpuError> {
+        self.composition(
+            target,
+            Composition {
+                source,
+                mask,
+                backdrop: source,
+                backdrop_origin: [0; 2],
+                alpha,
+                invert,
+                operation,
+                blend: 0,
+                expression: None,
+                source_origin: [0; 2],
+            },
+        )
+    }
+    pub(super) fn composition(
+        &mut self,
+        target: &Target,
+        composition: Composition<'_>,
+    ) -> Result<(), GpuError> {
+        self.flush_draws()?;
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
+        if self.scissor.empty() {
+            return Ok(());
+        }
+        let Composition {
+            source,
+            mask,
+            backdrop,
+            backdrop_origin,
+            alpha,
+            invert,
+            operation,
+            blend,
+            expression,
+            source_origin,
+        } = composition;
+        let (mode, progress) = match operation {
+            CompositeOperation::SourceOver => (0., 0.),
+            CompositeOperation::AlphaMask => (1., 0.),
+            CompositeOperation::LuminanceMask => (2., 0.),
+            CompositeOperation::Transition(p) => (3., p),
+            CompositeOperation::MaskedTransition(p) => (4., p),
+        };
+        let plain = mode == 0. && invert == 0. && blend == 0 && expression.is_none();
+        let coverage = mode == 1. && invert == 0. && blend == 0 && expression.is_none();
+        let replacing = matches!(
+            operation,
+            CompositeOperation::Transition(_) | CompositeOperation::MaskedTransition(_)
+        ) || blend != 0;
+        let overwrite = crate::common::target_writes::FullOverwrite::composite(
+            self.size,
+            target.view.size(),
+            self.scissor,
+            replacing,
+        );
+        let _kind = reel_core::profile::Scope::new(if plain {
+            reel_core::profile::Phase::SourceComposite
+        } else if coverage {
+            reel_core::profile::Phase::CoverageComposite
+        } else {
+            reel_core::profile::Phase::EffectComposite
+        });
+        let shader = if let Some(proof) = overwrite {
+            self.programs.overwrite(self.gpu, blend > 4, proof)?
+        } else if plain {
+            &self.programs.source_over
+        } else if coverage {
+            &self.programs.alpha_mask
+        } else if blend > 4 {
+            &self.programs.extended_blend
+        } else {
+            &self.programs.composite
+        };
+        self.ensure_sampled(&source.view)?;
+        if !plain {
+            self.ensure_sampled(&mask.view)?;
+        }
+        if blend != 0 {
+            self.ensure_sampled(&backdrop.view)?;
+        }
+        if let Some(expression) = expression {
+            self.ensure_sampled(&expression.view)?;
+        }
+        if overwrite.is_some() {
+            self.target_writes.take(target.slot);
+        } else {
+            self.ensure_target(target)?;
+        }
+        let mut values = Values::new();
+        for (name, unit) in [
+            ("u_source", 0),
+            ("u_mask", 1),
+            ("u_backdrop", 2),
+            ("u_expression", 3),
+        ] {
+            values.extend(shader.int(name, unit));
+        }
+        values.extend(shader.vec4("u_params", [alpha, mode, progress, 0.]));
+        values.extend(shader.vec4("u_source_uv", source.source_uv(self.size, source_origin)));
+        for (name, input) in [
+            ("u_mask_uv", mask),
+            ("u_expression_uv", expression.unwrap_or(source)),
+        ] {
+            values.extend(shader.vec4(name, input.frame_uv(self.size)));
+        }
+        values.extend(shader.vec4(
+            "u_backdrop_uv",
+            backdrop.source_uv(self.size, backdrop_origin),
+        ));
+        values.extend(shader.float("u_invert", invert));
+        values.extend(shader.float("u_blend", blend as f32));
+        values.extend(shader.float("u_has_expression", f32::from(expression.is_some())));
+        self.programs.quad(
+            self.gpu,
+            programs::Quad {
+                target: native::Target::Framebuffer(&target.framebuffer),
+                size: self.size,
+                shader,
+                textures: &[
+                    &source.view,
+                    &mask.view,
+                    &backdrop.view,
+                    &expression.unwrap_or(source).view,
+                ][..if plain {
+                    1
+                } else if coverage {
+                    2
+                } else {
+                    4
+                }],
+                values: &values,
+                blend: if replacing {
+                    native::Blend::Replace
+                } else {
+                    native::Blend::Premultiplied
+                },
+                scissor: self.native_scissor(),
+            },
+        )
+    }
+
     pub(super) fn combine_cropped(
         &mut self,
         target: &Target,

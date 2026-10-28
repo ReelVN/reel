@@ -468,7 +468,7 @@ reel prepare-texture original.png --output resources/background.reel-texture --s
 
 用 `image("background.reel-texture")` 显示，相同资源可用于粒子和图片遮罩。工具按比例缩小，不放大原图；默认给不透明图片使用 BC1，给含透明度的图片使用 BC3。`--format rgba8` 使用未压缩存储，适合需要保留细节的 UI 与遮罩；`--power-of-two` 为需要二次幂尺寸的设备填充边缘。`prepare-image` 默认生成压缩纹理瓦片，`--tile-encoding png` 选择 PNG 瓦片。BC 格式需要渲染设备支持，运行时直接上传压缩块。转换接口见 [prepare_texture](../../crates/reel-cli/src/prepare_texture.rs)。
 
-经常缩小显示的独立图片可加 `--mipmaps`，或在纹理转换规则中设置 `mipmaps = true`，生成完整的预滤波层级。默认保留单层。层级增加包体与纹理驻留，线性过滤会在相邻层间混合；图集仍按整张图片生成层级，相邻区域需预留足够边缘。分块图片使用已有层级金字塔。
+经常缩小显示的独立图片可加 `--mipmaps`，或在纹理转换规则中设置 `mipmaps = true`，生成完整的预滤波层级。默认保留单层。层级增加包体与纹理驻留，线性过滤会在相邻层间混合；作为单张纹理转换的既有精灵表按整张图片生成层级，相邻区域需预留足够边缘。分块图片使用已有层级金字塔。
 
 ```aside
 let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
