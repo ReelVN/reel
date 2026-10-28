@@ -140,11 +140,11 @@ mod tests {
         cache.reserve_metadata(
             [64, 64],
             quality,
-            &[first.clone()],
+            std::slice::from_ref(&first),
             &budgets.transient,
             limits.transient_bytes,
         );
-        cache.publish([64, 64], quality, &[first.clone()]);
+        cache.publish([64, 64], quality, std::slice::from_ref(&first));
         let pin = first
             .target
             .pin_effect(

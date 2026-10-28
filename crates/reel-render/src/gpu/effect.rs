@@ -8,12 +8,11 @@ use reel_ui::{
     resources::EffectShaderFormat,
 };
 use std::sync::{Arc, Mutex};
-use wgpu::util::DeviceExt;
 
 #[derive(Default)]
 pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 8]>);
 pub(super) struct Compiled {
-    layout: wgpu::BindGroupLayout,
+    pub(super) layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     _storage: BudgetTicket,
 }
@@ -434,103 +433,80 @@ impl Context<'_> {
         if shader.descriptor.source_sampler {
             self.ensure_sampled(&source.pixels.expect("sampled effect source").view);
         }
-        // Reserve all owned packing vectors and GPU uniform payloads together.
-        let parameter_bytes = effect.values.len().max(1) * 16;
+        // The slot owns its GPU buffer and exact texture leases until completion.
         let entry_capacity = 3
             + usize::from(shader.descriptor.source_sampler)
             + usize::from(!effect.images.is_empty())
             + effect.images.len()
             + usize::from(coverage.is_some());
-        let metadata_capacity = effect.images.len() * 2;
         self.transient(
-            (2 * parameter_bytes
-                + size_of_val(&context)
-                + 2 * metadata_capacity * size_of::<[f32; 4]>()
-                + entry_capacity * size_of::<wgpu::BindGroupEntry<'_>>()) as u64,
+            (entry_capacity * size_of::<wgpu::BindGroupEntry<'_>>()
+                + 2 * effect.images.len() * size_of::<Arc<super::resources::Image>>())
+                as u64,
         )?;
-        let parameters = if effect.values.is_empty() {
-            vec![[0.; 4]]
-        } else {
-            effect
-                .values
-                .iter()
-                .copied()
-                .map(effect_plan::slot)
-                .collect()
-        };
-        let uniform = |label, data: &[u8]| {
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(label),
-                    contents: data,
-                    usage: wgpu::BufferUsages::UNIFORM,
-                })
-        };
+        let mut images = Vec::with_capacity(effect.images.len());
+        for handle in &effect.images {
+            images.push(
+                self.images
+                    .get(handle)
+                    .ok_or(GpuError::InvalidRecord {
+                        at,
+                        record: "effect texture is not resident",
+                    })?
+                    .clone(),
+            );
+        }
         let context_slots = context;
-        let context = uniform("effect coordinates", bytemuck::cast_slice(&context_slots));
-        let parameters = uniform("effect parameters", bytemuck::cast_slice(&parameters));
-        let mut entries = Vec::with_capacity(entry_capacity);
-        entries.extend([
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&self.pipelines.samplers[0]),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: context.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: parameters.as_entire_binding(),
-            },
-        ]);
-        if shader.descriptor.source_sampler {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(
-                    &source.pixels.expect("sampled effect source").view,
-                ),
-            });
-        }
-        if let Some(mask) = coverage {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 5 + shader.descriptor.textures,
-                resource: wgpu::BindingResource::TextureView(&mask.view),
-            });
-        }
-        let mut metadata = Vec::with_capacity(metadata_capacity);
-        for (index, handle) in effect.images.iter().enumerate() {
-            let image = self.images.get(handle).ok_or(GpuError::InvalidRecord {
-                at,
-                record: "effect texture is not resident",
-            })?;
-            entries.push(wgpu::BindGroupEntry {
-                binding: 5 + index as u32,
-                resource: wgpu::BindingResource::TextureView(&image.view),
-            });
-            metadata.extend(effect_plan::texture_metadata(
-                image.layout,
-                image.encoding,
-                image.texture_format,
-            ));
-        }
-        let metadata = (!metadata.is_empty())
-            .then(|| uniform("effect image metadata", bytemuck::cast_slice(&metadata)));
-        if let Some(metadata) = &metadata {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 4,
-                resource: metadata.as_entire_binding(),
-            });
-        }
-        let bindings = self
-            .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("prepared effect"),
-                layout: &compiled.layout,
-                entries: &entries,
-            });
+        let source_target = shader
+            .descriptor
+            .source_sampler
+            .then(|| source.pixels.expect("sampled effect source"));
+        let prepared = self.effect_uniform_cache.prepare(
+            self.gpu,
+            self.budgets,
+            &self.budget_scope,
+            compiled.clone(),
+            source_target,
+            coverage,
+            images.clone(),
+            &context_slots,
+            &effect.values,
+            !self.capture,
+            &self.pipelines.samplers[0],
+        );
+        let fallback_bindings = match prepared {
+            Ok((slot, local)) => {
+                self.tickets.push(crate::common::renderer::Reservation {
+                    _shared: None,
+                    _local: local,
+                });
+                let mut slots = std::mem::take(&mut self.effect_uniform_slots);
+                let pushed = crate::common::scopes::push_stack(&mut slots, slot, |bytes| {
+                    self.transient(bytes)
+                });
+                self.effect_uniform_slots = slots;
+                pushed?;
+                None
+            }
+            Err(GpuError::Budget { .. } | GpuError::Pressure { .. }) => {
+                let parameter_bytes = effect.values.len().max(1) * 16;
+                let metadata_bytes = images.len() * 32;
+                self.transient(
+                    (2 * parameter_bytes + size_of_val(&context_slots) + 2 * metadata_bytes) as u64,
+                )?;
+                Some(super::effect_uniform::fallback(
+                    self.gpu,
+                    &compiled,
+                    source_target,
+                    coverage,
+                    &images,
+                    &context_slots,
+                    &effect.values,
+                    &self.pipelines.samplers[0],
+                ))
+            }
+            Err(error) => return Err(error),
+        };
         let mut held = std::mem::take(&mut self.effects);
         let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {
             self.transient(bytes)
@@ -586,7 +562,13 @@ impl Context<'_> {
         });
         pass.set_viewport(0., 0., output.size[0] as f32, output.size[1] as f32, 0., 1.);
         pass.set_pipeline(&compiled.pipeline);
-        pass.set_bind_group(0, &bindings, &[]);
+        let bindings = fallback_bindings.as_ref().unwrap_or_else(|| {
+            self.effect_uniform_slots
+                .last()
+                .expect("prepared effect slot")
+                .group()
+        });
+        pass.set_bind_group(0, bindings, &[]);
         pass.set_scissor_rect(
             self.scissor.x,
             self.scissor.y,

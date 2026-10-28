@@ -25,6 +25,9 @@ pub(super) struct UploadCreations {
     pub(super) geometry_staging: std::sync::atomic::AtomicUsize,
     pub(super) brush_groups: std::sync::atomic::AtomicUsize,
     pub(super) appearance_buffers: std::sync::atomic::AtomicUsize,
+    pub(super) effect_uniform_buffers: std::sync::atomic::AtomicUsize,
+    pub(super) effect_bind_groups: std::sync::atomic::AtomicUsize,
+    pub(super) effect_uniform_bytes: std::sync::atomic::AtomicU64,
 }
 #[cfg(test)]
 impl UploadCreations {

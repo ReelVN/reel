@@ -373,8 +373,13 @@ fn static_image_effect_chain_reuses_materialized_passes() {
         resources::{ColorEncoding, ResourceData},
     };
     let pool = r01_fixture::pool();
-    let program = EffectProgram::new(
-        vec![],
+    let program = EffectProgram::with_textures(
+        vec![EffectParameter {
+            name: "tint".into(),
+            ty: EffectType::Vec4,
+            default: None,
+        }],
+        vec![EffectTextureParameter { name: "ink".into() }],
         vec![
             EffectNode {
                 ty: EffectType::Vec2,
@@ -386,8 +391,36 @@ fn static_image_effect_chain_reuses_materialized_passes() {
                     uv: EffectNodeId(0),
                 },
             },
+            EffectNode {
+                ty: EffectType::Vec4,
+                op: EffectOp::TextureSample {
+                    binding: 0,
+                    uv: EffectNodeId(0),
+                    channel: EffectTextureChannel::Color,
+                },
+            },
+            EffectNode {
+                ty: EffectType::Vec4,
+                op: EffectOp::Parameter(0),
+            },
+            EffectNode {
+                ty: EffectType::Vec4,
+                op: EffectOp::Binary {
+                    op: EffectBinary::Multiply,
+                    left: EffectNodeId(1),
+                    right: EffectNodeId(2),
+                },
+            },
+            EffectNode {
+                ty: EffectType::Vec4,
+                op: EffectOp::Binary {
+                    op: EffectBinary::Multiply,
+                    left: EffectNodeId(4),
+                    right: EffectNodeId(3),
+                },
+            },
         ],
-        EffectNodeId(1),
+        EffectNodeId(5),
     )
     .unwrap();
     let fragment =
@@ -395,8 +428,8 @@ fn static_image_effect_chain_reuses_materialized_passes() {
     let descriptor = EffectShaderDescriptor::with_textures(
         [4; 32],
         EffectShaderFormat::Wgsl,
-        vec![],
-        0,
+        vec![EffectType::Vec4],
+        1,
         true,
         EffectType::Vec4,
         fragment.source.as_bytes(),
@@ -445,9 +478,15 @@ fn static_image_effect_chain_reuses_materialized_passes() {
         composite: Composite::default(),
     });
     let paint = PaintEffect {
-        instance: EffectInstance::new([4; 32], program, vec![]).unwrap(),
+        instance: EffectInstance::with_textures(
+            [4; 32],
+            program,
+            vec![EffectValue::Vec4([1f32.to_bits(); 4])],
+            vec!["static-image".into()],
+        )
+        .unwrap(),
         shader: registry.acquire(shader).unwrap(),
-        images: vec![],
+        images: vec![image_lease.clone()],
         bounds,
         coverage_invert: false,
     };
@@ -477,6 +516,53 @@ fn static_image_effect_chain_reuses_materialized_passes() {
     .unwrap();
     while !build.step(r01_fixture::step_budget()).unwrap().complete {}
     let frame = build.finish().unwrap();
+    let mut changed_paint = paint.clone();
+    changed_paint.instance = EffectInstance::with_textures(
+        [4; 32],
+        paint.instance.program().clone(),
+        vec![EffectValue::Vec4([0.5f32.to_bits(); 4])],
+        vec!["static-image".into()],
+    )
+    .unwrap();
+    let mut changed_scene = Scene::new();
+    changed_scene.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Image(ImageBrush::new(pixels.clone())),
+        brush_transform: None,
+        shape: Geometry::Rect(bounds),
+        composite: Composite::default(),
+    });
+    let mut changed_widget = r01_fixture::RecordWidget::new(changed_scene);
+    changed_widget.clip = false;
+    changed_widget.effect = Some(changed_paint.clone());
+    for _ in 0..2 {
+        let mut parent = r01_fixture::RecordWidget::new(Scene::new());
+        parent.clip = false;
+        parent.effect = Some(changed_paint.clone());
+        parent
+            .inner
+            .add(changed_widget.prepare(), Point::ZERO, Size::new(160., 120.));
+        changed_widget = parent;
+    }
+    let mut changed_bridge = r01_fixture::widget_bridge(changed_widget, Affine::IDENTITY);
+    let mut changed_build = FrameBuild::new(
+        changed_bridge.record(FrameId(2)).unwrap(),
+        registry.freeze(&[shader, image], &pool).unwrap(),
+        FrameInfo {
+            logical_size: [160., 120.],
+            physical_size: [160, 120],
+        },
+        r01_fixture::limits(),
+        &pool,
+    )
+    .unwrap();
+    while !changed_build
+        .step(r01_fixture::step_budget())
+        .unwrap()
+        .complete
+    {}
+    let changed_frame = changed_build.finish().unwrap();
     let gpu = pollster::block_on(Gpu::request(
         &wgpu::Instance::default(),
         None,
@@ -518,4 +604,167 @@ fn static_image_effect_chain_reuses_materialized_passes() {
     assert!(entries >= 2, "two materialized passes must be retained");
     assert!(hits[0] >= 1, "the immutable image pass must hit");
     assert!(hits[1] >= 1, "the intermediate effect output must hit");
+
+    use std::{sync::atomic::Ordering, time::Instant};
+    let mut measurements = Vec::new();
+    for baseline in [true, false] {
+        renderer.effect_uniforms.disable_for_test(baseline);
+        let snapshot = |renderer: &Renderer| {
+            let counts = &renderer.gpu().upload_creations;
+            (
+                counts.effect_uniform_buffers.load(Ordering::Relaxed),
+                counts.effect_bind_groups.load(Ordering::Relaxed),
+                counts.effect_uniform_bytes.load(Ordering::Relaxed),
+            )
+        };
+        let before = snapshot(&renderer);
+        let mut prepare_ns = 0;
+        for _ in 0..16 {
+            // Compare uniform paths on identical effect work, independently of R2.
+            renderer.effect_results.clear();
+            let start = Instant::now();
+            let prepared = renderer.prepare(&frame).unwrap();
+            prepare_ns += start.elapsed().as_nanos();
+            renderer.submit(prepared).unwrap();
+            renderer
+                .gpu()
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            renderer.poll().unwrap();
+        }
+        let after = snapshot(&renderer);
+        let measured = (
+            after.0 - before.0,
+            after.1 - before.1,
+            after.2 - before.2,
+            prepare_ns,
+        );
+        eprintln!(
+            "effect_uniform baseline={baseline} frames=16 buffers={} groups={} uploaded_bytes={} prepare_ns={}",
+            measured.0, measured.1, measured.2, measured.3
+        );
+        measurements.push(measured);
+    }
+    assert!(measurements[1].0 < measurements[0].0);
+    assert!(measurements[1].1 < measurements[0].1);
+    assert!(measurements[1].2 < measurements[0].2);
+
+    let before_dynamic = renderer
+        .gpu()
+        .upload_creations
+        .effect_uniform_bytes
+        .load(Ordering::Relaxed);
+    renderer.effect_results.clear();
+    let changed = renderer.prepare(&changed_frame).unwrap();
+    renderer.submit(changed).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    let changed_bytes = renderer
+        .gpu()
+        .upload_creations
+        .effect_uniform_bytes
+        .load(Ordering::Relaxed)
+        - before_dynamic;
+    eprintln!("effect_uniform changed_parameter_uploaded_bytes={changed_bytes}");
+    assert_eq!(
+        changed_bytes,
+        3 * 16,
+        "only the three parameter blocks changed"
+    );
+    renderer.effect_results.clear();
+    let same = renderer.prepare(&changed_frame).unwrap();
+    renderer.submit(same).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(
+        renderer
+            .gpu()
+            .upload_creations
+            .effect_uniform_bytes
+            .load(Ordering::Relaxed)
+            - before_dynamic,
+        changed_bytes
+    );
+
+    renderer.effect_results.clear();
+    let before_upload = renderer
+        .gpu()
+        .upload_creations
+        .effect_uniform_bytes
+        .load(Ordering::Relaxed);
+    let cancelled = renderer.prepare(&frame).unwrap();
+    assert_eq!(
+        renderer
+            .gpu()
+            .upload_creations
+            .effect_uniform_bytes
+            .load(Ordering::Relaxed),
+        before_upload
+    );
+    drop(cancelled);
+    assert_eq!(
+        renderer
+            .gpu()
+            .upload_creations
+            .effect_uniform_bytes
+            .load(Ordering::Relaxed),
+        before_upload
+    );
+    renderer.effect_results.clear();
+    let first = renderer.prepare(&frame).unwrap();
+    renderer.effect_results.clear();
+    let second = renderer.prepare(&frame).unwrap();
+    renderer.submit(second).unwrap();
+    renderer.submit(first).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+
+    // A cache invalidation while a candidate is held must prevent old slots
+    // from returning after that candidate completes.
+    renderer.effect_results.clear();
+    renderer.effect_uniforms.clear();
+    let old_generation = renderer.prepare(&frame).unwrap();
+    renderer.effect_uniforms.clear();
+    renderer.submit(old_generation).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(renderer.effect_uniforms.test_len(), 0);
+
+    renderer.effect_results.clear();
+    let warm = renderer.prepare(&frame).unwrap();
+    renderer.submit(warm).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    let slots = renderer.effect_uniforms.test_len();
+    assert!(slots > 0);
+    let resident = renderer.usage().transient;
+    for _ in 0..usize::from(crate::common::target_cache::MAX_IDLE_SUBMISSIONS) + slots {
+        renderer.effect_uniforms.submitted();
+    }
+    assert_eq!(renderer.effect_uniforms.test_len(), 0);
+    assert!(
+        renderer.usage().transient < resident,
+        "cold slots release their budget"
+    );
 }

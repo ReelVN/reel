@@ -35,6 +35,8 @@ pub(super) struct Context<'a> {
     pub(super) effect_results: &'a crate::common::effect_result::Cache<super::retained::Output>,
     pub(super) effect_pending: Vec<crate::common::effect_result::Pending<super::retained::Output>>,
     pub(super) effect_pins: Vec<Target>,
+    pub(super) effect_uniform_cache: &'a super::effect_uniform::Cache,
+    pub(super) effect_uniform_slots: Vec<super::effect_uniform::Storage>,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
     pub(super) retained_cache: &'a crate::common::retained::Cache<super::retained::Output, Quality>,

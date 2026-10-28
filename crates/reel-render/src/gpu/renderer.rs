@@ -32,6 +32,7 @@ pub struct Prepared {
     retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
     effect_pending: Vec<crate::common::effect_result::Pending<super::retained::Output>>,
     effect_pins: Vec<super::targets::Target>,
+    effect_uniform_slots: Vec<super::effect_uniform::Storage>,
     geometry: Vec<super::geometry::Storage>,
     budget_scope: Budgets,
     admission: BudgetTicket,
@@ -61,6 +62,7 @@ pub(super) struct Inflight {
     _targets: Vec<Arc<super::target_cache::Allocation>>,
     _retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
     _effect_pins: Vec<super::targets::Target>,
+    effect_uniform_slots: Vec<super::effect_uniform::Storage>,
     _admission: BudgetTicket,
     geometry: Vec<super::geometry::Storage>,
 }
@@ -114,6 +116,7 @@ pub struct Renderer {
     geometry: super::geometry::Cache,
     retained: super::retained::Cache,
     pub(super) effect_results: crate::common::effect_result::Cache<super::retained::Output>,
+    pub(super) effect_uniforms: super::effect_uniform::Cache,
 }
 pub(super) use crate::common::renderer::{Budgets, Reservation, reserve};
 
@@ -145,6 +148,7 @@ impl Renderer {
             geometry: Default::default(),
             retained: Default::default(),
             effect_results: Default::default(),
+            effect_uniforms: Default::default(),
         }
     }
     /// Prepare the device's supported quality tiers and built-in image masks
@@ -238,6 +242,10 @@ impl Renderer {
                         .all(|slot| slot.storage.ready().unwrap_or(false))
                 {
                     self.geometry.recycle(&mut pending.flight.geometry);
+                    self.effect_uniforms.recycle(
+                        &mut pending.flight.effect_uniform_slots,
+                        &self.budgets.transient,
+                    );
                     self.retained.inputs.complete(pending.token);
                     resources_available = true;
                     limit -= 1;
@@ -267,6 +275,8 @@ impl Renderer {
                     );
                 }
                 self.geometry.recycle(&mut s.geometry);
+                self.effect_uniforms
+                    .recycle(&mut s.effect_uniform_slots, &self.budgets.transient);
                 limit -= 1;
                 false
             } else {
@@ -280,6 +290,9 @@ impl Renderer {
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
+        if !resources.is_empty() {
+            self.effect_uniforms.clear();
+        }
         self.images.retire(resources);
         self.glyphs.retire(resources);
         for submission in &self.inflight {
@@ -345,6 +358,7 @@ impl Renderer {
         if *epoch != Some(frame.surface_epoch()) {
             self.retained.inputs.clear();
             self.effect_results.clear();
+            self.effect_uniforms.clear();
             *self.retained.ceiling.lock().unwrap() = None;
             *epoch = Some(frame.surface_epoch());
         }
@@ -358,6 +372,7 @@ impl Renderer {
             self.geometry.clear();
             self.images.clear_idle();
             self.effect_results.clear();
+            self.effect_uniforms.clear();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
         let result = self.prepare_cached(frame, second, size, capture, &policy, None);
@@ -376,6 +391,7 @@ impl Renderer {
             let cause = result.err().unwrap();
             let resident = pressured_usage(&cause, self.usage());
             self.effect_results.clear();
+            self.effect_uniforms.clear();
             if fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary) {
                 self.geometry.clear();
                 self.targets.release_idle();
@@ -671,6 +687,8 @@ impl Renderer {
                 effect_results: &self.effect_results,
                 effect_pending: Vec::new(),
                 effect_pins: Vec::new(),
+                effect_uniform_cache: &self.effect_uniforms,
+                effect_uniform_slots: Vec::new(),
                 selection,
                 retained_inputs: Vec::new(),
                 warm,
@@ -759,7 +777,7 @@ impl Renderer {
             } else {
                 None
             };
-            let prepared = Prepared {
+            let mut prepared = Prepared {
                 capture: None,
                 encoder: ctx.encoder,
                 output: output.view,
@@ -775,6 +793,7 @@ impl Renderer {
                 retained_inputs: ctx.retained_inputs,
                 effect_pending: ctx.effect_pending,
                 effect_pins: ctx.effect_pins,
+                effect_uniform_slots: ctx.effect_uniform_slots,
                 geometry: ctx.geometry,
                 budget_scope: ctx.budget_scope,
                 admission,
@@ -783,8 +802,12 @@ impl Renderer {
             };
             if let Some(token) = retained {
                 let done = Arc::new(AtomicBool::new(false));
+                for slot in &mut prepared.effect_uniform_slots {
+                    slot.upload(&self.gpu);
+                }
                 self.gpu.queue.submit([prepared.encoder.finish()]);
                 self.effect_results.submitted();
+                self.effect_uniforms.submitted();
                 for pending in prepared.effect_pending {
                     self.effect_results
                         .publish(pending, &self.budgets.transient);
@@ -813,6 +836,7 @@ impl Renderer {
                             _targets: prepared.targets,
                             _retained_inputs: prepared.retained_inputs,
                             _effect_pins: prepared.effect_pins,
+                            effect_uniform_slots: prepared.effect_uniform_slots,
                             _admission: prepared.admission,
                             geometry: prepared.geometry,
                         },
@@ -830,7 +854,7 @@ impl Renderer {
         }
         Ok(())
     }
-    pub fn submit(&mut self, prepared: Prepared) -> Result<u64, GpuError> {
+    pub fn submit(&mut self, mut prepared: Prepared) -> Result<u64, GpuError> {
         self.gpu.check()?;
         if !Arc::ptr_eq(&prepared.owner, &self.owner) || prepared.generation != self.gpu.generation
         {
@@ -849,8 +873,12 @@ impl Renderer {
             &self.budgets.transient,
             self.gpu.limits.transient_bytes,
         );
+        for slot in &mut prepared.effect_uniform_slots {
+            slot.upload(&self.gpu);
+        }
         self.gpu.queue.submit([prepared.encoder.finish()]);
         self.effect_results.submitted();
+        self.effect_uniforms.submitted();
         for pending in prepared.effect_pending {
             self.effect_results
                 .publish(pending, &self.budgets.transient);
@@ -872,6 +900,7 @@ impl Renderer {
             _targets: prepared.targets,
             _retained_inputs: prepared.retained_inputs,
             _effect_pins: prepared.effect_pins,
+            effect_uniform_slots: prepared.effect_uniform_slots,
             _admission: prepared.admission,
             geometry: prepared.geometry,
         });
