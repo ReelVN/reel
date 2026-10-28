@@ -3,6 +3,7 @@ mod data;
 mod decode;
 pub use data::AssetDataLoader;
 mod io;
+mod origins;
 pub(crate) use io::file;
 mod stream;
 pub use stream::{AssetStream, StreamControl};
@@ -23,7 +24,7 @@ use reel_core::{
 use reel_ui::{
     frame::{RetainedAsset, RetainedAssetKind},
     peniko::{ImageAlphaType, ImageFormat},
-    resources::{ColorEncoding, ResourceHandle, ResourceLease, ResourceRegistry, ResourceWeak},
+    resources::{ColorEncoding, ResourceLease, ResourceRegistry},
 };
 use std::{
     cell::RefCell,
@@ -130,7 +131,7 @@ struct Service {
     options: AssetOptions,
     next: u64,
     loads: BTreeMap<LoadId, Load>,
-    origins: BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
+    origins: origins::Origins,
     streams: stream::Streams,
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
@@ -297,6 +298,7 @@ impl Assets {
             input: input_pool(options.ordinary_input_bytes()),
             stream_input: input_pool(options.stream_input_bytes()),
             output: pool(BudgetCategory::CpuOutput, options.resident_bytes),
+            origins: origins::Origins::new(metadata.clone()),
             metadata,
             io_workspace_bytes: temporary.usage().bytes,
             temporary,
@@ -304,7 +306,6 @@ impl Assets {
             options,
             next: 0,
             loads: BTreeMap::new(),
-            origins: BTreeMap::new(),
             streams: stream::Streams::default(),
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
@@ -430,10 +431,10 @@ impl Assets {
     /// Origin is registered by the producer; keys never imply file provenance.
     pub fn retained_asset(&self, lease: &ResourceLease) -> Option<RetainedAsset> {
         let service = self.0.borrow();
-        let (_, kind) = service.origins.get(&lease.handle())?;
+        let kind = service.origins.kind(lease.handle())?;
         Some(RetainedAsset {
             version: lease.version().clone(),
-            kind: *kind,
+            kind,
         })
     }
     /// Encoded immutable author images use the same probe/decode/resident budgets as assets.
@@ -638,7 +639,9 @@ impl Service {
                         load.source.version = info.version;
                         match info.length.and_then(|n| u32::try_from(n).ok()) {
                             Some(length) => {
-                                load.phase = shared_resource(&self.origins, load)
+                                load.phase = self
+                                    .origins
+                                    .shared(load)
                                     .map_or(Phase::Read(length), |lease| Phase::Done(Ok(lease)));
                                 Ok(())
                             }
@@ -662,9 +665,7 @@ impl Service {
                     if !version_matches {
                         Err("asset adapter returned a different version".into())
                     } else if read.eof {
-                        if !described_version
-                            && let Some(lease) = shared_resource(&self.origins, load)
-                        {
+                        if !described_version && let Some(lease) = self.origins.shared(load) {
                             load.input = None;
                             load.phase = Phase::Done(Ok(lease));
                         }
@@ -731,7 +732,7 @@ impl Service {
                     if load.reloadable
                         && let Ok(lease) = &result
                     {
-                        remember_resource(&mut self.origins, load.kind, lease);
+                        self.origins.remember(load.kind, lease);
                     }
                     load.phase = Phase::Done(result);
                     load.input = None;
@@ -825,7 +826,7 @@ impl Service {
                 if load.reloadable
                     && let Ok(lease) = &result
                 {
-                    remember_resource(&mut self.origins, load.kind, lease);
+                    self.origins.remember(load.kind, lease);
                 }
                 load.phase = Phase::Done(result);
             }
@@ -874,7 +875,7 @@ impl Service {
                     load.phase = Phase::Decode;
                     probe = false;
                     if header.codec() == TextureCodec::Raw
-                        && let Some(lease) = shared_resource(&self.origins, load)
+                        && let Some(lease) = self.origins.shared(load)
                     {
                         load.input = None;
                         load.phase = Phase::Done(Ok(lease));
@@ -902,7 +903,7 @@ impl Service {
                         if load.reloadable
                             && let Ok(lease) = &result
                         {
-                            remember_resource(&mut self.origins, load.kind, lease);
+                            self.origins.remember(load.kind, lease);
                         }
                         load.phase = Phase::Done(result);
                         return Ok(());
@@ -918,7 +919,7 @@ impl Service {
                 // A concurrent request may have completed while this one waited
                 // for the decoder lane. Check once when this lane is available,
                 // rather than scanning resources on every pending host tick.
-                if let Some(lease) = shared_resource(&self.origins, load) {
+                if let Some(lease) = self.origins.shared(load) {
                     load.input = None;
                     load.phase = Phase::Done(Ok(lease));
                     return Ok(());
@@ -1033,44 +1034,4 @@ fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {
     registry
         .acquire(handle)
         .map_err(|e| format!("asset lease: {e:?}"))
-}
-
-fn shared_resource(
-    origins: &BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
-    load: &Load,
-) -> Option<ResourceLease> {
-    if !load.reloadable {
-        return None;
-    }
-    let version = load.source.version?;
-    // The path alone is insufficient: Describe or Read selected this immutable
-    // version. Upgrade only a matching kind without retaining any strong cache.
-    origins.values().find_map(|(weak, kind)| {
-        if !matches!(
-            (load.kind, kind),
-            (AssetKind::Image, RetainedAssetKind::Image)
-                | (AssetKind::Font, RetainedAssetKind::Font)
-                | (AssetKind::EffectShader, RetainedAssetKind::EffectShader)
-        ) {
-            return None;
-        }
-        weak.upgrade().filter(|lease| {
-            lease.version().key == load.source.key && lease.version().version == version
-        })
-    })
-}
-
-fn remember_resource(
-    origins: &mut BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
-    kind: AssetKind,
-    lease: &ResourceLease,
-) {
-    let kind = match kind {
-        AssetKind::Image => RetainedAssetKind::Image,
-        AssetKind::Font => RetainedAssetKind::Font,
-        AssetKind::EffectShader => RetainedAssetKind::EffectShader,
-        AssetKind::Bytes => unreachable!(),
-    };
-    origins.retain(|_, (weak, _)| !weak.is_released());
-    origins.insert(lease.handle(), (lease.downgrade(), kind));
 }
