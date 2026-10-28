@@ -299,7 +299,20 @@ fn coverage_variant(drawing: &FrameDrawing, group: &reel_ui::frame::FrameGroup) 
     let Some(effect) = group.effect.as_ref() else {
         return false;
     };
-    drawing.resources().leases().iter().any(|lease| lease.handle()==effect.shader && matches!(lease.data(),ResourceData::EffectShader{descriptor,..} if descriptor.coverage_offset.is_some() && crate::effect::OutputTail::supports_coverage(descriptor.output,descriptor.textures,descriptor.source_sampler)))
+    drawing.resources().leases().iter().any(|lease| {
+        if lease.handle() != effect.shader {
+            return false;
+        }
+        let ResourceData::EffectShader { descriptor, .. } = lease.data() else {
+            return false;
+        };
+        descriptor.coverage_offset.is_some()
+            && crate::effect::OutputTail::supports_coverage(
+                descriptor.output,
+                descriptor.textures,
+                descriptor.source_sampler,
+            )
+    })
 }
 
 /// Explicitly map parent frame pixels to the supplied source storage. Coverage
