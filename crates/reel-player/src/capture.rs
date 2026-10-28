@@ -54,6 +54,31 @@ impl Write for PngOutput<'_> {
     }
 }
 
+fn encode_png(
+    pixels: CapturedPixels,
+    pool: &BudgetPool,
+    cancelled: &AtomicBool,
+) -> Result<OwnedBytes, String> {
+    let pixels = pixels
+        .into_srgb(|| cancelled.load(Ordering::Acquire))
+        .map_err(|_| "capture cancelled".to_owned())?;
+    let storage = pool.reserve(0).map_err(|e| e.message)?;
+    let mut output = PngOutput {
+        bytes: Vec::new(),
+        storage,
+        cancelled,
+    };
+    image::codecs::png::PngEncoder::new(&mut output)
+        .write_image(
+            pixels.rgba.as_slice(),
+            pixels.size[0],
+            pixels.size[1],
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| e.to_string())?;
+    OwnedBytes::new(output.bytes, output.storage).map_err(|e| e.reason.message)
+}
+
 struct EncodeResult {
     id: CaptureId,
     result: Result<OwnedBytes, String>,
@@ -96,23 +121,7 @@ impl<C> CaptureService<C> {
             },
             wake.clone(),
             move |(id, pixels): (CaptureId, CapturedPixels), cancelled| {
-                let result = (|| {
-                    let storage = encoding_pool.reserve(0).map_err(|e| e.message)?;
-                    let mut output = PngOutput {
-                        bytes: Vec::new(),
-                        storage,
-                        cancelled,
-                    };
-                    image::codecs::png::PngEncoder::new(&mut output)
-                        .write_image(
-                            pixels.rgba.as_slice(),
-                            pixels.size[0],
-                            pixels.size[1],
-                            image::ExtendedColorType::Rgba8,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    OwnedBytes::new(output.bytes, output.storage).map_err(|e| e.reason.message)
-                })();
+                let result = encode_png(pixels, &encoding_pool, cancelled);
                 EncodeResult { id, result }
             },
             |event| event.result = Err("capture cancelled".into()),
@@ -288,5 +297,54 @@ impl<C> CaptureService<C> {
             self.active = None;
         }
         Ok(changed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reel_render::capture::CaptureEncoding;
+
+    #[test]
+    fn worker_png_preserves_linear_conversion_and_budget_on_cancel() {
+        let pool = BudgetPool::new(
+            BudgetCategory::Temporary,
+            QueueLimits {
+                max_requests: 8,
+                max_bytes: 1 << 20,
+            },
+        );
+        let make = || {
+            let bytes: Vec<u8> = (0..=255).flat_map(|v| [v, 255 - v, v ^ 0x55, v]).collect();
+            let ticket = pool.reserve(bytes.capacity() as u64).unwrap();
+            CapturedPixels {
+                size: [256, 1],
+                rgba: OwnedBytes::new(bytes, ticket).unwrap(),
+                encoding: CaptureEncoding::Linear,
+            }
+        };
+        let cancel = AtomicBool::new(false);
+        let png = encode_png(make(), &pool, &cancel).unwrap();
+        let rgba = image::load_from_memory(png.as_slice()).unwrap().to_rgba8();
+        for (i, pixel) in rgba.pixels().enumerate() {
+            for (channel, input) in [i as u8, 255 - i as u8, (i as u8) ^ 0x55]
+                .into_iter()
+                .enumerate()
+            {
+                let x = f32::from(input) / 255.;
+                let srgb = if x <= 0.0031308 {
+                    12.92 * x
+                } else {
+                    1.055 * x.powf(1. / 2.4) - 0.055
+                };
+                assert_eq!(pixel[channel], (srgb.clamp(0., 1.) * 255.).round() as u8);
+            }
+            assert_eq!(pixel[3], 255);
+        }
+        drop(png);
+        assert_eq!(pool.usage().bytes, 0);
+        cancel.store(true, Ordering::Release);
+        assert!(encode_png(make(), &pool, &cancel).is_err());
+        assert_eq!(pool.usage().bytes, 0);
     }
 }

@@ -155,6 +155,7 @@ impl Renderer {
         Ok(Some(CapturedPixels {
             size: capture.size,
             rgba,
+            encoding: crate::capture::CaptureEncoding::Srgb,
         }))
     }
 }

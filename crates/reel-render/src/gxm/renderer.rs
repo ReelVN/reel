@@ -893,12 +893,12 @@ impl crate::capture::CaptureBackend for Backend {
         self.context
             .read_rgba(&prepared.output.framebuffer, &mut rgba)
             .map_err(native_error)?;
-        crate::capture_color::encode_rgba(&mut rgba);
         let rgba =
             OwnedBytes::new(rgba, ticket).map_err(|e| GpuError::Readback(e.reason.message))?;
         Ok(Some(crate::capture::CapturedPixels {
             size: capture.size,
             rgba,
+            encoding: crate::capture::CaptureEncoding::Linear,
         }))
     }
 }

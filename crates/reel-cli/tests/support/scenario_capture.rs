@@ -271,7 +271,10 @@ impl CaptureBackend for Offscreen {
         &mut self,
         capture: &mut GpuCapture,
     ) -> Result<Option<CapturedPixels>, GpuError> {
-        let pixels = self.renderer.poll_capture(capture)?;
+        let pixels = self
+            .renderer
+            .poll_capture(capture)?
+            .map(|pixels| pixels.into_srgb(|| false).expect("uncancelled conversion"));
         if let Some(pixels) = &pixels {
             let [width, height] = pixels.size;
             let sample = |x: u32| {

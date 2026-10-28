@@ -11,15 +11,32 @@ fn channel(value: u8) -> u8 {
     (s.clamp(0., 1.) * 255.).round() as u8
 }
 
-pub(crate) fn encode_rgba(bytes: &mut [u8]) {
+pub(crate) fn encode_rgba_cancellable(
+    bytes: &mut [u8],
+    mut cancelled: impl FnMut() -> bool,
+) -> bool {
     static TABLE: OnceLock<[u8; 256]> = OnceLock::new();
-    let table = TABLE.get_or_init(|| std::array::from_fn(|index| channel(index as u8)));
-    for pixel in bytes.as_chunks_mut::<4>().0 {
-        pixel[0] = table[pixel[0] as usize];
-        pixel[1] = table[pixel[1] as usize];
-        pixel[2] = table[pixel[2] as usize];
-        pixel[3] = 255;
+    if cancelled() {
+        return false;
     }
+    let table = TABLE.get_or_init(|| std::array::from_fn(|index| channel(index as u8)));
+    for chunk in bytes.chunks_mut(16 * 1024) {
+        if cancelled() {
+            return false;
+        }
+        for pixel in chunk.as_chunks_mut::<4>().0 {
+            pixel[0] = table[pixel[0] as usize];
+            pixel[1] = table[pixel[1] as usize];
+            pixel[2] = table[pixel[2] as usize];
+            pixel[3] = 255;
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+fn encode_rgba(bytes: &mut [u8]) {
+    assert!(encode_rgba_cancellable(bytes, || false));
 }
 
 #[cfg(test)]
