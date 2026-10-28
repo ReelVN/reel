@@ -7,6 +7,7 @@ pub(crate) mod appearance;
 pub(crate) mod blend;
 pub(crate) mod effect_cache;
 pub(crate) mod effect_plan;
+pub(crate) mod effect_result;
 pub(crate) mod glyph;
 pub(crate) mod glyph_plan;
 pub(crate) mod glyph_upload;
