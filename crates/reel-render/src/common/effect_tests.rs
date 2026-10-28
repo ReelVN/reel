@@ -114,6 +114,9 @@ fn sampling_program(radius: i32) -> Arc<EffectProgram> {
 }
 
 fn sampling_offsets(offsets: &[f32]) -> Arc<EffectProgram> {
+    sampling_offsets_with_complexity(offsets, false)
+}
+fn sampling_offsets_with_complexity(offsets: &[f32], complex: bool) -> Arc<EffectProgram> {
     let mut g = Graph::default();
     let uv = g.node(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
     let x = g.node(EffectType::Float, EffectOp::Extract { value: uv, lane: 0 });
@@ -146,6 +149,17 @@ fn sampling_offsets(offsets: &[f32]) -> Arc<EffectProgram> {
                 right: offset,
             },
         );
+        let local_y = if complex {
+            g.node(
+                EffectType::Float,
+                EffectOp::Unary {
+                    op: EffectUnary::Sin,
+                    value: local_y,
+                },
+            )
+        } else {
+            local_y
+        };
         let at = g.node(EffectType::Vec2, EffectOp::Vec2([x, local_y]));
         let sample = g.node(EffectType::Vec4, EffectOp::SourceSample { uv: at });
         for (lane, channel) in channels.iter_mut().enumerate() {
@@ -208,9 +222,9 @@ fn large_proved_reduction_keeps_integer_constants_and_final_scaling() {
     for language in [Language::Wgsl, Language::Cg] {
         let fragment = compile_fragment(&program, language, 1 << 20).unwrap();
         let function = generate(&program, language, 1 << 20).unwrap().function;
-        assert_eq!(function.matches(" = reel_source_sample(").count(), 1);
-        assert!(function.contains("!= 31;"));
-        assert!(function.contains("+= 1)"));
+        assert_eq!(function.matches(" = reel_source_sample(").count(), 5);
+        assert!(function.contains("!= 30;"));
+        assert!(function.contains("+= 1;"));
         assert!(function.contains("= -30;"));
         assert!(function.find(" / ").unwrap() < function.rfind(" / ").unwrap());
         #[cfg(feature = "wgpu")]
@@ -1006,3 +1020,6 @@ fn independent_coverage_tail_preserves_typed_author_program_and_sampler_bound() 
     assert!(!OutputTail::supports_coverage(EffectType::Vec4, 15, true));
     assert!(!OutputTail::supports_coverage(EffectType::Float, 0, true));
 }
+
+#[path = "effect_reduction_tests.rs"]
+mod reduction_tests;

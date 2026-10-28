@@ -18,6 +18,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[path = "effect/cg.rs"]
 mod cg;
+#[path = "effect/emit_reduction.rs"]
+mod emit_reduction;
 #[path = "effect/gxp_compiler.rs"]
 pub mod gxp_compiler;
 #[path = "effect/reduction.rs"]
@@ -106,25 +108,33 @@ pub fn compile_fragment(
     compile_fragment_with_tail(program, language, OutputTail::Ordinary, max_source_bytes)
 }
 /// Generate one fixed variant without changing the authored effect graph.
+/// If bounded loop blocks exceed the complete source limit, retry the original
+/// single-tap loop so an optimization cannot reject a previously admitted shader.
 pub fn compile_fragment_with_tail(
     program: &EffectProgram,
     language: Language,
     tail: OutputTail,
     max_source_bytes: usize,
 ) -> Result<EffectFragment, GenerateError> {
-    let generated = generate(program, language, max_source_bytes)?;
-    if tail == OutputTail::AlphaCoverage
-        && !OutputTail::supports_coverage(
-            generated.output_type,
-            program.textures().len() as u32,
-            generated.samples_source,
-        )
-    {
-        return Err(GenerateError::UnsupportedTail);
-    }
-    match language {
-        Language::Wgsl => wgsl::compile(program, generated, tail, max_source_bytes),
-        Language::Cg => cg::compile(program, generated, tail, max_source_bytes),
+    let compile = |blocks| -> Result<_, GenerateError> {
+        let generated = generate_inner(program, language, max_source_bytes, blocks)?;
+        if tail == OutputTail::AlphaCoverage
+            && !OutputTail::supports_coverage(
+                generated.output_type,
+                program.textures().len() as u32,
+                generated.samples_source,
+            )
+        {
+            return Err(GenerateError::UnsupportedTail);
+        }
+        match language {
+            Language::Wgsl => wgsl::compile(program, generated, tail, max_source_bytes),
+            Language::Cg => cg::compile(program, generated, tail, max_source_bytes),
+        }
+    };
+    match compile(true) {
+        Err(GenerateError::SourceLimit { .. }) => compile(false),
+        result => result,
     }
 }
 
@@ -253,10 +263,25 @@ impl std::error::Error for GenerateError {}
 /// Traversal uses an explicit CPU work stack so graph depth cannot overflow it.
 /// The byte limit covers the returned declarations and function, including helpers;
 /// backend-owned entry points and source hooks have their own admission budget.
+/// Simple long sampling reductions use four ordered taps per iteration, with a
+/// single-tap retry when the bounded expansion exceeds this byte limit.
 pub fn generate(
     program: &EffectProgram,
     language: Language,
     max_source_bytes: usize,
+) -> Result<GeneratedEffect, GenerateError> {
+    match generate_inner(program, language, max_source_bytes, true) {
+        Err(GenerateError::SourceLimit { .. }) => {
+            generate_inner(program, language, max_source_bytes, false)
+        }
+        result => result,
+    }
+}
+fn generate_inner(
+    program: &EffectProgram,
+    language: Language,
+    max_source_bytes: usize,
+    block_reductions: bool,
 ) -> Result<GeneratedEffect, GenerateError> {
     // Every declared parameter needs at least one sixteen-byte slot and more
     // than sixteen source bytes. Reject oversized layouts before allocating them.
@@ -313,6 +338,7 @@ pub fn generate(
         next_name: 0,
         samples_source: false,
         reductions: HashMap::new(),
+        block_reductions,
     };
     emitter.run()?;
     let output_type = program.nodes()[program.output().0 as usize].ty;
@@ -391,13 +417,7 @@ struct Scope {
 enum Task {
     Scope(usize, EffectNodeId),
     Emit(usize, EffectNodeId),
-    ReductionEnd {
-        parent: usize,
-        scope: usize,
-        id: EffectNodeId,
-        name: usize,
-        reduction: reduction::Reduction,
-    },
+    Reduction(emit_reduction::Continuation),
     Otherwise {
         parent: usize,
         scope: usize,
@@ -424,6 +444,7 @@ struct Emitter<'a> {
     next_name: usize,
     samples_source: bool,
     reductions: HashMap<EffectNodeId, Option<reduction::Reduction>>,
+    block_reductions: bool,
 }
 
 impl Emitter<'_> {
@@ -519,51 +540,7 @@ impl Emitter<'_> {
                         continue;
                     }
                     if let Some(reduction) = self.reduction(id) {
-                        let name = self.next_name;
-                        self.next_name += 1;
-                        self.line(scope, &self.language.mutable(EffectType::Vec4, name))?;
-                        let initial = reduction.initial.map(|id| self.value(scope, id));
-                        self.line(
-                            scope,
-                            &format!(
-                                "reel_n{name} = {};",
-                                construct(self.language, EffectType::Vec4, &initial)
-                            ),
-                        )?;
-                        if self.language == Language::Cg {
-                            self.line(scope, "#pragma loop (unroll: never)")?;
-                        }
-                        let declaration = match (self.language, reduction.float_counter) {
-                            (Language::Cg, true) => format!("float reel_i{name}"),
-                            (Language::Cg, false) => format!("int reel_i{name}"),
-                            (Language::Wgsl, true) => format!("var reel_i{name}: f32"),
-                            (Language::Wgsl, false) => format!("var reel_i{name}: i32"),
-                        };
-                        self.line(scope, &format!("for ({declaration} = {}; reel_i{name} != {}; reel_i{name} += {}) {{", reduction.first, reduction.end, reduction.step))?;
-                        let child = self.child(scope);
-                        self.scopes[child].blocked = reduction.dependent.clone();
-                        let counter = self.next_name;
-                        self.next_name += 1;
-                        self.line(
-                            child,
-                            &self.language.declaration(
-                                EffectType::Float,
-                                counter,
-                                &format!("{}(reel_i{name})", self.language.ty(EffectType::Float)),
-                            ),
-                        )?;
-                        self.scopes[child]
-                            .values
-                            .insert(reduction.constant, counter);
-                        let sample = reduction.sample;
-                        tasks.push(Task::ReductionEnd {
-                            parent: scope,
-                            scope: child,
-                            id,
-                            name,
-                            reduction,
-                        });
-                        tasks.push(Task::Scope(child, sample));
+                        self.begin_reduction(scope, id, reduction, &mut tasks)?;
                         continue;
                     }
                     let node = self.program.nodes()[id.0 as usize].clone();
@@ -596,34 +573,7 @@ impl Emitter<'_> {
                     )?;
                     self.scopes[scope].values.insert(id, name);
                 }
-                Task::ReductionEnd {
-                    parent,
-                    scope,
-                    id,
-                    name,
-                    reduction,
-                } => {
-                    self.line(
-                        scope,
-                        &format!(
-                            "reel_n{name} = reel_n{name} + {};",
-                            self.value(scope, reduction.sample)
-                        ),
-                    )?;
-                    self.line(parent, "}")?;
-                    for (op, right) in reduction.scale {
-                        self.line(
-                            parent,
-                            &format!(
-                                "reel_n{name} = reel_n{name} {} {}({});",
-                                binary_name(op),
-                                self.language.ty(EffectType::Vec4),
-                                self.value(parent, right)
-                            ),
-                        )?;
-                    }
-                    self.scopes[parent].values.insert(id, name);
-                }
+                Task::Reduction(continuation) => self.emit_reduction(continuation, &mut tasks)?,
                 Task::Otherwise {
                     parent,
                     scope,
