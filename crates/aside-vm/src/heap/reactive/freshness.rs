@@ -32,15 +32,6 @@ impl Heap {
         let current = self.derived_is_current_work(output, None, &mut work)?;
         Ok(((!current).then_some(output), work))
     }
-    pub(crate) fn derived_claim_work(&self) -> u64 {
-        self.reactive_queue.len() as u64
-    }
-    pub(crate) fn claim_derived(&mut self, output: Value) -> Result<(), HeapError> {
-        let key = self.key(output)?;
-        self.reactive_queue.retain(|queued| *queued != key);
-        self.objects.get_mut(key).unwrap().derived_dirty = false;
-        Ok(())
-    }
     fn dependency_payload(
         &self,
         key: HeapKey,

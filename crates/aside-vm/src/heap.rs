@@ -306,6 +306,8 @@ pub(crate) struct Object {
     pub reactive_scanned: bool,
     pub derived: bool,
     pub derived_dirty: bool,
+    pub derived_previous: Option<HeapKey>,
+    pub derived_next: Option<HeapKey>,
     pub evaluation: u64,
     pub property_generation: u64,
     pub payload: Payload,
@@ -357,7 +359,8 @@ pub struct Heap {
     derived_disconnect_work: Vec<Value>,
     model_work: Vec<Value>,
     model_walk: u64,
-    reactive_queue: VecDeque<HeapKey>,
+    reactive_head: Option<HeapKey>,
+    reactive_tail: Option<HeapKey>,
     reactive_capture: Option<Value>,
     evaluation: u64,
     binding_revision: u64,
@@ -403,7 +406,7 @@ impl Heap {
             + 2 * std::mem::align_of::<crate::slots::Slot<RangeDescriptor>>().max(4);
         let estimate = crate::slots::ObjectSlots::<Object>::bytes_for(initial_objects)
             + (initial_roots as u64 + 1) * root_stride as u64
-            + initial_objects as u64 * 4 * std::mem::size_of::<HeapKey>() as u64
+            + initial_objects as u64 * 3 * std::mem::size_of::<HeapKey>() as u64
             + (initial_roots as u64 + 1) * std::mem::size_of::<Option<RootKey>>() as u64
             + (initial_ranges as u64 + 1)
                 * (range_stride as u64 + std::mem::size_of::<Option<RangeKey>>() as u64)
@@ -457,7 +460,8 @@ impl Heap {
             derived_disconnect_work: Vec::new(),
             model_work: Vec::new(),
             model_walk: 0,
-            reactive_queue: VecDeque::with_capacity(initial_objects),
+            reactive_head: None,
+            reactive_tail: None,
             reactive_capture: None,
             evaluation: 0,
             binding_revision: 1,
@@ -481,10 +485,7 @@ impl Heap {
             + (heap.range_index.capacity() * std::mem::size_of::<Option<RangeKey>>()) as u64
             + (heap.range_occupied.capacity() * size_of::<u64>()) as u64
             + BOOK_BYTES
-            + ((heap.allocations.capacity()
-                + heap.gray.capacity()
-                + heap.release.capacity()
-                + heap.reactive_queue.capacity())
+            + ((heap.allocations.capacity() + heap.gray.capacity() + heap.release.capacity())
                 * std::mem::size_of::<HeapKey>()) as u64
             + std::mem::size_of::<Self>() as u64;
         if actual > estimate {
@@ -662,6 +663,8 @@ impl Heap {
             reactive_scanned: false,
             derived: false,
             derived_dirty: false,
+            derived_previous: None,
+            derived_next: None,
             evaluation: self
                 .reactive_capture
                 .and_then(|output| {
@@ -1480,7 +1483,8 @@ impl Drop for Heap {
         drop(std::mem::take(&mut self.property_bindings));
         drop(std::mem::take(&mut self.derived_disconnect_work));
         drop(std::mem::take(&mut self.model_work));
-        drop(std::mem::take(&mut self.reactive_queue));
+        self.reactive_head = None;
+        self.reactive_tail = None;
         // The Rc book itself remains physically live while an observer/pool owns it.
         self.usage
             .refund(self.reserved - BOOK_BYTES + self.payload_bytes);

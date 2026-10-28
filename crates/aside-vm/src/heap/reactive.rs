@@ -1,5 +1,6 @@
 //! Read dependencies share heap ownership and weak reverse subscriptions.
 use super::*;
+mod queue;
 
 mod freshness;
 mod property_cycle;
@@ -264,17 +265,6 @@ impl Heap {
             return Err(HeapError::BindingCycle);
         }
         Ok(())
-    }
-
-    fn enqueue_derived(&mut self, key: HeapKey) {
-        if !self.objects.get(key).unwrap().derived_dirty {
-            if self.reactive_queue.len() == self.reactive_queue.capacity() {
-                self.reactive_queue
-                    .retain(|key| self.objects.get(*key).is_some_and(|o| !o.dying));
-            }
-            self.objects.get_mut(key).unwrap().derived_dirty = true;
-            self.reactive_queue.push_back(key);
-        }
     }
 
     fn reactive_remove(
@@ -545,7 +535,7 @@ impl Heap {
         self.set_host_payload(output, DerivedSlot::Dependencies as u32, Value::NULL)?;
         self.set_host_payload(output, DerivedSlot::Suspended as u32, Value::NULL)?;
         let key = self.key(output)?;
-        self.objects.get_mut(key).unwrap().derived_dirty = false;
+        self.unlink_derived(key);
         Ok(())
     }
 
@@ -705,55 +695,6 @@ impl Heap {
 
     pub fn reactive_evaluating(&self) -> bool {
         self.reactive_capture.is_some()
-    }
-
-    pub fn derived_pending(&self) -> bool {
-        !self.reactive_queue.is_empty() || self.reactive_capture.is_some()
-    }
-
-    /// Queue a host-owned observer at an explicit cooperative boundary.
-    pub fn schedule_derived(&mut self, output: Value) -> Result<(), HeapError> {
-        let key = self.key(output)?;
-        if self.object(key)?.derived_dirty {
-            self.reactive_queue.retain(|queued| *queued != key);
-            self.objects.get_mut(key).unwrap().derived_dirty = false;
-        }
-        self.enqueue_derived(key);
-        Ok(())
-    }
-
-    pub fn derived_is_queued(&self, output: Value) -> Result<bool, HeapError> {
-        Ok(self.object(self.key(output)?)?.derived_dirty)
-    }
-
-    /// Read existing queued identities without copying or rooting another graph.
-    pub fn pending_derived_outputs(&self) -> impl Iterator<Item = Value> + '_ {
-        self.reactive_queue.iter().filter_map(|key| {
-            let object = self.objects.get(*key)?;
-            (object.derived_dirty
-                && !object.dying
-                && !(self.gc.cutoff() && object.mark != self.gc.cycle))
-                .then(|| Value::object(self.id, key.data().as_ffi()))
-        })
-    }
-
-    pub fn next_derived(&mut self) -> Result<Option<Value>, HeapError> {
-        while let Some(key) = self.reactive_queue.pop_front() {
-            let Some(object) = self.objects.get_mut(key) else {
-                continue;
-            };
-            if !object.derived_dirty
-                || object.dying
-                || (self.gc.cutoff() && object.mark != self.gc.cycle)
-            {
-                continue;
-            }
-            object.derived_dirty = false;
-            let value = Value::object(self.id, key.data().as_ffi());
-            self.root_insertion_barrier(value)?;
-            return Ok(Some(value));
-        }
-        Ok(None)
     }
 }
 
