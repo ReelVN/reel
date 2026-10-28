@@ -64,6 +64,10 @@ struct Recording {
 // The first component uniquely identifies pixels; the second identifies the
 // stable producer family across changed parameter or image versions.
 pub(crate) struct Token(pub(crate) usize, pub(crate) usize);
+#[allow(
+    clippy::large_enum_variant,
+    reason = "cache probes keep recording identity inline to avoid a heap allocation on every lookup"
+)]
 enum Source {
     Recording(Recording),
     Output(Token),
