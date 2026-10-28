@@ -124,6 +124,28 @@ impl Cache {
 #[derive(Default)]
 pub struct ParticleSampler(Option<Box<Cache>>);
 impl ParticleSampler {
+    /// Sample one immutable, budgeted recording while retaining birth-cache reuse.
+    pub fn record(
+        &mut self,
+        node: &ParticleNode,
+    ) -> Result<crate::frame::SpriteInstances, crate::frame::BuildErrorKind> {
+        let Some(storage) = node.batches.0.as_ref() else {
+            return Ok(Default::default());
+        };
+        crate::frame::SpriteInstances::try_collect(&storage.pool, |emit| {
+            self.for_each(node, |s| {
+                if s.opacity > 0. && s.size > 0. {
+                    emit(crate::frame::SpriteInstance {
+                        position: s.position,
+                        size: s.size,
+                        rotation: s.rotation.to_radians(),
+                        alpha: s.opacity as f32,
+                    });
+                }
+            });
+        })
+    }
+
     /// Visit live sprites in emission and birth order. Clock jumps, pause, size
     /// scale and replacement emissions use the same formulas as `samples()`.
     pub fn for_each(&mut self, node: &ParticleNode, mut emit: impl FnMut(Sprite)) {

@@ -30,6 +30,12 @@ pub struct RecordWidget {
     pub effect: Option<PaintEffect>,
     pub mask_effect: Option<PaintEffect>,
     pub capture_included: bool,
+    pub sprite_draws: Vec<(
+        ResourceLease,
+        Rect,
+        Affine,
+        Result<SpriteInstances, BuildErrorKind>,
+    )>,
     pub resource_draws: Vec<(ResourceLease, Rect, Affine, reel_ui::peniko::ImageSampler)>,
 }
 impl RecordWidget {
@@ -55,6 +61,7 @@ impl RecordWidget {
             mask_effect: None,
             capture_included: true,
             resource_draws: Vec::new(),
+            sprite_draws: Vec::new(),
         }
     }
 }
@@ -100,6 +107,16 @@ impl Widget for RecordWidget {
             c.set_paint_layer_mode(self.mode);
         }
         p.replay(&self.own);
+        for (resource, bounds, transform, instances) in &self.sprite_draws {
+            c.draw_resource_sprites(
+                p,
+                resource,
+                *bounds,
+                *transform,
+                Default::default(),
+                instances.clone(),
+            );
+        }
         for (resource, bounds, transform, sampler) in &self.resource_draws {
             c.draw_resource_image(p, resource, *bounds, *transform, Affine::IDENTITY, *sampler);
         }

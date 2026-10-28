@@ -253,6 +253,8 @@ pub struct FrameImage {
     /// original UV mapping while preventing bilinear reads from adjacent regions.
     pub source_rect: Option<Rect>,
 }
+mod sprites;
+pub use sprites::{FrameSprite, FrameSprites, SpriteInstance, SpriteInstances};
 mod image_color;
 pub use image_color::{ImageAlphaLayout, ImageAppearance, ImageColorAdjustment};
 /// Four linear premultiplied colors and their unit square in frame coordinates.
@@ -293,6 +295,7 @@ pub enum FrameDraw {
         composite: Composite,
     },
     GlyphRun(FrameGlyphRun),
+    Sprites(FrameSprites),
     BlurredRoundedRect(#[serde(with = "wire::BlurredRectDef")] imaging::BlurredRoundedRect),
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1319,6 +1322,7 @@ fn validate_draw(d: &FrameDraw) -> Result<(), BuildErrorKind> {
             (g.transform, g.brush_transform, g.composite)
         }
         FrameDraw::BlurredRoundedRect(d) => (d.transform, None, d.composite),
+        FrameDraw::Sprites(d) => (d.transform, None, d.composite),
     };
     if finite(t) && bt.is_none_or(finite) && valid_composite(c) {
         Ok(())

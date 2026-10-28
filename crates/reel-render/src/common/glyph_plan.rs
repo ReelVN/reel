@@ -278,6 +278,9 @@ impl Plan {
                                 };
                                 padding(transformed(ink, *transform), outer)
                             }
+                            FrameDraw::Sprites(s) => {
+                                padding(transformed(s.ink_bounds(), s.transform), outer)
+                            }
                             FrameDraw::BlurredRoundedRect(_) => InkBounds::Unbounded,
                         };
                         if let Some(scope) = scopes.last_mut()

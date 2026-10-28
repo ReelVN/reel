@@ -550,6 +550,7 @@ fn resource_handles(command: &FrameCommand) -> impl Iterator<Item = ResourceHand
                 ..
             },
         ) => (Some(brush.image.resource), None, &[][..]),
+        FrameOp::Draw(FrameDraw::Sprites(s)) => (Some(s.brush.image.resource), None, &[][..]),
         FrameOp::Draw(FrameDraw::GlyphRun(g)) => (
             Some(g.font),
             match &g.brush {
@@ -653,6 +654,7 @@ pub(crate) fn command_payload_bytes(command: &FrameCommand) -> u64 {
             brush: paint,
             ..
         }) => geometry(shape) + stroke(value) + brush(paint),
+        FrameOp::Draw(FrameDraw::Sprites(s)) => s.instances.capacity() * size_of::<FrameSprite>(),
         FrameOp::Draw(FrameDraw::GlyphRun(g)) => {
             g.glyphs.capacity() * size_of::<record::Glyph>()
                 + g.normalized_coords.capacity() * size_of::<imaging::NormalizedCoord>()

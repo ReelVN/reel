@@ -119,6 +119,7 @@ pub(super) fn command(
                         }
                 }
                 FrameDraw::BlurredRoundedRect(_) => true,
+                FrameDraw::Sprites(s) => s.instances.iter().copied().all(FrameSprite::is_valid),
             }
         }
         FrameOp::PushContext(context) => {

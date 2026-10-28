@@ -165,7 +165,15 @@ impl LayerCollector {
         image: crate::frame::ImagePaint,
         lease: Option<&crate::resources::ResourceLease>,
     ) {
-        record_owner_range(&mut self.command_owners, start, end, owner, image, lease);
+        record_owner_range(
+            &mut self.command_owners,
+            start,
+            end,
+            owner,
+            image,
+            lease,
+            None,
+        );
     }
 
     fn paint(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {

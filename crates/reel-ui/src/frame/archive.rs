@@ -950,6 +950,12 @@ fn remap_command(
         FrameOp::Draw(FrameDraw::Fill { brush, .. } | FrameDraw::Stroke { brush, .. }) => {
             Some(brush)
         }
+        FrameOp::Draw(FrameDraw::Sprites(s)) => {
+            remap(&mut s.brush.image.resource, handles, |kind| {
+                kind == ResourceKind::Image
+            })?;
+            None
+        }
         FrameOp::Draw(FrameDraw::GlyphRun(glyphs)) => {
             remap(&mut glyphs.font, handles, |kind| kind == ResourceKind::Font)?;
             Some(&mut glyphs.brush)

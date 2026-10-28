@@ -111,6 +111,9 @@ impl GroupPlan {
                         FrameOp::Draw(
                             FrameDraw::Fill { composite, .. } | FrameDraw::Stroke { composite, .. },
                         ) => composite.blend == Default::default(),
+                        FrameOp::Draw(FrameDraw::Sprites(s)) => {
+                            s.composite.blend == Default::default()
+                        }
                         FrameOp::Draw(FrameDraw::GlyphRun(run)) => {
                             run.composite.blend == Default::default()
                         }

@@ -137,6 +137,9 @@ fn keys(drawing: &FrameDrawing, capture: bool) -> impl Iterator<Item = u8> + '_ 
             FrameOp::Draw(
                 FrameDraw::Fill { composite, .. } | FrameDraw::Stroke { composite, .. },
             ) => u8::from(composite.blend == Default::default()),
+            FrameOp::Draw(FrameDraw::Sprites(s)) => {
+                u8::from(s.composite.blend == Default::default())
+            }
             FrameOp::Draw(FrameDraw::GlyphRun(run)) => {
                 u8::from(run.composite.blend == Default::default())
             }

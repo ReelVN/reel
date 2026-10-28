@@ -128,6 +128,9 @@ pub(crate) fn collect<'a>(
                             ..
                         },
                     ) => std::slice::from_ref(&brush.image.resource),
+                    FrameOp::Draw(FrameDraw::Sprites(s)) => {
+                        std::slice::from_ref(&s.brush.image.resource)
+                    }
                     FrameOp::Draw(FrameDraw::GlyphRun(g)) => match &g.brush {
                         Brush::Image(brush) => std::slice::from_ref(&brush.image.resource),
                         _ => &[],

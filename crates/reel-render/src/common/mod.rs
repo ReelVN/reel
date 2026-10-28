@@ -35,3 +35,5 @@ pub(crate) mod geometry;
 pub(crate) mod glyph_key;
 pub(crate) mod indices;
 pub(crate) mod recording_cache;
+
+mod sprites;

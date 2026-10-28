@@ -484,6 +484,39 @@ impl Context<'_> {
             },
         )
     }
+    fn draw_sprites(
+        &mut self,
+        target: &Target,
+        batch: &reel_ui::frame::FrameSprites,
+        outer: Affine,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        self.composite_supported(batch.composite, at)?;
+        let image = self.image_resource(batch.brush.image.resource, at)?;
+        let source = image.source.as_ref().and_then(|s| s.lease.upgrade());
+        let coverage = source.as_ref().and_then(|s| s.image_coverage());
+        let mut mesh = mesh::Mesh::new(self.mesh_allocation());
+        mesh.sprites(
+            batch,
+            outer,
+            image.layout,
+            image.uv_transform(),
+            coverage,
+            self.size,
+            at,
+        )?;
+        self.paint_resource(
+            target,
+            mesh,
+            &image,
+            [
+                batch.brush.sampler.x_extend == Extend::Repeat,
+                batch.brush.sampler.y_extend == Extend::Repeat,
+            ],
+            batch.brush.image.appearance.map(|a| a.transformed(outer)),
+            batch.brush.sampler.quality,
+        )
+    }
     pub fn draw(
         &mut self,
         frame: &FrameDrawing,
@@ -527,6 +560,7 @@ impl Context<'_> {
                 *composite,
             ),
             FrameDraw::GlyphRun(run) => return self.draw_glyphs(frame, target, run, outer, origin),
+            FrameDraw::Sprites(batch) => return self.draw_sprites(target, batch, outer, at),
             FrameDraw::BlurredRoundedRect(_) => {
                 return Err(GpuError::Unsupported {
                     at,
@@ -711,7 +745,9 @@ impl Context<'_> {
             };
             if brush.image.resource != first_brush.image.resource
                 || brush.image.appearance != first_brush.image.appearance
-                || brush.sampler != first_brush.sampler
+                || brush.sampler.quality != first_brush.sampler.quality
+                || brush.sampler.x_extend != first_brush.sampler.x_extend
+                || brush.sampler.y_extend != first_brush.sampler.y_extend
                 || composite.blend != first_composite.blend
             {
                 break;

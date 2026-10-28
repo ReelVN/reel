@@ -321,21 +321,31 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         let NodeKind::Particles(expected) = &view.root.as_ref().unwrap().node.kind else {
             unreachable!()
         };
-        let draws = source
+        let batches: Vec<_> = source
             .plan()
             .layers
             .iter()
-            .flat_map(|layer| match &layer.kind {
-                reel_ui::app::VisualLayerKind::Scene(scene) => scene.commands(),
-                _ => &[],
-            })
-            .filter(|command| matches!(command, reel_ui::imaging::record::Command::Draw(_)))
-            .count();
+            .flat_map(|layer| layer.command_owners())
+            .filter_map(|range| range.sprites.as_ref())
+            .map(|batch| batch.as_ref().unwrap())
+            .collect();
         assert_eq!(
-            draws,
+            batches.len(),
+            1,
+            "one ordered sprite record per particle node"
+        );
+        let instances = batches[0].as_slice();
+        assert_eq!(
+            instances.len(),
             expected.samples().count(),
             "record includes every overlapping batch"
         );
+        for (actual, expected) in instances.iter().zip(expected.samples()) {
+            assert_eq!(actual.position, expected.position);
+            assert_eq!(actual.size, expected.size);
+            assert_eq!(actual.rotation, expected.rotation.to_radians());
+            assert_eq!(actual.alpha, expected.opacity as f32);
+        }
         let root = bridge.root().get_widget(widget).unwrap();
         let children = root.children();
         let particles = children[0].downcast::<SceneWidget>().unwrap();

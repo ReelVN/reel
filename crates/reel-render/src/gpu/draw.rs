@@ -188,6 +188,39 @@ impl Context<'_> {
         let (image, _) = resources::upload(self.gpu, &mut self.encoder, size, pixels, available)?;
         Ok(image)
     }
+    fn draw_sprites(
+        &mut self,
+        target: &Target,
+        batch: &reel_ui::frame::FrameSprites,
+        outer: Affine,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        self.composite_supported(batch.composite, at)?;
+        let image = self.image_resource(batch.brush.image.resource, at)?;
+        let source = image.source.as_ref().and_then(|s| s.lease.upgrade());
+        let coverage = source.as_ref().and_then(|s| s.image_coverage());
+        let mut mesh = mesh::Mesh::new(self.mesh_allocation());
+        mesh.sprites(
+            batch,
+            outer,
+            image.layout,
+            image.uv_transform(),
+            coverage,
+            self.size,
+            at,
+        )?;
+        self.paint_resource(
+            target,
+            mesh,
+            &image,
+            [
+                batch.brush.sampler.x_extend == Extend::Repeat,
+                batch.brush.sampler.y_extend == Extend::Repeat,
+            ],
+            batch.brush.image.appearance.map(|a| a.transformed(outer)),
+            batch.brush.sampler.quality,
+        )
+    }
     pub(super) fn draw(
         &mut self,
         frame: &FrameDrawing,
@@ -234,6 +267,7 @@ impl Context<'_> {
                 *composite,
             ),
             FrameDraw::GlyphRun(run) => return self.glyphs(frame, target, run, outer, origin),
+            FrameDraw::Sprites(batch) => return self.draw_sprites(target, batch, outer, at),
             FrameDraw::BlurredRoundedRect(_) => {
                 return Err(GpuError::Unsupported {
                     at,

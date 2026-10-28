@@ -126,6 +126,13 @@ fn projection(command: &FrameCommand) -> Option<Projection<'_>> {
             image: image(&run.brush),
             font: Some(run.font),
         },
+        FrameOp::Draw(FrameDraw::Sprites(s)) => Projection::Draw {
+            kind: 4,
+            transform: s.transform.as_coeffs(),
+            brush_transform: None,
+            image: Some(&s.brush),
+            font: None,
+        },
         FrameOp::Draw(FrameDraw::BlurredRoundedRect(draw)) => Projection::Draw {
             kind: 3,
             transform: draw.transform.as_coeffs(),

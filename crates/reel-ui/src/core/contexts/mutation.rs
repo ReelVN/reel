@@ -884,11 +884,40 @@ impl PaintCtx<'_> {
                 resource: resource.clone(),
                 sampler,
                 source_rect: self.widget_state.image_source_rect,
+                sprites: None,
             });
         painter
             .fill(bounds, peniko::Color::WHITE)
             .transform(transform)
             .brush_transform(Some(source_transform))
+            .draw();
+    }
+
+    /// Record centered sprites with one shared image, sampling state and lease.
+    /// The rectangle supplies source pixels and aspect ratio; the transform maps
+    /// batch-local positions to widget coordinates. Failed payload admission is
+    /// reported by the frame builder at this command, preserving the accepted frame.
+    pub fn draw_resource_sprites<S: crate::imaging::PaintSink + ?Sized>(
+        &mut self,
+        painter: &mut crate::imaging::Painter<'_, S>,
+        resource: &crate::resources::ResourceLease,
+        bounds: Rect,
+        transform: Affine,
+        sampler: peniko::ImageSampler,
+        instances: Result<crate::frame::SpriteInstances, crate::frame::BuildErrorKind>,
+    ) {
+        self.image_draws
+            .push(crate::core::recorded_paint::ResourceDraw {
+                command: self.command_cursor.get(),
+                resource: resource.clone(),
+                sampler,
+                source_rect: self.widget_state.image_source_rect,
+                sprites: Some(instances),
+            });
+        painter
+            .fill(bounds, peniko::Color::WHITE)
+            .transform(transform)
+            .brush_transform(Some(Affine::IDENTITY))
             .draw();
     }
 

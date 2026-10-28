@@ -25,6 +25,8 @@ pub struct CommandOwnerRange {
     pub image_sampling_transform: bool,
     /// Source-pixel window retained by this widget's cached image paint.
     pub image_source_rect: Option<Rect>,
+    /// Ordered sprite data or an admission failure at this recorded command.
+    pub sprites: Option<Result<crate::frame::SpriteInstances, crate::frame::BuildErrorKind>>,
 }
 
 /// Reliable provenance captured when a widget's cached paint is appended.

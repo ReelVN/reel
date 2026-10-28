@@ -375,6 +375,9 @@ impl Plan {
                                     FrameDraw::GlyphRun(run) => {
                                         run.composite.blend == Default::default()
                                     }
+                                    FrameDraw::Sprites(s) => {
+                                        s.composite.blend == Default::default()
+                                    }
                                     FrameDraw::BlurredRoundedRect(_) => false,
                                 };
                             }

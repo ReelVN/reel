@@ -139,6 +139,12 @@ pub(super) fn validate_op(op: &FrameOp) -> Result<(), BuildErrorKind> {
             brush,
             ..
         }) => valid_geometry(shape) && valid_stroke(stroke) && valid_brush(brush),
+        FrameOp::Draw(FrameDraw::Sprites(s)) => {
+            s.bounds.is_finite()
+                && s.bounds.width() > 0.
+                && s.bounds.height() > 0.
+                && valid_brush(&Brush::Image(s.brush))
+        }
         FrameOp::Draw(FrameDraw::GlyphRun(g)) => {
             valid_brush(&g.brush)
                 && match &g.style {
