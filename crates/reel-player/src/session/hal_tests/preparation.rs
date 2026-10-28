@@ -3,6 +3,8 @@ use crate::{presentation::PresentationResult, session::RecordedProjection};
 use reel_core::identity::{FrameId, SurfaceEpoch};
 use reel_ui::core::WidgetId;
 
+mod redraw_wake;
+
 struct Fixture {
     story: StoryRuntime,
     view: Presentation,
