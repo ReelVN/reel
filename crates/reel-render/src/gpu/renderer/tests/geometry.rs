@@ -2,6 +2,67 @@
 use super::*;
 
 #[test]
+#[ignore = "requires actual graphics adapter; measures ordered clips without pixel readback"]
+fn clipped_material_preparation_cost() {
+    use std::sync::atomic::Ordering;
+    let mut scene = Scene::new();
+    for index in 0..256 {
+        let x = f64::from(index % 16) * 6.25;
+        let y = f64::from(index / 16) * 6.25;
+        scene.push_clip(Clip::Fill {
+            transform: Affine::IDENTITY,
+            shape: Geometry::Rect(Rect::new(x, y, 200. + x, 100. + y)),
+            fill_rule: Default::default(),
+        });
+        fill(&mut scene, Color::from_rgba8(128, 64, 32, 128));
+        scene.pop_clip();
+    }
+    let pool = pool();
+    let frame = frame(scene, &pool);
+    let mut renderer = renderer(Default::default());
+    for _ in 0..3 {
+        renderer.submit(renderer.prepare(&frame).unwrap()).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    let before_groups = renderer
+        .gpu
+        .upload_creations
+        .brush_groups
+        .load(Ordering::Relaxed);
+    let before_draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
+    let mut prepare_time = std::time::Duration::ZERO;
+    for _ in 0..64 {
+        let start = std::time::Instant::now();
+        let prepared = renderer.prepare(&frame).unwrap();
+        prepare_time += start.elapsed();
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    let groups = renderer
+        .gpu
+        .upload_creations
+        .brush_groups
+        .load(Ordering::Relaxed)
+        - before_groups;
+    let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - before_draws;
+    assert_eq!(draws, 256 * 64);
+    eprintln!(
+        "frames=64 clipped_draws={draws} material_groups={groups} prepare_us={}",
+        prepare_time.as_micros()
+    );
+}
+
+#[test]
 fn recording_geometry_borrows_stable_data_and_bounds_changing_candidates() {
     use crate::common::{
         mesh,
@@ -185,6 +246,15 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
         renderer.gpu.upload_creations.draws.load(Ordering::Relaxed),
         5,
         "opaque and translucent solids split the isolated group's ordered entries"
+    );
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .brush_groups
+            .load(Ordering::Relaxed),
+        3,
+        "each segment shares material bindings across clip and blend changes"
     );
     assert_eq!(
         renderer
