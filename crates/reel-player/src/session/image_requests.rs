@@ -19,7 +19,7 @@ impl SessionUi {
         if !self.image_layout_pending {
             let requests = candidate.layout_image_requests(self.images.shader_format)?;
             if !requests.deferred_images {
-                self.images.request_stage_images(Ok(requests));
+                self.pending_images_ready = self.images.request_stage_images(Ok(requests));
                 self.image_demand_dirty = false;
                 return Ok(true);
             }
@@ -41,7 +41,7 @@ impl SessionUi {
         });
         self.sync_popup_view(bridge, root_id, Some(&layout));
         let outside = StageWidget::offscreen_images(bridge.root(), root_id);
-        self.images.request_stage_images(
+        self.pending_images_ready = self.images.request_stage_images(
             candidate.viewport_image_requests(outside, self.images.shader_format),
         );
         if self.pending_stage.is_none() {

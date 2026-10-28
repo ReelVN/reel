@@ -267,6 +267,8 @@ pub(super) fn same_inputs(a: Option<&Arc<SceneNode>>, b: Option<&Arc<SceneNode>>
                 || matches!(a.node.kind, NodeKind::Cursor)
                     != matches!(b.node.kind, NodeKind::Cursor)
                 || image_source(&a.node.kind) != image_source(&b.node.kind)
+                || image_resource(&a.node.kind).map(ResourceLease::handle)
+                    != image_resource(&b.node.kind).map(ResourceLease::handle)
                 || ap.appearance_origin != bp.appearance_origin
                 || ap.mask.as_ref().map(|mask| mask.sources())
                     != bp.mask.as_ref().map(|mask| mask.sources())

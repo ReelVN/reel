@@ -1149,6 +1149,9 @@ impl SessionUi {
             self.binding.borrow_mut().accepted = None;
             return Ok(());
         }
+        // Geometry may change while the viewport still requests the same loaded
+        // sources. Reuse the candidate's inherited leases after that check.
+        let reuse_images = std::mem::take(&mut self.pending_images_ready) || reuse_images;
         let images_ready = self.images.poll()?;
         let content_changed = content_revision != self.images.content_revision;
         if reuse_images && images_ready && !content_changed {

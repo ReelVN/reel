@@ -102,10 +102,12 @@ impl Images {
     pub fn request_stage(&mut self, view: &crate::stage_widget::StageView) {
         self.request_stage_images(view.image_requests(self.shader_format));
     }
+    /// Return true when settled whole-image demand and diagnostics are unchanged.
+    /// The caller may retain its resolved leases; tiled viewport work stays live.
     pub(crate) fn request_stage_images(
         &mut self,
         requests: Result<crate::stage_widget::ImageRequests, String>,
-    ) {
+    ) -> bool {
         #[cfg(test)]
         {
             self.stage_requests += 1;
@@ -113,13 +115,25 @@ impl Images {
         match requests {
             Ok(requests) => {
                 if self.closed {
-                    return;
+                    return false;
                 }
-                if self
+                let same_index = self
                     .request_index
                     .as_ref()
-                    .is_none_or(|old| !Arc::ptr_eq(old, &requests.index))
+                    .is_some_and(|old| Arc::ptr_eq(old, &requests.index));
+                if same_index
+                    && self.settled
+                    && self.failure.is_none()
+                    && self.manifests.is_empty()
+                    && self.skipped.is_empty()
+                    && requests.required().eq(self
+                        .wanted
+                        .iter()
+                        .map(|(source, origin)| (source.as_str(), origin.as_deref())))
                 {
+                    return true;
+                }
+                if !same_index {
                     self.encoded = requests
                         .index
                         .encoded()
@@ -150,6 +164,7 @@ impl Images {
                 self.failure = Some(error);
             }
         }
+        false
     }
     pub(crate) fn requests_ready(&self, requests: &crate::stage_widget::ImageRequests) -> bool {
         requests.required().all(|(source, _)| {
