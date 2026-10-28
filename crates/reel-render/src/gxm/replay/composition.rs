@@ -23,12 +23,15 @@ impl Context<'_> {
         ) else {
             return Ok(false);
         };
-        self.ensure_sampled(&source.view)?;
-        if region.overwrites_destination(target.view.size()) {
-            self.target_writes.take(target.slot);
-        } else {
-            self.ensure_target(target)?;
+        if self.target_writes.pending(target.slot)
+            && !region.overwrites_destination(target.view.size())
+        {
+            // Keep clear and partial draw in one scene instead of storing a
+            // complete clear before transferring the same pixels again.
+            return Ok(false);
         }
+        self.ensure_sampled(&source.view)?;
+        self.target_writes.take(target.slot);
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TextureCopy);
         self.gpu.copy_texture(
             &source.view,

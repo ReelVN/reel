@@ -40,6 +40,11 @@ impl TargetWrites {
         Ok(())
     }
 
+    /// Whether this logical target use still needs its first complete initialization.
+    pub(crate) fn pending(&self, slot: usize) -> bool {
+        self.pending[slot / 64] & (1 << (slot % 64)) != 0
+    }
+
     /// The first writer clears; later writers preserve earlier contents.
     pub(crate) fn take(&mut self, slot: usize) -> bool {
         let word = &mut self.pending[slot / 64];
@@ -92,7 +97,10 @@ mod tests {
         }
         assert!(reserved <= 64);
         for slot in (0..130).rev() {
+            assert!(first.pending(slot));
+            assert!(first.pending(slot));
             assert!(first.take(slot));
+            assert!(!first.pending(slot));
             assert!(!first.take(slot));
             assert!(second.take(slot));
             first
