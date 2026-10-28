@@ -59,11 +59,11 @@ pub enum GpuError {
         requested: u64,
         available: u64,
     },
-    /// The kernel could not allocate contiguous pages after native idle reclamation.
+    /// The kernel could not allocate a block after native idle reclamation.
     Allocation {
         domain: &'static str,
         requested: u64,
-        /// Total free bytes, when available; they may occupy separate extents.
+        /// Total free bytes, when available; kernel placement constraints still apply.
         available: Option<u64>,
         committed: u64,
         code: i32,

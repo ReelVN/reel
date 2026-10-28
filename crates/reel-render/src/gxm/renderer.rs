@@ -239,14 +239,18 @@ impl Backend {
     }
     // A failed command can already have reached the device. Retire its owners
     // only after a successful drain; a failed drain makes this backend terminal.
-    fn drain_error(&mut self) -> bool {
-        if self.context.refresh() || self.context.finish().is_err() {
-            self.drain_failed = true;
-            return false;
-        }
-        self.images.after_drain();
-        self.glyphs.after_drain();
-        self.check_native().is_ok()
+    fn drain_error(&mut self) -> Result<(), GpuError> {
+        let result = (|| {
+            self.context.refresh();
+            self.check_native()?;
+            self.context.finish().map_err(native_error)?;
+            self.images.after_drain();
+            self.glyphs.after_drain();
+            self.context.refresh();
+            self.check_native()
+        })();
+        self.drain_failed |= result.is_err();
+        result
     }
     fn prepare(
         &mut self,
@@ -504,8 +508,9 @@ impl Backend {
                     return Err(error);
                 }
                 self.images.release_idle();
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_images.extend(touched);
+                    return Err(fault);
                 }
                 return Err(error);
             }
@@ -514,15 +519,17 @@ impl Backend {
             let fence = match self.context.fence() {
                 Ok(fence) => Rc::new(fence),
                 Err(error) => {
-                    if !self.drain_error() {
+                    if let Err(fault) = self.drain_error() {
                         self.failed_images.extend(touched);
+                        return Err(fault);
                     }
                     return Err(error.into());
                 }
             };
             if let Err(error) = self.context.flush() {
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_images.extend(touched);
+                    return Err(fault);
                 }
                 return Err(error.into());
             }
@@ -608,8 +615,9 @@ impl Backend {
             }
             Err((error, work)) => {
                 self.images.release_idle();
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_work.push(work);
+                    return Err(fault);
                 }
                 Err(error)
             }
@@ -625,15 +633,17 @@ impl Backend {
         let fence = match self.context.fence() {
             Ok(fence) => Rc::new(fence),
             Err(error) => {
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_prepared.push(prepared);
+                    return Err(fault);
                 }
                 return Err(error.into());
             }
         };
         if let Err(error) = self.context.flush() {
-            if !self.drain_error() {
+            if let Err(fault) = self.drain_error() {
                 self.failed_prepared.push(prepared);
+                return Err(fault);
             }
             return Err(error.into());
         }
@@ -783,8 +793,9 @@ impl RenderBackend for Backend {
             self.programs
                 .present(&self.context, &prepared.output, info.physical_size)
         {
-            if !self.drain_error() {
+            if let Err(fault) = self.drain_error() {
                 self.failed_prepared.push(Rc::new(prepared));
+                return Err(fault);
             }
             return Err(error);
         }
