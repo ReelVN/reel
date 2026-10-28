@@ -409,28 +409,14 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         identity::{AssetKey, ContentVersion, ResourceVersion},
     };
     use reel_ui::resources::{ColorEncoding, ResourceRegistry};
-    fn painted_images(root: &mut RenderRoot) -> Vec<u64> {
-        use reel_ui::{
-            app::VisualLayerKind,
-            imaging::record::{Command, Draw},
-            peniko::Brush,
-        };
-        let mut ids = Vec::new();
-        for layer in root.redraw().0.layers {
-            if let VisualLayerKind::Scene(scene) = layer.kind {
-                for command in scene.commands() {
-                    if let Command::Draw(id) = command
-                        && let Draw::Fill {
-                            brush: Brush::Image(image),
-                            ..
-                        } = scene.draw_op(*id)
-                    {
-                        ids.push(image.image.data.id());
-                    }
-                }
-            }
-        }
-        ids
+    fn painted_images(root: &mut RenderRoot) -> Vec<reel_ui::resources::ResourceHandle> {
+        root.redraw()
+            .0
+            .layers
+            .iter()
+            .flat_map(|layer| layer.command_owners())
+            .filter_map(|owner| owner.image_resource.map(|resource| resource.resource))
+            .collect()
     }
     let mut stage = Stage::default();
     let text = stage
@@ -498,10 +484,32 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         )
         .unwrap();
     let mask = masks.acquire(mask).unwrap();
+    let image_pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 2,
+            max_bytes: 32,
+        },
+    );
+    let mut images = ResourceRegistry::new(2, 64 << 10).unwrap();
+    let original = images
+        .register(
+            ResourceVersion {
+                key: AssetKey("sprite.png".into()),
+                version: ContentVersion([2; 32]),
+            },
+            ResourceData::Image {
+                image: image.clone(),
+                encoding: ColorEncoding::Srgb,
+            },
+            image_pool.reserve(16).unwrap(),
+        )
+        .unwrap();
+    let original = images.acquire(original).unwrap();
     resolve_image_nodes(&mut view.root, |node, _| {
         if node.node.id == picture {
             SceneImages {
-                image: Some(image.clone()),
+                image_resource: Some(original.clone()),
                 mask_images: vec![mask.clone()].into(),
                 ..Default::default()
             }
@@ -511,17 +519,31 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
     });
     let previous = view.clone();
     let (mut root, widget) = mount(&view);
-    assert!(painted_images(&mut root).contains(&image.data.id()));
+    assert!(painted_images(&mut root).contains(&original.handle()));
     let pixels = Arc::new(vec![0; 16]);
     let released_pixels = Arc::downgrade(&pixels);
-    let replacement = ImageData {
+    let replacement_data = ImageData {
         data: Blob::new(pixels),
         ..image.clone()
     };
+    let replacement = images
+        .register(
+            ResourceVersion {
+                key: AssetKey("sprite.png".into()),
+                version: ContentVersion([3; 32]),
+            },
+            ResourceData::Image {
+                image: replacement_data,
+                encoding: ColorEncoding::Srgb,
+            },
+            image_pool.reserve(16).unwrap(),
+        )
+        .unwrap();
+    let replacement = images.acquire(replacement).unwrap();
     resolve_image_nodes(&mut view.root, |node, _| {
         if node.node.id == picture {
             SceneImages {
-                image: Some(replacement.clone()),
+                image_resource: Some(replacement.clone()),
                 mask_images: vec![mask.clone()].into(),
                 ..Default::default()
             }
@@ -548,17 +570,16 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         image_widget
             .projection
             .images
-            .image
+            .image_resource
             .as_ref()
             .unwrap()
-            .data
-            .id(),
-        replacement.data.id()
+            .handle(),
+        replacement.handle()
     );
     assert_eq!(image_widget.syncs, 1);
     let image_id = image_widget.image.as_ref().unwrap().id();
     assert!(
-        painted_images(&mut root).contains(&replacement.data.id()),
+        painted_images(&mut root).contains(&replacement.handle()),
         "same-size resource completion must replace cached image paint"
     );
     for visible in [false, true, false] {
@@ -571,7 +592,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
             resolve_image_nodes(&mut next.root, |node, _| {
                 if node.node.id == picture {
                     SceneImages {
-                        image: Some(replacement.clone()),
+                        image_resource: Some(replacement.clone()),
                         mask_images: vec![mask.clone()].into(),
                         ..Default::default()
                     }
@@ -592,11 +613,12 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
             .unwrap();
         assert_eq!(picture_widget.image.as_ref().unwrap().id(), image_id);
         assert_eq!(
-            painted_images(&mut root).contains(&replacement.data.id()),
+            painted_images(&mut root).contains(&replacement.handle()),
             visible
         );
         view = next;
     }
+    assert!(images.retire(replacement.handle()));
     drop(replacement);
     assert!(
         released_pixels.upgrade().is_none(),
@@ -620,4 +642,79 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         .downcast::<SceneWidget>()
         .unwrap();
     assert!(image_widget.image.is_none() && image_widget.mask_images.is_empty());
+}
+
+#[test]
+fn resolved_rgba_asset_records_one_resource_identity() {
+    use reel_core::{
+        budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::resources::{ColorEncoding, ResourceRegistry};
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 8,
+            max_bytes: 1024,
+        },
+    );
+    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let handle = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("image.png".into()),
+                version: ContentVersion([7; 32]),
+            },
+            OwnedBytes::new(vec![255; 16], pool.reserve(16).unwrap()).unwrap(),
+            [2, 2],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let lease = registry.acquire(handle).unwrap();
+    let mut stage = Stage::default();
+    let picture = stage
+        .create(
+            NodeKind::Image {
+                sampling: Default::default(),
+                source_rect: None,
+                source: "image.png".into(),
+                origin: None,
+                fit: Default::default(),
+                slice: None,
+                slice_scale: 1.,
+                slice_center: true,
+                repeat: [false; 2],
+                tile_scale: 1.,
+                corner_colors: None,
+                alpha_layout: Default::default(),
+                adjustment: Default::default(),
+            },
+            NodeProps::default(),
+            vec![],
+        )
+        .unwrap();
+    stage.replace(picture).unwrap();
+    let mut view = StageView::capture(&stage);
+    view.resolve_images(
+        &BTreeMap::from([("image.png".into(), lease)]),
+        EffectShaderFormat::Wgsl,
+    )
+    .unwrap();
+    let node = view.root.as_ref().unwrap();
+    assert_eq!(
+        node.images.image_resource.as_ref().unwrap().handle(),
+        handle
+    );
+    let (mut root, _) = mount(&view);
+    let layers = root.redraw().0.layers;
+    assert!(
+        layers
+            .iter()
+            .flat_map(|layer| layer.command_owners())
+            .any(|owner| owner
+                .image_resource
+                .is_some_and(|resource| resource.resource == handle))
+    );
 }

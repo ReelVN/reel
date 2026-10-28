@@ -5,12 +5,12 @@ use reel_ui::{
     imaging::Painter,
     kurbo::{Axis, Insets, Point, Rect, Size, Vec2},
     layout::{LenDef, LenReq, Length, SizeDef},
-    peniko::{Color, ImageData},
+    peniko::Color,
     properties::{
         Background, BorderColor, BorderWidth, ContentColor, CornerRadius, ThumbColor, ThumbRadius,
         TrackColor, TrackThickness,
     },
-    resources::{EffectShaderFormat, ResourceData, ResourceLease},
+    resources::{EffectShaderFormat, ResourceLease},
     stage::{
         ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
         NodeKind, NodeProps, NodeRevision, NodeText, NodeVirtualList, Stage, StageIdentity,
@@ -21,6 +21,8 @@ use reel_ui::{
         TextInputEvent,
     },
 };
+#[cfg(test)]
+use reel_ui::{peniko::ImageData, resources::ResourceData};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -132,7 +134,6 @@ impl PartialEq for ResolvedEffect {
 struct SceneImages {
     effect: Option<ResolvedEffect>,
     mask_effect: Option<ResolvedEffect>,
-    image: Option<ImageData>,
     image_resource: Option<ResourceLease>,
     mask_images: Arc<[ResourceLease]>,
     tiled_size: Option<Size>,
@@ -142,7 +143,6 @@ impl PartialEq for SceneImages {
     fn eq(&self, other: &Self) -> bool {
         self.effect == other.effect
             && self.mask_effect == other.mask_effect
-            && self.image.as_ref().map(|i| i.data.id()) == other.image.as_ref().map(|i| i.data.id())
             && self.image_resource.as_ref().map(ResourceLease::handle)
                 == other.image_resource.as_ref().map(ResourceLease::handle)
             && self
@@ -193,12 +193,6 @@ impl SceneNode {
             .as_ref()
             .and_then(|r| r.data().image_size())
             .map(|[w, h]| Size::new(w.into(), h.into()))
-            .or_else(|| {
-                self.images
-                    .image
-                    .as_ref()
-                    .map(|i| Size::new(i.width.into(), i.height.into()))
-            })
             .or(self.images.tiled_size)
             .unwrap_or(Size::ZERO);
         match &self.node.kind {
@@ -352,7 +346,6 @@ impl StageView {
                 .flatten();
             let mut images = old.map(|old| old.images.clone()).unwrap_or_default();
             if !matches!(node.kind, NodeKind::Image { .. } | NodeKind::Particles(_)) {
-                images.image = None;
                 images.image_resource = None;
                 images.tiled_size = None;
                 images.tiles.clear();
@@ -556,13 +549,7 @@ impl StageView {
             }
             if let Some((source, _)) = image_source(&node.node.kind) {
                 let lease = &images[source];
-                if matches!(node.node.kind, NodeKind::Particles(_)) {
-                    resolved.image_resource = Some(lease.clone());
-                } else if let ResourceData::Image { image, .. } = lease.data() {
-                    resolved.image = Some(image.clone());
-                } else {
-                    resolved.image_resource = Some(lease.clone());
-                }
+                resolved.image_resource = Some(lease.clone());
                 if handles.insert(lease.handle()) {
                     leases.push(lease.clone());
                 }
@@ -683,13 +670,7 @@ impl StageView {
                     resolved.tiled_size =
                         Some(Size::new(manifest.width.into(), manifest.height.into()));
                 } else if let Some(lease) = images.loaded.get(source) {
-                    if matches!(node.node.kind, NodeKind::Particles(_)) {
-                        resolved.image_resource = Some(lease.clone());
-                    } else if let ResourceData::Image { image, .. } = lease.data() {
-                        resolved.image = Some(image.clone());
-                    } else {
-                        resolved.image_resource = Some(lease.clone());
-                    }
+                    resolved.image_resource = Some(lease.clone());
                     if resources.insert(lease.handle()) {
                         leases.push(lease.clone());
                     }

@@ -74,6 +74,9 @@ impl Image {
     /// Select per-draw filtering without copying or replacing image storage.
     pub fn with_sampling(mut self, sampling: crate::peniko::ImageQuality) -> Self {
         self.sampling = sampling;
+        if let Some(image) = &mut self.image_data {
+            image.sampler.quality = sampling;
+        }
         self
     }
 
@@ -248,6 +251,9 @@ impl Image {
     pub fn set_sampling(this: &mut WidgetMut<'_, Self>, sampling: crate::peniko::ImageQuality) {
         if this.widget.sampling != sampling {
             this.widget.sampling = sampling;
+            if let Some(image) = &mut this.widget.image_data {
+                image.sampler.quality = sampling;
+            }
             this.ctx.request_render();
         }
     }
@@ -350,7 +356,9 @@ impl Image {
     #[inline]
     pub fn set_image_data(this: &mut WidgetMut<'_, Self>, image_data: impl Into<ImageBrush>) {
         let old_size = this.widget.preferred_size();
-        this.widget.image_data = Some(image_data.into());
+        let image_data = image_data.into();
+        this.widget.sampling = image_data.sampler.quality;
+        this.widget.image_data = Some(image_data);
         this.widget.resource = None;
         this.widget.tiles.clear();
         if this.widget.preferred_size() != old_size {

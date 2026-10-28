@@ -21,15 +21,9 @@ impl SceneWidget {
             return None;
         };
         view.images
-            .image
+            .image_resource
             .as_ref()
-            .map(|image| Image::new(image.clone()))
-            .or_else(|| {
-                view.images
-                    .image_resource
-                    .as_ref()
-                    .map(|lease| Image::from_resource(lease.clone()))
-            })
+            .map(|lease| Image::from_resource(lease.clone()))
             .or_else(|| {
                 view.images
                     .tiled_size
@@ -525,9 +519,7 @@ impl SceneWidget {
                 .set_modal(view.node.props.modal && !matches!(view.node.kind, NodeKind::Popup(_)));
         }
         let has_image = matches!(view.node.kind, NodeKind::Image { .. })
-            && (view.images.image.is_some()
-                || view.images.image_resource.is_some()
-                || view.images.tiled_size.is_some());
+            && (view.images.image_resource.is_some() || view.images.tiled_size.is_some());
         if has_image && this.widget.image.is_none() {
             this.widget.image = Self::image_widget(view);
             this.widget.image_size = view.image_size();
@@ -576,21 +568,6 @@ impl SceneWidget {
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
             Image::set_resource(&mut image, lease.clone());
-            this.widget.image_size = view.image_size();
-        }
-        if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.images.image)
-            && (image_source_changed
-                || this
-                    .widget
-                    .projection
-                    .images
-                    .image
-                    .as_ref()
-                    .map(|image| image.data.id())
-                    != Some(data.data.id()))
-            && let Some(mut image) = this.ctx.get_mut(pod)
-        {
-            Image::set_image_data(&mut image, data.clone());
             this.widget.image_size = view.image_size();
         }
         if let (Some(pod), Some(size)) = (&mut this.widget.image, view.images.tiled_size)
