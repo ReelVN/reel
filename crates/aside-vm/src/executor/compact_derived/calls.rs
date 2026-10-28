@@ -203,3 +203,66 @@ fn compact_dynamic_builtin_keeps_output_root_during_sliced_search() {
         assert!(!vm.heap.reactive_evaluating());
     }
 }
+
+#[test]
+#[ignore = "release repeated native receiver binding measurement"]
+fn native_binding_working_set_cost() {
+    for count in [64, 128, 256] {
+        let (mut vm, _, _, _) = prepared_expression(false, true);
+        let mut receivers = Vec::new();
+        for _ in 0..count {
+            let fields = vm.heap.alloc_table().unwrap();
+            receivers.push(vm.heap.alloc_host(fields, &[], None).unwrap());
+        }
+        for &receiver in &receivers {
+            vm.bind_native(receiver, FunctionId(4)).unwrap();
+        }
+        let before = vm.heap.stats();
+        let hits = vm.native_binding_hits;
+        let misses = vm.native_binding_misses;
+        let start = std::time::Instant::now();
+        for _ in 0..128 {
+            for &receiver in &receivers {
+                vm.bind_native(receiver, FunctionId(4)).unwrap();
+            }
+        }
+        eprintln!(
+            "native_bindings count={count} rounds=128 elapsed_us={} hits={} misses={} added_objects={} added_bytes={}",
+            start.elapsed().as_micros(),
+            vm.native_binding_hits - hits,
+            vm.native_binding_misses - misses,
+            vm.heap.stats().live_objects - before.live_objects,
+            vm.heap.stats().charged_bytes - before.charged_bytes
+        );
+    }
+}
+
+#[test]
+fn native_binding_set_remains_weak_and_rejects_collected_generations() {
+    let (mut vm, _, _, _) = prepared_expression(false, true);
+    let fields = vm.heap.alloc_table().unwrap();
+    let receiver = vm.heap.alloc_host(fields, &[], None).unwrap();
+    let root = vm
+        .heap
+        .add_root(RootOwner(1), RootKind::Host, receiver)
+        .unwrap();
+    let first = vm.bind_native(receiver, FunctionId(4)).unwrap();
+    assert!(
+        vm.bind_native(receiver, FunctionId(4))
+            .unwrap()
+            .same_bits(first)
+    );
+    review_tests::collect(&mut vm);
+    assert!(vm.heap.info(first).is_err());
+    let next = vm.bind_native(receiver, FunctionId(4)).unwrap();
+    assert!(!first.same_bits(next));
+    assert!(
+        vm.bind_native(receiver, FunctionId(4))
+            .unwrap()
+            .same_bits(next)
+    );
+    vm.heap.release_root(root).unwrap();
+    review_tests::collect(&mut vm);
+    assert!(vm.heap.info(receiver).is_err());
+    assert!(vm.bind_native(receiver, FunctionId(4)).is_err());
+}
