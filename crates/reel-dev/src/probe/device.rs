@@ -8,6 +8,8 @@ mod r01_fixture;
 mod scenes;
 #[path = "timing.rs"]
 mod timing;
+#[path = "video_color.rs"]
+mod video_color;
 
 use reel_render::gxm::{GxmBackend as DeviceBackend, GxmError as DeviceError};
 use reel_render::{AlphaMode, PresentOutcome, RenderBackend, RenderEvent, SurfaceInfo};
@@ -478,19 +480,20 @@ fn run() -> Result {
     }
     if !matches!(
         selected.as_str(),
-        "authored" | "all" | "render" | "matrix" | "media"
+        "authored" | "all" | "render" | "matrix" | "media" | "video_color"
     ) && !CASES.contains(&selected.as_str())
     {
         return Err(format!(
-            "unknown case {selected}; available: authored,all,render,matrix,media,{}",
+            "unknown case {selected}; available: authored,all,render,matrix,media,video_color,{}",
             CASES.join(",")
         )
         .into());
     }
     log(format_args!(
-        "BEGIN title=REELP0002 case={selected} render_frames={frames} trace={trace} render_vsync={vsync} render_flights={flights} source={} dirty={} no_readback=true",
+        "BEGIN title=REELP0002 case={selected} render_frames={frames} trace={trace} render_vsync={vsync} render_flights={flights} source={} dirty={} no_readback={}",
         env!("REEL_PROBE_REVISION"),
-        env!("REEL_PROBE_DIRTY")
+        env!("REEL_PROBE_DIRTY"),
+        selected != "video_color"
     ));
     // Package sessions use the player's sampler, including VM task locations.
     let _sampler = (selected != "authored")
@@ -503,6 +506,12 @@ fn run() -> Result {
         result?;
     } else {
         reel_player::platform::vita::Runtime::run(|runtime| {
+            if selected == "video_color" {
+                marker(&selected, "START");
+                let result = video_color::run(runtime.renderer());
+                marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
+                return result;
+            }
             if selected == "authored" {
                 return package_case(runtime, "authored");
             }

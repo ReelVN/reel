@@ -14,6 +14,7 @@ pub(crate) enum Kind {
     Packed,
     Video,
     VideoAppearance,
+    VideoDirectNv12,
 }
 impl Kind {
     fn index(self) -> usize {
@@ -34,6 +35,7 @@ impl Kind {
             Self::Packed => 13,
             Self::Video => 14,
             Self::VideoAppearance => 15,
+            Self::VideoDirectNv12 => 20,
         }
     }
     fn code(self, clipped: bool) -> native::ShaderCode<'static> {
@@ -72,6 +74,7 @@ impl Kind {
             17 => pair!("paint_direct_bc1_bounded"),
             18 => pair!("paint_direct_bc3_bounded"),
             19 => pair!("paint_solid_bounded"),
+            20 => pair!("paint_video_direct_nv12"),
             _ => unreachable!(),
         }
     }
@@ -81,7 +84,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 80],
+    entries: [OnceCell<Box<Entry>>; 84],
     budget: BudgetPool,
 }
 impl PaintPrograms {

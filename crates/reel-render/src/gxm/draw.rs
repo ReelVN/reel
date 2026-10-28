@@ -1038,7 +1038,7 @@ impl Context<'_> {
         let direct = if paint.coverage {
             mesh.direct_coverage(Some(&paint.appearance))
         } else {
-            (paint.kind == 0.)
+            (paint.kind == 0. || paint.kind > 1.5)
                 .then(|| {
                     mesh.direct_paint(
                         paint.source,
@@ -1048,6 +1048,7 @@ impl Context<'_> {
                     )
                 })
                 .flatten()
+                .filter(|direct| paint.kind == 0. || *direct == mesh::DirectPaint::Rgba)
         };
         let bounded = mesh.bounded_color.paint(direct, paint.format);
         let state = paint.state(

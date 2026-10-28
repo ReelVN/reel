@@ -99,7 +99,9 @@ impl PaintState {
         use super::super::programs::PaintKind;
         let styled = self.appearance[5][3] != 0. || self.appearance[7][3] != 0.;
         if let Some(direct) = self.direct {
-            if self.bounded {
+            if self.kind > 1.5 {
+                PaintKind::VideoDirectNv12
+            } else if self.bounded {
                 PaintKind::Bounded(direct)
             } else {
                 PaintKind::Direct(direct)

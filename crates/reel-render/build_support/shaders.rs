@@ -223,6 +223,24 @@ pub fn sources() -> Vec<Shader> {
             &format!("{defines}\n#define REEL_UNCLIPPED"),
         );
     }
+    for clipped in [false, true] {
+        add(
+            &format!(
+                "paint_video_direct_nv12{}",
+                if clipped { "" } else { "_unclipped" }
+            ),
+            false,
+            &paint,
+            &format!(
+                "#define REEL_NV12_DIRECT\n{}",
+                if clipped {
+                    ""
+                } else {
+                    "#define REEL_UNCLIPPED"
+                }
+            ),
+        );
+    }
     add("present", false, &read("present"), "");
     add("clear_vertex", true, &read("clear_vertex"), "");
     add("clear", false, &read("clear"), "");

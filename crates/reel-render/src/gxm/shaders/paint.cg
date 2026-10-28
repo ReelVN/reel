@@ -53,6 +53,22 @@ void main(){
  reel_output=color*v_color;
 }
 #endif
+#elif defined(REEL_NV12_DIRECT)
+uniform sampler2D u_image : TEXUNIT0;
+uniform sampler2D u_chroma_u : TEXUNIT1;
+uniform float4 u_video[4];
+void main(){
+ reel_clip();
+ float4 yuv=float4(tex2D(u_image,v_uv).r,tex2D(u_chroma_u,v_uv).ra,1.0);
+ float3 rgb=clamp(float3(dot(u_video[0],yuv),dot(u_video[1],yuv),dot(u_video[2],yuv)),0.0,1.0);
+ // Transfer metadata is uniform for the draw; one power evaluation serves both curves.
+ float srgb=u_video[3].x;
+ float offset=lerp(0.099,0.055,srgb),scale=lerp(1.099,1.055,srgb);
+ float exponent=lerp(1.0/0.45,2.4,srgb),slope=lerp(4.5,12.92,srgb);
+ float threshold=lerp(0.081,0.04045,srgb);
+ float3 linear=lerp(pow((rgb+offset)/scale,float3(exponent)),rgb/slope,step(rgb,float3(threshold)));
+ reel_output=float4(linear,1.0)*v_color;
+}
 #else
 uniform sampler2D u_image : TEXUNIT0;
 uniform sampler2D u_chroma_u : TEXUNIT1;
