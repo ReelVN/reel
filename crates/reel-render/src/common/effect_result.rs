@@ -58,16 +58,34 @@ struct ImageProjection {
     transform: [u64; 6],
     brush_transform: Option<[u64; 6]>,
 }
-struct Source {
+struct Recording {
     scene: Arc<Scene>,
     local: LocalId,
     image: ImageProjection,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Token(pub(crate) usize);
+enum Source {
+    Recording(Recording),
+    Output(Token),
+}
+impl Source {
+    fn anchor(&self) -> (u8, usize) {
+        match self {
+            Self::Recording(recording) => (0, Arc::as_ptr(&recording.scene) as usize),
+            Self::Output(token) => (1, token.0),
+        }
+    }
+}
 impl PartialEq for Source {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.scene, &other.scene)
-            && self.local == other.local
-            && self.image == other.image
+        match (self, other) {
+            (Self::Recording(a), Self::Recording(b)) => {
+                Arc::ptr_eq(&a.scene, &b.scene) && a.local == b.local && a.image == b.image
+            }
+            (Self::Output(a), Self::Output(b)) => a == b,
+            _ => false,
+        }
     }
 }
 impl Eq for Source {}
@@ -112,7 +130,7 @@ impl<'a> Probe<'a> {
                     if !recording.mask_path().is_empty() {
                         return None;
                     }
-                    source = Some(Source {
+                    source = Some(Source::Recording(Recording {
                         scene: recording.root().upgrade()?,
                         local,
                         image: ImageProjection {
@@ -126,7 +144,7 @@ impl<'a> Probe<'a> {
                             transform: affine(*transform),
                             brush_transform: brush_transform.map(affine),
                         },
-                    });
+                    }));
                 }
                 _ => return None,
             }
@@ -136,6 +154,14 @@ impl<'a> Probe<'a> {
             effect,
             grid,
         })
+    }
+    /// The token denotes an immutable, exclusively held previous effect result.
+    pub(crate) fn from_output(token: Token, effect: &'a FrameEffect, grid: Grid) -> Self {
+        Self {
+            source: Source::Output(token),
+            effect,
+            grid,
+        }
     }
 }
 
@@ -160,6 +186,16 @@ impl Key {
             && self.bounds == rect(probe.effect.bounds)
             && self.coverage_invert == probe.effect.coverage_invert
             && self.grid == probe.grid
+    }
+    fn same_key(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.definition == other.definition
+            && self.shader == other.shader
+            && self.values == other.values
+            && self.images == other.images
+            && self.bounds == other.bounds
+            && self.coverage_invert == other.coverage_invert
+            && self.grid == other.grid
     }
     /// Optional cache admission: failure leaves the ordinary render path intact.
     pub(crate) fn new(probe: Probe<'_>, pool: &BudgetPool) -> Option<Self> {
@@ -190,5 +226,166 @@ impl Key {
             grid: probe.grid,
             _storage: storage,
         })
+    }
+}
+
+struct Entry<T> {
+    key: Key,
+    token: Token,
+    output: T,
+    age: u8,
+}
+struct State<T> {
+    entries: Vec<Entry<T>>,
+    metadata: Option<BudgetTicket>,
+    next: usize,
+}
+impl<T> Default for State<T> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            metadata: None,
+            next: 1,
+        }
+    }
+}
+/// Optional results; output owners retain their original target reservations.
+/// Tokens never repeat within this renderer, including after eviction or clear.
+pub(crate) struct Cache<T>(std::sync::Mutex<State<T>>);
+impl<T> Default for Cache<T> {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(State::default()))
+    }
+}
+pub(crate) struct Candidate {
+    key: Key,
+    pub(crate) token: Token,
+}
+pub(crate) struct Pending<T> {
+    key: Key,
+    pub(crate) token: Token,
+    pub(crate) output: T,
+}
+impl Candidate {
+    pub(crate) fn finish<T>(self, output: T) -> Pending<T> {
+        Pending {
+            key: self.key,
+            token: self.token,
+            output,
+        }
+    }
+}
+impl<T: Clone> Cache<T> {
+    pub(crate) fn lookup(&self, probe: &Probe<'_>) -> Option<(Token, T)> {
+        let mut state = self.0.lock().unwrap();
+        let anchor = probe.source.anchor();
+        let start = state
+            .entries
+            .partition_point(|entry| entry.key.source.anchor() < anchor);
+        let entry = state.entries[start..]
+            .iter_mut()
+            .take_while(|entry| entry.key.source.anchor() == anchor)
+            .find(|entry| entry.key.matches(probe))?;
+        entry.age = 0;
+        Some((entry.token, entry.output.clone()))
+    }
+    /// Preparation is private to a candidate. It cannot be observed by another
+    /// candidate until the renderer successfully submits the producing work.
+    pub(crate) fn prepare(&self, probe: Probe<'_>, pool: &BudgetPool) -> Option<Candidate> {
+        let key = Key::new(probe, pool)?;
+        let mut state = self.0.lock().unwrap();
+        let token = Token(state.next);
+        state.next = state.next.checked_add(1)?;
+        Some(Candidate { key, token })
+    }
+    pub(crate) fn publish(&self, pending: Pending<T>, pool: &BudgetPool) -> bool {
+        let mut state = self.0.lock().unwrap();
+        let anchor = pending.key.source.anchor();
+        let start = state
+            .entries
+            .partition_point(|entry| entry.key.source.anchor() < anchor);
+        let end = start
+            + state.entries[start..].partition_point(|entry| entry.key.source.anchor() == anchor);
+        if let Some(index) = (start..end).find(|&i| state.entries[i].key.same_key(&pending.key)) {
+            state.entries.remove(index);
+        }
+        if state.entries.len() == state.entries.capacity() {
+            let old = state.entries.capacity();
+            let Some(capacity) = old.max(1).checked_mul(2) else {
+                return false;
+            };
+            let Some(peak) = old
+                .checked_add(capacity)
+                .and_then(|v| v.checked_mul(size_of::<Entry<T>>()))
+            else {
+                return false;
+            };
+            if state.metadata.is_none() {
+                let Ok(ticket) = pool.reserve(0) else {
+                    return false;
+                };
+                state.metadata = Some(ticket);
+            }
+            if state
+                .metadata
+                .as_mut()
+                .unwrap()
+                .resize(peak as u64)
+                .is_err()
+            {
+                return false;
+            }
+            let additional = capacity - state.entries.len();
+            state.entries.reserve_exact(additional);
+            let bytes = state.entries.capacity() * size_of::<Entry<T>>();
+            state
+                .metadata
+                .as_mut()
+                .unwrap()
+                .resize(bytes as u64)
+                .expect("admitted cache metadata");
+        }
+        let index = state
+            .entries
+            .partition_point(|entry| entry.key.source.anchor() <= anchor);
+        state.entries.insert(
+            index,
+            Entry {
+                key: pending.key,
+                token: pending.token,
+                output: pending.output,
+                age: 0,
+            },
+        );
+        true
+    }
+    /// Only accepted submissions age cached outputs.
+    pub(crate) fn submitted(&self) {
+        let mut state = self.0.lock().unwrap();
+        for entry in &mut state.entries {
+            entry.age = entry.age.saturating_add(1);
+        }
+    }
+    pub(crate) fn reclaim_one(&self) -> bool {
+        let mut state = self.0.lock().unwrap();
+        let Some((index, _)) = state
+            .entries
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, entry)| entry.age)
+        else {
+            return false;
+        };
+        state.entries.remove(index);
+        if state.entries.is_empty() {
+            state.entries = Vec::new();
+            state.metadata = None;
+        }
+        true
+    }
+    pub(crate) fn clear(&self) {
+        let mut state = self.0.lock().unwrap();
+        state.entries = Vec::new();
+        state.metadata = None;
     }
 }

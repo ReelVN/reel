@@ -31,7 +31,7 @@ impl Context<'_> {
             let index = self
                 .targets
                 .iter()
-                .filter(|target| target.view.size() == storage_size)
+                .filter(|target| target.view.size() == storage_size && !target.is_effect_pinned())
                 .count();
             let mut target = if let Some(target) = self.target_cache.get(storage_size, index) {
                 target
@@ -119,7 +119,9 @@ impl Context<'_> {
         Ok(())
     }
     pub(super) fn recycle_target(&mut self, target: Target) -> Result<(), GpuError> {
-        self.available_targets.push(target);
+        if !target.is_effect_pinned() {
+            self.available_targets.push(target);
+        }
         Ok(())
     }
 }

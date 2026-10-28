@@ -42,6 +42,22 @@ impl<T> Cache<T> {
             .map(|slot| &slot.value)
     }
 
+    /// Select a scratch owner while excluding allocations retained as effect results.
+    pub(crate) fn get_eligible(
+        &self,
+        size: [u32; 2],
+        index: usize,
+        mut eligible: impl FnMut(&T) -> bool,
+    ) -> Option<&T> {
+        let start = self.slots.partition_point(|slot| slot.size < size);
+        self.slots[start..]
+            .iter()
+            .take_while(|slot| slot.size == size)
+            .filter(|slot| eligible(&slot.value))
+            .nth(index)
+            .map(|slot| &slot.value)
+    }
+
     /// Admit overlapping old/new metadata capacity before growing the vector.
     /// Successful submission keeps the actual capacity warm through idle frames.
     pub(crate) fn reserve(
@@ -150,12 +166,27 @@ impl<T> Cache<T> {
         &mut self,
         required: &Requirements,
         recent: bool,
+        unique: impl FnMut(&T) -> bool,
+    ) -> bool {
+        self.reclaim_eligible(required, recent, |_| true, unique)
+    }
+
+    /// Retained effect results are outside scratch requirements and must not
+    /// consume the protected scratch multiplicity for a size class.
+    pub(crate) fn reclaim_eligible(
+        &mut self,
+        required: &Requirements,
+        recent: bool,
+        mut eligible: impl FnMut(&T) -> bool,
         mut unique: impl FnMut(&T) -> bool,
     ) -> bool {
         let mut previous = None;
         let mut index = 0;
         let mut candidate = None;
         for (position, slot) in self.slots.iter().enumerate() {
+            if !eligible(&slot.value) {
+                continue;
+            }
             if previous == Some(slot.size) {
                 index += 1;
             } else {

@@ -363,15 +363,57 @@ pub(super) fn attributes() -> [VertexAttribute; 4] {
         },
     ]
 }
+struct TargetStorage {
+    _ticket: super::ownership::NativeTicket,
+    effect_pins: std::cell::Cell<usize>,
+}
+struct EffectPin {
+    storage: Rc<TargetStorage>,
+    token: crate::common::effect_result::Token,
+    _metadata: BudgetTicket,
+}
+impl Drop for EffectPin {
+    fn drop(&mut self) {
+        self.storage
+            .effect_pins
+            .set(self.storage.effect_pins.get() - 1);
+    }
+}
 #[derive(Clone)]
 pub(super) struct Target {
     pub slot: usize,
     pub size: [u32; 2],
     pub view: Texture,
     pub framebuffer: Framebuffer,
-    _storage: Rc<super::ownership::NativeTicket>,
+    _storage: Rc<TargetStorage>,
+    effect_pin: Option<Rc<EffectPin>>,
 }
 impl Target {
+    pub(super) fn is_effect_pinned(&self) -> bool {
+        self._storage.effect_pins.get() != 0
+    }
+    pub(super) fn effect_token(&self) -> Option<crate::common::effect_result::Token> {
+        self.effect_pin.as_ref().map(|pin| pin.token)
+    }
+    pub(super) fn pin_effect(
+        &self,
+        token: crate::common::effect_result::Token,
+        pool: &BudgetPool,
+    ) -> Option<Self> {
+        let metadata = pool
+            .reserve((size_of::<EffectPin>() + 2 * size_of::<usize>()) as u64)
+            .ok()?;
+        self._storage
+            .effect_pins
+            .set(self._storage.effect_pins.get().checked_add(1)?);
+        let mut result = self.clone();
+        result.effect_pin = Some(Rc::new(EffectPin {
+            storage: self._storage.clone(),
+            token,
+            _metadata: metadata,
+        }));
+        Some(result)
+    }
     pub fn source_uv(&self, parent: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
         let storage = self.view.size();
         crate::common::source_view::uv_mapping(parent, storage, origin)
@@ -421,7 +463,11 @@ impl Target {
             view,
             framebuffer,
             size,
-            _storage: Rc::new(storage),
+            _storage: Rc::new(TargetStorage {
+                _ticket: storage,
+                effect_pins: std::cell::Cell::new(0),
+            }),
+            effect_pin: None,
         })
     }
 }

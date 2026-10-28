@@ -20,7 +20,9 @@ impl Cache {
         }
     }
     pub fn get(&self, size: [u32; 2], index: usize) -> Option<Target> {
-        self.owners.get(size, index).cloned()
+        self.owners
+            .get_eligible(size, index, |target| !target.is_effect_pinned())
+            .cloned()
     }
     pub fn insert(&mut self, target: &Target, metadata: &BudgetPool, limit: u64) {
         // Optional cache bookkeeping must not reject a resident target. Its work
@@ -29,7 +31,12 @@ impl Cache {
         self.owners.insert(target.view.size(), target.clone());
     }
     pub fn reclaim(&mut self, required: &Requirements, recent: bool) -> bool {
-        self.owners.reclaim(required, recent, Target::cache_only)
+        self.owners.reclaim_eligible(
+            required,
+            recent,
+            |target| !target.is_effect_pinned(),
+            Target::cache_only,
+        )
     }
     pub fn submitted(&mut self, used: &[Target]) {
         self.owners.submitted();

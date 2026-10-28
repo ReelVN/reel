@@ -22,6 +22,18 @@ pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
         .ok_or(GpuError::InvalidSize)
 }
 
+struct EffectPin {
+    allocation: std::sync::Arc<super::target_cache::Allocation>,
+    token: crate::common::effect_result::Token,
+    _metadata: reel_core::budget::BudgetTicket,
+}
+impl Drop for EffectPin {
+    fn drop(&mut self) {
+        self.allocation
+            .effect_pins
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 #[derive(Clone)]
 pub struct Target {
     pub(super) slot: usize,
@@ -29,8 +41,44 @@ pub struct Target {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub multisample: Option<wgpu::TextureView>,
+    pub(super) allocation: Option<std::sync::Weak<super::target_cache::Allocation>>,
+    effect_pin: Option<std::sync::Arc<EffectPin>>,
 }
 impl Target {
+    pub(super) fn is_effect_pinned(&self) -> bool {
+        self.allocation
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|allocation| {
+                allocation
+                    .effect_pins
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != 0
+            })
+    }
+    pub(super) fn effect_token(&self) -> Option<crate::common::effect_result::Token> {
+        self.effect_pin.as_ref().map(|pin| pin.token)
+    }
+    pub(super) fn pin_effect(
+        &self,
+        token: crate::common::effect_result::Token,
+        pool: &reel_core::budget::BudgetPool,
+    ) -> Option<Self> {
+        let allocation = self.allocation.as_ref()?.upgrade()?;
+        let metadata = pool
+            .reserve((size_of::<EffectPin>() + 2 * size_of::<usize>()) as u64)
+            .ok()?;
+        allocation
+            .effect_pins
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let mut result = self.clone();
+        result.effect_pin = Some(std::sync::Arc::new(EffectPin {
+            allocation,
+            token,
+            _metadata: metadata,
+        }));
+        Some(result)
+    }
     pub fn storage_size(&self) -> [u32; 2] {
         let size = self.texture.size();
         [size.width, size.height]
@@ -70,6 +118,8 @@ impl Target {
             texture,
             view,
             multisample,
+            allocation: None,
+            effect_pin: None,
         }
     }
     pub fn attachment(&self, clear: bool) -> wgpu::RenderPassColorAttachment<'_> {

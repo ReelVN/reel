@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 pub(super) struct Allocation {
     pub(super) target: Target,
+    pub(super) effect_pins: std::sync::atomic::AtomicUsize,
     _resident: BudgetTicket,
 }
 
@@ -231,7 +232,9 @@ impl TargetCache {
     ) -> Result<Arc<Allocation>, GpuError> {
         if let Some(entries) = self.0.lock().unwrap().as_ref()
             && entries.quality == quality
-            && let Some(target) = entries.slots.get(size, index)
+            && let Some(target) = entries
+                .slots
+                .get_eligible(size, index, |target| !target.target.is_effect_pinned())
         {
             return Ok(target.clone());
         }
@@ -245,9 +248,12 @@ impl TargetCache {
                     .as_mut()
                     .filter(|entries| entries.quality == quality)
                     .is_some_and(|entries| {
-                        entries
-                            .slots
-                            .reclaim(required, recent, |owner| Arc::strong_count(owner) == 1)
+                        entries.slots.reclaim_eligible(
+                            required,
+                            recent,
+                            |owner| !owner.target.is_effect_pinned(),
+                            |owner| Arc::strong_count(owner) == 1,
+                        )
                     });
                 if released {
                     resident = pool.reserve(cost);
@@ -261,9 +267,14 @@ impl TargetCache {
             requested: cost,
             available: gpu.limits.target_bytes.saturating_sub(pool.usage().bytes),
         })?;
-        Ok(Arc::new(Allocation {
-            target: Target::new(&gpu.device, size, quality),
-            _resident: resident,
+        Ok(Arc::new_cyclic(|owner| {
+            let mut target = Target::new(&gpu.device, size, quality);
+            target.allocation = Some(owner.clone());
+            Allocation {
+                target,
+                effect_pins: std::sync::atomic::AtomicUsize::new(0),
+                _resident: resident,
+            }
         }))
     }
 

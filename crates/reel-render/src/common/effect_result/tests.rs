@@ -11,7 +11,7 @@ fn pool() -> BudgetPool {
     )
 }
 fn source(scene: Arc<Scene>) -> Source {
-    Source {
+    Source::Recording(Recording {
         scene,
         local: LocalId::None,
         image: ImageProjection {
@@ -29,7 +29,7 @@ fn source(scene: Arc<Scene>) -> Source {
             transform: affine(Affine::IDENTITY),
             brush_transform: None,
         },
-    }
+    })
 }
 fn effect() -> FrameEffect {
     FrameEffect {
@@ -109,7 +109,10 @@ fn key_preserves_recording_and_exact_dependency_bits() {
     changed_grid.quality[0] += 1;
     assert!(!key.matches(&probe(&effect, changed_grid, scene.clone())));
     let mut other_source = source(scene.clone());
-    other_source.image.resource.generation += 1;
+    let Source::Recording(recording) = &mut other_source else {
+        unreachable!()
+    };
+    recording.image.resource.generation += 1;
     assert!(!key.matches(&Probe {
         source: other_source,
         effect: &effect,
@@ -117,5 +120,47 @@ fn key_preserves_recording_and_exact_dependency_bits() {
     }));
     assert!(pool.usage().bytes > 0);
     drop(key);
+    assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
+fn candidate_is_private_until_publish_and_output_tokens_never_repeat() {
+    let pool = pool();
+    let effect = effect();
+    let scene = Arc::new(Scene::new());
+    let cache = Cache::<Arc<()>>::default();
+    let a = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap()
+        .finish(Arc::new(()));
+    let token = a.token;
+    assert!(
+        cache
+            .lookup(&probe(&effect, grid(), scene.clone()))
+            .is_none()
+    );
+    assert!(cache.publish(a, &pool));
+    assert_eq!(
+        cache
+            .lookup(&probe(&effect, grid(), scene.clone()))
+            .unwrap()
+            .0,
+        token
+    );
+    let output_key = Key::new(Probe::from_output(token, &effect, grid()), &pool).unwrap();
+    assert!(output_key.matches(&Probe::from_output(token, &effect, grid())));
+    assert!(!output_key.matches(&Probe::from_output(Token(token.0 + 1), &effect, grid())));
+    drop(output_key);
+    cache.clear();
+    let b = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap()
+        .finish(Arc::new(()));
+    assert_ne!(token, b.token);
+    assert!(cache.publish(b, &pool));
+    let lease = cache.lookup(&probe(&effect, grid(), scene)).unwrap().1;
+    assert!(cache.reclaim_one());
+    assert_eq!(Arc::strong_count(&lease), 1);
+    drop(lease);
     assert_eq!(pool.usage().bytes, 0);
 }
