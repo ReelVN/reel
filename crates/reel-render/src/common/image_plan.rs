@@ -233,6 +233,15 @@ pub(crate) fn missing_pixels<'a>(
     if !sources.clone().any(|source| missing(&source)) {
         return Ok(None);
     }
+    pixel_demand(sources, pool, limit, missing)
+}
+
+fn pixel_demand<'a>(
+    sources: impl Iterator<Item = &'a ResourceLease>,
+    pool: &reel_core::budget::BudgetPool,
+    limit: u64,
+    include: impl FnMut(&&ResourceLease) -> bool,
+) -> Result<Option<crate::PixelDemand>, GpuError> {
     // Residency can change between the scan and collection. Reserve the
     // iterator's full bound so a concurrent eviction cannot grow the vector.
     let capacity = sources.size_hint().1.ok_or(GpuError::InvalidSize)?;
@@ -255,7 +264,7 @@ pub(crate) fn missing_pixels<'a>(
             requested: (resources.capacity() * size_of::<ResourceLease>()) as u64,
             available: limit.saturating_sub(pool.usage().bytes),
         })?;
-    resources.extend(sources.filter(missing).cloned());
+    resources.extend(sources.filter(include).cloned());
     if resources.is_empty() {
         return Ok(None);
     }
@@ -270,17 +279,17 @@ pub(crate) fn required_pixels(
     pool: &reel_core::budget::BudgetPool,
     limit: u64,
 ) -> Result<reel_ui::resources::ResourcePixels, GpuError> {
-    loop {
-        if let Some(reader) = source.read_pixels() {
-            return Ok(reader);
-        }
-        if let Some(demand) = missing_pixels(std::iter::once(source), pool, limit)? {
-            return Err(GpuError::PixelsNeeded(demand));
-        }
-        if source.pixel_byte_len().is_none() {
-            return Err(GpuError::InvalidSize);
-        }
+    if let Some(reader) = source.read_pixels() {
+        return Ok(reader);
     }
+    if source.pixel_byte_len().is_none() {
+        return Err(GpuError::InvalidSize);
+    }
+    // A concurrent restore can satisfy this demand before the player sees it.
+    // The player already completes resident demands without starting IO.
+    let demand =
+        pixel_demand(std::iter::once(source), pool, limit, |_| true)?.expect("one image source");
+    Err(GpuError::PixelsNeeded(demand))
 }
 
 /// Every demanded image coexists; only the largest indivisible upload overlaps.

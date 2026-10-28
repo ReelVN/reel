@@ -368,6 +368,21 @@ fn reloadable_pixels_release_only_after_readers_and_restore_identity() {
     drop(reader);
     assert!(image.discard_uploaded_pixels());
     assert_eq!(p.usage().bytes, 0);
+    assert_eq!(
+        image
+            .0
+            .pixels
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .weak_storage
+            .as_ref()
+            .unwrap()
+            .bytes(),
+        (size_of::<AccountedBlob>() + 2 * size_of::<usize>()) as u64,
+        "the dropped producer object stays allocated with its weak identity"
+    );
     assert!(image.read_pixels().is_none());
     assert_eq!(image.image_size(), Some([2, 2]));
     let wrong_handle = second

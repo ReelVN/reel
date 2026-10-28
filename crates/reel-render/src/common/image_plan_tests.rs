@@ -224,6 +224,12 @@ fn missing_pixel_demand_retains_only_absent_sources_and_charges_capacity() {
     missing.permit_pixel_reload();
     assert!(missing.discard_uploaded_pixels());
     let before = pool.usage().bytes;
+    let Err(GpuError::PixelsNeeded(single)) = required_pixels(&missing, &pool, u64::MAX) else {
+        panic!("an absent upload reader requests its original source");
+    };
+    assert_eq!(single.resources()[0].handle(), missing.handle());
+    drop(single);
+    assert_eq!(pool.usage().bytes, before);
     let demand = missing_pixels([&present, &missing].into_iter(), &pool, u64::MAX)
         .unwrap()
         .unwrap();

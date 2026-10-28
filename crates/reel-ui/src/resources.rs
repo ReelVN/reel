@@ -457,9 +457,15 @@ impl ResourceLease {
         {
             return false;
         }
-        // The producer's blob ticket ends with the last strong reference; its
-        // Arc control block remains until our source-identity weak reference ends.
-        let Ok(storage) = pixels.metadata.reserve((2 * size_of::<usize>()) as u64) else {
+        // Weak references retain the entire Arc allocation, including the
+        // dropped producer object. Separately owned pixel buffers are released.
+        let (backing, _) = pixels.resident.as_ref().unwrap().clone().into_raw_parts();
+        let (layout, _) = std::alloc::Layout::new::<[usize; 2]>()
+            .extend(std::alloc::Layout::for_value(backing.as_ref()))
+            .expect("existing Arc allocation");
+        let retained_bytes = layout.pad_to_align().size();
+        drop(backing);
+        let Ok(storage) = pixels.metadata.reserve(retained_bytes as u64) else {
             return false;
         };
         pixels.weak_storage = Some(storage);
