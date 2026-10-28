@@ -267,32 +267,49 @@ impl RetainedScene {
                         ticket
                             .resize(ticket.bytes() - key_bytes as u64)
                             .map_err(|_| retained::error(BuildErrorKind::Bytes))?;
-                        SavedResourceKind::Inline(match lease.data() {
-                            ResourceData::EffectShader { descriptor, bytes } => {
-                                snapshot_charge(
-                                    &mut ticket,
-                                    descriptor.parameters.len()
-                                        * size_of::<crate::stage::effect::EffectType>(),
-                                )?;
-                                InlineResource::EffectShader {
-                                    descriptor: descriptor.clone(),
-                                    bytes: bytes.clone(),
-                                }
+                        SavedResourceKind::Inline(if let Some(image) = lease.image_descriptor() {
+                            let pixels = lease
+                                .read_pixels()
+                                .ok_or_else(|| retained::error(BuildErrorKind::InvalidRecord))?;
+                            InlineResource::Image {
+                                image: peniko::ImageData {
+                                    data: pixels.blob(),
+                                    format: image.format,
+                                    alpha_type: image.alpha_type,
+                                    width: image.width,
+                                    height: image.height,
+                                },
+                                encoding: image.encoding,
                             }
-                            ResourceData::Texture { descriptor, bytes } => {
-                                InlineResource::Texture {
-                                    descriptor: *descriptor,
-                                    bytes: bytes.clone(),
-                                }
+                        } else if let Some(descriptor) = lease.texture_descriptor() {
+                            let pixels = lease
+                                .read_pixels()
+                                .ok_or_else(|| retained::error(BuildErrorKind::InvalidRecord))?;
+                            InlineResource::Texture {
+                                descriptor,
+                                bytes: pixels.blob(),
                             }
-                            ResourceData::Image { image, encoding } => InlineResource::Image {
-                                image: image.clone(),
-                                encoding: *encoding,
-                            },
-                            ResourceData::Font(font) => InlineResource::Font(font.clone()),
-                            ResourceData::Yuv420(image) => InlineResource::Yuv(image.clone()),
-                            ResourceData::External { .. } => {
-                                return Err(retained::error(BuildErrorKind::UnsupportedRecord));
+                        } else {
+                            match lease.data() {
+                                ResourceData::EffectShader { descriptor, bytes } => {
+                                    snapshot_charge(
+                                        &mut ticket,
+                                        descriptor.parameters.len()
+                                            * size_of::<crate::stage::effect::EffectType>(),
+                                    )?;
+                                    InlineResource::EffectShader {
+                                        descriptor: descriptor.clone(),
+                                        bytes: bytes.clone(),
+                                    }
+                                }
+                                ResourceData::Texture { .. } | ResourceData::Image { .. } => {
+                                    unreachable!()
+                                }
+                                ResourceData::Font(font) => InlineResource::Font(font.clone()),
+                                ResourceData::Yuv420(image) => InlineResource::Yuv(image.clone()),
+                                ResourceData::External { .. } => {
+                                    return Err(retained::error(BuildErrorKind::UnsupportedRecord));
+                                }
                             }
                         })
                     };
@@ -303,18 +320,20 @@ impl RetainedScene {
                         kind,
                         live_bytes: 512
                             + lease.version().key.0.capacity() as u64
-                            + match lease.data() {
-                                ResourceData::EffectShader { bytes, descriptor } => {
-                                    bytes.len() as u64
-                                        + (descriptor.parameters.capacity()
-                                            * size_of::<crate::stage::effect::EffectType>())
-                                            as u64
+                            + if let Some(bytes) = lease.pixel_byte_len() {
+                                bytes as u64
+                            } else {
+                                match lease.data() {
+                                    ResourceData::EffectShader { bytes, descriptor } => {
+                                        bytes.len() as u64
+                                            + (descriptor.parameters.capacity()
+                                                * size_of::<crate::stage::effect::EffectType>())
+                                                as u64
+                                    }
+                                    ResourceData::Font(font) => font.len() as u64,
+                                    ResourceData::Yuv420(image) => image.byte_len() as u64,
+                                    _ => unreachable!(),
                                 }
-                                ResourceData::Texture { bytes, .. } => bytes.len() as u64,
-                                ResourceData::Image { image, .. } => image.data.len() as u64,
-                                ResourceData::Font(font) => font.len() as u64,
-                                ResourceData::Yuv420(image) => image.byte_len() as u64,
-                                ResourceData::External { .. } => unreachable!(),
                             },
                     });
                     resource_ids.insert(lease.handle(), slot);

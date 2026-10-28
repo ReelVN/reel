@@ -159,6 +159,7 @@ struct Resource {
     data: ResourceData,
     // Remains stable when pixel residency changes; Blob IDs are lookup hints.
     source_blob_id: Option<u64>,
+    pixel_bytes: Option<usize>,
     image_coverage: Option<reel_core::image_coverage::ImageCoverage>,
     retired: AtomicBool,
     // Opaque imported producer storage has its own accounting domain. This reservation
@@ -177,6 +178,10 @@ impl ResourcePixels {
     /// Pixel or block bytes retained for this reader's lifetime.
     pub fn bytes(&self) -> &[u8] {
         self.0.data()
+    }
+    /// Share this reader's immutable pixel backing with a retained snapshot.
+    pub fn blob(&self) -> Blob<u8> {
+        self.0.clone()
     }
 }
 
@@ -228,6 +233,10 @@ impl ResourceLease {
     /// Return prepared texture metadata without retaining its block allocation.
     pub fn texture_descriptor(&self) -> Option<TextureDescriptor> {
         self.0.data.texture_descriptor()
+    }
+    /// Declared image or texture payload length, independent of residency.
+    pub fn pixel_byte_len(&self) -> Option<usize> {
+        self.0.pixel_bytes
     }
     /// Acquire an owning CPU reader for decoded image or texture pixels.
     /// Other resource kinds have their own data and return `None`.
@@ -535,11 +544,17 @@ impl ResourceRegistry {
             _ => None,
         };
         let source_blob_id = data.blob().map(Blob::id);
+        let pixel_bytes = match &data {
+            ResourceData::Image { image, .. } => Some(image.data.len()),
+            ResourceData::Texture { bytes, .. } => Some(bytes.len()),
+            _ => None,
+        };
         let lease = ResourceLease(Arc::new(Resource {
             handle,
             version,
             data,
             source_blob_id,
+            pixel_bytes,
             image_coverage,
             retired: AtomicBool::new(false),
             _reference_ticket: ticket,
