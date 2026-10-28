@@ -1,4 +1,4 @@
-//! Prove straight-line, parameterless expression frames once at admission.
+//! Prove parameterless expression frames once at admission.
 //! Eligible bodies still execute their original instructions and source PCs.
 use super::*;
 impl VerifiedProgram {
@@ -44,7 +44,8 @@ pub(super) fn build(
         b.work(f.code.len() as u64 * 3)?;
         let mut valid = true;
         for (i, instruction) in f.code.iter().enumerate() {
-            let op = instruction_spec(instruction?.opcode)
+            let instruction = instruction?;
+            let op = instruction_spec(instruction.opcode)
                 .expect("verified opcode")
                 .opcode;
             valid &= if i + 1 == f.code.len() {
@@ -52,7 +53,13 @@ pub(super) fn build(
             } else {
                 matches!(
                     op,
-                    Opcode::LoadConst
+                    Opcode::Return
+                        | Opcode::Jump
+                        | Opcode::BranchBool
+                        | Opcode::BranchNull
+                        | Opcode::Call
+                        | Opcode::CallNoWait
+                        | Opcode::LoadConst
                         | Opcode::Move
                         | Opcode::Clear
                         | Opcode::Clear2
@@ -101,12 +108,17 @@ pub(super) fn build(
 mod tests {
     use super::*;
     #[test]
-    fn compact_proof_keeps_dynamic_calls_and_control_flow_on_the_shared_bridge() {
+    fn compact_proof_accepts_expression_control_flow_but_retains_binding_restrictions() {
         let mut package = fixtures::helper_native();
+        assert!(
+            verify(package.clone(), Limits::default())
+                .unwrap()
+                .compact_derived(FunctionId(0))
+        );
         assert!(
             !verify(package.clone(), Limits::default())
                 .unwrap()
-                .compact_derived(FunctionId(0))
+                .compact_derived(FunctionId(1))
         );
         let function = &mut package.functions[0];
         function.descriptors.clear();
@@ -124,9 +136,41 @@ mod tests {
             .code
             .insert(0, Instruction::new(Opcode::Jump, 1, 0, 0));
         assert!(
-            !verify(package, Limits::default())
+            verify(package, Limits::default())
                 .unwrap()
                 .compact_derived(FunctionId(0))
         );
     }
+}
+
+#[test]
+#[ignore = "inspect compact-expression coverage in an external B01 artifact"]
+fn compact_external_program_coverage() {
+    let path = std::env::var("ASIDE_B01_PATH").expect("ASIDE_B01_PATH");
+    let bytes = std::fs::read(path).unwrap();
+    let program = VerifiedProgram::decode(&bytes, Limits::default()).unwrap();
+    let mut admitted = 0;
+    let mut called = 0;
+    let mut branched = 0;
+    for (index, function) in program.package().functions.iter().enumerate() {
+        if !program.compact_derived(FunctionId(index as u32)) {
+            continue;
+        }
+        admitted += 1;
+        let mut has_call = false;
+        let mut has_branch = false;
+        for instruction in function.code.iter() {
+            let op = instruction.unwrap().opcode;
+            has_call |= op == Opcode::Call as u16 || op == Opcode::CallNoWait as u16;
+            has_branch |= op == Opcode::Jump as u16
+                || op == Opcode::BranchBool as u16
+                || op == Opcode::BranchNull as u16;
+        }
+        called += usize::from(has_call);
+        branched += usize::from(has_branch);
+    }
+    eprintln!(
+        "compact_coverage functions={} admitted={admitted} with_calls={called} with_branches={branched}",
+        program.package().functions.len()
+    );
 }

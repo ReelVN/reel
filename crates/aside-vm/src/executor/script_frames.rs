@@ -33,6 +33,7 @@ impl Vm {
         let parameters = &self.program.package().signatures[f.signature.index()];
         let values = u64::from(f.register_count)
             + 4
+            + u64::from(self.program.compact_derived(function))
             + u64::from(f.kind == FunctionKind::Generator)
             + 2 * f.regions.len() as u64
             + u64::from(count) * 2
@@ -46,7 +47,13 @@ impl Vm {
         }
         let f = &self.program.package().functions[function.index()];
         let registers = f.register_count;
-        let env_len = 4 + f.regions.len() as u32 * 2 + u32::from(f.kind == FunctionKind::Generator);
+        // Slot 4 roots a compact observer independently of ordinary call scratch
+        // (class construction and builtin comparators use slot 3). Eligible
+        // functions have no exception regions or generator environment.
+        let env_len = 4
+            + f.regions.len() as u32 * 2
+            + u32::from(f.kind == FunctionKind::Generator)
+            + u32::from(self.program.compact_derived(function));
         let sig = &self.program.package().signatures[f.signature.index()];
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let context = inherit(context, f.context);

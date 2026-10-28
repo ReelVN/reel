@@ -137,7 +137,7 @@ impl Vm {
         self.heap.claim_derived(read.output)?;
         Ok(())
     }
-    /// Implement the standard read-only derived-value contract. Proven straight-line
+    /// Implement the standard read-only derived-value contract. Admitted parameterless
     /// expressions retain their script instructions and may defer the native bridge
     /// until this same commit continuation; custom observers use `call_reactive`.
     pub fn respond_derive(&mut self, ticket: HostTicket) -> Result<(), VmError> {
@@ -216,7 +216,7 @@ impl Vm {
         Ok(match self.task(task)?.frames.data.first() {
             Some(Frame::Native(frame)) => frame.derived_output,
             Some(Frame::Script(frame)) if frame.derived_bridge.is_some() => {
-                Some(self.value(frame.env, 3)?)
+                Some(self.value(frame.env, 4)?)
             }
             _ => None,
         })

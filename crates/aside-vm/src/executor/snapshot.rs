@@ -845,7 +845,7 @@ fn validate_frame(
                 return Err(SnapshotError::Invalid("script frame code/registers".into()));
             }
             if let Some((bridge, module, _)) = frame.derived_bridge {
-                let output = vm.value(frame.env, 3)?;
+                let output = vm.value(frame.env, 4)?;
                 let closure = vm.value(frame.env, 0)?;
                 if !vm.program.compact_derived(frame.code.function)
                     || !vm.compact_output(output)?
@@ -894,7 +894,7 @@ fn validate_frame(
                         .is_some_and(|(f, pc)| f.code.is_boundary(pc as usize))
                     || !frame.context.derived
                     || !frame.context.no_wait
-                    || vm.heap.range_descriptor(frame.env)?.len != 4
+                    || vm.heap.range_descriptor(frame.env)?.len != 5
                     // A rejected callback response can have admitted one window.
                     // Until materialization completes, root 1 owns the argument.
                     || !matches!(vm.heap.range_descriptor(frame.args)?.len, 0 | 2)

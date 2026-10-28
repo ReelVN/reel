@@ -819,6 +819,7 @@ impl Vm {
         }
         let values = f.register_count as u64
             + 4
+            + u64::from(self.program.compact_derived(function))
             + u64::from(f.kind == FunctionKind::Generator)
             + 2 * f.regions.len() as u64
             + count as u64 * 2
@@ -1040,8 +1041,9 @@ impl Vm {
                     self.generator_abandon(s)?;
                 }
                 if s.derived_bridge.is_some() {
-                    self.heap.end_derived(self.value(s.env, 3)?)?;
-                } else {
+                    self.heap.end_derived(self.value(s.env, 4)?)?;
+                }
+                if s.derived_bridge.is_none() || matches!(s.phase, ScriptPhase::Class(_)) {
                     self.abort_class(s)?;
                 }
                 for r in [s.regs, s.env, s.args, s.bound] {

@@ -11,7 +11,7 @@ impl Vm {
         let signature = self.program.package().functions[s.code.function.index()].signature;
         match s.phase {
             ScriptPhase::CompactBegin => {
-                let output = self.value(s.env, 3)?;
+                let output = self.value(s.env, 4)?;
                 let allocate = self
                     .heap
                     .host_payload(output, crate::heap::DerivedSlot::Candidate as u32)?
