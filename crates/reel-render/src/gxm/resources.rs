@@ -43,6 +43,28 @@ pub(super) struct Images {
     retired: crate::common::resources::RetiredImages<Rc<Image>>,
 }
 impl Images {
+    pub fn usage(&self) -> [u64; 3] {
+        let cached = self
+            .entries
+            .values()
+            .map(|image| image._storage.bytes())
+            .sum();
+        let mut retired = 0;
+        let mut readers = 0;
+        for image in self.retired.iter() {
+            let bytes = image._storage.bytes();
+            retired += bytes;
+            if Rc::strong_count(image) > 1
+                || image
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| !source.lease.is_released())
+            {
+                readers += bytes;
+            }
+        }
+        [cached, retired, readers]
+    }
     pub fn retain_demand(&mut self, required: &[crate::common::image_plan::Required<'_>]) {
         self.entries.retain(|handle, image| {
             Rc::strong_count(image) > 1

@@ -8,6 +8,14 @@ pub struct Usage {
     pub targets: u64,
     /// Accounted images, glyph atlases and persistent draw resources, in bytes.
     pub resources: u64,
+    /// Image allocations in the source cache, including images also held by frames.
+    /// This is a subset of `resources`, excluding glyph atlases and retired images.
+    pub cached_images: u64,
+    /// Retired image allocations kept available for storage reuse, in bytes.
+    /// This is a subset of `resources`, disjoint from `cached_images`.
+    pub retired_images: u64,
+    /// The subset of `retired_images` still held by another reader or source lease.
+    pub retired_image_readers: u64,
     /// Accounted staging, geometry and temporary storage, in bytes.
     pub transient: u64,
     /// Evictable completed geometry, staging and allocation metadata. This is

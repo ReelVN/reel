@@ -140,9 +140,13 @@ impl Backend {
     /// Renderer-owned domains and their shared simultaneous budget peak.
     /// Native driver allocations have separate ownership from these budgets.
     pub fn usage(&self) -> crate::Usage {
+        let [cached_images, retired_images, retired_image_readers] = self.images.usage();
         crate::Usage {
             targets: self.budgets.targets.usage().bytes,
             resources: self.budgets.resources.usage().bytes,
+            cached_images,
+            retired_images,
+            retired_image_readers,
             transient: self.budgets.transient.usage().bytes,
             cached_geometry: self.geometry.bytes(),
             shared: Some(self._group.usage()),

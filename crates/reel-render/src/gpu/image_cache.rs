@@ -51,6 +51,20 @@ struct Copy {
 }
 
 impl ImageCache {
+    pub(super) fn usage(&self) -> [u64; 3] {
+        let bytes = |image: &Arc<Image>| image.residency.as_ref().map_or(0, BudgetTicket::bytes);
+        let cached = self.images.lock().unwrap().values().map(bytes).sum();
+        let mut retired = 0;
+        let mut readers = 0;
+        for image in self.retired.lock().unwrap().iter() {
+            let size = bytes(image);
+            retired += size;
+            if !reusable(image) {
+                readers += size;
+            }
+        }
+        [cached, retired, readers]
+    }
     pub(super) fn retain_demand(&self, required: &[image_plan::Required<'_>]) {
         self.images.lock().unwrap().retain(|handle, image| {
             Arc::strong_count(image) > 1
