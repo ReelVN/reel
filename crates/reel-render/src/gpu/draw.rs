@@ -27,6 +27,7 @@ struct PaintState {
     quality: ImageQuality,
     appearance: Option<super::gradient::Uniform>,
     direct: Option<mesh::DirectPaint>,
+    bounded: bool,
     opaque: Option<mesh::OpaquePaint>,
     scissor: super::targets::Scissor,
 }
@@ -708,6 +709,7 @@ impl Context<'_> {
                 .flatten()
         };
         let state = PaintState {
+            bounded: mesh.bounded_color.paint(direct, texture_format),
             direct,
             opaque: mesh.opaque_paint(direct),
             image: image.clone(),
@@ -915,10 +917,24 @@ impl Context<'_> {
                 #[cfg(test)]
                 self.pipelines.direct_draws[index]
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(test)]
                 if let Some(opaque) = entry.state.opaque {
-                    #[cfg(test)]
                     self.pipelines.opaque_draws[opaque as usize]
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if entry.state.bounded && self.pipelines.bounded.is_some() {
+                    let index = if index == 7 { 3 } else { index };
+                    if let Some(opaque) = entry.state.opaque {
+                        let index = if matches!(opaque, mesh::OpaquePaint::Solid) {
+                            1
+                        } else {
+                            0
+                        };
+                        &self.pipelines.bounded_opaque.as_ref().unwrap()[index]
+                    } else {
+                        &self.pipelines.bounded.as_ref().unwrap()[index]
+                    }
+                } else if let Some(opaque) = entry.state.opaque {
                     &self.pipelines.opaque[opaque as usize]
                 } else {
                     &self.pipelines.direct[index]

@@ -297,7 +297,11 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 19, 19, 19, 8]);
+    let variants = if pipelines.bounded.is_some() { 25 } else { 19 };
+    assert_eq!(
+        renderer.pipelines.creations.snapshot(),
+        [3, variants, variants, variants, 8]
+    );
     let resident = renderer.usage().resources;
     assert!(resident > 0 && resident <= 2 * 512 * 512);
     assert_eq!(resident % (512 * 512), 0);

@@ -142,6 +142,12 @@ pub fn sources() -> Vec<Shader> {
             );
         }
     }
+    add(
+        "vertex_bounded",
+        true,
+        &read("vertex"),
+        "#define REEL_BOUNDED",
+    );
     let paint = read("paint");
     for (name, alpha, regional) in [
         ("paint_direct", 0, false),
@@ -161,6 +167,23 @@ pub fn sources() -> Vec<Shader> {
                 ""
             }
         );
+        if !regional && alpha != 3 {
+            for clipped in [false, true] {
+                add(
+                    &format!("{name}_bounded{}", if clipped { "" } else { "_unclipped" }),
+                    false,
+                    &paint,
+                    &format!(
+                        "{defines}\n#define REEL_BOUNDED\n{}",
+                        if clipped {
+                            ""
+                        } else {
+                            "#define REEL_UNCLIPPED"
+                        }
+                    ),
+                );
+            }
+        }
         add(name, false, &paint, &defines);
         add(
             &format!("{name}_unclipped"),

@@ -5,6 +5,7 @@ use std::cell::OnceCell;
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
     Direct(crate::common::mesh::DirectPaint),
+    Bounded(crate::common::mesh::DirectPaint),
     Rgba,
     Coverage,
     Gradient,
@@ -18,6 +19,13 @@ impl Kind {
     fn index(self) -> usize {
         match self {
             Self::Direct(direct) => direct as usize,
+            Self::Bounded(direct) => {
+                16 + if direct as usize == 7 {
+                    3
+                } else {
+                    direct as usize
+                }
+            }
             Self::Rgba => 8,
             Self::Coverage => 9,
             Self::Gradient => 10,
@@ -60,6 +68,10 @@ impl Kind {
             13 => pair!("paint_packed"),
             14 => pair!("paint_video"),
             15 => pair!("paint_video_appearance"),
+            16 => pair!("paint_direct_bounded"),
+            17 => pair!("paint_direct_bc1_bounded"),
+            18 => pair!("paint_direct_bc3_bounded"),
+            19 => pair!("paint_solid_bounded"),
             _ => unreachable!(),
         }
     }
@@ -69,7 +81,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 32],
+    entries: [OnceCell<Box<Entry>>; 40],
     budget: BudgetPool,
 }
 impl PaintPrograms {
@@ -94,7 +106,11 @@ impl PaintPrograms {
             );
             let program = create_program_with_vertex(
                 device,
-                shader_code!("vertex"),
+                if matches!(kind, Kind::Bounded(_)) {
+                    shader_code!("vertex_bounded")
+                } else {
+                    shader_code!("vertex")
+                },
                 kind.code(clipped),
                 clipped,
             )?;

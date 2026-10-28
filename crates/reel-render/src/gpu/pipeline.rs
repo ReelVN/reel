@@ -173,6 +173,8 @@ pub struct Pipelines {
     #[cfg(test)]
     pub coverage_draws: std::sync::atomic::AtomicUsize,
     pub direct: [wgpu::RenderPipeline; 8],
+    pub bounded: Option<[wgpu::RenderPipeline; 4]>,
+    pub bounded_opaque: Option<[wgpu::RenderPipeline; 2]>,
     #[cfg(test)]
     pub direct_draws: [std::sync::atomic::AtomicUsize; 8],
     pub opaque: [wgpu::RenderPipeline; 3],
@@ -306,6 +308,34 @@ impl Pipelines {
                 #[cfg(test)]
                 Some(counts),
             )
+        });
+        let bounded_supported = quality.format == wgpu::TextureFormat::Rgba8Unorm
+            && device.features().contains(wgpu::Features::SHADER_F16);
+        let bounded_pipeline = |entry, blend| {
+            pipeline_entry(
+                device,
+                quality,
+                &paint_layout,
+                include_str!("paint_bounded.wgsl"),
+                true,
+                FragmentOutput { entry, blend },
+                #[cfg(test)]
+                Some(counts),
+            )
+        };
+        let bounded = bounded_supported.then(|| {
+            [
+                "fragment_direct",
+                "fragment_direct_bc1",
+                "fragment_direct_bc3",
+                "fragment_solid",
+            ]
+            .map(|entry| {
+                bounded_pipeline(entry, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING))
+            })
+        });
+        let bounded_opaque = bounded_supported.then(|| {
+            ["fragment_direct_bc1", "fragment_solid"].map(|entry| bounded_pipeline(entry, None))
         });
         let opaque = [
             "fragment_direct_bc1",
@@ -479,6 +509,8 @@ impl Pipelines {
             #[cfg(test)]
             coverage_draws: Default::default(),
             direct,
+            bounded,
+            bounded_opaque,
             #[cfg(test)]
             direct_draws: Default::default(),
             opaque,

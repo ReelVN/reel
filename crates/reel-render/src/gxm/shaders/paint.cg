@@ -15,7 +15,14 @@ void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_po
 #define REEL_STYLE 0
 #endif
 varying float2 v_uv : TEXCOORD0;
-varying float4 v_color : TEXCOORD1;
+#ifdef REEL_BOUNDED
+#define REEL_COLOR half4
+#define REEL_RGB half3
+#else
+#define REEL_COLOR float4
+#define REEL_RGB float3
+#endif
+varying REEL_COLOR v_color : TEXCOORD1;
 varying float4 v_window : TEXCOORD2;
 #ifdef REEL_DIRECT
 #if REEL_DIRECT == 4
@@ -32,14 +39,14 @@ void main(){
  float2 half_texel=0.5/u_dimensions,span=v_window.zw;
  float2 inset=min(half_texel,span*0.5);
  float2 uv=clamp(clamp(v_uv,v_window.xy+inset,v_window.xy+span-inset),half_texel,float2(1.0)-half_texel);
- float4 color=tex2D(u_image,uv);
+ REEL_COLOR color=tex2D(u_image,uv);
 #else
- float4 color=tex2D(u_image,v_uv);
+ REEL_COLOR color=tex2D(u_image,v_uv);
 #endif
 #if REEL_DIRECT == 1
  color.a=1.0;
 #elif REEL_DIRECT == 2
- color.rgb=min(color.rgb,float3(color.a));
+ color.rgb=min(color.rgb,REEL_RGB(color.a));
 #elif REEL_DIRECT == 3
  color=float4(color.r);
 #endif

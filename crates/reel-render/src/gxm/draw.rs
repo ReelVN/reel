@@ -50,6 +50,7 @@ struct PaintState {
     quality: ImageQuality,
     coverage: bool,
     direct: Option<mesh::DirectPaint>,
+    bounded: bool,
     opaque: Option<mesh::OpaquePaint>,
     scissor: crate::common::scissor::Scissor,
 }
@@ -1071,6 +1072,7 @@ impl Context<'_> {
                 .flatten()
         };
         let state = PaintState {
+            bounded: mesh.bounded_color.paint(direct, format),
             direct,
             opaque: mesh.opaque_paint(direct),
             texture: texture.clone(),
@@ -1139,13 +1141,18 @@ impl Context<'_> {
                 quality,
                 coverage,
                 direct,
+                bounded,
                 opaque,
                 scissor,
             } = entry.state;
             let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
             use super::programs::PaintKind;
             let program = if let Some(direct) = direct {
-                PaintKind::Direct(direct)
+                if bounded {
+                    PaintKind::Bounded(direct)
+                } else {
+                    PaintKind::Direct(direct)
+                }
             } else if kind > 0. {
                 if styled {
                     PaintKind::VideoAppearance
