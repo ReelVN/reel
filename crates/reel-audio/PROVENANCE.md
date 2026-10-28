@@ -20,6 +20,8 @@ interpolation, with no callback allocation or extra PCM storage.
 Mixing reuses constant gain and pan coefficients within each processing block.
 Changing parameters retain their original per-sample interpolation, and pan
 application preserves the original multiplication order.
+Resampling reads the current PCM sample directly at integral positions and
+converts the fractional cursor only when a queued source changes sample rate.
 
 The host reader contract is codec-independent. Shared source timelines, decoder
 factories and the static/window preparation policy are maintained in `reel-media`;
