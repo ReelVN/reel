@@ -28,6 +28,8 @@ pub(super) struct UploadCreations {
     pub(super) effect_uniform_buffers: std::sync::atomic::AtomicUsize,
     pub(super) effect_bind_groups: std::sync::atomic::AtomicUsize,
     pub(super) effect_uniform_bytes: std::sync::atomic::AtomicU64,
+    pub(super) backdrop_copies: std::sync::atomic::AtomicUsize,
+    pub(super) disable_backdrop_copy: std::sync::atomic::AtomicBool,
 }
 #[cfg(test)]
 impl UploadCreations {

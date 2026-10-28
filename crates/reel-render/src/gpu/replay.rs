@@ -1292,14 +1292,16 @@ impl Context<'_> {
         // The attached backdrop is copied only for a blend which reads it.
         let backdrop = if blend != 0 {
             let backdrop = self.target()?;
-            self.combine(
-                &backdrop,
-                &target.view,
-                &target.view,
-                1.,
-                0.,
-                CompositeOperation::SourceOver,
-            )?;
+            if !self.copy_backdrop(target, &backdrop, self.scissor, self.scissor) {
+                self.combine(
+                    &backdrop,
+                    &target.view,
+                    &target.view,
+                    1.,
+                    0.,
+                    CompositeOperation::SourceOver,
+                )?;
+            }
             Some(backdrop)
         } else {
             None

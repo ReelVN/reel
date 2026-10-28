@@ -114,7 +114,8 @@ impl Target {
             format: quality.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         };
         let texture = device.create_texture(&descriptor);
@@ -140,7 +141,7 @@ impl Target {
     }
     pub fn attachment(&self, clear: bool) -> wgpu::RenderPassColorAttachment<'_> {
         #[cfg(test)]
-        pass_trace::record(&self.texture);
+        pass_trace::record(&self.texture, clear);
         wgpu::RenderPassColorAttachment {
             view: self.multisample.as_ref().unwrap_or(&self.view),
             resolve_target: self.multisample.as_ref().map(|_| &self.view),
@@ -159,14 +160,21 @@ impl Target {
 
 #[cfg(test)]
 pub(super) mod pass_trace {
-    use std::cell::RefCell;
-    thread_local! { static TRACE: RefCell<Option<Vec<wgpu::Texture>>> = const { RefCell::new(None) }; }
-    pub fn record(texture: &wgpu::Texture) {
+    use std::cell::{Cell, RefCell};
+    thread_local! { static TRACE: RefCell<Option<Vec<wgpu::Texture>>> = const { RefCell::new(None) }; static CLEARS: Cell<usize> = const { Cell::new(0) }; }
+    pub fn record(texture: &wgpu::Texture, clear: bool) {
         TRACE.with_borrow_mut(|trace| {
             if let Some(trace) = trace {
+                if clear {
+                    CLEARS.with(|count| count.set(count.get() + 1));
+                }
                 trace.push(texture.clone());
             }
         });
+    }
+    pub fn collect_counts<T>(work: impl FnOnce() -> T) -> (T, usize, usize) {
+        let (value, passes) = collect(work);
+        (value, passes.len(), CLEARS.with(Cell::get))
     }
     pub fn collect<T>(work: impl FnOnce() -> T) -> (T, Vec<wgpu::Texture>) {
         struct Reset;
@@ -175,6 +183,7 @@ pub(super) mod pass_trace {
                 TRACE.with_borrow_mut(|trace| *trace = None);
             }
         }
+        CLEARS.with(|count| count.set(0));
         TRACE.with_borrow_mut(|trace| {
             assert!(trace.is_none());
             *trace = Some(Vec::new());
