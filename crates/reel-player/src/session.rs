@@ -953,6 +953,7 @@ impl SessionUi {
             .or(self.stage.as_ref())
             .is_none_or(|view| !view.matches(stage))
         {
+            reel_core::profile::count(reel_core::profile::Phase::ProjectionChanged);
             let mut view =
                 StageView::update(stage, self.pending_stage.as_ref().or(self.stage.as_ref()));
             view.presentation_request = self
@@ -1253,6 +1254,7 @@ impl SessionUi {
             self.binding.borrow_mut().accepted = None;
         }
         if changed || self.stage_dirty {
+            reel_core::profile::count(reel_core::profile::Phase::ProjectionPublished);
             self.stamp.dialogue_complete = complete;
             self.stamp.dialogue_revision = dialogue_revision;
             self.stamp.revision = self

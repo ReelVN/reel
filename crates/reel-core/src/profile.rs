@@ -61,8 +61,24 @@ pub enum Phase {
     TargetCreated,
     /// Cross-frame scratch cache hits; instantaneous count, zero duration.
     TargetReused,
+    /// Native decoded pictures returned before timestamp lookahead.
+    VideoDecoded,
+    /// Pictures published into the playback queue.
+    VideoQueued,
+    /// Pictures selected for the current playback position.
+    VideoSelected,
+    /// Queued pictures superseded by another already-due picture.
+    VideoDropped,
+    /// Video pictures installed into the stage model.
+    VideoStage,
+    /// New stage revisions captured by the player UI.
+    ProjectionChanged,
+    /// UI revisions published after resource preparation.
+    ProjectionPublished,
+    /// Model invalidations delivered to presentation scheduling.
+    PresentationInvalidated,
 }
-pub const NAMES: [&str; 43] = [
+pub const NAMES: [&str; 51] = [
     "input",
     "tick",
     "session",
@@ -106,6 +122,14 @@ pub const NAMES: [&str; 43] = [
     "target_framebuffer",
     "target_created",
     "target_reused",
+    "video_decoded",
+    "video_queued",
+    "video_selected",
+    "video_dropped",
+    "video_stage",
+    "projection_changed",
+    "projection_published",
+    "presentation_invalidated",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

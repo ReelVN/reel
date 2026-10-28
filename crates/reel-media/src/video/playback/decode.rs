@@ -225,6 +225,7 @@ pub(super) fn decode(
                     frame,
                     _ticket: storage,
                 }));
+                reel_core::profile::count(reel_core::profile::Phase::VideoQueued);
                 if options.poster {
                     state.terminal = Some(VideoTerminal::Completed);
                 }

@@ -451,10 +451,14 @@ impl VideoPlayback {
             .front()
             .is_some_and(|frame| self.options.poster || frame.frame.pts <= self.position)
         {
+            if frame.is_some() {
+                reel_core::profile::count(reel_core::profile::Phase::VideoDropped);
+            }
             frame = state.frames.pop_front();
         }
         drop(state);
         if frame.is_some() {
+            reel_core::profile::count(reel_core::profile::Phase::VideoSelected);
             self.shared.signal();
         }
         frame

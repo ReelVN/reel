@@ -92,6 +92,7 @@ impl Presentation {
         self.suspended
     }
     pub fn invalidate(&mut self) {
+        reel_core::profile::count(reel_core::profile::Phase::PresentationInvalidated);
         if let Some(preparing) = &mut self.preparing {
             preparing.invalidated = true;
         }

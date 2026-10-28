@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [features]
 default = ["cpal-output"]
+profiling = ["reel-core/profiling"]
 cpal-output = ["dep:cpal"]
 opus = ["dep:opus", "dep:symphonia", "reel-audio/ogg"]
 decode = ["reel-audio/wav", "reel-audio/pcm", "reel-audio/ogg", "reel-audio/vorbis", "reel-audio/flac", "reel-audio/mp3", "opus"]

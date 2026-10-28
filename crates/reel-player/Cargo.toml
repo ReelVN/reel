@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-profiling = ["reel-core/profiling", "reel-render/profiling"]
+profiling = ["reel-core/profiling", "reel-render/profiling", "reel-media/profiling"]
 winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 video = ["reel-media/video"]

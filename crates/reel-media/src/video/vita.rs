@@ -36,7 +36,16 @@ impl MemoryBudget for NativeBudget {
             }
         };
         super::native_budget::reserve(&self.local, physical, bytes)
-            .map(|ticket| Box::new(ticket) as Box<dyn MemoryReservation>)
+            .map(|ticket| {
+                #[cfg(feature = "profiling")]
+                eprintln!(
+                    "[reel-video] reserve owner={} class={class:?} bytes={bytes} local_used={} local_peak={}",
+                    self.owner,
+                    self.local.usage().bytes,
+                    self.local.usage().peak_bytes,
+                );
+                Box::new(ticket) as Box<dyn MemoryReservation>
+            })
             .map_err(|mut error| {
                 error.message = format!("{} {class:?}: {}", self.owner, error.message);
                 match error.code {
@@ -180,6 +189,7 @@ impl VitaDecoder {
             })
         })? {
             NativePoll::Ready(next) => {
+                reel_core::profile::count(reel_core::profile::Phase::VideoDecoded);
                 let previous = self.pending.replace(next);
                 let Some(mut previous) = previous else {
                     return Ok(None);
