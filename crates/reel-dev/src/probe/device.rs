@@ -262,14 +262,10 @@ fn renderer_case(
         let (submit, present) = loop {
             let start = Instant::now();
             let mut present_start = start;
-            let mut checkpoint_error = None;
             let outcome = renderer.render_present(&frame, || {
                 present_start = Instant::now();
-                checkpoint_error = checkpoint(trace, case, index, "present").err();
+                checkpoint(trace, case, index, "present");
             });
-            if let Some(error) = checkpoint_error {
-                return Err(error);
-            }
             match outcome {
                 Ok(PresentOutcome::PresentAccepted(id)) => {
                     if id != frame.frame_id() {
