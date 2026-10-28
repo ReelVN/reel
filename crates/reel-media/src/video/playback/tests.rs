@@ -98,6 +98,9 @@ fn wait(mut ready: impl FnMut() -> bool) {
     }
 }
 fn movie(audio_first: bool) -> (VideoPlayback, BudgetPool) {
+    movie_at(audio_first, Duration::ZERO)
+}
+fn movie_at(audio_first: bool, start: Duration) -> (VideoPlayback, BudgetPool) {
     let budget = BudgetPool::new(
         BudgetCategory::CpuOutput,
         QueueLimits {
@@ -111,6 +114,7 @@ fn movie(audio_first: bool) -> (VideoPlayback, BudgetPool) {
         VideoOptions {
             queued_video_frames: 2,
             queued_audio_frames: 2,
+            start,
             ..Default::default()
         },
         budget.clone(),
@@ -212,9 +216,82 @@ fn split_clock_reads_complete_publications() {
         finished.store(false, Ordering::Release);
     });
     while running.load(Ordering::Acquire) {
-        assert!(values.contains(&clock.load().to_bits()));
+        if let Some(value) = clock.try_load() {
+            assert!(values.contains(&value.to_bits()));
+        }
     }
     worker.join().unwrap();
+    assert_eq!(clock.try_load().unwrap().to_bits(), values[1]);
+}
+
+#[test]
+fn unfinished_clock_publication_returns_before_writer_finishes() {
+    let clock = Arc::new(Clock::new(f64::from_bits(0x3ff0_0000_ffff_ffff)));
+    let next = 0x4000_0000_1111_1111;
+    clock.sequence.fetch_add(1, Ordering::AcqRel);
+    clock.low.store(next as u32, Ordering::Relaxed);
+    let reader = clock.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || send.send(reader.try_load()).unwrap());
+    // Complete the publication only after the read returns (or its deadline).
+    // A retrying reader fails this check without hanging the test process.
+    let observed = receive.recv_timeout(Duration::from_secs(3));
+    clock.high.store((next >> 32) as u32, Ordering::Relaxed);
+    clock.sequence.fetch_add(1, Ordering::Release);
+    worker.join().unwrap();
+    assert_eq!(observed, Ok(None));
+    assert_eq!(clock.try_load().unwrap().to_bits(), next);
+}
+
+#[test]
+fn playback_retains_its_own_clock_snapshot_across_incomplete_publications() {
+    // Each seek opens a fresh playback generation at its target. A later
+    // generation may seek backwards and starts with its own complete snapshot.
+    for start in [1.25, 0.25] {
+        let (mut movie, budget) = movie_at(false, Duration::from_secs_f64(start));
+        let mut audio = None;
+        wait(|| {
+            audio = movie.take_audio();
+            audio.is_some()
+        });
+        assert_eq!(movie.shared.transport.clock.try_load(), Some(start));
+        for complete in [None, Some(start + 0.125)] {
+            if let Some(position) = complete {
+                movie.shared.transport.clock.store(position);
+                movie.tick(Duration::ZERO);
+            }
+            let expected = complete.unwrap_or(start);
+            let next = (expected + 0.125).to_bits();
+            let transport = movie.shared.transport.clone();
+            transport.clock.sequence.fetch_add(1, Ordering::AcqRel);
+            transport.clock.low.store(next as u32, Ordering::Relaxed);
+            let (release, resume) = std::sync::mpsc::channel();
+            let writer = thread::spawn(move || {
+                // A regressed tick can finish after the timeout, then fail the
+                // retained-position assertion instead of hanging the suite.
+                let _ = resume.recv_timeout(Duration::from_secs(3));
+                transport
+                    .clock
+                    .high
+                    .store((next >> 32) as u32, Ordering::Relaxed);
+                transport.clock.sequence.fetch_add(1, Ordering::Release);
+            });
+            movie.tick(Duration::from_millis(10));
+            let retained = movie.position();
+            let state_position = movie.shared.state.lock().unwrap().position;
+            let _ = release.send(());
+            writer.join().unwrap();
+            assert_eq!(retained, Duration::from_secs_f64(expected));
+            assert_eq!(state_position, expected);
+            movie.tick(Duration::ZERO);
+            assert_eq!(movie.position(), Duration::from_secs_f64(expected + 0.125));
+        }
+        movie.cancel();
+        wait(|| movie.worker_finished());
+        drop(audio);
+        drop(movie);
+        assert_eq!(budget.usage().bytes, 0);
+    }
 }
 
 #[test]

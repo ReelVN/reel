@@ -103,20 +103,15 @@ impl Clock {
         self.high.store((bits >> 32) as u32, Ordering::Relaxed);
         self.sequence.fetch_add(1, Ordering::Release);
     }
-    fn load(&self) -> f64 {
-        loop {
-            let before = self.sequence.load(Ordering::Acquire);
-            if before & 1 != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let bits = u64::from(self.low.load(Ordering::Relaxed))
-                | (u64::from(self.high.load(Ordering::Relaxed)) << 32);
-            fence(Ordering::Acquire);
-            if before == self.sequence.load(Ordering::Relaxed) {
-                return f64::from_bits(bits);
-            }
+    fn try_load(&self) -> Option<f64> {
+        let before = self.sequence.load(Ordering::Acquire);
+        if before & 1 != 0 {
+            return None;
         }
+        let bits = u64::from(self.low.load(Ordering::Relaxed))
+            | (u64::from(self.high.load(Ordering::Relaxed)) << 32);
+        fence(Ordering::Acquire);
+        (before == self.sequence.load(Ordering::Relaxed)).then(|| f64::from_bits(bits))
     }
 }
 struct Transport {
@@ -392,6 +387,8 @@ impl VideoPlayback {
             .store(paused, Ordering::Release);
         self.shared.signal();
     }
+    /// Advance time without waiting for the PCM writer. A concurrent clock
+    /// publication retains this controller's last complete position until a later tick.
     pub fn tick(&mut self, elapsed: Duration) {
         let transport = &self.shared.transport;
         let mut state = self.shared.state.lock().unwrap();
@@ -403,8 +400,10 @@ impl VideoPlayback {
         };
         let end = self.options.end.map(|e| e.as_secs_f64()).or(info.duration);
         if info.audio_sample_rate.is_some() && !transport.audio_drained.load(Ordering::Acquire) {
-            if self.audio_clock {
-                self.position = transport.clock.load();
+            if self.audio_clock
+                && let Some(position) = transport.clock.try_load()
+            {
+                self.position = position;
             }
         } else {
             self.position += elapsed.as_secs_f64();
