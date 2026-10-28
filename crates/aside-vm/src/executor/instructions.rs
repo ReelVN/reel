@@ -134,8 +134,7 @@ impl Vm {
                 return Ok(false);
             }
             Opcode::ChildrenPush => {
-                let array = self.read(s.regs, r(a))?;
-                let child = self.read(s.regs, r(b))?;
+                let (array, child) = self.read_pair(s.regs, a, b)?;
                 if !child.same_bits(Value::NULL) {
                     if !self.heap.is_composable_host(child).map_err(heap_fault)? {
                         return Err(FaultKind::Type);
@@ -144,8 +143,7 @@ impl Vm {
                 }
             }
             Opcode::ArrayPush => {
-                let array = self.read(s.regs, r(a))?;
-                let value = self.read(s.regs, r(b))?;
+                let (array, value) = self.read_pair(s.regs, a, b)?;
                 self.heap.array_push(array, value).map_err(heap_fault)?;
             }
             Opcode::TableSpread => {
@@ -373,8 +371,7 @@ impl Vm {
                 return Ok(false);
             }
             Opcode::IndexGet => {
-                let object = self.read(s.regs, r(b))?;
-                let index = self.read(s.regs, r(c))?;
+                let (object, index) = self.read_pair(s.regs, b, c)?;
                 if self.is_text(object, ObjectKind::Host) {
                     let fields = match self.heap.host_fields(object) {
                         Ok(fields) => fields,
@@ -403,8 +400,7 @@ impl Vm {
                 self.write(s.regs, r(a), value)?;
             }
             Opcode::IndexSet => {
-                let object = self.read(s.regs, r(a))?;
-                let index = self.read(s.regs, r(b))?;
+                let (object, index) = self.read_pair(s.regs, a, b)?;
                 if self.is_text(object, ObjectKind::Host) {
                     let fields = self.heap.host_fields(object).map_err(heap_fault)?;
                     self.start_table(
@@ -471,8 +467,7 @@ impl Vm {
                 self.write(s.regs, r(a), v)?;
             }
             Opcode::CellWrite => {
-                let cell = self.read(s.regs, r(a))?;
-                let v = self.read(s.regs, r(b))?;
+                let (cell, v) = self.read_pair(s.regs, a, b)?;
                 let contract = self.heap.cell_info(cell).map_err(heap_fault)?.contract;
                 self.check_cell_type(contract, v)?;
                 self.heap.cell_write(cell, v).map_err(heap_fault)?;
@@ -603,8 +598,7 @@ impl Vm {
             | Opcode::Le
             | Opcode::Gt
             | Opcode::Ge => {
-                let left = self.read(s.regs, r(b))?;
-                let right = self.read(s.regs, r(c))?;
+                let (left, right) = self.read_pair(s.regs, b, c)?;
                 if matches!(op, Opcode::Eq | Opcode::Ne)
                     && left.tag() == ValueTag::Object
                     && right.tag() == ValueTag::Object
@@ -689,8 +683,7 @@ impl Vm {
                 self.write(s.regs, r(a), packed)?;
             }
             Opcode::ArgsPush | Opcode::ArgsNamed => {
-                let packed = self.read(s.regs, r(a))?;
-                let v = self.read(s.regs, r(b))?;
+                let (packed, v) = self.read_pair(s.regs, a, b)?;
                 let len = self.heap.packed_array_len(packed).map_err(heap_fault)?;
                 if len / 2 >= self.limits.max_arguments {
                     return Err(FaultKind::Resource);
@@ -708,8 +701,7 @@ impl Vm {
                     .map_err(heap_fault)?;
             }
             Opcode::ArgsSpread | Opcode::ArraySpread => {
-                let packed = self.read(s.regs, r(a))?;
-                let source = self.read(s.regs, r(b))?;
+                let (packed, source) = self.read_pair(s.regs, a, b)?;
                 let arguments = op == Opcode::ArgsSpread;
                 let named = arguments && self.is_text(source, ObjectKind::Table);
                 if !named

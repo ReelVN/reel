@@ -104,6 +104,8 @@ pub struct FrameSlots {
     active_ranges: u32,
     largest_free: u32,
     closed: bool,
+    #[cfg(test)]
+    pub(crate) paired_reads: bool,
     // Keep the bounded inline control metadata charged until this owner drops.
     control_charge: Reservation,
 }
@@ -184,6 +186,8 @@ impl FrameSlots {
             active_ranges: 0,
             largest_free: limits.initial_capacity,
             closed: false,
+            #[cfg(test)]
+            paired_reads: true,
             control_charge,
         })
     }
@@ -481,6 +485,39 @@ impl FrameSlots {
             return Err(HeapError::UninitializedSlot);
         }
         Ok(self.values.as_ref().unwrap().data[i])
+    }
+    /// Read two operands in source order using one validated window mapping.
+    pub(crate) fn read_pair(
+        &self,
+        range: RootRangeToken,
+        first: u32,
+        second: u32,
+    ) -> Result<(Value, Value), HeapError> {
+        #[cfg(test)]
+        if !self.paired_reads {
+            return Ok((
+                self.read(RangePosition {
+                    range,
+                    index: first,
+                })?,
+                self.read(RangePosition {
+                    range,
+                    index: second,
+                })?,
+            ));
+        }
+        let w = self.window(range)?;
+        let read = |index: u32| {
+            if index >= w.len {
+                return Err(HeapError::OutOfBounds);
+            }
+            let index = (w.base + index) as usize;
+            if !self.initialized(index) {
+                return Err(HeapError::UninitializedSlot);
+            }
+            Ok(self.values.as_ref().unwrap().data[index])
+        };
+        Ok((read(first)?, read(second)?))
     }
     pub fn borrow_initialized(&self, range: RootRangeToken) -> Result<&[Value], HeapError> {
         let w = self.window(range)?;
@@ -849,6 +886,52 @@ impl Drop for FrameSlots {
 mod tests {
     use super::*;
     use crate::{GcBudget, GcPhase, HeapLimits};
+
+    #[test]
+    fn paired_operands_preserve_first_failure_and_relocated_mapping() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let mut slots = FrameSlots::new(
+            &mut heap,
+            FrameSlotsLimits {
+                initial_capacity: 8,
+                max_capacity: 64,
+                max_window_len: 64,
+            },
+        )
+        .unwrap();
+        let range = slots
+            .open(&mut heap, RootOwner(1), RootKind::TaskFrame, 4)
+            .unwrap();
+        assert!(matches!(
+            slots.read_pair(range, 0, 99),
+            Err(HeapError::UninitializedSlot)
+        ));
+        slots
+            .write(&mut heap, RangePosition { range, index: 0 }, Value::int(17))
+            .unwrap();
+        assert!(matches!(
+            slots.read_pair(range, 0, 99),
+            Err(HeapError::OutOfBounds)
+        ));
+        assert!(matches!(
+            slots.read_pair(range, 0, 1),
+            Err(HeapError::UninitializedSlot)
+        ));
+        slots
+            .write(&mut heap, RangePosition { range, index: 1 }, Value::NULL)
+            .unwrap();
+        slots.relocate(&mut heap, 32).unwrap();
+        let (first, second) = slots.read_pair(range, 0, 1).unwrap();
+        assert_eq!(first.as_int(), Some(17));
+        assert!(second.same_bits(Value::NULL));
+        let (first, second) = slots.read_pair(range, 0, 0).unwrap();
+        assert!(first.same_bits(second));
+        slots.release(&mut heap, range).unwrap();
+        assert!(matches!(
+            slots.read_pair(range, 0, 1),
+            Err(HeapError::InvalidRootRange)
+        ));
+    }
 
     #[test]
     fn recycled_windows_clear_only_their_initialization_bits_at_word_boundaries() {

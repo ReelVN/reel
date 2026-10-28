@@ -766,6 +766,16 @@ impl Vm {
     fn read(&self, regs: RootRangeToken, reg: Reg) -> Result<Value, FaultKind> {
         self.slots.read(at(regs, reg.0)).map_err(heap_fault)
     }
+    fn read_pair(
+        &self,
+        regs: RootRangeToken,
+        first: u32,
+        second: u32,
+    ) -> Result<(Value, Value), FaultKind> {
+        self.slots
+            .read_pair(regs, first, second)
+            .map_err(heap_fault)
+    }
     fn write(&mut self, regs: RootRangeToken, reg: Reg, v: Value) -> Result<(), FaultKind> {
         self.slots
             .write(&mut self.heap, at(regs, reg.0), v)

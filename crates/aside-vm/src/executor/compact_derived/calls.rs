@@ -386,3 +386,24 @@ fn packed_derived_lookup_cost() {
         );
     }
 }
+
+#[test]
+#[ignore = "release differential paired-register derived measurement"]
+fn packed_derived_operand_cost() {
+    for paired in [false, true, true, false] {
+        let (mut vm, output, _, _) = prepared_storage(false, true, false, true);
+        vm.slots.paired_reads = paired;
+        let start = std::time::Instant::now();
+        for _ in 0..100000 {
+            let task = vm.start_derived(output, RootOwner(1)).unwrap();
+            let RunOutcome::Returned(delivery) = drive(&mut vm, task, false).0 else {
+                panic!("derive");
+            };
+            vm.discard_delivery(delivery).unwrap();
+        }
+        eprintln!(
+            "packed_derived_operands paired={paired} evaluations=100000 elapsed_us={}",
+            start.elapsed().as_micros()
+        );
+    }
+}
