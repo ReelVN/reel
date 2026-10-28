@@ -329,6 +329,7 @@ fn targets(frame: &RenderFrame, selection: &retained::Plan, samples: u32) -> u64
         masks: target_plan::MaskExecution::Sampled,
         selection,
         cost: &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
+        coverage_cost: None,
     }
     .measure(|_| Ok(()))
     .unwrap()

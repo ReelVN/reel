@@ -2,18 +2,62 @@
 use super::{GpuError, native, replay::Context, resources::Target};
 use crate::common::renderer::Reservation;
 
+pub(super) fn cost(
+    gpu: &super::ownership::Device,
+    size: [u32; 2],
+    coverage: bool,
+) -> Result<u64, GpuError> {
+    let format = if coverage {
+        native::TargetFormat::Coverage8
+    } else {
+        native::TargetFormat::Rgba8
+    };
+    Ok(gpu.target_layout(size, format)?.texture_bytes)
+}
+
 impl Context<'_> {
     pub fn target(&mut self) -> Result<Target, GpuError> {
-        self.flush_draws()?;
-        let storage_size = self.offscreen.storage_size(self.size);
-        let mut target = if let Some(index) = self
-            .available_targets
-            .iter()
-            .rposition(|target| target.view.size() == storage_size)
+        self.target_for(false)
+    }
+    pub fn coverage_target(&mut self) -> Result<Target, GpuError> {
+        self.target_for(true)
+    }
+    pub(super) fn clip_target(
+        &mut self,
+        group: Option<&reel_ui::frame::FrameGroup>,
+        delayed: bool,
+    ) -> Result<Target, GpuError> {
+        if self.offscreen.coverage_enabled()
+            && crate::common::target_plan::single_clip(group, delayed)
         {
+            self.coverage_target()
+        } else {
+            self.target()
+        }
+    }
+    fn target_for(&mut self, coverage: bool) -> Result<Target, GpuError> {
+        self.flush_draws()?;
+        let format = if coverage {
+            native::TargetFormat::Coverage8
+        } else {
+            native::TargetFormat::Rgba8
+        };
+        let texture_format = if coverage {
+            native::TextureFormat::Coverage8
+        } else {
+            native::TextureFormat::Rgba8
+        };
+        let storage_size = if coverage {
+            self.size
+        } else {
+            self.offscreen.storage_size(self.size)
+        };
+        let mut target = if let Some(index) = self.available_targets.iter().rposition(|target| {
+            target.view.size() == storage_size && target.view.format() == texture_format
+        }) {
             self.available_targets.swap_remove(index)
         } else {
-            let bytes = self.gpu.target_layout(storage_size)?.texture_bytes;
+            let bytes = self.gpu.target_layout(storage_size, format)?.texture_bytes;
             let local = self
                 .budget_scope
                 .targets
@@ -31,14 +75,29 @@ impl Context<'_> {
             let index = self
                 .targets
                 .iter()
-                .filter(|target| target.view.size() == storage_size && !target.is_effect_pinned())
+                .filter(|target| {
+                    target.view.size() == storage_size
+                        && target.view.format() == texture_format
+                        && !target.is_effect_pinned()
+                })
                 .count();
-            let mut target = if let Some(target) = self.target_cache.get(storage_size, index) {
+            let cache = if coverage {
+                &mut self.coverage_target_cache
+            } else {
+                &mut self.target_cache
+            };
+            let requirements = if coverage {
+                self.offscreen.coverage_requirements()
+            } else {
+                self.offscreen.requirements()
+            };
+            let mut target = if let Some(target) = cache.get(storage_size, index) {
                 target
             } else {
                 let mut allocation = Target::new(
                     self.gpu,
                     storage_size,
+                    format,
                     &self.budgets.targets,
                     self.limits.target_bytes,
                 );
@@ -46,13 +105,11 @@ impl Context<'_> {
                 // failure keeps its original owner/ticket retirement path.
                 for recent in [false, true] {
                     while matches!(allocation, Err((GpuError::Pressure { .. }, None))) {
-                        if self
-                            .target_cache
-                            .reclaim(self.offscreen.requirements(), recent)
-                        {
+                        if cache.reclaim(requirements, recent) {
                             allocation = Target::new(
                                 self.gpu,
                                 storage_size,
+                                format,
                                 &self.budgets.targets,
                                 self.limits.target_bytes,
                             );
@@ -74,7 +131,7 @@ impl Context<'_> {
                         return Err(error);
                     }
                 };
-                self.target_cache.insert(
+                cache.insert(
                     &target,
                     &self.budgets.transient,
                     self.limits.transient_bytes,

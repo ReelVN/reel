@@ -7,6 +7,8 @@ pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
     let bytes = match quality.format {
         wgpu::TextureFormat::Rgba16Float => 8,
         wgpu::TextureFormat::Rgba8Unorm => 4,
+        wgpu::TextureFormat::R16Float => 2,
+        wgpu::TextureFormat::R8Unorm => 1,
         _ => return Err(GpuError::InvalidSize),
     };
     u64::from(size[0])
@@ -142,6 +144,25 @@ impl Target {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coverage_formats_keep_precision_and_charge_resolve_and_samples() {
+        for (format, bytes) in [
+            (wgpu::TextureFormat::R8Unorm, 1),
+            (wgpu::TextureFormat::R16Float, 2),
+        ] {
+            for samples in [1, 4] {
+                let quality = Quality {
+                    format,
+                    samples,
+                    degraded: false,
+                };
+                assert_eq!(
+                    target_bytes([321, 127], quality).unwrap(),
+                    321 * 127 * bytes * if samples == 1 { 1 } else { 5 }
+                );
+            }
+        }
+    }
     #[test]
     fn resolve_and_msaa_are_both_charged() {
         assert_eq!(

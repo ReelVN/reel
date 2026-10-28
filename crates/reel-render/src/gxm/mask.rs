@@ -114,7 +114,7 @@ impl Context<'_> {
                 |at| GpuError::Unsupported { at, record },
             )
         };
-        let target = self.target()?;
+        let target = self.coverage_target()?;
         let Some(uv) = mask_uv(definition, transform) else {
             return Ok(target);
         };

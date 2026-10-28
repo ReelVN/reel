@@ -9,6 +9,7 @@ use wgpu::util::DeviceExt;
 #[derive(Default)]
 pub(super) struct PipelineSlots {
     slots: [Mutex<Option<Arc<Pipelines>>>; 3],
+    coverage: [Mutex<Option<Arc<wgpu::RenderPipeline>>>; 3],
     // Publish the first failed constructor before another quality tier starts.
     construction: Mutex<()>,
     #[cfg(test)]
@@ -21,6 +22,53 @@ impl PipelineSlots {
             .iter()
             .filter(|slot| slot.lock().unwrap().is_some())
             .count()
+    }
+    #[cfg(test)]
+    pub(super) fn coverage_count(&self) -> usize {
+        self.coverage
+            .iter()
+            .filter(|slot| slot.lock().unwrap().is_some())
+            .count()
+    }
+    pub(super) fn get_coverage(
+        &self,
+        gpu: &Gpu,
+        color: Quality,
+        pipelines: &Pipelines,
+    ) -> Result<Arc<wgpu::RenderPipeline>, GpuError> {
+        let quality = gpu
+            .coverage_quality(color)
+            .ok_or_else(|| GpuError::Device("unsupported coverage quality".into()))?;
+        let index = match (color.format, color.samples) {
+            (wgpu::TextureFormat::Rgba16Float, 4) => 0,
+            (wgpu::TextureFormat::Rgba16Float, 1) => 1,
+            (wgpu::TextureFormat::Rgba8Unorm, 1) => 2,
+            _ => return Err(GpuError::InvalidSize),
+        };
+        let mut slot = self.coverage[index]
+            .lock()
+            .expect("coverage pipeline slot poisoned");
+        if let Some(pipeline) = &*slot {
+            return Ok(pipeline.clone());
+        }
+        let _construction = self
+            .construction
+            .lock()
+            .expect("pipeline construction poisoned");
+        gpu.check()?;
+        let result = validated(gpu, || {
+            Arc::new(pipeline(
+                &gpu.device,
+                quality,
+                &pipelines.paint_layout,
+                include_str!("paint.wgsl"),
+                true,
+                #[cfg(test)]
+                Some(&self.creations),
+            ))
+        })?;
+        *slot = Some(result.clone());
+        Ok(result)
     }
     pub(super) fn prune_masks(&self) {
         for slot in &self.slots {
@@ -153,7 +201,10 @@ impl CompositeParams {
             softness.to_bits(),
             self.invert.to_bits(),
             self.blend,
-            0,
+            u32::from(matches!(
+                mask.texture().format(),
+                wgpu::TextureFormat::R8Unorm | wgpu::TextureFormat::R16Float
+            )),
             0,
             uv[0],
             uv[1],

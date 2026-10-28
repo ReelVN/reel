@@ -929,7 +929,14 @@ impl Context<'_> {
                 .upload_creations
                 .draws
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let pipeline = if entry.state.coverage {
+            let pipeline = if matches!(
+                batch.target.texture.format(),
+                wgpu::TextureFormat::R8Unorm | wgpu::TextureFormat::R16Float
+            ) {
+                self.coverage_pipeline
+                    .as_ref()
+                    .expect("admitted coverage pipeline")
+            } else if entry.state.coverage {
                 #[cfg(test)]
                 self.pipelines
                     .coverage_draws

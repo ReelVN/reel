@@ -39,6 +39,9 @@ pub(super) struct Context<'a> {
     pub(super) effect_uniform_slots: Vec<super::effect_uniform::Storage>,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
+    pub(super) coverage_target_cache: &'a super::target_cache::TargetCache,
+    pub(super) coverage_quality: Option<Quality>,
+    pub(super) coverage_pipeline: Option<Arc<wgpu::RenderPipeline>>,
     pub(super) retained_cache: &'a crate::common::retained::Cache<super::retained::Output, Quality>,
     pub(super) selection: Arc<crate::common::retained::Plan>,
     pub(super) retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
@@ -124,16 +127,29 @@ struct Stream<'a> {
 }
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
+        self.target_for(false)
+    }
+    pub(super) fn coverage_target(&mut self) -> Result<Target, GpuError> {
+        self.target_for(true)
+    }
+    fn target_for(&mut self, coverage: bool) -> Result<Target, GpuError> {
         self.flush_draws()?;
-        let storage_size = self.offscreen.storage_size(self.size);
-        let mut target = if let Some(index) = self
-            .available_targets
-            .iter()
-            .rposition(|target| target.storage_size() == storage_size)
-        {
+        let quality = if coverage {
+            self.coverage_quality.expect("admitted coverage format")
+        } else {
+            self.quality
+        };
+        let storage_size = if coverage {
+            self.size
+        } else {
+            self.offscreen.storage_size(self.size)
+        };
+        let mut target = if let Some(index) = self.available_targets.iter().rposition(|target| {
+            target.storage_size() == storage_size && target.texture.format() == quality.format
+        }) {
             self.available_targets.swap_remove(index)
         } else {
-            let cost = target_bytes(storage_size, self.quality)?;
+            let cost = target_bytes(storage_size, quality)?;
             let local = self
                 .budget_scope
                 .targets
@@ -147,20 +163,31 @@ impl Context<'_> {
                         .target_bytes
                         .saturating_sub(self.budget_scope.targets.usage().bytes),
                 })?;
-            let allocation = self.target_cache.get(
+            let cache = if coverage {
+                self.coverage_target_cache
+            } else {
+                self.target_cache
+            };
+            let requirements = if coverage {
+                self.offscreen.coverage_requirements()
+            } else {
+                self.offscreen.requirements()
+            };
+            let allocation = cache.get(
                 self.gpu,
                 storage_size,
-                self.quality,
+                quality,
                 self.target_allocations
                     .iter()
                     .filter(|allocation| {
                         allocation.target.storage_size() == storage_size
+                            && allocation.target.texture.format() == quality.format
                             && !allocation.target.is_effect_pinned()
                     })
                     .count(),
                 &self.budgets.targets,
                 cost,
-                self.offscreen.requirements(),
+                requirements,
             )?;
             self.tickets.push(Reservation {
                 _shared: None,
@@ -936,7 +963,16 @@ impl Context<'_> {
                         }
                     }
                     if let Some(clip) = group.clip {
-                        let coverage = self.target()?;
+                        let single = self.offscreen.coverage_enabled()
+                            && crate::common::target_plan::single_clip(
+                                group.group,
+                                group.delayed.is_some(),
+                            );
+                        let coverage = if single {
+                            self.coverage_target()?
+                        } else {
+                            self.target()?
+                        };
                         self.clip(&coverage, clip, transform, entry.at)?;
                         if let Some((effect, effect_transform, at)) = terminal_effect {
                             if nested {

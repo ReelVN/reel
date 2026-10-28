@@ -1,4 +1,4 @@
-struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32, blend: u32, source_uv: vec4<f32>, mask_uv: vec4<f32>, backdrop_uv: vec4<f32> /*MASK_FIELDS*/ };
+struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32, blend: u32, mask_red: u32, source_uv: vec4<f32>, mask_uv: vec4<f32>, backdrop_uv: vec4<f32> /*MASK_FIELDS*/ };
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var mask: texture_2d<f32>;
 @group(0) @binding(2) var linear_sampler: sampler;
@@ -45,7 +45,7 @@ fn covered_source(v: Varying) -> vec4<f32> {
         return mix(s, m, clamp(expression_coverage(v.pos.xy), 0.0, 1.0));
     }
     var coverage = 1.0;
-    if params.mode == 1u { coverage = clamp(m.a, 0.0, 1.0); }
+    if params.mode == 1u { coverage = clamp(select(m.a, m.r, params.mask_red != 0u), 0.0, 1.0); }
     if params.mode == 2u { coverage = clamp(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0); }
     return s * coverage * params.opacity * expression_coverage(v.pos.xy);
 }
@@ -101,8 +101,12 @@ fn separable(s: vec4<f32>, d: vec4<f32>, mode: u32) -> vec4<f32> {
     return textureSample(source, linear_sampler, v.source_uv) * params.opacity;
 }
 
+fn mask_alpha(v: Varying) -> f32 {
+    let value = textureSample(mask, linear_sampler, v.mask_uv);
+    return select(value.a, value.r, params.mask_red != 0u);
+}
 @fragment fn alpha_mask(v: Varying) -> @location(0) vec4<f32> {
-    return textureSample(source, linear_sampler, v.source_uv) * clamp(textureSample(mask, linear_sampler, v.mask_uv).a, 0.0, 1.0) * params.opacity;
+    return textureSample(source, linear_sampler, v.source_uv) * clamp(mask_alpha(v), 0.0, 1.0) * params.opacity;
 }
 
 @fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {

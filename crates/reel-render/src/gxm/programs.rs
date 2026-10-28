@@ -430,12 +430,13 @@ impl Target {
     pub fn new(
         context: &super::ownership::Device,
         size: [u32; 2],
+        format: native::TargetFormat,
         budget: &BudgetPool,
         limit: u64,
     ) -> Result<Self, (GpuError, Option<super::ownership::NativeTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
         let bytes = context
-            .target_layout(size)
+            .target_layout(size, format)
             .map_err(|error| (error.into(), None))?
             .texture_bytes;
         let storage = budget.reserve(bytes).map_err(|_| {
@@ -450,7 +451,7 @@ impl Target {
         })?;
         let storage = context.ticket(storage);
         let built = (|| {
-            let view = super::super::create_target_texture(context, size)?;
+            let view = super::super::create_target_texture(context, size, format)?;
             let framebuffer = context.framebuffer(&view)?;
             Ok::<_, native::Error>((view, framebuffer))
         })();

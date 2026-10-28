@@ -62,6 +62,11 @@ impl Requirements {
     }
 }
 
+/// A clip can use a scalar surface only if no precompiled effect tail consumes it.
+pub(crate) fn single_clip(group: Option<&FrameGroup>, delayed: bool) -> bool {
+    !delayed && group.is_none_or(|group| group.effect.is_none() && group.mask_effect.is_none())
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum MaskExecution {
     #[cfg_attr(
@@ -103,6 +108,7 @@ mod plan_tests;
 #[derive(Default)]
 struct Scratch {
     buckets: Vec<Bucket>,
+    coverage: Vec<Bucket>,
     local_backdrop: bool,
     events: Option<Vec<super::target_storage::Event>>,
 }
@@ -166,22 +172,70 @@ impl Scratch {
         bucket.live = bucket.live.checked_sub(1).expect("live target");
         Ok(())
     }
+    fn coverage(
+        &mut self,
+        size: [u32; 2],
+        acquired: bool,
+        reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<(), GpuError> {
+        if let Some(bucket) = self.coverage.iter_mut().find(|bucket| bucket.size == size) {
+            if acquired {
+                bucket.live += 1;
+                bucket.peak = bucket.peak.max(bucket.live);
+            } else {
+                bucket.live = bucket.live.checked_sub(1).expect("live coverage target");
+            }
+        } else {
+            assert!(acquired, "coverage target was acquired");
+            super::scopes::push_stack(
+                &mut self.coverage,
+                Bucket {
+                    size,
+                    live: 1,
+                    peak: 1,
+                },
+                reserve,
+            )?;
+        }
+        Ok(())
+    }
+    fn coverage_cost(
+        &self,
+        cost: Option<&dyn Fn([u32; 2]) -> Result<u64, GpuError>>,
+    ) -> Result<u64, GpuError> {
+        let Some(cost) = cost else { return Ok(0) };
+        self.coverage.iter().try_fold(0u64, |total, bucket| {
+            cost(bucket.size)?
+                .checked_mul(bucket.peak)
+                .and_then(|v| total.checked_add(v))
+                .ok_or(GpuError::InvalidSize)
+        })
+    }
     fn composite(
         &mut self,
         size: [u32; 2],
         needed: bool,
         mask_surface: bool,
+        single_mask: bool,
         reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<(), GpuError> {
         if mask_surface {
-            self.acquire(size, reserve)?;
+            if single_mask {
+                self.coverage(size, true, reserve)?;
+            } else {
+                self.acquire(size, reserve)?;
+            }
         }
         if needed {
             self.acquire(size, reserve)?;
             self.release(size, reserve)?;
         }
         if mask_surface {
-            self.release(size, reserve)?;
+            if single_mask {
+                self.coverage(size, false, reserve)?;
+            } else {
+                self.release(size, reserve)?;
+            }
         }
         Ok(())
     }
@@ -325,6 +379,7 @@ pub(crate) fn target_pixels(
         masks,
         selection,
         cost: &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
+        coverage_cost: None,
     }
     .measure(reserve)
     .map(|measured| measured.bytes / 4)
@@ -344,15 +399,29 @@ pub(crate) struct Input<'a> {
     pub masks: MaskExecution,
     pub selection: &'a super::retained::Plan,
     pub cost: &'a dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+    pub coverage_cost: Option<&'a dyn Fn([u32; 2]) -> Result<u64, GpuError>>,
 }
 
 pub(crate) struct Measured {
     pub bytes: u64,
     pub reusable: bool,
     pub local_backdrop: bool,
+    pub coverage_bytes: u64,
     scratch: Scratch,
 }
 impl Measured {
+    pub(crate) fn coverage_requirements(
+        &self,
+        reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<Requirements, GpuError> {
+        Requirements::collect(
+            self.scratch
+                .coverage
+                .iter()
+                .map(|bucket| (bucket.size, bucket.peak)),
+            reserve,
+        )
+    }
     pub(crate) fn requirements(
         &self,
         reserve: impl FnMut(u64) -> Result<(), GpuError>,
@@ -380,14 +449,17 @@ impl Input<'_> {
             .take(2)
             .count()
             == 2;
+        let coverage_bytes = scratch.coverage_cost(self.coverage_cost)?;
         let bytes = scratch
             .cost(self.cost)?
-            .checked_add(self.selection.persistent_bytes())
+            .checked_add(coverage_bytes)
+            .and_then(|v| v.checked_add(self.selection.persistent_bytes()))
             .ok_or(GpuError::InvalidSize)?;
         Ok(Measured {
             bytes,
             reusable,
             local_backdrop: scratch.local_backdrop,
+            coverage_bytes,
             scratch,
         })
     }
@@ -414,7 +486,8 @@ impl Input<'_> {
         )?;
         let bytes = plan
             .bytes()
-            .checked_add(self.selection.persistent_bytes())
+            .checked_add(scratch.coverage_cost(self.coverage_cost)?)
+            .and_then(|v| v.checked_add(self.selection.persistent_bytes()))
             .ok_or(GpuError::InvalidSize)?;
         Ok((plan, bytes, retained))
     }
@@ -436,6 +509,7 @@ impl Input<'_> {
             masks,
             selection,
             cost: _,
+            coverage_cost,
         } = *self;
         let mut scratch = Scratch {
             events: record.then(Vec::new),
@@ -573,7 +647,13 @@ impl Input<'_> {
                             mask_surface,
                             cached,
                         } => {
-                            scratch.composite(parent.size, false, mask_surface, &mut reserve)?;
+                            scratch.composite(
+                                parent.size,
+                                false,
+                                mask_surface,
+                                coverage_cost.is_some(),
+                                &mut reserve,
+                            )?;
                             if !cached {
                                 scratch.release(source, &mut reserve)?;
                             }
@@ -584,7 +664,13 @@ impl Input<'_> {
                             backdrop,
                             mask_surface,
                         } => {
-                            scratch.composite(parent.size, backdrop, mask_surface, &mut reserve)?;
+                            scratch.composite(
+                                parent.size,
+                                backdrop,
+                                mask_surface,
+                                coverage_cost.is_some(),
+                                &mut reserve,
+                            )?;
                             scratch.release(source, &mut reserve)?;
                             scratch.release(finished.size, &mut reserve)?;
                         }
@@ -866,6 +952,7 @@ impl Input<'_> {
                                         schedule.backdrop_size(source, current.size),
                                         backdrop,
                                         false,
+                                        coverage_cost.is_some(),
                                         &mut reserve,
                                     )?;
                                     scratch.release(source, &mut reserve)?;
@@ -929,20 +1016,35 @@ impl Input<'_> {
                             .group
                             .is_some_and(|group| group.composite.blend != Default::default());
                         if scope.clip {
-                            scratch.acquire(current.size, &mut reserve)?;
+                            let single = coverage_cost.is_some()
+                                && single_clip(scope.group, scope.retained_source.is_some());
+                            if single {
+                                scratch.coverage(current.size, true, &mut reserve)?;
+                            } else {
+                                scratch.acquire(current.size, &mut reserve)?;
+                            }
                             if mask.is_none() {
                                 scratch.composite(
                                     current.size,
                                     backdrop,
                                     masks.surface(scope.group, false),
+                                    coverage_cost.is_some(),
                                     &mut reserve,
                                 )?;
-                                scratch.release(current.size, &mut reserve)?;
+                                if single {
+                                    scratch.coverage(current.size, false, &mut reserve)?;
+                                } else {
+                                    scratch.release(current.size, &mut reserve)?;
+                                }
                                 scratch.release(source, &mut reserve)?;
                                 continue;
                             }
                             scratch.acquire(current.size, &mut reserve)?;
-                            scratch.release(current.size, &mut reserve)?;
+                            if single {
+                                scratch.coverage(current.size, false, &mut reserve)?;
+                            } else {
+                                scratch.release(current.size, &mut reserve)?;
+                            }
                             scratch.release(source, &mut reserve)?;
                             source = current.size;
                         }
@@ -977,6 +1079,7 @@ impl Input<'_> {
                                 current.size,
                                 backdrop,
                                 masks.surface(scope.group, true),
+                                coverage_cost.is_some(),
                                 &mut reserve,
                             )?;
                             scratch.release(source, &mut reserve)?;
@@ -997,6 +1100,51 @@ impl Input<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disjoint_color_and_coverage_lifetimes_keep_distinct_physical_peaks() {
+        let mut scratch = Scratch::default();
+        let mut reserve = |_| Ok(());
+        let size = [64, 32];
+        for _ in 0..2 {
+            scratch.acquire(size, &mut reserve).unwrap();
+        }
+        for _ in 0..2 {
+            scratch.release(size, &mut reserve).unwrap();
+        }
+        for _ in 0..3 {
+            scratch.coverage(size, true, &mut reserve).unwrap();
+        }
+        for _ in 0..3 {
+            scratch.coverage(size, false, &mut reserve).unwrap();
+        }
+        let color = scratch
+            .cost(&|s| Ok(u64::from(s[0]) * u64::from(s[1]) * 4))
+            .unwrap();
+        let coverage = scratch
+            .coverage_cost(Some(&|s| Ok(u64::from(s[0]) * u64::from(s[1]))))
+            .unwrap();
+        assert_eq!((color, coverage), (64 * 32 * 4 * 2, 64 * 32 * 3));
+    }
+    #[test]
+    fn sampled_scalar_mask_keeps_a_distinct_coverage_peak() {
+        let mut scratch = Scratch::default();
+        let mut reserve = |_| Ok(());
+        let size = [63, 31];
+        scratch.acquire(size, &mut reserve).unwrap();
+        scratch
+            .composite(size, true, true, true, &mut reserve)
+            .unwrap();
+        let color = scratch
+            .cost(&|s| Ok(u64::from(s[0]) * u64::from(s[1]) * 4))
+            .unwrap();
+        let alpha = scratch
+            .coverage_cost(Some(&|s| {
+                Ok(u64::from(s[0].next_multiple_of(4)) * u64::from(s[1]))
+            }))
+            .unwrap();
+        assert_eq!(color, 63 * 31 * 4 * 2);
+        assert_eq!(alpha, 64 * 31);
+    }
     #[test]
     fn different_source_sizes_keep_independent_storage_high_water() {
         let mut scratch = Scratch::default();

@@ -65,6 +65,7 @@ pub struct Backend {
     effects: effect::Cache,
     masks: crate::common::mask::split::Cache,
     targets: target_cache::Cache,
+    coverage_targets: target_cache::Cache,
     retained: crate::common::retained::Cache<resources::Target, u8>,
     effect_results: crate::common::effect_result::Cache<resources::Target>,
     geometry: geometry::Cache,
@@ -122,6 +123,7 @@ impl Backend {
             effects: Default::default(),
             masks: Default::default(),
             targets: Default::default(),
+            coverage_targets: Default::default(),
             retained: Default::default(),
             effect_results: Default::default(),
             geometry: Default::default(),
@@ -196,6 +198,7 @@ impl Backend {
         self.effect_results.clear();
         self.check_native()?;
         self.targets.clear();
+        self.coverage_targets.clear();
         self.check_native()?;
         self.retained.clear();
         self.check_native()?;
@@ -250,6 +253,7 @@ impl Backend {
             let resident = self._group.usage().bytes;
             self.effect_results.clear();
             self.targets.release_idle();
+            self.coverage_targets.release_idle();
             self.check_native()?;
             self.geometry.clear();
             self.check_native()?;
@@ -387,6 +391,7 @@ impl Backend {
                 )
         {
             self.targets.clear();
+            self.coverage_targets.clear();
             self.check_native()?;
         }
         for mask in &plan.masks {
@@ -473,16 +478,24 @@ impl Backend {
         }
         // Captures retain their output until readback, independently of later frames.
         let mut capture_targets = target_cache::Cache::default();
+        let mut capture_coverage_targets = target_cache::Cache::default();
         if capture {
             capture_targets.configure(size);
+            capture_coverage_targets.configure(size);
         } else {
             self.targets.configure(size);
+            self.coverage_targets.configure(size);
         }
         self.check_native()?;
         let targets = if capture {
             &mut capture_targets
         } else {
             &mut self.targets
+        };
+        let coverage_targets = if capture {
+            &mut capture_coverage_targets
+        } else {
+            &mut self.coverage_targets
         };
         match replay::prepare(
             DeviceResources {
@@ -497,6 +510,7 @@ impl Backend {
                 effects: &mut self.effects,
                 masks: &mut self.masks,
                 targets,
+                coverage_targets,
                 geometry: &mut self.geometry,
                 retained: &self.retained,
                 effect_results: &self.effect_results,
@@ -514,9 +528,12 @@ impl Backend {
                     self.retained.stage(
                         token,
                         prepared.output.clone(),
-                        self.context.target_layout(storage)?.texture_bytes,
+                        self.context
+                            .target_layout(storage, native::TargetFormat::Rgba8)?
+                            .texture_bytes,
                     );
                     self.targets.clear();
+                    self.coverage_targets.clear();
                     self.check_native()?;
                     if let Err(error) = self.submit(frame, prepared, None) {
                         self.retained.cancel(&frame.key());
@@ -575,6 +592,7 @@ impl Backend {
         self.check_native()?;
         self.images.submitted();
         self.targets.submitted(prepared.targets());
+        self.coverage_targets.submitted(prepared.targets());
         Ok((prepared, fence))
     }
 }
@@ -761,6 +779,7 @@ impl RenderBackend for Backend {
         self.effects.prune();
         self.check_native()?;
         self.targets.prune_cold();
+        self.coverage_targets.prune_cold();
         self.check_native()?;
         Ok(())
     }
@@ -861,6 +880,7 @@ impl Drop for Backend {
             self.images.after_drain();
             self.glyphs.after_drain();
             self.targets.clear();
+            self.coverage_targets.clear();
         } else {
             std::mem::forget(self.programs.clone());
             std::mem::forget(std::mem::take(&mut self.flights));
@@ -870,6 +890,7 @@ impl Drop for Backend {
             std::mem::forget(std::mem::take(&mut self.images));
             std::mem::forget(std::mem::take(&mut self.glyphs));
             std::mem::forget(std::mem::take(&mut self.targets));
+            std::mem::forget(std::mem::take(&mut self.coverage_targets));
         }
     }
 }

@@ -128,6 +128,7 @@ fn separate(frame: &RenderFrame) -> (target_plan::Requirements, u64) {
         masks: target_plan::MaskExecution::Sampled,
         selection: &Default::default(),
         cost: &cost,
+        coverage_cost: None,
     }
     .measure(|_| Ok(()))
     .unwrap();

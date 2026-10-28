@@ -113,6 +113,7 @@ pub struct Renderer {
     images: super::image_cache::ImageCache,
     glyphs: super::glyph_cache::GlyphCache,
     targets: super::target_cache::TargetCache,
+    coverage_targets: super::target_cache::TargetCache,
     geometry: super::geometry::Cache,
     retained: super::retained::Cache,
     pub(super) effect_results: crate::common::effect_result::Cache<super::retained::Output>,
@@ -145,6 +146,7 @@ impl Renderer {
             images: Default::default(),
             glyphs: Default::default(),
             targets: Default::default(),
+            coverage_targets: Default::default(),
             geometry: Default::default(),
             retained: Default::default(),
             effect_results: Default::default(),
@@ -287,6 +289,7 @@ impl Renderer {
         self.glyphs.retire(&[]);
         self.pipelines.prune_masks();
         self.targets.prune_cold();
+        self.coverage_targets.prune_cold();
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
@@ -395,9 +398,13 @@ impl Renderer {
             if fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary) {
                 self.geometry.clear();
                 self.targets.release_idle();
+                self.coverage_targets.release_idle();
             }
             match pressure_pool(&cause) {
-                Some(BudgetCategory::Offscreen) => self.targets.release_idle(),
+                Some(BudgetCategory::Offscreen) => {
+                    self.targets.release_idle();
+                    self.coverage_targets.release_idle();
+                }
                 Some(BudgetCategory::GpuResource) => {
                     self.images.clear_idle();
                 }
@@ -560,6 +567,10 @@ impl Renderer {
             let mut target_plan = |quality: Quality| {
                 offscreen = Default::default();
                 offscreen_tickets.clear();
+                let coverage_quality = self.gpu.coverage_quality(quality);
+                let coverage_cost = |extent| {
+                    super::targets::target_bytes(extent, coverage_quality.expect("coverage format"))
+                };
                 let (schedule, targets, retained) =
                     crate::common::offscreen::Plan::choose_with_groups(
                         frame,
@@ -571,6 +582,8 @@ impl Renderer {
                         &glyph_plan,
                         self.gpu.limits.target_bytes,
                         &|extent| super::targets::target_bytes(extent, quality),
+                        coverage_quality
+                            .map(|_| &coverage_cost as &dyn Fn([u32; 2]) -> Result<u64, GpuError>),
                         crate::common::target_plan::MaskExecution::Inline,
                         &selection,
                         groups.clone(),
@@ -629,6 +642,14 @@ impl Renderer {
                     .0
             };
             let pipelines = self.pipelines.get(&self.gpu, quality)?;
+            let coverage_pipeline = if offscreen.coverage_requirements().iter().len() != 0 {
+                Some(
+                    self.pipelines
+                        .get_coverage(&self.gpu, quality, &pipelines)?,
+                )
+            } else {
+                None
+            };
             for mask in plan.masks {
                 pipelines.masks.get(
                     &self.gpu,
@@ -652,6 +673,12 @@ impl Renderer {
             // deadlock cold frames on a host configured for one in-flight submission.
             let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
             self.targets.configure(size, quality);
+            let coverage_quality = self.gpu.coverage_quality(quality);
+            if let Some(coverage_quality) = coverage_quality {
+                self.coverage_targets.configure(size, coverage_quality);
+            } else {
+                self.coverage_targets.clear();
+            }
             let warm = selection
                 .warm
                 .map(|index| {
@@ -683,6 +710,9 @@ impl Renderer {
                 effects: Vec::new(),
                 white: None,
                 target_cache: &self.targets,
+                coverage_target_cache: &self.coverage_targets,
+                coverage_quality,
+                coverage_pipeline,
                 retained_cache: &self.retained.inputs,
                 effect_results: &self.effect_results,
                 effect_pending: Vec::new(),
@@ -817,6 +847,7 @@ impl Renderer {
                     .queue
                     .on_submitted_work_done(move || signal.store(true, Ordering::Release));
                 self.targets.clear();
+                self.coverage_targets.clear();
                 self.retained
                     .pending
                     .lock()
@@ -873,6 +904,15 @@ impl Renderer {
             &self.budgets.transient,
             self.gpu.limits.transient_bytes,
         );
+        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+            self.coverage_targets.reserve_metadata(
+                prepared.size,
+                coverage_quality,
+                &prepared.targets,
+                &self.budgets.transient,
+                self.gpu.limits.transient_bytes,
+            );
+        }
         for slot in &mut prepared.effect_uniform_slots {
             slot.upload(&self.gpu);
         }
@@ -911,6 +951,13 @@ impl Renderer {
             prepared.quality,
             &self.inflight.last().unwrap()._targets,
         );
+        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+            self.coverage_targets.publish(
+                prepared.size,
+                coverage_quality,
+                &self.inflight.last().unwrap()._targets,
+            );
+        }
         Ok(id)
     }
 }

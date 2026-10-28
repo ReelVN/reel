@@ -147,7 +147,10 @@ impl Context<'_> {
         };
         if let Some(probe) = probe {
             if let Some((_token, hit)) = self.effect_results.lookup(&probe) {
-                let bytes = self.gpu.target_layout(hit.view.size())?.texture_bytes;
+                let bytes = self
+                    .gpu
+                    .target_layout(hit.view.size(), native::TargetFormat::Rgba8)?
+                    .texture_bytes;
                 let local =
                     self.budget_scope
                         .targets

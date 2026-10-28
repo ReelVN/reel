@@ -59,7 +59,13 @@ fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, 19 * sets, 19 * sets, 19 * sets, 8 * sets]
+        [
+            3 * sets,
+            19 * sets + renderer.pipelines.coverage_count(),
+            19 * sets + renderer.pipelines.coverage_count(),
+            19 * sets + renderer.pipelines.coverage_count(),
+            8 * sets
+        ]
     );
 }
 
@@ -829,8 +835,8 @@ fn pipeline_reuse_construction_and_warm_driver_errors() {
     let attempted = cold.pipelines.creations.snapshot();
     assert_eq!(cold.pipelines.initialized_count(), 0);
     assert_eq!(
-        attempted[3], 4,
-        "paint, video and both group pipelines were constructed"
+        attempted[3], 19,
+        "the failed constructor validates the complete quality-tier pipeline set"
     );
     assert!(matches!(cold.prepare(&frame), Err(GpuError::Driver(_))));
     assert_eq!(cold.pipelines.creations.snapshot(), attempted);

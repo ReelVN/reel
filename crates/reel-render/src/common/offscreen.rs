@@ -31,6 +31,8 @@ pub(crate) struct Plan {
     groups: Option<(usize, usize, std::sync::Arc<super::scopes::Cached>)>,
     storage: super::target_storage::Plan,
     requirements: super::target_plan::Requirements,
+    coverage_requirements: super::target_plan::Requirements,
+    coverage_enabled: bool,
     stable_backdrop: bool,
 }
 
@@ -55,6 +57,12 @@ impl Plan {
         } else {
             &self.requirements
         }
+    }
+    pub(crate) fn coverage_requirements(&self) -> &super::target_plan::Requirements {
+        &self.coverage_requirements
+    }
+    pub(crate) fn coverage_enabled(&self) -> bool {
+        self.coverage_enabled
     }
     pub(crate) fn storage_size(&self, logical: [u32; 2]) -> [u32; 2] {
         self.storage.storage_size(logical)
@@ -115,6 +123,7 @@ impl Plan {
             glyphs,
             byte_limit,
             cost,
+            None,
             masks,
             selection,
             None,
@@ -136,6 +145,7 @@ impl Plan {
         glyphs: &glyph_plan::Plan,
         byte_limit: u64,
         cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+        coverage_cost: Option<&dyn Fn([u32; 2]) -> Result<u64, GpuError>>,
         masks: super::target_plan::MaskExecution,
         selection: &super::retained::Plan,
         groups: Option<std::sync::Arc<super::scopes::Cached>>,
@@ -169,6 +179,7 @@ impl Plan {
                 plan = Self::default();
                 retained.clear();
             }
+            plan.coverage_enabled = coverage_cost.is_some();
             plan.groups = groups.as_ref().map(|groups| {
                 (
                     frame.commands().as_ptr() as usize,
@@ -190,11 +201,19 @@ impl Plan {
                 masks,
                 selection,
                 cost,
+                coverage_cost,
             };
             let mut measured = Some(input.measure(|bytes| {
                 traversal.push(reserve(bytes)?);
                 Ok(())
             })?);
+            let coverage_bytes = measured.as_ref().unwrap().coverage_bytes;
+            let mut coverage_tickets = Vec::new();
+            let coverage_requirements =
+                measured.as_ref().unwrap().coverage_requirements(|bytes| {
+                    coverage_tickets.push(reserve(bytes)?);
+                    Ok(())
+                })?;
             let mut bytes = measured.as_ref().unwrap().bytes;
             let share_backdrops = bytes <= byte_limit
                 && measured.as_ref().unwrap().reusable
@@ -212,6 +231,7 @@ impl Plan {
                 storage_tickets = tickets;
             }
             if bytes <= byte_limit || plan.is_empty() {
+                plan.coverage_requirements = coverage_requirements;
                 if plan.storage.bytes() == 0 {
                     plan.requirements = measured.as_ref().unwrap().requirements(|bytes| {
                         storage_tickets.push(reserve(bytes)?);
@@ -220,7 +240,9 @@ impl Plan {
                 }
                 // Capacity reuse is optional for both exact and lifetime-shared
                 // classes. Metadata pressure leaves the admitted plan intact.
-                let capacity_limit = byte_limit.saturating_sub(selection.persistent_bytes());
+                let capacity_limit = byte_limit
+                    .saturating_sub(selection.persistent_bytes())
+                    .saturating_sub(coverage_bytes);
                 let padded = if plan.storage.bytes() == 0 {
                     super::target_storage::Plan::capacities(
                         &plan.requirements,
@@ -240,7 +262,7 @@ impl Plan {
                     )
                 };
                 if let Ok(Some((storage, tickets))) = padded {
-                    bytes = storage.bytes() + selection.persistent_bytes();
+                    bytes = storage.bytes() + selection.persistent_bytes() + coverage_bytes;
                     plan.requirements = Default::default();
                     storage_tickets = tickets;
                     plan.storage = storage;
@@ -261,6 +283,7 @@ impl Plan {
                         masks,
                         selection,
                         cost,
+                        coverage_cost,
                     };
                     if let Ok((mut storage, _, mut tickets)) = input.storage(&mut reserve) {
                         if let Ok(Some((padded, padded_tickets))) = storage.padded_capacities(
@@ -273,7 +296,8 @@ impl Plan {
                             storage = padded;
                             tickets = padded_tickets;
                         }
-                        let shared_bytes = storage.bytes() + selection.persistent_bytes();
+                        let shared_bytes =
+                            storage.bytes() + selection.persistent_bytes() + coverage_bytes;
                         // Below pressure, eliminate existing allocations rather
                         // than introducing a new class or higher multiplicity.
                         // Otherwise animated overlap can alternate two pools and
@@ -321,6 +345,7 @@ impl Plan {
                             masks,
                             selection,
                             cost,
+                            coverage_cost,
                         }
                         .measure(|bytes| {
                             temporary.push(reserve(bytes)?);
@@ -343,7 +368,8 @@ impl Plan {
                             &mut reserve,
                         );
                         if let Ok(Some((storage, padded_tickets))) = padded {
-                            let bytes = storage.bytes() + selection.persistent_bytes();
+                            let bytes =
+                                storage.bytes() + selection.persistent_bytes() + coverage_bytes;
                             Ok(Some((storage, Default::default(), bytes, padded_tickets)))
                         } else {
                             Ok(Some((
@@ -364,6 +390,7 @@ impl Plan {
                     }
                 }
                 retained.extend(storage_tickets);
+                retained.extend(coverage_tickets);
                 plan.groups = groups.map(|groups| {
                     (
                         frame.commands().as_ptr() as usize,

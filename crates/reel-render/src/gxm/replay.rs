@@ -62,6 +62,7 @@ pub(super) struct Context<'a> {
     pub effect_pending: Vec<crate::common::effect_result::Pending<Target>>,
     pub effect_pins: Vec<Target>,
     pub target_cache: &'a mut super::target_cache::Cache,
+    pub coverage_target_cache: &'a mut super::target_cache::Cache,
     pub retained_cache: &'a crate::common::retained::Cache<Target, u8>,
     pub selection: std::sync::Arc<crate::common::retained::Plan>,
     pub retained_inputs: Vec<Target>,
@@ -114,6 +115,7 @@ pub(super) struct Caches<'a> {
     pub effect_results: &'a crate::common::effect_result::Cache<Target>,
     pub masks: &'a mut crate::common::mask::split::Cache,
     pub targets: &'a mut super::target_cache::Cache,
+    pub coverage_targets: &'a mut super::target_cache::Cache,
     pub geometry: &'a mut super::geometry::Cache,
     pub retained: &'a crate::common::retained::Cache<Target, u8>,
 }
@@ -146,6 +148,7 @@ pub(super) fn prepare(
         effect_results,
         masks: mask_cache,
         targets: target_cache,
+        coverage_targets: coverage_target_cache,
         geometry: geometry_cache,
         retained: retained_cache,
     } = caches;
@@ -175,6 +178,7 @@ pub(super) fn prepare(
         effect_pending: Vec::new(),
         effect_pins: Vec::new(),
         target_cache,
+        coverage_target_cache,
         retained_cache,
         selection: selection.clone(),
         retained_inputs: Vec::new(),
@@ -208,6 +212,8 @@ pub(super) fn prepare(
             .target_cache
             .groups
             .get(frame.drawing(), capture, &budgets.transient);
+        let color_cost = |size| super::targets::cost(gpu, size, false);
+        let coverage_cost = |size| super::targets::cost(gpu, size, true);
         let (schedule, bytes, retained) = crate::common::offscreen::Plan::choose_with_groups(
             frame,
             None,
@@ -217,7 +223,8 @@ pub(super) fn prepare(
             gpu.capabilities().max_texture_size,
             &context.glyph_plan,
             limits.target_bytes,
-            &|extent| Ok(gpu.target_layout(extent)?.texture_bytes),
+            &color_cost,
+            Some(&coverage_cost),
             crate::common::target_plan::MaskExecution::Sampled,
             &selection,
             groups,
@@ -1062,7 +1069,7 @@ impl Context<'_> {
                         }
                     }
                     if let Some(clip) = group.clip {
-                        let coverage = self.target()?;
+                        let coverage = self.clip_target(group.group, group.delayed.is_some())?;
                         self.clip(&coverage, clip, transform, entry.at)?;
                         if let Some((effect, effect_transform, at)) = terminal_effect {
                             if nested {

@@ -85,8 +85,9 @@ fn create_program(
 fn create_target_texture(
     context: &native::Context,
     size: [u32; 2],
+    format: native::TargetFormat,
 ) -> Result<native::Texture, native::Error> {
-    context.create_target_texture(size)
+    context.create_target_texture(size, format)
 }
 
 fn texture_bytes(size: [u32; 2], format: native::TextureFormat) -> Result<u64, GxmError> {

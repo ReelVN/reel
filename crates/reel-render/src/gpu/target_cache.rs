@@ -377,6 +377,7 @@ impl TargetCache {
         {
             let additional = slots
                 .iter()
+                .filter(|allocation| allocation.target.texture.format() == quality.format)
                 .filter(|allocation| {
                     !entries
                         .slots
@@ -398,7 +399,10 @@ impl TargetCache {
             && entries.quality == quality
         {
             entries.slots.submitted();
-            for allocation in slots {
+            for allocation in slots
+                .iter()
+                .filter(|allocation| allocation.target.texture.format() == quality.format)
+            {
                 let size = allocation.target.storage_size();
                 if !entries
                     .slots
@@ -407,7 +411,10 @@ impl TargetCache {
                     entries.slots.insert(size, allocation.clone());
                 }
             }
-            for allocation in slots {
+            for allocation in slots
+                .iter()
+                .filter(|allocation| allocation.target.texture.format() == quality.format)
+            {
                 entries
                     .slots
                     .mark_used(allocation.target.storage_size(), |cached| {

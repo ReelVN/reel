@@ -178,6 +178,7 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                             let size = schedule.storage_size(logical);
                             Ok(u64::from(size[0]) * u64::from(size[1]))
                         },
+                        coverage_cost: None,
                     }
                     .measure(|_| Ok(()))
                     .unwrap()
