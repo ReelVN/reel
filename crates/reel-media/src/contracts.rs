@@ -279,7 +279,9 @@ pub trait AudioOutput {
     fn configure(&mut self, request: AudioRequest) -> Result<AudioFormat, AudioError>;
     /// Rejects with the identical, uncalled fill. After acceptance only status reports faults.
     fn start(&mut self, fill: PcmFill) -> Result<(), Rejected<PcmFill>>;
-    /// Closes entry and waits for the in-flight call; retains the same fill.
+    /// Closes entry and waits for the in-flight fill call; retains the same fill.
+    /// Native queued PCM may drain asynchronously while the software state is
+    /// Suspended. Native handles/buffers remain owned through actual completion.
     fn suspend(&mut self) -> Result<(), AudioError>;
     fn resume(&mut self) -> Result<(), AudioError>;
     fn status(&self) -> AudioStatus;
