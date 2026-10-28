@@ -51,6 +51,9 @@ pub struct PlayerOptions {
     /// CPU frame preparation and metadata admission limit, charged by actual
     /// capacity. The desktop default is 64 MiB; smaller hosts select their quota.
     pub frame_bytes: u64,
+    /// Maximum capture readback bytes copied per poll; a complete row can exceed it.
+    /// The default is 256 KiB.
+    pub capture_readback_bytes_per_poll: u64,
 }
 impl Default for PlayerOptions {
     fn default() -> Self {
@@ -69,6 +72,7 @@ impl Default for PlayerOptions {
             save_directory: None,
             save_bytes: 256 << 20,
             frame_bytes: 64 << 20,
+            capture_readback_bytes_per_poll: 256 << 10,
         }
     }
 }
@@ -225,6 +229,7 @@ where
             pixel_recovery: pixel_recovery::PixelRecovery::default(),
             captures: crate::capture::CaptureService::new(
                 options.assets.input_bytes,
+                options.capture_readback_bytes_per_poll,
                 reel_core::wake::WakeSignal::new(move || notify()),
             ),
             window_state: Arc::new(Default::default()),

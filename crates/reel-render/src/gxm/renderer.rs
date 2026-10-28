@@ -843,6 +843,8 @@ pub struct Capture {
     size: [u32; 2],
     output: BudgetPool,
     _frame: RenderFrame,
+    pixels: Option<(Vec<u8>, reel_core::budget::BudgetTicket)>,
+    wake: reel_core::wake::WakeSignal,
 }
 impl crate::capture::CaptureBackend for Backend {
     type Error = GpuError;
@@ -870,29 +872,57 @@ impl crate::capture::CaptureBackend for Backend {
             size,
             output: output.clone(),
             _frame: frame.clone(),
+            pixels: None,
+            wake,
         })
     }
     fn poll_capture(
         &mut self,
         capture: &mut Capture,
+        max_bytes: u64,
     ) -> Result<Option<crate::capture::CapturedPixels>, GpuError> {
         self.check_native()?;
         if !capture.fence.poll().map_err(native_error)? {
             return Ok(None);
         }
-        let Some(prepared) = capture.prepared.take() else {
+        let Some(prepared) = capture.prepared.as_ref() else {
             return Ok(None);
         };
-        prepared.recycle_geometry(&mut self.geometry);
-        let bytes = u64::from(capture.size[0]) * u64::from(capture.size[1]) * 4;
-        let ticket = capture
-            .output
-            .reserve(bytes)
-            .map_err(|e| GpuError::Readback(e.message))?;
-        let mut rgba = vec![0u8; usize::try_from(bytes).map_err(|_| GpuError::InvalidSize)?];
+        let row = capture.size[0] as usize * 4;
+        let total = row
+            .checked_mul(capture.size[1] as usize)
+            .ok_or(GpuError::InvalidSize)?;
+        if capture.pixels.is_none() {
+            let mut ticket = capture
+                .output
+                .reserve(total as u64)
+                .map_err(|e| GpuError::Readback(e.message))?;
+            let pixels = Vec::with_capacity(total);
+            ticket
+                .resize(pixels.capacity() as u64)
+                .map_err(|e| GpuError::Readback(e.message))?;
+            capture.pixels = Some((pixels, ticket));
+        }
+        let (rgba, _) = capture.pixels.as_mut().unwrap();
+        let first_row = rgba.len() / row;
+        let rows =
+            crate::capture::readback_rows(row, capture.size[1] as usize - first_row, max_bytes);
+        let start = rgba.len();
+        rgba.resize(start + rows * row, 0);
         self.context
-            .read_rgba(&prepared.output.framebuffer, &mut rgba)
+            .read_rgba(
+                &prepared.output.framebuffer,
+                first_row as u32,
+                &mut rgba[start..],
+            )
             .map_err(native_error)?;
+        if rgba.len() < total {
+            capture.wake.wake();
+            return Ok(None);
+        }
+        let prepared = capture.prepared.take().unwrap();
+        prepared.recycle_geometry(&mut self.geometry);
+        let (rgba, ticket) = capture.pixels.take().unwrap();
         let rgba =
             OwnedBytes::new(rgba, ticket).map_err(|e| GpuError::Readback(e.reason.message))?;
         Ok(Some(crate::capture::CapturedPixels {

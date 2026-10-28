@@ -182,7 +182,11 @@ impl capture::CaptureBackend for Backend {
     ) -> Result<(), RenderError> {
         Err(RenderError::ResourcesUnavailable)
     }
-    fn poll_capture(&mut self, _: &mut ()) -> Result<Option<capture::CapturedPixels>, RenderError> {
+    fn poll_capture(
+        &mut self,
+        _: &mut (),
+        _: u64,
+    ) -> Result<Option<capture::CapturedPixels>, RenderError> {
         Err(RenderError::ResourcesUnavailable)
     }
 }

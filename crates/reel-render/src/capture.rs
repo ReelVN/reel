@@ -56,6 +56,14 @@ impl CapturedPixels {
         })
     }
 }
+/// Number of whole rows admitted by one capture readback poll.
+/// A row is the smallest unit of progress, even when it exceeds the byte limit.
+#[cfg(any(feature = "wgpu", feature = "gxm", test))]
+pub(crate) fn readback_rows(row_bytes: usize, remaining: usize, max_bytes: u64) -> usize {
+    let rows = (max_bytes / row_bytes as u64).max(1);
+    remaining.min(usize::try_from(rows).unwrap_or(usize::MAX))
+}
+
 pub trait CaptureBackend {
     type Error: BackendError + 'static;
     type Capture;
@@ -66,9 +74,12 @@ pub trait CaptureBackend {
         output: &BudgetPool,
         wake: WakeSignal,
     ) -> Result<Self::Capture, Self::Error>;
+    /// Progress readback by at most `max_bytes`, except that one complete row
+    /// is always copied. Incomplete work arranges a wake for a later poll.
     fn poll_capture(
         &mut self,
         capture: &mut Self::Capture,
+        max_bytes: u64,
     ) -> Result<Option<CapturedPixels>, Self::Error>;
 }
 
@@ -88,8 +99,9 @@ impl<B: CaptureBackend + ?Sized> CaptureBackend for &mut B {
     fn poll_capture(
         &mut self,
         capture: &mut Self::Capture,
+        max_bytes: u64,
     ) -> Result<Option<CapturedPixels>, Self::Error> {
-        (**self).poll_capture(capture)
+        (**self).poll_capture(capture, max_bytes)
     }
 }
 
@@ -114,6 +126,24 @@ mod tests {
             rgba: OwnedBytes::new(bytes, ticket).unwrap(),
             encoding,
         }
+    }
+    #[test]
+    fn row_budget_always_advances_and_bounds_each_copy() {
+        let width = 3_840;
+        assert_eq!(readback_rows(width, 544, 256 << 10), 68);
+        assert_eq!(readback_rows(width, 2, 256 << 10), 2);
+        assert_eq!(readback_rows(width, 544, 0), 1);
+        assert_eq!(readback_rows(width, 544, 3_839), 1);
+        assert_eq!(readback_rows(width, 544, u64::MAX), 544);
+        let mut remaining = 544;
+        let mut polls = 0;
+        while remaining != 0 {
+            let rows = readback_rows(width, remaining, 256 << 10);
+            assert!(rows > 0 && rows * width <= 256 << 10);
+            remaining -= rows;
+            polls += 1;
+        }
+        assert_eq!(polls, 8);
     }
     #[test]
     fn worker_conversion_preserves_storage_and_existing_srgb() {

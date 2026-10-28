@@ -365,6 +365,7 @@ impl State {
                 let window = window.clone();
                 crate::capture::CaptureService::new(
                     crate::assets::AssetOptions::default().input_bytes,
+                    crate::player::PlayerOptions::default().capture_readback_bytes_per_poll,
                     reel_core::wake::WakeSignal::new(move || window.request_redraw()),
                 )
             },

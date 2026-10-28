@@ -102,10 +102,11 @@ pub struct CaptureService<C> {
     pool: BudgetPool,
     wake: WakeSignal,
     serial: u64,
+    readback_bytes_per_poll: u64,
     pixel_demand: Option<(CaptureId, reel_ui::bridge::CandidateKey, PixelDemand)>,
 }
 impl<C> CaptureService<C> {
-    pub fn new(max_bytes: u64, wake: WakeSignal) -> Self {
+    pub fn new(max_bytes: u64, readback_bytes_per_poll: u64, wake: WakeSignal) -> Self {
         let pool = BudgetPool::new(
             BudgetCategory::Temporary,
             QueueLimits {
@@ -132,6 +133,7 @@ impl<C> CaptureService<C> {
             pool,
             wake,
             serial: 0,
+            readback_bytes_per_poll,
             pixel_demand: None,
         }
     }
@@ -270,26 +272,28 @@ impl<C> CaptureService<C> {
             }
             Phase::WaitingPixels => Ok(()),
             Phase::FailedPixels(error) => Err(error.clone()),
-            Phase::Reading(capture) => match backend.poll_capture(capture) {
-                Ok(Some(pixels)) => {
-                    self.serial += 1;
-                    let bytes = pixels.rgba.ticket().bytes();
-                    match self.worker.accept(
-                        self.serial,
-                        (active.request.id, pixels),
-                        bytes,
-                        Priority::Visible,
-                    ) {
-                        Ok(()) => {
-                            active.phase = Phase::Encoding(self.serial);
-                            Ok(())
+            Phase::Reading(capture) => {
+                match backend.poll_capture(capture, self.readback_bytes_per_poll) {
+                    Ok(Some(pixels)) => {
+                        self.serial += 1;
+                        let bytes = pixels.rgba.ticket().bytes();
+                        match self.worker.accept(
+                            self.serial,
+                            (active.request.id, pixels),
+                            bytes,
+                            Priority::Visible,
+                        ) {
+                            Ok(()) => {
+                                active.phase = Phase::Encoding(self.serial);
+                                Ok(())
+                            }
+                            Err(error) => Err(error.reason.message),
                         }
-                        Err(error) => Err(error.reason.message),
                     }
+                    Ok(None) => Ok(()),
+                    Err(error) => Err(error.to_string()),
                 }
-                Ok(None) => Ok(()),
-                Err(error) => Err(error.to_string()),
-            },
+            }
             Phase::Encoding(_) => Ok(()),
         };
         if let Err(error) = result {
