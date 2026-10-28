@@ -358,3 +358,30 @@ fn encoded_image_batch_waits_for_input_capacity_without_failing() {
     images.close();
     assert_eq!(images.pool.usage().bytes, 0);
 }
+
+#[test]
+fn settled_image_demand_skips_rescans_and_reopens_for_new_sources() {
+    let (mut images, wake) = loader();
+    images.request(wanted(&["assets/panels.png"]));
+    ready(&mut images, &wake).unwrap();
+    images.commit();
+    let scans = images.poll_scans;
+    for _ in 0..4096 {
+        assert!(images.poll().unwrap());
+    }
+    assert_eq!(images.poll_scans, scans);
+    println!(
+        "settled_images polls=4096 demand_scans={}",
+        images.poll_scans - scans
+    );
+    images.request(wanted(&["assets/sun.jpg"]));
+    assert!(!images.poll().unwrap());
+    assert!(images.poll_scans > scans);
+    ready(&mut images, &wake).unwrap();
+    images.commit();
+    let scans = images.poll_scans;
+    for _ in 0..4096 {
+        assert!(images.poll().unwrap());
+    }
+    assert_eq!(images.poll_scans, scans);
+}
