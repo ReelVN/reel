@@ -906,6 +906,12 @@ impl PaintCtx<'_> {
         sampler: peniko::ImageSampler,
         instances: Result<crate::frame::SpriteInstances, crate::frame::BuildErrorKind>,
     ) {
+        if instances
+            .as_ref()
+            .is_ok_and(|values| values.as_slice().is_empty())
+        {
+            return;
+        }
         self.image_draws
             .push(crate::core::recorded_paint::ResourceDraw {
                 command: self.command_cursor.get(),

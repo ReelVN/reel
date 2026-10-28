@@ -87,9 +87,7 @@ impl SpriteInstances {
         sample: impl FnOnce(&mut dyn FnMut(SpriteInstance)),
     ) -> Result<Self, BuildErrorKind> {
         let overhead = size_of::<Storage>() + 2 * size_of::<usize>();
-        let mut ticket = pool
-            .reserve(overhead as u64)
-            .map_err(|_| BuildErrorKind::Bytes)?;
+        let mut ticket: Option<BudgetTicket> = None;
         let mut values = Vec::new();
         let mut failed = false;
         sample(&mut |sprite| {
@@ -107,14 +105,20 @@ impl SpriteInstances {
                     return;
                 };
                 let mut next = Vec::new();
-                if ticket.resize(bytes as u64).is_err() || next.try_reserve_exact(capacity).is_err()
-                {
+                let admission = if let Some(ticket) = ticket.as_mut() {
+                    ticket.resize(bytes as u64)
+                } else {
+                    pool.reserve(bytes as u64).map(|value| ticket = Some(value))
+                };
+                if admission.is_err() || next.try_reserve_exact(capacity).is_err() {
                     failed = true;
                     return;
                 }
                 next.extend_from_slice(&values);
                 values = next;
                 if ticket
+                    .as_mut()
+                    .unwrap()
                     .resize((values.capacity() * size_of::<SpriteInstance>() + overhead) as u64)
                     .is_err()
                 {
@@ -127,6 +131,9 @@ impl SpriteInstances {
         if failed {
             return Err(BuildErrorKind::Bytes);
         }
+        let Some(ticket) = ticket else {
+            return Ok(Self::default());
+        };
         Ok(Self(Some(Arc::new(Storage {
             values,
             _ticket: ticket,

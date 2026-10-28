@@ -56,6 +56,18 @@ fn instances(pool: &BudgetPool, n: usize) -> SpriteInstances {
     })
     .unwrap()
 }
+#[test]
+fn empty_sprite_recording_needs_no_storage_admission() {
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 0,
+            max_bytes: 0,
+        },
+    );
+    assert!(instances(&pool, 0).as_slice().is_empty());
+    assert_eq!(pool.usage().bytes, 0);
+}
 fn widget(lease: ResourceLease, data: Result<SpriteInstances, BuildErrorKind>) -> RecordWidget {
     let mut w = RecordWidget::new(Scene::new());
     w.opacity = 0.5;

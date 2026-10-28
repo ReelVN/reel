@@ -198,6 +198,7 @@ impl TargetCache {
             .unwrap()
             .as_ref()
             .map_or(0, |entries| entries.slots.capacity_bytes())
+            + self.1.lock().unwrap().metadata_bytes()
     }
     pub(super) fn configure(&self, size: [u32; 2], quality: Quality) {
         let mut cache = self.0.lock().unwrap();

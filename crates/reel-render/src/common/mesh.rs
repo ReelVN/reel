@@ -413,7 +413,11 @@ impl Mesh {
             .grow(&mut self.vertices, mesh.vertices.len())?;
         self.allocation
             .grow(&mut self.indices, mesh.indices.len())?;
-        self.bounded_color = self.bounded_color.intersect(mesh.bounded_color);
+        self.bounded_color = if vertex_start == 0 {
+            mesh.bounded_color
+        } else {
+            self.bounded_color.intersect(mesh.bounded_color)
+        };
         self.vertices.extend_from_slice(&mesh.vertices);
         self.indices
             .extend(mesh.indices.iter().map(|&index| vertex_start + index));

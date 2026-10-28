@@ -31,6 +31,12 @@ pub(crate) struct Cache {
     disabled: bool,
 }
 impl Cache {
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn metadata_bytes(&self) -> u64 {
+        self.entry
+            .as_ref()
+            .map_or(0, |entry| entry._storage.bytes())
+    }
     pub(crate) fn get(
         &mut self,
         drawing: &FrameDrawing,
