@@ -436,6 +436,11 @@ fn render_cases(
 fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) -> Result {
     use reel_player::saves::{DirectorySaves, SaveStorage};
     marker(case, "START")?;
+    log(format_args!(
+        "MEMORY {case} start heap={:?} free={:?}",
+        vita_native::allocator::stats(),
+        vita_native::memory::free_memory()
+    ));
     runtime.renderer().set_vsync(true)?;
     let save_directory = directory().join(case);
     let saves = DirectorySaves::new(&save_directory, 8 << 20);
@@ -457,6 +462,11 @@ fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) 
             }
             Ok(())
         });
+    log(format_args!(
+        "MEMORY {case} end heap={:?} free={:?}",
+        vita_native::allocator::stats(),
+        vita_native::memory::free_memory()
+    ));
     marker(case, if result.is_ok() { "PASS" } else { "ERROR" })?;
     result
 }
