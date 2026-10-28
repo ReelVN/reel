@@ -501,8 +501,13 @@ impl AsideSessionUi {
             return Ok(());
         }
         if !matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
-            self.vm.sync_stage(self.ui.session())?;
             let feedback = !self.vm.stage_ready();
+            if feedback && !self.vm.virtual_feedback_boundary() {
+                return Ok(());
+            }
+            // Project only a complete batch or a committed virtual-list window.
+            // Ordinary script budget slices can still contain partial writes.
+            self.vm.sync_stage(self.ui.session())?;
             if feedback
                 && (!self.vm.virtual_feedback_ready()
                     || !self.ui.permits_virtual_feedback(self.vm.stage()))
