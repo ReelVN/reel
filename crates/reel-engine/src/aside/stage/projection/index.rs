@@ -55,20 +55,22 @@ impl Index {
                 if key != changed {
                     break;
                 }
-                reserve(heap, &mut self.pending, &mut self.pending_charge)?;
-                self.pending.push(id);
+                if let Err(at) = self.pending.binary_search(&id) {
+                    reserve(heap, &mut self.pending, &mut self.pending_charge)?;
+                    self.pending.insert(at, id);
+                }
             }
         }
         if !self.pending.is_empty() {
             for &id in &self.virtuals {
-                reserve(heap, &mut self.pending, &mut self.pending_charge)?;
-                self.pending.push(id);
+                if let Err(at) = self.pending.binary_search(&id) {
+                    reserve(heap, &mut self.pending, &mut self.pending_charge)?;
+                    self.pending.insert(at, id);
+                }
             }
         }
-        // Append first: reverse-order changes must not repeatedly shift the
-        // already collected nodes. A node may depend on several changed sources.
-        self.pending.sort_unstable();
-        self.pending.dedup();
+        // Keep the pending allocation bounded by unique nodes while different
+        // changed sources can share every dependent node.
         Ok(true)
     }
     pub fn is_current(&self, heap: &Heap, stage: &Stage) -> Option<bool> {
@@ -171,4 +173,57 @@ fn reserve<T>(
     *values = next;
     *charge = next_charge;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_sources_keep_pending_storage_bounded_by_unique_nodes() {
+        let limits = aside_vm::HeapLimits::default();
+        let mut heap = Heap::new(aside_vm::SessionEpoch(1), limits).unwrap();
+        let stage = Stage::default();
+        let mut index = Index::new(&heap).unwrap();
+        let mut sources = Vec::new();
+        for _ in 0..256 {
+            let source = heap.alloc_array(&[Value::int(0)]).unwrap();
+            for node in 0..64 {
+                index.watch(&mut heap, source, NodeId(node)).unwrap();
+            }
+            sources.push(source);
+        }
+        index.dependencies.sort_unstable();
+        index.topology = stage.topology_revision();
+        index.invalid = false;
+        index.accept(&heap);
+        // Warm both bounded buffers using repeated writes to one shared source.
+        for write in 0..256 {
+            heap.set_field(sources[0], 0, Value::int(write)).unwrap();
+        }
+        assert!(index.collect(&heap, &stage).unwrap());
+        index.accept(&heap);
+        let capacity = index.pending.capacity();
+        let charge = heap.budget_usage().charged_bytes();
+        let _remaining = heap
+            .budget_usage()
+            .reserve(limits.max_bytes - charge - 256)
+            .unwrap();
+        let charged = heap.budget_usage().charged_bytes();
+        let started = std::time::Instant::now();
+        for frame in 1..=100 {
+            for &source in &sources {
+                heap.set_field(source, 0, Value::int(frame)).unwrap();
+            }
+            assert!(index.collect(&heap, &stage).unwrap());
+            assert_eq!(index.pending.len(), 64);
+            assert_eq!(index.pending.capacity(), capacity);
+            assert_eq!(heap.budget_usage().charged_bytes(), charged);
+            index.accept(&heap);
+        }
+        println!(
+            "overlapping_projection sources=256 nodes=64 batches=100 pending_capacity={capacity} extra_charged=0 elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+    }
 }
