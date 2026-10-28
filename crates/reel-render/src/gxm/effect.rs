@@ -9,7 +9,7 @@ use reel_ui::{
 use std::rc::Rc;
 
 #[derive(Default)]
-pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 4]);
+pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 5]);
 impl Cache {
     pub fn prune(&mut self) {
         for cache in &mut self.0 {
@@ -28,6 +28,10 @@ pub(super) struct Compiled {
     _storage: super::ownership::NativeTicket,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one prepared fragment and its fixed execution variant"
+)]
 fn compile(
     gpu: &super::ownership::Device,
     shader: &effect_plan::Shader<'_>,
@@ -36,6 +40,7 @@ fn compile(
     at: RecordLocation,
     padded: bool,
     masked: bool,
+    full_target: bool,
 ) -> Result<Rc<Compiled>, GpuError> {
     let effect_plan::Shader {
         lease,
@@ -55,12 +60,15 @@ fn compile(
             record: "effect textures exceed the device capacity",
         });
     }
-    let bytes = descriptor
-        .code(bytes, masked)
-        .ok_or(GpuError::InvalidRecord {
-            at,
-            record: "missing effect variant",
-        })?;
+    let bytes = if full_target {
+        descriptor.full_target_code(bytes)
+    } else {
+        descriptor.code(bytes, masked)
+    }
+    .ok_or(GpuError::InvalidRecord {
+        at,
+        record: "missing effect variant",
+    })?;
     let code = super::super::effect_code(format, bytes, at)?;
     let storage = effect_cache::reserve(
         budget,
@@ -75,6 +83,7 @@ fn compile(
         code,
         descriptor.output == reel_ui::stage::effect::EffectType::Float || masked,
         padded,
+        !full_target,
     )
     .map_err(|error| GpuError::Shader {
         at,
@@ -295,34 +304,6 @@ impl Context<'_> {
         } = shader;
         let padded = descriptor.output == reel_ui::stage::effect::EffectType::Float
             && source.size != source.storage_size;
-        let cache =
-            &mut self.effect_cache.0[usize::from(padded) + 2 * usize::from(coverage.is_some())];
-        let compiled = if let Some(compiled) = cache.get(
-            descriptor.shader_key,
-            lease,
-            &self.budgets.resources,
-            self.limits.resource_bytes,
-        )? {
-            compiled
-        } else {
-            let compiled = compile(
-                self.gpu,
-                &shader,
-                &self.budgets.resources,
-                self.limits.resource_bytes,
-                at,
-                padded,
-                coverage.is_some(),
-            )?;
-            cache.insert(
-                descriptor.shader_key,
-                lease,
-                compiled.clone(),
-                &self.budgets.resources,
-                self.limits.resource_bytes,
-            )?;
-            compiled
-        };
         let output = if let Some(output) = &terminal {
             output.target.clone()
         } else {
@@ -355,6 +336,51 @@ impl Context<'_> {
         if descriptor.source_sampler {
             self.ensure_sampled(&source.pixels.expect("sampled effect source").view)?;
         }
+        let overwrite = (!padded
+            && terminal.is_none()
+            && coverage.is_none()
+            && descriptor.full_target_offset.is_some())
+        .then(|| {
+            crate::common::target_writes::FullOverwrite::composite(
+                self.size,
+                output.view.size(),
+                self.scissor,
+                true,
+            )
+        })
+        .flatten();
+        let cache = &mut self.effect_cache.0[if overwrite.is_some() {
+            4
+        } else {
+            usize::from(padded) + 2 * usize::from(coverage.is_some())
+        }];
+        let compiled = if let Some(compiled) = cache.get(
+            descriptor.shader_key,
+            lease,
+            &self.budgets.resources,
+            self.limits.resource_bytes,
+        )? {
+            compiled
+        } else {
+            let compiled = compile(
+                self.gpu,
+                &shader,
+                &self.budgets.resources,
+                self.limits.resource_bytes,
+                at,
+                padded,
+                coverage.is_some(),
+                overwrite.is_some(),
+            )?;
+            cache.insert(
+                descriptor.shader_key,
+                lease,
+                compiled.clone(),
+                &self.budgets.resources,
+                self.limits.resource_bytes,
+            )?;
+            compiled
+        };
         self.ensure_target(&output)?;
         let mut held = std::mem::take(&mut self.effects);
         let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {

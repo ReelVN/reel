@@ -10,8 +10,8 @@ pub(super) use crate::common::target_plan::target_pixels;
 pub(super) fn overwrite_load(
     _: crate::common::target_writes::FullOverwrite,
 ) -> wgpu::LoadOp<wgpu::Color> {
-    // SAFETY: the caller draws the fullscreen composite triangle over the entire
-    // physical viewport/scissor. Its fragment shader never discards, its pipeline
+    // SAFETY: the caller draws a fullscreen triangle over the entire physical
+    // viewport/scissor. Its proven fragment variant never discards, its pipeline
     // has no blending, depth or stencil, and it writes all channels/samples before
     // resolve and store. Shader texture inputs are separate targets.
     wgpu::LoadOp::DontCare(unsafe { wgpu::LoadOpDontCare::enabled() })

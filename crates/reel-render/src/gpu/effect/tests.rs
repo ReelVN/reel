@@ -141,6 +141,13 @@ fn terminal_effect_submission_preserves_visible_sources_and_culls_invisible_outp
 }
 
 fn coverage_frame(variant: bool) -> reel_ui::frame::RenderFrame {
+    coverage_frame_variant(variant, false, false)
+}
+fn coverage_frame_variant(
+    variant: bool,
+    full: bool,
+    materialized: bool,
+) -> reel_ui::frame::RenderFrame {
     let pool = r01_fixture::pool();
     let program = EffectProgram::new(
         vec![],
@@ -161,7 +168,12 @@ fn coverage_frame(variant: bool) -> reel_ui::frame::RenderFrame {
     .unwrap();
     let fragment =
         crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 16384).unwrap();
-    let mut code = fragment.source.as_bytes().to_vec();
+    // The full variant fixture rejects an accidental ordinary-program selection.
+    let mut code = if full {
+        b"full-target variant required".to_vec()
+    } else {
+        fragment.source.as_bytes().to_vec()
+    };
     let offset = code.len() as u32;
     if variant {
         code.extend_from_slice(
@@ -176,6 +188,22 @@ fn coverage_frame(variant: bool) -> reel_ui::frame::RenderFrame {
             .as_bytes(),
         );
     }
+    let full_offset = full.then(|| {
+        let offset = code.len() as u32;
+        code.extend_from_slice(
+            crate::effect::compile_fragment_variant(
+                &program,
+                crate::effect::Language::Wgsl,
+                crate::effect::OutputTail::Ordinary,
+                crate::effect::FragmentCoverage::FullTarget,
+                16384,
+            )
+            .unwrap()
+            .source
+            .as_bytes(),
+        );
+        offset
+    });
     let descriptor = EffectShaderDescriptor::with_textures(
         [4; 32],
         EffectShaderFormat::Wgsl,
@@ -191,6 +219,11 @@ fn coverage_frame(variant: bool) -> reel_ui::frame::RenderFrame {
     } else {
         descriptor
     };
+    let descriptor = if let Some(offset) = full_offset {
+        descriptor.with_full_target_variant(offset, &code).unwrap()
+    } else {
+        descriptor
+    };
     let mut registry = ResourceRegistry::new(1, 32768).unwrap();
     let handle = registry
         .register_effect_shader(
@@ -202,7 +235,8 @@ fn coverage_frame(variant: bool) -> reel_ui::frame::RenderFrame {
             OwnedBytes::new(code.clone(), pool.reserve(code.len() as u64).unwrap()).unwrap(),
         )
         .unwrap();
-    let bounds = Rect::new(0., 0., 160., 120.);
+    let height = if materialized { 128. } else { 120. };
+    let bounds = Rect::new(0., 0., 160., height);
     let mut scene = Scene::new();
     scene.draw(Draw::Fill {
         transform: Affine::IDENTITY,
@@ -213,23 +247,35 @@ fn coverage_frame(variant: bool) -> reel_ui::frame::RenderFrame {
         composite: Default::default(),
     });
     let mut widget = r01_fixture::RecordWidget::new(scene);
-    widget.clip = true;
+    widget.clip = !materialized;
+    widget.invert = if materialized { 0.1 } else { 0. };
     widget.inner.clip = bounds;
     widget.opacity = 0.37;
     widget.effect = Some(PaintEffect {
         instance: EffectInstance::new([4; 32], program, vec![]).unwrap(),
         shader: registry.acquire(handle).unwrap(),
         images: vec![],
-        bounds: Rect::new(0., 0., 64., 48.),
+        bounds: if materialized {
+            bounds
+        } else {
+            Rect::new(0., 0., 64., 48.)
+        },
         coverage_invert: false,
     });
-    let mut bridge = r01_fixture::widget_bridge(widget, Affine::rotate(0.17));
+    let mut bridge = r01_fixture::widget_bridge(
+        widget,
+        if materialized {
+            Affine::translate((80., 64.)) * Affine::rotate(0.5) * Affine::translate((-80., -64.))
+        } else {
+            Affine::rotate(0.17)
+        },
+    );
     let mut build = FrameBuild::new(
         bridge.record(FrameId(1)).unwrap(),
         registry.freeze(&[handle], &pool).unwrap(),
         FrameInfo {
-            logical_size: [160., 120.],
-            physical_size: [160, 120],
+            logical_size: [160., height],
+            physical_size: [160, height as u32],
         },
         r01_fixture::limits(),
         &pool,
@@ -765,4 +811,35 @@ fn static_image_effect_chain_reuses_materialized_passes() {
         renderer.usage().transient < resident,
         "cold slots release their budget"
     );
+}
+
+#[test]
+#[ignore = "requires graphics adapter; synthetic numeric domain comparison"]
+fn full_target_effect_keeps_local_domain_and_initializes_unwritten_pixels() {
+    let make_renderer = || {
+        Renderer::new(
+            pollster::block_on(Gpu::request(
+                &wgpu::Instance::default(),
+                None,
+                DeviceGeneration(1),
+                Default::default(),
+            ))
+            .unwrap(),
+        )
+    };
+    let mut original = make_renderer();
+    let baseline = original
+        .prepare(&coverage_frame_variant(false, false, true))
+        .unwrap();
+    let expected = original.readback(baseline).unwrap();
+    let mut optimized = make_renderer();
+    let frame = coverage_frame_variant(false, true, true);
+    let candidate = optimized.prepare(&frame).unwrap();
+    let actual = optimized.readback(candidate).unwrap();
+    assert_eq!(expected.len(), actual.len());
+    for (before, after) in expected.iter().zip(&actual) {
+        for (a, b) in before.iter().zip(after) {
+            assert!((a - b).abs() <= 0.004);
+        }
+    }
 }

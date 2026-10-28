@@ -31,7 +31,7 @@ fn capture(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot,
 }
 fn linear(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot, ResourceError> {
     let ticket = p
-        .reserve((values.len() * size_of::<ResourceLease>()) as u64)
+        .reserve(std::mem::size_of_val(values) as u64)
         .map_err(|_| ResourceError::Bytes)?;
     let mut leases = Vec::with_capacity(values.len());
     for lease in values.iter().cloned() {

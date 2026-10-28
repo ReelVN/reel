@@ -124,6 +124,7 @@ pub(super) fn create_program(
     fragment: ShaderCode<'_>,
     implicit_source: bool,
     padded: bool,
+    clipped: bool,
 ) -> Result<Program, GpuError> {
     create_program_with_vertex(
         context,
@@ -135,7 +136,7 @@ pub(super) fn create_program(
             shader_code!("vertex")
         },
         fragment,
-        true,
+        clipped,
         false,
     )
 }

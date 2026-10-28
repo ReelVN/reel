@@ -10,7 +10,7 @@ use reel_ui::{
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
-pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 8]>);
+pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 9]>);
 pub(super) struct Compiled {
     pub(super) layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -33,6 +33,7 @@ impl Cache {
         padded: bool,
         terminal: bool,
         masked: bool,
+        full_target: bool,
         shader: &effect_plan::Shader<'_>,
         budget: &BudgetPool,
         at: RecordLocation,
@@ -69,8 +70,11 @@ impl Cache {
             });
         }
         let mut caches = self.0.lock().unwrap();
-        let cache =
-            &mut caches[usize::from(padded) + 2 * usize::from(terminal) + 4 * usize::from(masked)];
+        let cache = &mut caches[if full_target {
+            8
+        } else {
+            usize::from(padded) + 2 * usize::from(terminal) + 4 * usize::from(masked)
+        }];
         if let Some(compiled) = cache.get(
             descriptor.shader_key,
             lease,
@@ -79,12 +83,15 @@ impl Cache {
         )? {
             return Ok(compiled);
         }
-        let bytes = descriptor
-            .code(bytes, masked)
-            .ok_or(GpuError::InvalidRecord {
-                at,
-                record: "missing effect variant",
-            })?;
+        let bytes = if full_target {
+            descriptor.full_target_code(bytes)
+        } else {
+            descriptor.code(bytes, masked)
+        }
+        .ok_or(GpuError::InvalidRecord {
+            at,
+            record: "missing effect variant",
+        })?;
         let source = std::str::from_utf8(bytes).map_err(|_| GpuError::InvalidRecord {
             at,
             record: "effect WGSL encoding",
@@ -394,16 +401,6 @@ impl Context<'_> {
         let shader = effect_plan::shader(drawing, effect, at)?;
         let padded = shader.descriptor.output == reel_ui::stage::effect::EffectType::Float
             && source.size != source.storage_size;
-        let compiled = self.pipelines.effects.get(
-            self.gpu,
-            self.quality,
-            padded,
-            terminal.is_some(),
-            coverage.is_some(),
-            &shader,
-            &self.budgets.resources,
-            at,
-        )?;
         let output = if let Some(output) = &terminal {
             output.target.clone()
         } else {
@@ -440,6 +437,30 @@ impl Context<'_> {
         if shader.descriptor.source_sampler {
             self.ensure_sampled(&source.pixels.expect("sampled effect source").view);
         }
+        let overwrite = (!padded
+            && terminal.is_none()
+            && coverage.is_none()
+            && shader.descriptor.full_target_offset.is_some())
+        .then(|| {
+            crate::common::target_writes::FullOverwrite::composite(
+                self.size,
+                output.storage_size(),
+                self.scissor,
+                true,
+            )
+        })
+        .flatten();
+        let compiled = self.pipelines.effects.get(
+            self.gpu,
+            self.quality,
+            padded,
+            terminal.is_some(),
+            coverage.is_some(),
+            overwrite.is_some(),
+            &shader,
+            &self.budgets.resources,
+            at,
+        )?;
         // The slot owns its GPU buffer and exact texture leases until completion.
         let entry_capacity = 3
             + usize::from(shader.descriptor.source_sampler)
@@ -557,11 +578,10 @@ impl Context<'_> {
             None
         };
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
+        let attachment = output.attachment(self.target_writes.take(output.slot));
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("prepared effect"),
-            color_attachments: &[Some(
-                output.attachment(self.target_writes.take(output.slot)),
-            )],
+            color_attachments: &[Some(attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,
