@@ -370,6 +370,7 @@ pub struct KiraMixer {
     manager: DeferredManager,
     signal: Arc<RetirementSignal>,
     max_sounds: usize,
+    stream_cache_bytes: u64,
     reclaim_cursor: usize,
 }
 /// A count of pure ownership transfers. Destruction/budget return is asynchronous.
@@ -443,6 +444,22 @@ impl KiraMixer {
                 "invalid Kira resource/buffer limits",
             ));
         }
+        // Cache storage survives while a Sound is active, on any group's unused
+        // queue, or in the shared normal queue/worker. Queued segments have no
+        // voice cache until they replace the current source of that same Sound.
+        let stream_cache_bytes = (limits.max_sounds as u64)
+            .checked_mul((AudioGroup::ALL.len() + 1) as u64)
+            .and_then(|voices| voices.checked_add(service.limits().queued_work as u64))
+            .and_then(|voices| voices.checked_add(1))
+            .and_then(|voices| {
+                voices.checked_mul(reel_audio::sound::static_sound::STREAM_CACHE_BYTES as u64)
+            })
+            .ok_or_else(|| {
+                AudioError::new(
+                    AudioErrorKind::InvalidRequest,
+                    "voice cache accounting overflow",
+                )
+            })?;
         let (signal, renderer_credit, manager_credit) = service.reserve_generation()?;
         let manager = AudioManager::<Bridge>::new(AudioManagerSettings {
             backend_settings: (format.sample_rate_hz, signal.clone(), renderer_credit),
@@ -493,6 +510,7 @@ impl KiraMixer {
             manager,
             signal,
             max_sounds: limits.max_sounds,
+            stream_cache_bytes,
             reclaim_cursor: 0,
         })
     }
@@ -764,6 +782,7 @@ impl KiraMixer {
             * ((2 * capacity + 7) * std::mem::size_of::<QueuedStaticSound>() as u64
                 + (capacity + 1) * std::mem::size_of::<(u64, PlaybackBounds)>() as u64
                 + std::mem::size_of::<Option<StaticSoundQueue>>() as u64)
+            + self.stream_cache_bytes
     }
 }
 /// Small transport metadata; never retains a second PCM allocation.
