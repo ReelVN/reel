@@ -3,6 +3,28 @@ use std::sync::Arc;
 
 use super::AdapterError;
 
+/// Copy a validated fixed-size property through bounded borrowed heap segments.
+/// The caller supplies the exact byte length; each segment respects the heap's
+/// read limit, including limits smaller than the property itself.
+pub(super) fn read_fixed_bytes(
+    heap: &Heap,
+    value: Value,
+    mut output: &mut [u8],
+) -> Result<(), aside_vm::HeapError> {
+    let mut offset = 0;
+    while !output.is_empty() {
+        let segment = heap.byte_segment(value, offset)?;
+        let count = segment.len().min(output.len());
+        if count == 0 {
+            return Err(aside_vm::HeapError::OutOfBounds);
+        }
+        output[..count].copy_from_slice(&segment[..count]);
+        output = &mut output[count..];
+        offset += count as u32;
+    }
+    Ok(())
+}
+
 /// Copy an immutable VM string without exceeding Heap's per-call input limit.
 /// Decode only after the complete byte sequence has arrived: a read boundary
 /// may bisect a UTF-8 scalar. `read_limit` comes from the same VmLimits as load.
@@ -89,6 +111,29 @@ pub(super) fn alloc_string(
 mod tests {
     use super::*;
     use aside_vm::{HeapLimits, SessionEpoch};
+
+    #[test]
+    fn fixed_properties_cross_heap_segments_and_preserve_output_bounds() {
+        for limit in [1, 2, 3, 7, 4096] {
+            let mut heap = Heap::new(
+                SessionEpoch(1),
+                HeapLimits {
+                    max_mutation_bytes: limit,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let value = alloc_string(&mut heap, "#aB01fF80", limit as usize).unwrap();
+            let mut bytes = [0x55; 11];
+            read_fixed_bytes(&heap, value, &mut bytes[1..10]).unwrap();
+            assert_eq!(&bytes[1..10], b"#aB01fF80");
+            assert_eq!([bytes[0], bytes[10]], [0x55; 2]);
+            assert!(matches!(
+                read_fixed_bytes(&heap, value, &mut bytes),
+                Err(aside_vm::HeapError::OutOfBounds)
+            ));
+        }
+    }
 
     #[test]
     fn shared_projection_reuses_equal_utf8_across_small_read_boundaries() {
