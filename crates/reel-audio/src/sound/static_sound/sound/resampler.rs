@@ -53,6 +53,9 @@ impl Resampler {
 
 	#[must_use]
 	pub fn get(&self, fractional_position: f32) -> Frame {
+		if fractional_position == 0. {
+			return self.frames[1].frame;
+		}
 		interpolate_frame(
 			self.frames[0].frame,
 			self.frames[1].frame,
