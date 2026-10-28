@@ -17,6 +17,7 @@ pub(super) struct Image {
     pub encoding: ColorEncoding,
     pub coverage: bool,
     native_import: bool,
+    reuse_count: u8,
     pub source: Option<ResourceSource>,
     _storage: super::ownership::NativeTicket,
 }
@@ -43,6 +44,31 @@ pub(super) struct Images {
     retired: crate::common::resources::RetiredImages<Rc<Image>>,
 }
 impl Images {
+    pub fn submitted(&mut self) {
+        self.retired.submitted();
+    }
+    pub fn usage(&self) -> [u64; 3] {
+        let cached = self
+            .entries
+            .values()
+            .map(|image| image._storage.bytes())
+            .sum();
+        let mut retired = 0;
+        let mut readers = 0;
+        for image in self.retired.iter() {
+            let bytes = image._storage.bytes();
+            retired += bytes;
+            if Rc::strong_count(image) > 1
+                || image
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| !source.lease.is_released())
+            {
+                readers += bytes;
+            }
+        }
+        [cached, retired, readers]
+    }
     pub fn retain_demand(&mut self, required: &[crate::common::image_plan::Required<'_>]) {
         self.entries.retain(|handle, image| {
             Rc::strong_count(image) > 1
@@ -132,9 +158,11 @@ impl Images {
                 .is_some_and(|source| source.retained(versions))
         }) {
             if !image.coverage && !image.native_import {
-                self.retired.put(image);
+                let uses = image.reuse_count;
+                self.retired.put(image, uses);
             }
         }
+        self.retired.prune_cold(reusable);
         self.pending.retain(|_, pending| {
             // The pending upload itself owns a valid pre-retirement lease.
             // prepare() discards it when the next demand no longer includes it.
@@ -186,6 +214,7 @@ impl Images {
             encoding: ColorEncoding::Linear,
             coverage: false,
             native_import: false,
+            reuse_count: 0,
             source: None,
             _storage: storage,
         });
@@ -254,8 +283,12 @@ impl Images {
             .retired
             .take_if(|image| recyclable(image, item, bytes))
             .and_then(Rc::into_inner);
-        let (storage, recycled_textures) = if let Some(image) = recycled {
-            (image._storage, Some((image.texture, image.planes)))
+        let (storage, recycled_textures, reuse_count) = if let Some(image) = recycled {
+            (
+                image._storage,
+                Some((image.texture, image.planes)),
+                image.reuse_count.saturating_add(1),
+            )
         } else {
             self.make_room(&budgets.resources, bytes, limits.resource_bytes);
             (
@@ -266,6 +299,7 @@ impl Images {
                     "image residency",
                 )?),
                 None,
+                0,
             )
         };
         let built = (|| {
@@ -351,6 +385,7 @@ impl Images {
             encoding,
             coverage: false,
             native_import,
+            reuse_count,
             source: Some(ResourceSource {
                 version: source.version().clone(),
                 lease: source.downgrade(),
@@ -484,6 +519,14 @@ fn costs(item: &crate::common::image_plan::Required<'_>) -> Result<(u64, u64), G
     }
 }
 
+fn reusable(image: &Rc<Image>) -> bool {
+    Rc::strong_count(image) == 1
+        && image
+            .source
+            .as_ref()
+            .is_some_and(|source| source.lease.is_released())
+}
+
 fn recyclable(
     image: &Rc<Image>,
     item: &crate::common::image_plan::Required<'_>,
@@ -491,11 +534,7 @@ fn recyclable(
 ) -> bool {
     // Flights and prepared frames retain their Image references through the
     // completion fence. The final reader and source lease must both be gone.
-    Rc::strong_count(image) == 1
-        && image
-            .source
-            .as_ref()
-            .is_some_and(|source| source.lease.is_released())
+    reusable(image)
         && image._storage.bytes() == bytes
         && !image.coverage
         && !image.native_import

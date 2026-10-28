@@ -171,6 +171,10 @@ impl Cache {
             + self.shapes.lock().unwrap().bytes()
             + self.glyphs.lock().unwrap().bytes()
     }
+    pub fn begin_replay(&self) {
+        self.shapes.lock().unwrap().begin_replay();
+        self.glyphs.lock().unwrap().begin_replay();
+    }
     pub fn clear(&self) {
         self.pool.lock().unwrap().clear();
         self.shapes.lock().unwrap().clear();

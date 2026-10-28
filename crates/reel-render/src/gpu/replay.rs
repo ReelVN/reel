@@ -201,6 +201,7 @@ impl Context<'_> {
         frame: &FrameDrawing,
         transform: Affine,
     ) -> Result<Target, GpuError> {
+        self.geometry_cache.begin_replay();
         let mut first = self.start_stream(
             frame,
             frame.commands(),

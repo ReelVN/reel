@@ -168,9 +168,13 @@ impl Renderer {
     }
     /// Current renderer-owned residency across the shared accounting domains.
     pub fn usage(&self) -> Usage {
+        let [cached_images, retired_images, retired_image_readers] = self.images.usage();
         Usage {
             targets: self.budgets.targets.usage().bytes,
             resources: self.budgets.resources.usage().bytes,
+            cached_images,
+            retired_images,
+            retired_image_readers,
             transient: self.budgets.transient.usage().bytes,
             cached_geometry: self.geometry.bytes(),
             shared: None,
@@ -846,6 +850,7 @@ impl Renderer {
             geometry: prepared.geometry,
         });
         self.gpu.check()?;
+        self.images.submitted();
         self.targets.publish(
             prepared.size,
             prepared.quality,

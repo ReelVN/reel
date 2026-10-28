@@ -530,9 +530,14 @@ impl Mesh {
             clip_identity: None,
         }
     }
-    pub(crate) fn triangles(&mut self, vertices: &[Vertex]) -> Result<(), GpuError> {
+    /// Append trusted triangle indices with shared vertices from an internal planner.
+    pub(crate) fn indexed_triangles(
+        &mut self,
+        vertices: &[Vertex],
+        indices: impl ExactSizeIterator<Item = u32>,
+    ) -> Result<(), GpuError> {
         self.allocation.grow(&mut self.vertices, vertices.len())?;
-        self.allocation.grow(&mut self.indices, vertices.len())?;
+        self.allocation.grow(&mut self.indices, indices.len())?;
         let start = self.vertices.len() as u32;
         let mut proof = if self.vertices.is_empty() {
             super::precision::BoundedColor::new([1.; 4])
@@ -544,7 +549,7 @@ impl Mesh {
         }
         self.bounded_color = proof;
         self.vertices.extend_from_slice(vertices);
-        self.indices.extend(start..start + vertices.len() as u32);
+        self.indices.extend(indices.map(|index| start + index));
         Ok(())
     }
     pub(crate) fn quad(&mut self, rect: Rect, uv: Rect) -> Result<(), GpuError> {
@@ -993,11 +998,12 @@ mod tests {
         assert!(bounded(&clipped));
         let mut other = Mesh::new(allocation());
         other
-            .triangles(
+            .indexed_triangles(
                 &[Vertex {
                     color: [2.; 4],
                     ..mesh.vertices[0]
                 }; 3],
+                0..3,
             )
             .unwrap();
         mesh.append(&other).unwrap();

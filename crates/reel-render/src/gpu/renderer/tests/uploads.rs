@@ -33,9 +33,31 @@ fn retired_decoded_images_reuse_completed_storage_across_resource_versions() {
             .unwrap();
         renderer.poll().unwrap();
     }
+    assert_eq!(renderer.usage().cached_images, 0);
+    assert_eq!(renderer.usage().retired_images, 3 * 8 * 8 * 8);
+    assert_eq!(renderer.usage().retired_image_readers, 0);
+    for _ in 0..100 {
+        renderer.poll().unwrap();
+    }
+    assert_eq!(renderer.usage().retired_images, 3 * 8 * 8 * 8);
+    let blank = frame(Scene::new(), &pool());
+    for age in 1..=16 {
+        let prepared = renderer.prepare(&blank).unwrap();
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        assert_eq!(
+            renderer.usage().retired_images,
+            if age < 16 { 3 * 8 * 8 * 8 } else { 0 }
+        );
+    }
     empty(&renderer);
     eprintln!(
-        "decoded RGBA: 8 three-image sets create3 working F16 textures instead of24; cleared GPU/CPU reservations"
+        "decoded RGBA: 8 three-image sets create3 textures instead of24; 100 polls preserve reuse; 16 cold submissions retire1536B without pressure"
     );
 }
 
@@ -250,4 +272,48 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
     renderer.images.clear_idle();
     assert_eq!(renderer.usage().resources, 0);
     assert_eq!(renderer.usage().transient, 0);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter; submits without pixel readback"]
+fn retired_image_cooling_keeps_source_leases_until_the_last_reader_retires() {
+    let mut renderer = renderer(Default::default());
+    let (source, mut registry, handles) = image_restore_fixture([8, 8], true);
+    let prepared = renderer.prepare(&source).unwrap();
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    let versions: Vec<_> = source
+        .resources()
+        .leases()
+        .iter()
+        .map(|l| l.version().clone())
+        .collect();
+    for handle in handles {
+        registry.retire(handle);
+    }
+    renderer.retire(&versions);
+    assert_eq!(renderer.usage().cached_images, 0);
+    assert_eq!(renderer.usage().retired_image_readers, 3 * 8 * 8 * 8);
+    let blank = frame(Scene::new(), &pool());
+    for _ in 0..32 {
+        let prepared = renderer.prepare(&blank).unwrap();
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    assert_eq!(renderer.usage().retired_image_readers, 3 * 8 * 8 * 8);
+    drop(source);
+    drop(registry);
+    renderer.poll().unwrap();
+    assert_eq!(renderer.usage().retired_images, 0);
+    empty(&renderer);
 }

@@ -184,3 +184,89 @@ fn recorded_reveal_prepares_only_visible_glyphs_and_bounds_the_group() {
         "capture exclusions omit the real glyph run"
     );
 }
+
+fn finite_visual_frame(groups: usize) -> RenderFrame {
+    let mut scene = Scene::new();
+    for index in 0..groups {
+        scene.push_group(Group {
+            composite: Composite {
+                alpha: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        for offset in [0., 4.] {
+            scene.draw(Draw::Fill {
+                transform: Affine::translate((index as f64 + offset, 3.)),
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 30., 40.)),
+                composite: Default::default(),
+            });
+        }
+        scene.pop_group();
+    }
+    let pool = r01_fixture::pool();
+    let mut widget = r01_fixture::RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+    r01_fixture::build(
+        bridge.record(FrameId(1)).unwrap(),
+        r01_fixture::empty_snapshot(&pool),
+        &pool,
+    )
+}
+
+#[test]
+#[ignore = "CPU visual preparation measurement; no graphics adapter"]
+fn finite_visual_preparation_cost() {
+    use std::{hint::black_box, time::Instant};
+    for groups in [16, 128, 512] {
+        let frame = finite_visual_frame(groups);
+        let began = Instant::now();
+        let mut reserved = 0;
+        for _ in 0..2000 {
+            let mut probe = Probe::default();
+            let plan = Plan::collect(
+                std::iter::once(black_box(&frame)),
+                Affine::IDENTITY,
+                4096,
+                false,
+                &Default::default(),
+                &mut probe,
+            )
+            .unwrap();
+            assert_eq!(probe.glyphs, 0);
+            assert!(plan.groups.is_empty());
+            reserved += probe.reserved;
+            black_box(plan);
+        }
+        println!(
+            "finite_visual groups={groups} frames=2000 elapsed_us={} reserved_bytes={reserved}",
+            began.elapsed().as_micros()
+        );
+    }
+}
+
+#[test]
+fn finite_visuals_reuse_compiled_ink_without_preparation_storage() {
+    let frame = finite_visual_frame(128);
+    let mut probe = Probe::default();
+    let plan = Plan::collect(
+        std::iter::once(&frame),
+        Affine::scale_non_uniform(0.7, 1.3),
+        4096,
+        false,
+        &Default::default(),
+        &mut probe,
+    )
+    .unwrap();
+    assert_eq!(probe.glyphs, 0);
+    assert_eq!(probe.reserved, 0);
+    for command in frame.commands() {
+        if let FrameOp::PushGroup(group) = &command.op {
+            assert_eq!(plan.group_ink(group), group.ink_bounds);
+        }
+    }
+}

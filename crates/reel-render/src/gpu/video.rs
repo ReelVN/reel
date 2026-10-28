@@ -110,6 +110,7 @@ pub(super) fn upload(
             }),
             residency: None,
             source: None,
+            reuse_count: 0,
         }
     };
     let (_, staging_size) = costs(image);

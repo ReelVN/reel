@@ -3,6 +3,79 @@ use super::*;
 use crate::common::target_plan::Requirements;
 
 impl Plan {
+    /// Stabilize the physical classes produced by lifetime sharing. The logical
+    /// map is composed with the padded classes, preserving every source grid and
+    /// the already established simultaneous-use multiplicity.
+    pub(crate) fn padded_capacities<R>(
+        &self,
+        root: [u32; 2],
+        max_dimension: u32,
+        byte_limit: u64,
+        cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+        mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
+    ) -> Result<Option<(Self, Vec<R>)>, GpuError> {
+        let Some((padding, _temporary)) = Self::capacities(
+            &self.requirements,
+            root,
+            max_dimension,
+            byte_limit,
+            cost,
+            &mut reserve,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut tickets = Vec::new();
+        let mut mappings = Vec::new();
+        for mapping in &self.mappings {
+            push_stack(
+                &mut mappings,
+                Mapping {
+                    logical: mapping.logical,
+                    storage: padding.storage_size(mapping.storage),
+                },
+                |bytes| {
+                    tickets.push(reserve(bytes)?);
+                    Ok(())
+                },
+            )?;
+        }
+        for mapping in &padding.mappings {
+            if self
+                .mappings
+                .binary_search_by_key(&mapping.logical, |entry| entry.logical)
+                .is_err()
+            {
+                push_stack(
+                    &mut mappings,
+                    Mapping {
+                        logical: mapping.logical,
+                        storage: mapping.storage,
+                    },
+                    |bytes| {
+                        tickets.push(reserve(bytes)?);
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+        mappings.sort_unstable_by_key(|mapping| mapping.logical);
+        // Padding's mapping capacity is temporary; retain only the composed map
+        // and physical requirements. Its tickets end with this planning call.
+        let requirements = Requirements::collect(padding.requirements.iter(), |bytes| {
+            tickets.push(reserve(bytes)?);
+            Ok(())
+        })?;
+        Ok(Some((
+            Self {
+                mappings,
+                bytes: padding.bytes,
+                requirements,
+            },
+            tickets,
+        )))
+    }
+
     /// Keep output exact. Scratch padding is limited to one eighth of its
     /// backend byte cost and admitted against the same physical frame peak.
     pub(crate) fn capacities<R>(
@@ -33,29 +106,11 @@ impl Plan {
         };
         let mut tickets = Vec::new();
         for (size, count) in required.iter().filter(|(size, _)| *size != root) {
-            let largest = size[0].max(size[1]);
-            let quantum = largest
-                .checked_next_power_of_two()
-                .ok_or(GpuError::InvalidSize)?
-                / 32;
-            let quantum = quantum.max(32);
-            let extent = |value: u32| {
-                value
-                    .div_ceil(quantum)
-                    .checked_mul(quantum)
-                    .ok_or(GpuError::InvalidSize)
+            let Some((storage, total_extra)) =
+                padded_size(size, count, max_dimension, spare, cost)?
+            else {
+                continue;
             };
-            let storage = [extent(size[0])?, extent(size[1])?];
-            if storage == size || storage[0] > max_dimension || storage[1] > max_dimension {
-                continue;
-            }
-            let before = cost(size)?;
-            let after = cost(storage)?;
-            let extra = after.checked_sub(before).ok_or(GpuError::InvalidSize)?;
-            let total_extra = extra.checked_mul(count).ok_or(GpuError::InvalidSize)?;
-            if extra > before / 8 || total_extra > spare {
-                continue;
-            }
             spare -= total_extra;
             plan.bytes += total_extra;
             push_stack(
@@ -86,6 +141,61 @@ impl Plan {
     }
 }
 
+/// Keep an already affordable square bucket. A rejected thin/small source tries
+/// axis-sized buckets, reducing the more inflated axis until the same byte cap
+/// admits it. Exact sizing is the final candidate, with no changed quality tier.
+fn padded_size(
+    size: [u32; 2],
+    count: u64,
+    max_dimension: u32,
+    spare: u64,
+    cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+) -> Result<Option<([u32; 2], u64)>, GpuError> {
+    let before = cost(size)?;
+    let bucket = |value: u32, divisor: u32| {
+        value
+            .checked_next_power_of_two()
+            .map(|power| (power / divisor).max(1))
+            .ok_or(GpuError::InvalidSize)
+    };
+    let square = bucket(size[0].max(size[1]), 32)?.max(32);
+    let mut quantum = [square; 2];
+    let mut square_candidate = true;
+    loop {
+        let round = |axis: usize| {
+            size[axis]
+                .div_ceil(quantum[axis])
+                .checked_mul(quantum[axis])
+                .ok_or(GpuError::InvalidSize)
+        };
+        let storage = [round(0)?, round(1)?];
+        if storage == size {
+            return Ok(None);
+        }
+        if storage.iter().all(|&extent| extent <= max_dimension) {
+            let extra = cost(storage)?
+                .checked_sub(before)
+                .ok_or(GpuError::InvalidSize)?;
+            let total = extra.checked_mul(count).ok_or(GpuError::InvalidSize)?;
+            if extra <= before / 8 && total <= spare {
+                return Ok(Some((storage, total)));
+            }
+        }
+        if square_candidate {
+            quantum = [bucket(size[0], 32)?, bucket(size[1], 32)?];
+            square_candidate = false;
+        } else {
+            let inflation = [
+                u64::from(storage[0] - size[0]) * u64::from(size[1]),
+                u64::from(storage[1] - size[1]) * u64::from(size[0]),
+            ];
+            let axis = usize::from(inflation[1] > inflation[0]);
+            let axis = if quantum[axis] > 1 { axis } else { 1 - axis };
+            quantum[axis] = (quantum[axis] / 2).max(1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +205,84 @@ mod tests {
     }
     fn cost(size: [u32; 2]) -> Result<u64, GpuError> {
         Ok(area(size) * 4)
+    }
+
+    #[test]
+    fn lifetime_padding_preserves_overlap_and_exact_pressure_fallback() {
+        let root = [960, 544];
+        let a = [481, 384];
+        let b = [400, 380];
+        let events = [
+            Event {
+                size: root,
+                acquired: true,
+            },
+            Event {
+                size: a,
+                acquired: true,
+            },
+            Event {
+                size: a,
+                acquired: true,
+            },
+            Event {
+                size: a,
+                acquired: false,
+            },
+            Event {
+                size: b,
+                acquired: true,
+            },
+            Event {
+                size: a,
+                acquired: false,
+            },
+            Event {
+                size: b,
+                acquired: true,
+            },
+        ];
+        let (exact, _) = Plan::from_lifetimes(&events, root, &cost, |_| Ok(())).unwrap();
+        assert_eq!(exact.requirements().count(a), 2);
+        assert!(
+            exact
+                .padded_capacities(root, 4096, exact.bytes(), &cost, |_| Ok(()))
+                .unwrap()
+                .is_none()
+        );
+        let pool = crate::test_support::r01_fixture::pool();
+        let limit = cost(root).unwrap() + 2 * cost([512, 384]).unwrap();
+        let (padded, tickets) = exact
+            .padded_capacities(root, 4096, limit, &cost, |bytes| {
+                pool.reserve(bytes).map_err(|_| GpuError::InvalidSize)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(padded.storage_size(root), root);
+        assert_eq!(padded.storage_size(a), [512, 384]);
+        assert_eq!(padded.storage_size(b), [512, 384]);
+        assert_eq!(padded.requirements().count([512, 384]), 2);
+        assert_eq!(padded.bytes(), limit);
+        assert_eq!(
+            pool.usage().bytes,
+            (padded.mappings.capacity() * size_of::<Mapping>()) as u64
+                + padded.requirements.capacity_bytes()
+        );
+        drop(padded);
+        drop(tickets);
+        assert_eq!(pool.usage().bytes, 0);
+        assert!(
+            exact
+                .padded_capacities(root, 4096, limit, &cost, |_| Err::<(), _>(
+                    GpuError::InvalidSize
+                ))
+                .is_err()
+        );
+        assert_eq!(
+            exact.storage_size(b),
+            a,
+            "optional metadata failure keeps the exact shared plan"
+        );
     }
 
     #[test]
@@ -144,10 +332,15 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let (limited, _) = Plan::capacities(&inputs, root, 500, u64::MAX, &cost, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(limited.storage_size(size), [496, 384]);
         assert!(
-            Plan::capacities(&inputs, root, 500, u64::MAX, &cost, |_| Ok(()))
-                .unwrap()
-                .is_none()
+            limited
+                .storage_size(size)
+                .iter()
+                .all(|&extent| extent <= 500)
         );
         let small = required(&[([1, 1], 1)]);
         assert!(

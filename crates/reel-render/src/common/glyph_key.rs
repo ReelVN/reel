@@ -1,12 +1,21 @@
 use reel_ui::{frame::FrameGlyphRun, resources::ResourceHandle};
-use std::sync::Arc;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Key {
     run: Arc<RunKey>,
     glyph: u32,
 }
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq)]
 pub(crate) struct RunKey {
+    hash: u64,
+    fields: RunFields,
+}
+#[derive(PartialEq, Eq, Hash)]
+struct RunFields {
     font: ResourceHandle,
     index: u32,
     size: u32,
@@ -31,7 +40,7 @@ enum StyleKey {
 }
 impl RunKey {
     pub fn new(run: &FrameGlyphRun, density: f64) -> Self {
-        Self {
+        let fields = RunFields {
             font: run.font,
             index: run.font_index,
             size: run.font_size.to_bits(),
@@ -53,7 +62,19 @@ impl RunKey {
                     dashes: s.dash_pattern.iter().map(|v| v.to_bits()).collect(),
                 },
             },
+        };
+        let mut hasher = DefaultHasher::new();
+        fields.hash(&mut hasher);
+        Self {
+            hash: hasher.finish(),
+            fields,
         }
+    }
+}
+impl Hash for RunKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Each glyph shares this digest; equality still compares every raster field.
+        state.write_u64(self.hash);
     }
 }
 impl Key {
@@ -61,3 +82,6 @@ impl Key {
         Self { run, glyph }
     }
 }
+
+#[cfg(test)]
+mod tests;

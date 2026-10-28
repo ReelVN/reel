@@ -1,5 +1,7 @@
 //! Physical storage shared by scratch extents with compatible lifetimes.
 use super::{GpuError, scopes::push_stack};
+#[cfg(test)]
+mod animation_tests;
 mod capacities;
 
 #[derive(Clone, Copy)]
@@ -25,6 +27,7 @@ struct Class {
     peak: u64,
     cost: u64,
     group: usize,
+    span: std::ops::Range<usize>,
 }
 
 struct Group {
@@ -34,6 +37,8 @@ struct Group {
     protected: bool,
     live: u64,
     combined_peak: u64,
+    span: std::ops::Range<usize>,
+    overlaps: bool,
 }
 
 impl Plan {
@@ -74,6 +79,7 @@ impl Plan {
                         peak: 0,
                         cost: cost(event.size)?,
                         group: 0,
+                        span: 0..0,
                     },
                     &mut planning,
                 )?;
@@ -85,16 +91,25 @@ impl Plan {
         for _ in &classes {
             push_stack(&mut live, 0u64, &mut planning)?;
         }
-        for event in events {
+        for (position, event) in events.iter().enumerate() {
             let index = classes
                 .binary_search_by_key(&event.size, |class| class.size)
                 .unwrap();
+            if classes[index].span.is_empty() {
+                classes[index].span.start = position;
+            }
+            classes[index].span.end = position + 1;
             push_stack(&mut timeline, (index, event.acquired), &mut planning)?;
             if event.acquired {
                 live[index] += 1;
                 classes[index].peak = classes[index].peak.max(live[index]);
             } else {
                 live[index] = live[index].checked_sub(1).expect("planned target release");
+            }
+        }
+        for (class, live) in classes.iter_mut().zip(live) {
+            if live != 0 {
+                class.span.end = events.len();
             }
         }
         let mut order = Vec::new();
@@ -109,34 +124,45 @@ impl Plan {
             let class = &classes[index];
             let size = class.size;
             let peak = class.peak;
+            let span = class.span.clone();
             let original = class.cost.checked_mul(peak).ok_or(GpuError::InvalidSize)?;
             let mut best = None;
             if size != root {
-                // One timeline sweep evaluates all existing groups. A new
-                // candidate acquisition changes every combined live count;
-                // existing group events change only that group's count.
+                // Sequential source chains cannot overlap when their complete
+                // event envelopes are disjoint. Their joint peak is already
+                // known; only intersecting envelopes need the timeline sweep.
                 for group in &mut groups {
                     group.live = 0;
-                    group.combined_peak = 0;
+                    group.combined_peak = group.peak.max(peak);
+                    group.overlaps = !group.protected
+                        && group.span.start < span.end
+                        && span.start < group.span.end;
                 }
-                let mut current = 0u64;
-                for &(event_class, acquired) in &timeline {
-                    if event_class == index {
-                        if acquired {
-                            current += 1;
-                            for group in &mut groups {
-                                group.combined_peak = group.combined_peak.max(group.live + current);
+                if groups.iter().any(|group| group.overlaps) {
+                    let mut current = 0u64;
+                    for &(event_class, acquired) in &timeline {
+                        if event_class == index {
+                            if acquired {
+                                current += 1;
+                                for group in groups.iter_mut().filter(|group| group.overlaps) {
+                                    group.combined_peak =
+                                        group.combined_peak.max(group.live + current);
+                                }
+                            } else {
+                                current = current.checked_sub(1).expect("planned class release");
                             }
-                        } else {
-                            current = current.checked_sub(1).expect("planned class release");
-                        }
-                    } else if let Some(group_id) = classes[event_class].group.checked_sub(1) {
-                        let group = &mut groups[group_id];
-                        if acquired {
-                            group.live += 1;
-                            group.combined_peak = group.combined_peak.max(group.live + current);
-                        } else {
-                            group.live = group.live.checked_sub(1).expect("planned group release");
+                        } else if let Some(group_id) = classes[event_class].group.checked_sub(1) {
+                            let group = &mut groups[group_id];
+                            if !group.overlaps {
+                                continue;
+                            }
+                            if acquired {
+                                group.live += 1;
+                                group.combined_peak = group.combined_peak.max(group.live + current);
+                            } else {
+                                group.live =
+                                    group.live.checked_sub(1).expect("planned group release");
+                            }
                         }
                     }
                 }
@@ -181,6 +207,8 @@ impl Plan {
                 groups[group_id].cost = combined_cost;
                 groups[group_id].size = size;
                 groups[group_id].peak = peak;
+                groups[group_id].span.start = groups[group_id].span.start.min(span.start);
+                groups[group_id].span.end = groups[group_id].span.end.max(span.end);
                 classes[index].group = group_id + 1;
             } else {
                 push_stack(
@@ -192,6 +220,8 @@ impl Plan {
                         protected: size == root,
                         live: 0,
                         combined_peak: 0,
+                        span,
+                        overlaps: false,
                     },
                     &mut planning,
                 )?;
@@ -249,6 +279,86 @@ mod tests {
 
     fn event(size: [u32; 2], acquired: bool) -> Event {
         Event { size, acquired }
+    }
+
+    #[test]
+    #[ignore = "CPU lifetime planner measurement; no graphics adapter"]
+    fn sequential_lifetime_planning_cost() {
+        use std::{hint::black_box, time::Instant};
+        for count in [32, 128, 512] {
+            let root = [960, 544];
+            let mut events = vec![event(root, true)];
+            for index in 0..count {
+                let size = [512 + index, 400];
+                events.extend([
+                    event(size, true),
+                    event(size, true),
+                    event(size, false),
+                    event(size, false),
+                ]);
+            }
+            let began = Instant::now();
+            let mut checksum = 0;
+            for _ in 0..200 {
+                let (plan, _) = Plan::from_lifetimes(
+                    black_box(&events),
+                    root,
+                    &|size| Ok(area(size) * 4),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(
+                    plan.bytes(),
+                    (area(root) + 2 * area([511 + count, 400])) * 4
+                );
+                checksum += black_box(plan.bytes());
+            }
+            println!(
+                "lifetime_plan classes={count} frames=200 elapsed_us={} checksum={checksum}",
+                began.elapsed().as_micros()
+            );
+        }
+    }
+
+    #[test]
+    fn open_lifetimes_and_interleaved_reuse_keep_exact_joint_peaks() {
+        let root = [960, 544];
+        let a = [600, 400];
+        let b = [500, 400];
+        let (open, _) = Plan::from_lifetimes(
+            &[event(a, true), event(b, true), event(b, false)],
+            root,
+            &|size| Ok(area(size)),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            open.storage_size(b),
+            b,
+            "an unreleased source overlaps the later chain"
+        );
+        assert_eq!(open.bytes(), area(a) + area(b));
+        let (interleaved, _) = Plan::from_lifetimes(
+            &[
+                event(a, true),
+                event(a, false),
+                event(b, true),
+                event(b, false),
+                event(a, true),
+                event(a, false),
+            ],
+            root,
+            &|size| Ok(area(size)),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            interleaved.storage_size(b),
+            a,
+            "intersecting envelopes still use exact event lifetimes"
+        );
+        assert_eq!(interleaved.requirements().count(a), 1);
+        assert_eq!(interleaved.bytes(), area(a));
     }
 
     #[test]

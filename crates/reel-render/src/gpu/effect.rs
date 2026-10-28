@@ -394,11 +394,13 @@ impl Context<'_> {
         });
         self.effects = held;
         retained?;
+        let mut index_count = 0;
         let mesh = if padded {
-            let vertices = effect_plan::implicit_mesh::vertices(&context_slots)
+            let geometry = effect_plan::implicit_mesh::geometry(&context_slots)
                 .ok_or(GpuError::InvalidSize)?;
             let mut mesh = crate::common::mesh::Mesh::new(self.mesh_allocation());
-            mesh.triangles(&vertices)?;
+            mesh.indexed_triangles(geometry.vertices(), geometry.indices().iter().copied())?;
+            index_count = geometry.indices().len() as u32;
             let batch = crate::common::draw_batch::Batch::new(mesh, ())?;
             let (storage, local, metadata) = self.geometry_cache.upload_batch(
                 self.gpu,
@@ -451,7 +453,7 @@ impl Context<'_> {
         if let Some(mesh) = mesh {
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..54, 0, 0..1);
+            pass.draw_indexed(0..index_count, 0, 0..1);
         } else {
             pass.draw(0..3, 0..1);
         }

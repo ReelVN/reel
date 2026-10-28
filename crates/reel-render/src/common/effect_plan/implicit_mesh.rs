@@ -6,7 +6,32 @@ use reel_ui::kurbo::{Affine, Point};
 /// has affine clamped UVs, so both backends can interpolate them before sampling.
 /// Positions are clip-space; color.xy retains the original top-left target UV.
 /// A singular or unrepresentable source mapping has no drawable mesh.
-pub(crate) fn vertices(context: &[[f32; 4]; crate::effect::CONTEXT_SLOTS]) -> Option<[Vertex; 54]> {
+pub(crate) struct Geometry {
+    vertices: [Vertex; 16],
+    vertex_count: usize,
+    indices: [u32; 54],
+    index_count: usize,
+}
+impl Geometry {
+    pub(crate) fn vertices(&self) -> &[Vertex] {
+        &self.vertices[..self.vertex_count]
+    }
+    pub(super) fn vertices_mut(&mut self) -> &mut [Vertex] {
+        &mut self.vertices[..self.vertex_count]
+    }
+    pub(crate) fn indices(&self) -> &[u32] {
+        &self.indices[..self.index_count]
+    }
+    #[cfg(test)]
+    fn triangles(&self) -> Vec<Vertex> {
+        self.indices()
+            .iter()
+            .map(|&index| self.vertices[index as usize])
+            .collect()
+    }
+}
+
+pub(crate) fn geometry(context: &[[f32; 4]; crate::effect::CONTEXT_SLOTS]) -> Option<Geometry> {
     let x = context[7].map(f64::from);
     let y = context[8].map(f64::from);
     let mapping = Affine::new([x[0], y[0], x[1], y[1], x[2], y[2]]);
@@ -59,11 +84,32 @@ pub(crate) fn vertices(context: &[[f32; 4]; crate::effect::CONTEXT_SLOTS]) -> Op
     }) {
         return None;
     }
-    Some(std::array::from_fn(|index| {
-        let cell = index / 6;
-        let first = cell / 3 * 4 + cell % 3;
-        points[first + [0, 1, 4, 1, 5, 4][index % 6]]
-    }))
+    let mut mesh = Geometry {
+        vertices: points,
+        vertex_count: 0,
+        indices: [0; 54],
+        index_count: 0,
+    };
+    let mut remap = [u32::MAX; 16];
+    for row in 0..3 {
+        for column in 0..3 {
+            if grid[0][column] == grid[0][column + 1] || grid[1][row] == grid[1][row + 1] {
+                continue;
+            }
+            let first = row * 4 + column;
+            for offset in [0, 1, 4, 1, 5, 4] {
+                let original = first + offset;
+                if remap[original] == u32::MAX {
+                    remap[original] = mesh.vertex_count as u32;
+                    mesh.vertices[mesh.vertex_count] = points[original];
+                    mesh.vertex_count += 1;
+                }
+                mesh.indices[mesh.index_count] = remap[original];
+                mesh.index_count += 1;
+            }
+        }
+    }
+    Some(mesh)
 }
 
 #[cfg(test)]
@@ -80,7 +126,7 @@ mod tests {
         context
     }
 
-    fn sample(vertices: &[Vertex; 54], target: [f64; 2]) -> ([f64; 2], [f64; 2]) {
+    fn sample(vertices: &[Vertex], target: [f64; 2]) -> ([f64; 2], [f64; 2]) {
         let point = [target[0] * 2. - 1., 1. - target[1] * 2.];
         for triangle in vertices.as_chunks::<3>().0 {
             let a = triangle[0].position.map(f64::from);
@@ -134,7 +180,7 @@ mod tests {
                 [0.1, 0.2, 1. / 512., 1. / 256.],
             ] {
                 let context = context(mapping, window);
-                let mesh = vertices(&context).unwrap();
+                let mesh = geometry(&context).unwrap().triangles();
                 // A backend scissor restricts the same complete viewport mesh.
                 for bounds in [[0., 0., 1., 1.], [0.17, 0.31, 0.73, 0.64]] {
                     for y in 0..19 {
@@ -169,9 +215,65 @@ mod tests {
     }
 
     #[test]
+    fn indexed_cells_reduce_upload_bytes_and_preserve_triangle_attributes() {
+        use crate::common::{
+            GpuLimits,
+            draw_batch::Batch,
+            mesh::{Allocation, Mesh},
+            renderer::Budgets,
+        };
+        let limits = GpuLimits::default();
+        let global = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        for (mapping, expected_vertices, expected_indices) in [
+            (Affine::IDENTITY, 16, 54),
+            (
+                Affine::translate((2., -3.)) * Affine::scale_non_uniform(0.2, -0.3),
+                4,
+                6,
+            ),
+        ] {
+            let context = context(mapping, [0., 0., 0.5, 0.75]);
+            let geometry = geometry(&context).unwrap();
+            assert_eq!(geometry.vertices().len(), expected_vertices);
+            assert_eq!(geometry.indices().len(), expected_indices);
+            let mut mesh = Mesh::new(Allocation::new(
+                &global,
+                &local,
+                limits.transient_bytes,
+                1 << 20,
+            ));
+            mesh.indexed_triangles(geometry.vertices(), geometry.indices().iter().copied())
+                .unwrap();
+            let triangles = geometry.triangles();
+            for (index, original) in mesh.indices.iter().zip(triangles) {
+                let actual = &mesh.vertices[*index as usize];
+                assert_eq!(actual.position, original.position);
+                assert_eq!(actual.uv, original.uv);
+                assert_eq!(actual.color, original.color);
+            }
+            let batch = Batch::new(mesh, ()).unwrap();
+            let before = 54 * (size_of::<Vertex>() + size_of::<u16>()) as u64;
+            let after = batch.capacity().bytes();
+            assert_eq!(
+                after,
+                (expected_vertices * size_of::<Vertex>() + expected_indices * size_of::<u16>())
+                    as u64
+            );
+            println!(
+                "padded_effect vertices=54->{expected_vertices} indices=54->{expected_indices} upload_bytes={before}->{after}"
+            );
+            assert!(after < before);
+            drop(batch);
+            assert_eq!(global.transient.usage().bytes, 0);
+            assert_eq!(local.transient.usage().bytes, 0);
+        }
+    }
+
+    #[test]
     fn cell_boundaries_share_vertices_and_singular_maps_have_no_mesh() {
         let context = context(Affine::IDENTITY, [0., 0., 0.5, 0.75]);
-        let mesh = vertices(&context).unwrap();
+        let mesh = geometry(&context).unwrap().triangles();
         for row in 0..3 {
             for column in 0..2 {
                 let left = (row * 3 + column) * 6;
@@ -184,6 +286,6 @@ mod tests {
         }
         let mut singular = context;
         singular[8] = singular[7];
-        assert!(vertices(&singular).is_none());
+        assert!(geometry(&singular).is_none());
     }
 }
