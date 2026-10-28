@@ -97,6 +97,20 @@ impl BudgetPool {
         self.0.lock().expect("budget account poisoned").usage
     }
 
+    /// Capacity available for one new ticket at this observation. A shared
+    /// group can reduce it further; `reserve` commits the eventual admission.
+    pub fn available_bytes(&self) -> u64 {
+        let account = self.0.lock().expect("budget account poisoned");
+        if account.usage.tickets >= account.limits.max_requests {
+            return 0;
+        }
+        let available = account.limits.max_bytes - account.usage.bytes;
+        account.group.as_ref().map_or(available, |group| {
+            let total = group.0.lock().expect("budget group poisoned");
+            available.min(total.max_bytes - total.usage.bytes)
+        })
+    }
+
     pub fn reserve(&self, bytes: u64) -> Result<BudgetTicket, RejectReason> {
         let mut a = self.0.lock().expect("budget account poisoned");
         let category = a.category;

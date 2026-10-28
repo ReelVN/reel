@@ -172,10 +172,13 @@ fn grouped_capacity_rejections_and_resize_are_atomic() {
     let input = group.pool(BudgetCategory::CpuInput, limits(2, 70));
     let gpu = group.pool(BudgetCategory::GpuResource, limits(1, 90));
     let mut a = input.reserve(60).unwrap();
+    assert_eq!(input.available_bytes(), 10);
+    assert_eq!(gpu.available_bytes(), 40);
     assert_eq!(gpu.reserve(50).unwrap_err().code, RejectCode::Busy);
     assert_eq!(gpu.usage(), BudgetUsage::default());
     assert_eq!(input.reserve(11).unwrap_err().code, RejectCode::Busy);
     let zero = input.clone().reserve(0).unwrap();
+    assert_eq!(input.available_bytes(), 0);
     assert_eq!(input.reserve(0).unwrap_err().code, RejectCode::Busy);
     let mut b = gpu.reserve(40).unwrap();
     assert_eq!(a.category(), BudgetCategory::CpuInput);
@@ -194,6 +197,7 @@ fn grouped_capacity_rejections_and_resize_are_atomic() {
     assert_eq!(a.bytes(), 60);
     assert_eq!((input.usage(), gpu.usage(), group.usage()), before);
     b.resize(20).unwrap();
+    assert_eq!(gpu.available_bytes(), 0);
     assert_eq!(group.usage().bytes, 80);
     a.resize(70).unwrap();
     assert_eq!(
