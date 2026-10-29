@@ -1,11 +1,8 @@
 // Native GXM counterpart of the shared renderer algorithm.
 // Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
-varying float4 fragment_position : WPOS;
 varying out float4 reel_output : COLOR;
-uniform float4 reel_clip_rect;
-void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
 varying float2 v_uv : TEXCOORD0;
 uniform sampler2D u_image : TEXUNIT0;
 float3 encode(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
 void main(){
- reel_clip();float4 color=tex2D(u_image,v_uv);reel_output=float4(encode(color.rgb),1.0);}
+ float4 color=tex2D(u_image,v_uv);reel_output=float4(encode(color.rgb),1.0);}

@@ -339,7 +339,14 @@ impl Programs {
                     shader_code!("mask_paired_gg_composite"),
                 )?,
             ],
-            present: Shader::new(context, shader_code!("present"))?,
+            // The final quad covers the viewport with no narrower scissor.
+            // Omitting discard lets GXM schedule the texture fetch independently.
+            present: Shader::with_clipping(
+                context,
+                shader_code!("vertex"),
+                shader_code!("present"),
+                false,
+            )?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
             indices: context.index_buffer_u16(&[0, 1, 2, 0, 2, 3])?,
             _storage: storage,
