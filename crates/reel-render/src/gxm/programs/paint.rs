@@ -105,7 +105,9 @@ impl PaintPrograms {
             &self.entries[kind.index() * 4 + usize::from(clipped) * 2 + usize::from(instanced)];
         if slot.get().is_none() {
             #[cfg(feature = "profiling")]
-            eprintln!("[reel-render] paint shader={kind:?} clipped={clipped} instanced={instanced}");
+            eprintln!(
+                "[reel-render] paint shader={kind:?} clipped={clipped} instanced={instanced}"
+            );
             let storage = device.ticket(
                 self.budget
                     .reserve(size_of::<Entry>() as u64)

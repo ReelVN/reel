@@ -66,6 +66,41 @@ fn sampled_alpha(pixels: &[u8], size: [u32; 2], at: Point, window: Rect, nearest
 }
 
 #[test]
+fn minified_rotated_portraits_coalesce_geometry_while_large_images_keep_shape_detail() {
+    let size = [64, 65];
+    let pixels = portrait(size);
+    let coverage = ImageCoverage::rgba8(size, &pixels).unwrap();
+    let bounds = Rect::new(0., 0., 64., 65.);
+    let make = |scale| {
+        quads(
+            bounds,
+            &brush(None),
+            Affine::IDENTITY,
+            Affine::rotate(0.7) * Affine::scale(scale),
+            TextureLayout::identity(size),
+            Some(&coverage),
+        )
+    };
+    let small = make(0.25);
+    let large = make(16.);
+    assert_eq!(small.len, 1);
+    assert!(large.len > small.len);
+    for geometry in [&small, &large] {
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                if pixels[((y * size[0] + x) * 4 + 3) as usize] != 0 {
+                    assert!(
+                        geometry
+                            .iter()
+                            .any(|rect| rect.contains(Point::new(x as f64 + 0.5, y as f64 + 0.5)))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn source_windows_scaling_mirroring_and_filter_neighbours_keep_every_nonzero_sample() {
     let size = [64, 65];
     let pixels = portrait(size);
@@ -91,55 +126,59 @@ fn source_windows_scaling_mirroring_and_filter_neighbours_keep_every_nonzero_sam
                         source.height() / bounds.height(),
                     )
                     * Affine::translate((-bounds.x0, -bounds.y0));
-            let physical_transform = Affine::rotate(0.7) * Affine::scale(0.25);
-            let quads = quads(
-                bounds,
-                &brush,
-                transform,
-                physical_transform,
-                layout,
-                Some(&coverage),
-            );
-            assert!(quads.len <= IMAGE_COVERAGE_BANDS);
-            if crop.is_none() || crop.is_some_and(|rect| rect.width() > 100.) {
-                assert!(quads.iter().map(|rect| rect.area()).sum::<f64>() < bounds.area());
-            }
-            for (i, a) in quads.iter().enumerate() {
-                assert!(a.width() > 0. && a.height() > 0.);
-                for b in quads.iter().skip(i + 1) {
-                    let overlap = a.intersect(b);
-                    assert!(overlap.width() <= 1e-12 || overlap.height() <= 1e-12);
+            for scale in [0.25, 2.4, 16.] {
+                let physical_transform = Affine::rotate(0.7) * Affine::scale(scale);
+                let quads = quads(
+                    bounds,
+                    &brush,
+                    transform,
+                    physical_transform,
+                    layout,
+                    Some(&coverage),
+                );
+                assert!(quads.len <= IMAGE_COVERAGE_BANDS);
+                assert!(quads.iter().map(|rect| rect.area()).sum::<f64>() <= bounds.area());
+                if scale == 16. && (crop.is_none() || crop.is_some_and(|rect| rect.width() > 100.))
+                {
+                    assert!(quads.iter().map(|rect| rect.area()).sum::<f64>() < bounds.area());
                 }
-            }
-            for nearest in [false, true] {
-                for y in 0..320 {
-                    for x in 0..480 {
-                        let local = Point::new(
-                            bounds.x0 + (f64::from(x) + 0.37) / 4.,
-                            bounds.y0 + (f64::from(y) + 0.61) / 4.,
-                        );
-                        let authored = transform * local;
-                        let texel = Point::new(authored.x / 3., authored.y / 2.);
-                        let window = Rect::new(
-                            source.x0 / 3.,
-                            source.y0 / 2.,
-                            source.x1 / 3.,
-                            source.y1 / 2.,
-                        );
-                        if sampled_alpha(&pixels, size, texel, window, nearest) > 0. {
-                            assert!(
-                                quads.iter().any(|quad| quad.contains(local)),
-                                "nonzero sample removed: {local:?}, {crop:?}, mirror={mirror}, nearest={nearest}"
+                for (i, a) in quads.iter().enumerate() {
+                    assert!(a.width() > 0. && a.height() > 0.);
+                    for b in quads.iter().skip(i + 1) {
+                        let overlap = a.intersect(b);
+                        assert!(overlap.width() <= 1e-12 || overlap.height() <= 1e-12);
+                    }
+                }
+                for nearest in [false, true] {
+                    for y in 0..320 {
+                        for x in 0..480 {
+                            let local = Point::new(
+                                bounds.x0 + (f64::from(x) + 0.37) / 4.,
+                                bounds.y0 + (f64::from(y) + 0.61) / 4.,
                             );
-                            for offset in [(0.9375, -0.9375), (-0.9375, 0.9375)] {
-                                let sample = physical_transform.inverse()
-                                    * (physical_transform * local
-                                        + reel_ui::kurbo::Vec2::from(offset));
-                                if bounds.contains(sample) {
-                                    assert!(
-                                        quads.iter().any(|quad| quad.contains(sample)),
-                                        "coverage sample removed: {sample:?}, shade={local:?}"
-                                    );
+                            let authored = transform * local;
+                            let texel = Point::new(authored.x / 3., authored.y / 2.);
+                            let window = Rect::new(
+                                source.x0 / 3.,
+                                source.y0 / 2.,
+                                source.x1 / 3.,
+                                source.y1 / 2.,
+                            );
+                            if sampled_alpha(&pixels, size, texel, window, nearest) > 0. {
+                                assert!(
+                                    quads.iter().any(|quad| quad.contains(local)),
+                                    "nonzero sample removed: {local:?}, {crop:?}, mirror={mirror}, nearest={nearest}"
+                                );
+                                for offset in [(0.9375, -0.9375), (-0.9375, 0.9375)] {
+                                    let sample = physical_transform.inverse()
+                                        * (physical_transform * local
+                                            + reel_ui::kurbo::Vec2::from(offset));
+                                    if bounds.contains(sample) {
+                                        assert!(
+                                            quads.iter().any(|quad| quad.contains(sample)),
+                                            "coverage sample removed: {sample:?}, shade={local:?}"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -149,11 +188,12 @@ fn source_windows_scaling_mirroring_and_filter_neighbours_keep_every_nonzero_sam
         }
     }
     let full = Rect::new(0., 0., 192., 130.);
+    // Large presentation retains fine coverage and its transparent-fill saving.
     let quads = quads(
         full,
         &brush(None),
         Affine::IDENTITY,
-        Affine::IDENTITY,
+        Affine::scale(8.),
         layout,
         Some(&coverage),
     );

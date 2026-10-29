@@ -135,10 +135,16 @@ pub(crate) fn quads(
     }
     // Rebuild the union as disjoint bands after pixel padding. Inflating output
     // quads directly would overlap and apply source-over blending twice.
-    let step = (bottom - top) / IMAGE_COVERAGE_BANDS as f64;
-    for band in 0..IMAGE_COVERAGE_BANDS {
+    // Minified portraits need fewer primitives. Preserve each band's complete
+    // support union while keeping strips roughly two 32-pixel tiles tall;
+    // fine transparent geometry can cost more than the zero-alpha fill it saves.
+    let [_, _, physical_x, physical_y, _, _] = physical_transform.as_coeffs();
+    let height = (bottom - top) / d.abs() * physical_x.hypot(physical_y);
+    let bands = ((height / 64.).ceil() as usize).clamp(1, IMAGE_COVERAGE_BANDS);
+    let step = (bottom - top) / bands as f64;
+    for band in 0..bands {
         let y0 = top + step * band as f64;
-        let y1 = if band + 1 == IMAGE_COVERAGE_BANDS {
+        let y1 = if band + 1 == bands {
             bottom
         } else {
             top + step * (band + 1) as f64
