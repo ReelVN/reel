@@ -210,12 +210,12 @@ impl Assets {
                     scene.pop_group();
                 }
             }
-        } else {
+        } else if case != "empty" {
             fill(&mut scene, Rect::new(0., 0., 960., 544.), Affine::IDENTITY);
         }
         let mut widget = r01_fixture::RecordWidget::new(scene);
         widget.clip = false;
-        if case != "offscreen" {
+        if !matches!(case, "empty" | "solid" | "offscreen") {
             let handle = self.texture(case, index)?;
             let lease = self.registry.acquire(handle).map_err(error)?;
             let progress = 0.1 + 0.8 * (index % 8) as f32 / 7.;

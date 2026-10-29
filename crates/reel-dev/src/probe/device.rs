@@ -1,5 +1,7 @@
 //! Temporary device experiment; delegates drawing to production Reel/native code.
 #![allow(dead_code)]
+#[path = "ablation.rs"]
+mod ablation;
 #[path = "blend_color.rs"]
 mod blend_color;
 #[path = "../../../reel-ui/tests/support/fixture.rs"]
@@ -33,6 +35,8 @@ const SIZE: [u32; 2] = [960, 544];
 const CASES: &[&str] = &[
     "clear_swap",
     "fence",
+    "empty",
+    "solid",
     "rgba",
     "bc1",
     "bc3",
@@ -189,18 +193,22 @@ fn native_case(case: &str, frames: usize) -> Result {
 
 fn poll_frames(
     renderer: &mut DeviceBackend,
-    pending: &mut VecDeque<reel_core::identity::FrameId>,
+    pending: &mut VecDeque<(reel_core::identity::FrameId, usize, Instant)>,
     events: &mut Vec<RenderEvent<DeviceError>>,
     completed: &mut usize,
+    measurements: &mut timing::Frames,
 ) -> Result {
     events.clear();
     renderer.poll(events, 32)?;
     for event in events.drain(..) {
         match event {
             RenderEvent::RenderFinished { frame, .. } => {
-                if pending.pop_front() != Some(frame) {
+                let (expected, index, submitted) =
+                    pending.pop_front().ok_or("unexpected completion")?;
+                if expected != frame {
                     return Err("completion order".into());
                 }
+                measurements.completed(index, submitted.elapsed());
                 *completed += 1;
             }
             RenderEvent::DeviceLost(error) => return Err(error.into()),
@@ -233,13 +241,20 @@ fn renderer_case(
     } else {
         8
     };
+    let native_before = renderer.native_memory_usage()?.submission_timing;
     let total = Instant::now();
     for index in 0..frames {
         let started = Instant::now();
         let mut waiting = Duration::ZERO;
         while pending.len() >= flights {
             let wait = Instant::now();
-            poll_frames(renderer, &mut pending, &mut events, &mut completed)?;
+            poll_frames(
+                renderer,
+                &mut pending,
+                &mut events,
+                &mut completed,
+                &mut measurements,
+            )?;
             polls += 1;
             if pending.len() >= flights {
                 if started.elapsed() > Duration::from_secs(10) {
@@ -275,13 +290,19 @@ fn renderer_case(
                     if id != frame.frame_id() {
                         return Err("frame identity".into());
                     }
-                    pending.push_back(id);
+                    pending.push_back((id, index, start));
                     peak_pending = peak_pending.max(pending.len());
                     break (present_start.duration_since(start), present_start.elapsed());
                 }
                 Ok(outcome) => return Err(format!("{case}: unexpected {outcome:?}").into()),
                 Err(DeviceError::Busy) => {
-                    poll_frames(renderer, &mut pending, &mut events, &mut completed)?;
+                    poll_frames(
+                        renderer,
+                        &mut pending,
+                        &mut events,
+                        &mut completed,
+                        &mut measurements,
+                    )?;
                     polls += 1;
                     if started.elapsed() > Duration::from_secs(10) {
                         return Err("submission timeout".into());
@@ -315,7 +336,13 @@ fn renderer_case(
     }
     let drain = Instant::now();
     while !pending.is_empty() {
-        poll_frames(renderer, &mut pending, &mut events, &mut completed)?;
+        poll_frames(
+            renderer,
+            &mut pending,
+            &mut events,
+            &mut completed,
+            &mut measurements,
+        )?;
         polls += 1;
         if !pending.is_empty() {
             if drain.elapsed() > Duration::from_secs(10) {
@@ -328,6 +355,12 @@ fn renderer_case(
     if completed != frames {
         return Err("missing completions".into());
     }
+    let label = format!("{case}-vsync{}-flights{flights}", u8::from(vsync));
+    ablation::native_delta(
+        &label,
+        native_before,
+        renderer.native_memory_usage()?.submission_timing,
+    );
     if trace {
         log(format_args!(
             "CASE {case} diagnostic checkpoints enabled; timing excluded"
@@ -443,7 +476,7 @@ fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) 
 }
 
 fn run() -> Result {
-    let mut selected = "authored".to_owned();
+    let mut selected = "diagnostic".to_owned();
     let mut frames = 120;
     let mut trace = false;
     let mut vsync = true;
@@ -482,11 +515,19 @@ fn run() -> Result {
     }
     if !matches!(
         selected.as_str(),
-        "authored" | "all" | "render" | "matrix" | "media" | "video_color" | "blend_color"
+        "diagnostic"
+            | "ablation"
+            | "authored"
+            | "all"
+            | "render"
+            | "matrix"
+            | "media"
+            | "video_color"
+            | "blend_color"
     ) && !CASES.contains(&selected.as_str())
     {
         return Err(format!(
-            "unknown case {selected}; available: authored,all,render,matrix,media,video_color,blend_color,{}",
+            "unknown case {selected}; available: diagnostic,ablation,authored,all,render,matrix,media,video_color,blend_color,{}",
             CASES.join(",")
         )
         .into());
@@ -498,7 +539,7 @@ fn run() -> Result {
         !matches!(selected.as_str(), "video_color" | "blend_color")
     ));
     // Package sessions use the player's sampler, including VM task locations.
-    let _sampler = (selected != "authored")
+    let _sampler = (!matches!(selected.as_str(), "authored" | "diagnostic"))
         .then(|| Sampler::start())
         .transpose()?;
     if matches!(selected.as_str(), "clear_swap" | "fence") {
@@ -515,6 +556,24 @@ fn run() -> Result {
                 } else {
                     blend_color::run(runtime.renderer())
                 };
+                marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
+                return result;
+            }
+            if matches!(selected.as_str(), "diagnostic" | "ablation") {
+                marker(&selected, "START");
+                let result = (|| {
+                    {
+                        let _sampler = (selected == "diagnostic")
+                            .then(Sampler::start)
+                            .transpose()?;
+                        ablation::run(runtime.renderer(), frames, trace)?;
+                    }
+                    if selected == "diagnostic" {
+                        runtime.renderer().reset_session()?;
+                        package_case(runtime, "authored")?;
+                    }
+                    Ok(())
+                })();
                 marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
                 return result;
             }
