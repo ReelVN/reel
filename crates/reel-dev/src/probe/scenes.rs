@@ -3,6 +3,8 @@ use super::{Error, Result, SIZE, r01_fixture};
 mod masks;
 #[path = "scenes/text.rs"]
 mod text;
+#[path = "scenes/portraits.rs"]
+mod portraits;
 pub const TEXT_REVEAL_FRAMES: usize = text::LINE.len();
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
@@ -30,6 +32,7 @@ pub struct Assets {
     pub versions: Vec<ResourceVersion>,
     text: Option<text::TextScene>,
     static_mask: Option<(ResourceHandle, Arc<EffectProgram>)>,
+    portraits: Option<portraits::Portraits>,
 }
 fn error(error: impl std::fmt::Debug) -> Error {
     format!("{error:?}").into()
@@ -49,11 +52,13 @@ impl Assets {
             versions: Vec::new(),
             text: None,
             static_mask: None,
+            portraits: None,
         })
     }
     pub fn retire(&mut self) {
         self.text = None;
         self.static_mask = None;
+        self.portraits = None;
         for handle in self.handles.drain(..) {
             self.registry.retire(handle);
             self.registry.release(handle);
@@ -167,6 +172,12 @@ impl Assets {
         Ok((handle, program))
     }
     pub fn frame(&mut self, case: &str, index: usize) -> Result<RenderFrame> {
+        if case == "portrait_pan" {
+            if self.portraits.is_none() {
+                self.portraits = Some(portraits::Portraits::load()?);
+            }
+            return self.portraits.as_ref().unwrap().frame(index, &self.pool);
+        }
         if matches!(case, "text" | "text_plain" | "text_styled") {
             if self.text.is_none() {
                 self.text = Some(text::TextScene::new(
