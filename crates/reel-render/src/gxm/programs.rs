@@ -67,6 +67,8 @@ const NAMES: &[&str] = &[
     "u_seed1",
     "u_origin",
     "u_origins[0]",
+    "u_quad_rect",
+    "u_quad_scale",
 ];
 pub(super) type Values<'a> = SmallVec<[UniformValue<'a>; 24]>;
 #[path = "programs/paint.rs"]
@@ -77,6 +79,12 @@ pub(super) struct Shader {
     uniforms: [Option<Uniform>; NAMES.len()],
 }
 impl Shader {
+    fn composite(
+        context: &super::ownership::Device,
+        fragment: ShaderCode<'_>,
+    ) -> Result<Self, GpuError> {
+        Self::with_clipping(context, shader_code!("composite_vertex"), fragment, false)
+    }
     fn new(context: &super::ownership::Device, fragment: ShaderCode<'_>) -> Result<Self, GpuError> {
         Self::with_vertex(context, shader_code!("vertex"), fragment)
     }
@@ -233,7 +241,7 @@ pub(super) struct Programs {
     pub paint: paint::PaintPrograms,
     pub composite: Shader,
     pub extended_blend: Shader,
-    overwrite: [std::cell::OnceCell<Shader>; 2],
+    transition: [std::cell::OnceCell<Shader>; 2],
     #[cfg(feature = "gxm-tile-destination")]
     tile: [std::cell::OnceCell<Shader>; 13],
     pub source_over: Shader,
@@ -279,30 +287,14 @@ impl Programs {
             source_window: [0.; 4],
         });
         Ok(Self {
-            overwrite: std::array::from_fn(|_| std::cell::OnceCell::new()),
+            transition: std::array::from_fn(|_| std::cell::OnceCell::new()),
             #[cfg(feature = "gxm-tile-destination")]
             tile: std::array::from_fn(|_| std::cell::OnceCell::new()),
             paint: paint::PaintPrograms::new(budget),
-            composite: Shader::with_vertex(
-                context,
-                shader_code!("composite_vertex"),
-                shader_code!("composite"),
-            )?,
-            extended_blend: Shader::with_vertex(
-                context,
-                shader_code!("composite_vertex"),
-                shader_code!("extended_blend"),
-            )?,
-            source_over: Shader::with_vertex(
-                context,
-                shader_code!("composite_vertex"),
-                shader_code!("source_over"),
-            )?,
-            alpha_mask: Shader::with_vertex(
-                context,
-                shader_code!("composite_vertex"),
-                shader_code!("alpha_mask"),
-            )?,
+            composite: Shader::composite(context, shader_code!("composite"))?,
+            extended_blend: Shader::composite(context, shader_code!("extended_blend"))?,
+            source_over: Shader::composite(context, shader_code!("source_over"))?,
+            alpha_mask: Shader::composite(context, shader_code!("alpha_mask"))?,
             mask_8: Shader::new(context, shader_code!("mask_8"))?,
             mask_16: Shader::new(context, shader_code!("mask_16"))?,
             mask_16_compact: Shader::new(context, shader_code!("mask_16_compact"))?,
@@ -395,7 +387,7 @@ impl Programs {
                 context,
                 shader_code!("composite_vertex"),
                 fragment,
-                true,
+                false,
                 false,
                 native::FragmentOutput::Declared,
             )?;
@@ -408,23 +400,20 @@ impl Programs {
         Ok(slot.get().unwrap())
     }
 
-    pub fn overwrite(
+    pub fn transition(
         &self,
         context: &super::ownership::Device,
-        extended: bool,
-        _: crate::common::target_writes::FullOverwrite,
+        masked: bool,
     ) -> Result<&Shader, GpuError> {
-        let slot = &self.overwrite[usize::from(extended)];
+        let slot = &self.transition[usize::from(masked)];
         if slot.get().is_none() {
-            let shader = Shader::with_clipping(
+            let shader = Shader::composite(
                 context,
-                shader_code!("composite_vertex"),
-                if extended {
-                    shader_code!("extended_blend_overwrite")
+                if masked {
+                    shader_code!("masked_transition")
                 } else {
-                    shader_code!("composite_overwrite")
+                    shader_code!("transition")
                 },
-                false,
             )?;
             assert!(slot.set(shader).is_ok(), "single-threaded program creation");
         }
@@ -441,9 +430,39 @@ impl Programs {
             blend,
             scissor,
         } = quad;
+        let mut geometry_values = Values::new();
+        let mut draw_size = size;
+        let mut draw_scissor = scissor;
+        let values = if let Some(uniform) = shader.uniform("u_quad_rect") {
+            let [x, y, width, height] = scissor.unwrap_or([0, 0, size[0], size[1]]);
+            // The cropped quad owns pixel clipping. Use the physical viewport
+            // so pooled padding does not request a second fragment clip.
+            draw_size = match target {
+                NativeTarget::Framebuffer(framebuffer) => framebuffer.size(),
+                NativeTarget::Screen => size,
+            };
+            draw_scissor = None;
+            geometry_values.extend_from_slice(values);
+            geometry_values.push(UniformValue::Vec4(
+                uniform,
+                [x as f32, y as f32, width as f32, height as f32],
+            ));
+            geometry_values.extend(shader.vec4(
+                "u_quad_scale",
+                [
+                    2. / draw_size[0] as f32,
+                    -2. / draw_size[1] as f32,
+                    1. / size[0] as f32,
+                    1. / size[1] as f32,
+                ],
+            ));
+            geometry_values.as_slice()
+        } else {
+            values
+        };
         context.draw(Draw {
             target,
-            size,
+            size: draw_size,
             program: &shader.program,
             vertices: &self.vertices,
             instances: None,
@@ -452,7 +471,7 @@ impl Programs {
             textures,
             uniforms: values,
             blend,
-            scissor,
+            scissor: draw_scissor,
         })?;
         Ok(())
     }

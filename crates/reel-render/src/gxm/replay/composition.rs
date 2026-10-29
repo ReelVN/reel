@@ -122,8 +122,19 @@ impl Context<'_> {
         } else {
             reel_core::profile::Phase::EffectComposite
         });
-        let shader = if let Some(proof) = overwrite {
-            self.programs.overwrite(self.gpu, blend > 4, proof)?
+        let shader = if invert == 0.
+            && blend == 0
+            && matches!(
+                operation,
+                CompositeOperation::Transition(_) | CompositeOperation::MaskedTransition(_)
+            )
+            && (!matches!(operation, CompositeOperation::MaskedTransition(_))
+                || expression.is_some())
+        {
+            self.programs.transition(
+                self.gpu,
+                matches!(operation, CompositeOperation::MaskedTransition(_)),
+            )?
         } else if plain {
             &self.programs.source_over
         } else if coverage {
