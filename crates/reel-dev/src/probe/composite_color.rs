@@ -127,10 +127,12 @@ fn retain(frame: &RenderFrame) -> Result<RetainedScene> {
     build.finish().map_err(error)
 }
 
-fn cropped_groups(renderer: &mut DeviceBackend) -> Result {
+fn cropped_groups(renderer: &mut DeviceBackend, reference: bool) -> Result {
     // Finite overlapping children force an isolated source smaller than the
     // viewport. Repeated extents also exercise pooled physical target padding.
     let mut case = 0;
+    let mut maximum = 0;
+    let directory = super::directory().join("composite-color-v1");
     for offset in [0., 11., 23.] {
         for alpha in [0.1, 0.5] {
             let a = Rect::new(7. + offset, 9., 65. + offset, 37.);
@@ -148,10 +150,27 @@ fn cropped_groups(renderer: &mut DeviceBackend) -> Result {
             fill(&mut scene, b, [255; 4]);
             scene.pop_group();
             let pixels = capture(renderer, frame(scene, 10_000 + case, vec![])?, SIZE)?;
+            let path = directory.join(format!("crop-{case}.rgba"));
+            if reference {
+                std::fs::write(path, &pixels)?;
+            } else {
+                let expected = std::fs::read(path)?;
+                if expected.len() != pixels.len() {
+                    return Err("cropped group reference size mismatch".into());
+                }
+                for (actual, expected) in pixels.iter().zip(expected) {
+                    maximum = maximum.max(actual.abs_diff(expected));
+                }
+            }
             for y in 0..SIZE[1] {
                 for x in 0..SIZE[0] {
                     let point = (f64::from(x) + 0.5, f64::from(y) + 0.5);
-                    let inside = a.contains(point) || b.contains(point);
+                    // The device reference covers every edge sample, including
+                    // the existing linear-filter rounding at isolated boundaries.
+                    // Uniform interiors and distant exterior pixels also have
+                    // an independent analytic oracle.
+                    let inside = a.inset(-1.).contains(point) || b.inset(-1.).contains(point);
+                    let outside = !a.inset(1.).contains(point) && !b.inset(1.).contains(point);
                     let expected = if inside {
                         (alpha * 255.).round() as u8
                     } else {
@@ -161,7 +180,8 @@ fn cropped_groups(renderer: &mut DeviceBackend) -> Result {
                     let actual = &pixels[at..at + 4];
                     let tolerance = u8::from(inside);
                     if actual[3] != 255
-                        || actual[..3].iter().any(|v| v.abs_diff(expected) > tolerance)
+                        || ((inside || outside)
+                            && actual[..3].iter().any(|v| v.abs_diff(expected) > tolerance))
                     {
                         return Err(format!("cropped group case={case} pixel=({x},{y}) actual={actual:?} expected_rgb={expected}").into());
                     }
@@ -170,8 +190,11 @@ fn cropped_groups(renderer: &mut DeviceBackend) -> Result {
             case += 1;
         }
     }
+    if maximum > 1 {
+        return Err(format!("cropped group reference max_error={maximum} exceeds one byte").into());
+    }
     log(format_args!(
-        "COMPOSITE CROP cases={case} outside_error=0 inside_tolerance=1"
+        "COMPOSITE CROP cases={case} reference={reference} max_error={maximum} tolerance=1 interior_tolerance=1 exterior_error=0"
     ));
     Ok(())
 }
@@ -256,6 +279,6 @@ pub(super) fn run(renderer: &mut DeviceBackend, reference: bool) -> Result {
     if maximum > 1 {
         return Err("composite output differs from device reference beyond one byte".into());
     }
-    cropped_groups(renderer)?;
+    cropped_groups(renderer, reference)?;
     Ok(())
 }
