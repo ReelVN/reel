@@ -95,7 +95,7 @@ fn image_projection_compares_actual_source_raster_and_appearance() {
         assert!(original == ImageProjection::new(&brush, moved, None, moved.inverse()));
         assert!(original != ImageProjection::new(&brush, moved, None, Affine::IDENTITY));
     }
-    let mut adjusted = brush.clone();
+    let mut adjusted = brush;
     adjusted.image.appearance = Some(ImageAppearance {
         alpha_layout: ImageAlphaLayout::Native,
         gradient: Some(ImageColorGradient {
@@ -110,11 +110,11 @@ fn image_projection_compares_actual_source_raster_and_appearance() {
     let projection = ImageProjection::new(&adjusted, Affine::IDENTITY, None, Affine::IDENTITY);
     assert!(projection != original);
     let translation = Affine::translate((8., 16.));
-    let mut moved = adjusted.clone();
+    let mut moved = adjusted;
     moved.image.appearance = moved.image.appearance.map(|a| a.transformed(translation));
     assert!(projection == ImageProjection::new(&moved, translation, None, translation.inverse()));
     for mutation in 0..4 {
-        let mut changed = adjusted.clone();
+        let mut changed = adjusted;
         let appearance = changed.image.appearance.as_mut().unwrap();
         match mutation {
             0 => appearance.adjustment.gain[1] = 0.8,

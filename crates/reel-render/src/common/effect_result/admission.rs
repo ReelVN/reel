@@ -3,6 +3,8 @@
 pub(crate) struct Admission {
     enabled: bool,
     remaining: u64,
+    #[cfg(any(feature = "gxm", test))]
+    additional: u64,
 }
 impl Admission {
     /// `required` is the selected physical plan, including coverage and retained
@@ -12,6 +14,8 @@ impl Admission {
         Self {
             enabled,
             remaining: limit.saturating_sub(required),
+            #[cfg(any(feature = "gxm", test))]
+            additional: u64::MAX,
         }
     }
     pub(crate) fn enabled(&self) -> bool {
@@ -26,11 +30,38 @@ impl Admission {
         assert!(self.can_retain(bytes), "admitted effect lifetime extension");
         self.remaining -= bytes;
     }
+    /// Limit new lifetime extensions after required physical allocations exist.
+    /// Already resident results continue to use the original lifetime allowance.
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn limit_additional(&mut self, bytes: u64) {
+        self.additional = bytes;
+    }
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn can_retain_new(&self, bytes: u64, physical_bytes: u64) -> bool {
+        self.can_retain(bytes) && physical_bytes <= self.additional
+    }
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn retain_new(&mut self, bytes: u64, physical_bytes: u64) {
+        assert!(self.can_retain_new(bytes, physical_bytes));
+        self.retain(bytes);
+        self.additional -= physical_bytes;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_pins_share_actual_headroom_without_recharging_resident_hits() {
+        let mut admission = Admission::new(3 * 4096, 8 * 4096, true);
+        admission.limit_additional(4096);
+        admission.retain(4096);
+        assert!(admission.can_retain_new(2048, 4096));
+        admission.retain_new(2048, 4096);
+        assert!(!admission.can_retain_new(2048, 4096));
+        assert!(admission.can_retain(4096));
+        admission.retain(4096);
+    }
     #[test]
     fn lifetime_extensions_leave_the_full_original_plan_and_quality_available() {
         // A three-target scratch peak fits exactly. Holding early results until
