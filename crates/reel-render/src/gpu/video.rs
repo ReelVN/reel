@@ -100,6 +100,7 @@ pub(super) fn upload(
             texture: textures.as_slice()[0].clone(),
             size,
             layout: reel_core::texture::TextureLayout::identity(size),
+            origin: [0; 2],
             texture_format: None,
             encoding: reel_ui::resources::ColorEncoding::Linear,
             yuv: Some(Planes {
@@ -111,6 +112,9 @@ pub(super) fn upload(
             residency: None,
             source: None,
             reuse_count: 0,
+            discard_pending: std::sync::atomic::AtomicBool::new(false),
+            backing: None,
+            _view_storage: None,
         }
     };
     let (_, staging_size) = costs(image);

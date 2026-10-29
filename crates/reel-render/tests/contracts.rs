@@ -107,10 +107,7 @@ fn borrowed_present_retains_old_versions_until_last_lease_and_completion() {
         )
         .unwrap();
     let lease = registry.acquire(h).unwrap();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
-    let image = image.clone();
+    let image = test_image_data(&lease);
     let weak = lease.downgrade();
     let mut bridge = widget_bridge(RecordWidget::new(image_scene(&image)), Affine::IDENTITY);
     let mut build = FrameBuild::new(
@@ -244,7 +241,7 @@ fn owned_font_storage_follows_producer_blob_aliases_after_retirement() {
     let bytes = OwnedBytes::new(bytes, pool.reserve(capacity).unwrap()).unwrap();
     let handle = registry.register_font(version(1), bytes).unwrap();
     let lease = registry.acquire(handle).unwrap();
-    let ResourceData::Font(font) = lease.data() else {
+    let reel_ui::resources::ResourceView::Font(font) = lease.view() else {
         unreachable!()
     };
     let producer = font.clone();
@@ -461,4 +458,15 @@ fn accepted_notice_survives_frame_drop_and_render_completion() {
         backend.poll(&mut events, 16).unwrap();
     }
     assert_eq!(bridge.snapshot_usage().bytes, 0);
+}
+
+fn test_image_data(lease: &reel_ui::resources::ResourceLease) -> reel_ui::peniko::ImageData {
+    let image = lease.image_descriptor().unwrap();
+    reel_ui::peniko::ImageData {
+        data: lease.read_pixels().unwrap().blob(),
+        format: image.format,
+        alpha_type: image.alpha_type,
+        width: image.width,
+        height: image.height,
+    }
 }

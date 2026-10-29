@@ -2,6 +2,8 @@
 use super::{GpuError, scopes::push_stack};
 #[cfg(test)]
 mod animation_tests;
+#[cfg(test)]
+mod backdrop_tests;
 mod capacities;
 
 #[derive(Clone, Copy)]

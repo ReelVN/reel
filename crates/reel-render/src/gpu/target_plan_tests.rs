@@ -97,6 +97,8 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
     };
     for transform in [
         Affine::IDENTITY,
+        Affine::translate((2000., 0.)),
+        Affine::translate((-2000., 0.)) * Affine::rotate(0.2),
         Affine::translate((13.2, -7.6))
             * Affine::scale_non_uniform(0.83, 0.29)
             * Affine::rotate(2.1),
@@ -116,6 +118,7 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                 widget.clip = false;
                 widget.effect = Some(paint.clone());
                 widget.opacity = opacity;
+                widget.capture_included = depth != 4;
                 for _ in 1..depth {
                     let mut parent = r01_fixture::RecordWidget::new(Scene::new());
                     parent.clip = false;
@@ -140,6 +143,51 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                 .unwrap();
                 while !build.step(r01_fixture::step_budget()).unwrap().complete {}
                 let frame = build.finish().unwrap();
+                if depth == 4 {
+                    assert!(!frame.drawing().capture_exclusions().is_empty());
+                    let glyphs = crate::common::glyph_plan::Plan::default();
+                    let selection = Default::default();
+                    let (schedule, scheduled, _) = offscreen::Plan::choose(
+                        &frame,
+                        None,
+                        [160, 120],
+                        true,
+                        1,
+                        4096,
+                        &glyphs,
+                        u64::MAX,
+                        &|size| Ok(u64::from(size[0]) * u64::from(size[1])),
+                        MaskExecution::Inline,
+                        &selection,
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+                    assert!(schedule.is_empty());
+                    let replayed = Input {
+                        frame: &frame,
+                        second: None,
+                        size: [160, 120],
+                        capture: true,
+                        samples: 1,
+                        max_dimension: 4096,
+                        glyphs: &glyphs,
+                        schedule: &schedule,
+                        masks: MaskExecution::Inline,
+                        selection: &selection,
+                        cost: &|logical| {
+                            let size = schedule.storage_size(logical);
+                            Ok(u64::from(size[0]) * u64::from(size[1]))
+                        },
+                        coverage_cost: None,
+                    }
+                    .measure(|_| Ok(()))
+                    .unwrap()
+                    .bytes;
+                    assert_eq!(scheduled, replayed);
+                    // Even outside the viewport, the effect wrappers around
+                    // the excluded child keep their local source requirements.
+                    assert!(scheduled > 160 * 120);
+                }
                 for masks in [MaskExecution::Inline, MaskExecution::Sampled] {
                     let pixels = target_pixels(
                         &frame,
@@ -155,7 +203,11 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                         |_| Ok(()),
                     )
                     .unwrap();
-                    let expected = if transform == Affine::IDENTITY {
+                    let expected = if transform.as_coeffs()[4].abs() == 2000. {
+                        // The complete eight-level effect chain is outside the
+                        // output. Source targets disappear from admission too.
+                        160 * 120
+                    } else if transform == Affine::IDENTITY {
                         160 * 120
                             * if opacity == 1. {
                                 if depth == 1 { 2 } else { 3 }
@@ -319,6 +371,12 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
         reel_ui::frame::BlendMode::default(),
         reel_ui::peniko::Mix::Screen.into(),
         reel_ui::peniko::Mix::Multiply.into(),
+        reel_ui::peniko::Mix::Overlay.into(),
+        reel_ui::peniko::Mix::HardLight.into(),
+        reel_ui::peniko::Mix::ColorDodge.into(),
+        reel_ui::peniko::Mix::Lighten.into(),
+        reel_ui::peniko::Mix::Difference.into(),
+        reel_ui::peniko::Mix::SoftLight.into(),
     ] {
         for clipped in [false, true] {
             let mut scene = Scene::new();
@@ -395,10 +453,8 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
                 .unwrap();
                 assert_eq!(
                     pixels,
-                    u64::from(size[0])
-                        * u64::from(size[1])
-                        * if blend == Default::default() { 1 } else { 2 }
-                        + source_pixels
+                    u64::from(size[0]) * u64::from(size[1])
+                        + source_pixels * if blend == Default::default() { 1 } else { 2 }
                 );
             }
         }
@@ -406,6 +462,231 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
 }
 
 fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
+    sibling_frame_with_hidden(barrier, excluded, false)
+}
+fn interleaved_source_frame(special: bool, scope_change: bool) -> RenderFrame {
+    interleaved_source_frame_with_inline(special, scope_change, false)
+}
+fn interleaved_source_frame_with_inline(
+    special: bool,
+    scope_change: bool,
+    inline_before_draw: bool,
+) -> RenderFrame {
+    let mut scene = Scene::new();
+    let fill = |scene: &mut Scene, left, color, composite| {
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(color),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(left, 20., left + 80., 80.)),
+            composite,
+        });
+    };
+    for index in 0..2 {
+        if index == 1 {
+            if inline_before_draw {
+                scene.push_group(Group::default());
+            }
+            fill(
+                &mut scene,
+                50.,
+                Color::from_rgba8(20, 180, 80, 130),
+                Composite {
+                    blend: if special {
+                        reel_ui::peniko::Mix::Screen.into()
+                    } else {
+                        Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            if scope_change {
+                scene.push_group(Group::default());
+            }
+        }
+        scene.push_group(Group {
+            composite: Composite {
+                alpha: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        fill(
+            &mut scene,
+            20. + index as f64 * 40.,
+            Color::from_rgb8(180, 30, 90),
+            Default::default(),
+        );
+        fill(
+            &mut scene,
+            60. + index as f64 * 40.,
+            Color::from_rgba8(60, 80, 220, 150),
+            Default::default(),
+        );
+        scene.pop_group();
+        if index == 1 && (scope_change || inline_before_draw) {
+            scene.pop_group();
+        }
+    }
+    let pool = r01_fixture::pool();
+    let mut widget = r01_fixture::RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(11)).unwrap(),
+        r01_fixture::empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [400, 300],
+        },
+        r01_fixture::limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+    build.finish().unwrap()
+}
+fn interleaved_plan(frame: &RenderFrame, limit: u64) -> (offscreen::Plan, u64) {
+    let (plan, bytes, _) = offscreen::Plan::choose(
+        frame,
+        None,
+        [400, 300],
+        false,
+        1,
+        4096,
+        &crate::common::glyph_plan::Plan::default(),
+        limit,
+        &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
+        MaskExecution::Sampled,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    (plan, bytes)
+}
+#[test]
+fn interleaved_parent_draw_replays_between_sources_and_counts_switch_peak_tradeoff() {
+    use crate::common::offscreen::ParentStep;
+    let frame = interleaved_source_frame(false, false);
+    let (plan, bytes) = interleaved_plan(&frame, u64::MAX);
+    let entries: Vec<_> = (0..frame.commands().len())
+        .filter_map(|index| plan.entry(index))
+        .collect();
+    assert_eq!(entries.len(), 2);
+    assert!(entries[0].first && entries[1].last);
+    let parent_draw = entries[0].end..entries[1].push;
+    let expected_draws: Vec<_> = parent_draw
+        .clone()
+        .filter(|index| matches!(frame.commands()[*index].op, FrameOp::Draw(_)))
+        .collect();
+    assert_eq!(expected_draws.len(), 1);
+    assert!(expected_draws.iter().all(|&index| plan.defer_draw(index)));
+    for entry in &entries {
+        assert!((entry.push..entry.end).all(|index| !plan.defer_draw(index)));
+    }
+    let mut cursor = plan.parent_cursor(entries[0].push);
+    let mut order = Vec::new();
+    let mut bound = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        bound.push(if entry.shared { 1 } else { index + 1 });
+    }
+    while let Some(step) = plan.next_parent(frame.commands(), &mut cursor) {
+        match step {
+            ParentStep::Sources(range) => {
+                for index in range {
+                    order.push((0, entries[index].push));
+                    bound.push(0);
+                }
+            }
+            ParentStep::Draws(range) => {
+                for index in range {
+                    order.push((1, index));
+                    bound.push(0);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        order,
+        [
+            (0, entries[0].push),
+            (1, expected_draws[0]),
+            (0, entries[1].push)
+        ]
+    );
+    let scheduled_switches = bound.windows(2).filter(|pair| pair[0] != pair[1]).count();
+    let baseline_switches = 3;
+    assert!(scheduled_switches < baseline_switches);
+    let baseline_pixels = target_pixels(
+        &frame,
+        None,
+        [400, 300],
+        false,
+        1,
+        4096,
+        &crate::common::glyph_plan::Plan::default(),
+        &offscreen::Plan::default(),
+        MaskExecution::Sampled,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let baseline_bytes = baseline_pixels * 4;
+    assert!(
+        bytes > baseline_bytes,
+        "keeping both sources alive has a real budget cost"
+    );
+    let (tight, tight_bytes) = interleaved_plan(&frame, baseline_bytes);
+    assert!(
+        tight.is_empty(),
+        "the immediate path is retained at the original peak budget"
+    );
+    assert_eq!(tight_bytes, baseline_bytes);
+    assert!(!tight.defer_draw(expected_draws[0]));
+    eprintln!(
+        "interleaved sources=2 parent_draws=1 planned_target_switches={baseline_switches}->{scheduled_switches} planned_scenes={}->{} peak_target_bytes={baseline_bytes}->{bytes}; tight_bytes={tight_bytes}",
+        baseline_switches + 1,
+        scheduled_switches + 1
+    );
+}
+#[test]
+fn source_windows_stop_at_backdrop_reads_and_parent_scope_changes() {
+    for (special, scope_change) in [(true, false), (false, true)] {
+        let frame = interleaved_source_frame(special, scope_change);
+        let (plan, _) = interleaved_plan(&frame, u64::MAX);
+        assert!(plan.is_empty());
+    }
+}
+
+#[test]
+fn inline_parent_before_the_first_deferred_draw_keeps_its_draw_in_the_tape() {
+    use crate::common::offscreen::ParentStep;
+    let frame = interleaved_source_frame_with_inline(false, false, true);
+    let (plan, _) = interleaved_plan(&frame, u64::MAX);
+    let entries: Vec<_> = (0..frame.commands().len())
+        .filter_map(|index| plan.entry(index))
+        .collect();
+    assert_eq!(entries.len(), 2);
+    let expected: Vec<_> = (entries[0].end..entries[1].push)
+        .filter(|&index| matches!(frame.commands()[index].op, FrameOp::Draw(_)))
+        .collect();
+    assert_eq!(expected.len(), 1);
+    let mut cursor = plan.parent_cursor(entries[0].push);
+    let mut tape = Vec::new();
+    while let Some(step) = plan.next_parent(frame.commands(), &mut cursor) {
+        match step {
+            ParentStep::Sources(range) => tape.extend(range.map(|index| (0, entries[index].push))),
+            ParentStep::Draws(range) => tape.extend(range.map(|index| (1, index))),
+        }
+    }
+    assert_eq!(
+        tape,
+        [(0, entries[0].push), (1, expected[0]), (0, entries[1].push)]
+    );
+}
+
+fn sibling_frame_with_hidden(barrier: bool, excluded: bool, hidden: bool) -> RenderFrame {
     let mut scene = Scene::new();
     let draw = |scene: &mut Scene, left| {
         scene.draw(Draw::Fill {
@@ -429,8 +710,9 @@ fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
             },
             ..Default::default()
         });
-        draw(&mut scene, 20. + index as f64 * 60.);
-        draw(&mut scene, 60. + index as f64 * 60.);
+        let offset = if hidden && index % 2 == 1 { 2000. } else { 0. };
+        draw(&mut scene, 20. + index as f64 * 60. + offset);
+        draw(&mut scene, 60. + index as f64 * 60. + offset);
         scene.pop_group();
         scene.pop_group();
     }
@@ -452,6 +734,44 @@ fn sibling_frame(barrier: bool, excluded: bool) -> RenderFrame {
     .unwrap();
     while !build.step(r01_fixture::step_budget()).unwrap().complete {}
     build.finish().unwrap()
+}
+
+#[test]
+fn invisible_siblings_leave_a_balanced_visible_atlas_and_no_target_demand() {
+    let frame = sibling_frame_with_hidden(false, false, true);
+    let (schedule, pixels, _) = offscreen::Plan::choose(
+        &frame,
+        None,
+        [960, 544],
+        false,
+        1,
+        4096,
+        &crate::common::glyph_plan::Plan::default(),
+        u64::MAX,
+        &|size| Ok(u64::from(size[0]) * u64::from(size[1])),
+        MaskExecution::Inline,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let entries: Vec<_> = (0..frame.commands().len())
+        .filter_map(|i| schedule.entry(i))
+        .collect();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries.iter().filter(|entry| entry.first).count(), 1);
+    assert_eq!(entries.iter().filter(|entry| entry.last).count(), 1);
+    assert!(entries.iter().all(|entry| entry.shared));
+    assert!(entries.windows(2).all(|pair| pair[0].push < pair[1].push));
+    let size = entries[0].view.storage_size;
+    assert_eq!(pixels, 960 * 544 + u64::from(size[0]) * u64::from(size[1]));
+    assert_eq!(
+        schedule
+            .requirements()
+            .iter()
+            .map(|(_, count)| count)
+            .sum::<u64>(),
+        2
+    );
 }
 
 #[test]

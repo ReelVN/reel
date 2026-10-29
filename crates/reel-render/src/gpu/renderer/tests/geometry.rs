@@ -478,7 +478,7 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
     };
     use reel_ui::{
         peniko::{ImageAlphaType, ImageBrush, ImageFormat},
-        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+        resources::{ColorEncoding, ResourceRegistry},
     };
     use std::sync::atomic::Ordering;
     let pool = pool();
@@ -499,9 +499,7 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
         )
         .unwrap();
     let lease = registry.acquire(handle).unwrap();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
+    let image = crate::test_support::image_data(&lease);
     let mut renderer = renderer(Default::default());
     eprintln!("sprite adapter: {:?}", renderer.gpu.adapter.get_info());
     for (particles, boundary) in [(128, false), (2048, false), (16384, false), (2048, true)] {
@@ -572,17 +570,12 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
 #[test]
 #[ignore = "requires actual graphics adapter; submits without pixel readback"]
 fn image_sampling_changes_split_batches_and_share_resident_texture() {
-    use reel_ui::{
-        peniko::{ImageBrush, ImageQuality},
-        resources::ResourceData,
-    };
+    use reel_ui::peniko::{ImageBrush, ImageQuality};
     use std::sync::atomic::Ordering;
     let pool = pool();
     let (_original, registry, handles) = image_restore_fixture([4, 4], true);
     let lease = registry.acquire(handles[0]).unwrap();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
+    let image = crate::test_support::image_data(&lease);
     let make_frame = |qualities: &[ImageQuality]| {
         let mut scene = Scene::new();
         for (index, &quality) in qualities.iter().enumerate() {

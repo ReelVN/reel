@@ -103,26 +103,22 @@ impl Clock {
         self.high.store((bits >> 32) as u32, Ordering::Relaxed);
         self.sequence.fetch_add(1, Ordering::Release);
     }
-    fn load(&self) -> f64 {
-        loop {
-            let before = self.sequence.load(Ordering::Acquire);
-            if before & 1 != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let bits = u64::from(self.low.load(Ordering::Relaxed))
-                | (u64::from(self.high.load(Ordering::Relaxed)) << 32);
-            fence(Ordering::Acquire);
-            if before == self.sequence.load(Ordering::Relaxed) {
-                return f64::from_bits(bits);
-            }
+    fn try_load(&self) -> Option<f64> {
+        let before = self.sequence.load(Ordering::Acquire);
+        if before & 1 != 0 {
+            return None;
         }
+        let bits = u64::from(self.low.load(Ordering::Relaxed))
+            | (u64::from(self.high.load(Ordering::Relaxed)) << 32);
+        fence(Ordering::Acquire);
+        (before == self.sequence.load(Ordering::Relaxed)).then(|| f64::from_bits(bits))
     }
 }
 struct Transport {
     paused: AtomicBool,
     cancelled: Arc<AtomicBool>,
     audio_end: AtomicBool,
+    audio_ready: AtomicBool,
     audio_drained: AtomicBool,
     clock: Clock,
     gain: AtomicU32,
@@ -308,6 +304,7 @@ impl VideoPlayback {
                 paused: AtomicBool::new(options.paused),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 audio_end: AtomicBool::new(false),
+                audio_ready: AtomicBool::new(false),
                 audio_drained: AtomicBool::new(false),
                 clock: Clock::new(position),
                 gain: AtomicU32::new(1.0_f32.to_bits()),
@@ -364,10 +361,28 @@ impl VideoPlayback {
     }
     /// Admit this exactly once through MediaPlayer/KiraMixer. Until admission
     /// the bounded audio queue pauses PCM delivery while video decoding continues.
+    /// Returns None until the first PCM prefix is published (or the track ends),
+    /// so an audio device is opened only when the track is ready to consume.
     pub fn take_audio(&mut self) -> Option<StreamSoundData> {
+        if !self.shared.transport.audio_ready.load(Ordering::Acquire)
+            && !self.shared.transport.audio_end.load(Ordering::Acquire)
+        {
+            return None;
+        }
         let data = self.shared.state.lock().unwrap().audio.take();
         self.audio_clock |= data.is_some();
+        if data.is_some() {
+            self.shared.signal();
+        }
         data
+    }
+    /// Whether an admitted audio consumer still needs PCM processing, including
+    /// while paused. False after cancellation/drain; this is lifetime metadata,
+    /// not a device-presentation or worker-retirement observation.
+    pub fn audio_pending(&self) -> bool {
+        self.audio_clock
+            && !self.shared.transport.cancelled.load(Ordering::Acquire)
+            && !self.shared.transport.audio_drained.load(Ordering::Acquire)
     }
     pub fn position(&self) -> Duration {
         Duration::from_secs_f64(self.position)
@@ -392,6 +407,8 @@ impl VideoPlayback {
             .store(paused, Ordering::Release);
         self.shared.signal();
     }
+    /// Advance time without waiting for the PCM writer. A concurrent clock
+    /// publication retains this controller's last complete position until a later tick.
     pub fn tick(&mut self, elapsed: Duration) {
         let transport = &self.shared.transport;
         let mut state = self.shared.state.lock().unwrap();
@@ -403,8 +420,10 @@ impl VideoPlayback {
         };
         let end = self.options.end.map(|e| e.as_secs_f64()).or(info.duration);
         if info.audio_sample_rate.is_some() && !transport.audio_drained.load(Ordering::Acquire) {
-            if self.audio_clock {
-                self.position = transport.clock.load();
+            if self.audio_clock
+                && let Some(position) = transport.clock.try_load()
+            {
+                self.position = position;
             }
         } else {
             self.position += elapsed.as_secs_f64();
@@ -432,10 +451,14 @@ impl VideoPlayback {
             .front()
             .is_some_and(|frame| self.options.poster || frame.frame.pts <= self.position)
         {
+            if frame.is_some() {
+                reel_core::profile::count(reel_core::profile::Phase::VideoDropped);
+            }
             frame = state.frames.pop_front();
         }
         drop(state);
         if frame.is_some() {
+            reel_core::profile::count(reel_core::profile::Phase::VideoSelected);
             self.shared.signal();
         }
         frame
@@ -482,3 +505,6 @@ impl Drop for VideoPlayback {
         self.cancel(); /* detached worker owns cleanup until its cancelled read returns */
     }
 }
+
+#[cfg(test)]
+mod readiness_tests;

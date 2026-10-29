@@ -99,6 +99,7 @@ mod semantic_guides {
     // These names are the documented reel::prelude symbols, not names harvested
     // from unresolved diagnostics. Their dynamic members remain runtime contracts.
     const PRELUDE: &[&str] = &[
+        "build",
         "audio",
         "assets",
         "appearance",

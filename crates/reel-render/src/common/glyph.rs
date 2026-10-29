@@ -1,7 +1,7 @@
 //! Consumes shaped glyph IDs/positions; this module never invokes Swash shaping.
 use super::GpuError;
 use reel_ui::frame::{FrameDrawing, FrameGlyphRun, RecordLocation};
-use reel_ui::resources::ResourceData;
+use reel_ui::resources::ResourceView;
 use reel_ui::{kurbo, peniko};
 use swash::{
     scale::{ScaleContext, outline::Outline},
@@ -84,7 +84,7 @@ pub fn rasterize(
             at,
             record: "missing font lease",
         })?;
-    let ResourceData::Font(font) = resource.data() else {
+    let ResourceView::Font(font) = resource.view() else {
         return Err(GpuError::Unsupported {
             at,
             record: "font resource type",

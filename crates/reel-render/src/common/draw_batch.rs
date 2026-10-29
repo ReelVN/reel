@@ -7,6 +7,7 @@ use super::{
 #[cfg(test)]
 use std::ops::Deref;
 use std::ops::Range;
+pub(crate) const MAX_BYTES: usize = 256 * 1024;
 
 mod packing;
 #[cfg(feature = "gxm")]
@@ -72,7 +73,10 @@ impl<T> Batch<T> {
         Ok(batch)
     }
     pub fn full(&self, next: &Mesh) -> bool {
-        self.entries.len() >= 64 || self.bytes.saturating_add(next.bytes()) > 256 * 1024
+        self.full_bytes(next.bytes())
+    }
+    pub fn full_bytes(&self, bytes: usize) -> bool {
+        self.entries.len() >= 64 || self.bytes.saturating_add(bytes) > MAX_BYTES
     }
     fn append(&mut self, mesh: Reference) -> Result<Range<u32>, GpuError> {
         let end = self

@@ -119,6 +119,133 @@ fn retaining_history_releases_prefix_edges_with_one_array_commit() {
 }
 
 #[test]
+fn omitted_history_appends_keep_the_existing_text_graph() {
+    use super::super::super::rich_text;
+    use crate::{DialogueLineInput, HistoryInput};
+    use reel_core::text::Text;
+
+    for source in [Text::from("原文é"), Text::parse("[b]原文é[/b]").unwrap()] {
+        for chunk in [1, 4096] {
+            let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+            let owner = session.root_owner();
+            let id = session
+                .begin_open_say(
+                    owner,
+                    &[DialogueLineInput {
+                        speaker_id: None,
+                        speaker_name: "",
+                        content_id: "initial",
+                        text: (&source).into(),
+                        history: HistoryInput::Display,
+                    }],
+                    "zh-CN",
+                    false,
+                )
+                .unwrap();
+            let story =
+                crate::aside::source::compile_story("pub fn opening() {}", "story", 1, "opening")
+                    .unwrap();
+            let mut runtime = crate::aside::SessionVm::load(
+                &session,
+                story.program,
+                crate::aside::VmLimits::default(),
+            )
+            .unwrap();
+            let heap = runtime.vm.heap_mut();
+            let mut history = History::new(heap).unwrap();
+            let roots = heap.alloc_array(&[history.value]).unwrap();
+            heap.add_root(RootOwner(1), RootKind::Host, roots).unwrap();
+            history
+                .sync(heap, &session, None, Value::NULL, roots, chunk)
+                .unwrap();
+            // The active model's lines are unused when display and history differ.
+            let fields = heap.alloc_table().unwrap();
+            let active = heap.alloc_array(&[]).unwrap();
+            let model = heap.alloc_immutable_host(fields, &[active]).unwrap();
+            heap.array_push(roots, model).unwrap();
+            let group = heap.sequence_get(history.value, 0).unwrap();
+            let lines = heap
+                .host_property(PropertyId {
+                    host: group,
+                    field: HistoryGroupField::Lines as u32,
+                })
+                .unwrap();
+            let row = heap.sequence_get(lines, 0).unwrap();
+            let property = PropertyId {
+                host: row,
+                field: HistoryLineField::Text as u32,
+            };
+            let original = heap.host_property(property).unwrap();
+            let before = heap.stats();
+            for i in 0..32 {
+                session
+                    .append_dialogue(
+                        owner,
+                        id,
+                        &Text::from("追加"),
+                        &format!("part:{i}"),
+                        HistoryInput::Omit,
+                    )
+                    .unwrap();
+                history
+                    .update_dialogue(
+                        heap,
+                        &session,
+                        session.open_dialogue(id).unwrap(),
+                        model,
+                        chunk,
+                    )
+                    .unwrap();
+                assert!(heap.host_property(property).unwrap().same_bits(original));
+            }
+            let after = heap.stats();
+            assert_eq!(after.live_objects, before.live_objects);
+            assert_eq!(after.charged_bytes, before.charged_bytes);
+            assert!(rich_text::matches(heap, original, &source, chunk).unwrap());
+            session
+                .append_dialogue(
+                    owner,
+                    id,
+                    &Text::from("正文"),
+                    "changed",
+                    HistoryInput::Text("历史".into()),
+                )
+                .unwrap();
+            history
+                .update_dialogue(
+                    heap,
+                    &session,
+                    session.open_dialogue(id).unwrap(),
+                    model,
+                    chunk,
+                )
+                .unwrap();
+            let changed = heap.host_property(property).unwrap();
+            assert!(!changed.same_bits(original));
+            assert!(
+                rich_text::matches(
+                    heap,
+                    changed,
+                    session.view().history[0].lines()[0].content().styled(),
+                    chunk
+                )
+                .unwrap()
+            );
+            history
+                .update_dialogue(
+                    heap,
+                    &session,
+                    session.open_dialogue(id).unwrap(),
+                    model,
+                    chunk,
+                )
+                .unwrap();
+            assert!(heap.host_property(property).unwrap().same_bits(changed));
+        }
+    }
+}
+
+#[test]
 #[ignore = "release history trim/sync/GC measurement; no UI or process-RSS claim"]
 fn history_retention_cost() {
     for rows in [10_000, 100_000] {

@@ -34,7 +34,7 @@ impl Metrics {
     }
 }
 
-pub(super) fn encode(
+pub(crate) fn encode(
     linear: &image::Rgba32FImage,
     descriptor: TextureDescriptor,
 ) -> Result<Vec<u8>, String> {

@@ -264,6 +264,7 @@ impl Lowerer<'_> {
                 if external.kind == h::ExternalBindingKind::Type
                     || external.descriptor.namespace.is_some()
                     || external.descriptor.intrinsic.is_some()
+                    || external.descriptor.constant.is_some()
                 {
                     continue;
                 }

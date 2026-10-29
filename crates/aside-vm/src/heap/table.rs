@@ -309,8 +309,14 @@ impl Heap {
     }
     /// One semantic sequence read; the caller owns the budget and retention.
     pub fn sequence_get(&self, sequence: Value, index: u32) -> Result<Value, HeapError> {
-        self.sequence_len(sequence)?;
-        self.get_field(sequence, index)
+        let object = self.object(self.key(sequence)?)?;
+        if !matches!(
+            object.kind,
+            ObjectKind::Array | ObjectKind::Tuple | ObjectKind::Dependencies
+        ) {
+            return Err(HeapError::WrongKind);
+        }
+        object.payload.edge(index).ok_or(HeapError::OutOfBounds)
     }
     pub fn table_own_string_lookup<'a>(
         &self,

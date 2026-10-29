@@ -26,6 +26,88 @@ pub(super) struct Reduction {
     pub dependent: BTreeSet<u32>,
 }
 impl Reduction {
+    pub fn iterations(&self) -> usize {
+        ((i64::from(self.end) - i64::from(self.first)) / i64::from(self.step)) as usize
+    }
+    /// Four ordered taps amortize branch control without a wide live sample set.
+    /// Keep short reductions, integer-conversion boundaries and complex/branched
+    /// coordinate bodies on the original single-tap loop.
+    pub fn block_width(&self, program: &EffectProgram) -> usize {
+        if self.float_counter
+            && self.iterations() >= 32
+            && self.dependent.len() <= 8
+            && self.small_invariants(program)
+            && matches!(
+                program.nodes()[self.sample.0 as usize].op,
+                EffectOp::SourceSample { .. }
+            )
+            && self.dependent.iter().all(|&id| {
+                if matches!(
+                    program.nodes()[id as usize].op,
+                    EffectOp::SourceSample { .. }
+                ) {
+                    return id == self.sample.0;
+                }
+                matches!(
+                    program.nodes()[id as usize].op,
+                    EffectOp::Constant(EffectValue::Float(_))
+                        | EffectOp::Extract { .. }
+                        | EffectOp::Vec2(_)
+                        | EffectOp::Binary {
+                            op: EffectBinary::Add
+                                | EffectBinary::Subtract
+                                | EffectBinary::Multiply
+                                | EffectBinary::Divide,
+                            ..
+                        }
+                )
+            })
+        {
+            4
+        } else {
+            1
+        }
+    }
+    fn small_invariants(&self, program: &EffectProgram) -> bool {
+        let mut visited = BTreeSet::new();
+        let mut pending: Vec<_> = self.dependencies().collect();
+        let mut components = 0;
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id.0) {
+                continue;
+            }
+            let node = &program.nodes()[id.0 as usize];
+            components += match node.ty {
+                EffectType::Bool | EffectType::Float => 1,
+                EffectType::Vec2 => 2,
+                EffectType::Vec3 => 3,
+                EffectType::Vec4 => 4,
+            };
+            if components > 16
+                || !matches!(
+                    node.op,
+                    EffectOp::Constant(_)
+                        | EffectOp::Input(_)
+                        | EffectOp::Parameter(_)
+                        | EffectOp::Extract { .. }
+                        | EffectOp::Vec2(_)
+                        | EffectOp::Vec3(_)
+                        | EffectOp::Vec4(_)
+                        | EffectOp::Binary {
+                            op: EffectBinary::Add
+                                | EffectBinary::Subtract
+                                | EffectBinary::Multiply
+                                | EffectBinary::Divide,
+                            ..
+                        }
+                )
+            {
+                return false;
+            }
+            pending.extend(dependencies(&node.op));
+        }
+        true
+    }
     pub fn dependencies(&self) -> impl Iterator<Item = EffectNodeId> + '_ {
         self.initial
             .into_iter()

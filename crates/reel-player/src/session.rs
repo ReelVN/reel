@@ -953,6 +953,7 @@ impl SessionUi {
             .or(self.stage.as_ref())
             .is_none_or(|view| !view.matches(stage))
         {
+            reel_core::profile::count(reel_core::profile::Phase::ProjectionChanged);
             let mut view =
                 StageView::update(stage, self.pending_stage.as_ref().or(self.stage.as_ref()));
             view.presentation_request = self
@@ -1043,6 +1044,13 @@ impl SessionUi {
         self.images.shader_format = format;
         self.image_demand_dirty = self.pending_stage.is_some() || self.stage.is_some();
         self.image_layout_pending = false;
+    }
+    pub(crate) fn image_restore_diagnostic(
+        &self,
+        lease: &reel_ui::resources::ResourceLease,
+        error: &str,
+    ) -> String {
+        self.images.restore_diagnostic(lease, error)
     }
     pub fn assets(&self) -> crate::assets::Assets {
         self.images.assets.clone()
@@ -1145,10 +1153,12 @@ impl SessionUi {
         let content_revision = self.images.content_revision;
         if !self.prepare_image_requests(bridge, root_id)? {
             self.images_waiting_presentation = true;
-            self.pause_dialogue();
-            self.binding.borrow_mut().accepted = None;
+            self.wait_for_image_presentation();
             return Ok(());
         }
+        // Geometry may change while the viewport still requests the same loaded
+        // sources. Reuse the candidate's inherited leases after that check.
+        let reuse_images = std::mem::take(&mut self.pending_images_ready) || reuse_images;
         let images_ready = self.images.poll()?;
         let content_changed = content_revision != self.images.content_revision;
         if reuse_images && images_ready && !content_changed {
@@ -1161,8 +1171,7 @@ impl SessionUi {
             if (demand_changed || content_changed || self.pending_stage.is_some())
                 && !self.prepare_tiles(bridge, root_id, content_changed)?
             {
-                self.pause_dialogue();
-                self.binding.borrow_mut().accepted = None;
+                self.wait_for_image_presentation();
                 return Ok(());
             }
         } else if images_ready {
@@ -1200,8 +1209,7 @@ impl SessionUi {
                     &geometry,
                 );
             }
-            self.pause_dialogue();
-            self.binding.borrow_mut().accepted = None;
+            self.wait_for_image_presentation();
             if !self.virtual_images_ready {
                 return Ok(());
             }
@@ -1246,6 +1254,7 @@ impl SessionUi {
             self.binding.borrow_mut().accepted = None;
         }
         if changed || self.stage_dirty {
+            reel_core::profile::count(reel_core::profile::Phase::ProjectionPublished);
             self.stamp.dialogue_complete = complete;
             self.stamp.dialogue_revision = dialogue_revision;
             self.stamp.revision = self

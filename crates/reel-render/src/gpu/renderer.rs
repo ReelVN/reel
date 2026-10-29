@@ -5,6 +5,8 @@ use super::{
 };
 use crate::Usage;
 #[cfg(test)]
+mod effect_admission_tests;
+#[cfg(test)]
 #[path = "texture_tests.rs"]
 mod texture_tests;
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits};
@@ -30,6 +32,9 @@ pub struct Prepared {
     effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
     retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    effect_pending: Vec<crate::common::effect_result::Pending<super::retained::Output>>,
+    effect_pins: Vec<super::targets::Target>,
+    effect_uniform_slots: Vec<super::effect_uniform::Storage>,
     geometry: Vec<super::geometry::Storage>,
     budget_scope: Budgets,
     admission: BudgetTicket,
@@ -58,6 +63,8 @@ pub(super) struct Inflight {
     _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
     _retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    _effect_pins: Vec<super::targets::Target>,
+    effect_uniform_slots: Vec<super::effect_uniform::Storage>,
     _admission: BudgetTicket,
     geometry: Vec<super::geometry::Storage>,
 }
@@ -86,6 +93,7 @@ fn pressure_pool(cause: &GpuError) -> Option<BudgetCategory> {
         | "mesh scratch"
         | "geometry"
         | "retained plan"
+        | "source plan"
         | "retained cache"
         | "retained dependencies"
         | "retained submission"
@@ -107,8 +115,13 @@ pub struct Renderer {
     images: super::image_cache::ImageCache,
     glyphs: super::glyph_cache::GlyphCache,
     targets: super::target_cache::TargetCache,
+    coverage_targets: super::target_cache::TargetCache,
     geometry: super::geometry::Cache,
+    #[cfg(test)]
+    sprite_instances_enabled: bool,
     retained: super::retained::Cache,
+    pub(super) effect_results: crate::common::effect_result::Cache<super::retained::Output>,
+    pub(super) effect_uniforms: super::effect_uniform::Cache,
 }
 pub(super) use crate::common::renderer::{Budgets, Reservation, reserve};
 
@@ -137,8 +150,13 @@ impl Renderer {
             images: Default::default(),
             glyphs: Default::default(),
             targets: Default::default(),
+            coverage_targets: Default::default(),
             geometry: Default::default(),
+            #[cfg(test)]
+            sprite_instances_enabled: true,
             retained: Default::default(),
+            effect_results: Default::default(),
+            effect_uniforms: Default::default(),
         }
     }
     /// Prepare the device's supported quality tiers and built-in image masks
@@ -232,6 +250,10 @@ impl Renderer {
                         .all(|slot| slot.storage.ready().unwrap_or(false))
                 {
                     self.geometry.recycle(&mut pending.flight.geometry);
+                    self.effect_uniforms.recycle(
+                        &mut pending.flight.effect_uniform_slots,
+                        &self.budgets.transient,
+                    );
                     self.retained.inputs.complete(pending.token);
                     resources_available = true;
                     limit -= 1;
@@ -260,7 +282,10 @@ impl Renderer {
                         s._frames.last().expect("submission owns its output frame"),
                     );
                 }
+                self.images.discard_uploaded_pixels(&s._images);
                 self.geometry.recycle(&mut s.geometry);
+                self.effect_uniforms
+                    .recycle(&mut s.effect_uniform_slots, &self.budgets.transient);
                 limit -= 1;
                 false
             } else {
@@ -271,9 +296,13 @@ impl Renderer {
         self.glyphs.retire(&[]);
         self.pipelines.prune_masks();
         self.targets.prune_cold();
+        self.coverage_targets.prune_cold();
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
+        if !resources.is_empty() {
+            self.effect_uniforms.clear();
+        }
         self.images.retire(resources);
         self.glyphs.retire(resources);
         for submission in &self.inflight {
@@ -338,6 +367,8 @@ impl Renderer {
         let mut epoch = self.retained.epoch.lock().unwrap();
         if *epoch != Some(frame.surface_epoch()) {
             self.retained.inputs.clear();
+            self.effect_results.clear();
+            self.effect_uniforms.clear();
             *self.retained.ceiling.lock().unwrap() = None;
             *epoch = Some(frame.surface_epoch());
         }
@@ -350,6 +381,8 @@ impl Renderer {
         if capture {
             self.geometry.clear();
             self.images.clear_idle();
+            self.effect_results.clear();
+            self.effect_uniforms.clear();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
         let result = self.prepare_cached(frame, second, size, capture, &policy, None);
@@ -367,12 +400,18 @@ impl Renderer {
         if fallback || matches!(result, Err(GpuError::Pressure { .. })) {
             let cause = result.err().unwrap();
             let resident = pressured_usage(&cause, self.usage());
+            self.effect_results.clear();
+            self.effect_uniforms.clear();
             if fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary) {
                 self.geometry.clear();
                 self.targets.release_idle();
+                self.coverage_targets.release_idle();
             }
             match pressure_pool(&cause) {
-                Some(BudgetCategory::Offscreen) => self.targets.prune_cold(),
+                Some(BudgetCategory::Offscreen) => {
+                    self.targets.release_idle();
+                    self.coverage_targets.release_idle();
+                }
                 Some(BudgetCategory::GpuResource) => {
                     self.images.clear_idle();
                 }
@@ -412,6 +451,7 @@ impl Renderer {
         geometry_policy: &super::geometry::UploadPolicy,
         mut retry: Option<CacheRetry>,
     ) -> Result<Prepared, GpuError> {
+        let effect_results_enabled = retry.is_none();
         loop {
             self.gpu.check()?;
             self.images.retire(&[]);
@@ -493,7 +533,7 @@ impl Renderer {
             }
             // Cold image uploads may yield Busy. Complete that admission before
             // preparing glyphs so retries cannot discard and rerasterize their work.
-            let images = self.images.prepare(
+            let mut images = self.images.prepare(
                 &self.gpu,
                 &plan.images,
                 &self.budgets,
@@ -501,6 +541,32 @@ impl Renderer {
                 &self.admission,
                 &self.glyphs,
             )?;
+            if !plan.aliases.is_empty() {
+                let bytes = (plan.aliases.len() * 128) as u64;
+                tickets.push(reserve(
+                    &self.budgets.transient,
+                    &budget_scope.transient,
+                    bytes,
+                    self.gpu.limits.transient_bytes,
+                    "image plan",
+                )?);
+                images.reserve(plan.aliases.len());
+                for alias in &plan.aliases {
+                    let backing = images
+                        .get(&alias.backing.handle())
+                        .ok_or(GpuError::InvalidSize)?
+                        .clone();
+                    let storage = reserve(
+                        &self.budgets.transient,
+                        &budget_scope.transient,
+                        (size_of::<super::resources::Image>() + 2 * size_of::<usize>()) as u64,
+                        self.gpu.limits.transient_bytes,
+                        "image plan",
+                    )?;
+                    let image = super::resources::Image::atlas(backing, alias.source, storage)?;
+                    images.insert(alias.source.handle(), Arc::new(image));
+                }
+            }
             let transform = Affine::scale_non_uniform(
                 f64::from(size[0]) / frame.info().logical_size[0],
                 f64::from(size[1]) / frame.info().logical_size[1],
@@ -532,9 +598,14 @@ impl Renderer {
             );
             let mut offscreen = crate::common::offscreen::Plan::default();
             let mut offscreen_tickets = Vec::new();
+            let mut required_target_bytes = 0;
             let mut target_plan = |quality: Quality| {
                 offscreen = Default::default();
                 offscreen_tickets.clear();
+                let coverage_quality = self.gpu.coverage_quality(quality);
+                let coverage_cost = |extent| {
+                    super::targets::target_bytes(extent, coverage_quality.expect("coverage format"))
+                };
                 let (schedule, targets, retained) =
                     crate::common::offscreen::Plan::choose_with_groups(
                         frame,
@@ -546,7 +617,10 @@ impl Renderer {
                         &glyph_plan,
                         self.gpu.limits.target_bytes,
                         &|extent| super::targets::target_bytes(extent, quality),
+                        coverage_quality
+                            .map(|_| &coverage_cost as &dyn Fn([u32; 2]) -> Result<u64, GpuError>),
                         crate::common::target_plan::MaskExecution::Inline,
+                        crate::common::blend::DestinationAccess::Sampled,
                         &selection,
                         groups.clone(),
                         |bytes| {
@@ -560,6 +634,7 @@ impl Renderer {
                         },
                     )?;
                 offscreen = schedule;
+                required_target_bytes = targets;
                 offscreen_tickets = retained;
                 Ok(targets)
             };
@@ -604,6 +679,14 @@ impl Renderer {
                     .0
             };
             let pipelines = self.pipelines.get(&self.gpu, quality)?;
+            let coverage_pipeline = if offscreen.coverage_requirements().iter().len() != 0 {
+                Some(
+                    self.pipelines
+                        .get_coverage(&self.gpu, quality, &pipelines)?,
+                )
+            } else {
+                None
+            };
             for mask in plan.masks {
                 pipelines.masks.get(
                     &self.gpu,
@@ -614,6 +697,9 @@ impl Renderer {
                 )?;
             }
             for image in images.values() {
+                if image.backing.is_some() {
+                    continue;
+                }
                 tickets.push(Reservation {
                     _shared: None,
                     _local: super::image_cache::reserve_local(
@@ -627,6 +713,12 @@ impl Renderer {
             // deadlock cold frames on a host configured for one in-flight submission.
             let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
             self.targets.configure(size, quality);
+            let coverage_quality = self.gpu.coverage_quality(quality);
+            if let Some(coverage_quality) = coverage_quality {
+                self.coverage_targets.configure(size, coverage_quality);
+            } else {
+                self.coverage_targets.clear();
+            }
             let warm = selection
                 .warm
                 .map(|index| {
@@ -658,7 +750,20 @@ impl Renderer {
                 effects: Vec::new(),
                 white: None,
                 target_cache: &self.targets,
+                coverage_target_cache: &self.coverage_targets,
+                coverage_quality,
+                coverage_pipeline,
                 retained_cache: &self.retained.inputs,
+                effect_results: &self.effect_results,
+                effect_admission: crate::common::effect_result::Admission::new(
+                    required_target_bytes,
+                    self.gpu.limits.target_bytes,
+                    effect_results_enabled && !capture,
+                ),
+                effect_pending: Vec::new(),
+                effect_pins: Vec::new(),
+                effect_uniform_cache: &self.effect_uniforms,
+                effect_uniform_slots: Vec::new(),
                 selection,
                 retained_inputs: Vec::new(),
                 warm,
@@ -669,6 +774,9 @@ impl Renderer {
                 scissor: super::targets::Scissor::full(size),
                 mesh_clip: None,
                 paint_batch: None,
+                instance_batch: None,
+                #[cfg(test)]
+                sprite_instances_enabled: self.sprite_instances_enabled,
                 geometry_policy,
                 geometry_cache: &self.geometry,
                 geometry: Vec::new(),
@@ -747,7 +855,7 @@ impl Renderer {
             } else {
                 None
             };
-            let prepared = Prepared {
+            let mut prepared = Prepared {
                 capture: None,
                 encoder: ctx.encoder,
                 output: output.view,
@@ -761,6 +869,9 @@ impl Renderer {
                 effects: ctx.effects,
                 targets: ctx.target_allocations,
                 retained_inputs: ctx.retained_inputs,
+                effect_pending: ctx.effect_pending,
+                effect_pins: ctx.effect_pins,
+                effect_uniform_slots: ctx.effect_uniform_slots,
                 geometry: ctx.geometry,
                 budget_scope: ctx.budget_scope,
                 admission,
@@ -769,12 +880,22 @@ impl Renderer {
             };
             if let Some(token) = retained {
                 let done = Arc::new(AtomicBool::new(false));
+                for slot in &mut prepared.effect_uniform_slots {
+                    slot.upload(&self.gpu);
+                }
                 self.gpu.queue.submit([prepared.encoder.finish()]);
+                self.effect_results.submitted();
+                self.effect_uniforms.submitted();
+                for pending in prepared.effect_pending {
+                    self.effect_results
+                        .publish(pending, &self.budgets.transient);
+                }
                 let signal = done.clone();
                 self.gpu
                     .queue
                     .on_submitted_work_done(move || signal.store(true, Ordering::Release));
                 self.targets.clear();
+                self.coverage_targets.clear();
                 self.retained
                     .pending
                     .lock()
@@ -793,6 +914,8 @@ impl Renderer {
                             _effects: prepared.effects,
                             _targets: prepared.targets,
                             _retained_inputs: prepared.retained_inputs,
+                            _effect_pins: prepared.effect_pins,
+                            effect_uniform_slots: prepared.effect_uniform_slots,
                             _admission: prepared.admission,
                             geometry: prepared.geometry,
                         },
@@ -810,7 +933,7 @@ impl Renderer {
         }
         Ok(())
     }
-    pub fn submit(&mut self, prepared: Prepared) -> Result<u64, GpuError> {
+    pub fn submit(&mut self, mut prepared: Prepared) -> Result<u64, GpuError> {
         self.gpu.check()?;
         if !Arc::ptr_eq(&prepared.owner, &self.owner) || prepared.generation != self.gpu.generation
         {
@@ -829,7 +952,25 @@ impl Renderer {
             &self.budgets.transient,
             self.gpu.limits.transient_bytes,
         );
+        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+            self.coverage_targets.reserve_metadata(
+                prepared.size,
+                coverage_quality,
+                &prepared.targets,
+                &self.budgets.transient,
+                self.gpu.limits.transient_bytes,
+            );
+        }
+        for slot in &mut prepared.effect_uniform_slots {
+            slot.upload(&self.gpu);
+        }
         self.gpu.queue.submit([prepared.encoder.finish()]);
+        self.effect_results.submitted();
+        self.effect_uniforms.submitted();
+        for pending in prepared.effect_pending {
+            self.effect_results
+                .publish(pending, &self.budgets.transient);
+        }
         self.glyphs.publish(&prepared.glyphs);
         let signal = done.clone();
         self.gpu
@@ -846,6 +987,8 @@ impl Renderer {
             _effects: prepared.effects,
             _targets: prepared.targets,
             _retained_inputs: prepared.retained_inputs,
+            _effect_pins: prepared.effect_pins,
+            effect_uniform_slots: prepared.effect_uniform_slots,
             _admission: prepared.admission,
             geometry: prepared.geometry,
         });
@@ -856,6 +999,13 @@ impl Renderer {
             prepared.quality,
             &self.inflight.last().unwrap()._targets,
         );
+        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+            self.coverage_targets.publish(
+                prepared.size,
+                coverage_quality,
+                &self.inflight.last().unwrap()._targets,
+            );
+        }
         Ok(id)
     }
 }

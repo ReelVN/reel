@@ -29,6 +29,52 @@ fn main() {
 }
 "#;
 
+#[test]
+fn compiled_box_sampling_exports_its_logical_footprint_and_warp_stays_unknown() {
+    let project = project(
+        r#"
+use std::math::sin;
+fn horizontal(pixel) -> (float, float, float, float) {
+    let (x,y) = pixel.uv;
+    let (w,h) = pixel.size;
+    let mut red=0.0; let mut green=0.0; let mut blue=0.0; let mut alpha=0.0;
+    for i in 0..61 {
+        let (r,g,b,a) = pixel.sample((x+(i-30)/w,y));
+        red+=r; green+=g; blue+=b; alpha+=a;
+    }
+    (red/61.0,green/61.0,blue/61.0,alpha/61.0)
+}
+fn warp(pixel) -> (float, float, float, float) {
+    let (x,y)=pixel.uv;
+    pixel.sample((x+sin(y),y))
+}
+fn main() { let h=effect(horizontal); let w=effect(warp); }
+"#,
+    );
+    let checked = checked(project.path());
+    let prepared =
+        prepare_effects::prepare(project.path(), &checked.effects, Target::Desktop).unwrap();
+    let descriptors = descriptors(&prepared.files);
+    for definition in checked.effects.definitions() {
+        let name = checked
+            .effects
+            .origin(definition.id)
+            .unwrap()
+            .function
+            .as_ref();
+        let descriptor = &descriptors[&EffectShaderFormat::Wgsl.asset_path(definition.id)];
+        if name.ends_with("horizontal") {
+            assert_eq!(
+                descriptor.source_footprint.unwrap().logical_halo,
+                [30, 0, 30, 0]
+            );
+        } else {
+            assert!(name.ends_with("warp"));
+            assert!(descriptor.source_footprint.is_none());
+        }
+    }
+}
+
 fn project(source: &str) -> tempfile::TempDir {
     let temporary = tempfile::tempdir().unwrap();
     fs::create_dir_all(temporary.path().join("src")).unwrap();

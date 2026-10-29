@@ -357,6 +357,61 @@ fn published_rich_nvl_example_retains_styled_lines_and_activates_the_glossary() 
 }
 
 #[test]
+fn projected_rich_text_keeps_the_same_immutable_graph_through_gc() {
+    use aside_vm::{RootKind, RootOwner};
+    use reel_core::text::Text;
+
+    let markup = "[b]Hello[/b] [link=star][ruby=ほし]星[/ruby][/link][pause=0.5]";
+    let parsed = Text::parse(markup).unwrap();
+    for encoded in [false, true] {
+        let (_session, mut vm) = models::prepared("fn opening() {}", encoded);
+        for chunk in [1, 3, 64] {
+            let heap = vm.vm.heap_mut();
+            let source = text::alloc_string(heap, markup, chunk).unwrap();
+            let created = super::super::rich_text::create(heap, source, chunk).unwrap();
+            let projected = super::super::rich_text::alloc(heap, &parsed, chunk).unwrap();
+            let values = heap.alloc_array(&[created, projected]).unwrap();
+            let root = heap.add_root(RootOwner(1), RootKind::Host, values).unwrap();
+            let handles = [created, projected].map(|value| heap.handle(value).unwrap());
+
+            collect(&mut vm);
+            let heap = vm.vm.heap();
+            for handle in handles {
+                let value = heap.import_handle(handle).unwrap();
+                let fields = heap.host_fields(value).unwrap();
+                let plain = heap.table_entry(fields, 0).unwrap().1;
+                let markup_value = heap.table_entry(fields, 1).unwrap().1;
+                assert!(plain.same_bits(heap.host_payload(value, 2).unwrap()));
+                assert!(markup_value.same_bits(heap.host_payload(value, 1).unwrap()));
+                assert_eq!(
+                    text::read_string(heap, plain, chunk).unwrap(),
+                    parsed.as_ref()
+                );
+                assert_eq!(
+                    text::read_string(heap, markup_value, chunk).unwrap(),
+                    markup
+                );
+                assert_eq!(
+                    super::super::rich_text::len(heap, value).unwrap(),
+                    parsed.len()
+                );
+                assert_eq!(
+                    super::super::rich_text::read(heap, value, chunk).unwrap(),
+                    parsed
+                );
+            }
+            vm.vm.heap_mut().release_root(root).unwrap();
+            collect(&mut vm);
+            assert!(
+                handles
+                    .iter()
+                    .all(|&handle| vm.vm.heap().import_handle(handle).is_err())
+            );
+        }
+    }
+}
+
+#[test]
 fn styled_dialogue_history_reveal_and_owned_links_from_source_and_asb() {
     let code = r##"
     fn dynamic(value) {value}
@@ -391,6 +446,12 @@ fn styled_dialogue_history_reveal_and_owned_links_from_source_and_asb() {
             || d.text.plain != original.plain || h[0].text.markup != original.markup {
             throw "history lost styles";
         }
+        readonly = false;
+        try { dynamic(d.text).plain = "changed"; } catch e { readonly = true; }
+        if !readonly { throw "mutable projected plain text"; }
+        readonly = false;
+        try { dynamic(h[0].text).markup = "changed"; } catch e { readonly = true; }
+        if !readonly { throw "mutable projected markup"; }
         narrator(rich("[size=36][color=#aabbcc]Next[/color][/size]"));
         stage.replace(text(rich("[link=end]Done[/link]"), on_link: |e| {
             e.target.on_link = null; e.target.value = "done";

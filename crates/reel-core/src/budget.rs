@@ -63,6 +63,17 @@ impl BudgetGroup {
     }
 }
 
+/// Local and optional shared-group accounting captured under the same locks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BudgetSnapshot {
+    /// Limits for this pool.
+    pub limits: QueueLimits,
+    /// Current pool reservations and their simultaneous peak.
+    pub usage: BudgetUsage,
+    /// Shared group byte limit and current simultaneous usage.
+    pub group: Option<(u64, BudgetUsage)>,
+}
+
 #[derive(Debug)]
 struct Account {
     category: BudgetCategory,
@@ -95,6 +106,34 @@ impl BudgetPool {
 
     pub fn usage(&self) -> BudgetUsage {
         self.0.lock().expect("budget account poisoned").usage
+    }
+
+    /// Capture the local limit, usage and optional group under their accounting locks.
+    pub fn snapshot(&self) -> BudgetSnapshot {
+        let account = self.0.lock().expect("budget account poisoned");
+        let group = account.group.as_ref().map(|group| {
+            let group = group.0.lock().expect("budget group poisoned");
+            (group.max_bytes, group.usage)
+        });
+        BudgetSnapshot {
+            limits: account.limits,
+            usage: account.usage,
+            group,
+        }
+    }
+
+    /// Capacity available for one new ticket at this observation. A shared
+    /// group can reduce it further; `reserve` commits the eventual admission.
+    pub fn available_bytes(&self) -> u64 {
+        let account = self.0.lock().expect("budget account poisoned");
+        if account.usage.tickets >= account.limits.max_requests {
+            return 0;
+        }
+        let available = account.limits.max_bytes - account.usage.bytes;
+        account.group.as_ref().map_or(available, |group| {
+            let total = group.0.lock().expect("budget group poisoned");
+            available.min(total.max_bytes - total.usage.bytes)
+        })
     }
 
     pub fn reserve(&self, bytes: u64) -> Result<BudgetTicket, RejectReason> {
@@ -163,6 +202,64 @@ impl BudgetTicket {
     }
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// Move this reservation to another local pool while retaining its bytes.
+    /// A common group's bytes and peak remain unchanged; destination admission
+    /// and the source debit happen together. Rejection preserves the source.
+    /// Unrelated groups admit the destination before releasing the source.
+    pub fn transfer_to(&mut self, destination: &BudgetPool) -> Result<(), RejectReason> {
+        if Arc::ptr_eq(&self.account, &destination.0) {
+            return Ok(());
+        }
+        // All two-account operations lock in address order. Ordinary account
+        // operations take at most one account before its group.
+        let source_first =
+            (Arc::as_ptr(&self.account) as usize) < (Arc::as_ptr(&destination.0) as usize);
+        let (first, second) = if source_first {
+            (&self.account, &destination.0)
+        } else {
+            (&destination.0, &self.account)
+        };
+        let mut first = first.lock().expect("budget account poisoned");
+        let mut second = second.lock().expect("budget account poisoned");
+        let (source, target) = if source_first {
+            (&mut *first, &mut *second)
+        } else {
+            (&mut *second, &mut *first)
+        };
+        let common = match (&source.group, &target.group) {
+            (Some(a), Some(b)) => Arc::ptr_eq(&a.0, &b.0),
+            (None, None) => true,
+            _ => false,
+        };
+        if common {
+            let bytes = target
+                .usage
+                .bytes
+                .checked_add(self.bytes)
+                .filter(|&bytes| bytes <= target.limits.max_bytes)
+                .ok_or_else(capacity_exhausted)?;
+            if target.usage.tickets >= target.limits.max_requests {
+                return Err(capacity_exhausted());
+            }
+            target.usage.bytes = bytes;
+            target.usage.tickets += 1;
+            target.usage.peak_bytes = target.usage.peak_bytes.max(bytes);
+            source.usage.bytes -= self.bytes;
+            source.usage.tickets -= 1;
+            let category = target.category;
+            drop(second);
+            drop(first);
+            self.account = destination.0.clone();
+            self.category = category;
+            return Ok(());
+        }
+        drop(second);
+        drop(first);
+        let replacement = destination.reserve(self.bytes)?;
+        *self = replacement;
+        Ok(())
     }
 
     /// Change this reservation without briefly releasing its existing charge.
@@ -267,6 +364,12 @@ impl OwnedBytes {
         self.range = self.range.start + range.start..self.range.start + range.end;
         Ok(self)
     }
+    /// Reclassify this unchanged allocation without copying its bytes.
+    /// Rejection leaves the original buffer and reservation intact.
+    pub fn transfer_to(&mut self, destination: &BudgetPool) -> Result<(), RejectReason> {
+        self.ticket.transfer_to(destination)
+    }
+
     /// Transfer this allocation to an already reserved accounting domain.
     /// Rejection returns both original ownership and the replacement ticket.
     /// The source stays charged until the replacement is validated and installed;

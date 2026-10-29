@@ -8,7 +8,7 @@ fn configured_fonts_shape_mixed_text_and_live_family_changes_preserve_widget_ide
         frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget},
         imaging::record::{Command, Draw},
         reel_text::fontique::{Collection, CollectionOptions},
-        resources::{ResourceData, ResourceSnapshot},
+        resources::ResourceSnapshot,
     };
     let pool = reel_core::budget::BudgetPool::new(
         reel_core::budget::BudgetCategory::CpuOutput,
@@ -33,7 +33,7 @@ fn configured_fonts_shape_mixed_text_and_live_family_changes_preserve_widget_ide
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .expect("font read must wake the host");
         };
-        let ResourceData::Font(data) = lease.data() else {
+        let reel_ui::resources::ResourceView::Font(data) = lease.view() else {
             unreachable!()
         };
         (data.clone(), lease)

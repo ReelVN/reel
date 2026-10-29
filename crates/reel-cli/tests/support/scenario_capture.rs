@@ -9,6 +9,7 @@ use reel_player::{
     aside_session::AsideSessionUi,
     assets::{AssetKind, LoadId},
     capture::CaptureService,
+    player::PlayerOptions,
     story_runtime::StoryRuntime,
 };
 use reel_render::{
@@ -20,7 +21,7 @@ use reel_ui::{
     core::{DefaultProperties, Widget, WidgetId, WindowEvent},
     dpi::PhysicalSize,
     frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget},
-    resources::{ResourceData, ResourceLease, ResourceSnapshot},
+    resources::{ResourceLease, ResourceSnapshot},
 };
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
@@ -154,7 +155,8 @@ fn dump_topology(frame: &RenderFrame, error: &GpuError, title: &str) {
         let effect = |effect: &reel_ui::frame::FrameEffect| {
             let output = drawing.resources().leases().iter().find_map(|lease| {
                 if lease.handle() == effect.shader
-                    && let ResourceData::EffectShader { descriptor, .. } = lease.data()
+                    && let reel_ui::resources::ResourceView::EffectShader { descriptor, .. } =
+                        lease.view()
                 {
                     Some(descriptor.output)
                 } else {
@@ -269,8 +271,12 @@ impl CaptureBackend for Offscreen {
     fn poll_capture(
         &mut self,
         capture: &mut GpuCapture,
+        max_bytes: u64,
     ) -> Result<Option<CapturedPixels>, GpuError> {
-        let pixels = self.renderer.poll_capture(capture)?;
+        let pixels = self
+            .renderer
+            .poll_capture(capture, max_bytes)?
+            .map(|pixels| pixels.into_srgb(|| false).expect("uncancelled conversion"));
         if let Some(pixels) = &pixels {
             let [width, height] = pixels.size;
             let sample = |x: u32| {
@@ -370,7 +376,11 @@ impl ScenarioCapture {
         Self {
             backend,
             capture_enabled,
-            captures: CaptureService::new(128 << 20, WakeSignal::new(|| {})),
+            captures: CaptureService::new(
+                128 << 20,
+                PlayerOptions::default().capture_readback_bytes_per_poll,
+                WakeSignal::new(|| {}),
+            ),
             pool: BudgetPool::new(
                 BudgetCategory::CpuOutput,
                 QueueLimits {
@@ -505,7 +515,11 @@ impl ScenarioCapture {
 
     pub fn new_session(&mut self) {
         self.cancel_pending();
-        self.captures = CaptureService::new(128 << 20, WakeSignal::new(|| {}));
+        self.captures = CaptureService::new(
+            128 << 20,
+            PlayerOptions::default().capture_readback_bytes_per_poll,
+            WakeSignal::new(|| {}),
+        );
         self.accepted = None;
         self.size = None;
         self.fonts.clear();
@@ -595,7 +609,7 @@ impl ScenarioCapture {
             .fonts
             .iter()
             .map(|path| {
-                let ResourceData::Font(font) = self.fonts[path].data() else {
+                let reel_ui::resources::ResourceView::Font(font) = self.fonts[path].view() else {
                     unreachable!()
                 };
                 font.clone()

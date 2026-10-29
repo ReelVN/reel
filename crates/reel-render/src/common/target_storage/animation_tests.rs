@@ -169,6 +169,7 @@ fn pressured_effect_frames_keep_capacity_through_lifetime_sharing_and_retire_rea
                 masks,
                 selection: &selection,
                 cost: &cost,
+                coverage_cost: None,
             };
             assert!(input.measure(|_| Ok(())).unwrap().bytes > limit);
             let (exact, _, _) = input.storage(|_| Ok(())).unwrap();

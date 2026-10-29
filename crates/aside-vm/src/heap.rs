@@ -1,3 +1,4 @@
+mod array;
 mod changes;
 mod model;
 pub use changes::ChangeCursor;
@@ -344,6 +345,7 @@ pub struct Heap {
     pub(crate) next_attachment: u64,
     pub(crate) usage: HeapBudgetUsage,
     pub(crate) allocations: VecDeque<HeapKey>,
+    pub(crate) weak_refs: VecDeque<HeapKey>,
     pub(crate) gray: VecDeque<HeapKey>,
     pub(crate) release: VecDeque<HeapKey>,
     pub(crate) gc: Collector,
@@ -445,6 +447,7 @@ impl Heap {
             next_attachment: 0,
             usage,
             allocations: VecDeque::with_capacity(initial_objects),
+            weak_refs: VecDeque::new(),
             gray: VecDeque::with_capacity(initial_objects),
             release: VecDeque::with_capacity(initial_objects),
             gc: Collector::default(),
@@ -687,6 +690,9 @@ impl Heap {
             charged,
         });
         self.allocations.push_back(key);
+        if kind == ObjectKind::WeakRef {
+            self.weak_refs.push_back(key);
+        }
         if self.gc.phase == GcPhase::Mark {
             self.gray.push_back(key);
         }
@@ -1347,6 +1353,7 @@ impl Heap {
     pub fn alloc_weakref(&mut self, target: Value) -> Result<Value, HeapError> {
         let weak = self.downgrade(target)?;
         self.ensure_object_slot()?;
+        self.ensure_weak_slot()?;
         Ok(self.allocate(ObjectKind::WeakRef, Payload::Empty, Some(weak.0), 0))
     }
     pub fn upgrade_weakref(&mut self, reference: Value) -> Result<Option<Value>, HeapError> {

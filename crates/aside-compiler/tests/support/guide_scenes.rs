@@ -1,5 +1,6 @@
 use aside_compiler::EntryPoint as E;
 pub const SCENES: &[(&str, E)] = &[
+    ("build target selection", E::Block),
     ("minimal single-file project", E::Module),
     ("main module", E::Module),
     ("title module", E::Module),

@@ -40,9 +40,10 @@ impl<T, R> Default for Pool<T, R> {
     }
 }
 impl<T, R: Borrow<BudgetTicket>> Pool<T, R> {
-    pub fn take_matching(
+    pub fn take_eligible(
         &mut self,
         requested: Capacity,
+        eligible: impl Fn(&T) -> bool,
         score: impl Fn(&T) -> usize,
     ) -> Option<Box<Allocation<T, R>>> {
         let index = self
@@ -51,28 +52,16 @@ impl<T, R: Borrow<BudgetTicket>> Pool<T, R> {
             .enumerate()
             .filter_map(|(index, slot)| {
                 let slot = slot.as_ref()?;
-                slot.capacity
-                    .fits(requested)
+                (slot.capacity.fits(requested) && eligible(&slot.storage))
                     .then(|| (index, score(&slot.storage), slot.capacity.bytes()))
             })
             .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)))?
             .0;
         self.slots[index].take()
     }
+    #[cfg(test)]
     pub fn take(&mut self, requested: Capacity) -> Option<Box<Allocation<T, R>>> {
-        let index = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| {
-                let slot = slot.as_ref()?;
-                slot.capacity
-                    .fits(requested)
-                    .then_some((index, slot.capacity.bytes()))
-            })
-            .min_by_key(|(_, bytes)| *bytes)?
-            .0;
-        self.slots[index].take()
+        self.take_eligible(requested, |_| true, |_| 0)
     }
     pub fn put(&mut self, allocation: Box<Allocation<T, R>>) {
         // Completed allocations track recent demand. Keeping the first 64
@@ -108,6 +97,39 @@ impl<T, R: Borrow<BudgetTicket>> Pool<T, R> {
 mod tests {
     use super::*;
     use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
+
+    #[test]
+    fn stream_kind_filters_before_scoring_completed_slots() {
+        let budget = BudgetPool::new(
+            BudgetCategory::Temporary,
+            QueueLimits {
+                max_requests: 4,
+                max_bytes: 1024,
+            },
+        );
+        let mut pool = Pool::default();
+        let requested = Capacity {
+            vertices: 128,
+            indices: 12,
+            index_format: super::super::indices::Format::U16,
+        };
+        for kind in [false, true] {
+            pool.put(Box::new(Allocation {
+                capacity: requested,
+                storage: kind,
+                ticket: budget.reserve(requested.bytes()).unwrap(),
+            }));
+        }
+        let instance = pool.take_eligible(requested, |kind| *kind, |_| 0).unwrap();
+        assert!(instance.storage);
+        assert!(
+            pool.take_eligible(requested, |kind| *kind, |_| usize::MAX)
+                .is_none()
+        );
+        assert!(!pool.take(requested).unwrap().storage);
+        drop(instance);
+        assert_eq!(budget.usage().bytes, 0);
+    }
 
     #[test]
     fn growing_geometry_retains_recent_completed_sizes_and_releases_evictions() {

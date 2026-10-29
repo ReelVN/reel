@@ -259,3 +259,99 @@ fn transition_starts_at_acceptance_after_preparation_and_suspension() {
         }
     }
 }
+
+#[test]
+fn unaccepted_transition_yields_without_freezing_a_settled_clock() {
+    use std::cell::Cell;
+    let code = r##"fn main() {
+        let timer=clock(interval:0.016);
+        let node=stack(width:64,height:64,x:bind(timer.elapsed),background:"#ff0000");
+        stage.replace(node);
+        stage.transition(target:node,duration:0.6,change:|| { node.background="#0000ff"; });
+        await run(delay(1));
+    }"##;
+    let driver = AsideSessionUi::from_source(
+        Session::new(SessionId(75), Epoch(1)).unwrap(),
+        code,
+        "transition_wait",
+        1,
+        "main",
+        "en",
+        Default::default(),
+    )
+    .unwrap();
+    let widget = driver.widget().prepare();
+    let root = widget.id();
+    let tree = RenderRoot::new(
+        widget,
+        |_| {},
+        RenderRootOptions {
+            default_properties: std::sync::Arc::new(Default::default()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(640, 420),
+            scale_factor: 1.,
+            default_font: None,
+        },
+    );
+    let mut bridge = PresentationBridge::new(
+        tree,
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: GeometryLimits { max_bytes: 1 << 20 },
+            max_candidates: 4,
+            max_bridge_bytes: 64 << 10,
+            max_snapshot_bytes: 8 << 20,
+        },
+    )
+    .unwrap();
+    let mut story = StoryRuntime::new(driver);
+    for _ in 0..1000 {
+        story.tick(SliceBudget::default(), || 0).unwrap();
+        story.driver_mut().unwrap().sync(&mut bridge, root).unwrap();
+        if story.driver().transitions_pending()
+            && !story.runnable
+            && story.driver().adapter().stage_ready()
+        {
+            break;
+        }
+    }
+    assert!(story.driver().transitions_pending());
+    assert!(story.driver().adapter().stage_ready());
+    assert!(!story.runnable);
+    let before = story.logical_ns;
+    // Deliberately withhold every compiled/accepted drawing, as when renderer
+    // admission is blocked. Each host call must yield well before its deadline.
+    for sample in [32_000_000, 64_000_000, 96_000_000] {
+        let now = Cell::new(sample);
+        story
+            .tick(
+                SliceBudget {
+                    deadline_ns: Some(sample + 2_000_000),
+                    ..Default::default()
+                },
+                || {
+                    let value = now.get();
+                    now.set(value + 1000);
+                    value
+                },
+            )
+            .unwrap();
+        assert!(
+            now.get() - sample < 100_000,
+            "external wait consumed the VM slice"
+        );
+        story.driver_mut().unwrap().sync(&mut bridge, root).unwrap();
+    }
+    assert!(
+        story.logical_ns > before,
+        "independent clock must continue sampling"
+    );
+    assert!(story.driver().adapter().stage_ready());
+    let view = story.driver().adapter().transition_views().next().unwrap();
+    assert_eq!(view.phase, TransitionPhase::OldPending);
+    assert_eq!(
+        view.progress, 0.,
+        "only an accepted frame can start the transition"
+    );
+}

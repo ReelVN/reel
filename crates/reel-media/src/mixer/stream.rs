@@ -15,31 +15,40 @@ pub struct DecodeLimits {
     pub io_deadline: Option<reel_core::io::ReadDeadline>,
     /// Maximum decoded PCM bytes retained as a complete static sound.
     pub static_threshold: u64,
-    /// Number of frames in the streaming window; must be at least eight.
+    /// Number of preallocated PCM frames; must be at least eight. Ready, cached
+    /// and recycled blocks share this fixed pool. Queue/history metadata is also
+    /// charged before allocation; the mixer separately accounts its voice cache.
     pub window_frames: usize,
 }
 
-struct Slot {
-    index: AtomicUsize,
-    pcm: AtomicU64,
-}
+mod blocks;
+pub(super) mod control;
+use atomic_refcell::AtomicRefCell;
+pub(super) use control::Control;
+use sync_wrapper::SyncWrapper;
+
 struct Window {
     io_deadline: Option<reel_core::io::ReadDeadline>,
     sample_rate: u32,
-    slots: Box<[Slot]>,
+    capacity: usize,
+    needs_block: AtomicBool,
     status: Arc<StreamStatus>,
     wanted: AtomicUsize,
     serial: AtomicU64,
     stopped: Arc<AtomicBool>,
+    control: Arc<Control>,
     _residency: Arc<Residency>,
 }
 struct Lease {
+    // Block queues physically release before the final residency owner.
+    reader: AtomicRefCell<SyncWrapper<blocks::Reader>>,
     window: Arc<Window>,
     cancel: Arc<dyn Fn() + Send + Sync>,
 }
 impl Drop for Lease {
     fn drop(&mut self) {
         self.window.stopped.store(true, Ordering::Release);
+        self.window.control.stop();
         (self.cancel)();
     }
 }
@@ -51,21 +60,26 @@ impl FrameSource for Lease {
         Some(self.window.status.clone())
     }
     fn frame(&self, index: usize) -> Option<Frame> {
-        self.window.wanted.store(index, Ordering::Release);
-        let slot = &self.window.slots[index % self.window.slots.len()];
-        if slot.index.load(Ordering::SeqCst) != index {
-            return None;
+        let mut frame = [Frame::ZERO];
+        (self.read_frames(index, &mut frame) != 0).then_some(frame[0])
+    }
+    fn read_frames(&self, index: usize, output: &mut [Frame]) -> usize {
+        if output.is_empty() {
+            return 0;
         }
-        let bits = slot.pcm.load(Ordering::SeqCst);
-        if slot.index.load(Ordering::SeqCst) != index {
-            return None;
-        }
-        Some(Frame::new(
-            f32::from_bits(bits as u32),
-            f32::from_bits((bits >> 32) as u32),
-        ))
+        let Ok(mut reader) = self.reader.try_borrow_mut() else {
+            return 0;
+        };
+        reader.get_mut().read(&self.window, index, output)
     }
     fn seek(&self, index: usize) {
+        // Starting an already prepared queue segment needs no decoder generation.
+        // Immutable cached samples are also valid for a seek back into that window.
+        if let Ok(mut reader) = self.reader.try_borrow_mut()
+            && reader.get_mut().seek_cached(&self.window, index)
+        {
+            return;
+        }
         self.window.wanted.store(index, Ordering::Release);
         self.window.serial.fetch_add(1, Ordering::AcqRel);
     }
@@ -77,16 +91,12 @@ impl FrameSource for Lease {
     }
 }
 impl Window {
-    fn store(&self, index: usize, frame: Frame) {
-        let slot = &self.slots[index % self.slots.len()];
-        slot.index.store(usize::MAX, Ordering::SeqCst);
-        slot.pcm.store(
-            u64::from(frame.left.to_bits()) | (u64::from(frame.right.to_bits()) << 32),
-            Ordering::SeqCst,
-        );
-        slot.index.store(index, Ordering::SeqCst);
-    }
-    fn run(&self, mut decoder: Box<dyn AudioDecoder>) -> Result<(), String> {
+    fn run(
+        &self,
+        mut decoder: Box<dyn AudioDecoder>,
+        mut writer: blocks::Writer,
+    ) -> Result<(), String> {
+        let mut filling: Option<blocks::Block> = None;
         let mut packet_len = 0usize;
         let mut packet_start = 0usize;
         let mut next = 0usize;
@@ -96,10 +106,10 @@ impl Window {
         let mut last_idle_wanted = usize::MAX;
         let mut deadline_published = false;
         while !self.stopped.load(Ordering::Acquire) {
-            let wanted = self.wanted.load(Ordering::Acquire);
             let request = self.serial.load(Ordering::Acquire);
-            let outside = wanted < next.saturating_sub(self.slots.len().saturating_sub(4))
-                || wanted > next.saturating_add(self.slots.len());
+            let wanted = self.wanted.load(Ordering::Acquire);
+            let outside = wanted < next.saturating_sub(self.capacity.saturating_sub(4))
+                || wanted > next.saturating_add(self.capacity);
             if request != serial || (outside && seeking_to.is_none()) {
                 if let Some(deadline) = &self.io_deadline {
                     deadline.buffered(Duration::ZERO);
@@ -115,6 +125,9 @@ impl Window {
                     Err(error) => return Err(error.to_string()),
                 })
                 .map_err(|_| "audio seek exceeds address space")?;
+                if let Some(block) = &mut filling {
+                    block.len = 0;
+                }
                 packet_len = 0;
                 packet_start = next;
                 eof = false;
@@ -122,72 +135,106 @@ impl Window {
             if seeking_to.is_some_and(|target| next >= target) {
                 seeking_to = None;
             }
-            if eof || next >= wanted.saturating_add(self.slots.len().saturating_sub(4)) {
-                // Paused and not-yet-admitted items keep their bounded window,
-                // but do not wake at the active refill cadence.
-                if deadline_published {
+            if !eof && next < wanted.saturating_add(self.capacity.saturating_sub(4)) {
+                if next >= packet_start + packet_len {
                     if let Some(deadline) = &self.io_deadline {
-                        deadline.clear();
+                        deadline.buffered(Duration::from_secs_f64(
+                            next.saturating_sub(wanted) as f64 / f64::from(self.sample_rate),
+                        ));
+                        deadline_published = true;
                     }
-                    deadline_published = false;
-                }
-                let idle = wanted == last_idle_wanted;
-                last_idle_wanted = wanted;
-                std::thread::sleep(Duration::from_millis(if idle { 8 } else { 1 }));
-                continue;
-            }
-            if next >= packet_start + packet_len {
-                // Only a new packet can perform source IO. Refilling part of an
-                // already decoded packet needs neither a clock read nor a hint lock.
-                if let Some(deadline) = &self.io_deadline {
-                    deadline.buffered(Duration::from_secs_f64(
-                        next.saturating_sub(wanted) as f64 / f64::from(self.sample_rate),
-                    ));
-                    deadline_published = true;
-                }
-                let decoded = {
-                    let _profile =
-                        reel_core::profile::Scope::new(reel_core::profile::Phase::AudioDecode);
-                    decoder.decode(&self.stopped)?
-                };
-                if !decoded {
-                    self.status.set_len(next);
-                    if next == 0 {
-                        return Err("audio contains no PCM frames".into());
+                    let decoded = {
+                        let _profile =
+                            reel_core::profile::Scope::new(reel_core::profile::Phase::AudioDecode);
+                        decoder.decode(&self.stopped)?
+                    };
+                    if !decoded {
+                        if filling.as_ref().is_some_and(|block| block.len != 0) {
+                            writer.publish(filling.take().expect("partial PCM owner"));
+                            self.control.publish(serial);
+                        }
+                        self.needs_block.store(false, Ordering::Release);
+                        self.status.set_len(next);
+                        if next == 0 {
+                            return Err("audio contains no PCM frames".into());
+                        }
+                        self.control.publish(serial);
+                        eof = true;
+                        continue;
                     }
-                    eof = true;
+                    packet_len = decoder.pcm().len();
+                    if packet_len == 0 {
+                        return Err("decoder returned an empty PCM chunk".into());
+                    }
+                    next.checked_add(packet_len)
+                        .filter(|&n| n < usize::MAX)
+                        .ok_or("audio timeline exceeds address space")?;
+                    packet_start = next;
+                }
+                if next < wanted {
+                    if let Some(block) = &mut filling {
+                        block.len = 0;
+                    }
+                    next = (packet_start + packet_len).min(wanted);
                     continue;
                 }
-                packet_len = decoder.pcm().len();
-                if packet_len == 0 {
-                    return Err("decoder returned an empty PCM chunk".into());
+                if let Some(mut block) = filling.take().or_else(|| writer.take()) {
+                    self.needs_block.store(false, Ordering::Release);
+                    if block.len == 0 {
+                        block.start = next;
+                        block.serial = serial;
+                    }
+                    let count = (block.frames.len() - block.len)
+                        .min(packet_start + packet_len - next)
+                        .min(wanted.saturating_add(self.capacity.saturating_sub(4)) - next);
+                    block.frames[block.len..block.len + count].copy_from_slice(
+                        &decoder.pcm()[next - packet_start..next - packet_start + count],
+                    );
+                    block.len += count;
+                    next += count;
+                    if block.len == block.frames.len() {
+                        writer.publish(block);
+                        self.control.publish(serial);
+                    } else {
+                        // Pack small codec packets into the same owned block.
+                        // EOF or the actual window boundary publishes its tail.
+                        filling = Some(block);
+                    }
+                    continue;
                 }
-                next.checked_add(packet_len)
-                    .filter(|&n| n < usize::MAX)
-                    .ok_or("audio timeline exceeds address space")?;
-                packet_start = next;
+                self.needs_block.store(true, Ordering::Release);
+            } else {
+                if filling.as_ref().is_some_and(|block| block.len != 0) {
+                    writer.publish(filling.take().expect("window tail PCM owner"));
+                    self.control.publish(serial);
+                }
+                self.needs_block.store(false, Ordering::Release);
             }
-            let limit = (packet_start + packet_len)
-                .min(wanted.saturating_add(self.slots.len().saturating_sub(4)));
-            let packet = decoder.pcm();
-            while next < limit {
-                if self.stopped.load(Ordering::Acquire)
-                    || self.serial.load(Ordering::Acquire) != serial
-                {
-                    break;
+            // Non-RT control wakes held/paused windows. Active and admitted
+            // future streams retain bounded polling for atomic-only PCM demand.
+            if deadline_published {
+                if let Some(deadline) = &self.io_deadline {
+                    deadline.clear();
                 }
-                if next >= wanted {
-                    self.store(next, packet[next - packet_start]);
-                }
-                next += 1;
+                deadline_published = false;
             }
+            let idle = wanted == last_idle_wanted;
+            last_idle_wanted = wanted;
+            self.control.wait(!idle)?;
         }
         Ok(())
     }
 }
 impl DecodedSound {
     /// Prepare an ordinary audio item without loading the complete encoded file.
-    /// Unknown or large PCM uses the same queued transport with a bounded window.
+    /// Unknown or large PCM uses the same queued transport with a bounded block
+    /// window. Every preparation owns independent decoder/reader endpoints;
+    /// temporary aliases retain that ownership without adding another consumer.
+    /// Preparation waits off the realtime/control thread for the first complete
+    /// PCM block or terminal error. The borrowed cancellation flag is checked at
+    /// most every 10 ms during this initialization wait; IO cancellation retains
+    /// its reader-specific contract. Held/paused windows then wait for control;
+    /// active and queued windows poll atomic PCM demand within 8/16 ms.
     pub fn prepare(
         reader: impl MediaRead + 'static,
         length: u64,
@@ -288,6 +335,7 @@ impl DecodedSound {
                     settings: Default::default(),
                     slice: None,
                 },
+                control: None,
                 budget: Arc::new(Residency {
                     ticket,
                     release: Mutex::new(None),
@@ -297,47 +345,49 @@ impl DecodedSound {
         if cancelled.load(Ordering::Acquire) {
             return Err("audio preparation cancelled".into());
         }
-        let bytes = window_frames
-            .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| {
-                n.checked_add(
-                    std::mem::size_of::<Window>()
-                        + std::mem::size_of::<Lease>()
-                        + std::mem::size_of::<StreamStatus>()
-                        + std::mem::size_of::<Residency>()
-                        + 8 * std::mem::size_of::<usize>(),
+        let bytes = blocks::storage_bytes(window_frames)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    (size_of::<Control>()
+                        + 2 * size_of::<usize>()
+                        + size_of::<Window>()
+                        + size_of::<Lease>()
+                        + size_of::<StreamStatus>()
+                        + size_of::<Residency>()
+                        + size_of::<[usize; 8]>()) as u64,
                 )
             })
             .ok_or("audio window size overflow")?;
-        let ticket = pool.reserve(bytes as u64).map_err(|e| e.message)?;
+        let ticket = pool.reserve(bytes).map_err(|e| e.message)?;
         let budget = Arc::new(Residency {
             ticket,
             release: Mutex::new(None),
         });
+        let control = Arc::new(Control::new()?);
         let window = Arc::new(Window {
             io_deadline,
             sample_rate,
-            slots: (0..window_frames)
-                .map(|_| Slot {
-                    index: AtomicUsize::new(usize::MAX),
-                    pcm: AtomicU64::new(0),
-                })
-                .collect(),
+            capacity: window_frames,
+            needs_block: AtomicBool::new(false),
             status: Arc::new(StreamStatus::new(count)),
             wanted: AtomicUsize::new(0),
             serial: AtomicU64::new(0),
             stopped,
+            control: control.clone(),
             _residency: budget.clone(),
         });
+        let (reader, writer) = blocks::channels(window_frames);
         let lease = Arc::new(Lease {
+            reader: AtomicRefCell::new(SyncWrapper::new(reader)),
             window: window.clone(),
             cancel,
         });
+        control.bind_source(Arc::downgrade(&lease));
         std::thread::Builder::new()
             .name("reel-audio-stream".into())
             .stack_size(512 << 10)
             .spawn(move || {
-                if let Err(error) = window.run(decoder)
+                if let Err(error) = window.run(decoder, writer)
                     && !window.stopped.load(Ordering::Acquire)
                 {
                     window.status.fail(error);
@@ -345,9 +395,12 @@ impl DecodedSound {
                 if let Some(deadline) = &window.io_deadline {
                     deadline.clear();
                 }
+                window.control.finish();
             })
             .map_err(|e| e.to_string())?;
+        control.wait_initial(cancelled)?;
         Ok(Self {
+            control: Some(Arc::downgrade(&control)),
             data: StaticSoundData {
                 sample_rate,
                 frames: FrameStorage::Stream(lease),
@@ -389,7 +442,7 @@ mod tests {
         assert_eq!(reference.len(), 6576);
         drop(decoder);
         for threshold in [0, 1 << 20] {
-            let sound = DecodedSound::prepare(
+            let mut sound = DecodedSound::prepare(
                 std::io::Cursor::new(bytes),
                 bytes.len() as u64,
                 pool.clone(),
@@ -405,7 +458,7 @@ mod tests {
             .unwrap();
             assert_eq!(sound.data.frames.len(), reference.len());
             for target in [0, 2000, 0, 2000, 0] {
-                sound.data.frames.seek(target);
+                sound.seek(Duration::from_secs_f64(target as f64 / 48000.));
                 let deadline = std::time::Instant::now() + Duration::from_secs(3);
                 loop {
                     if let Some(actual) = sound.data.frames.frame(target) {
@@ -451,18 +504,17 @@ mod tests {
         let window = Arc::new(Window {
             io_deadline: None,
             sample_rate: 48_000,
-            slots: (0..64)
-                .map(|_| Slot {
-                    index: AtomicUsize::new(usize::MAX),
-                    pcm: AtomicU64::new(0),
-                })
-                .collect(),
+            capacity: 64,
+            needs_block: AtomicBool::new(false),
             status: Arc::new(StreamStatus::new(usize::MAX)),
             wanted: AtomicUsize::new(expected + 100_000),
             serial: AtomicU64::new(1),
             stopped: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(Control::new().unwrap()),
             _residency: residency,
         });
+        window.control.mode(true, false);
+        let (reader, writer) = blocks::channels(64);
         let worker = window.clone();
         drop(decoder);
         let decoder = SoftwareAudioDecoderFactory
@@ -473,7 +525,7 @@ mod tests {
                 window.stopped.clone(),
             )
             .unwrap();
-        let handle = std::thread::spawn(move || worker.run(decoder));
+        let handle = std::thread::spawn(move || worker.run(decoder, writer));
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while window.status.len() == usize::MAX {
             if std::time::Instant::now() >= deadline {
@@ -486,6 +538,7 @@ mod tests {
         assert_eq!(window.status.len(), expected);
         window.stopped.store(true, Ordering::Release);
         handle.join().unwrap().unwrap();
+        drop(reader);
         drop(window);
         assert_eq!(pool.usage().bytes, 0);
     }
@@ -537,3 +590,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod cost;

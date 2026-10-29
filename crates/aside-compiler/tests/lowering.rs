@@ -20,6 +20,8 @@ fn clears(instruction: &bc::Instruction, register: u32) -> bool {
 mod call_arguments;
 #[path = "lowering/collections_locations.rs"]
 mod collections_locations;
+#[path = "lowering/host_constants.rs"]
+mod host_constants;
 #[path = "lowering/initializer_locals.rs"]
 mod initializer_locals;
 #[path = "lowering/members.rs"]
@@ -695,13 +697,12 @@ fn default_block_tails_nested_returns_loops_and_throw_still_compile() {
         let default = function_default(&p.signatures[f.signature.index()].parameters[0]);
         let thunk = &p.functions[default.index()];
         assert_eq!(thunk.context, bc::Context::NoWait);
-        assert!(
-            thunk
-                .code
-                .iter()
-                .map(Result::unwrap)
-                .any(|i| i.opcode == bc::Opcode::Return as u16)
-        );
+        assert!(thunk.code.iter().map(Result::unwrap).any(|i| i.opcode
+            == if name == "throwing" {
+                bc::Opcode::Throw
+            } else {
+                bc::Opcode::Return
+            } as u16));
     }
     assert!(
         function(p, "nested")

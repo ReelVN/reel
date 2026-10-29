@@ -1,10 +1,9 @@
-//! Temporary, bounded device recording. Disk IO happens after the session closes.
+//! Bounded measurements collected in memory and emitted through the process output.
 use crate::story_runtime::StoryRuntime;
 use reel_core::profile::{GeometryUploads, NAMES, Sample};
 use std::{
     collections::VecDeque,
     io::{self, Write},
-    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     time::Instant,
 };
@@ -12,7 +11,9 @@ use std::{
 const WINDOWS: usize = 512;
 const SLOW: usize = 64;
 const SEGMENTS: usize = 64;
-static SERIAL: AtomicU32 = AtomicU32::new(0);
+mod device;
+#[cfg(any(target_os = "vita", test))]
+pub(crate) use device::DeviceSample;
 static VM_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const VM_NAMES: [&str; 26] = [
@@ -160,7 +161,7 @@ impl Live {
                 let start = Instant::now();
                 let mut previous = Sample::snapshot();
                 let mut geometry = GeometryUploads::snapshot();
-                let mut line = String::with_capacity(2048);
+                let mut line = String::with_capacity(8192);
                 eprintln!("[reel-probe] live sampling started; elapsed us and completed calls; nested phases overlap; VM counters cumulative, last_* latest slice; gc_phase idle=0 mark=1 weak=2 sweep=3; fn/pc identify the last selected task; vm_sample advances on main-thread snapshots");
                 while !stopped.load(Ordering::Relaxed) {
                     let deadline = Instant::now() + std::time::Duration::from_secs(1);
@@ -191,6 +192,9 @@ impl Live {
                     let _ = write!(line, " geometry_upload={}/{}", uploads.bytes, uploads.calls);
                     append_vm(&mut line);
                     eprintln!("{line}");
+                    if device::append_live(&mut line) {
+                        eprintln!("{line}");
+                    }
                     VM_REQUESTED.store(true, Ordering::Relaxed);
                 }
             })?;
@@ -254,6 +258,7 @@ pub(crate) struct Recording {
     slow: VecDeque<Row>,
     segment: (String, Row),
     segments: VecDeque<(String, Row)>,
+    device: device::DeviceSamples,
 }
 impl Recording {
     pub(crate) fn new() -> Self {
@@ -271,11 +276,18 @@ impl Recording {
             window_start: 0,
             last_present: None,
             last_geometry: GeometryUploads::snapshot(),
-            windows: VecDeque::with_capacity(WINDOWS),
-            slow: VecDeque::with_capacity(SLOW),
+            windows: VecDeque::with_capacity(if cfg!(target_os = "vita") { 0 } else { WINDOWS }),
+            slow: VecDeque::with_capacity(if cfg!(target_os = "vita") { 0 } else { SLOW }),
             segment: (String::new(), Row::default()),
             segments: VecDeque::with_capacity(SEGMENTS),
+            device: device::DeviceSamples::default(),
         }
+    }
+
+    #[cfg(any(target_os = "vita", test))]
+    pub(crate) fn record_device(&mut self, sample: DeviceSample) {
+        self.device
+            .record(self.started.elapsed().as_micros() as u64, sample);
     }
 
     pub(crate) fn record(
@@ -332,13 +344,13 @@ impl Recording {
             }
         }
         self.segment.1.add(row);
-        if active >= 50_000 {
+        if !cfg!(target_os = "vita") && active >= 50_000 {
             if self.slow.len() == SLOW {
                 self.slow.pop_front();
             }
             self.slow.push_back(row);
         }
-        if elapsed - self.window_start >= 250_000 {
+        if !cfg!(target_os = "vita") && elapsed - self.window_start >= 250_000 {
             if self.windows.len() == WINDOWS {
                 self.windows.pop_front();
             }
@@ -347,25 +359,18 @@ impl Recording {
         }
     }
 
-    pub(crate) fn write(
-        self,
-        root: &Path,
+    pub(crate) fn report(
+        &self,
+        out: &mut impl Write,
         title: &str,
-        timestamp: u64,
         outcome: &str,
-    ) -> io::Result<PathBuf> {
-        std::fs::create_dir_all(root)?;
-        let path = root.join(format!(
-            "{timestamp}-{}.tsv",
-            SERIAL.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut out = io::BufWriter::new(std::fs::File::create(&path)?);
+    ) -> io::Result<()> {
         writeln!(out, "title\t{}", title.replace(['\t', '\r', '\n'], " "))?;
         writeln!(out, "outcome\t{}", outcome.replace(['\t', '\r', '\n'], " "))?;
         writeln!(
             out,
             "recording_bytes\t{}",
-            (WINDOWS + SLOW) * std::mem::size_of::<Row>()
+            (self.windows.capacity() + self.slow.capacity()) * std::mem::size_of::<Row>()
                 + self.segments.capacity() * std::mem::size_of::<(String, Row)>()
                 + self
                     .segments
@@ -373,10 +378,11 @@ impl Recording {
                     .map(|(label, _)| label.capacity())
                     .sum::<usize>()
                 + self.segment.0.capacity()
+                + self.device.bytes()
         )?;
         writeln!(
             out,
-            "timing\tCPU microseconds; nested phases overlap; read/decode include worker time; present includes CPU wait; idle gaps are included in present_gap"
+            "timing\tElapsed microseconds; nested phases overlap; read/decode include worker time; present includes blocking; idle gaps are included in present_gap"
         )?;
         writeln!(
             out,
@@ -410,24 +416,36 @@ impl Recording {
             }
             writeln!(out)
         }
-        row(&mut out, "startup", "", self.startup)?;
-        row(&mut out, "total", "", self.total)?;
-        for (label, r) in self.segments {
-            row(&mut out, "segment", &label, r)?;
+        row(out, "startup", "", self.startup)?;
+        row(out, "total", "", self.total)?;
+        for (label, r) in &self.segments {
+            row(out, "segment", label, *r)?;
         }
         if self.segment.1.loops != 0 {
-            row(&mut out, "segment", &self.segment.0, self.segment.1)?;
+            row(out, "segment", &self.segment.0, self.segment.1)?;
         }
-        for r in self.windows {
-            row(&mut out, "window", "", r)?;
+        for r in &self.windows {
+            row(out, "window", "", *r)?;
         }
-        if self.pending.loops != 0 {
-            row(&mut out, "window", "", self.pending)?;
+        if !cfg!(target_os = "vita") && self.pending.loops != 0 {
+            row(out, "window", "", self.pending)?;
         }
-        for r in self.slow {
-            row(&mut out, "slow", "", r)?;
+        for r in &self.slow {
+            row(out, "slow", "", *r)?;
         }
-        out.flush()?;
-        Ok(path)
+        out.flush()
+    }
+
+    #[cfg(target_os = "vita")]
+    pub(crate) fn print(&self, title: &str, outcome: &str) -> io::Result<()> {
+        let mut out = io::stderr().lock();
+        writeln!(out, "[reel-probe-report] begin")?;
+        self.report(&mut out, title, outcome)?;
+        writeln!(out, "[reel-probe-report] end")?;
+        let mut native = String::with_capacity(8192);
+        if device::append_live(&mut native) {
+            writeln!(out, "{native}")?;
+        }
+        out.flush()
     }
 }

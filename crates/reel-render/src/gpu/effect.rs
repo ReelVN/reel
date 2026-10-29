@@ -8,12 +8,11 @@ use reel_ui::{
     resources::EffectShaderFormat,
 };
 use std::sync::{Arc, Mutex};
-use wgpu::util::DeviceExt;
 
 #[derive(Default)]
-pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 8]>);
+pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 9]>);
 pub(super) struct Compiled {
-    layout: wgpu::BindGroupLayout,
+    pub(super) layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     _storage: BudgetTicket,
 }
@@ -34,6 +33,7 @@ impl Cache {
         padded: bool,
         terminal: bool,
         masked: bool,
+        full_target: bool,
         shader: &effect_plan::Shader<'_>,
         budget: &BudgetPool,
         at: RecordLocation,
@@ -70,8 +70,11 @@ impl Cache {
             });
         }
         let mut caches = self.0.lock().unwrap();
-        let cache =
-            &mut caches[usize::from(padded) + 2 * usize::from(terminal) + 4 * usize::from(masked)];
+        let cache = &mut caches[if full_target {
+            8
+        } else {
+            usize::from(padded) + 2 * usize::from(terminal) + 4 * usize::from(masked)
+        }];
         if let Some(compiled) = cache.get(
             descriptor.shader_key,
             lease,
@@ -80,12 +83,15 @@ impl Cache {
         )? {
             return Ok(compiled);
         }
-        let bytes = descriptor
-            .code(bytes, masked)
-            .ok_or(GpuError::InvalidRecord {
-                at,
-                record: "missing effect variant",
-            })?;
+        let bytes = if full_target {
+            descriptor.full_target_code(bytes)
+        } else {
+            descriptor.code(bytes, masked)
+        }
+        .ok_or(GpuError::InvalidRecord {
+            at,
+            record: "missing effect variant",
+        })?;
         let source = std::str::from_utf8(bytes).map_err(|_| GpuError::InvalidRecord {
             at,
             record: "effect WGSL encoding",
@@ -136,7 +142,14 @@ impl Cache {
                 quality,
                 &layout,
                 source,
-                (padded, if padded { "vertex_padded" } else { "vertex" }),
+                (
+                    if padded {
+                        pipeline::VertexInput::Mesh
+                    } else {
+                        pipeline::VertexInput::None
+                    },
+                    if padded { "vertex_padded" } else { "vertex" },
+                ),
                 pipeline::FragmentOutput {
                     entry: "fragment",
                     blend: terminal.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -172,9 +185,181 @@ impl Context<'_> {
         effect: &FrameEffect,
         transform: Affine,
         source: &Target,
+        source_commands: Option<(std::ops::Range<usize>, Affine, super::targets::Scissor)>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
-        self.effect_draw(drawing, effect, transform, source, None, None, at)
+        use crate::common::effect_result::{Grid, Probe};
+        self.flush_draws()?;
+        let proof_transform = source_commands
+            .as_ref()
+            .map_or(Affine::IDENTITY, |(_, value, _)| *value);
+        let region = source_commands.as_ref().map_or(
+            super::targets::Scissor::full(source.size),
+            |(_, _, region)| *region,
+        );
+        let (source_transform, effect_transform) = Grid::transforms(proof_transform, transform);
+        let grid = Grid {
+            source_transform,
+            effect_transform,
+            source_size: source.size,
+            source_storage: source.storage_size(),
+            source_scissor: [region.x, region.y, region.width, region.height],
+            output_size: self.size,
+            output_storage: self.offscreen.storage_size(self.size),
+            scissor: [
+                self.scissor.x,
+                self.scissor.y,
+                self.scissor.width,
+                self.scissor.height,
+            ],
+            quality: [
+                match self.quality.format {
+                    wgpu::TextureFormat::Rgba8Unorm => 0,
+                    wgpu::TextureFormat::Rgba16Float => 1,
+                    _ => {
+                        return self.effect_draw(
+                            drawing,
+                            effect,
+                            transform,
+                            effect_plan::Source::sampled(
+                                source,
+                                source.size,
+                                source.storage_size(),
+                            ),
+                            None,
+                            None,
+                            at,
+                        );
+                    }
+                },
+                self.quality.samples,
+            ],
+        };
+        let probe = if self.effect_admission.enabled()
+            && !self.capture
+            && !self.scissor.empty()
+            && effect_plan::context(effect, transform, self.size, source.size).is_some()
+        {
+            if let Some(token) = source.effect_token() {
+                Some(Probe::from_output(token, effect, grid))
+            } else if let Some((commands, _, _)) = source_commands {
+                Probe::new(drawing, commands, effect, grid)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(probe) = probe {
+            if let Some((token, hit)) = self.effect_results.lookup(&probe) {
+                if self
+                    .effect_pins
+                    .iter()
+                    .any(|held| held.effect_token() == Some(token))
+                {
+                    return Ok(hit.target);
+                }
+                let bytes = super::targets::target_bytes(hit.target.storage_size(), self.quality)?;
+                if self.effect_admission.can_retain(bytes) {
+                    let local =
+                        self.budget_scope
+                            .targets
+                            .reserve(bytes)
+                            .map_err(|_| GpuError::Budget {
+                                domain: "offscreen targets",
+                                requested: bytes,
+                                available: self
+                                    .gpu
+                                    .limits
+                                    .target_bytes
+                                    .saturating_sub(self.budget_scope.targets.usage().bytes),
+                            })?;
+                    self.tickets.push(crate::common::renderer::Reservation {
+                        _shared: None,
+                        _local: local,
+                    });
+                    let mut owners = std::mem::take(&mut self.retained_inputs);
+                    let held = crate::common::scopes::push_stack(
+                        &mut owners,
+                        hit.allocation.clone(),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.retained_inputs = owners;
+                    held?;
+                    let mut pins = std::mem::take(&mut self.effect_pins);
+                    let held =
+                        crate::common::scopes::push_stack(&mut pins, hit.target.clone(), |bytes| {
+                            self.transient(bytes)
+                        });
+                    self.effect_pins = pins;
+                    held?;
+                    self.effect_admission.retain(bytes);
+                    return Ok(hit.target);
+                }
+            }
+            let output = self.effect_draw(
+                drawing,
+                effect,
+                transform,
+                effect_plan::Source::sampled(source, source.size, source.storage_size()),
+                None,
+                None,
+                at,
+            )?;
+            let bytes = super::targets::target_bytes(output.storage_size(), self.quality)?;
+            if self.effect_admission.can_retain(bytes)
+                && let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient)
+            {
+                if !candidate.retain {
+                    let mut pending = std::mem::take(&mut self.effect_pending);
+                    let _ = crate::common::scopes::push_stack(
+                        &mut pending,
+                        candidate.observe(),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.effect_pending = pending;
+                    return Ok(output);
+                }
+                let Some(pinned) = output.pin_effect(candidate.token, &self.budgets.transient)
+                else {
+                    return Ok(output);
+                };
+                let mut pins = std::mem::take(&mut self.effect_pins);
+                let held = crate::common::scopes::push_stack(&mut pins, pinned.clone(), |bytes| {
+                    self.transient(bytes)
+                });
+                self.effect_pins = pins;
+                if held.is_ok() {
+                    let allocation = self.target_allocations[output.slot].clone();
+                    let stored = super::retained::Output {
+                        allocation,
+                        target: pinned.clone(),
+                    };
+                    let mut pending = std::mem::take(&mut self.effect_pending);
+                    let saved = crate::common::scopes::push_stack(
+                        &mut pending,
+                        candidate.finish(stored),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.effect_pending = pending;
+                    if saved.is_ok() {
+                        self.effect_admission.retain(bytes);
+                        return Ok(pinned);
+                    }
+                    self.effect_pins.pop();
+                }
+            }
+            return Ok(output);
+        }
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            effect_plan::Source::sampled(source, source.size, source.storage_size()),
+            None,
+            None,
+            at,
+        )
     }
     /// Multiply the complete local source by scalar coverage in one pass.
     pub(super) fn effect_mask(
@@ -190,7 +375,7 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            source,
+            effect_plan::Source::sampled(source, source.size, source.storage_size()),
             Some(source_frame_to_pixels),
             None,
             at,
@@ -215,7 +400,7 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            source,
+            effect_plan::Source::sampled(source, source.size, source.storage_size()),
             None,
             Some(effect_plan::Terminal {
                 target,
@@ -230,12 +415,12 @@ impl Context<'_> {
         clippy::too_many_arguments,
         reason = "one prepared effect and optional terminal composite"
     )]
-    fn effect_draw(
+    pub(super) fn effect_draw(
         &mut self,
         drawing: &FrameDrawing,
         effect: &FrameEffect,
         transform: Affine,
-        source: &Target,
+        source: effect_plan::Source<'_, Target>,
         source_view: Option<Affine>,
         terminal: Option<effect_plan::Terminal<'_, Target>>,
         at: RecordLocation,
@@ -246,17 +431,7 @@ impl Context<'_> {
         let coverage = coverage.map(|(mask, _)| mask);
         let shader = effect_plan::shader(drawing, effect, at)?;
         let padded = shader.descriptor.output == reel_ui::stage::effect::EffectType::Float
-            && source.size != source.storage_size();
-        let compiled = self.pipelines.effects.get(
-            self.gpu,
-            self.quality,
-            padded,
-            terminal.is_some(),
-            coverage.is_some(),
-            &shader,
-            &self.budgets.resources,
-            at,
-        )?;
+            && source.size != source.storage_size;
         let output = if let Some(output) = &terminal {
             output.target.clone()
         } else {
@@ -279,7 +454,7 @@ impl Context<'_> {
             context[2][3] = opacity;
             context[3][3] = f32::from(nested);
         }
-        effect_plan::map_storage(&mut context, source.size, source.storage_size());
+        effect_plan::map_storage(&mut context, source.size, source.storage_size);
         if let Some(mask) = coverage {
             context[9] =
                 crate::common::source_view::uv_mapping(self.size, mask.storage_size(), [0; 2]);
@@ -287,107 +462,116 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(output);
         }
+        #[cfg(test)]
+        crate::common::effect_plan::roi::testing::observe(
+            effect.definition,
+            self.size,
+            self.scissor,
+        );
         if let Some(mask) = coverage {
             self.ensure_sampled(&mask.view);
         }
         if shader.descriptor.source_sampler {
-            self.ensure_sampled(&source.view);
+            self.ensure_sampled(&source.pixels.expect("sampled effect source").view);
         }
-        // Reserve all owned packing vectors and GPU uniform payloads together.
-        let parameter_bytes = effect.values.len().max(1) * 16;
+        let overwrite = (!padded
+            && terminal.is_none()
+            && coverage.is_none()
+            && shader.descriptor.full_target_offset.is_some())
+        .then(|| {
+            crate::common::target_writes::FullOverwrite::composite(
+                self.size,
+                output.storage_size(),
+                self.scissor,
+                true,
+            )
+        })
+        .flatten();
+        let compiled = self.pipelines.effects.get(
+            self.gpu,
+            self.quality,
+            padded,
+            terminal.is_some(),
+            coverage.is_some(),
+            overwrite.is_some(),
+            &shader,
+            &self.budgets.resources,
+            at,
+        )?;
+        // The slot owns its GPU buffer and exact texture leases until completion.
         let entry_capacity = 3
             + usize::from(shader.descriptor.source_sampler)
             + usize::from(!effect.images.is_empty())
             + effect.images.len()
             + usize::from(coverage.is_some());
-        let metadata_capacity = effect.images.len() * 2;
         self.transient(
-            (2 * parameter_bytes
-                + size_of_val(&context)
-                + 2 * metadata_capacity * size_of::<[f32; 4]>()
-                + entry_capacity * size_of::<wgpu::BindGroupEntry<'_>>()) as u64,
+            (entry_capacity * size_of::<wgpu::BindGroupEntry<'_>>()
+                + 2 * effect.images.len() * size_of::<Arc<super::resources::Image>>())
+                as u64,
         )?;
-        let parameters = if effect.values.is_empty() {
-            vec![[0.; 4]]
-        } else {
-            effect
-                .values
-                .iter()
-                .copied()
-                .map(effect_plan::slot)
-                .collect()
-        };
-        let uniform = |label, data: &[u8]| {
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(label),
-                    contents: data,
-                    usage: wgpu::BufferUsages::UNIFORM,
-                })
-        };
+        let mut images = Vec::with_capacity(effect.images.len());
+        for handle in &effect.images {
+            images.push(
+                self.images
+                    .get(handle)
+                    .ok_or(GpuError::InvalidRecord {
+                        at,
+                        record: "effect texture is not resident",
+                    })?
+                    .clone(),
+            );
+        }
         let context_slots = context;
-        let context = uniform("effect coordinates", bytemuck::cast_slice(&context_slots));
-        let parameters = uniform("effect parameters", bytemuck::cast_slice(&parameters));
-        let mut entries = Vec::with_capacity(entry_capacity);
-        entries.extend([
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&self.pipelines.samplers[0]),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: context.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: parameters.as_entire_binding(),
-            },
-        ]);
-        if shader.descriptor.source_sampler {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&source.view),
-            });
-        }
-        if let Some(mask) = coverage {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 5 + shader.descriptor.textures,
-                resource: wgpu::BindingResource::TextureView(&mask.view),
-            });
-        }
-        let mut metadata = Vec::with_capacity(metadata_capacity);
-        for (index, handle) in effect.images.iter().enumerate() {
-            let image = self.images.get(handle).ok_or(GpuError::InvalidRecord {
-                at,
-                record: "effect texture is not resident",
-            })?;
-            entries.push(wgpu::BindGroupEntry {
-                binding: 5 + index as u32,
-                resource: wgpu::BindingResource::TextureView(&image.view),
-            });
-            metadata.extend(effect_plan::texture_metadata(
-                image.layout,
-                image.encoding,
-                image.texture_format,
-            ));
-        }
-        let metadata = (!metadata.is_empty())
-            .then(|| uniform("effect image metadata", bytemuck::cast_slice(&metadata)));
-        if let Some(metadata) = &metadata {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 4,
-                resource: metadata.as_entire_binding(),
-            });
-        }
-        let bindings = self
-            .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("prepared effect"),
-                layout: &compiled.layout,
-                entries: &entries,
-            });
+        let source_target = shader
+            .descriptor
+            .source_sampler
+            .then(|| source.pixels.expect("sampled effect source"));
+        let prepared = self.effect_uniform_cache.prepare(
+            self.gpu,
+            self.budgets,
+            &self.budget_scope,
+            compiled.clone(),
+            source_target,
+            coverage,
+            images.clone(),
+            &context_slots,
+            &effect.values,
+            !self.capture,
+            &self.pipelines.samplers[0],
+        );
+        let fallback_bindings = match prepared {
+            Ok((slot, local)) => {
+                self.tickets.push(crate::common::renderer::Reservation {
+                    _shared: None,
+                    _local: local,
+                });
+                let mut slots = std::mem::take(&mut self.effect_uniform_slots);
+                let pushed = crate::common::scopes::push_stack(&mut slots, slot, |bytes| {
+                    self.transient(bytes)
+                });
+                self.effect_uniform_slots = slots;
+                pushed?;
+                None
+            }
+            Err(GpuError::Budget { .. } | GpuError::Pressure { .. }) => {
+                let parameter_bytes = effect.values.len().max(1) * 16;
+                let metadata_bytes = images.len() * 32;
+                self.transient(
+                    (2 * parameter_bytes + size_of_val(&context_slots) + 2 * metadata_bytes) as u64,
+                )?;
+                Some(super::effect_uniform::fallback(
+                    self.gpu,
+                    &compiled,
+                    source_target,
+                    coverage,
+                    &images,
+                    &context_slots,
+                    &effect.values,
+                    &self.pipelines.samplers[0],
+                ))
+            }
+            Err(error) => return Err(error),
+        };
         let mut held = std::mem::take(&mut self.effects);
         let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {
             self.transient(bytes)
@@ -431,11 +615,10 @@ impl Context<'_> {
             None
         };
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
+        let attachment = output.attachment(self.target_writes.take(output.slot));
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("prepared effect"),
-            color_attachments: &[Some(
-                output.attachment(self.target_writes.take(output.slot)),
-            )],
+            color_attachments: &[Some(attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,
@@ -443,7 +626,13 @@ impl Context<'_> {
         });
         pass.set_viewport(0., 0., output.size[0] as f32, output.size[1] as f32, 0., 1.);
         pass.set_pipeline(&compiled.pipeline);
-        pass.set_bind_group(0, &bindings, &[]);
+        let bindings = fallback_bindings.as_ref().unwrap_or_else(|| {
+            self.effect_uniform_slots
+                .last()
+                .expect("prepared effect slot")
+                .group()
+        });
+        pass.set_bind_group(0, bindings, &[]);
         pass.set_scissor_rect(
             self.scissor.x,
             self.scissor.y,
@@ -462,5 +651,7 @@ impl Context<'_> {
     }
 }
 
+#[cfg(test)]
+mod roi_tests;
 #[cfg(test)]
 mod tests;

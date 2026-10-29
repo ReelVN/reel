@@ -33,6 +33,9 @@ impl Gpu {
     pub fn limits(&self) -> GpuLimits {
         self.limits
     }
+    /// Request a native renderer device. The instance must leave
+    /// `STRICT_WEBGPU_COMPLIANCE` unset: fully overwritten scratch attachments
+    /// use WGPU's `DontCare` load operation.
     pub async fn request(
         instance: &wgpu::Instance,
         surface: Option<&wgpu::Surface<'_>>,
@@ -133,6 +136,30 @@ impl Gpu {
             requested: bytes,
             available: self.limits.target_bytes,
         })
+    }
+    /// Match the existing color attachment's channel precision and sampling.
+    pub(super) fn coverage_quality(&self, color: Quality) -> Option<Quality> {
+        let format = match color.format {
+            wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::R8Unorm,
+            wgpu::TextureFormat::Rgba16Float => wgpu::TextureFormat::R16Float,
+            _ => return None,
+        };
+        let features = self.adapter.get_texture_format_features(format);
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        if !features.allowed_usages.contains(usage)
+            || !features.flags.contains(
+                wgpu::TextureFormatFeatureFlags::FILTERABLE
+                    | wgpu::TextureFormatFeatureFlags::BLENDABLE,
+            )
+            || !features.flags.sample_count_supported(color.samples)
+            || (color.samples > 1
+                && !features
+                    .flags
+                    .contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE))
+        {
+            return None;
+        }
+        Some(Quality { format, ..color })
     }
     pub(super) fn supported_qualities(&self) -> impl Iterator<Item = Quality> + '_ {
         [

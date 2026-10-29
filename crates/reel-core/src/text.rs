@@ -1,5 +1,6 @@
 //! Immutable author text, shared by narrative services and paragraph layout.
 use std::{ops::Range, sync::Arc};
+mod compose;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextStyle {
@@ -95,7 +96,7 @@ impl<'de> serde::Deserialize<'de> for Text {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 struct RichText {
     markup: Arc<str>,
     spans: Vec<TextSpan>,
@@ -104,6 +105,17 @@ struct RichText {
     cues: Vec<TextCue>,
     continue_after: bool,
     font_bytes: usize,
+}
+
+impl PartialEq for RichText {
+    fn eq(&self, other: &Self) -> bool {
+        self.markup == other.markup
+            && self.spans == other.spans
+            && self.ruby == other.ruby
+            && self.links == other.links
+            && self.cues == other.cues
+            && self.continue_after == other.continue_after
+    }
 }
 
 impl Default for Text {

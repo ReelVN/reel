@@ -7,8 +7,12 @@ fn main() {
         .file("src/platform/vita/startup.c")
         .warnings(true)
         .compile("reel_vita_startup");
-    // The packager discovers this configuration symbol after ELF linking.
-    for symbol in ["sceUserMainThreadStackSize", "_newlib_heap_size_user"] {
+    // Retain the main-thread metadata for packaging and the complete process
+    // allocator family before CRT initialization.
+    for symbol in [
+        "sceUserMainThreadStackSize",
+        "vita_native_process_heap_anchor",
+    ] {
         println!("cargo:rustc-link-arg-bin=reel-vita=-Wl,--undefined={symbol}");
     }
 }

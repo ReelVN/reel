@@ -69,6 +69,12 @@ impl Demand {
     pub(crate) fn preparing(&mut self) {
         self.model = Model::Preparing;
     }
+    pub(crate) fn waiting_for_pixels(&mut self, draw: Draw) {
+        if draw == Draw::Current {
+            self.model = Model::Waiting;
+        }
+        self.exposure = Exposure::Waiting;
+    }
     pub(crate) fn refused(&mut self, draw: Draw, error: FailureKind) {
         if draw == Draw::Current {
             self.model = if error == FailureKind::Pressure {

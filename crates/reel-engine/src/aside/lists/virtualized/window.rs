@@ -267,12 +267,7 @@ impl SessionVm {
                     )?;
                     for i in 0..self.vm.heap().sequence_len(old)? {
                         let e = self.vm.heap().sequence_get(old, i)?;
-                        let kept = (0..self.vm.heap().sequence_len(w.source)?).any(|j| {
-                            self.vm
-                                .heap()
-                                .sequence_get(w.source, j)
-                                .is_ok_and(|v| v.same_bits(e))
-                        });
+                        let kept = mounted_contains(self.vm.heap(), w.source, e)?;
                         if !kept {
                             let key = entry(self.vm.heap(), e, Entry::Key)?;
                             if let Some(current) = find(
@@ -281,13 +276,7 @@ impl SessionVm {
                                 key,
                                 self.read_limit,
                             )? {
-                                let mounted =
-                                    (0..self.vm.heap().sequence_len(w.source)?).any(|j| {
-                                        self.vm
-                                            .heap()
-                                            .sequence_get(w.source, j)
-                                            .is_ok_and(|v| v.same_bits(current))
-                                    });
+                                let mounted = mounted_contains(self.vm.heap(), w.source, current)?;
                                 if !mounted {
                                     self.vm.heap_mut().set_field(
                                         current,
@@ -378,4 +367,27 @@ impl SessionVm {
         };
         check().unwrap_or(false)
     }
+}
+
+/// Candidate rows are ordered by their current logical index, including pinned
+/// rows. Identity distinguishes an obsolete entry from its keyed replacement.
+fn mounted_contains(heap: &Heap, rows: Value, needle: Value) -> Result<bool, HeapError> {
+    let wanted = heap.sequence_get(needle, INDEX)?.as_int().unwrap();
+    let mut lo = 0;
+    let mut hi = heap.sequence_len(rows)?;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let entry = heap.sequence_get(rows, mid)?;
+        match heap
+            .sequence_get(entry, INDEX)?
+            .as_int()
+            .unwrap()
+            .cmp(&wanted)
+        {
+            std::cmp::Ordering::Less => lo = mid + 1,
+            std::cmp::Ordering::Greater => hi = mid,
+            std::cmp::Ordering::Equal => return Ok(entry.same_bits(needle)),
+        }
+    }
+    Ok(false)
 }

@@ -1,0 +1,298 @@
+//! Weak provenance and a budgeted lookup accelerator for immutable resources.
+use super::{AssetKind, Load, RetainedAssetKind};
+use reel_core::{
+    budget::{BudgetPool, BudgetTicket},
+    identity::{AssetKey, ContentVersion},
+};
+use reel_ui::resources::{ResourceHandle, ResourceLease, ResourceWeak};
+use std::{
+    collections::{BTreeMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    mem::size_of,
+};
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Entry {
+    hash: u64,
+    handle: ResourceHandle,
+}
+struct Index {
+    entries: Vec<Entry>,
+    ticket: Option<BudgetTicket>,
+}
+pub(super) struct Origins {
+    items: BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
+    index: Option<Index>,
+    metadata: BudgetPool,
+}
+fn kind(kind: AssetKind) -> Option<RetainedAssetKind> {
+    match kind {
+        AssetKind::Image => Some(RetainedAssetKind::Image),
+        AssetKind::Font => Some(RetainedAssetKind::Font),
+        AssetKind::EffectShader => Some(RetainedAssetKind::EffectShader),
+        AssetKind::Bytes => None,
+    }
+}
+fn fingerprint(key: &AssetKey, version: ContentVersion, kind: RetainedAssetKind) -> u64 {
+    let mut hash = DefaultHasher::new();
+    key.hash(&mut hash);
+    version.hash(&mut hash);
+    (match kind {
+        RetainedAssetKind::Image => 0_u8,
+        RetainedAssetKind::Font => 1,
+        RetainedAssetKind::EffectShader => 2,
+    })
+    .hash(&mut hash);
+    hash.finish()
+}
+impl Index {
+    // Reserve both old and new vectors while growth reallocates. If metadata is
+    // occupied, the caller discards this optional accelerator and scans instead.
+    fn push(&mut self, item: Entry, metadata: &BudgetPool) -> bool {
+        if self.entries.len() == self.entries.capacity() {
+            let Some(capacity) = self.entries.len().max(4).checked_mul(2) else {
+                return false;
+            };
+            let Some(bytes) = capacity.checked_mul(size_of::<Entry>()) else {
+                return false;
+            };
+            let Ok(mut ticket) = metadata.reserve(bytes as u64) else {
+                return false;
+            };
+            let mut replacement = Vec::new();
+            if replacement.try_reserve_exact(capacity).is_err() {
+                return false;
+            }
+            let Some(actual) = replacement.capacity().checked_mul(size_of::<Entry>()) else {
+                return false;
+            };
+            if ticket.resize(actual as u64).is_err() {
+                return false;
+            }
+            replacement.extend_from_slice(&self.entries);
+            self.entries = replacement;
+            self.ticket = Some(ticket);
+        }
+        let position = self.entries.binary_search(&item).unwrap_or_else(|i| i);
+        self.entries.insert(position, item);
+        true
+    }
+}
+impl Origins {
+    pub(super) fn new(metadata: BudgetPool) -> Self {
+        Self {
+            items: BTreeMap::new(),
+            index: Some(Index {
+                entries: Vec::new(),
+                ticket: None,
+            }),
+            metadata,
+        }
+    }
+    pub(super) fn clear(&mut self) {
+        self.items.clear();
+        self.index = None;
+    }
+    pub(super) fn kind(&self, handle: ResourceHandle) -> Option<RetainedAssetKind> {
+        self.items.get(&handle).map(|(_, kind)| *kind)
+    }
+    pub(super) fn shared(&self, load: &Load) -> Option<ResourceLease> {
+        if !load.reloadable {
+            return None;
+        }
+        let version = load.source.version?;
+        let kind = kind(load.kind)?;
+        let candidate = |(weak, candidate_kind): &(ResourceWeak, RetainedAssetKind)| {
+            (*candidate_kind == kind)
+                .then(|| weak.upgrade())
+                .flatten()
+                .filter(|lease| {
+                    lease.version().key == load.source.key
+                        && lease.version().version == version
+                        && (kind != RetainedAssetKind::Image || lease.pixels_resident())
+                })
+        };
+        if self.items.len() >= 16
+            && let Some(index) = &self.index
+        {
+            let hash = fingerprint(&load.source.key, version, kind);
+            let start = index.entries.partition_point(|entry| entry.hash < hash);
+            index.entries[start..]
+                .iter()
+                .take_while(|entry| entry.hash == hash)
+                .find_map(|entry| self.items.get(&entry.handle).and_then(candidate))
+        } else {
+            self.items.values().find_map(candidate)
+        }
+    }
+    pub(super) fn remember(&mut self, asset_kind: AssetKind, lease: &ResourceLease) {
+        let kind = kind(asset_kind).expect("bytes do not have resource leases");
+        if kind == RetainedAssetKind::Image {
+            lease.permit_pixel_reload();
+        }
+        self.items.retain(|_, (weak, _)| !weak.is_released());
+        if let Some(index) = &mut self.index {
+            index.entries.retain(|entry| {
+                entry.handle != lease.handle() && self.items.contains_key(&entry.handle)
+            });
+            let item = Entry {
+                hash: fingerprint(&lease.version().key, lease.version().version, kind),
+                handle: lease.handle(),
+            };
+            if !index.push(item, &self.metadata) {
+                self.index = None;
+            }
+        }
+        self.items.insert(lease.handle(), (lease.downgrade(), kind));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::{Phase, ResourceRegistry};
+    use reel_core::budget::OwnedBytes;
+    use reel_core::{
+        budget::{BudgetCategory, QueueLimits},
+        identity::{AssetSource, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::ColorEncoding,
+    };
+
+    fn pool(bytes: u64) -> BudgetPool {
+        BudgetPool::new(
+            BudgetCategory::Metadata,
+            QueueLimits {
+                max_requests: 10000,
+                max_bytes: bytes,
+            },
+        )
+    }
+    fn load(version: ResourceVersion) -> Load {
+        Load {
+            source: AssetSource {
+                key: version.key,
+                version: Some(version.version),
+            },
+            reloadable: true,
+            kind: AssetKind::Image,
+            phase: Phase::Describe,
+            input: None,
+            size: [0, 0],
+            texture: None,
+            output: 0,
+            temporary: 0,
+        }
+    }
+    fn fixture(
+        count: usize,
+        metadata: BudgetPool,
+    ) -> (Origins, ResourceRegistry, Vec<ResourceLease>) {
+        let mut registry = ResourceRegistry::new(count as u32, 1 << 20).unwrap();
+        let data = pool(1 << 20);
+        let mut origins = Origins::new(metadata);
+        let mut leases = Vec::new();
+        for i in 0..count {
+            let version = ResourceVersion {
+                key: AssetKey(format!("image/{i}")),
+                version: ContentVersion([i as u8; 32]),
+            };
+            let handle = registry
+                .register_image(
+                    version,
+                    OwnedBytes::new(vec![i as u8; 4], data.reserve(4).unwrap()).unwrap(),
+                    [1, 1],
+                    ImageFormat::Rgba8,
+                    ImageAlphaType::Alpha,
+                    ColorEncoding::Srgb,
+                )
+                .unwrap();
+            let lease = registry.acquire(handle).unwrap();
+            origins.remember(AssetKind::Image, &lease);
+            leases.push(lease);
+        }
+        (origins, registry, leases)
+    }
+    #[test]
+    fn indexed_weak_reuse_respects_collisions_retirement_and_metadata_pressure() {
+        let metadata = pool(1 << 20);
+        let (mut origins, mut registry, leases) = fixture(20, metadata.clone());
+        let expected = &leases[10];
+        let request = load(expected.version().clone());
+        assert_eq!(
+            origins.shared(&request).unwrap().handle(),
+            expected.handle()
+        );
+        let index = origins.index.as_mut().unwrap();
+        let hash = fingerprint(
+            &request.source.key,
+            request.source.version.unwrap(),
+            RetainedAssetKind::Image,
+        );
+        index
+            .entries
+            .iter_mut()
+            .find(|entry| entry.handle == leases[0].handle())
+            .unwrap()
+            .hash = hash;
+        index.entries.sort_unstable();
+        assert_eq!(
+            origins.shared(&request).unwrap().handle(),
+            expected.handle()
+        );
+        let mut wrong_kind = load(expected.version().clone());
+        wrong_kind.kind = AssetKind::Font;
+        assert!(origins.shared(&wrong_kind).is_none());
+        expected.prohibit_new_leases();
+        assert!(origins.shared(&request).is_none());
+        assert!(metadata.usage().bytes > 0);
+        origins.clear();
+        assert_eq!(metadata.usage().bytes, 0);
+        for lease in leases {
+            assert!(registry.retire(lease.handle()));
+        }
+
+        let limited = pool(0);
+        let (origins, _, leases) = fixture(2, limited.clone());
+        assert!(origins.index.is_none());
+        assert_eq!(
+            origins
+                .shared(&load(leases[1].version().clone()))
+                .unwrap()
+                .handle(),
+            leases[1].handle()
+        );
+        assert_eq!(limited.usage().bytes, 0);
+    }
+    #[test]
+    #[ignore = "release-mode lookup cost comparison"]
+    fn lookup_cost_comparison() {
+        use std::{hint::black_box, time::Instant};
+        for count in [8, 256, 1024] {
+            let (mut origins, _, leases) = fixture(count, pool(1 << 20));
+            let requests: Vec<_> = leases
+                .iter()
+                .map(|lease| load(lease.version().clone()))
+                .collect();
+            let run = |origins: &Origins| {
+                let start = Instant::now();
+                for _ in 0..100 {
+                    for request in &requests {
+                        black_box(origins.shared(black_box(request))).unwrap();
+                    }
+                }
+                start.elapsed()
+            };
+            let indexed = run(&origins);
+            let bytes = origins.metadata.usage().bytes;
+            origins.index = None;
+            let linear = run(&origins);
+            println!(
+                "origins={count} lookups={} index_bytes={bytes} indexed={indexed:?} linear={linear:?}",
+                count * 100
+            );
+        }
+    }
+}

@@ -6,6 +6,7 @@ pub(super) fn compile(
     program: &EffectProgram,
     generated: GeneratedEffect,
     tail: OutputTail,
+    coverage: FragmentCoverage,
     max_source_bytes: usize,
 ) -> Result<EffectFragment, GenerateError> {
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
@@ -106,10 +107,17 @@ fn reel_output(color: vec4<f32>, coverage: f32) -> vec4<f32> {
         r#"
     let p = vec3(v.position.xy, 1.0);
     let uv = vec2(dot(reel_context.slots[0].xyz, p), dot(reel_context.slots[1].xyz, p));
-    if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) { discard; }
-    let position = reel_context.slots[4].xy + uv * reel_context.slots[4].zw;
 "#,
     );
+    if coverage == FragmentCoverage::Local {
+        source.push_str("    if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) { discard; }\n");
+    } else {
+        source.push_str(
+            "    if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) { return vec4<f32>(0.0); }\n",
+        );
+    }
+    source
+        .push_str("    let position = reel_context.slots[4].xy + uv * reel_context.slots[4].zw;\n");
     if generated.output_type == EffectType::Float {
         source.push_str("var coverage = clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0); let mode = reel_context.slots[0].w; if mode >= 2.0 { coverage = 1.0 - coverage; } if mode == 1.0 || mode == 2.0 { return reel_output(vec4(coverage), reel_tail_coverage); } return reel_output(reel_implicit_source * coverage, reel_tail_coverage);\n}\n");
     } else {
@@ -169,7 +177,7 @@ fn texture_functions(program: &EffectProgram, limit: usize) -> Result<String, Ge
         if channels == 0 {
             continue;
         }
-        writeln!(code,"@group(0) @binding({}) var reel_texture_{binding}:texture_2d<f32>;\nfn reel_texture_{binding}_read(uv:vec2<f32>)->vec4<f32>{{let t=reel_texture_meta.values[{}];let h=reel_texture_meta.values[{}].xy;var s=textureSampleLevel(reel_texture_{binding},reel_sampler,clamp(uv*t.xy,h,t.xy-h),0.0);if t.w==1.0{{s.a=1.0;}}if t.w==2.0{{s=vec4(min(s.rgb,vec3(s.a)),s.a);}}return s;}}",5+binding,binding*2,binding*2+1).unwrap();
+        writeln!(code,"@group(0) @binding({}) var reel_texture_{binding}:texture_2d<f32>;\nfn reel_texture_{binding}_read(uv:vec2<f32>)->vec4<f32>{{let t=reel_texture_meta.values[{}];let m=reel_texture_meta.values[{}];let h=m.xy;let o=m.zw;var s=textureSampleLevel(reel_texture_{binding},reel_sampler,clamp(o+uv*t.xy,o+h,o+t.xy-h),0.0);if t.w==1.0{{s.a=1.0;}}if t.w==2.0{{s=vec4(min(s.rgb,vec3(s.a)),s.a);}}return s;}}",5+binding,binding*2,binding*2+1).unwrap();
         if channels & 1 != 0 {
             writeln!(code,"fn reel_texture_{binding}_color(uv:vec2<f32>)->vec4<f32>{{return reel_texture_{binding}_read(uv);}}").unwrap();
         }

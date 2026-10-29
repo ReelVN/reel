@@ -85,7 +85,7 @@ impl Compiler {
     /// Feed versioned flags, filenames and complete tool contents to a hash.
     /// Absolute SDK installation paths never enter the content identity.
     pub fn fingerprint(&self, mut field: impl FnMut(&[u8])) -> io::Result<()> {
-        field(b"Reel Sony GXP compiler v1\0sce_vp_psp2\0sce_fp_psp2");
+        field(b"Reel Sony GXP compiler v2\0sce_vp_psp2\0sce_fp_psp2\0fragment-D7203-retry-O2-no-spill");
         for flag in FLAGS {
             field(flag.as_bytes());
         }
@@ -105,7 +105,8 @@ impl Compiler {
         Ok(())
     }
 
-    /// Compile one complete typed Cg program, retaining the original diagnostic.
+    /// Compile with exact math at O3. Fragment register exhaustion (D7203) retries
+    /// the same source at O2 once, keeping spills as errors and both failure logs.
     pub fn compile(&self, stage: Stage, source: &str) -> io::Result<Vec<u8>> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = env::temp_dir().join(format!(
@@ -118,16 +119,44 @@ impl Compiler {
         let input = temporary.0.join("shader.cg");
         let output = temporary.0.join("shader.gxp");
         fs::write(&input, source)?;
-        let compiled = Command::new(&self.executable)
-            .args(["-profile", stage.profile()])
-            .args(FLAGS)
-            .arg(self.host_path(&input)?)
-            .arg("-o")
-            .arg(self.host_path(&output)?)
-            .output()?;
+        let input_path = self.host_path(&input)?;
+        let output_path = self.host_path(&output)?;
+        let run = |optimization| {
+            Command::new(&self.executable)
+                .args(["-profile", stage.profile()])
+                .args(
+                    FLAGS
+                        .iter()
+                        .copied()
+                        .map(|flag| if flag == "-O3" { optimization } else { flag }),
+                )
+                .arg(&input_path)
+                .arg("-o")
+                .arg(&output_path)
+                .output()
+        };
+        let mut compiled = run("-O3")?;
+        let mut original = String::new();
+        if !compiled.status.success()
+            && matches!(stage, Stage::Fragment)
+            && register_pressure(&compiled.stdout, &compiled.stderr)
+        {
+            original = format!(
+                "O3 ({}):\n{}{}\nO2 retry:\n",
+                compiled.status,
+                String::from_utf8_lossy(&compiled.stdout),
+                String::from_utf8_lossy(&compiled.stderr)
+            );
+            compiled = run("-O2").map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("{original}could not run compiler: {error}"),
+                )
+            })?;
+        }
         if !compiled.status.success() {
             return Err(io::Error::other(format!(
-                "Sony {} compilation failed ({}):\n{}{}",
+                "Sony {} compilation failed ({}):\n{original}{}{}",
                 stage.profile(),
                 compiled.status,
                 String::from_utf8_lossy(&compiled.stdout),
@@ -165,9 +194,32 @@ impl Compiler {
     }
 }
 
+fn register_pressure(stdout: &[u8], stderr: &[u8]) -> bool {
+    [stdout, stderr].into_iter().any(|bytes| {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .any(|line| line.trim_start().starts_with("error D7203:"))
+    })
+}
+
 struct Temporary(PathBuf);
 impl Drop for Temporary {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::register_pressure;
+
+    #[test]
+    fn only_register_exhaustion_errors_admit_an_optimization_retry() {
+        let exhausted = b"error D7203: not enough registers available for the entire program\r\n";
+        assert!(register_pressure(exhausted, b""));
+        assert!(register_pressure(b"", exhausted));
+        assert!(!register_pressure(b"warning D7203: spilling enabled", b""));
+        assert!(!register_pressure(b"error D1001: invalid syntax", b""));
+        assert!(!register_pressure(b"source: error D7203: text", b""));
     }
 }

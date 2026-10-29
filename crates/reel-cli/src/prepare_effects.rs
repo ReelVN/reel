@@ -8,7 +8,10 @@ use crate::resource_conversion::{Prepared, Report};
 use reel_engine::aside::source::{EffectDefinition, EffectProducts};
 use reel_package::archive::{ArchiveKind, ArchiveWriter};
 use reel_render::effect::gxp_compiler::{Compiler, Stage};
-use reel_render::effect::{Language, OutputTail, compile_fragment, compile_fragment_with_tail};
+use reel_render::effect::{
+    FragmentCoverage, Language, OutputTail, compile_fragment, compile_fragment_variant,
+    compile_fragment_with_tail,
+};
 use reel_ui::resources::{EffectShaderDescriptor, EffectShaderFormat};
 use std::{
     collections::BTreeMap,
@@ -165,6 +168,35 @@ pub fn prepare_with_input(
                         } else {
                             None
                         };
+                        let full = compile_fragment_variant(
+                            &definition.program,
+                            language,
+                            OutputTail::Ordinary,
+                            FragmentCoverage::FullTarget,
+                            MAX_SHADER_BYTES,
+                        )
+                        .map_err(io::Error::other)?;
+                        prepared.report.source_bytes += full.source.len() as u64;
+                        let full_code = if format == EffectShaderFormat::Gxp {
+                            gxp(
+                                &cache,
+                                &full.source,
+                                compiler.as_ref().unwrap(),
+                                compiler_identity.as_bytes(),
+                            )?
+                        } else {
+                            full.source.into_bytes()
+                        };
+                        let full_offset =
+                            if raw.len() + full_code.len() + 104 + fragment.parameters.slots.len()
+                                <= MAX_SHADER_BYTES
+                            {
+                                let offset = u32::try_from(raw.len()).map_err(io::Error::other)?;
+                                raw.extend_from_slice(&full_code);
+                                Some(offset)
+                            } else {
+                                None
+                            };
                         let descriptor = EffectShaderDescriptor::with_textures(
                             definition.id,
                             format,
@@ -187,6 +219,20 @@ pub fn prepare_with_input(
                         } else {
                             descriptor
                         };
+                        let descriptor = if let Some(offset) = full_offset {
+                            descriptor
+                                .with_full_target_variant(offset, &raw)
+                                .map_err(io::Error::other)?
+                        } else {
+                            descriptor
+                        };
+                        let footprint = reel_render::effect::source_footprint(&definition.program)
+                            .filter(|_| {
+                                raw.len() + 120 + descriptor.parameters.len() <= MAX_SHADER_BYTES
+                            });
+                        let descriptor = descriptor
+                            .with_source_footprint(footprint, &raw)
+                            .map_err(io::Error::other)?;
                         let bytes = descriptor.encode_payload(&raw).map_err(io::Error::other)?;
                         if bytes.len() > MAX_SHADER_BYTES {
                             return Err(io::Error::other(

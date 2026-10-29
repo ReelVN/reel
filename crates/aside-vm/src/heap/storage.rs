@@ -42,6 +42,13 @@ fn grow_index<T: Copy + Default>(
 }
 
 impl Heap {
+    pub(crate) fn ensure_weak_slot(&mut self) -> Result<(), HeapError> {
+        if self.weak_refs.len() == self.weak_refs.capacity() {
+            let capacity = self.weak_refs.len().saturating_mul(2).max(4);
+            self.reserved += grow_queue(&mut self.weak_refs, capacity, &self.usage)?;
+        }
+        Ok(())
+    }
     /// Prepare slice admission using the same slot/queue growth as allocation.
     pub(crate) fn object_allocation_bytes(&self, additional: usize) -> u64 {
         let additional = additional.min(

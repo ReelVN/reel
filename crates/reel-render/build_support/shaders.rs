@@ -23,6 +23,7 @@ pub fn sources() -> Vec<Shader> {
     };
     for name in [
         "vertex",
+        "vertex_instances",
         "composite_vertex",
         "effect_vertex",
         "effect_padded_vertex",
@@ -34,7 +35,17 @@ pub fn sources() -> Vec<Shader> {
         ("composite", ""),
         ("source_over", "REEL_SOURCE_OVER_ONLY"),
         ("alpha_mask", "REEL_ALPHA_MASK_ONLY"),
+        ("tile_composite", "REEL_TILE_DESTINATION"),
+        (
+            "tile_extended_blend",
+            "REEL_TILE_DESTINATION\n#define REEL_EXTENDED_BLEND",
+        ),
         ("extended_blend", "REEL_EXTENDED_BLEND"),
+        ("composite_overwrite", "REEL_FULL_OVERWRITE"),
+        (
+            "extended_blend_overwrite",
+            "REEL_EXTENDED_BLEND\n#define REEL_FULL_OVERWRITE",
+        ),
     ] {
         add(
             name,
@@ -45,6 +56,23 @@ pub fn sources() -> Vec<Shader> {
             } else {
                 format!("#define {define}")
             },
+        );
+    }
+    // Specialize ordinary non-inverted blends; inversion and custom modes keep
+    // the generic programs and their existing arithmetic.
+    for blend in [1, 2, 3, 5, 6, 7, 8, 9, 10] {
+        add(
+            &format!("tile_blend_{blend}"),
+            false,
+            &composite,
+            &format!(
+                "#define REEL_TILE_DESTINATION\n#define REEL_STATIC_BLEND {blend}.0\n{}",
+                if blend > 4 {
+                    "#define REEL_EXTENDED_BLEND"
+                } else {
+                    ""
+                },
+            ),
         );
     }
     let mask = read("mask");
@@ -148,6 +176,12 @@ pub fn sources() -> Vec<Shader> {
         &read("vertex"),
         "#define REEL_BOUNDED",
     );
+    add(
+        "vertex_instances_bounded",
+        true,
+        &read("vertex_instances"),
+        "#define REEL_BOUNDED",
+    );
     let paint = read("paint");
     for (name, alpha, regional) in [
         ("paint_direct", 0, false),
@@ -209,6 +243,24 @@ pub fn sources() -> Vec<Shader> {
             false,
             &paint,
             &format!("{defines}\n#define REEL_UNCLIPPED"),
+        );
+    }
+    for clipped in [false, true] {
+        add(
+            &format!(
+                "paint_video_direct_nv12{}",
+                if clipped { "" } else { "_unclipped" }
+            ),
+            false,
+            &paint,
+            &format!(
+                "#define REEL_NV12_DIRECT\n{}",
+                if clipped {
+                    ""
+                } else {
+                    "#define REEL_UNCLIPPED"
+                }
+            ),
         );
     }
     add("present", false, &read("present"), "");

@@ -90,15 +90,16 @@ fn recording_keeps_bounded_history_and_writes_complete_totals() {
     assert_eq!(recording.total.loops, 600);
     assert_eq!(recording.segments[0].1.loops, 300);
     assert_eq!(recording.segment.1.loops, 300);
+    recording.record_device([77; device::NAMES.len()]);
     assert_eq!(
         recording.total.phases.calls[reel_core::profile::Phase::Draw as usize],
         600
     );
-    let root = std::env::temp_dir().join(format!("reel-probe-check-{}", std::process::id()));
-    let path = recording
-        .write(&root, "Window\tlight", 1, "closed")
+    let mut output = Vec::new();
+    recording
+        .report(&mut output, "Window\tlight", "Device failure")
         .unwrap();
-    let text = std::fs::read_to_string(&path).unwrap();
+    let text = String::from_utf8(output).unwrap();
     let rows: Vec<_> = text.lines().skip(5).collect();
     let width = rows[0].split('\t').count();
     assert!(
@@ -118,7 +119,13 @@ fn recording_keeps_bounded_history_and_writes_complete_totals() {
             .count(),
         SLOW
     );
-    std::fs::remove_file(path).unwrap();
-    std::fs::remove_dir(root).unwrap();
+    let mut output = Vec::new();
+    recording.device.write(&mut output).unwrap();
+    let device_text = String::from_utf8(output).unwrap();
+    let rows: Vec<_> = device_text.lines().skip(1).collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].split('\t').count(), device::NAMES.len() + 1);
+    assert_eq!(rows[1].split('\t').count(), device::NAMES.len() + 1);
+    assert!(rows[1].ends_with("\t77"));
     drop(live);
 }

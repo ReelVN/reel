@@ -9,12 +9,20 @@ pub use renderer::{Backend as GxmBackend, Capture as GxmCapture};
 type MemoryUsage = native::MemoryUsage;
 mod limits;
 
-/// Native presentation and simultaneous resource limits.
+fn destination_access() -> crate::common::blend::DestinationAccess {
+    if cfg!(feature = "gxm-tile-destination") {
+        crate::common::blend::DestinationAccess::CurrentPixelUnorm8
+    } else {
+        crate::common::blend::DestinationAccess::Sampled
+    }
+}
+
+/// Native presentation and work concurrency.
 #[derive(Clone, Debug)]
 pub struct GxmOptions {
     /// Synchronize presentation with display refresh.
     pub vsync: bool,
-    /// Simultaneous GPU and transient resource ceilings.
+    /// In-flight and upload work limits; storage follows native physical capacity.
     pub limits: GxmLimits,
 }
 impl Default for GxmOptions {
@@ -35,12 +43,16 @@ mod renderer;
 
 /// Create a native device with Reel's offline clear programs. Hosts that issue
 /// native commands directly use the same initialization as the frame executor.
-pub fn create_context(options: &GxmOptions) -> Result<native::Context, native::Error> {
+/// Native physical admission accounts rounded blocks through physical release.
+/// Screen draws use `native::FragmentOutput::Srgb` with linear input colors;
+/// offscreen targets retain their explicit encoding, defaulting to linear RGBA8.
+pub fn create_context(
+    options: &GxmOptions,
+    wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+) -> Result<native::Context, native::Error> {
     let config = native::Config {
-        pixel_arena_bytes: options.limits.total_bytes,
-        buffer_arena_bytes: options.limits.transient_bytes,
-        upload_staging_bytes: options.limits.transient_bytes.min(4 << 20),
-        ..Default::default()
+        display_encoding: native::SurfaceEncoding::Srgb,
+        ..native::Config::default()
     };
     native::Context::with_config(
         config,
@@ -52,32 +64,43 @@ pub fn create_context(options: &GxmOptions) -> Result<native::Context, native::E
             color_uniform: "u_clear_color",
             clip_uniform: "reel_clip_rect",
         },
+        wake,
+        None,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one native pipeline and its reflected vertex interface"
+)]
 fn create_program(
     context: &native::Context,
     vertex: native::ShaderCode<'_>,
     fragment: native::ShaderCode<'_>,
     bindings: &[native::AttributeBinding<'_>],
-    attributes: &[native::VertexAttribute],
+    layout: native::VertexLayout<'_>,
+    instance: Option<native::VertexLayout<'_>>,
     clipped: bool,
+    output: native::FragmentOutput,
 ) -> Result<native::Program, native::Error> {
     context.create_program(native::ProgramDescriptor {
         vertex,
         fragment,
         bindings,
-        stride: 12,
-        attributes,
+        stride: layout.stride,
+        attributes: layout.attributes,
+        instance,
         clip_uniform: clipped.then_some("reel_clip_rect"),
+        output,
     })
 }
 
 fn create_target_texture(
     context: &native::Context,
     size: [u32; 2],
+    format: native::TargetFormat,
 ) -> Result<native::Texture, native::Error> {
-    context.create_target_texture(size)
+    context.create_target_texture(size, format)
 }
 
 fn texture_bytes(size: [u32; 2], format: native::TextureFormat) -> Result<u64, GxmError> {
@@ -100,6 +123,29 @@ fn effect_code(
 
 fn native_error(error: native::Error) -> GxmError {
     match error {
+        native::Error::Allocation {
+            domain,
+            requested,
+            available,
+            committed,
+            code,
+        } => GxmError::Allocation {
+            domain,
+            requested,
+            available,
+            committed,
+            code,
+            pending: false,
+        },
+        native::Error::Budget {
+            domain: domain @ ("physical MAIN" | "physical CDRAM"),
+            requested,
+            limit,
+        } => GxmError::Pressure {
+            domain,
+            requested,
+            available: limit,
+        },
         native::Error::Budget {
             domain,
             requested,

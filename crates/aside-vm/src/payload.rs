@@ -108,6 +108,58 @@ impl Values {
             }
         }
     }
+    /// Mutable suffix of one already allocated block. Internal writers retain
+    /// exclusive payload ownership and never return it across a heap operation.
+    fn segment_mut(&mut self, offset: u32) -> &mut [Value] {
+        if offset == self.len {
+            return &mut [];
+        }
+        match &mut self.storage {
+            ValueStorage::Inline(values) => &mut values[offset as usize..self.len as usize],
+            ValueStorage::Small(values) => &mut values[offset as usize..self.len as usize],
+            ValueStorage::Chunks { first, .. } if (offset as usize) < FIRST_VALUES => {
+                &mut first.as_mut().unwrap()[offset as usize..FIRST_VALUES]
+            }
+            ValueStorage::Chunks { rest, .. } => {
+                let relative = offset as usize - FIRST_VALUES;
+                let within = relative % VALUE_CHUNK_LEN;
+                let count = (self.len - offset).min((VALUE_CHUNK_LEN - within) as u32) as usize;
+                &mut rest
+                    .get_mut(&((relative / VALUE_CHUNK_LEN) as u32))
+                    .unwrap()[within..within + count]
+            }
+        }
+    }
+    pub fn write_slice(&mut self, mut offset: u32, mut input: &[Value]) {
+        while !input.is_empty() {
+            let destination = self.segment_mut(offset);
+            let count = input.len().min(destination.len());
+            destination[..count].copy_from_slice(&input[..count]);
+            offset += count as u32;
+            input = &input[count..];
+        }
+    }
+    pub fn extend_from_slice(&mut self, mut input: &[Value]) {
+        while !input.is_empty() {
+            if self.needs_chunk() {
+                self.push(input[0]);
+                input = &input[1..];
+                continue;
+            }
+            let available = match &self.storage {
+                ValueStorage::Inline(_) => INLINE_VALUES - self.len as usize,
+                ValueStorage::Small(_) => FIRST_VALUES - self.len as usize,
+                ValueStorage::Chunks { .. } => {
+                    VALUE_CHUNK_LEN - (self.len as usize - FIRST_VALUES) % VALUE_CHUNK_LEN
+                }
+            };
+            let count = input.len().min(available);
+            let start = self.len;
+            self.len += count as u32;
+            self.write_slice(start, &input[..count]);
+            input = &input[count..];
+        }
+    }
     pub fn set(&mut self, index: u32, value: Value) {
         match &mut self.storage {
             ValueStorage::Inline(values) => values[index as usize] = value,

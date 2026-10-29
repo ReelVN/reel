@@ -182,7 +182,11 @@ impl capture::CaptureBackend for Backend {
     ) -> Result<(), RenderError> {
         Err(RenderError::ResourcesUnavailable)
     }
-    fn poll_capture(&mut self, _: &mut ()) -> Result<Option<capture::CapturedPixels>, RenderError> {
+    fn poll_capture(
+        &mut self,
+        _: &mut (),
+        _: u64,
+    ) -> Result<Option<capture::CapturedPixels>, RenderError> {
         Err(RenderError::ResourcesUnavailable)
     }
 }
@@ -321,7 +325,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     // The recording consumer requires explicit upload completion, just as its
     // presentation contract requires explicit completion of submitted frames.
     let font = player.resources[0].clone();
-    let reel_ui::resources::ResourceData::Font(data) = font.data() else {
+    let reel_ui::resources::ResourceView::Font(data) = font.view() else {
         panic!("font resource");
     };
     let bytes = OwnedBytes::new(
@@ -574,16 +578,16 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     let mut events = Vec::new();
     view.poll(&mut backend, &mut events, 8).unwrap();
     assert_eq!(backend.polls, 0, "idle must not poll the device");
-    let render = |story: &mut StoryRuntime,
-                  view: &mut Presentation,
-                  backend: &mut Backend,
-                  host: &mut Host| {
+    let mut stamp = None;
+    let mut render = |story: &mut StoryRuntime,
+                      view: &mut Presentation,
+                      backend: &mut Backend,
+                      host: &mut Host| {
         story
             .driver_mut()
             .unwrap()
             .sync(&mut view.bridge, root)
             .unwrap();
-        let mut stamp = None;
         let result = view
             .render(backend, host, |bridge, id, info| {
                 let Some((source, receipt)) = story.driver().record(bridge, root, id).unwrap()
@@ -622,7 +626,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
             story
                 .driver_mut()
                 .unwrap()
-                .presented(&view.bridge, &stamp.unwrap())
+                .presented(&view.bridge, stamp.as_ref().unwrap())
                 .unwrap();
         }
         result
@@ -708,12 +712,9 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         25.
     );
     view.invalidate();
-    assert!(
-        render(&mut story, &mut view, &mut backend, &mut host)
-            .refused
-            .is_some()
-    );
-    assert_eq!(view.bridge.pending_count(), 0);
+    let pressured = render(&mut story, &mut view, &mut backend, &mut host);
+    assert!(!pressured.accepted && pressured.refused.is_none());
+    assert_eq!(view.bridge.pending_count(), 1);
     assert_eq!(view.bridge.accepted_key().unwrap().frame_id(), accepted);
     for _ in 0..32 {
         view.exposed();
@@ -743,13 +744,10 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     let accepted = view.bridge.accepted_key().unwrap().frame_id();
     view.invalidate();
     backend.refusal = Some(RenderError::Busy);
-    assert!(
-        render(&mut story, &mut view, &mut backend, &mut host)
-            .refused
-            .is_some()
-    );
-    assert!(!view.needs_redraw());
     backend.resources_available = true;
+    let pressured = render(&mut story, &mut view, &mut backend, &mut host);
+    assert!(!pressured.accepted && pressured.refused.is_none());
+    assert!(!view.needs_redraw());
     let presents = host.presents;
     events.clear();
     view.poll(&mut backend, &mut events, 0).unwrap();

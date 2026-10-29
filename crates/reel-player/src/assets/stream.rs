@@ -32,6 +32,7 @@ struct State {
 }
 struct Shared {
     deadline: ReadDeadline,
+    input: BudgetPool,
     state: Mutex<State>,
     reader: Mutex<Option<Box<dyn AssetIo + Send>>>,
     admission: Arc<Mutex<Admission>>,
@@ -78,19 +79,16 @@ impl Shared {
             .admission
             .lock()
             .unwrap()
-            .waiters
-            .front()
-            .and_then(Weak::upgrade);
+            .next(self.input.available_bytes())
+            .map(|(_, shared)| shared);
         if let Some(next) = next {
             next.wake.wake();
         }
     }
     fn leave_admission(&self) {
-        self.admission
-            .lock()
-            .unwrap()
-            .waiters
-            .retain(|waiter| !std::ptr::eq(waiter.as_ptr(), self) && waiter.strong_count() != 0);
+        self.admission.lock().unwrap().waiters.retain(|waiter| {
+            !std::ptr::eq(waiter.reader.as_ptr(), self) && waiter.reader.strong_count() != 0
+        });
         self.wake_next();
     }
 }
@@ -149,14 +147,17 @@ impl AssetStream {
     }
     fn submit(&self, request: Request) -> Result<Option<reel_core::identity::IoId>, RejectReason> {
         let mut admission = self.shared.admission.lock().unwrap();
-        if matches!(request, Request::Read { .. })
-            && admission
-                .waiters
-                .front()
-                .is_none_or(|next| !std::ptr::eq(next.as_ptr(), Arc::as_ptr(&self.shared)))
-        {
-            return Ok(None);
-        }
+        let selected = if matches!(request, Request::Read { .. }) {
+            let Some((index, reader)) = admission.next(self.input.available_bytes()) else {
+                return Ok(None);
+            };
+            if !Arc::ptr_eq(&reader, &self.shared) {
+                return Ok(None);
+            }
+            Some(index)
+        } else {
+            None
+        };
         let output = if let Request::Read { len, .. } = request {
             Some(self.input.reserve(u64::from(len))?)
         } else {
@@ -201,8 +202,10 @@ impl AssetStream {
                 Err(error) => (Err(error.reason), Some(error.request.completion)),
             },
         };
-        if result.is_ok() && matches!(request, Request::Read { .. }) {
-            admission.waiters.pop_front();
+        if result.is_ok()
+            && let Some(index) = selected
+        {
+            admission.admitted(index);
         }
         drop(endpoint);
         drop(admission);
@@ -215,13 +218,18 @@ impl AssetStream {
         result.map(Some)
     }
     fn transact(&mut self, request: Request) -> io::Result<Response> {
-        if matches!(request, Request::Read { .. }) {
+        if let Request::Read { len, .. } = request {
             self.shared
                 .admission
                 .lock()
                 .unwrap()
                 .waiters
-                .push_back(Arc::downgrade(&self.shared));
+                .push_back(Waiter {
+                    reader: Arc::downgrade(&self.shared),
+                    len,
+                    bypasses: 0,
+                });
+            self.shared.wake_next();
         }
         let result = self.transact_inner(request);
         self.shared.leave_admission();
@@ -318,8 +326,8 @@ impl Read for AssetStream {
         output[..count].copy_from_slice(bytes.as_slice());
         self.position += count as u64;
         drop(bytes);
-        // Completion draining precedes input lease release. Wake its next FIFO
-        // waiter here so tiny allowances also progress without a main-thread turn.
+        // Completion draining precedes input lease release. Wake the next fitting
+        // deadline here so tiny allowances progress without a main-thread turn.
         self.shared.wake_next();
         Ok(count)
     }
@@ -350,10 +358,47 @@ fn closed() -> io::Error {
 fn closed_reason() -> RejectReason {
     RejectReason::new(RejectCode::Unavailable, "asset stream closed")
 }
+struct Waiter {
+    reader: Weak<Shared>,
+    len: u32,
+    bypasses: u8,
+}
 #[derive(Default)]
 struct Admission {
     readers: Vec<Weak<Shared>>,
-    waiters: VecDeque<Weak<Shared>>,
+    waiters: VecDeque<Waiter>,
+}
+impl Admission {
+    fn next(&self, available: u64) -> Option<(usize, Arc<Shared>)> {
+        let mut chosen = None;
+        let mut earliest = None;
+        for (index, waiter) in self.waiters.iter().enumerate() {
+            let Some(reader) = waiter.reader.upgrade() else {
+                continue;
+            };
+            // Four bypasses reserve the next capacity for the oldest live request.
+            // This bounds starvation even when a stream continually refills.
+            if chosen.is_none() && waiter.bypasses >= 4 {
+                return (u64::from(waiter.len) <= available).then_some((index, reader));
+            }
+            if u64::from(waiter.len) > available {
+                continue;
+            }
+            let deadline = reader.deadline.get();
+            let rank = (deadline.is_none(), deadline);
+            if chosen.is_none() || earliest.is_some_and(|old| rank < old) {
+                earliest = Some(rank);
+                chosen = Some((index, reader));
+            }
+        }
+        chosen
+    }
+    fn admitted(&mut self, index: usize) {
+        for waiter in self.waiters.iter_mut().take(index) {
+            waiter.bypasses = waiter.bypasses.saturating_add(1).min(4);
+        }
+        self.waiters.remove(index);
+    }
 }
 #[derive(Default)]
 pub(super) struct Streams(Arc<Mutex<Admission>>);
@@ -377,6 +422,7 @@ impl Streams {
             let target = weak.clone();
             Shared {
                 deadline,
+                input: input.clone(),
                 state: Mutex::new(State {
                     source: AssetSource {
                         key: AssetKey(source),
@@ -428,5 +474,79 @@ impl Streams {
         for shared in readers.into_iter().filter_map(|reader| reader.upgrade()) {
             StreamControl(shared).cancel();
         }
+    }
+}
+
+#[cfg(all(test, not(target_os = "vita")))]
+mod tests {
+    use super::*;
+    use reel_core::budget::{BudgetCategory, QueueLimits};
+    use std::time::{Duration, Instant};
+
+    fn reader(deadline: ReadDeadline, input: &BudgetPool) -> Arc<Shared> {
+        Arc::new(Shared {
+            deadline,
+            input: input.clone(),
+            state: Mutex::new(State {
+                source: AssetSource {
+                    key: AssetKey("stream".into()),
+                    version: None,
+                },
+                completion: None,
+                closed: false,
+            }),
+            reader: Mutex::new(None),
+            admission: Default::default(),
+            ready: Condvar::new(),
+            wake: WakeSignal::new(|| {}),
+        })
+    }
+    fn queue(admission: &mut Admission, reader: &Arc<Shared>, len: u32) {
+        admission.waiters.push_back(Waiter {
+            reader: Arc::downgrade(reader),
+            len,
+            bypasses: 0,
+        });
+    }
+    #[test]
+    fn fitting_deadlines_bypass_large_reads_without_starving_them() {
+        let input = BudgetPool::new(
+            BudgetCategory::CpuInput,
+            QueueLimits {
+                max_requests: 8,
+                max_bytes: 12,
+            },
+        );
+        let occupied = input.reserve(8).unwrap();
+        let now = Instant::now();
+        let large = reader(ReadDeadline::at(now), &input);
+        let late = reader(ReadDeadline::at(now + Duration::from_secs(2)), &input);
+        let urgent = reader(ReadDeadline::at(now + Duration::from_secs(1)), &input);
+        let mut admission = Admission::default();
+        queue(&mut admission, &large, 8);
+        queue(&mut admission, &late, 4);
+        queue(&mut admission, &urgent, 4);
+        for bypass in 0..4 {
+            let (index, selected) = admission.next(input.available_bytes()).unwrap();
+            assert!(Arc::ptr_eq(&selected, &urgent));
+            admission.admitted(index);
+            assert_eq!(admission.waiters[0].bypasses, bypass + 1);
+            queue(&mut admission, &urgent, 4);
+        }
+        assert!(admission.next(input.available_bytes()).is_none());
+        drop(occupied);
+        let (index, selected) = admission.next(input.available_bytes()).unwrap();
+        assert!(Arc::ptr_eq(&selected, &large));
+        admission.admitted(index);
+        urgent.deadline.pause(true);
+        assert!(Arc::ptr_eq(
+            &admission.next(input.available_bytes()).unwrap().1,
+            &late
+        ));
+        drop(late);
+        assert!(Arc::ptr_eq(
+            &admission.next(input.available_bytes()).unwrap().1,
+            &urgent
+        ));
     }
 }

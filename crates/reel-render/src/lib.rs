@@ -3,6 +3,7 @@
     clippy::result_large_err,
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
+mod capture_color;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
 mod common;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
@@ -23,9 +24,7 @@ use reel_core::{
 };
 use reel_ui::bridge::{PresentationNotice, PresentationOutcome};
 use reel_ui::frame::RenderFrame;
-use reel_ui::resources::{
-    ColorEncoding, ResourceData, ResourceHandle, ResourceLease, ResourceWeak,
-};
+use reel_ui::resources::{ColorEncoding, ResourceHandle, ResourceLease, ResourceWeak};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,8 +133,51 @@ pub enum FailureKind {
     DeviceLost,
     Fatal,
 }
+/// Budgeted missing CPU pixels required by an exact render or capture attempt.
+#[derive(Debug)]
+pub struct PixelDemand {
+    resources: Vec<ResourceLease>,
+    _storage: BudgetTicket,
+}
+impl PixelDemand {
+    /// Admit a nonempty, capacity-accounted list, deduplicated by resource handle.
+    /// Rejection returns the original vector and ticket to the producer.
+    pub fn new(
+        mut resources: Vec<ResourceLease>,
+        storage: BudgetTicket,
+    ) -> Result<Self, (Vec<ResourceLease>, BudgetTicket)> {
+        let capacity = resources.capacity().checked_mul(size_of::<ResourceLease>());
+        if resources.is_empty() || capacity.is_none_or(|bytes| bytes as u64 > storage.bytes()) {
+            return Err((resources, storage));
+        }
+        resources.sort_unstable_by_key(ResourceLease::handle);
+        resources.dedup_by_key(|resource| resource.handle());
+        Ok(Self {
+            resources,
+            _storage: storage,
+        })
+    }
+    /// Test whether the demand includes this immutable resource identity.
+    pub fn contains(&self, handle: ResourceHandle) -> bool {
+        self.resources
+            .binary_search_by_key(&handle, ResourceLease::handle)
+            .is_ok()
+    }
+    /// The immutable source identities that must be restored before retrying.
+    pub fn resources(&self) -> &[ResourceLease] {
+        &self.resources
+    }
+}
+
 pub trait BackendError: std::error::Error {
     fn kind(&self) -> FailureKind;
+    /// Extract an asynchronous pixel demand while preserving every other error.
+    fn into_pixel_demand(self) -> Result<PixelDemand, Self>
+    where
+        Self: Sized,
+    {
+        Err(self)
+    }
 }
 impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -190,6 +232,10 @@ pub enum RenderEvent<E = RenderError> {
 }
 pub mod capture;
 pub trait RenderBackend {
+    /// Identity of the current device; a replacement device uses a new value.
+    fn device_generation(&self) -> u64 {
+        0
+    }
     /// Some reports the current setting when this backend can change synchronization.
     fn vsync(&self) -> Option<bool> {
         None
@@ -223,6 +269,9 @@ pub trait RenderBackend {
 /// A player may borrow a process-owned device without taking its lifetime.
 impl<B: RenderBackend + ?Sized> RenderBackend for &mut B {
     type Error = B::Error;
+    fn device_generation(&self) -> u64 {
+        (**self).device_generation()
+    }
     fn vsync(&self) -> Option<bool> {
         (**self).vsync()
     }
@@ -521,27 +570,25 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
             .checked_add(item.payload.bytes().ticket().bytes())
             .filter(|n| *n <= max_bytes)
             .ok_or(RejectCode::InvalidRequest)?;
-        match (&item.payload, item.resource.data()) {
-            (
-                UploadPayload::Texture { descriptor, bytes },
-                ResourceData::Texture {
-                    descriptor: source, ..
-                },
-            ) => {
-                if descriptor != source || descriptor.validate(bytes.as_slice().len()).is_err() {
+        match &item.payload {
+            UploadPayload::Texture { descriptor, bytes } => {
+                let Some(source) = item.resource.texture_descriptor() else {
+                    return Err(RejectCode::Unsupported);
+                };
+                if *descriptor != source || descriptor.validate(bytes.as_slice().len()).is_err() {
                     return Err(RejectCode::InvalidRequest);
                 }
             }
-            (
-                UploadPayload::Pixels {
-                    size,
-                    stride,
-                    format,
-                    bytes,
-                    ..
-                },
-                ResourceData::Image { image, .. },
-            ) => {
+            UploadPayload::Pixels {
+                size,
+                stride,
+                format,
+                bytes,
+                ..
+            } => {
+                let Some(image) = item.resource.image_descriptor() else {
+                    return Err(RejectCode::Unsupported);
+                };
                 let row = (size[0] as u64)
                     .checked_mul(format.pixel_bytes().ok_or(RejectCode::Unsupported)?)
                     .ok_or(RejectCode::InvalidRequest)?;
@@ -555,12 +602,14 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
                     return Err(RejectCode::InvalidRequest);
                 }
             }
-            (UploadPayload::Font { bytes }, ResourceData::Font(font)) => {
+            UploadPayload::Font { bytes } => {
+                let reel_ui::resources::ResourceView::Font(font) = item.resource.view() else {
+                    return Err(RejectCode::Unsupported);
+                };
                 if bytes.as_slice().len() != font.len() {
                     return Err(RejectCode::InvalidRequest);
                 }
             }
-            _ => return Err(RejectCode::Unsupported),
         }
     }
     Ok(bytes)
@@ -682,7 +731,7 @@ impl RenderBackend for RecordingBackend {
             return Ok(PresentOutcome::SurfaceUnavailable);
         }
         if frame.resources().leases().iter().any(|r| {
-            !matches!(r.data(), ResourceData::External { .. })
+            !matches!(r.view(), reel_ui::resources::ResourceView::External { .. })
                 && !self.resident.iter().any(|ready| ready.handle == r.handle())
         }) {
             return Err(RenderError::ResourcesUnavailable);

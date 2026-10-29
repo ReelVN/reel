@@ -14,6 +14,7 @@ use reel_ui::{
 };
 use std::time::Instant;
 
+mod atlas;
 mod nine_slice;
 
 mod synthesis;
@@ -297,7 +298,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
     };
     use reel_ui::{
         peniko::{ImageAlphaType, ImageBrush, ImageFormat},
-        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+        resources::{ColorEncoding, ResourceRegistry},
     };
     let pool = pool();
     let mut registry = ResourceRegistry::new(1, 65264).unwrap();
@@ -315,9 +316,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
         )
         .unwrap();
     let lease = registry.acquire(handle).unwrap();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
+    let image = crate::test_support::image_data(&lease);
     let mut image_scene = Scene::new();
     image_scene.draw(Draw::Fill {
         transform: Affine::IDENTITY,
@@ -476,7 +475,7 @@ fn image_restore_fixture(
     };
     use reel_ui::{
         peniko::{ImageAlphaType, ImageBrush, ImageFormat},
-        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+        resources::{ColorEncoding, ResourceRegistry},
     };
     let pool = pool();
     let mut registry = ResourceRegistry::new(3, 65264).unwrap();
@@ -502,9 +501,7 @@ fn image_restore_fixture(
             )
             .unwrap();
         let lease = registry.acquire(handle).unwrap();
-        let ResourceData::Image { image, .. } = lease.data() else {
-            unreachable!()
-        };
+        let image = crate::test_support::image_data(&lease);
         scene.draw(Draw::Fill {
             transform: Affine::IDENTITY,
             fill_rule: Default::default(),
@@ -1010,6 +1007,8 @@ fn retained_transition_reuploads_retired_images_and_releases_them_after_completi
 }
 
 mod geometry;
+mod instances;
+mod task_subgraphs;
 mod text;
 mod uploads;
 

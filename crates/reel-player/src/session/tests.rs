@@ -7,7 +7,7 @@ use reel_ui::{
 };
 use std::sync::Arc;
 
-pub(super) fn session() -> Session {
+pub(crate) fn session() -> Session {
     Session::new(SessionId(42), Epoch(3)).unwrap()
 }
 fn say(session: &mut Session, text: &str) -> InteractionId {
@@ -221,7 +221,7 @@ fn author_scene_renders_edits_original_nodes_and_keeps_final_picture() {
     use reel_core::identity::{AssetKey, ContentVersion, ResourceVersion};
     use reel_engine::aside::{SliceBudget, VmLimits};
     use reel_ui::frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget};
-    use reel_ui::resources::{ResourceData, ResourceHandle, ResourceRegistry};
+    use reel_ui::resources::{ResourceHandle, ResourceRegistry};
 
     fn labels(widget: WidgetRef<'_, dyn Widget>, out: &mut Vec<(WidgetId, String)>) {
         if let Some(label) = widget.downcast::<Label>() {
@@ -378,7 +378,7 @@ fn author_scene_renders_edits_original_nodes_and_keeps_final_picture() {
             .unwrap();
         handles.push(handle);
         let lease = registry.acquire(handle).unwrap();
-        let ResourceData::Font(font) = lease.data() else {
+        let reel_ui::resources::ResourceView::Font(font) = lease.view() else {
             unreachable!()
         };
         font.clone()

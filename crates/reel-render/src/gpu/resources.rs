@@ -9,7 +9,7 @@ use reel_ui::peniko::{
     ImageAlphaType,
     color::{AlphaColor, LinearSrgb, PremulColor, Srgb},
 };
-use reel_ui::resources::{ColorEncoding, ResourceData, ResourceLease};
+use reel_ui::resources::{ColorEncoding, ResourceLease};
 
 use crate::common::resources::rgba8_linear_f16;
 
@@ -25,6 +25,11 @@ pub(super) struct UploadCreations {
     pub(super) geometry_staging: std::sync::atomic::AtomicUsize,
     pub(super) brush_groups: std::sync::atomic::AtomicUsize,
     pub(super) appearance_buffers: std::sync::atomic::AtomicUsize,
+    pub(super) effect_uniform_buffers: std::sync::atomic::AtomicUsize,
+    pub(super) effect_bind_groups: std::sync::atomic::AtomicUsize,
+    pub(super) effect_uniform_bytes: std::sync::atomic::AtomicU64,
+    pub(super) backdrop_copies: std::sync::atomic::AtomicUsize,
+    pub(super) disable_backdrop_copy: std::sync::atomic::AtomicBool,
 }
 #[cfg(test)]
 impl UploadCreations {
@@ -39,6 +44,7 @@ pub struct Image {
     pub(super) texture: wgpu::Texture,
     pub size: [u32; 2],
     pub(super) layout: TextureLayout,
+    pub(super) origin: [u32; 2],
     pub(super) texture_format: Option<TextureFormat>,
     /// Original channel encoding, retained for packed alpha coverage.
     pub(super) encoding: ColorEncoding,
@@ -46,23 +52,69 @@ pub struct Image {
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
     pub(super) source: Option<ResourceSource>,
     pub(super) reuse_count: u8,
+    pub(super) discard_pending: std::sync::atomic::AtomicBool,
+    pub(super) backing: Option<std::sync::Arc<Image>>,
+    pub(super) _view_storage: Option<super::renderer::Reservation>,
 }
 impl Image {
+    pub(super) fn normalized_origin(&self) -> [f64; 2] {
+        std::array::from_fn(|i| f64::from(self.origin[i]) / f64::from(self.layout.storage_size[i]))
+    }
     pub(super) fn uv_transform(&self) -> reel_ui::kurbo::Affine {
         let [x, y] = self.layout.uv_scale();
-        reel_ui::kurbo::Affine::scale_non_uniform(x, y)
+        let offset = self.origin.map(|v| v as f64);
+        reel_ui::kurbo::Affine::translate((
+            offset[0] / f64::from(self.size[0]),
+            offset[1] / f64::from(self.size[1]),
+        )) * reel_ui::kurbo::Affine::scale_non_uniform(x, y)
+    }
+    pub(super) fn atlas(
+        backing: std::sync::Arc<Image>,
+        source: &ResourceLease,
+        storage: super::renderer::Reservation,
+    ) -> Result<Self, GpuError> {
+        let reel_ui::resources::ResourceView::AtlasView {
+            image, encoding, ..
+        } = source.view()
+        else {
+            return Err(GpuError::InvalidSize);
+        };
+        image
+            .validate(backing.size)
+            .map_err(|_| GpuError::InvalidSize)?;
+        Ok(Self {
+            view: backing.view.clone(),
+            texture: backing.texture.clone(),
+            size: backing.size,
+            layout: TextureLayout {
+                logical_size: image.logical_size,
+                content_size: image.content_size,
+                storage_size: backing.size,
+            },
+            origin: image.content_origin,
+            texture_format: backing.texture_format,
+            encoding,
+            yuv: None,
+            residency: None,
+            source: None,
+            reuse_count: 0,
+            discard_pending: std::sync::atomic::AtomicBool::new(false),
+            backing: Some(backing),
+            _view_storage: Some(storage),
+        })
     }
 }
 pub(super) fn image_rows(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
-    lease: &ResourceLease,
+    source: (&ResourceLease, &reel_ui::resources::ResourcePixels),
     at: RecordLocation,
     target: &Image,
     rows: std::ops::Range<u32>,
     staging: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
-    let ResourceData::Image { image, encoding } = lease.data() else {
+    let (lease, pixels) = source;
+    let Some(image) = lease.image_descriptor() else {
         return Err(GpuError::Unsupported {
             at,
             record: "non-image resource",
@@ -75,8 +127,8 @@ pub(super) fn image_rows(
         });
     }
     upload_rows_with(gpu, encoder, target, rows, staging, |index| {
-        let rgba = &image.data.data()[index * 4..index * 4 + 4];
-        rgba8_linear_f16(rgba, *encoding, image.alpha_type)
+        let rgba = &pixels.bytes()[index * 4..index * 4 + 4];
+        rgba8_linear_f16(rgba, image.encoding, image.alpha_type)
     })
 }
 pub use crate::common::resources::upload_cost;
@@ -153,12 +205,16 @@ pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError>
         texture,
         size,
         layout: TextureLayout::identity(size),
+        origin: [0; 2],
         texture_format: None,
         encoding: ColorEncoding::Linear,
         yuv: None,
         residency: None,
         source: None,
         reuse_count: 0,
+        discard_pending: std::sync::atomic::AtomicBool::new(false),
+        backing: None,
+        _view_storage: None,
     })
 }
 
@@ -228,25 +284,30 @@ pub(super) fn create_texture(
         texture,
         size,
         layout: upload.layout,
+        origin: [0; 2],
         texture_format: Some(descriptor.format),
         encoding: descriptor.source_encoding,
         yuv: None,
         residency: None,
         source: None,
         reuse_count: 0,
+        discard_pending: std::sync::atomic::AtomicBool::new(false),
+        backing: None,
+        _view_storage: None,
     })
 }
 /// Copy whole format block rows, retaining compressed bytes throughout staging.
 pub(super) fn texture_rows(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
-    source: &ResourceLease,
+    source: (&ResourceLease, &reel_ui::resources::ResourcePixels),
     target: &Image,
     upload: TextureUploadLayout,
     rows: std::ops::Range<u32>,
     reusable: Option<&super::upload::Buffer>,
 ) -> Result<(), GpuError> {
-    let ResourceData::Texture { descriptor, bytes } = source.data() else {
+    let (source, pixels) = source;
+    let Some(descriptor) = source.texture_descriptor() else {
         return Err(GpuError::InvalidSize);
     };
     let row = texture_row_bytes(upload);
@@ -283,7 +344,7 @@ pub(super) fn texture_rows(
             if descriptor.storage_layout == reel_core::texture::TextureStorageLayout::Linear {
                 let src =
                     (upload.offset + u64::from(rows.start + y) * upload.source_row_bytes) as usize;
-                output.copy_from_slice(&bytes.data()[src..src + packed as usize]);
+                output.copy_from_slice(&pixels.bytes()[src..src + packed as usize]);
             } else {
                 let n = descriptor.format.block_bytes() as usize;
                 for x in 0..upload.layout.storage_size[0].div_ceil(4) {
@@ -296,7 +357,7 @@ pub(super) fn texture_rows(
                         );
                     output
                         .slice(x as usize * n..(x as usize + 1) * n)
-                        .copy_from_slice(&bytes.data()[src..src + n]);
+                        .copy_from_slice(&pixels.bytes()[src..src + n]);
                 }
             }
         }

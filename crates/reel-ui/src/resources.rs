@@ -6,12 +6,13 @@ mod effect;
 use crate::peniko::{Blob, FontData, ImageAlphaType, ImageData, ImageFormat};
 pub use effect::{
     EFFECT_SHADER_ABI, EffectShaderDescriptor, EffectShaderFormat, EffectShaderPayloadError,
+    EffectSourceFootprint,
 };
 use reel_core::budget::{
     BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, OwnedBytes, QueueLimits,
 };
 pub use reel_core::identity::ResourceVersion;
-use reel_core::texture::{TextureDescriptor, TexturePayload};
+use reel_core::texture::{ImageView, TextureDescriptor, TexturePayload};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
@@ -42,6 +43,12 @@ pub enum ResourceData {
         image: ImageData,
         encoding: ColorEncoding,
     },
+    /// A logical image view retaining one separately identified physical texture.
+    AtlasView {
+        image: ImageView,
+        encoding: ColorEncoding,
+        backing: ResourceLease,
+    },
     Yuv420(reel_core::image::Yuv420Image),
     Font(Blob<u8>),
     External {
@@ -55,7 +62,7 @@ impl ResourceData {
             Self::Texture { bytes, .. } => Some(bytes),
             Self::Image { image, .. } => Some(&image.data),
             Self::Font(font) => Some(font),
-            Self::External { .. } | Self::Yuv420(_) => None,
+            Self::External { .. } | Self::Yuv420(_) | Self::AtlasView { .. } => None,
         }
     }
     fn same_source(&self, other: &Self) -> bool {
@@ -90,6 +97,18 @@ impl ResourceData {
                     encoding: be,
                 },
             ) => ae == be && same_image(a, b),
+            (
+                Self::AtlasView {
+                    image: a,
+                    encoding: ae,
+                    backing: ab,
+                },
+                Self::AtlasView {
+                    image: b,
+                    encoding: be,
+                    backing: bb,
+                },
+            ) => a == b && ae == be && ab.handle() == bb.handle(),
             (Self::Font(a), Self::Font(b)) => same_blob(a, b),
             (Self::Yuv420(a), Self::Yuv420(b)) => a.same_storage(b),
             (Self::External { token: a }, Self::External { token: b }) => a == b,
@@ -107,6 +126,7 @@ impl ResourceData {
             Self::Texture { descriptor, .. } => Some(descriptor.layout.logical_size),
             Self::Image { image, .. } => Some([image.width, image.height]),
             Self::Yuv420(image) => Some(image.size()),
+            Self::AtlasView { image, .. } => Some(image.logical_size),
             _ => None,
         }
     }
@@ -152,13 +172,53 @@ impl AsRef<[u8]> for AccountedBlob {
         self.bytes.as_slice()
     }
 }
+type PixelStorage = dyn AsRef<[u8]> + Send + Sync;
+
+#[derive(Debug)]
+struct PixelState {
+    // A weak reference preserves producer identity without retaining its bytes.
+    storage: Weak<PixelStorage>,
+    resident: Option<Blob<u8>>,
+    metadata: BudgetPool,
+    weak_storage: Option<BudgetTicket>,
+    reloadable: bool,
+}
+impl PixelState {
+    fn new(blob: Blob<u8>, metadata: BudgetPool) -> Self {
+        let (storage, _) = blob.clone().into_raw_parts();
+        Self {
+            storage: Arc::downgrade(&storage),
+            resident: Some(blob),
+            metadata,
+            weak_storage: None,
+            reloadable: false,
+        }
+    }
+    fn matches(&self, blob: &Blob<u8>) -> bool {
+        let (storage, _) = blob.clone().into_raw_parts();
+        Weak::ptr_eq(&self.storage, &Arc::downgrade(&storage))
+    }
+}
+
+#[derive(Debug)]
+enum StoredResource {
+    Image(ImageDescriptor),
+    Texture(TextureDescriptor),
+    Other(ResourceData),
+}
+
 #[derive(Debug)]
 struct Resource {
     handle: ResourceHandle,
     version: ResourceVersion,
-    data: ResourceData,
+    data: StoredResource,
+    pixels: Option<Mutex<PixelState>>,
+    // Remains stable when pixel residency changes; Blob IDs are lookup hints.
+    source_blob_id: Option<u64>,
+    pixel_bytes: Option<usize>,
     image_coverage: Option<reel_core::image_coverage::ImageCoverage>,
     retired: AtomicBool,
+    pixel_discard_pending: AtomicBool,
     // Opaque imported producer storage has its own accounting domain. This reservation
     // covers the frozen reference's declared extent; owned blobs carry their own ticket.
     _reference_ticket: Option<BudgetTicket>,
@@ -167,6 +227,75 @@ struct Resource {
 #[derive(Clone, Debug)]
 pub struct ResourceLease(Arc<Resource>);
 
+/// An owned reader for immutable image pixels. Clones share the producer's
+/// allocation and its budget until the last reader drops.
+#[derive(Clone, Debug)]
+pub struct ResourcePixels(Blob<u8>);
+impl ResourcePixels {
+    /// Pixel or block bytes retained for this reader's lifetime.
+    pub fn bytes(&self) -> &[u8] {
+        self.0.data()
+    }
+    /// Share this reader's immutable pixel backing with a retained snapshot.
+    pub fn blob(&self) -> Blob<u8> {
+        self.0.clone()
+    }
+}
+
+/// Immutable decoded image metadata, independent of pixel residency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageDescriptor {
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Pixel channel format.
+    pub format: ImageFormat,
+    /// Alpha representation of the decoded pixels.
+    pub alpha_type: ImageAlphaType,
+    /// Color encoding of the decoded pixels.
+    pub encoding: ColorEncoding,
+}
+
+/// Immutable resource metadata. Image and texture pixel bytes require an owned reader.
+#[derive(Debug)]
+pub enum ResourceView<'a> {
+    /// Portable shader descriptor and immutable program bytes.
+    EffectShader {
+        /// Shader format and parameter contract.
+        descriptor: &'a EffectShaderDescriptor,
+        /// Immutable shader program bytes.
+        bytes: &'a Blob<u8>,
+    },
+    /// Prepared texture metadata.
+    Texture {
+        /// Validated texture storage layout.
+        descriptor: TextureDescriptor,
+    },
+    /// Decoded image metadata.
+    Image {
+        /// Decoded size, channel and color information.
+        image: ImageDescriptor,
+    },
+    /// Logical coordinates and encoding of a separately retained physical page.
+    AtlasView {
+        /// The logical image's extent and page-local texel rectangle.
+        image: ImageView,
+        /// Original encoding of the image channels.
+        encoding: ColorEncoding,
+        /// Physical texture, shared with other page views.
+        backing: &'a ResourceLease,
+    },
+    /// Producer-owned planar video pixels.
+    Yuv420(&'a reel_core::image::Yuv420Image),
+    /// Immutable font bytes.
+    Font(&'a Blob<u8>),
+    /// External producer identity.
+    External {
+        /// Producer-provided identity.
+        token: u64,
+    },
+}
 /// An explicit producer resource used as the brush of this widget's recorded
 /// image fills. No encoded pixels or fabricated RGBA image descriptor is needed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -181,8 +310,259 @@ impl ResourceLease {
     pub fn version(&self) -> &ResourceVersion {
         &self.0.version
     }
-    pub fn data(&self) -> &ResourceData {
-        &self.0.data
+    /// Return the resource metadata without taking ownership of image pixels.
+    pub fn view(&self) -> ResourceView<'_> {
+        match &self.0.data {
+            StoredResource::Image(image) => ResourceView::Image { image: *image },
+            StoredResource::Texture(descriptor) => ResourceView::Texture {
+                descriptor: *descriptor,
+            },
+            StoredResource::Other(ResourceData::EffectShader { descriptor, bytes }) => {
+                ResourceView::EffectShader { descriptor, bytes }
+            }
+            StoredResource::Other(ResourceData::Yuv420(image)) => ResourceView::Yuv420(image),
+            StoredResource::Other(ResourceData::AtlasView {
+                image,
+                encoding,
+                backing,
+            }) => ResourceView::AtlasView {
+                image: *image,
+                encoding: *encoding,
+                backing,
+            },
+            StoredResource::Other(ResourceData::Font(font)) => ResourceView::Font(font),
+            StoredResource::Other(ResourceData::External { token }) => {
+                ResourceView::External { token: *token }
+            }
+            StoredResource::Other(ResourceData::Image { .. } | ResourceData::Texture { .. }) => {
+                unreachable!()
+            }
+        }
+    }
+    /// Return decoded image metadata without retaining its pixel allocation.
+    pub fn image_descriptor(&self) -> Option<ImageDescriptor> {
+        match self.0.data {
+            StoredResource::Image(image) => Some(image),
+            _ => None,
+        }
+    }
+    /// Return prepared texture metadata without retaining its block allocation.
+    pub fn texture_descriptor(&self) -> Option<TextureDescriptor> {
+        match self.0.data {
+            StoredResource::Texture(descriptor) => Some(descriptor),
+            StoredResource::Other(ResourceData::AtlasView { ref backing, .. }) => {
+                backing.texture_descriptor()
+            }
+            _ => None,
+        }
+    }
+    /// Logical dimensions of an image, texture, or video resource.
+    pub fn image_size(&self) -> Option<[u32; 2]> {
+        match self.view() {
+            ResourceView::Image { image } => Some([image.width, image.height]),
+            ResourceView::Texture { descriptor } => Some(descriptor.layout.logical_size),
+            ResourceView::Yuv420(image) => Some(image.size()),
+            ResourceView::AtlasView { image, .. } => Some(image.logical_size),
+            _ => None,
+        }
+    }
+    /// Physical image whose pixel ownership is shared by this logical view.
+    pub fn image_backing(&self) -> &ResourceLease {
+        match self.view() {
+            ResourceView::AtlasView { backing, .. } => backing,
+            _ => self,
+        }
+    }
+    /// Logical-to-physical texture mapping for a prepared texture or atlas view.
+    pub fn image_view(&self) -> Option<ImageView> {
+        match self.view() {
+            ResourceView::AtlasView { image, .. } => Some(image),
+            ResourceView::Texture { descriptor } => Some(ImageView::from_layout(descriptor.layout)),
+            _ => None,
+        }
+    }
+    /// Declared image or texture payload length, independent of residency.
+    pub fn pixel_byte_len(&self) -> Option<usize> {
+        self.0.pixel_bytes
+    }
+    /// Acquire an owning CPU reader for decoded image or texture pixels.
+    /// Other resource kinds have their own data and return `None`.
+    pub fn read_pixels(&self) -> Option<ResourcePixels> {
+        self.0
+            .pixels
+            .as_ref()?
+            .lock()
+            .expect("image pixels poisoned")
+            .resident
+            .clone()
+            .map(ResourcePixels)
+    }
+    /// Whether a decoded image or texture currently has CPU pixels.
+    pub fn pixels_resident(&self) -> bool {
+        if let ResourceView::AtlasView { backing, .. } = self.view() {
+            return backing.pixels_resident();
+        }
+        self.0.pixels.as_ref().is_some_and(|pixels| {
+            pixels
+                .lock()
+                .expect("image pixels poisoned")
+                .resident
+                .is_some()
+        })
+    }
+    fn source_blob_id(&self) -> Option<u64> {
+        self.0.source_blob_id
+    }
+    fn snapshot_source_key(&self) -> (u8, u64) {
+        match self.view() {
+            ResourceView::Yuv420(image) => {
+                let [width, height] = image.size();
+                (1, (u64::from(width) << 32) | u64::from(height))
+            }
+            ResourceView::External { token } => (2, token),
+            ResourceView::AtlasView { backing, .. } => (3, backing.source_blob_id().unwrap_or(0)),
+            _ => (0, self.source_blob_id().expect("blob-backed resource")),
+        }
+    }
+    fn lookup_same_source(&self, other: &Self) -> bool {
+        match (self.view(), other.view()) {
+            (ResourceView::Image { image: a }, ResourceView::Image { image: b }) => {
+                a.width == b.width
+                    && a.height == b.height
+                    && a.format == b.format
+                    && a.alpha_type == b.alpha_type
+                    && self.same_pixels(other)
+            }
+            (ResourceView::Texture { descriptor: a }, ResourceView::Texture { descriptor: b }) => {
+                a == b && self.same_pixels(other)
+            }
+            _ => match (&self.0.data, &other.0.data) {
+                (StoredResource::Other(a), StoredResource::Other(b)) => lookup_same_source(a, b),
+                _ => false,
+            },
+        }
+    }
+    fn same_pixels(&self, other: &Self) -> bool {
+        if self.source_blob_id() != other.source_blob_id() {
+            return false;
+        }
+        let Some(a) = &self.0.pixels else {
+            return false;
+        };
+        let Some(b) = &other.0.pixels else {
+            return false;
+        };
+        let a = a.lock().expect("image pixels poisoned").storage.clone();
+        let b = b.lock().expect("image pixels poisoned").storage.clone();
+        Weak::ptr_eq(&a, &b)
+    }
+    fn same_input_pixels(&self, blob: &Blob<u8>) -> bool {
+        self.source_blob_id() == Some(blob.id())
+            && self.0.pixels.as_ref().is_some_and(|identity| {
+                identity
+                    .lock()
+                    .expect("image pixels poisoned")
+                    .matches(blob)
+            })
+    }
+    fn same_input_source(&self, data: &ResourceData) -> bool {
+        match (self.view(), data) {
+            (ResourceView::Image { image: a }, ResourceData::Image { image: b, encoding }) => {
+                a.width == b.width
+                    && a.height == b.height
+                    && a.format == b.format
+                    && a.alpha_type == b.alpha_type
+                    && a.encoding == *encoding
+                    && self.same_input_pixels(&b.data)
+            }
+            (
+                ResourceView::Texture { descriptor: a },
+                ResourceData::Texture {
+                    descriptor: b,
+                    bytes,
+                },
+            ) => a == *b && self.same_input_pixels(bytes),
+            _ => match &self.0.data {
+                StoredResource::Other(existing) => existing.same_source(data),
+                _ => false,
+            },
+        }
+    }
+    /// Mark pixels as reconstructible from this resource's fixed asset version.
+    /// The asset owner must retain a path that can asynchronously restore them.
+    pub fn permit_pixel_reload(&self) {
+        if let Some(pixels) = &self.0.pixels {
+            let mut pixels = pixels.lock().expect("image pixels poisoned");
+            pixels.reloadable = true;
+            self.0
+                .pixel_discard_pending
+                .store(pixels.resident.is_some(), Ordering::Release);
+        }
+    }
+    /// Whether a completed consumer should attempt to release these pixels.
+    pub fn pixel_discard_pending(&self) -> bool {
+        self.0.pixel_discard_pending.load(Ordering::Acquire)
+    }
+    /// Release reconstructible pixels after the same version is resident on the
+    /// consumer. Returns false while a CPU reader or producer alias holds them.
+    pub fn discard_uploaded_pixels(&self) -> bool {
+        let Some(pixels) = &self.0.pixels else {
+            return false;
+        };
+        let mut pixels = pixels.lock().expect("image pixels poisoned");
+        if !pixels.reloadable
+            || pixels
+                .resident
+                .as_ref()
+                .is_none_or(|blob| blob.strong_count() != 1)
+        {
+            return false;
+        }
+        // Weak references retain the entire Arc allocation, including the
+        // dropped producer object. Separately owned pixel buffers are released.
+        let (backing, _) = pixels.resident.as_ref().unwrap().clone().into_raw_parts();
+        let (layout, _) = std::alloc::Layout::new::<[usize; 2]>()
+            .extend(std::alloc::Layout::for_value(backing.as_ref()))
+            .expect("existing Arc allocation");
+        let retained_bytes = layout.pad_to_align().size();
+        drop(backing);
+        let Ok(storage) = pixels.metadata.reserve(retained_bytes as u64) else {
+            return false;
+        };
+        pixels.weak_storage = Some(storage);
+        pixels.resident = None;
+        self.0.pixel_discard_pending.store(false, Ordering::Release);
+        true
+    }
+    /// Restore the same fixed version and descriptor into this resource identity.
+    /// Existing readers keep their own backing until they are dropped.
+    pub fn restore_pixels(&self, source: &ResourceLease) -> Result<(), ResourceError> {
+        if self.version() != source.version()
+            || self.image_descriptor() != source.image_descriptor()
+            || self.texture_descriptor() != source.texture_descriptor()
+            || self.pixel_byte_len() != source.pixel_byte_len()
+        {
+            return Err(ResourceError::ConflictingVersion);
+        }
+        let replacement = source.read_pixels().ok_or(ResourceError::InvalidData)?;
+        let Some(state) = &self.0.pixels else {
+            return Err(ResourceError::InvalidData);
+        };
+        let mut state = state.lock().expect("image pixels poisoned");
+        if !state.reloadable {
+            return Err(ResourceError::InvalidData);
+        }
+        if state.resident.is_none() {
+            let (backing, _) = replacement.0.into_raw_parts();
+            let blob =
+                Blob::from_raw_parts(backing, self.source_blob_id().expect("pixel identity"));
+            let (backing, _) = blob.clone().into_raw_parts();
+            state.storage = Arc::downgrade(&backing);
+            state.resident = Some(blob);
+            state.weak_storage = None;
+            self.0.pixel_discard_pending.store(true, Ordering::Release);
+        }
+        Ok(())
     }
     /// Cached conservative alpha support in visible texels, including the
     /// filtering border. Registration computes this once from immutable RGBA
@@ -329,6 +709,34 @@ impl ResourceRegistry {
         let bytes = self.owned_blob(bytes)?;
         self.register_inner(version, ResourceData::Texture { descriptor, bytes }, None)
     }
+    /// Register a logical atlas view that retains its exact physical texture lease.
+    /// The page and view remain independently identified and budgeted.
+    pub fn register_atlas_view(
+        &mut self,
+        version: ResourceVersion,
+        image: ImageView,
+        encoding: ColorEncoding,
+        backing: ResourceLease,
+    ) -> Result<ResourceHandle, ResourceError> {
+        if backing.is_retired() {
+            return Err(ResourceError::RetiredOrForeign);
+        }
+        let ResourceView::Texture { descriptor } = backing.view() else {
+            return Err(ResourceError::InvalidData);
+        };
+        image
+            .validate(descriptor.layout.storage_size)
+            .map_err(|_| ResourceError::InvalidData)?;
+        self.register_inner(
+            version,
+            ResourceData::AtlasView {
+                image,
+                encoding,
+                backing,
+            },
+            None,
+        )
+    }
     /// Transfer a complete platform shader into the ordinary immutable resource
     /// ledger. Every lease and cloned blob retains its original byte reservation.
     pub fn register_effect_shader(
@@ -409,7 +817,7 @@ impl ResourceRegistry {
                 if existing.retired.load(Ordering::Acquire) {
                     return Err(ResourceError::RetiredOrForeign);
                 }
-                return if existing.data.same_source(&data) {
+                return if ResourceLease(existing.clone()).same_input_source(&data) {
                     Ok(existing.handle)
                 } else {
                     Err(ResourceError::ConflictingVersion)
@@ -464,12 +872,42 @@ impl ResourceRegistry {
             }
             _ => None,
         };
+        let source_blob_id = data.blob().map(Blob::id);
+        let pixel_bytes = match &data {
+            ResourceData::Image { image, .. } => Some(image.data.len()),
+            ResourceData::Texture { bytes, .. } => Some(bytes.len()),
+            _ => None,
+        };
+        let (data, pixels) = match data {
+            ResourceData::Image { image, encoding } => (
+                StoredResource::Image(ImageDescriptor {
+                    width: image.width,
+                    height: image.height,
+                    format: image.format,
+                    alpha_type: image.alpha_type,
+                    encoding,
+                }),
+                Some(Mutex::new(PixelState::new(
+                    image.data,
+                    self.descriptors.clone(),
+                ))),
+            ),
+            ResourceData::Texture { descriptor, bytes } => (
+                StoredResource::Texture(descriptor),
+                Some(Mutex::new(PixelState::new(bytes, self.descriptors.clone()))),
+            ),
+            other => (StoredResource::Other(other), None),
+        };
         let lease = ResourceLease(Arc::new(Resource {
             handle,
             version,
             data,
+            pixels,
+            source_blob_id,
+            pixel_bytes,
             image_coverage,
             retired: AtomicBool::new(false),
+            pixel_discard_pending: AtomicBool::new(false),
             _reference_ticket: ticket,
             descriptor_ticket: Arc::new(descriptor),
         }));
@@ -523,6 +961,9 @@ impl ResourceRegistry {
         ResourceSnapshot::capture(handles.iter().map(|&handle| self.acquire(handle)), pool)
     }
 }
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug)]
 pub struct ResourceSnapshot {
     pub(crate) leases: Vec<ResourceLease>,
@@ -539,8 +980,8 @@ impl ResourceSnapshot {
             .map_err(|_| ResourceError::Bytes)?;
         leases.sort_unstable_by_key(|r| {
             (
-                r.data().blob().is_none(),
-                r.data().blob().map_or(0, Blob::id),
+                r.source_blob_id().is_none(),
+                r.source_blob_id().unwrap_or(0),
                 r.handle(),
             )
         });
@@ -563,23 +1004,40 @@ impl ResourceSnapshot {
         let ticket = pool
             .reserve(bytes as u64)
             .map_err(|_| ResourceError::Bytes)?;
+        let indexed = resources.len() >= 16;
         let mut leases = Vec::with_capacity(resources.len());
         for lease in resources {
             let lease = lease?;
             if lease.is_retired() {
                 return Err(ResourceError::RetiredOrForeign);
             }
-            if leases.iter().any(|other: &ResourceLease| {
-                other.handle() == lease.handle() || lookup_same_source(other.data(), lease.data())
-            }) {
-                return Err(ResourceError::ConflictingVersion);
+            if indexed {
+                let key = lease.snapshot_source_key();
+                let start = leases
+                    .partition_point(|other: &ResourceLease| other.snapshot_source_key() < key);
+                let end = start
+                    + leases[start..].partition_point(|other| other.snapshot_source_key() == key);
+                // A handle belongs to one immutable Resource, so the same handle
+                // necessarily has the same source key. Blob IDs remain hints.
+                if leases[start..end].iter().any(|other| {
+                    other.handle() == lease.handle() || other.lookup_same_source(&lease)
+                }) {
+                    return Err(ResourceError::ConflictingVersion);
+                }
+                leases.insert(end, lease);
+            } else {
+                if leases.iter().any(|other: &ResourceLease| {
+                    other.handle() == lease.handle() || other.lookup_same_source(&lease)
+                }) {
+                    return Err(ResourceError::ConflictingVersion);
+                }
+                leases.push(lease);
             }
-            leases.push(lease);
         }
         leases.sort_unstable_by_key(|r| {
             (
-                r.data().blob().is_none(),
-                r.data().blob().map_or(0, Blob::id),
+                r.source_blob_id().is_none(),
+                r.source_blob_id().unwrap_or(0),
                 r.handle(),
             )
         });
@@ -591,38 +1049,45 @@ impl ResourceSnapshot {
     fn matching(
         &self,
         blob: &Blob<u8>,
-        matches: impl Fn(&ResourceData) -> bool,
+        matches: impl Fn(&ResourceLease) -> bool,
     ) -> Option<ResourceHandle> {
         let start = self
             .leases
-            .partition_point(|r| r.data().blob().is_some_and(|b| b.id() < blob.id()));
+            .partition_point(|r| r.source_blob_id().is_some_and(|id| id < blob.id()));
         self.leases[start..]
             .iter()
-            .take_while(|r| r.data().blob().is_some_and(|b| b.id() == blob.id()))
-            .find(|r| matches(r.data()))
+            .take_while(|r| r.source_blob_id().is_some_and(|id| id == blob.id()))
+            .find(|r| matches(r))
             .map(ResourceLease::handle)
     }
     pub(crate) fn image(&self, image: &ImageData) -> Option<ResourceHandle> {
-        self.matching(
-            &image.data,
-            |data| matches!(data,ResourceData::Image {image:other,..} if same_image(image,other)),
-        )
+        self.matching(&image.data, |lease| {
+            lease.image_descriptor().is_some_and(|other| {
+                image.width == other.width
+                    && image.height == other.height
+                    && image.format == other.format
+                    && image.alpha_type == other.alpha_type
+                    && lease
+                        .read_pixels()
+                        .is_some_and(|pixels| same_blob(&image.data, &pixels.0))
+            })
+        })
     }
     pub(crate) fn contains_image(&self, handle: ResourceHandle) -> bool {
         self.leases
             .iter()
-            .any(|lease| lease.handle() == handle && lease.data().image_size().is_some())
+            .any(|lease| lease.handle() == handle && lease.image_size().is_some())
     }
     pub(crate) fn font(&self, font: &FontData) -> Option<ResourceHandle> {
         self.matching(
             &font.data,
-            |data| matches!(data, ResourceData::Font(other) if same_blob(&font.data, other)),
+            |lease| matches!(lease.view(), ResourceView::Font(other) if same_blob(&font.data, other)),
         )
     }
     pub(crate) fn external(&self, token: u64) -> Option<ResourceHandle> {
         self.leases
             .iter()
-            .find(|r| matches!(r.data(),ResourceData::External {token:t} if *t==token))
+            .find(|r| matches!(r.view(),ResourceView::External {token:t} if t==token))
             .map(ResourceLease::handle)
     }
     pub fn leases(&self) -> &[ResourceLease] {

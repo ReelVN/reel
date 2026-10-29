@@ -40,3 +40,8 @@ ffmpeg -f lavfi -i "sine=frequency=660:sample_rate=22050:duration=0.08" -ac 2 -c
 ```
 
 Decoder coverage: `cargo test --locked --offline -p reel-audio --features mp3 mp3_ --lib`.
+
+Worker-backed static sources can publish contiguous PCM batches. Each voice keeps
+a fixed 64-frame cache, cleared at transport discontinuities; four-point resampling,
+queued source ownership and underrun position remain on the existing transport.
+The default source read observes one frame; hosts account the fixed cache cost.

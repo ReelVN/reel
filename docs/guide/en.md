@@ -33,6 +33,14 @@ reel export --release --resource-target vita
 
 These commands preview and export the selected assets using the current platform player. Development exports copy selected files; release exports package them under their logical paths.
 
+Use `build.target` to choose platform settings or effects. Set its value with `--resource-target` for `check`, `build`, `dev` and `export`. The compiler checks both branches and generates code for the selected branch and its nested functions.
+
+```aside
+let particle_count = if build.target == "vita" { 80 } else { 320 };
+```
+
+Keep the logical canvas when sharing a layout; use resource scaling and effect settings to adjust rendering cost. `window.info().platform` reports the player currently running the game.
+
 To export with another platform's runtime, pass its directory with `--runtime`. Its executable, native modules and platform metadata keep their relative paths beside `game.asb`:
 
 ```sh
@@ -79,6 +87,18 @@ The first matching rule applies; unmatched files retain their original content. 
 
 For smooth gradients, place a texture rule with `format = "rgba8"` and `dither = "ordered"` before the general texture rule. Dithering distributes color quantization error and preserves alpha; RGBA8 uses eight times the texture memory of BC1. For a single file, run `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`.
 
+To pack small images used together into an atlas, add this before the general texture rule:
+
+```toml
+[[targets.vita]]
+match = "images/ui/**/*.{png,jpg,jpeg}"
+convert = "atlas"
+page_size = [1024, 1024]
+format = "auto"
+```
+
+Each rule produces one atlas page that loads and uploads as a whole; use separate rules for images needed at different times. Scripts keep the original image paths, logical dimensions and crop coordinates. The page stores one texture level, with images aligned to compression blocks and padded edges for filtering. If the images do not fit, preparation reports an error; increase `page_size` or split the group. The rule accepts `scale`, `format` and `dither`.
+
 For long images or atlases, place a `convert = "tiles"` rule before the general texture rule. `tile_size = 510` leaves room for gutters in a 512-pixel texture; `first_level = 1` stores half density and smaller levels. The rule also accepts `format` and `power_of_two`. The original logical path and atlas crop coordinates remain usable, while loading follows the visible tiles.
 
 ```sh
@@ -87,7 +107,7 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource at a time; `prepare-resources --memory-bytes` selects its workspace limit.
+`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource or configured atlas group at a time; `prepare-resources --memory-bytes` selects its workspace limit.
 
 Video conversion uses `ffmpeg` and `ffprobe` from PATH to produce H.264/AAC MP4, preserving the frame rate and fitting within `size`. Movies with color and alpha stacked vertically use `alpha_layout = "top_bottom"`. Video workspace is estimated from dimensions; codec subprocesses allocate their own memory.
 
@@ -449,7 +469,7 @@ reel prepare-texture original.png --output resources/background.reel-texture --s
 
 Display it with `image("background.reel-texture")` or use it for particles and image masks. The tool preserves aspect ratio and only reduces dimensions. Opaque images use BC1 by default; images with transparency use BC3. `--format rgba8` keeps uncompressed storage for detailed UI artwork and masks; `--power-of-two` pads edges for devices requiring power-of-two dimensions. `prepare-image` generates compressed texture tiles by default; `--tile-encoding png` selects PNG tiles. BC formats require device support and upload as compressed blocks at runtime. See [prepare_texture](../../crates/reel-cli/src/prepare_texture.rs) for the conversion API.
 
-For standalone images often displayed at smaller sizes, add `--mipmaps` or set `mipmaps = true` in a texture conversion rule to generate the complete prefiltered chain. The default keeps one level. Extra levels increase package size and texture residency; linear filtering blends adjacent levels. Atlases generate levels for the whole image, so neighboring regions need sufficient gutters. Tiled images use their existing level pyramid.
+For standalone images often displayed at smaller sizes, add `--mipmaps` or set `mipmaps = true` in a texture conversion rule to generate the complete prefiltered chain. The default keeps one level. Extra levels increase package size and texture residency; linear filtering blends adjacent levels. Pre-packed sprite sheets converted as one texture generate levels for the whole sheet, so neighboring regions need sufficient gutters. Tiled images use their existing level pyramid.
 
 ```aside
 let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {

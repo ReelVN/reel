@@ -114,7 +114,7 @@ impl Context<'_> {
                 |at| GpuError::Unsupported { at, record },
             )
         };
-        let target = self.target()?;
+        let target = self.coverage_target()?;
         let Some(uv) = mask_uv(definition, transform) else {
             return Ok(target);
         };
@@ -178,8 +178,8 @@ impl Context<'_> {
             dimensions[index] = [
                 image.layout.storage_size[0] as f32,
                 image.layout.storage_size[1] as f32,
-                0.,
-                0.,
+                image.origin[0] as f32 / image.layout.storage_size[0] as f32,
+                image.origin[1] as f32 / image.layout.storage_size[1] as f32,
             ];
             images.push(image);
         }
@@ -251,6 +251,7 @@ impl Context<'_> {
         let mut textures = smallvec::SmallVec::<[&native::Texture; 3]>::new();
         let mut texels = [[0.; 4]; 2];
         let mut dimensions = [[0.; 4]; 2];
+        let mut origins = [[0.; 4]; 2];
         for (index, sample) in plan.samples.iter().enumerate() {
             let image = self
                 .images
@@ -259,6 +260,7 @@ impl Context<'_> {
             textures.push(&image.texture);
             texels[index] = crate::common::effect_plan::texture_metadata(
                 image.layout,
+                image.origin,
                 image.encoding,
                 image.format,
             )[0];
@@ -266,6 +268,12 @@ impl Context<'_> {
                 image.layout.storage_size[0] as f32,
                 image.layout.storage_size[1] as f32,
                 f32::from(sample.repeat),
+                0.,
+            ];
+            origins[index] = [
+                image.origin[0] as f32 / image.layout.storage_size[0] as f32,
+                image.origin[1] as f32 / image.layout.storage_size[1] as f32,
+                0.,
                 0.,
             ];
         }
@@ -282,6 +290,7 @@ impl Context<'_> {
         values.extend(shader.array("u_coordinates[0]", &input.coordinates));
         values.extend(shader.array("u_texels[0]", &texels));
         values.extend(shader.array("u_dimensions[0]", &dimensions));
+        values.extend(shader.array("u_origins[0]", &origins));
         values.extend(shader.array("u_ops[0]", &stream.operations));
         values.extend(shader.vec4("u_flags", stream.phases));
         let [a, b, c, d, e, f] = uv.as_coeffs().map(|v| v as f32);
@@ -345,8 +354,8 @@ impl Context<'_> {
             dimensions[index] = [
                 image.layout.storage_size[0] as f32,
                 image.layout.storage_size[1] as f32,
-                0.,
-                0.,
+                image.origin[0] as f32 / image.layout.storage_size[0] as f32,
+                image.origin[1] as f32 / image.layout.storage_size[1] as f32,
             ];
             fetches[index] = [
                 f32::from(fetch.repeat),
@@ -445,6 +454,13 @@ impl Context<'_> {
             ],
         ));
         values.extend(shader.vec2("u_dimensions", image.layout.storage_size.map(|v| v as f32)));
+        values.extend(shader.vec2(
+            "u_origin",
+            [
+                image.origin[0] as f32 / image.layout.storage_size[0] as f32,
+                image.origin[1] as f32 / image.layout.storage_size[1] as f32,
+            ],
+        ));
         values.extend(shader.vec2("u_output_size", self.size.map(|v| v as f32)));
         values.extend(shader.vec4(
             "u_texels",

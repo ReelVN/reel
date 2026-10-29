@@ -31,6 +31,9 @@ impl Default for ReclaimLimits {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReclaimStatus {
     pub live_generations: usize,
+    /// Inner realtime Sound payloads still alive, including unused/retired owners.
+    /// The count decreases after payload destruction; it does not claim presentation.
+    pub live_sources: usize,
     pub control_owners: usize,
     pub unsubmitted_teardowns: usize,
     /// Normal queue plus the single worker's in-flight normal object.
@@ -58,6 +61,9 @@ pub(crate) struct ServiceShared {
     closing: AtomicBool,
     failed: AtomicBool,
     generations: AtomicUsize,
+    sources: AtomicUsize,
+    #[cfg(test)]
+    waits: AtomicUsize,
     control_owners: AtomicUsize,
     unsubmitted: AtomicUsize,
     outstanding: AtomicUsize,
@@ -79,12 +85,24 @@ impl ServiceShared {
     pub fn accepting(&self) -> bool {
         !self.closing.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire)
     }
-    pub fn notify(&self) {
+    /// PCM only publishes the predicate. Native/event callbacks stay off this path.
+    pub fn notify_rt(&self) {
         self.pending.store(true, Ordering::Release);
+    }
+    pub fn notify_control(&self) {
+        self.notify_rt();
+        self.kick();
+    }
+    fn kick(&self) {
+        if self.available.signal().is_err() {
+            self.record_error();
+            self.wake.wake();
+        }
     }
     fn status(&self) -> ReclaimStatus {
         ReclaimStatus {
             live_generations: self.generations.load(Ordering::Acquire),
+            live_sources: self.sources.load(Ordering::Acquire),
             control_owners: self.control_owners.load(Ordering::Acquire),
             unsubmitted_teardowns: self.unsubmitted.load(Ordering::Acquire),
             outstanding_work: self.outstanding.load(Ordering::Acquire),
@@ -101,7 +119,7 @@ impl ServiceShared {
     fn record_error(&self) {
         self.failed.store(true, Ordering::Release);
         self.errors.fetch_add(1, Ordering::Release);
-        self.notify();
+        self.notify_rt();
     }
 }
 /// Host owned independently of mixers. Drop detaches a draining worker; only
@@ -137,6 +155,9 @@ impl AudioReclaimService {
             closing: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             generations: AtomicUsize::new(0),
+            sources: AtomicUsize::new(0),
+            #[cfg(test)]
+            waits: AtomicUsize::new(0),
             control_owners: AtomicUsize::new(0),
             unsubmitted: AtomicUsize::new(0),
             outstanding: AtomicUsize::new(0),
@@ -268,7 +289,7 @@ impl Generation {
 impl Drop for Generation {
     fn drop(&mut self) {
         self.shared.generations.fetch_sub(1, Ordering::AcqRel);
-        self.shared.notify();
+        self.shared.notify_control();
     }
 }
 pub(crate) struct RetirementSignal {
@@ -290,7 +311,7 @@ impl Drop for TeardownCredit {
                 .unsubmitted
                 .fetch_sub(1, Ordering::AcqRel);
         }
-        self.generation.shared.notify();
+        self.generation.shared.notify_control();
     }
 }
 pub(crate) struct NormalCredit {
@@ -310,7 +331,7 @@ impl Drop for NormalCredit {
             .shared
             .outstanding
             .fetch_sub(1, Ordering::AcqRel);
-        self.generation.shared.notify();
+        self.generation.shared.notify_control();
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,6 +365,21 @@ impl Job {
             Self::Renderer(_owned) => JobKind::Renderer,
             Self::Manager(_owned) => JobKind::Manager,
         }
+    }
+}
+/// Last field of a Sound wrapper: its inner payload drops before this evidence.
+pub(crate) struct SourceOwner(Arc<ServiceShared>);
+impl SourceOwner {
+    pub fn new(signal: &RetirementSignal) -> Self {
+        signal.shared.sources.fetch_add(1, Ordering::AcqRel);
+        signal.shared.kick();
+        Self(signal.shared.clone())
+    }
+}
+impl Drop for SourceOwner {
+    fn drop(&mut self) {
+        self.0.sources.fetch_sub(1, Ordering::AcqRel);
+        self.0.notify_control();
     }
 }
 // Declaration order is essential: payload physically drops before either credit.
@@ -405,7 +441,7 @@ fn submit_teardown<T>(
         _normal: None,
         _teardown: Some(credit),
     }));
-    shared.notify();
+    shared.notify_control();
 }
 pub(crate) struct DeferredRenderer {
     pub renderer: Option<Renderer>,
@@ -423,7 +459,7 @@ impl DeferredRenderer {
         renderer.on_start_processing();
         // Notify AFTER actual unused publication; only atomic flags on PCM.
         if signal.observed.swap(false, Ordering::AcqRel) {
-            signal.shared.notify();
+            signal.shared.notify_rt();
         }
         renderer.process(out, 2);
     }
@@ -457,6 +493,7 @@ fn run_worker(
 ) {
     let mut prefer_teardown = false;
     let mut wait_failed = false;
+    let mut quiet = crate::idle::QuietWait::new();
     loop {
         // Bounded fairness between ordinary work and reserved teardown.
         let work = if prefer_teardown {
@@ -465,6 +502,7 @@ fn run_worker(
             normal.pop().or_else(|_| teardown.pop())
         };
         prefer_teardown = !prefer_teardown;
+        let productive = work.is_ok();
         if let Ok(work) = work {
             let kind = work.job.kind();
             let begin = Instant::now();
@@ -503,11 +541,10 @@ fn run_worker(
                     }
                 }
             }
-            shared.notify();
+            shared.notify_control();
         }
-        if shared.pending.swap(false, Ordering::AcqRel)
-            && catch_unwind(AssertUnwindSafe(|| shared.wake.wake())).is_err()
-        {
+        let pending = shared.pending.swap(false, Ordering::AcqRel);
+        if pending && catch_unwind(AssertUnwindSafe(|| shared.wake.wake())).is_err() {
             shared.record_error();
         }
         if shared.closing.load(Ordering::Acquire)
@@ -521,14 +558,37 @@ fn run_worker(
                 // A failed native event stops accepting work, while this owner
                 // must still drain objects submitted by existing generations.
                 thread::sleep(Duration::from_millis(2));
-            } else if shared
-                .available
-                .wait(Some(Duration::from_millis(2)))
-                .is_err()
-            {
-                shared.record_error();
-                wait_failed = true;
+            } else {
+                let timeout = quiet.timeout(
+                    productive || pending,
+                    shared.sources.load(Ordering::Acquire) == 0,
+                );
+                #[cfg(test)]
+                shared.waits.fetch_add(1, Ordering::Relaxed);
+                if shared.available.wait(timeout).is_err() {
+                    shared.record_error();
+                    wait_failed = true;
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn empty_reclaimer_parks_until_control_signals_shutdown() {
+        let mut service =
+            AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+        let limit = Instant::now() + Duration::from_secs(2);
+        while service.shared.waits.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < limit);
+            thread::park_timeout(Duration::from_millis(1));
+        }
+        let before = service.shared.waits.load(Ordering::Acquire);
+        thread::sleep(Duration::from_millis(40));
+        assert_eq!(service.shared.waits.load(Ordering::Acquire), before);
+        assert_eq!(service.drain_and_join().unwrap().live_sources, 0);
     }
 }

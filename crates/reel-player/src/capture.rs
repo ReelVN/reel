@@ -10,7 +10,10 @@ use reel_engine::aside::{
     AdapterError,
     capture::{CaptureId, CaptureRequest},
 };
-use reel_render::capture::{CaptureBackend, CapturedPixels};
+use reel_render::{
+    BackendError, PixelDemand,
+    capture::{CaptureBackend, CapturedPixels},
+};
 use reel_ui::frame::RenderFrame;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,12 +54,39 @@ impl Write for PngOutput<'_> {
     }
 }
 
+fn encode_png(
+    pixels: CapturedPixels,
+    pool: &BudgetPool,
+    cancelled: &AtomicBool,
+) -> Result<OwnedBytes, String> {
+    let pixels = pixels
+        .into_srgb(|| cancelled.load(Ordering::Acquire))
+        .map_err(|_| "capture cancelled".to_owned())?;
+    let storage = pool.reserve(0).map_err(|e| e.message)?;
+    let mut output = PngOutput {
+        bytes: Vec::new(),
+        storage,
+        cancelled,
+    };
+    image::codecs::png::PngEncoder::new(&mut output)
+        .write_image(
+            pixels.rgba.as_slice(),
+            pixels.size[0],
+            pixels.size[1],
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| e.to_string())?;
+    OwnedBytes::new(output.bytes, output.storage).map_err(|e| e.reason.message)
+}
+
 struct EncodeResult {
     id: CaptureId,
     result: Result<OwnedBytes, String>,
 }
 enum Phase<C> {
     Waiting,
+    WaitingPixels,
+    FailedPixels(String),
     Reading(C),
     Encoding(u64),
 }
@@ -72,9 +102,11 @@ pub struct CaptureService<C> {
     pool: BudgetPool,
     wake: WakeSignal,
     serial: u64,
+    readback_bytes_per_poll: u64,
+    pixel_demand: Option<(CaptureId, reel_ui::bridge::CandidateKey, PixelDemand)>,
 }
 impl<C> CaptureService<C> {
-    pub fn new(max_bytes: u64, wake: WakeSignal) -> Self {
+    pub fn new(max_bytes: u64, readback_bytes_per_poll: u64, wake: WakeSignal) -> Self {
         let pool = BudgetPool::new(
             BudgetCategory::Temporary,
             QueueLimits {
@@ -90,23 +122,7 @@ impl<C> CaptureService<C> {
             },
             wake.clone(),
             move |(id, pixels): (CaptureId, CapturedPixels), cancelled| {
-                let result = (|| {
-                    let storage = encoding_pool.reserve(0).map_err(|e| e.message)?;
-                    let mut output = PngOutput {
-                        bytes: Vec::new(),
-                        storage,
-                        cancelled,
-                    };
-                    image::codecs::png::PngEncoder::new(&mut output)
-                        .write_image(
-                            pixels.rgba.as_slice(),
-                            pixels.size[0],
-                            pixels.size[1],
-                            image::ExtendedColorType::Rgba8,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    OwnedBytes::new(output.bytes, output.storage).map_err(|e| e.reason.message)
-                })();
+                let result = encode_png(pixels, &encoding_pool, cancelled);
                 EncodeResult { id, result }
             },
             |event| event.result = Err("capture cancelled".into()),
@@ -117,10 +133,48 @@ impl<C> CaptureService<C> {
             pool,
             wake,
             serial: 0,
+            readback_bytes_per_poll,
+            pixel_demand: None,
         }
     }
     pub fn busy(&self) -> bool {
         self.active.is_some() || !self.worker.is_idle()
+    }
+    pub(crate) fn take_pixel_demand(
+        &mut self,
+    ) -> Option<(CaptureId, reel_ui::bridge::CandidateKey, PixelDemand)> {
+        self.pixel_demand.take()
+    }
+    pub(crate) fn waiting_pixels(&self) -> Option<(CaptureId, reel_ui::bridge::CandidateKey)> {
+        self.active.as_ref().and_then(|pending| {
+            matches!(pending.phase, Phase::WaitingPixels)
+                .then(|| (pending.request.id, pending.frame.key()))
+        })
+    }
+    pub(crate) fn pixels_ready(&mut self, id: CaptureId, key: &reel_ui::bridge::CandidateKey) {
+        if let Some(active) = &mut self.active
+            && active.request.id == id
+            && &active.frame.key() == key
+            && matches!(active.phase, Phase::WaitingPixels)
+        {
+            active.phase = Phase::Waiting;
+            self.wake.wake();
+        }
+    }
+    pub(crate) fn pixels_failed(
+        &mut self,
+        id: CaptureId,
+        key: &reel_ui::bridge::CandidateKey,
+        error: String,
+    ) {
+        if let Some(active) = &mut self.active
+            && active.request.id == id
+            && &active.frame.key() == key
+            && matches!(active.phase, Phase::WaitingPixels)
+        {
+            active.phase = Phase::FailedPixels(error);
+            self.wake.wake();
+        }
     }
     pub fn drive<B: CaptureBackend<Capture = C>>(
         &mut self,
@@ -155,6 +209,7 @@ impl<C> CaptureService<C> {
                 self.worker.cancel(id);
             }
             self.active = None;
+            self.pixel_demand = None;
         }
         if self.active.is_none()
             && self.worker.is_idle()
@@ -204,29 +259,41 @@ impl<C> CaptureService<C> {
                         active.phase = Phase::Reading(capture);
                         Ok(())
                     }
+                    Err(error) => match error.into_pixel_demand() {
+                        Ok(demand) => {
+                            self.pixel_demand =
+                                Some((active.request.id, active.frame.key(), demand));
+                            active.phase = Phase::WaitingPixels;
+                            Ok(())
+                        }
+                        Err(error) => Err(error.to_string()),
+                    },
+                }
+            }
+            Phase::WaitingPixels => Ok(()),
+            Phase::FailedPixels(error) => Err(error.clone()),
+            Phase::Reading(capture) => {
+                match backend.poll_capture(capture, self.readback_bytes_per_poll) {
+                    Ok(Some(pixels)) => {
+                        self.serial += 1;
+                        let bytes = pixels.rgba.ticket().bytes();
+                        match self.worker.accept(
+                            self.serial,
+                            (active.request.id, pixels),
+                            bytes,
+                            Priority::Visible,
+                        ) {
+                            Ok(()) => {
+                                active.phase = Phase::Encoding(self.serial);
+                                Ok(())
+                            }
+                            Err(error) => Err(error.reason.message),
+                        }
+                    }
+                    Ok(None) => Ok(()),
                     Err(error) => Err(error.to_string()),
                 }
             }
-            Phase::Reading(capture) => match backend.poll_capture(capture) {
-                Ok(Some(pixels)) => {
-                    self.serial += 1;
-                    let bytes = pixels.rgba.ticket().bytes();
-                    match self.worker.accept(
-                        self.serial,
-                        (active.request.id, pixels),
-                        bytes,
-                        Priority::Visible,
-                    ) {
-                        Ok(()) => {
-                            active.phase = Phase::Encoding(self.serial);
-                            Ok(())
-                        }
-                        Err(error) => Err(error.reason.message),
-                    }
-                }
-                Ok(None) => Ok(()),
-                Err(error) => Err(error.to_string()),
-            },
             Phase::Encoding(_) => Ok(()),
         };
         if let Err(error) = result {
@@ -234,5 +301,54 @@ impl<C> CaptureService<C> {
             self.active = None;
         }
         Ok(changed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reel_render::capture::CaptureEncoding;
+
+    #[test]
+    fn worker_png_preserves_linear_conversion_and_budget_on_cancel() {
+        let pool = BudgetPool::new(
+            BudgetCategory::Temporary,
+            QueueLimits {
+                max_requests: 8,
+                max_bytes: 1 << 20,
+            },
+        );
+        let make = || {
+            let bytes: Vec<u8> = (0..=255).flat_map(|v| [v, 255 - v, v ^ 0x55, v]).collect();
+            let ticket = pool.reserve(bytes.capacity() as u64).unwrap();
+            CapturedPixels {
+                size: [256, 1],
+                rgba: OwnedBytes::new(bytes, ticket).unwrap(),
+                encoding: CaptureEncoding::Linear,
+            }
+        };
+        let cancel = AtomicBool::new(false);
+        let png = encode_png(make(), &pool, &cancel).unwrap();
+        let rgba = image::load_from_memory(png.as_slice()).unwrap().to_rgba8();
+        for (i, pixel) in rgba.pixels().enumerate() {
+            for (channel, input) in [i as u8, 255 - i as u8, (i as u8) ^ 0x55]
+                .into_iter()
+                .enumerate()
+            {
+                let x = f32::from(input) / 255.;
+                let srgb = if x <= 0.0031308 {
+                    12.92 * x
+                } else {
+                    1.055 * x.powf(1. / 2.4) - 0.055
+                };
+                assert_eq!(pixel[channel], (srgb.clamp(0., 1.) * 255.).round() as u8);
+            }
+            assert_eq!(pixel[3], 255);
+        }
+        drop(png);
+        assert_eq!(pool.usage().bytes, 0);
+        cancel.store(true, Ordering::Release);
+        assert!(encode_png(make(), &pool, &cancel).is_err());
+        assert_eq!(pool.usage().bytes, 0);
     }
 }

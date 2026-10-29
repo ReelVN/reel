@@ -2,6 +2,9 @@
 #[cfg(all(feature = "vita", target_os = "vita"))]
 pub mod vita;
 #[cfg(any(test, all(feature = "vita", target_os = "vita")))]
+#[path = "platform/vita/signals.rs"]
+mod vita_signals;
+#[cfg(any(test, all(feature = "vita", target_os = "vita")))]
 #[path = "platform/vita/text.rs"]
 mod vita_text;
 #[cfg(feature = "winit")]

@@ -318,6 +318,9 @@ pub(crate) fn allocate(
             }
             let meta: ObjectMeta = record.read()?;
             heap.ensure_object_slot()?;
+            if meta.kind == ObjectKind::WeakRef {
+                heap.ensure_weak_slot()?;
+            }
             let payload = match meta.layout {
                 Layout::Cell(contract, _) if meta.kind == ObjectKind::Cell => {
                     Payload::Cell(crate::cell::CellState {

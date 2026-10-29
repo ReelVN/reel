@@ -41,7 +41,9 @@ struct Proof<'a> {
     work: usize,
 }
 
-pub(super) fn collect(modules: &[h::AnalyzedModule]) -> Vec<CompiledEffect> {
+pub(super) fn collect(
+    modules: &[h::AnalyzedModule],
+) -> Result<Vec<CompiledEffect>, EffectDiagnostic> {
     let initializers: Vec<_> = modules
         .iter()
         .map(|module| {
@@ -76,12 +78,20 @@ pub(super) fn collect(modules: &[h::AnalyzedModule]) -> Vec<CompiledEffect> {
         work: 0,
     };
     for (module_index, module) in modules.iter().enumerate() {
+        let selected = aside_compiler::lowering::select_branches(module, Default::default())
+            .map_err(|error| EffectDiagnostic {
+                module: module.source_path().into(),
+                span: error.span,
+                message: error.detail,
+            })?;
         let mut function_nodes = vec![None; module.hir().nodes.len()];
         for (index, function) in module.functions().iter().enumerate() {
             function_nodes[function.node.0 as usize] = Some(h::FunctionId(index as u32));
         }
         for (index, node) in module.hir().nodes.iter().enumerate() {
-            if !matches!(node.form, Form::Call { .. }) {
+            if !selected.contains(h::NodeId(index as u32))
+                || !matches!(node.form, Form::Call { .. })
+            {
                 continue;
             }
             proof.work = 0;
@@ -140,7 +150,7 @@ pub(super) fn collect(modules: &[h::AnalyzedModule]) -> Vec<CompiledEffect> {
             });
         }
     }
-    output
+    Ok(output)
 }
 impl Proof<'_> {
     fn value(

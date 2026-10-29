@@ -191,3 +191,39 @@ fn transient_pressure_releases_metadata_after_external_readers_retire() {
     assert_eq!(data.usage().bytes, 0);
     assert_eq!(metadata.usage().bytes, 0);
 }
+
+#[test]
+fn scratch_lookup_skips_effect_owned_targets_without_changing_identity_order() {
+    let metadata = pool(4096);
+    let mut cache = Cache::default();
+    cache.reserve(4, &metadata, 4096).unwrap();
+    for (value, pinned) in [(1, false), (2, true), (3, false), (4, true)] {
+        cache.insert([8, 8], (value, pinned));
+    }
+    assert_eq!(
+        cache.get_eligible([8, 8], 0, |entry| !entry.1),
+        Some(&(1, false))
+    );
+    assert_eq!(
+        cache.get_eligible([8, 8], 1, |entry| !entry.1),
+        Some(&(3, false))
+    );
+    assert_eq!(cache.get_eligible([8, 8], 2, |entry| !entry.1), None);
+}
+
+#[test]
+fn effect_owned_slots_do_not_count_as_protected_scratch() {
+    let metadata = pool(4096);
+    let mut cache = Cache::default();
+    cache.reserve(3, &metadata, 4096).unwrap();
+    for (value, pinned) in [(1, true), (2, false), (3, false)] {
+        cache.insert([8, 8], (value, pinned));
+    }
+    let demand = requirements(&[([8, 8], 1)]);
+    assert!(cache.reclaim_eligible(&demand, true, |entry| !entry.1, |_| true));
+    assert_eq!(
+        cache.get_eligible([8, 8], 0, |entry| !entry.1),
+        Some(&(2, false))
+    );
+    assert!(!cache.reclaim_eligible(&demand, true, |entry| !entry.1, |_| true));
+}

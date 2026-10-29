@@ -2,6 +2,9 @@
 use super::{GpuError, target_plan::Requirements};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 
+/// Shared idle threshold for cold optional target retention in accepted submissions.
+pub(crate) const MAX_IDLE_SUBMISSIONS: u8 = 32;
+
 struct Slot<T> {
     size: [u32; 2],
     value: T,
@@ -34,11 +37,28 @@ impl<T> Cache<T> {
             .take_while(|slot| slot.size == size)
             .any(|slot| same(&slot.value))
     }
+    #[cfg(test)]
     pub(crate) fn get(&self, size: [u32; 2], index: usize) -> Option<&T> {
         let start = self.slots.partition_point(|slot| slot.size < size);
         self.slots
             .get(start.checked_add(index)?)
             .filter(|slot| slot.size == size)
+            .map(|slot| &slot.value)
+    }
+
+    /// Select a scratch owner while excluding allocations retained as effect results.
+    pub(crate) fn get_eligible(
+        &self,
+        size: [u32; 2],
+        index: usize,
+        mut eligible: impl FnMut(&T) -> bool,
+    ) -> Option<&T> {
+        let start = self.slots.partition_point(|slot| slot.size < size);
+        self.slots[start..]
+            .iter()
+            .take_while(|slot| slot.size == size)
+            .filter(|slot| eligible(&slot.value))
+            .nth(index)
             .map(|slot| &slot.value)
     }
 
@@ -128,7 +148,11 @@ impl<T> Cache<T> {
     pub(crate) fn prune_cold(&mut self, mut unique: impl FnMut(&T) -> bool) -> bool {
         let before = self.slots.len();
         self.slots.retain(|slot| {
-            let retention = 2 + slot.uses.saturating_sub(1).saturating_mul(2).min(30);
+            let retention = 2 + slot
+                .uses
+                .saturating_sub(1)
+                .saturating_mul(2)
+                .min(MAX_IDLE_SUBMISSIONS - 2);
             slot.age < retention || !unique(&slot.value)
         });
         self.slots.len() != before
@@ -146,16 +170,32 @@ impl<T> Cache<T> {
     /// Reclaim one independent owner outside the plan's physical multiplicity.
     /// Oldest owners go first; equal-age candidates prefer larger storage. The
     /// caller retries admission before discarding another reusable target.
+    #[cfg(test)]
     pub(crate) fn reclaim(
         &mut self,
         required: &Requirements,
         recent: bool,
+        unique: impl FnMut(&T) -> bool,
+    ) -> bool {
+        self.reclaim_eligible(required, recent, |_| true, unique)
+    }
+
+    /// Retained effect results are outside scratch requirements and must not
+    /// consume the protected scratch multiplicity for a size class.
+    pub(crate) fn reclaim_eligible(
+        &mut self,
+        required: &Requirements,
+        recent: bool,
+        mut eligible: impl FnMut(&T) -> bool,
         mut unique: impl FnMut(&T) -> bool,
     ) -> bool {
         let mut previous = None;
         let mut index = 0;
         let mut candidate = None;
         for (position, slot) in self.slots.iter().enumerate() {
+            if !eligible(&slot.value) {
+                continue;
+            }
             if previous == Some(slot.size) {
                 index += 1;
             } else {

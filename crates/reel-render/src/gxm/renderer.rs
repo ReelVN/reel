@@ -58,6 +58,8 @@ pub struct Backend {
     context: ownership::Device,
     programs: Rc<programs::Programs>,
     options: Options,
+    limits: crate::common::GpuLimits,
+    total_bytes: u64,
     budgets: Budgets,
     _group: BudgetGroup,
     images: Images,
@@ -65,11 +67,14 @@ pub struct Backend {
     effects: effect::Cache,
     masks: crate::common::mask::split::Cache,
     targets: target_cache::Cache,
+    coverage_targets: target_cache::Cache,
     retained: crate::common::retained::Cache<resources::Target, u8>,
+    effect_results: crate::common::effect_result::Cache<resources::Target>,
     geometry: geometry::Cache,
     info: Option<SurfaceInfo>,
     suspended: bool,
     next_submission: u64,
+    device_generation: u64,
     flights: VecDeque<Flight>,
     events: VecDeque<RenderEvent<GpuError>>,
     failed_work: Vec<replay::Work>,
@@ -78,10 +83,15 @@ pub struct Backend {
     drain_failed: bool,
 }
 impl Backend {
-    /// Create the thread-bound device and load its offline programs.
+    /// Create the device and notify the host after display completion.
+    /// The wake callback only signals the host; graphics work stays on this thread.
+    /// Physical admission shares MAIN with CPU arenas and accounts CDRAM separately.
     #[cfg(target_os = "vita")]
-    pub fn new(options: Options) -> Result<Self, GpuError> {
-        let context = super::create_context(&options).map_err(native_error)?;
+    pub fn new(
+        options: Options,
+        wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, GpuError> {
+        let context = super::create_context(&options, wake).map_err(native_error)?;
         Self::with_context(context, options)
     }
 
@@ -89,8 +99,18 @@ impl Backend {
         if options.limits.max_inflight == 0 || options.limits.image_upload_bytes_per_prepare == 0 {
             return Err(GpuError::InvalidSize);
         }
+        static NEXT_DEVICE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let device_generation = NEXT_DEVICE
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |generation| generation.checked_add(1),
+            )
+            .map_err(|_| GpuError::IdentityExhausted)?;
+        let limits = options.limits.common(context.memory_state());
+        let total_bytes = limits.resource_bytes;
         let context = ownership::Device::new(context);
-        let group = BudgetGroup::new(options.limits.total_bytes);
+        let group = BudgetGroup::new(total_bytes);
         let pool = |category, bytes| {
             group.pool(
                 category,
@@ -101,15 +121,17 @@ impl Backend {
             )
         };
         let budgets = Budgets {
-            resources: pool(BudgetCategory::GpuResource, options.limits.resource_bytes),
-            targets: pool(BudgetCategory::Offscreen, options.limits.target_bytes),
-            transient: pool(BudgetCategory::Temporary, options.limits.transient_bytes),
+            resources: pool(BudgetCategory::GpuResource, limits.resource_bytes),
+            targets: pool(BudgetCategory::Offscreen, limits.target_bytes),
+            transient: pool(BudgetCategory::Temporary, limits.transient_bytes),
         };
         let programs = Rc::new(programs::Programs::new(&context, &budgets.resources)?);
         Ok(Self {
             context,
             programs,
             options,
+            limits,
+            total_bytes,
             budgets,
             _group: group,
             images: Default::default(),
@@ -117,11 +139,14 @@ impl Backend {
             effects: Default::default(),
             masks: Default::default(),
             targets: Default::default(),
+            coverage_targets: Default::default(),
             retained: Default::default(),
+            effect_results: Default::default(),
             geometry: Default::default(),
             info: None,
             suspended: false,
             next_submission: 1,
+            device_generation,
             flights: VecDeque::new(),
             events: VecDeque::new(),
             failed_work: Vec::new(),
@@ -151,6 +176,10 @@ impl Backend {
             cached_geometry: self.geometry.bytes(),
             shared: Some(self._group.usage()),
         }
+    }
+    /// Physical page commitment and capacity, read in constant time.
+    pub fn native_memory_state(&self) -> native::MemoryState {
+        self.context.memory_state()
     }
     /// Explicitly sample native allocator domains, separately from renderer budgets.
     /// Heap snapshots are adjacent observations; registered storage, its device
@@ -187,7 +216,10 @@ impl Backend {
         self.glyphs = draw::GlyphCache::default();
         self.check_native()?;
         self.masks = Default::default();
+        self.effect_results.clear();
+        self.check_native()?;
         self.targets.clear();
+        self.coverage_targets.clear();
         self.check_native()?;
         self.retained.clear();
         self.check_native()?;
@@ -207,14 +239,18 @@ impl Backend {
     }
     // A failed command can already have reached the device. Retire its owners
     // only after a successful drain; a failed drain makes this backend terminal.
-    fn drain_error(&mut self) -> bool {
-        if self.context.refresh() || self.context.finish().is_err() {
-            self.drain_failed = true;
-            return false;
-        }
-        self.images.after_drain();
-        self.glyphs.after_drain();
-        self.check_native().is_ok()
+    fn drain_error(&mut self) -> Result<(), GpuError> {
+        let result = (|| {
+            self.context.refresh();
+            self.check_native()?;
+            self.context.finish().map_err(native_error)?;
+            self.images.after_drain();
+            self.glyphs.after_drain();
+            self.context.refresh();
+            self.check_native()
+        })();
+        self.drain_failed |= result.is_err();
+        result
     }
     fn prepare(
         &mut self,
@@ -237,10 +273,17 @@ impl Backend {
                     ..
                 })
             );
-        if (fallback || matches!(result, Err(GpuError::Pressure { .. }))) && !self.drain_failed {
+        if (fallback
+            || result
+                .as_ref()
+                .is_err_and(|error| error.is_memory_pressure()))
+            && !self.drain_failed
+        {
             let cause = result.err().unwrap();
             let resident = self._group.usage().bytes;
+            self.effect_results.clear();
             self.targets.release_idle();
+            self.coverage_targets.release_idle();
             self.check_native()?;
             self.geometry.clear();
             self.check_native()?;
@@ -259,9 +302,15 @@ impl Backend {
                 }),
             );
             self.geometry.cpu_disabled = false;
-            return result;
+            return self.resolve_pressure(result);
         }
-        result
+        self.resolve_pressure(result)
+    }
+
+    fn resolve_pressure<T>(&self, result: Result<T, GpuError>) -> Result<T, GpuError> {
+        // Completed work has been polled and idle caches reclaimed. Only live
+        // submissions can justify waiting for another release notification.
+        result.map_err(|error| error.after_reclamation(!self.flights.is_empty()))
     }
     fn prepare_cached(
         &mut self,
@@ -270,6 +319,7 @@ impl Backend {
         capture: bool,
         retry: Option<CacheRetry>,
     ) -> Result<replay::Prepared, GpuError> {
+        let effect_results_enabled = retry.is_none();
         self.check_native()?;
         self.masks.prune();
         if self.drain_failed {
@@ -277,7 +327,7 @@ impl Backend {
                 "GPU failure could not be drained".into(),
             ));
         }
-        let limits = self.options.limits.common();
+        let limits = self.limits;
         if !capture && self.retained.pending(&frame.key()) {
             return Err(GpuError::Preparing);
         }
@@ -342,7 +392,7 @@ impl Backend {
             )?
         };
         if let Some(retry) = retry
-            && matches!(retry.cause, GpuError::Pressure { .. })
+            && retry.cause.is_memory_pressure()
         {
             let resident = self._group.usage().bytes;
             self.images.retain_demand(&plan.images);
@@ -357,7 +407,7 @@ impl Backend {
             &plan.images,
             self.context.capabilities(),
             limits,
-            self.options.limits.total_bytes,
+            self.total_bytes,
         )?;
         // Captures need independent outputs; release the ordinary scratch cache
         // before reserving them. New images also take priority under pressure.
@@ -368,7 +418,7 @@ impl Backend {
                 .output_size()
                 .is_some_and(|cached| cached != size)
             || image_growth
-                > self.options.limits.total_bytes.saturating_sub(
+                > self.total_bytes.saturating_sub(
                     self.budgets
                         .resources
                         .usage()
@@ -378,6 +428,7 @@ impl Backend {
                 )
         {
             self.targets.clear();
+            self.coverage_targets.clear();
             self.check_native()?;
         }
         for mask in &plan.masks {
@@ -397,7 +448,10 @@ impl Backend {
             for handle in &mask.definition.images {
                 if plan.images.iter().any(|image| {
                     image.source.handle() == *handle
-                        && matches!(image.source.data(), ResourceData::Yuv420(_))
+                        && matches!(
+                            image.source.view(),
+                            reel_ui::resources::ResourceView::Yuv420(_)
+                        )
                 }) {
                     return Err(GpuError::Unsupported {
                         at: mask.at,
@@ -423,14 +477,40 @@ impl Backend {
                 &mut touched,
             )
         };
+        let upload = upload.and_then(|ready| {
+            if !ready || plan.aliases.is_empty() {
+                return Ok(ready);
+            }
+            images.reserve(plan.aliases.len());
+            for alias in &plan.aliases {
+                let backing = images
+                    .get(&alias.backing.handle())
+                    .ok_or(GpuError::InvalidSize)?
+                    .clone();
+                let storage = crate::common::renderer::reserve(
+                    &self.budgets.transient,
+                    &local.transient,
+                    (size_of::<resources::Image>() + 2 * size_of::<usize>() + 128) as u64,
+                    limits.transient_bytes,
+                    "image plan",
+                )?;
+                let image = resources::Image::atlas(backing, alias.source, storage)?;
+                images.insert(alias.source.handle(), Rc::new(image));
+            }
+            Ok(ready)
+        });
         drop(plan);
         drop(plan_tickets);
         let ready = match upload {
             Ok(ready) => ready,
             Err(error) => {
+                if matches!(error, GpuError::PixelsNeeded(_)) && touched.is_empty() {
+                    return Err(error);
+                }
                 self.images.release_idle();
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_images.extend(touched);
+                    return Err(fault);
                 }
                 return Err(error);
             }
@@ -439,15 +519,17 @@ impl Backend {
             let fence = match self.context.fence() {
                 Ok(fence) => Rc::new(fence),
                 Err(error) => {
-                    if !self.drain_error() {
+                    if let Err(fault) = self.drain_error() {
                         self.failed_images.extend(touched);
+                        return Err(fault);
                     }
                     return Err(error.into());
                 }
             };
             if let Err(error) = self.context.flush() {
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_images.extend(touched);
+                    return Err(fault);
                 }
                 return Err(error.into());
             }
@@ -464,10 +546,13 @@ impl Backend {
         }
         // Captures retain their output until readback, independently of later frames.
         let mut capture_targets = target_cache::Cache::default();
+        let mut capture_coverage_targets = target_cache::Cache::default();
         if capture {
             capture_targets.configure(size);
+            capture_coverage_targets.configure(size);
         } else {
             self.targets.configure(size);
+            self.coverage_targets.configure(size);
         }
         self.check_native()?;
         let targets = if capture {
@@ -475,11 +560,16 @@ impl Backend {
         } else {
             &mut self.targets
         };
+        let coverage_targets = if capture {
+            &mut capture_coverage_targets
+        } else {
+            &mut self.coverage_targets
+        };
         match replay::prepare(
             DeviceResources {
                 gpu: &self.context,
                 budgets: &self.budgets,
-                limits: self.options.limits.common(),
+                limits: self.limits,
             },
             &self.programs,
             replay::Caches {
@@ -488,8 +578,11 @@ impl Backend {
                 effects: &mut self.effects,
                 masks: &mut self.masks,
                 targets,
+                coverage_targets,
                 geometry: &mut self.geometry,
                 retained: &self.retained,
+                effect_results: &self.effect_results,
+                effect_results_enabled,
             },
             images,
             frame,
@@ -504,9 +597,12 @@ impl Backend {
                     self.retained.stage(
                         token,
                         prepared.output.clone(),
-                        self.context.target_layout(storage)?.texture_bytes,
+                        self.context
+                            .target_layout(storage, native::TargetFormat::Rgba8)?
+                            .texture_bytes,
                     );
                     self.targets.clear();
+                    self.coverage_targets.clear();
                     self.check_native()?;
                     if let Err(error) = self.submit(frame, prepared, None) {
                         self.retained.cancel(&frame.key());
@@ -519,8 +615,9 @@ impl Backend {
             }
             Err((error, work)) => {
                 self.images.release_idle();
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_work.push(work);
+                    return Err(fault);
                 }
                 Err(error)
             }
@@ -536,17 +633,24 @@ impl Backend {
         let fence = match self.context.fence() {
             Ok(fence) => Rc::new(fence),
             Err(error) => {
-                if !self.drain_error() {
+                if let Err(fault) = self.drain_error() {
                     self.failed_prepared.push(prepared);
+                    return Err(fault);
                 }
                 return Err(error.into());
             }
         };
         if let Err(error) = self.context.flush() {
-            if !self.drain_error() {
+            if let Err(fault) = self.drain_error() {
                 self.failed_prepared.push(prepared);
+                return Err(fault);
             }
             return Err(error.into());
+        }
+        self.effect_results.submitted();
+        for pending in prepared.take_effect_pending() {
+            self.effect_results
+                .publish(pending, &self.budgets.transient);
         }
         self.flights.push_back(Flight {
             fence: fence.clone(),
@@ -560,10 +664,14 @@ impl Backend {
         self.check_native()?;
         self.images.submitted();
         self.targets.submitted(prepared.targets());
+        self.coverage_targets.submitted(prepared.targets());
         Ok((prepared, fence))
     }
 }
 impl RenderBackend for Backend {
+    fn device_generation(&self) -> u64 {
+        self.device_generation
+    }
     type Error = GpuError;
     fn vsync(&self) -> Option<bool> {
         Some(self.context.vsync())
@@ -626,13 +734,14 @@ impl RenderBackend for Backend {
             max_offscreen_size: self.context.capabilities().max_texture_size,
             upload_limits: QueueLimits {
                 max_requests: self.options.limits.max_inflight as u32,
-                max_bytes: self.options.limits.transient_bytes,
+                max_bytes: self.limits.transient_bytes,
             },
         }
     }
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), GpuError> {
         self.check_native()?;
         self.retained.clear();
+        self.effect_results.clear();
         self.check_native()?;
         if info.physical_size != self.output_size()
             || info.surface_epoch.0 == 0
@@ -684,8 +793,9 @@ impl RenderBackend for Backend {
             self.programs
                 .present(&self.context, &prepared.output, info.physical_size)
         {
-            if !self.drain_error() {
+            if let Err(fault) = self.drain_error() {
                 self.failed_prepared.push(Rc::new(prepared));
+                return Err(fault);
             }
             return Err(error);
         }
@@ -723,6 +833,28 @@ impl RenderBackend for Backend {
             }
             let flight = self.flights.pop_front().unwrap();
             if let Some(prepared) = &flight._prepared {
+                for (handle, image) in prepared.images() {
+                    if !image.discard_pending.get() {
+                        continue;
+                    }
+                    if !self
+                        .images
+                        .entries
+                        .get(handle)
+                        .is_some_and(|current| Rc::ptr_eq(current, image))
+                    {
+                        continue;
+                    }
+                    let source = image
+                        .source
+                        .as_ref()
+                        .and_then(|source| source.lease.upgrade());
+                    if source.is_none_or(|source| {
+                        !source.pixel_discard_pending() || source.discard_uploaded_pixels()
+                    }) {
+                        image.discard_pending.set(false);
+                    }
+                }
                 prepared.recycle_geometry(&mut self.geometry);
             }
             if let Some(token) = flight.retained {
@@ -736,12 +868,16 @@ impl RenderBackend for Backend {
                     .push_back(RenderEvent::RenderFinished { id, frame });
             }
         }
+        // A frame fence represents its last scene. Retire every completed native
+        // scene and transfer before pruning pools or admitting the next frame.
+        self.context.poll().map_err(native_error)?;
         out.extend(self.events.drain(..limit.min(self.events.len())));
         self.images.prune(&[]);
         self.glyphs.prune(&[]);
         self.effects.prune();
         self.check_native()?;
         self.targets.prune_cold();
+        self.coverage_targets.prune_cold();
         self.check_native()?;
         Ok(())
     }
@@ -750,6 +886,7 @@ impl RenderBackend for Backend {
     }
     fn suspend(&mut self) {
         self.retained.clear();
+        self.effect_results.clear();
         self.suspended = true;
         self.info = None;
     }
@@ -761,6 +898,8 @@ pub struct Capture {
     size: [u32; 2],
     output: BudgetPool,
     _frame: RenderFrame,
+    pixels: Option<(Vec<u8>, reel_core::budget::BudgetTicket)>,
+    wake: reel_core::wake::WakeSignal,
 }
 impl crate::capture::CaptureBackend for Backend {
     type Error = GpuError;
@@ -788,46 +927,63 @@ impl crate::capture::CaptureBackend for Backend {
             size,
             output: output.clone(),
             _frame: frame.clone(),
+            pixels: None,
+            wake,
         })
     }
     fn poll_capture(
         &mut self,
         capture: &mut Capture,
+        max_bytes: u64,
     ) -> Result<Option<crate::capture::CapturedPixels>, GpuError> {
         self.check_native()?;
         if !capture.fence.poll().map_err(native_error)? {
             return Ok(None);
         }
-        let Some(prepared) = capture.prepared.take() else {
+        let Some(prepared) = capture.prepared.as_ref() else {
             return Ok(None);
         };
-        prepared.recycle_geometry(&mut self.geometry);
-        let bytes = u64::from(capture.size[0]) * u64::from(capture.size[1]) * 4;
-        let ticket = capture
-            .output
-            .reserve(bytes)
-            .map_err(|e| GpuError::Readback(e.message))?;
-        let mut rgba = vec![0u8; usize::try_from(bytes).map_err(|_| GpuError::InvalidSize)?];
-        self.context
-            .read_rgba(&prepared.output.framebuffer, &mut rgba)
-            .map_err(native_error)?;
-        for pixel in rgba.as_chunks_mut::<4>().0 {
-            for channel in &mut pixel[..3] {
-                let x = f32::from(*channel) / 255.;
-                let s = if x <= 0.0031308 {
-                    12.92 * x
-                } else {
-                    1.055 * x.powf(1. / 2.4) - 0.055
-                };
-                *channel = (s.clamp(0., 1.) * 255.).round() as u8;
-            }
-            pixel[3] = 255;
+        let row = capture.size[0] as usize * 4;
+        let total = row
+            .checked_mul(capture.size[1] as usize)
+            .ok_or(GpuError::InvalidSize)?;
+        if capture.pixels.is_none() {
+            let mut ticket = capture
+                .output
+                .reserve(total as u64)
+                .map_err(|e| GpuError::Readback(e.message))?;
+            let pixels = Vec::with_capacity(total);
+            ticket
+                .resize(pixels.capacity() as u64)
+                .map_err(|e| GpuError::Readback(e.message))?;
+            capture.pixels = Some((pixels, ticket));
         }
+        let (rgba, _) = capture.pixels.as_mut().unwrap();
+        let first_row = rgba.len() / row;
+        let rows =
+            crate::capture::readback_rows(row, capture.size[1] as usize - first_row, max_bytes);
+        let start = rgba.len();
+        rgba.resize(start + rows * row, 0);
+        self.context
+            .read_rgba(
+                &prepared.output.framebuffer,
+                first_row as u32,
+                &mut rgba[start..],
+            )
+            .map_err(native_error)?;
+        if rgba.len() < total {
+            capture.wake.wake();
+            return Ok(None);
+        }
+        let prepared = capture.prepared.take().unwrap();
+        prepared.recycle_geometry(&mut self.geometry);
+        let (rgba, ticket) = capture.pixels.take().unwrap();
         let rgba =
             OwnedBytes::new(rgba, ticket).map_err(|e| GpuError::Readback(e.reason.message))?;
         Ok(Some(crate::capture::CapturedPixels {
             size: capture.size,
             rgba,
+            encoding: crate::capture::CaptureEncoding::Linear,
         }))
     }
 }
@@ -841,6 +997,7 @@ impl Drop for Backend {
             self.images.after_drain();
             self.glyphs.after_drain();
             self.targets.clear();
+            self.coverage_targets.clear();
         } else {
             std::mem::forget(self.programs.clone());
             std::mem::forget(std::mem::take(&mut self.flights));
@@ -850,6 +1007,7 @@ impl Drop for Backend {
             std::mem::forget(std::mem::take(&mut self.images));
             std::mem::forget(std::mem::take(&mut self.glyphs));
             std::mem::forget(std::mem::take(&mut self.targets));
+            std::mem::forget(std::mem::take(&mut self.coverage_targets));
         }
     }
 }

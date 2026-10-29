@@ -452,10 +452,14 @@ pub(crate) fn render_text_faded_lines(
             let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
+            let run = glyph_run.run();
+            let bytes = run.text_range();
+            if bytes.end <= visible_bytes.start || bytes.start >= visible_bytes.end {
+                continue;
+            }
             let style = glyph_run.style();
             let mut x = glyph_run.offset();
             let y = glyph_run.baseline();
-            let run = glyph_run.run();
             let font = run.font();
             let font_size = run.font_size();
             let synthesis = run.synthesis();

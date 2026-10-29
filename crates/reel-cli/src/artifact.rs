@@ -55,7 +55,7 @@ pub(crate) fn module_metadata(
             .functions
             .iter()
             .map(|f| rp::FunctionMetadata {
-                output: f.output.0,
+                output: f.output.map(|function| function.0),
                 declared_context: rp::DeclaredContext {
                     no_wait: f.declared_context.no_wait,
                     init: f.declared_context.init,

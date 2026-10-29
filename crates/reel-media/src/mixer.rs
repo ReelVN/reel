@@ -1,6 +1,6 @@
 use crate::maintenance::{
     AudioReclaimService, DeferredManager, DeferredRenderer, Envelope, Job, RetirementSignal,
-    TeardownCredit, try_producer,
+    SourceOwner, TeardownCredit, try_producer,
 };
 use crate::retirement::PhysicalRelease;
 use crate::{AudioError, AudioErrorKind, AudioFormat, AudioGroup, PcmFill};
@@ -94,6 +94,7 @@ impl Default for MixerLimits {
 pub struct DecodedSound {
     data: StaticSoundData,
     budget: Arc<Residency>,
+    control: Option<std::sync::Weak<stream::Control>>,
 }
 /// Every internal PCM alias owns this same reservation. Declaration order ensures
 /// the actual ticket is returned before the final physical-release publication.
@@ -104,6 +105,15 @@ struct Residency {
 }
 pub type DecodedSoundRequest = (u32, Vec<[f32; 2]>, BudgetTicket);
 impl DecodedSound {
+    fn prepare_for(&self, host: &Arc<crate::maintenance::ServiceShared>) -> bool {
+        self.control
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .is_none_or(|control| {
+                control.bind_host(host);
+                control.prepared()
+            })
+    }
     pub fn new(
         sample_rate_hz: u32,
         frames: Vec<[f32; 2]>,
@@ -132,6 +142,7 @@ impl DecodedSound {
         };
         Ok(Self {
             data,
+            control: None,
             budget: Arc::new(Residency {
                 ticket,
                 release: std::sync::Mutex::new(None),
@@ -165,6 +176,7 @@ impl DecodedSound {
             .map_err(|e| e.message)?;
         Ok(Self {
             data,
+            control: None,
             budget: Arc::new(Residency {
                 ticket,
                 release: std::sync::Mutex::new(None),
@@ -240,9 +252,12 @@ impl DecodedSound {
     }
     /// Update a decoded sound before admission without copying or decoding PCM.
     pub fn seek(&mut self, position: Duration) -> Duration {
-        let bounds = PlaybackBounds::new(&self.data);
+        let bounds = PlaybackBounds::new(self);
         let frame = bounds.frame(position);
         self.data.settings.start_position = PlaybackPosition::Samples(frame);
+        if let Some(control) = self.control.as_ref().and_then(std::sync::Weak::upgrade) {
+            control.seek(frame);
+        }
         bounds.time(frame)
     }
     /// The resolved content start, including frame quantization and loop wrapping.
@@ -291,6 +306,7 @@ struct ObservedData<D>(D, Arc<RetirementSignal>);
 struct ObservedSound {
     sound: Box<dyn Sound>,
     signal: Arc<RetirementSignal>,
+    _source: SourceOwner,
 }
 #[cfg(feature = "video")]
 impl<D: SoundData> SoundData for ObservedData<D> {
@@ -301,6 +317,7 @@ impl<D: SoundData> SoundData for ObservedData<D> {
         Ok((
             Box::new(ObservedSound {
                 sound,
+                _source: SourceOwner::new(&self.1),
                 signal: self.1,
             }),
             handle,
@@ -324,10 +341,10 @@ impl Sound for ObservedSound {
     }
 }
 struct BudgetedSound {
-    // Rust drops fields in declaration order: native Sound/PCM FIRST, ticket
-    // SECOND. The private frame Arc has no externally held Weak references.
+    // Native Sound/PCM fields drop before the source-count evidence.
     sound: Box<dyn Sound>,
     signal: Arc<RetirementSignal>,
+    _source: SourceOwner,
 }
 impl Sound for BudgetedSound {
     fn on_start_processing(&mut self) {
@@ -352,6 +369,7 @@ impl SoundData for BudgetedData {
         Ok((
             Box::new(BudgetedSound {
                 sound,
+                _source: SourceOwner::new(&self.signal),
                 signal: self.signal,
             }),
             (handle, queue),
@@ -370,6 +388,7 @@ pub struct KiraMixer {
     manager: DeferredManager,
     signal: Arc<RetirementSignal>,
     max_sounds: usize,
+    stream_cache_bytes: u64,
     reclaim_cursor: usize,
 }
 /// A count of pure ownership transfers. Destruction/budget return is asynchronous.
@@ -443,6 +462,25 @@ impl KiraMixer {
                 "invalid Kira resource/buffer limits",
             ));
         }
+        // Cache storage survives while a Sound is active, on any group's unused
+        // queue, or in the shared normal queue/worker. Queued segments have no
+        // voice cache until they replace the current source of that same Sound.
+        let stream_cache_bytes = (limits.max_sounds as u64)
+            .checked_mul((AudioGroup::ALL.len() + 1) as u64)
+            .and_then(|voices| voices.checked_add(service.limits().queued_work as u64))
+            .and_then(|voices| voices.checked_add(1))
+            .and_then(|voices| {
+                voices.checked_mul(
+                    (reel_audio::sound::static_sound::STREAM_CACHE_BYTES + size_of::<SourceOwner>())
+                        as u64,
+                )
+            })
+            .ok_or_else(|| {
+                AudioError::new(
+                    AudioErrorKind::InvalidRequest,
+                    "voice cache accounting overflow",
+                )
+            })?;
         let (signal, renderer_credit, manager_credit) = service.reserve_generation()?;
         let manager = AudioManager::<Bridge>::new(AudioManagerSettings {
             backend_settings: (format.sample_rate_hz, signal.clone(), renderer_credit),
@@ -493,6 +531,7 @@ impl KiraMixer {
             manager,
             signal,
             max_sounds: limits.max_sounds,
+            stream_cache_bytes,
             reclaim_cursor: 0,
         })
     }
@@ -554,7 +593,7 @@ impl KiraMixer {
             }
         }
         if needs_maintenance || transferred_sounds != 0 {
-            signal.shared.notify();
+            signal.shared.notify_control();
         }
         ReclaimProgress {
             transferred_sounds,
@@ -613,6 +652,9 @@ impl KiraMixer {
                 "Kira or background ownership capacity exhausted",
             ),
         };
+        if !sound.prepare_for(&signal.shared) {
+            return Err(reject(sound));
+        }
         if !signal.shared.accepting()
             || self
                 .manager
@@ -634,7 +676,7 @@ impl KiraMixer {
         let Ok(chunk) = producer.write_chunk_uninit(1) else {
             return Err(reject(sound));
         };
-        let bounds = PlaybackBounds::new(&sound.data);
+        let bounds = PlaybackBounds::new(&sound);
         let control = self.manager.manager.as_mut().expect("owned manager");
         let Some(queue_slot) = control.queues.iter().position(Option::is_none).or_else(|| {
             control
@@ -669,20 +711,26 @@ impl KiraMixer {
                     Job::AcceptedData(sound, retired_queue),
                     &signal,
                 )));
-                signal.shared.notify();
+                signal.shared.notify_control();
                 let mut history = std::collections::VecDeque::with_capacity(self.max_sounds + 1);
                 history.push_back((0, bounds));
                 Ok(Playback {
                     handle,
                     bounds: history,
                     queue_slot,
-                })
+                    started: std::sync::atomic::AtomicBool::new(!held),
+                    paused: false,
+                    output_suspended: false,
+                }
+                .with_decode_mode())
             }
             Err(_) => Err(reject(sound)),
         }
     }
     /// Announce before decoding so an exhausted segment holds its content clock.
     pub fn start(&mut self, playback: &Playback) {
+        playback.started.store(true, Ordering::Release);
+        playback.sync_decode();
         self.manager.manager.as_ref().unwrap().queues[playback.queue_slot]
             .as_ref()
             .expect("live playback queue")
@@ -722,6 +770,9 @@ impl KiraMixer {
                 "audio queue or background ownership capacity exhausted",
             ),
         };
+        if !sound.prepare_for(&signal.shared) {
+            return Err(reject(sound));
+        }
         let Some(mut producer) = try_producer(&signal.shared) else {
             return Err(reject(sound));
         };
@@ -750,20 +801,24 @@ impl KiraMixer {
         }
         playback
             .bounds
-            .push_back((index, PlaybackBounds::new(&sound.data)));
+            .push_back((index, PlaybackBounds::new(&sound)));
         chunk.fill_from_iter(std::iter::once(Envelope::normal(
             Job::AcceptedData(sound, None),
             &signal,
         )));
-        signal.shared.notify();
+        signal.shared.notify_control();
+        playback.sync_decode();
         Ok(())
     }
     pub(crate) fn queue_bytes(&self) -> u64 {
         let capacity = self.max_sounds as u64;
         capacity
             * ((2 * capacity + 7) * std::mem::size_of::<QueuedStaticSound>() as u64
-                + (capacity + 1) * std::mem::size_of::<(u64, PlaybackBounds)>() as u64
+                + (capacity + 1)
+                    * (std::mem::size_of::<(u64, PlaybackBounds)>() as u64
+                        + stream::control::CONTROL_BYTES)
                 + std::mem::size_of::<Option<StaticSoundQueue>>() as u64)
+            + self.stream_cache_bytes
     }
 }
 /// Small transport metadata; never retains a second PCM allocation.
@@ -774,10 +829,13 @@ struct PlaybackBounds {
     source: Option<Arc<reel_audio::sound::static_sound::StreamStatus>>,
     source_loop_end: bool,
     explicit_end: bool,
+    control: Option<std::sync::Weak<stream::Control>>,
 }
 impl PlaybackBounds {
-    fn new(data: &StaticSoundData) -> Self {
+    fn new(sound: &DecodedSound) -> Self {
+        let data = &sound.data;
         Self {
+            control: sound.control.clone(),
             sample_rate: data.sample_rate,
             frames: data.num_frames(),
             source: match &data.frames {
@@ -826,8 +884,31 @@ pub struct Playback {
     handle: StaticSoundHandle,
     bounds: std::collections::VecDeque<(u64, PlaybackBounds)>,
     queue_slot: usize,
+    started: std::sync::atomic::AtomicBool,
+    paused: bool,
+    output_suspended: bool,
 }
 impl Playback {
+    fn with_decode_mode(self) -> Self {
+        self.sync_decode();
+        self
+    }
+    pub(crate) fn suspend_decode(&mut self, suspended: bool) {
+        self.output_suspended = suspended;
+        self.sync_decode();
+    }
+    pub(crate) fn sync_decode(&self) {
+        let current = self.handle.queue_cursor().0;
+        let active = self.started.load(Ordering::Acquire)
+            && !self.paused
+            && !self.output_suspended
+            && !self.is_stopped();
+        for (index, bounds) in &self.bounds {
+            if let Some(control) = bounds.control.as_ref().and_then(std::sync::Weak::upgrade) {
+                control.mode(active && *index == current, active && *index > current);
+            }
+        }
+    }
     /// A worker error or interval invalidated when an unknown source reaches EOF.
     pub fn error(&self) -> Option<String> {
         let current = self.queue_cursor().0;
@@ -848,6 +929,7 @@ impl Playback {
         None
     }
     pub fn queue_cursor(&self) -> (u64, f64) {
+        self.sync_decode();
         self.handle.queue_cursor()
     }
     /// Coherent source cursor and rate ramp, including unapplied control commands.
@@ -879,6 +961,9 @@ impl Playback {
             .expect("current transport metadata")
             .1;
         let position = bounds.time(bounds.frame(position));
+        if let Some(control) = bounds.control.as_ref().and_then(std::sync::Weak::upgrade) {
+            control.seek(bounds.frame(position));
+        }
         self.handle.seek_to(position.as_secs_f64());
         position
     }
@@ -911,13 +996,19 @@ impl Playback {
         self.handle.stop(tween(duration));
     }
     pub fn pause(&mut self) {
+        self.paused = true;
         self.handle.pause(immediate());
+        self.sync_decode();
     }
     pub fn resume(&mut self) {
+        self.paused = false;
         self.handle.resume(immediate());
+        self.sync_decode();
     }
     pub fn stop(&mut self) {
+        self.started.store(false, Ordering::Release);
         self.handle.stop(immediate());
+        self.sync_decode();
     }
 }
 fn validate_db(db: f32) -> Result<f32, AudioError> {

@@ -27,10 +27,13 @@ fn creator(
     c.metadata
         .functions
         .iter()
-        .position(|f| f.output == output)
+        .position(|f| f.output == Some(output))
         .or_else(|| {
             c.metadata.functions.iter().position(|f| {
-                let body = &c.program.package().functions[f.output.index()];
+                let Some(function) = f.output else {
+                    return false;
+                };
+                let body = &c.program.package().functions[function.index()];
                 c.program.package().signatures[body.signature.index()]
                     .parameters
                     .iter()
@@ -248,7 +251,7 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
                     .metadata
                     .functions
                     .iter()
-                    .position(|f| f.output == *function)
+                    .position(|f| f.output == Some(*function))
                     .unwrap();
                 assert_eq!(captures.len(), m.functions()[target].captures.len());
                 for (source, expected) in captures.iter().zip(&m.functions()[target].captures) {

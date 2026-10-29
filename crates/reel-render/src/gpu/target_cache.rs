@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 pub(super) struct Allocation {
     pub(super) target: Target,
+    pub(super) effect_pins: std::sync::atomic::AtomicUsize,
     _resident: BudgetTicket,
 }
 
@@ -101,6 +102,90 @@ mod tests {
         drop(flight);
         assert_eq!(budgets.targets.usage().bytes, 0);
         gpu.check().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires actual graphics adapter; allocates targets without drawing or readback"]
+    fn effect_pin_prevents_scratch_reuse_until_last_guard_retires() {
+        let limits = super::super::GpuLimits::default();
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            limits,
+        ))
+        .unwrap();
+        let quality = Quality {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            samples: 1,
+            degraded: false,
+        };
+        let budgets = Budgets::new(limits);
+        let cache = TargetCache::default();
+        cache.configure([64, 64], quality);
+        let size = [32, 32];
+        let cost = super::super::targets::target_bytes(size, quality).unwrap();
+        let requirements = crate::common::target_plan::Requirements::default();
+        let first = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                0,
+                &budgets.targets,
+                cost,
+                &requirements,
+            )
+            .unwrap();
+        cache.reserve_metadata(
+            [64, 64],
+            quality,
+            std::slice::from_ref(&first),
+            &budgets.transient,
+            limits.transient_bytes,
+        );
+        cache.publish([64, 64], quality, std::slice::from_ref(&first));
+        let pin = first
+            .target
+            .pin_effect(
+                crate::common::effect_result::Token(1, 1),
+                &budgets.transient,
+            )
+            .unwrap();
+        let retained = pin.clone();
+        assert!(first.target.is_effect_pinned());
+        let second = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                0,
+                &budgets.targets,
+                cost,
+                &requirements,
+            )
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        drop(pin);
+        assert!(first.target.is_effect_pinned());
+        drop(retained);
+        assert!(!first.target.is_effect_pinned());
+        let again = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                0,
+                &budgets.targets,
+                cost,
+                &requirements,
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        cache.clear();
+        drop((first, second, again));
+        assert_eq!(budgets.targets.usage().bytes, 0);
+        assert_eq!(budgets.transient.usage().bytes, 0);
     }
 
     #[test]
@@ -231,8 +316,11 @@ impl TargetCache {
     ) -> Result<Arc<Allocation>, GpuError> {
         if let Some(entries) = self.0.lock().unwrap().as_ref()
             && entries.quality == quality
-            && let Some(target) = entries.slots.get(size, index)
+            && let Some(target) = entries
+                .slots
+                .get_eligible(size, index, |target| !target.target.is_effect_pinned())
         {
+            reel_core::profile::count(reel_core::profile::Phase::TargetReused);
             return Ok(target.clone());
         }
         let mut resident = pool.reserve(cost);
@@ -245,9 +333,12 @@ impl TargetCache {
                     .as_mut()
                     .filter(|entries| entries.quality == quality)
                     .is_some_and(|entries| {
-                        entries
-                            .slots
-                            .reclaim(required, recent, |owner| Arc::strong_count(owner) == 1)
+                        entries.slots.reclaim_eligible(
+                            required,
+                            recent,
+                            |owner| !owner.target.is_effect_pinned(),
+                            |owner| Arc::strong_count(owner) == 1,
+                        )
                     });
                 if released {
                     resident = pool.reserve(cost);
@@ -261,9 +352,14 @@ impl TargetCache {
             requested: cost,
             available: gpu.limits.target_bytes.saturating_sub(pool.usage().bytes),
         })?;
-        Ok(Arc::new(Allocation {
-            target: Target::new(&gpu.device, size, quality),
-            _resident: resident,
+        Ok(Arc::new_cyclic(|owner| {
+            let mut target = Target::new(&gpu.device, size, quality);
+            target.allocation = Some(owner.clone());
+            Allocation {
+                target,
+                effect_pins: std::sync::atomic::AtomicUsize::new(0),
+                _resident: resident,
+            }
         }))
     }
 
@@ -282,6 +378,7 @@ impl TargetCache {
         {
             let additional = slots
                 .iter()
+                .filter(|allocation| allocation.target.texture.format() == quality.format)
                 .filter(|allocation| {
                     !entries
                         .slots
@@ -303,7 +400,10 @@ impl TargetCache {
             && entries.quality == quality
         {
             entries.slots.submitted();
-            for allocation in slots {
+            for allocation in slots
+                .iter()
+                .filter(|allocation| allocation.target.texture.format() == quality.format)
+            {
                 let size = allocation.target.storage_size();
                 if !entries
                     .slots
@@ -312,7 +412,10 @@ impl TargetCache {
                     entries.slots.insert(size, allocation.clone());
                 }
             }
-            for allocation in slots {
+            for allocation in slots
+                .iter()
+                .filter(|allocation| allocation.target.texture.format() == quality.format)
+            {
                 entries
                     .slots
                     .mark_used(allocation.target.storage_size(), |cached| {

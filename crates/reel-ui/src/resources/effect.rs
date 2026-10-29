@@ -49,8 +49,15 @@ impl EffectShaderFormat {
     }
 }
 
-/// Typed interface of a complete exported fragment. The definition identity is
-/// shared across platform products; the resource version identifies their bytes.
+/// Compiler-proved logical neighborhood of explicit subtree samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EffectSourceFootprint {
+    /// Maximum source offsets in original effect logical pixels, ordered left,
+    /// top, right, bottom. The renderer adds the texture filtering footprint.
+    pub logical_halo: [u32; 4],
+}
+
+/// Typed interface and compiler-proved source sampling of an exported fragment.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectShaderDescriptor {
     pub definition: EffectDefinitionId,
@@ -69,6 +76,15 @@ pub struct EffectShaderDescriptor {
     /// Byte offset of the optional fixed alpha-coverage variant; the prefix is ordinary code.
     /// Only color effects with a spare portable sampler carry this variant.
     pub coverage_offset: Option<u32>,
+    /// Byte offset of an optional final fragment with unconditional output over
+    /// the target, returning transparent outside the local effect domain.
+    /// It has the ordinary output tail. This metadata never authorizes undefined
+    /// attachment contents; registered shaders still run on initialized targets.
+    pub full_target_offset: Option<u32>,
+    /// Compiler-proved fixed source neighborhood. Absence keeps the full source
+    /// domain. This proof changes neither shader coordinates nor logical Size.
+    #[serde(default)]
+    pub source_footprint: Option<EffectSourceFootprint>,
 }
 impl EffectShaderDescriptor {
     /// Build the canonical code identity for an exported target fragment.
@@ -102,12 +118,28 @@ impl EffectShaderDescriptor {
             source_sampler,
             output,
             coverage_offset: None,
+            full_target_offset: None,
+            source_footprint: None,
         };
         if !descriptor.is_valid() || raw.is_empty() {
             return Err(EffectShaderPayloadError::Invalid);
         }
         descriptor.shader_key = descriptor.content_key(raw);
         Ok(descriptor)
+    }
+    /// Bind a compiler-proved source neighborhood into the code identity. Only
+    /// ordinary color fragments can use this optional work-reduction contract.
+    pub fn with_source_footprint(
+        mut self,
+        footprint: Option<EffectSourceFootprint>,
+        raw: &[u8],
+    ) -> Result<Self, EffectShaderPayloadError> {
+        self.source_footprint = footprint;
+        if !self.is_valid() || raw.is_empty() {
+            return Err(EffectShaderPayloadError::Invalid);
+        }
+        self.shader_key = self.content_key(raw);
+        Ok(self)
     }
     /// Attach the offline coverage variant and bind both segments into the content key.
     pub fn with_coverage_variant(
@@ -124,12 +156,30 @@ impl EffectShaderDescriptor {
     }
     /// Borrow the selected immutable code segment without allocating or compiling shaders.
     pub fn code<'a>(&self, raw: &'a [u8], coverage: bool) -> Option<&'a [u8]> {
+        let raw = raw.get(..self.full_target_offset.map_or(raw.len(), |v| v as usize))?;
         match (self.coverage_offset, coverage) {
             (Some(offset), false) => raw.get(..offset as usize),
             (Some(offset), true) => raw.get(offset as usize..),
             (None, false) => Some(raw),
             (None, true) => None,
         }
+    }
+    /// Attach the final full-target fragment and bind its range into code identity.
+    pub fn with_full_target_variant(
+        mut self,
+        offset: u32,
+        raw: &[u8],
+    ) -> Result<Self, EffectShaderPayloadError> {
+        self.full_target_offset = Some(offset);
+        if !self.is_valid() || offset as usize >= raw.len() {
+            return Err(EffectShaderPayloadError::Invalid);
+        }
+        self.shader_key = self.content_key(raw);
+        Ok(self)
+    }
+    /// Borrow the full-target variant after the renderer proves complete coverage.
+    pub fn full_target_code<'a>(&self, raw: &'a [u8]) -> Option<&'a [u8]> {
+        raw.get(self.full_target_offset? as usize..)
     }
     fn content_key(&self, raw: &[u8]) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
@@ -140,6 +190,13 @@ impl EffectShaderDescriptor {
         hash.update(&self.textures.to_le_bytes());
         hash.update(&[u8::from(self.source_sampler)]);
         hash.update(&self.coverage_offset.unwrap_or(0).to_le_bytes());
+        hash.update(&self.full_target_offset.unwrap_or(0).to_le_bytes());
+        if let Some(footprint) = self.source_footprint {
+            hash.update(b"source-footprint\0");
+            for value in footprint.logical_halo {
+                hash.update(&value.to_le_bytes());
+            }
+        }
         for ty in &self.parameters {
             hash.update(&[type_byte(*ty)]);
         }
@@ -153,6 +210,9 @@ impl EffectShaderDescriptor {
             && self
                 .coverage_offset
                 .is_none_or(|o| (o as usize) < raw.len())
+            && self
+                .full_target_offset
+                .is_none_or(|o| (o as usize) < raw.len())
             && self.shader_key == self.content_key(raw)
     }
     /// Encode the version-one little-endian prepared shader envelope. The header
@@ -161,7 +221,9 @@ impl EffectShaderDescriptor {
         if !self.matches_bytes(raw) {
             return Err(EffectShaderPayloadError::Invalid);
         }
-        let capacity = 100usize
+        let capacity = 104usize
+            .checked_add(16 * usize::from(self.source_footprint.is_some()))
+            .ok_or(EffectShaderPayloadError::Limit)?
             .checked_add(self.parameters.len())
             .and_then(|v| v.checked_add(raw.len()))
             .ok_or(EffectShaderPayloadError::Limit)?;
@@ -170,13 +232,22 @@ impl EffectShaderDescriptor {
         bytes.extend_from_slice(&self.abi.to_le_bytes());
         bytes.push(format_byte(self.format));
         bytes.push(type_byte(self.output));
-        bytes.extend_from_slice(&[u8::from(self.source_sampler), 0]);
+        bytes.extend_from_slice(&[
+            u8::from(self.source_sampler),
+            u8::from(self.source_footprint.is_some()),
+        ]);
         bytes.extend_from_slice(&(self.parameters.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&self.definition);
         bytes.extend_from_slice(&self.shader_key);
         bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
         bytes.extend_from_slice(&self.textures.to_le_bytes());
         bytes.extend_from_slice(&self.coverage_offset.unwrap_or(0).to_le_bytes());
+        bytes.extend_from_slice(&self.full_target_offset.unwrap_or(0).to_le_bytes());
+        if let Some(footprint) = self.source_footprint {
+            for value in footprint.logical_halo {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
         bytes.extend(self.parameters.iter().copied().map(type_byte));
         bytes.extend_from_slice(raw);
         Ok(bytes)
@@ -194,7 +265,7 @@ impl EffectShaderDescriptor {
         if bytes.len() > max_payload_bytes {
             return Err(Limit);
         }
-        if bytes.len() < 100 || &bytes[..8] != b"REELSHD1" || (bytes[14] > 1 || bytes[15] != 0) {
+        if bytes.len() < 104 || &bytes[..8] != b"REELSHD1" || (bytes[14] > 1 || bytes[15] > 1) {
             return Err(Invalid);
         }
         let source_sampler = bytes[14] != 0;
@@ -213,17 +284,33 @@ impl EffectShaderDescriptor {
         let textures = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
         let offset = u32::from_le_bytes(bytes[96..100].try_into().unwrap());
         let coverage_offset = (offset != 0).then_some(offset);
-        if coverage_offset.is_some_and(|v| v as usize >= size) {
+        let full = u32::from_le_bytes(bytes[100..104].try_into().unwrap());
+        let full_target_offset = (full != 0).then_some(full);
+        if coverage_offset.is_some_and(|v| v as usize >= size)
+            || full_target_offset.is_some_and(|v| v as usize >= size || v <= offset)
+        {
             return Err(Invalid);
         }
-        let start = 100usize.checked_add(count).ok_or(Invalid)?;
+        let schema = 104 + 16 * usize::from(bytes[15] != 0);
+        if bytes.len() < schema {
+            return Err(Invalid);
+        }
+        let source_footprint = (bytes[15] != 0).then(|| EffectSourceFootprint {
+            logical_halo: std::array::from_fn(|i| {
+                u32::from_le_bytes(bytes[104 + i * 4..108 + i * 4].try_into().unwrap())
+            }),
+        });
+        if source_footprint.is_some() && (!source_sampler || output != EffectType::Vec4) {
+            return Err(Invalid);
+        }
+        let start = schema.checked_add(count).ok_or(Invalid)?;
         if size == 0 || start.checked_add(size) != Some(bytes.len()) {
             return Err(Invalid);
         }
         if abi != EFFECT_SHADER_ABI || !matches!(output, EffectType::Float | EffectType::Vec4) {
             return Err(Invalid);
         }
-        let parameters = bytes[100..start]
+        let parameters = bytes[schema..start]
             .iter()
             .map(|&v| byte_type(v).ok_or(Invalid))
             .collect::<Result<Vec<_>, _>>()?;
@@ -238,6 +325,8 @@ impl EffectShaderDescriptor {
                 source_sampler,
                 output,
                 coverage_offset,
+                full_target_offset,
+                source_footprint,
             },
             start..bytes.len(),
         ))
@@ -245,6 +334,12 @@ impl EffectShaderDescriptor {
     /// Validate the portable interface before registering its immutable bytes.
     pub fn is_valid(&self) -> bool {
         self.abi == EFFECT_SHADER_ABI
+            && self
+                .source_footprint
+                .is_none_or(|_| self.source_sampler && self.output == EffectType::Vec4)
+            && self
+                .full_target_offset
+                .is_none_or(|offset| offset > self.coverage_offset.unwrap_or(0))
             && self.coverage_offset.is_none_or(|offset| {
                 offset > 0
                     && self.output == EffectType::Vec4
@@ -305,6 +400,48 @@ fn byte_type(value: u8) -> Option<EffectType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn footprint_envelope_is_optional_identity_bound_and_length_checked() {
+        let raw = b"ordinary fragment";
+        let original = EffectShaderDescriptor::new(
+            [7; 32],
+            EffectShaderFormat::Wgsl,
+            Vec::new(),
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap();
+        let proved = original
+            .clone()
+            .with_source_footprint(
+                Some(EffectSourceFootprint {
+                    logical_halo: [30, 0, 30, 0],
+                }),
+                raw,
+            )
+            .unwrap();
+        assert_ne!(original.shader_key, proved.shader_key);
+        let old = original.encode_payload(raw).unwrap();
+        let bytes = proved.encode_payload(raw).unwrap();
+        assert_eq!(bytes.len(), old.len() + 16);
+        let (decoded, code) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
+        assert_eq!(decoded, proved);
+        assert_eq!(&bytes[code], raw);
+        assert!(decoded.matches_bytes(raw));
+        let mut changed = decoded;
+        changed.source_footprint.as_mut().unwrap().logical_halo[0] = 29;
+        assert!(!changed.matches_bytes(raw));
+        assert!(EffectShaderDescriptor::decode_payload(&bytes[..119], bytes.len()).is_err());
+        let mut missing = old.clone();
+        missing[15] = 1;
+        assert!(EffectShaderDescriptor::decode_payload(&missing, missing.len()).is_err());
+        assert_eq!(
+            EffectShaderDescriptor::decode_payload(&old, old.len())
+                .unwrap()
+                .0,
+            original
+        );
+    }
     #[test]
     fn gxp_envelopes_have_a_distinct_native_format_identity() {
         let raw = b"GXP\0test-program";
@@ -369,6 +506,45 @@ mod tests {
         let mut invalid = bytes.clone();
         invalid[96..100].copy_from_slice(&(raw.len() as u32).to_le_bytes());
         assert!(EffectShaderDescriptor::decode_payload(&invalid, invalid.len()).is_err());
+    }
+    #[test]
+    fn full_target_segment_keeps_ordinary_and_coverage_ranges_distinct() {
+        let raw = b"ordinarymaskedfull";
+        let descriptor = EffectShaderDescriptor::new(
+            [7; 32],
+            EffectShaderFormat::Wgsl,
+            vec![],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap()
+        .with_coverage_variant(8, raw)
+        .unwrap()
+        .with_full_target_variant(14, raw)
+        .unwrap();
+        assert_eq!(descriptor.code(raw, false), Some(&b"ordinary"[..]));
+        assert_eq!(descriptor.code(raw, true), Some(&b"masked"[..]));
+        assert_eq!(descriptor.full_target_code(raw), Some(&b"full"[..]));
+        let encoded = descriptor.encode_payload(raw).unwrap();
+        let (decoded, range) =
+            EffectShaderDescriptor::decode_payload(&encoded, encoded.len()).unwrap();
+        assert_eq!(decoded, descriptor);
+        assert!(decoded.matches_bytes(&encoded[range]));
+        assert!(descriptor.clone().with_full_target_variant(8, raw).is_err());
+        assert!(
+            descriptor
+                .clone()
+                .with_full_target_variant(raw.len() as u32, raw)
+                .is_err()
+        );
+        assert_ne!(
+            descriptor.shader_key,
+            descriptor
+                .clone()
+                .with_full_target_variant(15, raw)
+                .unwrap()
+                .shader_key
+        );
     }
     #[test]
     fn prepared_envelope_preserves_schema_and_raw_range() {

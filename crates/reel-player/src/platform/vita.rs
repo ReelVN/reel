@@ -14,41 +14,30 @@
 //! `cargo-vita` packages the ELF, platform metadata and `runtime/vita/`.
 //! Its VPK contains `eboot.bin` and `launcher.rpk`, which contains the launcher
 //! font at `fonts/body.ttf`. Graphics uses the system GXM API.
+use super::vita_signals::Signals;
 use crate::{
     hal::{DisplayMetrics, Host, PlatformHost, WindowControl},
     player::{Player, PlayerOptions},
 };
 use reel_core::{
-    budget::QueueLimits,
+    budget::{BudgetCategory, BudgetGroup, BudgetPool, QueueLimits},
     clock::{Clock, MonoTime, UnixMillis},
     wake::WakeSignal,
     window::{WindowCapabilities, WindowConfiguration, WindowInfo, WindowPlatform, WindowSize},
 };
 use reel_render::gxm::{GxmBackend, GxmOptions};
 use reel_ui::app::RenderRootSignal;
-use std::{
-    cell::{Cell, RefCell},
-    path::Path,
-    rc::Rc,
-    sync::Arc,
-    time::Duration,
-};
+use std::{path::Path, rc::Rc, sync::Arc, time::Duration};
 use vita_native::app::{
     self as native,
     power::{PowerEvents, PowerKind},
     wake::Wake,
 };
 mod input;
+#[cfg(feature = "profiling")]
+mod profiling;
 type Error = Box<dyn std::error::Error>;
 
-#[derive(Default)]
-struct Signals {
-    redraw: Cell<bool>,
-    exit: Cell<bool>,
-    visible: Cell<bool>,
-    title: RefCell<String>,
-    text: super::vita_text::Signals,
-}
 /// Fixed-display host. Native controller, wake and power objects stay in the
 /// platform adapter; author code sees the ordinary stage and window capabilities.
 pub struct VitaHost {
@@ -82,8 +71,7 @@ impl Clock for VitaHost {
 }
 impl PlatformHost for VitaHost {
     fn request_redraw(&mut self) {
-        self.signals.redraw.set(true);
-        let _ = self.wake.signal();
+        self.signals.request_redraw();
     }
     fn set_wake_deadline(&mut self, when: Option<MonoTime>) {
         self.deadline = when;
@@ -156,25 +144,10 @@ impl Host for VitaHost {
     fn ui_signal_handler(&self) -> impl FnMut(RenderRootSignal) + 'static {
         let signals = self.signals.clone();
         let wake = self.wake.clone();
-        move |signal| match signal {
-            RenderRootSignal::RequestRedraw | RenderRootSignal::RequestAnimFrame => {
-                signals.redraw.set(true);
+        move |signal| {
+            signals.receive(signal, || {
                 let _ = wake.signal();
-            }
-            RenderRootSignal::Exit => {
-                signals.exit.set(true);
-                let _ = wake.signal();
-            }
-            RenderRootSignal::SetTitle(title) => {
-                *signals.title.borrow_mut() = title;
-            }
-            signal @ (RenderRootSignal::StartIme
-            | RenderRootSignal::EndIme
-            | RenderRootSignal::ImeMoved(..)) => {
-                signals.text.receive(&signal);
-                let _ = wake.signal();
-            }
-            _ => {}
+            });
         }
     }
 }
@@ -342,12 +315,15 @@ fn run_package_on(
     options.media.stream_window_frames = 4096;
     options.media.queue_bytes = 1 << 20;
     options.media.mixer.max_sounds = 16;
-    options.media.video.decoded_bytes = 24 << 20;
+    // Includes AvPlayer's codec buffers, owned NV12 output and PCM. The 960x544
+    // hardware profile reaches the old 24 MiB limit before its output pool fills.
+    options.media.video.decoded_bytes = 32 << 20;
     options.media.video.queued_pictures = 2;
     options.media.video.queued_audio_frames = 4096;
-    options.media.video_decoder = Some(Arc::new(
-        reel_media::video::VitaVideoDecoderFactory::default(),
-    ));
+    options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory {
+        contiguous_budget: Some(native.video_contiguous.clone()),
+        ..Default::default()
+    }));
     let story = crate::distribution::story_from_package(loaded.package)?;
     drop(loading);
     run_story_on(story, options, native, backend)
@@ -452,6 +428,7 @@ fn close_backend<T>(result: Result<T, Error>, backend: GxmBackend) -> Result<T, 
 }
 
 struct NativeLoop {
+    video_contiguous: BudgetPool,
     host: VitaHost,
     wake: Arc<Wake>,
     power: PowerEvents,
@@ -471,10 +448,29 @@ impl NativeLoop {
         let wake = Wake::new()?;
         let power = PowerEvents::new(wake.clone())?;
         let controls = native::input::Input::new()?;
-        let backend = GxmBackend::new(GxmOptions::default())?;
+        // Existing host-service stacks already reduce free MAIN. Configure before
+        // graphics or session/media workers own additional managed blocks.
+        vita_native::allocator::configure_main_budget()?;
+        let free = native::memory::free_memory()?;
+        let contiguous_capacity = free.contiguous_bytes;
+        let video_contiguous = BudgetGroup::new(contiguous_capacity).pool(
+            BudgetCategory::CpuOutput,
+            QueueLimits {
+                max_requests: u32::MAX,
+                max_bytes: contiguous_capacity,
+            },
+        );
+        let display_wake = wake.clone();
+        let backend = GxmBackend::new(
+            GxmOptions::default(),
+            Some(Arc::new(move || {
+                let _ = display_wake.signal();
+            })),
+        )?;
         let host = VitaHost::new(backend.output_size(), wake.clone());
         Ok((
             Self {
+                video_contiguous,
                 host,
                 wake,
                 power,
@@ -494,7 +490,10 @@ impl NativeLoop {
             wake,
             power,
             controls,
+            video_contiguous,
         } = self;
+        #[cfg(not(feature = "profiling"))]
+        let _ = video_contiguous;
         // Carry held input through the boundary until release. A launch-confirm press
         // must not become a second confirmation in the newly mounted game.
         let mut input = input::Input::default();
@@ -505,6 +504,8 @@ impl NativeLoop {
         let mut recording = crate::probe::Recording::new();
         #[cfg(feature = "profiling")]
         let mut next_memory_sample = MonoTime(0);
+        #[cfg(feature = "profiling")]
+        let mut waits = profiling::Waits::default();
         let result = (|| -> Result<(), Error> {
             input = input::Input::new(controls.sample()?);
             loop {
@@ -550,7 +551,11 @@ impl NativeLoop {
                 #[cfg(feature = "profiling")]
                 let probe_started = std::time::Instant::now();
                 let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
-                let sample = controls.sample()?;
+                let sample = {
+                    let _timing =
+                        reel_core::profile::Scope::new(reel_core::profile::Phase::ControlPoll);
+                    controls.sample()?
+                };
                 let keyboard_was_active = text.active();
                 if !keyboard_was_active && return_to_library && input.return_to_library(&sample) {
                     host.signals.exit.set(true);
@@ -576,7 +581,7 @@ impl NativeLoop {
                 player.poll_completions()?;
                 player.tick(host)?;
                 player.prepare_initial_frame(host)?;
-                if host.signals.redraw.replace(false) || player.needs_redraw() {
+                if host.signals.take_redraw() || player.needs_redraw() {
                     player.render(host)?;
                 }
                 #[cfg(feature = "profiling")]
@@ -590,11 +595,19 @@ impl NativeLoop {
                     );
                     if now >= next_memory_sample {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
-                        eprintln!(
-                            "[reel-profile] gpu_memory renderer={usage:?} native={:?}",
-                            player.backend.native_memory_usage()
+                        profiling::record_device(
+                            &mut recording,
+                            player.backend,
+                            video_contiguous,
+                            &waits,
                         );
                     }
+                }
+                // Accepting a retained frame can expose a newer model after its
+                // UI signal was consumed. Service eligible work before sleeping;
+                // preparation under GPU pressure remains blocked until completion.
+                if host.signals.has_redraw() || player.needs_redraw() {
+                    continue;
                 }
                 let now = host.monotonic_now();
                 let deadline = player
@@ -609,10 +622,20 @@ impl NativeLoop {
                 // bounded 60 Hz. Time spent in rendering/vsync already contributes
                 // to this interval, so continuous animation receives no second cap.
                 let timeout = Duration::from_nanos(deadline.0.saturating_sub(now.0));
-                wake.wait(Some(timeout))?;
+                {
+                    let _timing =
+                        reel_core::profile::Scope::new(reel_core::profile::Phase::HostWait);
+                    #[cfg(feature = "profiling")]
+                    let started = std::time::Instant::now();
+                    let _result = wake.wait(Some(timeout))?;
+                    #[cfg(feature = "profiling")]
+                    waits.record(timeout, started.elapsed(), _result);
+                }
             }
             Ok(())
         })();
+        #[cfg(feature = "profiling")]
+        profiling::record_device(&mut recording, player.backend, video_contiguous, &waits);
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;
@@ -638,12 +661,7 @@ impl NativeLoop {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "closed".into());
             let title = host.signals.title.borrow();
-            let logged = recording.write(
-                Path::new("ux0:/data/reel/performance"),
-                &title,
-                native::time::unix_millis().unwrap_or(0) as u64,
-                &outcome,
-            );
+            let logged = recording.print(&title, &outcome);
             if let Err(error) = logged {
                 return result.and(Err(format!("Probe log: {error}").into()));
             }

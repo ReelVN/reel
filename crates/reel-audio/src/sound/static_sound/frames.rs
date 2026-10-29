@@ -62,7 +62,23 @@ pub trait FrameSource: Send + Sync {
 	}
 	/// Return a cached frame, or None while its worker prepares it.
 	fn frame(&self, index: usize) -> Option<Frame>;
-	/// Request a source-local seek without waiting for its worker.
+	/// Copy an available contiguous prefix into caller-owned storage without waiting.
+	/// Return zero while preparation or concurrent access prevents a coherent read.
+	/// The default observes at most one frame, preserving existing source behavior.
+	/// Implementations may batch publication/consumption; never allocate, lock or do IO.
+	fn read_frames(&self, index: usize, output: &mut [Frame]) -> usize {
+		if let Some(first) = output.first_mut()
+			&& let Some(frame) = self.frame(index)
+		{
+			*first = frame;
+			1
+		} else {
+			0
+		}
+	}
+	/// Request a source-local seek without waiting for its worker. Immutable PCM
+	/// already cached at the target may be reused. A decoder restart must reject
+	/// publications from the superseded preparation generation.
 	fn seek(&self, _index: usize) {}
 	/// Whether preparation has terminated with an error.
 	fn failed(&self) -> bool {
@@ -153,5 +169,50 @@ impl<const N: usize> From<Arc<[Frame; N]>> for FrameStorage {
 impl FromIterator<Frame> for FrameStorage {
 	fn from_iter<T: IntoIterator<Item = Frame>>(iter: T) -> Self {
 		Self::Static(iter.into_iter().collect())
+	}
+}
+
+/// Fixed per-voice storage used to batch worker-backed source reads.
+/// Hosts include every active or retired Sound owner in the fixed storage bound.
+pub const STREAM_CACHE_BYTES: usize = std::mem::size_of::<FrameCache>();
+
+pub(super) struct FrameCache {
+	frames: [Frame; 64],
+	start: usize,
+	len: usize,
+}
+impl FrameCache {
+	pub(super) fn new() -> Self {
+		Self {
+			frames: [Frame::ZERO; 64],
+			start: 0,
+			len: 0,
+		}
+	}
+	pub(super) fn clear(&mut self) {
+		self.len = 0;
+	}
+	pub(super) fn frame(
+		&mut self,
+		index: usize,
+		storage: &FrameStorage,
+		end: usize,
+		backwards: bool,
+	) -> Option<Frame> {
+		if index >= end {
+			return None;
+		}
+		match storage {
+			FrameStorage::Static(frames) => frames.get(index).copied(),
+			FrameStorage::Stream(source) => {
+				if index < self.start || index - self.start >= self.len {
+					self.start = index;
+					let count = if backwards { 1 } else { self.frames.len() }.min(end - index);
+					self.len = source.read_frames(index, &mut self.frames[..count]);
+					assert!(self.len <= count, "source read exceeds caller capacity");
+				}
+				(index - self.start < self.len).then(|| self.frames[index - self.start])
+			}
+		}
 	}
 }

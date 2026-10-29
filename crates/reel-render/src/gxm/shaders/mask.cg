@@ -97,7 +97,7 @@ float evaluate(float4 a,float2 uv){
    float repeat=floor(a.w/1024.0);float2 at=uv*scale+offset;
    if(reel_mod(repeat,2.0)>0.5)at.x=frac(at.x);if(repeat>1.5)at.y=frac(at.y);
    float4 texels=u_texels[image],dimensions=u_dimensions[image];float2 half_texel=0.5/dimensions.xy;
-   at=clamp(at*texels.xy,half_texel,texels.xy-half_texel);
+   at=clamp(dimensions.zw+at*texels.xy,dimensions.zw+half_texel,dimensions.zw+texels.xy-half_texel);
    float4 color=image_sample(image,at);
    if(texels.w==1.0)color.a=1.0;if(texels.w==2.0)color.rgb=min(color.rgb,float3(color.a));
    if(op==2)value=color.a;

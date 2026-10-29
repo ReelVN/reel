@@ -58,6 +58,9 @@ impl WgpuBackend {
 }
 
 impl RenderBackend for WgpuBackend {
+    fn device_generation(&self) -> u64 {
+        self.renderer.gpu().generation().0
+    }
     type Error = GpuError;
     fn vsync(&self) -> Option<bool> {
         self.unsynchronized.map(|_| self.vsync)

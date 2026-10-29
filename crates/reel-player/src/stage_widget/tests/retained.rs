@@ -218,14 +218,9 @@ fn retained_inline_rgba_and_yuv_share_pixels_then_restore_color_and_planes() {
             )
             .unwrap();
         let rgba_lease = registry.acquire(rgba).unwrap();
-        let ResourceData::Image {
-            image: original_rgba,
-            ..
-        } = rgba_lease.data()
-        else {
-            panic!()
-        };
-        let rgba_pointer = original_rgba.data.as_ref().as_ptr();
+        let original_rgba = rgba_lease.read_pixels().unwrap();
+        let rgba_pointer = original_rgba.bytes().as_ptr();
+        drop(original_rgba);
         let scene = picture(
             registry.acquire(yuv).unwrap(),
             rgba_lease.clone(),
@@ -235,18 +230,18 @@ fn retained_inline_rgba_and_yuv_share_pixels_then_restore_color_and_planes() {
         assert_eq!(saved.assets().count(), 0);
         let live = restore_inline(&saved, &frame_pool);
         for lease in live.drawing().resources().leases() {
-            match lease.data() {
-                ResourceData::Yuv420(retained) => assert!(
+            match lease.view() {
+                reel_ui::resources::ResourceView::Yuv420(retained) => assert!(
                     retained.same_storage(&image),
                     "making a save descriptor copied decoded planes"
                 ),
-                ResourceData::Image { image, encoding } => {
+                reel_ui::resources::ResourceView::Image { image } => {
                     assert_eq!(
-                        image.data.as_ref().as_ptr(),
+                        lease.read_pixels().unwrap().bytes().as_ptr(),
                         rgba_pointer,
                         "making a save descriptor copied the dynamic image"
                     );
-                    assert_eq!(*encoding, ColorEncoding::Linear);
+                    assert_eq!(image.encoding, ColorEncoding::Linear);
                 }
                 _ => panic!("unexpected picture resource"),
             }
@@ -256,8 +251,8 @@ fn retained_inline_rgba_and_yuv_share_pixels_then_restore_color_and_planes() {
         let restored = restore_inline(&decoded, &frame_pool);
         assert_eq!(restored.drawing().resources().leases().len(), 2);
         for lease in restored.drawing().resources().leases() {
-            match lease.data() {
-                ResourceData::Yuv420(restored) => {
+            match lease.view() {
+                reel_ui::resources::ResourceView::Yuv420(restored) => {
                     assert_eq!(restored.size(), [3, 3]);
                     assert_eq!(restored.color(), image.color());
                     assert_eq!(restored.layout(), layout);
@@ -268,12 +263,12 @@ fn retained_inline_rgba_and_yuv_share_pixels_then_restore_color_and_planes() {
                         assert_eq!(restored.plane(plane), image.plane(plane));
                     }
                 }
-                ResourceData::Image { image, encoding } => {
+                reel_ui::resources::ResourceView::Image { image } => {
                     assert_eq!([image.width, image.height], [64, 64]);
                     assert_eq!(image.format, ImageFormat::Rgba8);
                     assert_eq!(image.alpha_type, ImageAlphaType::Alpha);
-                    assert_eq!(*encoding, ColorEncoding::Linear);
-                    assert_eq!(image.data.as_ref(), rgba_bytes);
+                    assert_eq!(image.encoding, ColorEncoding::Linear);
+                    assert_eq!(lease.read_pixels().unwrap().bytes(), rgba_bytes);
                 }
                 _ => panic!("unexpected restored resource"),
             }

@@ -1,20 +1,27 @@
-//! Temporary device experiment; delegates drawing to production Reel/native code.
+//! Hardware profiling and color checks through production Reel/native rendering.
 #![allow(dead_code)]
+#[path = "ablation.rs"]
+mod ablation;
+#[path = "blend_color.rs"]
+mod blend_color;
 #[path = "../../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
+#[path = "present_color.rs"]
+mod present_color;
 #[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
 mod r01_fixture;
 #[path = "scenes.rs"]
 mod scenes;
 #[path = "timing.rs"]
 mod timing;
+#[path = "video_color.rs"]
+mod video_color;
 
 use reel_render::gxm::{GxmBackend as DeviceBackend, GxmError as DeviceError};
 use reel_render::{AlphaMode, PresentOutcome, RenderBackend, RenderEvent, SurfaceInfo};
 use reel_ui::resources::ColorEncoding;
 use std::{
     collections::VecDeque,
-    io::Write,
     path::PathBuf,
     sync::{
         Arc,
@@ -30,12 +37,16 @@ const SIZE: [u32; 2] = [960, 544];
 const CASES: &[&str] = &[
     "clear_swap",
     "fence",
+    "empty",
+    "solid",
     "rgba",
     "bc1",
     "bc3",
     "bc1_region",
     "bc3_region",
     "text",
+    "text_plain",
+    "text_styled",
     "offscreen",
     "mask_chain",
     "mask_threshold",
@@ -66,33 +77,14 @@ fn directory() -> PathBuf {
     PathBuf::from("ux0:/data/reel-probe")
 }
 
-fn marker(case: &str, state: &str) -> Result {
-    // Disk work occurs only at case boundaries. A frozen start survives reboot.
-    let directory = directory();
-    std::fs::create_dir_all(&directory)?;
-    let line = format!("case={case} state={state}\n");
-    reel_storage::publish(&directory.join("status.txt"), true, |file| {
-        file.write_all(line.as_bytes())
-    })?;
-    let mut history = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join("cases.log"))?;
-    history.write_all(line.as_bytes())?;
-    history.flush()?;
-    drop(history);
-    Ok(())
+fn marker(case: &str, state: &str) {
+    log(format_args!("case={case} state={state}"));
 }
 
-fn checkpoint(enabled: bool, case: &str, frame: usize, step: &str) -> Result {
+fn checkpoint(enabled: bool, case: &str, frame: usize, step: &str) {
     if enabled {
-        let line = format!("case={case} frame={frame} step={step}\n");
-        reel_storage::publish(&directory().join("checkpoint.txt"), true, |file| {
-            file.write_all(line.as_bytes())
-        })?;
-        log(line.trim_end());
+        log(format_args!("case={case} frame={frame} step={step}"));
     }
-    Ok(())
 }
 
 struct Sampler {
@@ -100,7 +92,7 @@ struct Sampler {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Sampler {
-    fn start(trace: bool) -> Result<Self> {
+    fn start() -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::Builder::new()
@@ -137,15 +129,6 @@ impl Sampler {
                         work.join(",")
                     );
                     log(&line);
-                    if trace
-                        && let Err(error) =
-                            reel_storage::publish(&directory().join("active.txt"), true, |file| {
-                                file.write_all(line.as_bytes())
-                            })
-                    {
-                        log(format_args!("sample publication failed: {error}"));
-                        break;
-                    }
                 }
             })?;
         Ok(Self {
@@ -165,7 +148,7 @@ impl Drop for Sampler {
 
 fn native_case(case: &str, frames: usize) -> Result {
     let context = call("native.context", || {
-        let context = reel_render::gxm::create_context(&Default::default())?;
+        let context = reel_render::gxm::create_context(&Default::default(), None)?;
         Ok(context)
     })?;
     log(format_args!(
@@ -214,18 +197,22 @@ fn native_case(case: &str, frames: usize) -> Result {
 
 fn poll_frames(
     renderer: &mut DeviceBackend,
-    pending: &mut VecDeque<reel_core::identity::FrameId>,
+    pending: &mut VecDeque<(reel_core::identity::FrameId, usize, Instant)>,
     events: &mut Vec<RenderEvent<DeviceError>>,
     completed: &mut usize,
+    measurements: &mut timing::Frames,
 ) -> Result {
     events.clear();
     renderer.poll(events, 32)?;
     for event in events.drain(..) {
         match event {
             RenderEvent::RenderFinished { frame, .. } => {
-                if pending.pop_front() != Some(frame) {
+                let (expected, index, submitted) =
+                    pending.pop_front().ok_or("unexpected completion")?;
+                if expected != frame {
                     return Err("completion order".into());
                 }
+                measurements.completed(index, submitted.elapsed());
                 *completed += 1;
             }
             RenderEvent::DeviceLost(error) => return Err(error.into()),
@@ -253,18 +240,25 @@ fn renderer_case(
     let mut polls = 0;
     let mut geometry_uploads = reel_core::profile::GeometryUploads::snapshot();
     let mut warm_uploads = reel_core::profile::GeometryUploads::default();
-    let warm_after = if case == "text" {
+    let warm_after = if case.starts_with("text") {
         scenes::TEXT_REVEAL_FRAMES
     } else {
         8
     };
+    let native_before = renderer.native_memory_usage()?.submission_timing;
     let total = Instant::now();
     for index in 0..frames {
         let started = Instant::now();
         let mut waiting = Duration::ZERO;
         while pending.len() >= flights {
             let wait = Instant::now();
-            poll_frames(renderer, &mut pending, &mut events, &mut completed)?;
+            poll_frames(
+                renderer,
+                &mut pending,
+                &mut events,
+                &mut completed,
+                &mut measurements,
+            )?;
             polls += 1;
             if pending.len() >= flights {
                 if started.elapsed() > Duration::from_secs(10) {
@@ -274,7 +268,7 @@ fn renderer_case(
             }
             waiting += wait.elapsed();
         }
-        checkpoint(trace, case, index, "build")?;
+        checkpoint(trace, case, index, "build");
         let build_start = Instant::now();
         let frame = assets.frame(case, index)?;
         if index == 0 {
@@ -287,30 +281,32 @@ fn renderer_case(
             })?;
         }
         let built = Instant::now();
-        checkpoint(trace, case, index, "render")?;
+        checkpoint(trace, case, index, "render");
         let (submit, present) = loop {
             let start = Instant::now();
             let mut present_start = start;
-            let mut checkpoint_error = None;
             let outcome = renderer.render_present(&frame, || {
                 present_start = Instant::now();
-                checkpoint_error = checkpoint(trace, case, index, "present").err();
+                checkpoint(trace, case, index, "present");
             });
-            if let Some(error) = checkpoint_error {
-                return Err(error);
-            }
             match outcome {
                 Ok(PresentOutcome::PresentAccepted(id)) => {
                     if id != frame.frame_id() {
                         return Err("frame identity".into());
                     }
-                    pending.push_back(id);
+                    pending.push_back((id, index, start));
                     peak_pending = peak_pending.max(pending.len());
                     break (present_start.duration_since(start), present_start.elapsed());
                 }
                 Ok(outcome) => return Err(format!("{case}: unexpected {outcome:?}").into()),
                 Err(DeviceError::Busy) => {
-                    poll_frames(renderer, &mut pending, &mut events, &mut completed)?;
+                    poll_frames(
+                        renderer,
+                        &mut pending,
+                        &mut events,
+                        &mut completed,
+                        &mut measurements,
+                    )?;
                     polls += 1;
                     if started.elapsed() > Duration::from_secs(10) {
                         return Err("submission timeout".into());
@@ -326,7 +322,7 @@ fn renderer_case(
             drop(frame);
             assets.retire();
         }
-        checkpoint(trace, case, index, "submitted")?;
+        checkpoint(trace, case, index, "submitted");
         let uploads = reel_core::profile::GeometryUploads::snapshot();
         if index >= warm_after {
             let delta = uploads.delta(geometry_uploads);
@@ -344,7 +340,13 @@ fn renderer_case(
     }
     let drain = Instant::now();
     while !pending.is_empty() {
-        poll_frames(renderer, &mut pending, &mut events, &mut completed)?;
+        poll_frames(
+            renderer,
+            &mut pending,
+            &mut events,
+            &mut completed,
+            &mut measurements,
+        )?;
         polls += 1;
         if !pending.is_empty() {
             if drain.elapsed() > Duration::from_secs(10) {
@@ -353,10 +355,17 @@ fn renderer_case(
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+    let drain_elapsed = drain.elapsed();
     let elapsed = total.elapsed();
     if completed != frames {
         return Err("missing completions".into());
     }
+    let label = format!("{case}-vsync{}-flights{flights}", u8::from(vsync));
+    ablation::native_delta(
+        &label,
+        native_before,
+        renderer.native_memory_usage()?.submission_timing,
+    );
     if trace {
         log(format_args!(
             "CASE {case} diagnostic checkpoints enabled; timing excluded"
@@ -376,7 +385,7 @@ fn renderer_case(
     log(format_args!(
         "CASE {case} vsync={vsync} submitted={frames} completed={completed} flights_peak={peak_pending}/{flights} polls={polls} elapsed_us={} drain_us={} accounted_usage={:?} asset_usage={:?}",
         elapsed.as_micros(),
-        drain.elapsed().as_micros(),
+        drain_elapsed.as_micros(),
         renderer.usage(),
         assets.usage()
     ));
@@ -402,13 +411,13 @@ fn render_cases(
             || *case == selected
     }) {
         let label = format!("{case}-vsync{}-flights{flights}", u8::from(vsync));
-        marker(&label, "START")?;
+        marker(&label, "START");
         log(format_args!("CASE {label} START"));
         let before = reel_core::profile::Sample::snapshot();
-        checkpoint(trace, case, 0, "reset_session")?;
+        checkpoint(trace, case, 0, "reset_session");
         renderer.reset_session()?;
         let result = renderer_case(renderer, case, frames, trace, vsync, flights);
-        marker(&label, if result.is_ok() { "PASS" } else { "ERROR" })?;
+        marker(&label, if result.is_ok() { "PASS" } else { "ERROR" });
         let delta = reel_core::profile::Sample::snapshot().delta(before);
         for (index, name) in reel_core::profile::NAMES.iter().enumerate() {
             if delta.calls[index] != 0 {
@@ -435,7 +444,12 @@ fn render_cases(
 #[cfg(target_os = "vita")]
 fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) -> Result {
     use reel_player::saves::{DirectorySaves, SaveStorage};
-    marker(case, "START")?;
+    marker(case, "START");
+    log(format_args!(
+        "MEMORY {case} start heap={:?} free={:?}",
+        vita_native::allocator::stats(),
+        vita_native::app::memory::free_memory()
+    ));
     runtime.renderer().set_vsync(true)?;
     let save_directory = directory().join(case);
     let saves = DirectorySaves::new(&save_directory, 8 << 20);
@@ -457,12 +471,17 @@ fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) 
             }
             Ok(())
         });
-    marker(case, if result.is_ok() { "PASS" } else { "ERROR" })?;
+    log(format_args!(
+        "MEMORY {case} end heap={:?} free={:?}",
+        vita_native::allocator::stats(),
+        vita_native::app::memory::free_memory()
+    ));
+    marker(case, if result.is_ok() { "PASS" } else { "ERROR" });
     result
 }
 
 fn run() -> Result {
-    let mut selected = "authored".to_owned();
+    let mut selected = "diagnostic".to_owned();
     let mut frames = 120;
     let mut trace = false;
     let mut vsync = true;
@@ -501,31 +520,77 @@ fn run() -> Result {
     }
     if !matches!(
         selected.as_str(),
-        "authored" | "all" | "render" | "matrix" | "media"
+        "diagnostic"
+            | "ablation"
+            | "authored"
+            | "all"
+            | "render"
+            | "matrix"
+            | "media"
+            | "video_color"
+            | "blend_color"
+            | "present_color"
     ) && !CASES.contains(&selected.as_str())
     {
         return Err(format!(
-            "unknown case {selected}; available: authored,all,render,matrix,media,{}",
+            "unknown case {selected}; available: diagnostic,ablation,authored,all,render,matrix,media,video_color,blend_color,present_color,{}",
             CASES.join(",")
         )
         .into());
     }
     log(format_args!(
-        "BEGIN title=REELP0002 case={selected} frames={frames} trace={trace} vsync={vsync} flights={flights} source={} dirty={} no_readback=true",
+        "BEGIN title=REELP0002 case={selected} render_frames={frames} trace={trace} render_vsync={vsync} render_flights={flights} source={} dirty={} no_readback={}",
         env!("REEL_PROBE_REVISION"),
-        env!("REEL_PROBE_DIRTY")
+        env!("REEL_PROBE_DIRTY"),
+        !matches!(
+            selected.as_str(),
+            "video_color" | "blend_color" | "present_color"
+        )
     ));
     // Package sessions use the player's sampler, including VM task locations.
-    let _sampler = (selected != "authored")
-        .then(|| Sampler::start(trace))
+    let _sampler = (!matches!(selected.as_str(), "authored" | "diagnostic"))
+        .then(|| Sampler::start())
         .transpose()?;
-    if matches!(selected.as_str(), "clear_swap" | "fence") {
-        marker(&selected, "START")?;
+    if selected == "present_color" {
+        marker(&selected, "START");
+        let result = present_color::run();
+        marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
+        result?;
+    } else if matches!(selected.as_str(), "clear_swap" | "fence") {
+        marker(&selected, "START");
         let result = native_case(&selected, frames);
-        marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" })?;
+        marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
         result?;
     } else {
         reel_player::platform::vita::Runtime::run(|runtime| {
+            if matches!(selected.as_str(), "video_color" | "blend_color") {
+                marker(&selected, "START");
+                let result = if selected == "video_color" {
+                    video_color::run(runtime.renderer())
+                } else {
+                    blend_color::run(runtime.renderer())
+                };
+                marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
+                return result;
+            }
+            if matches!(selected.as_str(), "diagnostic" | "ablation") {
+                marker(&selected, "START");
+                let result = (|| {
+                    {
+                        let _sampler = (selected == "diagnostic")
+                            .then(Sampler::start)
+                            .transpose()?;
+                        ablation::run(runtime.renderer(), frames, trace)?;
+                    }
+                    if selected == "diagnostic" {
+                        runtime.renderer().reset_session()?;
+                        package_case(runtime, "authored")?;
+                    }
+                    Ok(())
+                })();
+                marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
+                return result;
+            }
             if selected == "authored" {
                 return package_case(runtime, "authored");
             }

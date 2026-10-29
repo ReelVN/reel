@@ -53,6 +53,7 @@ impl Context<'_> {
         let Some(first) = commands.first().and_then(quad) else {
             return Ok(0);
         };
+        self.expand_instances()?;
         let handle = first.brush.image.resource;
         let image = self.image_resource(handle, commands[0].origin.at)?;
         let source = image
@@ -104,13 +105,15 @@ impl Context<'_> {
                         self.size,
                         mesh::ImagePaint {
                             color: quad.brush.image.color.map(|channel| channel * quad.alpha),
-                            sampling: mesh::ImageSampling::with_layout(
+                            sampling: mesh::ImageSampling::for_image(
                                 quad.brush.image.source_rect,
                                 image.layout,
+                                image.normalized_origin(),
                                 [
                                     quad.brush.sampler.x_extend == Extend::Repeat,
                                     quad.brush.sampler.y_extend == Extend::Repeat,
                                 ],
+                                image.backing.is_some(),
                             ),
                         },
                         at,

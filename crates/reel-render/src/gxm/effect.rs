@@ -9,7 +9,7 @@ use reel_ui::{
 use std::rc::Rc;
 
 #[derive(Default)]
-pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 4]);
+pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 5]);
 impl Cache {
     pub fn prune(&mut self) {
         for cache in &mut self.0 {
@@ -28,6 +28,10 @@ pub(super) struct Compiled {
     _storage: super::ownership::NativeTicket,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one prepared fragment and its fixed execution variant"
+)]
 fn compile(
     gpu: &super::ownership::Device,
     shader: &effect_plan::Shader<'_>,
@@ -36,6 +40,7 @@ fn compile(
     at: RecordLocation,
     padded: bool,
     masked: bool,
+    full_target: bool,
 ) -> Result<Rc<Compiled>, GpuError> {
     let effect_plan::Shader {
         lease,
@@ -55,12 +60,15 @@ fn compile(
             record: "effect textures exceed the device capacity",
         });
     }
-    let bytes = descriptor
-        .code(bytes, masked)
-        .ok_or(GpuError::InvalidRecord {
-            at,
-            record: "missing effect variant",
-        })?;
+    let bytes = if full_target {
+        descriptor.full_target_code(bytes)
+    } else {
+        descriptor.code(bytes, masked)
+    }
+    .ok_or(GpuError::InvalidRecord {
+        at,
+        record: "missing effect variant",
+    })?;
     let code = super::super::effect_code(format, bytes, at)?;
     let storage = effect_cache::reserve(
         budget,
@@ -75,6 +83,7 @@ fn compile(
         code,
         descriptor.output == reel_ui::stage::effect::EffectType::Float || masked,
         padded,
+        !full_target,
     )
     .map_err(|error| GpuError::Shader {
         at,
@@ -107,9 +116,157 @@ impl Context<'_> {
         effect: &FrameEffect,
         transform: Affine,
         source: &Target,
+        source_commands: Option<(
+            std::ops::Range<usize>,
+            Affine,
+            crate::common::scissor::Scissor,
+        )>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
-        self.effect_draw(drawing, effect, transform, source, None, None, at)
+        use crate::common::effect_result::{Grid, Probe};
+        self.flush_draws()?;
+        let proof_transform = source_commands
+            .as_ref()
+            .map_or(Affine::IDENTITY, |(_, value, _)| *value);
+        let region = source_commands.as_ref().map_or(
+            crate::common::scissor::Scissor::full(source.size),
+            |(_, _, region)| *region,
+        );
+        let (source_transform, effect_transform) = Grid::transforms(proof_transform, transform);
+        let grid = Grid {
+            source_transform,
+            effect_transform,
+            source_size: source.size,
+            source_storage: source.view.size(),
+            source_scissor: [region.x, region.y, region.width, region.height],
+            output_size: self.size,
+            output_storage: self.offscreen.storage_size(self.size),
+            scissor: [
+                self.scissor.x,
+                self.scissor.y,
+                self.scissor.width,
+                self.scissor.height,
+            ],
+            quality: [0, 1],
+        };
+        let probe = if self.effect_admission.enabled()
+            && !self.capture
+            && !self.scissor.empty()
+            && effect_plan::context(effect, transform, self.size, source.size).is_some()
+        {
+            if let Some(token) = source.effect_token() {
+                Some(Probe::from_output(token, effect, grid))
+            } else if let Some((commands, _, _)) = source_commands {
+                Probe::new(drawing, commands, effect, grid)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(probe) = probe {
+            if let Some((token, hit)) = self.effect_results.lookup(&probe) {
+                if self
+                    .effect_pins
+                    .iter()
+                    .any(|held| held.effect_token() == Some(token))
+                {
+                    return Ok(hit);
+                }
+                let bytes = self
+                    .gpu
+                    .target_layout(hit.view.size(), native::TargetFormat::Rgba8)?
+                    .texture_bytes;
+                if self.effect_admission.can_retain(bytes) {
+                    let local =
+                        self.budget_scope
+                            .targets
+                            .reserve(bytes)
+                            .map_err(|_| GpuError::Budget {
+                                domain: "offscreen targets",
+                                requested: bytes,
+                                available: self
+                                    .limits
+                                    .target_bytes
+                                    .saturating_sub(self.budget_scope.targets.usage().bytes),
+                            })?;
+                    self.tickets.push(crate::common::renderer::Reservation {
+                        _shared: None,
+                        _local: local,
+                    });
+
+                    let mut pins = std::mem::take(&mut self.effect_pins);
+                    let held = crate::common::scopes::push_stack(&mut pins, hit.clone(), |bytes| {
+                        self.transient(bytes)
+                    });
+                    self.effect_pins = pins;
+                    held?;
+                    self.effect_admission.retain(bytes);
+                    return Ok(hit);
+                }
+            }
+            let output = self.effect_draw(
+                drawing,
+                effect,
+                transform,
+                effect_plan::Source::sampled(source, source.size, source.view.size()),
+                None,
+                None,
+                at,
+            )?;
+            let bytes = self
+                .gpu
+                .target_layout(output.view.size(), native::TargetFormat::Rgba8)?
+                .texture_bytes;
+            if self.effect_admission.can_retain(bytes)
+                && let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient)
+            {
+                if !candidate.retain {
+                    let mut pending = std::mem::take(&mut self.effect_pending);
+                    let _ = crate::common::scopes::push_stack(
+                        &mut pending,
+                        candidate.observe(),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.effect_pending = pending;
+                    return Ok(output);
+                }
+                let Some(pinned) = output.pin_effect(candidate.token, &self.budgets.transient)
+                else {
+                    return Ok(output);
+                };
+                let mut pins = std::mem::take(&mut self.effect_pins);
+                let held = crate::common::scopes::push_stack(&mut pins, pinned.clone(), |bytes| {
+                    self.transient(bytes)
+                });
+                self.effect_pins = pins;
+                if held.is_ok() {
+                    let stored = pinned.clone();
+                    let mut pending = std::mem::take(&mut self.effect_pending);
+                    let saved = crate::common::scopes::push_stack(
+                        &mut pending,
+                        candidate.finish(stored),
+                        |bytes| self.transient(bytes),
+                    );
+                    self.effect_pending = pending;
+                    if saved.is_ok() {
+                        self.effect_admission.retain(bytes);
+                        return Ok(pinned);
+                    }
+                    self.effect_pins.pop();
+                }
+            }
+            return Ok(output);
+        }
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            effect_plan::Source::sampled(source, source.size, source.view.size()),
+            None,
+            None,
+            at,
+        )
     }
     /// Multiply the complete local source by scalar coverage in one pass.
     pub(super) fn effect_mask(
@@ -125,7 +282,7 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            source,
+            effect_plan::Source::sampled(source, source.size, source.view.size()),
             Some(source_frame_to_pixels),
             None,
             at,
@@ -150,7 +307,7 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            source,
+            effect_plan::Source::sampled(source, source.size, source.view.size()),
             None,
             Some(effect_plan::Terminal {
                 target,
@@ -165,12 +322,12 @@ impl Context<'_> {
         clippy::too_many_arguments,
         reason = "one prepared effect and optional terminal composite"
     )]
-    fn effect_draw(
+    pub(super) fn effect_draw(
         &mut self,
         drawing: &FrameDrawing,
         effect: &FrameEffect,
         transform: Affine,
-        source: &Target,
+        source: effect_plan::Source<'_, Target>,
         source_view: Option<Affine>,
         terminal: Option<effect_plan::Terminal<'_, Target>>,
         at: RecordLocation,
@@ -184,35 +341,7 @@ impl Context<'_> {
             lease, descriptor, ..
         } = shader;
         let padded = descriptor.output == reel_ui::stage::effect::EffectType::Float
-            && source.size != source.view.size();
-        let cache =
-            &mut self.effect_cache.0[usize::from(padded) + 2 * usize::from(coverage.is_some())];
-        let compiled = if let Some(compiled) = cache.get(
-            descriptor.shader_key,
-            lease,
-            &self.budgets.resources,
-            self.limits.resource_bytes,
-        )? {
-            compiled
-        } else {
-            let compiled = compile(
-                self.gpu,
-                &shader,
-                &self.budgets.resources,
-                self.limits.resource_bytes,
-                at,
-                padded,
-                coverage.is_some(),
-            )?;
-            cache.insert(
-                descriptor.shader_key,
-                lease,
-                compiled.clone(),
-                &self.budgets.resources,
-                self.limits.resource_bytes,
-            )?;
-            compiled
-        };
+            && source.size != source.storage_size;
         let output = if let Some(output) = &terminal {
             output.target.clone()
         } else {
@@ -231,7 +360,7 @@ impl Context<'_> {
             context[2][3] = opacity;
             context[3][3] = f32::from(nested);
         }
-        effect_plan::map_storage(&mut context, source.size, source.view.size());
+        effect_plan::map_storage(&mut context, source.size, source.storage_size);
         if let Some(mask) = coverage {
             context[9] =
                 crate::common::source_view::uv_mapping(self.size, mask.view.size(), [0; 2]);
@@ -243,8 +372,53 @@ impl Context<'_> {
             self.ensure_sampled(&mask.view)?;
         }
         if descriptor.source_sampler {
-            self.ensure_sampled(&source.view)?;
+            self.ensure_sampled(&source.pixels.expect("sampled effect source").view)?;
         }
+        let overwrite = (!padded
+            && terminal.is_none()
+            && coverage.is_none()
+            && descriptor.full_target_offset.is_some())
+        .then(|| {
+            crate::common::target_writes::FullOverwrite::composite(
+                self.size,
+                output.view.size(),
+                self.scissor,
+                true,
+            )
+        })
+        .flatten();
+        let cache = &mut self.effect_cache.0[if overwrite.is_some() {
+            4
+        } else {
+            usize::from(padded) + 2 * usize::from(coverage.is_some())
+        }];
+        let compiled = if let Some(compiled) = cache.get(
+            descriptor.shader_key,
+            lease,
+            &self.budgets.resources,
+            self.limits.resource_bytes,
+        )? {
+            compiled
+        } else {
+            let compiled = compile(
+                self.gpu,
+                &shader,
+                &self.budgets.resources,
+                self.limits.resource_bytes,
+                at,
+                padded,
+                coverage.is_some(),
+                overwrite.is_some(),
+            )?;
+            cache.insert(
+                descriptor.shader_key,
+                lease,
+                compiled.clone(),
+                &self.budgets.resources,
+                self.limits.resource_bytes,
+            )?;
+            compiled
+        };
         self.ensure_target(&output)?;
         let mut held = std::mem::take(&mut self.effects);
         let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {
@@ -265,7 +439,7 @@ impl Context<'_> {
         )?;
         let mut images = Vec::with_capacity(image_capacity);
         if descriptor.source_sampler {
-            images.push(&source.view);
+            images.push(&source.pixels.expect("sampled effect source").view);
         }
         let mut metadata = Vec::with_capacity(metadata_capacity);
         let mut values = Vec::with_capacity(value_capacity);
@@ -282,6 +456,7 @@ impl Context<'_> {
             images.push(&image.texture);
             metadata.extend(effect_plan::texture_metadata(
                 image.layout,
+                image.origin,
                 image.encoding,
                 image.format,
             ));
@@ -371,6 +546,7 @@ impl Context<'_> {
             size: self.size,
             program: &compiled.program,
             vertices: mesh.map_or(&self.programs.vertices, |mesh| &mesh.vertices),
+            instances: None,
             indices: Some(mesh.map_or(&self.programs.indices, |mesh| &mesh.indices)),
             range: 0..if padded { index_count } else { 6 },
             textures: &images,

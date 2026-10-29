@@ -3,10 +3,26 @@ pub(super) use crate::common::scissor::Scissor;
 #[cfg(test)]
 pub(super) use crate::common::target_plan::target_pixels;
 
+#[allow(
+    unsafe_code,
+    reason = "the common proof covers every stored sample before any read"
+)]
+pub(super) fn overwrite_load(
+    _: crate::common::target_writes::FullOverwrite,
+) -> wgpu::LoadOp<wgpu::Color> {
+    // SAFETY: the caller draws a fullscreen triangle over the entire physical
+    // viewport/scissor. Its proven fragment variant never discards, its pipeline
+    // has no blending, depth or stencil, and it writes all channels/samples before
+    // resolve and store. Shader texture inputs are separate targets.
+    wgpu::LoadOp::DontCare(unsafe { wgpu::LoadOpDontCare::enabled() })
+}
+
 pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
     let bytes = match quality.format {
         wgpu::TextureFormat::Rgba16Float => 8,
         wgpu::TextureFormat::Rgba8Unorm => 4,
+        wgpu::TextureFormat::R16Float => 2,
+        wgpu::TextureFormat::R8Unorm => 1,
         _ => return Err(GpuError::InvalidSize),
     };
     u64::from(size[0])
@@ -22,6 +38,18 @@ pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
         .ok_or(GpuError::InvalidSize)
 }
 
+struct EffectPin {
+    allocation: std::sync::Arc<super::target_cache::Allocation>,
+    token: crate::common::effect_result::Token,
+    _metadata: reel_core::budget::BudgetTicket,
+}
+impl Drop for EffectPin {
+    fn drop(&mut self) {
+        self.allocation
+            .effect_pins
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 #[derive(Clone)]
 pub struct Target {
     pub(super) slot: usize,
@@ -29,8 +57,44 @@ pub struct Target {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub multisample: Option<wgpu::TextureView>,
+    pub(super) allocation: Option<std::sync::Weak<super::target_cache::Allocation>>,
+    effect_pin: Option<std::sync::Arc<EffectPin>>,
 }
 impl Target {
+    pub(super) fn is_effect_pinned(&self) -> bool {
+        self.allocation
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|allocation| {
+                allocation
+                    .effect_pins
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != 0
+            })
+    }
+    pub(super) fn effect_token(&self) -> Option<crate::common::effect_result::Token> {
+        self.effect_pin.as_ref().map(|pin| pin.token)
+    }
+    pub(super) fn pin_effect(
+        &self,
+        token: crate::common::effect_result::Token,
+        pool: &reel_core::budget::BudgetPool,
+    ) -> Option<Self> {
+        let allocation = self.allocation.as_ref()?.upgrade()?;
+        let metadata = pool
+            .reserve((size_of::<EffectPin>() + 2 * size_of::<usize>()) as u64)
+            .ok()?;
+        allocation
+            .effect_pins
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let mut result = self.clone();
+        result.effect_pin = Some(std::sync::Arc::new(EffectPin {
+            allocation,
+            token,
+            _metadata: metadata,
+        }));
+        Some(result)
+    }
     pub fn storage_size(&self) -> [u32; 2] {
         let size = self.texture.size();
         [size.width, size.height]
@@ -50,7 +114,8 @@ impl Target {
             format: quality.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         };
         let texture = device.create_texture(&descriptor);
@@ -64,15 +129,20 @@ impl Target {
                 })
                 .create_view(&Default::default())
         });
+        reel_core::profile::count(reel_core::profile::Phase::TargetCreated);
         Self {
             slot: 0,
             size,
             texture,
             view,
             multisample,
+            allocation: None,
+            effect_pin: None,
         }
     }
     pub fn attachment(&self, clear: bool) -> wgpu::RenderPassColorAttachment<'_> {
+        #[cfg(test)]
+        pass_trace::record(&self.texture, clear);
         wgpu::RenderPassColorAttachment {
             view: self.multisample.as_ref().unwrap_or(&self.view),
             resolve_target: self.multisample.as_ref().map(|_| &self.view),
@@ -90,8 +160,65 @@ impl Target {
 }
 
 #[cfg(test)]
+pub(super) mod pass_trace {
+    use std::cell::{Cell, RefCell};
+    thread_local! { static TRACE: RefCell<Option<Vec<wgpu::Texture>>> = const { RefCell::new(None) }; static CLEARS: Cell<usize> = const { Cell::new(0) }; }
+    pub fn record(texture: &wgpu::Texture, clear: bool) {
+        TRACE.with_borrow_mut(|trace| {
+            if let Some(trace) = trace {
+                if clear {
+                    CLEARS.with(|count| count.set(count.get() + 1));
+                }
+                trace.push(texture.clone());
+            }
+        });
+    }
+    pub fn collect_counts<T>(work: impl FnOnce() -> T) -> (T, usize, usize) {
+        let (value, passes) = collect(work);
+        (value, passes.len(), CLEARS.with(Cell::get))
+    }
+    pub fn collect<T>(work: impl FnOnce() -> T) -> (T, Vec<wgpu::Texture>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TRACE.with_borrow_mut(|trace| *trace = None);
+            }
+        }
+        CLEARS.with(|count| count.set(0));
+        TRACE.with_borrow_mut(|trace| {
+            assert!(trace.is_none());
+            *trace = Some(Vec::new());
+        });
+        let reset = Reset;
+        let value = work();
+        let trace = TRACE.with_borrow_mut(Option::take).unwrap();
+        drop(reset);
+        (value, trace)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coverage_formats_keep_precision_and_charge_resolve_and_samples() {
+        for (format, bytes) in [
+            (wgpu::TextureFormat::R8Unorm, 1),
+            (wgpu::TextureFormat::R16Float, 2),
+        ] {
+            for samples in [1, 4] {
+                let quality = Quality {
+                    format,
+                    samples,
+                    degraded: false,
+                };
+                assert_eq!(
+                    target_bytes([321, 127], quality).unwrap(),
+                    321 * 127 * bytes * if samples == 1 { 1 } else { 5 }
+                );
+            }
+        }
+    }
     #[test]
     fn resolve_and_msaa_are_both_charged() {
         assert_eq!(

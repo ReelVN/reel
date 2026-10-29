@@ -14,6 +14,7 @@ pub(crate) enum Kind {
     Packed,
     Video,
     VideoAppearance,
+    VideoDirectNv12,
 }
 impl Kind {
     fn index(self) -> usize {
@@ -34,6 +35,7 @@ impl Kind {
             Self::Packed => 13,
             Self::Video => 14,
             Self::VideoAppearance => 15,
+            Self::VideoDirectNv12 => 20,
         }
     }
     fn code(self, clipped: bool) -> native::ShaderCode<'static> {
@@ -72,6 +74,7 @@ impl Kind {
             17 => pair!("paint_direct_bc1_bounded"),
             18 => pair!("paint_direct_bc3_bounded"),
             19 => pair!("paint_solid_bounded"),
+            20 => pair!("paint_video_direct_nv12"),
             _ => unreachable!(),
         }
     }
@@ -81,7 +84,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 40],
+    entries: [OnceCell<Box<Entry>>; 84],
     budget: BudgetPool,
 }
 impl PaintPrograms {
@@ -96,8 +99,10 @@ impl PaintPrograms {
         device: &super::super::ownership::Device,
         kind: Kind,
         clipped: bool,
+        instanced: bool,
     ) -> Result<&Shader, GpuError> {
-        let slot = &self.entries[kind.index() * 2 + usize::from(clipped)];
+        let slot =
+            &self.entries[kind.index() * 4 + usize::from(clipped) * 2 + usize::from(instanced)];
         if slot.get().is_none() {
             let storage = device.ticket(
                 self.budget
@@ -106,13 +111,18 @@ impl PaintPrograms {
             );
             let program = create_program_with_vertex(
                 device,
-                if matches!(kind, Kind::Bounded(_)) {
+                if instanced && matches!(kind, Kind::Bounded(_)) {
+                    shader_code!("vertex_instances_bounded")
+                } else if instanced {
+                    shader_code!("vertex_instances")
+                } else if matches!(kind, Kind::Bounded(_)) {
                     shader_code!("vertex_bounded")
                 } else {
                     shader_code!("vertex")
                 },
                 kind.code(clipped),
                 clipped,
+                instanced,
             )?;
             let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
             let entry = Box::new(Entry {

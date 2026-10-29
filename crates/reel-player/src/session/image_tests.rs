@@ -1,4 +1,8 @@
 use super::*;
+#[path = "image_motion.rs"]
+mod motion;
+#[path = "image_playback.rs"]
+mod playback;
 use crate::{
     aside_session::{AsideSessionUi, StoryProgress, StoryState},
     assets::AssetOptions,
@@ -250,10 +254,7 @@ fn image_pixel_ids(frame: &RenderFrame) -> Vec<u64> {
                     .iter()
                     .find(|lease| lease.handle() == image.image.resource)
                     .expect("image handle must resolve in this frame's snapshot");
-                let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
-                    panic!("image handle resolved to another resource kind")
-                };
-                Some(image.data.id())
+                Some(crate::test_image::data(lease).data.id())
             } else {
                 None
             }
@@ -424,7 +425,7 @@ fn main() {
 #[test]
 fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
     use reel_ui::{
-        resources::{EffectShaderDescriptor, EffectShaderFormat, ResourceData},
+        resources::{EffectShaderDescriptor, EffectShaderFormat},
         stage::{NodeKind, NodeProps, Stage, effect::*},
     };
     for coverage in [false, true] {
@@ -521,10 +522,18 @@ fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
         let lease = ui
             .image_resources()
             .iter()
-            .find(|lease| matches!(lease.data(), ResourceData::EffectShader { .. }))
+            .find(|lease| {
+                matches!(
+                    lease.view(),
+                    reel_ui::resources::ResourceView::EffectShader { .. }
+                )
+            })
             .unwrap();
         let handle = lease.handle();
-        assert!(matches!(lease.data(), ResourceData::EffectShader { .. }));
+        assert!(matches!(
+            lease.view(),
+            reel_ui::resources::ResourceView::EffectShader { .. }
+        ));
         let retained = bridge.record(FrameId(1)).unwrap();
         let layer = retained
             .plan()
@@ -561,8 +570,8 @@ fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
         assert_eq!(prepared.images.len(), 1);
         assert_eq!(prepared.coverage_invert, coverage);
         assert!(matches!(
-            prepared.images[0].data(),
-            ResourceData::Image { .. }
+            prepared.images[0].view(),
+            reel_ui::resources::ResourceView::Image { .. }
         ));
         let resources = ui.stage.as_ref().unwrap().resources.clone();
         let requests = ui.images.stage_requests;

@@ -324,7 +324,7 @@ impl Prepared {
     pub(super) fn parameter_cost(&self, images: usize) -> u64 {
         let bytes = pipeline::COMPOSITE_BYTES
             + 64
-            + images as u64 * 16
+            + images as u64 * 32
             + if self.split.is_some() { 64 } else { 0 };
         bytes * if images > 4 { 2 } else { 1 }
     }
@@ -345,8 +345,8 @@ impl Prepared {
     ) {
         let matrix = transform.as_coeffs();
         let header = pipeline::COMPOSITE_WORDS;
-        let base_words = header + 16 + inputs.images.len() * 4;
-        let mut words = smallvec::SmallVec::<[u32; 60]>::with_capacity(
+        let base_words = header + 16 + inputs.images.len() * 8;
+        let mut words = smallvec::SmallVec::<[u32; 84]>::with_capacity(
             base_words + if self.split.is_some() { 16 } else { 0 },
         );
         words.resize(base_words, 0);
@@ -392,6 +392,23 @@ impl Prepared {
                         Some(reel_core::texture::TextureFormat::Bc3Rgba) => 2.,
                         _ => 0.,
                     },
+                ]
+                .map(f32::to_bits),
+            );
+        }
+        let origin_start = header + 16 + inputs.images.len() * 4;
+        for (parameters, image) in words[origin_start..]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(&inputs.images)
+        {
+            parameters.copy_from_slice(
+                &[
+                    image.origin[0] as f32 / image.size[0] as f32,
+                    image.origin[1] as f32 / image.size[1] as f32,
+                    0.,
+                    0.,
                 ]
                 .map(f32::to_bits),
             );
@@ -510,7 +527,8 @@ fn shader_with_split(
     if !program.sources().is_empty() {
         write!(
             code,
-            ", mask_texels: array<vec4<f32>,{}>",
+            ", mask_texels: array<vec4<f32>,{}>, mask_origins: array<vec4<f32>,{}>",
+            program.sources().len(),
             program.sources().len()
         )?;
     }
@@ -577,7 +595,7 @@ fn shader_with_split(
                 }
                 writeln!(
                     code,
-                    "let texels_{i}=params.mask_texels[{image}];let half_{i}=0.5/vec2<f32>(textureDimensions(image_{image}));var sample_{i}=textureSampleLevel(image_{image},linear_sampler,clamp(coords_{i}*texels_{i}.xy,half_{i},texels_{i}.xy-half_{i}),0.0);if texels_{i}.w==1.0{{sample_{i}.a=1.0;}}if texels_{i}.w==2.0{{sample_{i}=vec4<f32>(min(sample_{i}.rgb,vec3<f32>(sample_{i}.a)),sample_{i}.a);}}"
+                    "let texels_{i}=params.mask_texels[{image}];let half_{i}=0.5/vec2<f32>(textureDimensions(image_{image}));let origin_{i}=params.mask_origins[{image}].xy;var sample_{i}=textureSampleLevel(image_{image},linear_sampler,clamp(origin_{i}+coords_{i}*texels_{i}.xy,origin_{i}+half_{i},origin_{i}+texels_{i}.xy-half_{i}),0.0);if texels_{i}.w==1.0{{sample_{i}.a=1.0;}}if texels_{i}.w==2.0{{sample_{i}=vec4<f32>(min(sample_{i}.rgb,vec3<f32>(sample_{i}.a)),sample_{i}.a);}}"
                 )?;
                 match channel {
                     MaskChannel::Alpha => format!("sample_{i}.a"),
@@ -645,7 +663,7 @@ fn paired_expression(
         }
         writeln!(
             code,
-            "let t{index}=params.mask_texels[{image}];let h{index}=0.5/vec2<f32>(textureDimensions(image_{image}));var s{index}=textureSampleLevel(image_{image},linear_sampler,clamp(c{index}*t{index}.xy,h{index},t{index}.xy-h{index}),0.0);if t{index}.w==1.0{{s{index}.a=1.0;}}"
+            "let t{index}=params.mask_texels[{image}];let h{index}=0.5/vec2<f32>(textureDimensions(image_{image}));let o{index}=params.mask_origins[{image}].xy;var s{index}=textureSampleLevel(image_{image},linear_sampler,clamp(o{index}+c{index}*t{index}.xy,o{index}+h{index},o{index}+t{index}.xy-h{index}),0.0);if t{index}.w==1.0{{s{index}.a=1.0;}}"
         )?;
         if sample.channel == MaskChannel::Gray {
             writeln!(
@@ -712,7 +730,7 @@ fn split_expression(
         }
         writeln!(
             code,
-            "let t{i}=params.mask_texels[{image}];let h{i}=0.5/vec2<f32>(textureDimensions(image_{image}));var s{i}=textureSampleLevel(image_{image},linear_sampler,clamp(at{i}*t{i}.xy,h{i},t{i}.xy-h{i}),0.0);if t{i}.w==1.0{{s{i}.a=1.0;}}if t{i}.w==2.0{{s{i}=vec4<f32>(min(s{i}.rgb,vec3<f32>(s{i}.a)),s{i}.a);}}"
+            "let t{i}=params.mask_texels[{image}];let h{i}=0.5/vec2<f32>(textureDimensions(image_{image}));let o{i}=params.mask_origins[{image}].xy;var s{i}=textureSampleLevel(image_{image},linear_sampler,clamp(o{i}+at{i}*t{i}.xy,o{i}+h{i},o{i}+t{i}.xy-h{i}),0.0);if t{i}.w==1.0{{s{i}.a=1.0;}}if t{i}.w==2.0{{s{i}=vec4<f32>(min(s{i}.rgb,vec3<f32>(s{i}.a)),s{i}.a);}}"
         )?;
         if let Some(slot) = fetch.alpha {
             writeln!(code, "n{slot}=s{i}.a;")?;

@@ -260,8 +260,8 @@ fn particle_raster_and_bc_resources_submit_without_expansion() {
         let (frame, pool) = particle_frame(compressed);
         assert_eq!(
             matches!(
-                frame.resources().leases()[0].data(),
-                ResourceData::Texture { .. }
+                frame.resources().leases()[0].view(),
+                reel_ui::resources::ResourceView::Texture { .. }
             ),
             compressed
         );

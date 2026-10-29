@@ -26,6 +26,13 @@ impl Scissor {
     /// Geometry wholly inside an inner clip can use the viewport's clip. Keep
     /// a subpixel margin so vertex quantization cannot expose an adjacent sample.
     pub fn for_vertices(self, vertices: &[super::mesh::Vertex], size: [u32; 2]) -> Self {
+        self.for_positions(vertices.iter().map(|vertex| vertex.position), size)
+    }
+    pub fn for_positions(
+        self,
+        mut positions: impl Iterator<Item = [f32; 2]>,
+        size: [u32; 2],
+    ) -> Self {
         let full = Self::full(size);
         if self == full {
             return full;
@@ -34,9 +41,9 @@ impl Scissor {
         let y0 = f64::from(self.y) + 1. / 16.;
         let x1 = f64::from(self.x + self.width) - 1. / 16.;
         let y1 = f64::from(self.y + self.height) - 1. / 16.;
-        if vertices.iter().all(|v| {
-            let x = (f64::from(v.position[0]) + 1.) * f64::from(size[0]) * 0.5;
-            let y = (1. - f64::from(v.position[1])) * f64::from(size[1]) * 0.5;
+        if positions.all(|position| {
+            let x = (f64::from(position[0]) + 1.) * f64::from(size[0]) * 0.5;
+            let y = (1. - f64::from(position[1])) * f64::from(size[1]) * 0.5;
             x >= x0 && x <= x1 && y >= y0 && y <= y1
         }) {
             full

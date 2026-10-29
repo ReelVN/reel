@@ -4,11 +4,16 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use wgpu::util::DeviceExt;
 
+#[cfg(test)]
+#[path = "pipeline/overwrite_tests.rs"]
+mod overwrite_tests;
+
 /// Only the three existing format/sample pairs can occupy these instance slots.
 /// No frame data or application-accounted allocations live here.
 #[derive(Default)]
 pub(super) struct PipelineSlots {
     slots: [Mutex<Option<Arc<Pipelines>>>; 3],
+    coverage: [Mutex<Option<Arc<wgpu::RenderPipeline>>>; 3],
     // Publish the first failed constructor before another quality tier starts.
     construction: Mutex<()>,
     #[cfg(test)]
@@ -21,6 +26,53 @@ impl PipelineSlots {
             .iter()
             .filter(|slot| slot.lock().unwrap().is_some())
             .count()
+    }
+    #[cfg(test)]
+    pub(super) fn coverage_count(&self) -> usize {
+        self.coverage
+            .iter()
+            .filter(|slot| slot.lock().unwrap().is_some())
+            .count()
+    }
+    pub(super) fn get_coverage(
+        &self,
+        gpu: &Gpu,
+        color: Quality,
+        pipelines: &Pipelines,
+    ) -> Result<Arc<wgpu::RenderPipeline>, GpuError> {
+        let quality = gpu
+            .coverage_quality(color)
+            .ok_or_else(|| GpuError::Device("unsupported coverage quality".into()))?;
+        let index = match (color.format, color.samples) {
+            (wgpu::TextureFormat::Rgba16Float, 4) => 0,
+            (wgpu::TextureFormat::Rgba16Float, 1) => 1,
+            (wgpu::TextureFormat::Rgba8Unorm, 1) => 2,
+            _ => return Err(GpuError::InvalidSize),
+        };
+        let mut slot = self.coverage[index]
+            .lock()
+            .expect("coverage pipeline slot poisoned");
+        if let Some(pipeline) = &*slot {
+            return Ok(pipeline.clone());
+        }
+        let _construction = self
+            .construction
+            .lock()
+            .expect("pipeline construction poisoned");
+        gpu.check()?;
+        let result = validated(gpu, || {
+            Arc::new(pipeline(
+                &gpu.device,
+                quality,
+                &pipelines.paint_layout,
+                include_str!("paint.wgsl"),
+                true,
+                #[cfg(test)]
+                Some(&self.creations),
+            ))
+        })?;
+        *slot = Some(result.clone());
+        Ok(result)
     }
     pub(super) fn prune_masks(&self) {
         for slot in &self.slots {
@@ -112,6 +164,8 @@ pub(super) struct CompositeParams {
     pub blend: u32,
     /// Integer parent pixels preceding the source's top-left storage texel.
     pub source_origin: [i32; 2],
+    /// Integer parent pixels preceding the copied backdrop's first texel.
+    pub backdrop_origin: [i32; 2],
 }
 pub(super) const COMPOSITE_WORDS: usize = 20;
 pub(super) const COMPOSITE_BYTES: u64 = (COMPOSITE_WORDS * size_of::<u32>()) as u64;
@@ -136,7 +190,13 @@ impl CompositeParams {
                 .map(f32::to_bits)
         };
         let mask_uv = mapping(mask);
-        let backdrop_uv = mapping(backdrop);
+        let size = backdrop.texture().size();
+        let backdrop_uv = crate::common::source_view::uv_mapping(
+            target.size,
+            [size.width, size.height],
+            self.backdrop_origin,
+        )
+        .map(f32::to_bits);
         let (mode, progress, softness) = operation_words(self.operation);
         [
             self.opacity.to_bits(),
@@ -145,7 +205,10 @@ impl CompositeParams {
             softness.to_bits(),
             self.invert.to_bits(),
             self.blend,
-            0,
+            u32::from(matches!(
+                mask.texture().format(),
+                wgpu::TextureFormat::R8Unorm | wgpu::TextureFormat::R16Float
+            )),
             0,
             uv[0],
             uv[1],
@@ -168,6 +231,7 @@ pub(super) struct CompositeInputs<'a> {
     pub backdrop: &'a wgpu::TextureView,
 }
 pub struct Pipelines {
+    instances: Mutex<[Option<Arc<wgpu::RenderPipeline>>; 18]>,
     pub paint: wgpu::RenderPipeline,
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
@@ -491,11 +555,11 @@ impl Pipelines {
         let nearest_samplers = create_samplers(wgpu::FilterMode::Nearest);
         let plain_appearance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("plain image appearance"),
-            contents: &[0u8; 144],
+            contents: &[0u8; 160],
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let block_appearance = std::array::from_fn(|index| {
-            let mut values = [[0f32; 4]; 9];
+            let mut values = [[0f32; 4]; 10];
             values[8][2] = (index + 1) as f32;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("fixed block texture appearance"),
@@ -504,6 +568,7 @@ impl Pipelines {
             })
         });
         Self {
+            instances: Default::default(),
             paint,
             coverage,
             #[cfg(test)]
@@ -601,9 +666,19 @@ impl Pipelines {
         params: CompositeParams,
     ) {
         let group = self.composite_group(device, target, inputs, &params);
+        let full = crate::common::target_writes::FullOverwrite::composite(
+            target.size,
+            target.storage_size(),
+            params.scissor,
+            params.blend != 0 || params.operation.replaces(),
+        );
+        let mut attachment = target.attachment(params.clear);
+        if let Some(proof) = full {
+            attachment.ops.load = super::targets::overwrite_load(proof);
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("whole group composite"),
-            color_attachments: &[Some(target.attachment(params.clear))],
+            color_attachments: &[Some(attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,
@@ -691,11 +766,24 @@ pub(super) fn pipeline_entry(
         quality,
         layout,
         code,
-        (mesh, "vertex"),
+        (
+            if mesh {
+                VertexInput::Mesh
+            } else {
+                VertexInput::None
+            },
+            "vertex",
+        ),
         fragment,
         #[cfg(test)]
         counts,
     )
+}
+
+pub(super) enum VertexInput {
+    None,
+    Mesh,
+    Instances,
 }
 
 pub(super) fn pipeline_vertex(
@@ -703,7 +791,7 @@ pub(super) fn pipeline_vertex(
     quality: Quality,
     layout: &wgpu::BindGroupLayout,
     code: &str,
-    vertex: (bool, &str),
+    vertex: (VertexInput, &str),
     fragment: FragmentOutput<'_>,
     #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
@@ -742,6 +830,20 @@ pub(super) fn pipeline_vertex(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &attributes,
     })];
+    let base_attributes = instance_attributes(crate::common::quad_instances::VERTEX_ATTRIBUTES);
+    let per_instance = instance_attributes(crate::common::quad_instances::INSTANCE_ATTRIBUTES);
+    let instance_buffers = [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: size_of::<crate::common::quad_instances::QuadVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &base_attributes,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: size_of::<crate::common::quad_instances::Instance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &per_instance,
+        }),
+    ];
     #[cfg(test)]
     if let Some(counts) = counts {
         counts
@@ -755,7 +857,11 @@ pub(super) fn pipeline_vertex(
             module: &shader,
             entry_point: Some(vertex.1),
             compilation_options: Default::default(),
-            buffers: if vertex.0 { &buffers } else { &[] },
+            buffers: match vertex.0 {
+                VertexInput::None => &[],
+                VertexInput::Mesh => &buffers,
+                VertexInput::Instances => &instance_buffers,
+            },
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -777,6 +883,22 @@ pub(super) fn pipeline_vertex(
         cache: None,
     })
 }
+fn instance_attributes<const N: usize>(
+    attrs: [crate::common::quad_instances::Attribute; N],
+) -> [wgpu::VertexAttribute; N] {
+    attrs.map(|attr| wgpu::VertexAttribute {
+        shader_location: attr.location,
+        offset: attr.offset,
+        format: match attr.components {
+            1 => wgpu::VertexFormat::Float32,
+            2 => wgpu::VertexFormat::Float32x2,
+            4 => wgpu::VertexFormat::Float32x4,
+            _ => unreachable!(),
+        },
+    })
+}
+#[path = "pipeline_instances.rs"]
+mod instances;
 
 pub(super) fn operation_words(operation: CompositeOperation) -> (u32, f32, f32) {
     match operation {

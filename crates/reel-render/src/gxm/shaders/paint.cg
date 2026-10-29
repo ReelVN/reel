@@ -53,32 +53,73 @@ void main(){
  reel_output=color*v_color;
 }
 #endif
+#elif defined(REEL_NV12_DIRECT)
+uniform sampler2D u_image : TEXUNIT0;
+uniform sampler2D u_chroma_u : TEXUNIT1;
+uniform float4 u_video[4];
+void main(){
+ reel_clip();
+ float4 yuv=float4(tex2D(u_image,v_uv).r,tex2D(u_chroma_u,v_uv).ra,1.0);
+ float3 rgb=clamp(float3(dot(u_video[0],yuv),dot(u_video[1],yuv),dot(u_video[2],yuv)),0.0,1.0);
+ // Transfer metadata is uniform for the draw; one power evaluation serves both curves.
+ float srgb=u_video[3].x;
+ float offset=lerp(0.099,0.055,srgb),scale=lerp(1.099,1.055,srgb);
+ float exponent=lerp(1.0/0.45,2.4,srgb),slope=lerp(4.5,12.92,srgb);
+ float threshold=lerp(0.081,0.04045,srgb);
+ float3 linear=lerp(pow((rgb+offset)/scale,float3(exponent)),rgb/slope,step(rgb,float3(threshold)));
+ reel_output=float4(linear,1.0)*v_color;
+}
 #else
 uniform sampler2D u_image : TEXUNIT0;
 uniform sampler2D u_chroma_u : TEXUNIT1;
 uniform sampler2D u_chroma_v : TEXUNIT2;
 uniform float2 u_dimensions,u_output_size,u_repeat;
-uniform float4 u_appearance[9],u_video[4];
+uniform float4 u_appearance[10],u_video[4];
 uniform float u_video_kind,u_image_flip,u_coverage;
 float3 linear_srgb(float3 x){return lerp(pow((x+0.055)/1.055,float3(2.4)),x/12.92,step(x,float3(0.04045)));}
 float3 encoded_srgb(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
 float2 flip_uv(float2 uv){if(u_image_flip>0.5)uv.y=1.0-uv.y;return uv;}
 float2 source_uv(){
  float2 low=v_window.xy,span=abs(v_window.zw),half_texel=0.5/u_dimensions;
- float2 high=float2(1.0)-half_texel;
- if(u_appearance[4].w>=3.0)high.y=u_appearance[8].y*0.5-half_texel.y;
+ float4 bounds=u_appearance[9];bool has_view=all(abs(bounds.zw)>float2(0.0));
+ float2 view_low=has_view?bounds.xy:float2(0.0);
+ float2 extent=has_view?abs(bounds.zw):float2(1.0);
+ float2 high=view_low+extent-half_texel,texture_low=view_low+half_texel;
+ if(u_appearance[4].w>=3.0)high.y=view_low.y+u_appearance[8].y*0.5-half_texel.y;
  float2 uv=v_uv;
  if(any((span<=float2(0.0)))){
-  if(u_repeat.x>0.5)uv.x=frac(uv.x);if(u_repeat.y>0.5)uv.y=frac(uv.y);
-  if(u_appearance[4].w>=3.0)uv=clamp(uv,half_texel,high);
+  if(has_view&&all(v_window==float4(0.0))){
+   float2 wrapped=view_low+frac((uv-view_low)/extent)*extent;
+   if(bounds.z<0.0)uv.x=wrapped.x;if(bounds.w<0.0)uv.y=wrapped.y;
+  }else if(!has_view){if(u_repeat.x>0.5)uv.x=frac(uv.x);if(u_repeat.y>0.5)uv.y=frac(uv.y);}
+  if(u_appearance[4].w>=3.0||has_view)uv=clamp(uv,texture_low,high);
  }else{
   if(v_window.z<0.0)uv.x=low.x+frac((uv.x-low.x)/span.x)*span.x;
   if(v_window.w<0.0)uv.y=low.y+frac((uv.y-low.y)/span.y)*span.y;
   float2 inset=min(half_texel,span*0.5);
-  uv=clamp(clamp(uv,low+inset,low+span-inset),half_texel,high);
+  uv=clamp(clamp(uv,low+inset,low+span-inset),texture_low,high);
  }
  return uv;
 }
+#if REEL_SOURCE_KIND == 0
+float4 repeat_color(float2 uv,float4 base){
+ float4 bounds=u_appearance[9];float2 extent=abs(bounds.zw);
+ if(any(v_window!=float4(0.0))||!all(extent>float2(0.0))||!any(bounds.zw<float2(0.0))||u_appearance[8].w==1.0)return base;
+ float2 period=extent*u_dimensions,at=frac((v_uv-bounds.xy)/extent)*period;
+ float2 weights=max(float2(0.0),float2(0.5)-min(at,period-at));
+ if(bounds.z>=0.0||period.x<=1.0)weights.x=0.0;if(bounds.w>=0.0||period.y<=1.0)weights.y=0.0;
+ float2 h=0.5/u_dimensions;
+ float2 opposite=float2(at.x<period.x*0.5?bounds.x+extent.x-h.x:bounds.x+h.x,at.y<period.y*0.5?bounds.y+extent.y-h.y:bounds.y+h.y);
+ float4 color=base;
+ if(weights.x>0.0)color=lerp(color,tex2Dlod(u_image,float4(flip_uv(float2(opposite.x,uv.y)),0.0,0.0)),weights.x);
+ if(weights.y>0.0){
+  float4 edge=tex2Dlod(u_image,float4(flip_uv(float2(uv.x,opposite.y)),0.0,0.0));
+  if(weights.x>0.0)edge=lerp(edge,tex2Dlod(u_image,float4(flip_uv(opposite),0.0,0.0)),weights.x);
+  color=lerp(color,edge,weights.y);
+ }
+ return color;
+}
+#endif
 #if REEL_SOURCE_KIND == 3
 float encoded_red(float4 color){
  float value=0.0;
@@ -92,8 +133,11 @@ float encoded_red(float4 color){
 float alpha_sample(float2 uv){
  if(u_appearance[8].w==1.0)return encoded_red(tex2D(u_image,flip_uv(uv)));
  float2 pixel=uv*u_dimensions-0.5,base=floor(pixel),t=frac(pixel);
- float2 a=(clamp(base,float2(0.0),u_dimensions-1.0)+0.5)/u_dimensions;
- float2 b=(clamp(base+1.0,float2(0.0),u_dimensions-1.0)+0.5)/u_dimensions;
+ float4 bounds=u_appearance[9];bool has_view=all(abs(bounds.zw)>float2(0.0));
+ float2 view_low=has_view?floor(bounds.xy*u_dimensions+0.5):float2(0.0);
+ float2 view_high=has_view?floor((bounds.xy+abs(bounds.zw))*u_dimensions+0.5)-1.0:u_dimensions-1.0;
+ float2 a=(clamp(base,view_low,view_high)+0.5)/u_dimensions;
+ float2 b=(clamp(base+1.0,view_low,view_high)+0.5)/u_dimensions;
  return lerp(lerp(encoded_red(tex2D(u_image,flip_uv(a))),encoded_red(tex2D(u_image,flip_uv(float2(b.x,a.y)))),t.x),lerp(encoded_red(tex2D(u_image,flip_uv(float2(a.x,b.y)))),encoded_red(tex2D(u_image,flip_uv(b))),t.x),t.y);
 }
 #endif
@@ -118,6 +162,9 @@ float4 source(float2 uv){
  float alpha=tex2D(u_image,uv).r;return float4(float3(alpha),alpha);
 #else
  float4 color=tex2D(u_image,flip_uv(uv));
+#if REEL_SOURCE_KIND == 0
+ color=repeat_color(uv,color);
+#endif
  if(u_appearance[8].z==1.0)color.a=1.0;
  if(u_appearance[8].z==2.0)color.rgb=min(color.rgb,float3(color.a));
 #if REEL_SOURCE_KIND == 3

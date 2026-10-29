@@ -1,6 +1,8 @@
 //! Presentation-aware text playback shared by all session hosts.
 use super::*;
 use std::time::Duration;
+#[cfg(test)]
+mod tests;
 
 #[derive(Default)]
 pub(super) struct Playback {
@@ -66,6 +68,13 @@ impl SessionUi {
         self.playback.last_ns = None;
         self.playback.auto_last = None;
         self.playback.remaining = self.session.reading().delay();
+    }
+
+    pub(super) fn wait_for_image_presentation(&mut self) {
+        self.pause_dialogue();
+        // A receipt recorded before this resource wait cannot resume reading.
+        self.stamp.advance_revision = self.stamp.advance_revision.wrapping_add(1);
+        self.binding.borrow_mut().accepted = None;
     }
 
     /// Supply monotonic logical nanoseconds and finite nonnegative graphemes/sec.

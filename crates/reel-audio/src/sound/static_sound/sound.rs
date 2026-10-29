@@ -23,7 +23,8 @@ use self::resampler::Resampler;
 use super::{
 	CommandReaders,
 	data::StaticSoundData,
-	frame_at_index, num_frames,
+	frames::FrameCache,
+	num_frames,
 	queue::{QueueRenderer, QueuedStaticSound},
 };
 
@@ -31,6 +32,7 @@ pub(super) struct StaticSound {
 	command_readers: CommandReaders,
 	sample_rate: u32,
 	frames: super::FrameStorage,
+	frame_cache: FrameCache,
 	slice: Option<(usize, usize)>,
 	reverse: bool,
 	playback_state_manager: PlaybackStateManager,
@@ -76,6 +78,7 @@ impl StaticSound {
 			command_readers,
 			sample_rate: data.sample_rate,
 			frames: data.frames,
+			frame_cache: FrameCache::new(),
 			slice: data.slice,
 			reverse: data.settings.reverse,
 			playback_state_manager: PlaybackStateManager::new(settings.fade_in_tween),
@@ -146,6 +149,7 @@ impl StaticSound {
 	}
 
 	fn swap_item(&mut self, next: QueuedStaticSound) -> QueuedStaticSound {
+		self.frame_cache.clear();
 		let old = QueuedStaticSound {
 			index: self.item,
 			data: StaticSoundData {
@@ -254,6 +258,7 @@ impl StaticSound {
 	}
 
 	fn pause(&mut self, fade_out_tween: Tween) {
+		self.frame_cache.clear();
 		self.playback_state_manager.pause(fade_out_tween);
 		self.update_shared_playback_state();
 	}
@@ -289,8 +294,12 @@ impl StaticSound {
 			return false;
 		}
 		self.retire_history();
+		let previous = self.transport.position;
 		if self.is_playing_backwards() {
 			self.transport.decrement_position();
+			if self.transport.position > previous {
+				self.frame_cache.clear();
+			}
 		} else {
 			let end = self
 				.transport
@@ -303,6 +312,9 @@ impl StaticSound {
 			} else {
 				self.transport
 					.increment_position(num_frames(&self.frames, self.slice));
+				if self.transport.position < previous {
+					self.frame_cache.clear();
+				}
 			}
 		}
 		true
@@ -329,6 +341,7 @@ impl StaticSound {
 	}
 
 	fn seek_to_index(&mut self, index: usize) {
+		self.frame_cache.clear();
 		if self.playback_state_manager.playback_state() == PlaybackState::Stopped {
 			return;
 		}
@@ -361,8 +374,11 @@ impl StaticSound {
 
 	fn push_frame_to_resampler(&mut self) -> bool {
 		let frame = if self.transport.playing {
-			let Some(frame) = frame_at_index(self.transport.position, &self.frames, self.slice)
-			else {
+			let start = self.slice.map_or(0, |(start, _)| start);
+			let index = self.transport.position + start;
+			let end = num_frames(&self.frames, self.slice) + start;
+			let backwards = self.is_playing_backwards();
+			let Some(frame) = self.frame_cache.frame(index, &self.frames, end, backwards) else {
 				return false;
 			};
 			Some(frame)

@@ -7,6 +7,9 @@ fn default_storage_grows_past_old_content_quotas_during_each_gc_phase() {
         let initial = h.stats().reserved_bytes;
         let anchor = h.alloc_cell(Value::int(-1)).unwrap();
         let token = root(&mut h, anchor);
+        if phase == GcPhase::Weak {
+            h.alloc_weakref(anchor).unwrap();
+        }
         if phase != GcPhase::Idle {
             h.begin_collection().unwrap();
             reach_phase(&mut h, phase);
@@ -483,6 +486,7 @@ fn weak_stage_new_allocations_do_not_displace_old_sweep_records() {
     for _ in 0..5 {
         old.push(h.alloc_array(&[]).unwrap());
     }
+    h.alloc_weakref(old[0]).unwrap();
     h.begin_collection().unwrap();
     reach_phase(&mut h, GcPhase::Weak);
     let mut fresh = Vec::new();

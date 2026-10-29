@@ -148,7 +148,7 @@ fn repeated_text_is_shared_across_modules_and_defaults_after_roundtrip() {
     )
     .unwrap();
     value(&mut vm, compilation.initializer);
-    assert_eq!(value(&mut vm, entry).as_bool(), Some(true));
+    assert_eq!(value(&mut vm, entry.unwrap()).as_bool(), Some(true));
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn imported_functions_reexports_and_objects_keep_one_identity_and_private_enviro
         );
         assert_eq!(
             state.metadata.functions[declaration.source_function.0 as usize].output,
-            declaration.output
+            Some(declaration.output)
         );
         assert_eq!(
             package.modules[state.module.index()].globals[declaration.global.index()].name,
@@ -260,7 +260,7 @@ fn imported_functions_reexports_and_objects_keep_one_identity_and_private_enviro
             value(&mut vm, compilation.initializer).tag(),
             ValueTag::Null
         );
-        assert_eq!(value(&mut vm, entry).as_int(), Some(7));
+        assert_eq!(value(&mut vm, entry.unwrap()).as_int(), Some(7));
     }
 }
 
@@ -302,7 +302,7 @@ fn legal_function_cycles_link_before_scc_initializers() {
     )
     .unwrap();
     value(&mut vm, compilation.initializer);
-    assert_eq!(value(&mut vm, entry).as_int(), Some(30));
+    assert_eq!(value(&mut vm, entry.unwrap()).as_int(), Some(30));
 }
 
 #[test]

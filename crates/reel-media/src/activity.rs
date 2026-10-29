@@ -159,6 +159,7 @@ pub struct AudioActivityService {
     descriptor_bytes: u64,
     occupied: usize,
     active: usize,
+    output_suspended: bool,
     next_id: Option<u64>,
     epoch: MediaEpoch,
     failed: Option<AudioErrorKind>,
@@ -210,6 +211,7 @@ impl AudioActivityService {
             descriptor_bytes: 0,
             occupied: 0,
             active: 0,
+            output_suspended: false,
             next_id: Some(1),
             epoch,
             failed: None,
@@ -302,6 +304,16 @@ impl AudioActivityService {
     pub fn epoch(&self) -> MediaEpoch {
         self.epoch
     }
+    /// Host-only companion to suspending the output gate. Parks stream decoder
+    /// producers without changing business pause state, Kira command slots,
+    /// fades or content positions. New admissions inherit the flag. Call after
+    /// output suspension completes, and clear when PCM processing resumes.
+    pub fn set_output_suspended(&mut self, suspended: bool) {
+        self.output_suspended = suspended;
+        for entry in self.entries.iter_mut().flatten() {
+            entry.playback.suspend_decode(suspended);
+        }
+    }
     pub fn occupied(&self) -> usize {
         self.occupied
     }
@@ -387,7 +399,7 @@ impl AudioActivityService {
         let descriptor = DescriptorRelease(state.clone());
         let volume_db = sound.volume_db();
         sound.track_retirement(PhysicalRelease(state.clone()));
-        let playback = match self.mixer.play_in_mode(group, sound, held) {
+        let mut playback = match self.mixer.play_in_mode(group, sound, held) {
             Ok(playback) => playback,
             Err(Rejected {
                 request: mut sound,
@@ -406,6 +418,7 @@ impl AudioActivityService {
                 });
             }
         };
+        playback.suspend_decode(self.output_suspended);
         self.next_id = id.0.checked_add(1);
         self.evidence[evidence_slot] = Arc::downgrade(&state);
         *self
@@ -692,6 +705,7 @@ impl AudioActivityService {
             if let Some(e) = &mut self.entries[self.maintenance_cursor]
                 && e.terminal.is_none()
             {
+                e.playback.sync_decode();
                 let terminal = if let Some(reason) = self.failed {
                     Some(AudioActivityTerminal::Failed(reason))
                 } else if e.playback.error().is_some() {

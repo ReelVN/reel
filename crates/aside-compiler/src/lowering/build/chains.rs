@@ -14,6 +14,9 @@ impl FunctionBuilder<'_, '_> {
         let value = loop {
             self.l.b.span = self.span(base);
             self.l.b.work(1)?;
+            if let Some(constant) = self.l.external_constant(base)? {
+                break Some(self.constant(constant, base)?);
+            }
             if let Some(native) = self.l.native(base)? {
                 break Some(self.native_reference(native, base)?);
             }

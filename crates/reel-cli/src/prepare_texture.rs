@@ -7,8 +7,8 @@ use reel_core::texture::{
     ColorEncoding, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
 use std::path::Path;
-mod mips;
-mod quality;
+pub(crate) mod mips;
+pub(crate) mod quality;
 
 /// `Auto` uses BC1 for opaque images and BC3 for images with transparency.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
@@ -269,7 +269,7 @@ fn content_size(original: [u32; 2], bounds: Option<[u32; 2]>) -> Result<[u32; 2]
     })
 }
 
-fn scaled_content_size(
+pub(crate) fn scaled_content_size(
     original: [u32; 2],
     bounds: Option<[u32; 2]>,
     scale: f64,
@@ -292,7 +292,7 @@ fn prepare_pixels(
     Ok((descriptor, pixels))
 }
 
-fn prepare_linear(
+pub(crate) fn prepare_linear(
     original: DynamicImage,
     options: Options,
     scale: f64,
@@ -370,7 +370,7 @@ fn prepare_linear(
     Ok((descriptor, linear))
 }
 
-fn quantized_pixels(
+pub(crate) fn quantized_pixels(
     linear: &image::Rgba32FImage,
     descriptor: TextureDescriptor,
     dither: Dither,

@@ -95,7 +95,16 @@ impl History {
                     field: LineField::Text as u32,
                 })?
             } else {
-                super::super::rich_text::alloc(heap, line.content().styled(), chunk)?
+                let previous = heap.host_property(PropertyId {
+                    host: row,
+                    field: HistoryLineField::Text as u32,
+                })?;
+                let content = line.content().styled();
+                if super::super::rich_text::matches(heap, previous, content, chunk)? {
+                    previous
+                } else {
+                    super::super::rich_text::alloc(heap, content, chunk)?
+                }
             };
             publish(heap, row, HistoryLineField::Text as u32, text)?;
             if index == 0 {

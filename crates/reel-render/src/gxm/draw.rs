@@ -19,6 +19,9 @@ use reel_ui::{
     peniko::{Brush, Extend, Fill, ImageQuality, color::LinearSrgb},
 };
 use std::{cell::RefCell, rc::Weak, sync::Arc};
+#[path = "draw_instances.rs"]
+mod instances;
+pub(super) use instances::InstanceBatch;
 
 struct Paint<'a> {
     texture: &'a native::Texture,
@@ -26,7 +29,7 @@ struct Paint<'a> {
     kind: f32,
     video: &'a [[f32; 4]; 4],
     dimensions: [u32; 2],
-    appearance: [[f32; 4]; 9],
+    appearance: [[f32; 4]; 10],
     repeat: [bool; 2],
     coverage: bool,
     format: Option<PixelFormat>,
@@ -45,7 +48,7 @@ struct PaintState {
     kind: f32,
     video: [[f32; 4]; 4],
     dimensions: [u32; 2],
-    appearance: [[f32; 4]; 9],
+    appearance: [[f32; 4]; 10],
     repeat: [bool; 2],
     quality: ImageQuality,
     coverage: bool,
@@ -231,7 +234,11 @@ impl GlyphCache {
                 "glyph atlas",
             )?;
             let storage = gpu.ticket(storage);
-            let texture = match gpu.create_texture(size, native::TextureFormat::Luma8) {
+            let texture = match gpu.create_texture(
+                size,
+                native::TextureFormat::Luma8,
+                native::TextureMemory::Cdram,
+            ) {
                 Ok(texture) => texture,
                 Err(error) => {
                     if gpu.finish().is_err() {
@@ -395,7 +402,7 @@ impl Context<'_> {
                 kind: 0.,
                 video: &[[0.; 4]; 4],
                 dimensions: source.view.size(),
-                appearance: [[0.; 4]; 9],
+                appearance: [[0.; 4]; 10],
                 repeat: [false; 2],
                 coverage: false,
                 format: None,
@@ -476,7 +483,7 @@ impl Context<'_> {
                 kind: 0.,
                 video: &[[0.; 4]; 4],
                 dimensions: [1, 1],
-                appearance: [[0.; 4]; 9],
+                appearance: [[0.; 4]; 10],
                 repeat: [false; 2],
                 coverage: false,
                 format: None,
@@ -496,6 +503,10 @@ impl Context<'_> {
         let image = self.image_resource(batch.brush.image.resource, at)?;
         let source = image.source.as_ref().and_then(|s| s.lease.upgrade());
         let coverage = source.as_ref().and_then(|s| s.image_coverage());
+        if self.sprite_instances(target, batch, outer, &image, coverage, at)? {
+            return Ok(());
+        }
+        self.expand_instances()?;
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
         mesh.sprites(
             batch,
@@ -504,6 +515,7 @@ impl Context<'_> {
             image.uv_transform(),
             coverage,
             self.size,
+            image._backing.is_some(),
             at,
         )?;
         self.paint_resource(
@@ -527,6 +539,9 @@ impl Context<'_> {
         origin: reel_ui::frame::CommandOrigin,
     ) -> Result<(), GpuError> {
         let at = origin.at;
+        if !matches!(draw, FrameDraw::Sprites(_)) {
+            self.expand_instances()?;
+        }
         let (transform, shape, fill, stroke, brush, brush_transform, composite) = match draw {
             FrameDraw::Fill {
                 transform,
@@ -609,12 +624,18 @@ impl Context<'_> {
                     });
                 }
                 let image = self.image_resource(brush.image.resource, at)?;
+                self.image_instances(&image)?;
                 let repeat = [
                     brush.sampler.x_extend == Extend::Repeat,
                     brush.sampler.y_extend == Extend::Repeat,
                 ];
-                let sampling =
-                    mesh::ImageSampling::with_layout(brush.image.source_rect, image.layout, repeat);
+                let sampling = mesh::ImageSampling::for_image(
+                    brush.image.source_rect,
+                    image.layout,
+                    image.normalized_origin(),
+                    repeat,
+                    image._backing.is_some(),
+                );
                 let color = brush
                     .image
                     .color
@@ -721,6 +742,7 @@ impl Context<'_> {
             return Ok(0);
         }
         let image = self.image_resource(first_brush.image.resource, first.origin.at)?;
+        self.image_instances(&image)?;
         let source = image
             .source
             .as_ref()
@@ -779,10 +801,12 @@ impl Context<'_> {
                             .image
                             .color
                             .map(|c| c * composite.alpha * brush.sampler.alpha),
-                        sampling: mesh::ImageSampling::with_layout(
+                        sampling: mesh::ImageSampling::for_image(
                             brush.image.source_rect,
                             image.layout,
+                            image.normalized_origin(),
                             repeat,
+                            image._backing.is_some(),
                         ),
                     },
                     command.origin.at,
@@ -967,7 +991,7 @@ impl Context<'_> {
                 kind: 0.,
                 video: &[[0.; 4]; 4],
                 dimensions: page.size,
-                appearance: paint.unwrap_or([[0.; 4]; 9]),
+                appearance: paint.unwrap_or([[0.; 4]; 10]),
                 repeat: [false; 2],
                 coverage: true,
                 format: None,
@@ -985,43 +1009,10 @@ impl Context<'_> {
         appearance: Option<ImageAppearance>,
         quality: ImageQuality,
     ) -> Result<(), GpuError> {
-        if appearance
-            .and_then(|a| a.gradient)
-            .is_some_and(|g| g.transform.determinant() == 0.)
-        {
+        let Some(paint) = Paint::image(image, repeat, appearance, quality) else {
             return Ok(());
-        }
-        let mut values = appearance.map(appearance_uniform).unwrap_or([[0.; 4]; 9]);
-        values[8] = [
-            image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
-            image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
-            match image.format {
-                Some(PixelFormat::Bc1Rgb) => 1.,
-                Some(PixelFormat::Bc3Rgba) => 2.,
-                _ => 0.,
-            },
-            f32::from(quality == ImageQuality::Low),
-        ];
-        if values[4][3] == 3. && image.kind == 0. && image.encoding == ColorEncoding::Linear {
-            values[4][3] = 4.;
-        }
-        self.paint_mesh(
-            target,
-            mesh,
-            Paint {
-                texture: &image.texture,
-                planes: &image.planes,
-                kind: image.kind,
-                video: &image.video,
-                dimensions: image.layout.storage_size,
-                appearance: values,
-                repeat,
-                coverage: image.coverage,
-                format: image.format,
-                quality,
-                source: mesh::PaintSource::Texture,
-            },
-        )
+        };
+        self.paint_mesh(target, mesh, paint)
     }
     fn paint_mesh(
         &mut self,
@@ -1029,19 +1020,6 @@ impl Context<'_> {
         mesh: impl Into<crate::common::recording_cache::Reference>,
         paint: Paint<'_>,
     ) -> Result<(), GpuError> {
-        let Paint {
-            texture,
-            planes,
-            kind,
-            video,
-            dimensions,
-            appearance,
-            repeat,
-            coverage,
-            format,
-            quality,
-            source,
-        } = paint;
         let mesh = mesh.into();
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
@@ -1057,6 +1035,37 @@ impl Context<'_> {
         if mesh.indices.is_empty() {
             return Ok(());
         }
+        let direct = if paint.coverage {
+            mesh.direct_coverage(Some(&paint.appearance))
+        } else {
+            (paint.kind == 0. || paint.kind > 1.5)
+                .then(|| {
+                    mesh.direct_paint(
+                        paint.source,
+                        paint.repeat,
+                        Some(&paint.appearance),
+                        paint.format,
+                    )
+                })
+                .flatten()
+                .filter(|direct| paint.kind == 0. || *direct == mesh::DirectPaint::Rgba)
+        };
+        let bounded = mesh.bounded_color.paint(direct, paint.format);
+        let state = paint.state(
+            direct,
+            bounded,
+            mesh.opaque_paint(direct),
+            self.scissor.for_vertices(&mesh.vertices, self.size),
+        );
+        self.expand_instances()?;
+        self.queue_mesh(target, mesh, state)
+    }
+    fn queue_mesh(
+        &mut self,
+        target: &Target,
+        mesh: crate::common::recording_cache::Reference,
+        state: PaintState,
+    ) -> Result<(), GpuError> {
         if self
             .paint_batch
             .as_ref()
@@ -1064,28 +1073,6 @@ impl Context<'_> {
         {
             self.flush_draws()?;
         }
-        let direct = if coverage {
-            mesh.direct_coverage(Some(&appearance))
-        } else {
-            (kind == 0.)
-                .then(|| mesh.direct_paint(source, repeat, Some(&appearance), format))
-                .flatten()
-        };
-        let state = PaintState {
-            bounded: mesh.bounded_color.paint(direct, format),
-            direct,
-            opaque: mesh.opaque_paint(direct),
-            texture: texture.clone(),
-            planes: planes.iter().cloned().collect(),
-            kind,
-            video: *video,
-            dimensions,
-            appearance,
-            repeat,
-            quality,
-            coverage,
-            scissor: self.scissor.for_vertices(&mesh.vertices, self.size),
-        };
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);
             self.paint_batch = Some(batch);
@@ -1100,6 +1087,7 @@ impl Context<'_> {
     }
     /// Flush before target clearing, composition, or leaving the replay stream.
     pub(super) fn flush_draws(&mut self) -> Result<(), GpuError> {
+        self.finish_instances()?;
         let Some(batch) = self.paint_batch.take() else {
             return Ok(());
         };
@@ -1130,6 +1118,7 @@ impl Context<'_> {
         let vertices = &storage.vertices;
         let indices = &storage.indices;
         for entry in batch.geometry.entries {
+            let program = entry.state.shader_kind();
             let PaintState {
                 texture,
                 planes,
@@ -1140,44 +1129,16 @@ impl Context<'_> {
                 repeat,
                 quality,
                 coverage,
-                direct,
-                bounded,
+                direct: _,
+                bounded: _,
                 opaque,
                 scissor,
             } = entry.state;
-            let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
-            use super::programs::PaintKind;
-            let program = if let Some(direct) = direct {
-                if bounded {
-                    PaintKind::Bounded(direct)
-                } else {
-                    PaintKind::Direct(direct)
-                }
-            } else if kind > 0. {
-                if styled {
-                    PaintKind::VideoAppearance
-                } else {
-                    PaintKind::Video
-                }
-            } else if coverage {
-                if appearance[4][3] == 2. {
-                    PaintKind::GlyphGradient
-                } else {
-                    PaintKind::Coverage
-                }
-            } else if appearance[4][3] >= 3. {
-                PaintKind::Packed
-            } else if appearance[4][3] == 2. {
-                PaintKind::Gradient
-            } else if styled {
-                PaintKind::Appearance
-            } else {
-                PaintKind::Rgba
-            };
             let shader = self.programs.paint.get(
                 self.gpu,
                 program,
                 !scissor.tile_exact(32, batch.target.view.size()),
+                false,
             )?;
             let mut values = Values::new();
             for (name, unit) in [("u_image", 0), ("u_chroma_u", 1), ("u_chroma_v", 2)] {
@@ -1205,6 +1166,7 @@ impl Context<'_> {
                     size: self.size,
                     program: &shader.program,
                     vertices,
+                    instances: None,
                     indices: Some(indices),
                     range: entry.range,
                     textures: &[

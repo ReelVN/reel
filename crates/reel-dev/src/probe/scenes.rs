@@ -167,13 +167,14 @@ impl Assets {
         Ok((handle, program))
     }
     pub fn frame(&mut self, case: &str, index: usize) -> Result<RenderFrame> {
-        if case == "text" {
+        if matches!(case, "text" | "text_plain" | "text_styled") {
             if self.text.is_none() {
                 self.text = Some(text::TextScene::new(
                     &mut self.registry,
                     &self.pool,
                     &mut self.handles,
                     &mut self.versions,
+                    case,
                 )?);
             }
             return self.text.as_mut().unwrap().frame(
@@ -210,12 +211,12 @@ impl Assets {
                     scene.pop_group();
                 }
             }
-        } else {
+        } else if case != "empty" {
             fill(&mut scene, Rect::new(0., 0., 960., 544.), Affine::IDENTITY);
         }
         let mut widget = r01_fixture::RecordWidget::new(scene);
         widget.clip = false;
-        if case != "offscreen" {
+        if !matches!(case, "empty" | "solid" | "offscreen") {
             let handle = self.texture(case, index)?;
             let lease = self.registry.acquire(handle).map_err(error)?;
             let progress = 0.1 + 0.8 * (index % 8) as f32 / 7.;

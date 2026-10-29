@@ -1,6 +1,6 @@
 //! Generate stored mip levels before quantization, preserving one base UV mapping.
 use super::*;
-pub(super) fn encode(
+pub(crate) fn encode(
     mut linear: image::Rgba32FImage,
     descriptor: TextureDescriptor,
     dither: Dither,

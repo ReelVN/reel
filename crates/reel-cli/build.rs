@@ -20,6 +20,11 @@ fn main() -> io::Result<()> {
         "crates/reel-cli/src/prepare_texture",
         "crates/reel-core/src/texture.rs",
     ];
+    let mut atlas = texture.to_vec();
+    atlas.extend([
+        "crates/reel-cli/src/resource_conversion/atlas.rs",
+        "crates/reel-core/src/prepared_atlas.rs",
+    ]);
     let mut tiles = texture.to_vec();
     tiles.extend([
         "crates/reel-cli/src/prepare_image.rs",
@@ -57,6 +62,7 @@ fn main() -> io::Result<()> {
     let dependencies = locked_dependencies::LockedDependencies::parse(&lock)?;
     for (kind, sources, dependency_roots) in [
         ("TEXTURE", texture.as_slice(), ["image", "rgbcx"].as_slice()),
+        ("ATLAS", atlas.as_slice(), ["image", "rgbcx"].as_slice()),
         ("TILES", tiles.as_slice(), ["image", "rgbcx"].as_slice()),
         (
             "OPUS",

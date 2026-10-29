@@ -31,11 +31,46 @@ fn prepare_probe() {
     // Retain the player's native startup configuration in the diagnostic binary.
     // reel-player supplies the archive; the linker must keep these process symbols.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita") {
-        for symbol in ["sceUserMainThreadStackSize", "_newlib_heap_size_user"] {
+        for symbol in [
+            "sceUserMainThreadStackSize",
+            "vita_native_process_heap_anchor",
+        ] {
             println!("cargo:rustc-link-arg-bin=reel-gpu-probe=-Wl,--undefined={symbol}");
         }
     }
     prepare_static_mask();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita") {
+        prepare_present_color();
+    }
+}
+
+#[cfg(feature = "vita-probe")]
+fn prepare_present_color() {
+    use reel_render::effect::gxp_compiler::{Compiler, Stage};
+    let compiler = Compiler::new().expect("offline Sony shader compiler");
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let fragment_path = "../reel-render/src/gxm/shaders/present.cg";
+    let vertex_path = "src/probe/present_color_vertex.cg";
+    for path in [fragment_path, vertex_path] {
+        println!("cargo:rerun-if-changed={path}");
+    }
+    let fragment = std::fs::read_to_string(fragment_path).unwrap();
+    let vertex = std::fs::read_to_string(vertex_path).unwrap();
+    for (name, stage, source) in [
+        ("present-color-vertex", Stage::Vertex, vertex),
+        ("present-color-pbe", Stage::Fragment, fragment.clone()),
+        (
+            "present-color-reference",
+            Stage::Fragment,
+            format!("#define REEL_SHADER_SRGB\n{fragment}"),
+        ),
+    ] {
+        std::fs::write(
+            output.join(format!("{name}.gxp")),
+            compiler.compile(stage, &source).unwrap(),
+        )
+        .unwrap();
+    }
 }
 
 #[cfg(feature = "vita-probe")]

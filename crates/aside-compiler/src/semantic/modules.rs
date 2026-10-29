@@ -156,8 +156,21 @@ impl Drop for ResolutionSource {
         }
     }
 }
+/// A host-supplied scalar known before bytecode generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompileConstant {
+    Null,
+    Bool(bool),
+    Int(i64),
+    FloatBits(u64),
+    Utf8(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct ExternalSymbol {
+    /// Immutable scalar supplied by the host at compilation. Reads emit its
+    /// value directly and constant conditions can discard unreachable branches.
+    pub constant: Option<Arc<CompileConstant>>,
     /// Bound source information shared through module interfaces. This never
     /// replaces the declared native signature or changes runtime admission.
     pub source_type: Option<Arc<super::SourceType>>,
@@ -195,6 +208,21 @@ pub struct ExternalClass {
     pub static_members: Vec<ExternalMember>,
 }
 impl ExternalSymbol {
+    /// Declare a typed compile-time value with ordinary import identity.
+    pub fn constant(name: impl Into<String>, value: CompileConstant) -> Self {
+        use CompileConstant as Const;
+        let ty = match &value {
+            Const::Null => TypeHint::Null,
+            Const::Bool(_) => TypeHint::Bool,
+            Const::Int(_) => TypeHint::Int,
+            Const::FloatBits(_) => TypeHint::Float,
+            Const::Utf8(_) => TypeHint::String,
+        };
+        Self {
+            constant: Some(Arc::new(value)),
+            ..Self::value(name, ty)
+        }
+    }
     /// Use the exact registration identity; no ABI/capability/default registry
     /// is synthesized by the analyzer. Missing identity stays explicit as None.
     pub fn with_reference(mut self, reference: SymbolReference) -> Self {
@@ -236,6 +264,7 @@ impl ExternalSymbol {
     }
     pub fn dynamic(name: impl Into<String>) -> Self {
         Self {
+            constant: None,
             source_type: None,
             name: name.into(),
             reference: None,
@@ -251,6 +280,7 @@ impl ExternalSymbol {
     }
     pub fn value(name: impl Into<String>, ty: TypeHint) -> Self {
         Self {
+            constant: None,
             source_type: None,
             name: name.into(),
             reference: None,
@@ -266,6 +296,7 @@ impl ExternalSymbol {
     }
     pub fn function(name: impl Into<String>, signature: ExternalSignature) -> Self {
         Self {
+            constant: None,
             source_type: None,
             name: name.into(),
             reference: None,
@@ -496,6 +527,7 @@ impl MemoryResolver {
                     module: m.canonical_path.clone(),
                     version: m.version.clone(),
                     bindings: vec![ExternalSymbol {
+                        constant: None,
                         source_type: None,
                         name: r.path.last().cloned().unwrap_or_default(),
                         reference: None,

@@ -306,7 +306,9 @@ pub(super) fn preflight(
                 })
             {
                 b.work(links.natives.len() as u64)?;
-                if project.is_none_or(|p| p.node(h::NodeId(i as u32)).is_none())
+                if m.external_binding(None, Some(h::NodeId(i as u32)))
+                    .is_none_or(|binding| binding.descriptor.constant.is_none())
+                    && project.is_none_or(|p| p.node(h::NodeId(i as u32)).is_none())
                     && !links
                         .natives
                         .iter()

@@ -1,12 +1,13 @@
 //! Shared parameter, coordinate and resource admission for prepared effects.
 pub(crate) mod implicit_mesh;
+pub(crate) mod roi;
 #[cfg(test)]
 mod terminal_tests;
 use super::GpuError;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
     kurbo::Affine,
-    resources::{EffectShaderDescriptor, ResourceData, ResourceLease},
+    resources::{EffectShaderDescriptor, ResourceLease, ResourceView},
     stage::effect::EffectValue,
 };
 
@@ -19,6 +20,29 @@ pub(crate) struct Shader<'a> {
 pub(crate) struct SourceLayout {
     pub size: [u32; 2],
     pub frame_to_source: Affine,
+}
+/// Source coordinates remain available when a proved color effect has no pixel
+/// dependency. Sampled effects always retain their actual texture and storage.
+pub(crate) struct Source<'a, T> {
+    pub size: [u32; 2],
+    pub storage_size: [u32; 2],
+    pub pixels: Option<&'a T>,
+}
+impl<'a, T> Source<'a, T> {
+    pub(crate) fn sampled(pixels: &'a T, size: [u32; 2], storage_size: [u32; 2]) -> Self {
+        Self {
+            size,
+            storage_size,
+            pixels: Some(pixels),
+        }
+    }
+    pub(crate) fn unused(size: [u32; 2]) -> Self {
+        Self {
+            size,
+            storage_size: size,
+            pixels: None,
+        }
+    }
 }
 
 /// Nested effects on one authored domain inherit its already rasterized grid.
@@ -187,7 +211,7 @@ pub(crate) fn shader<'a>(
             at,
             record: "effect shader resource",
         })?;
-    let ResourceData::EffectShader { descriptor, bytes } = lease.data() else {
+    let ResourceView::EffectShader { descriptor, bytes } = lease.view() else {
         return Err(GpuError::InvalidRecord {
             at,
             record: "effect shader resource kind",
@@ -303,7 +327,7 @@ fn coverage_variant(drawing: &FrameDrawing, group: &reel_ui::frame::FrameGroup) 
         if lease.handle() != effect.shader {
             return false;
         }
-        let ResourceData::EffectShader { descriptor, .. } = lease.data() else {
+        let ResourceView::EffectShader { descriptor, .. } = lease.view() else {
             return false;
         };
         descriptor.coverage_offset.is_some()
@@ -412,6 +436,7 @@ pub(crate) fn projected_source(
 /// Common fixed image metadata: content scale/encoding/format plus texel centers.
 pub(crate) fn texture_metadata(
     layout: reel_core::texture::TextureLayout,
+    origin: [u32; 2],
     encoding: reel_ui::resources::ColorEncoding,
     format: Option<reel_core::texture::TextureFormat>,
 ) -> [[f32; 4]; 2] {
@@ -430,8 +455,8 @@ pub(crate) fn texture_metadata(
         [
             0.5 / layout.storage_size[0] as f32,
             0.5 / layout.storage_size[1] as f32,
-            0.0,
-            0.0,
+            origin[0] as f32 / layout.storage_size[0] as f32,
+            origin[1] as f32 / layout.storage_size[1] as f32,
         ],
     ]
 }

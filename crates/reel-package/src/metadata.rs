@@ -306,7 +306,7 @@ pub struct DeclaredContext {
 #[serde(deny_unknown_fields)]
 pub struct FunctionMetadata {
     // Array index is the source FunctionId. Initializer and thunks are excluded.
-    pub output: u32,
+    pub output: Option<u32>,
     pub declared_context: DeclaredContext,
     pub known_wait: bool,
     pub dynamic_calls: bool,
@@ -435,9 +435,12 @@ impl ModuleMetadata {
         )?;
         let mut outputs = BTreeSet::new();
         for f in &self.functions {
+            let Some(function_id) = f.output else {
+                continue;
+            };
             let output = p
                 .functions
-                .get(f.output as usize)
+                .get(function_id as usize)
                 .ok_or_else(|| Error::new(Invalid, "function mapping out of range"))?;
             let context = &f.declared_context;
             require(
@@ -458,8 +461,8 @@ impl ModuleMetadata {
                 output.module.0 == self.module_id
                     && output.kind == bc::FunctionKind::Plain
                     && output.context == expected
-                    && f.output != self.initializer.function_id
-                    && outputs.insert(f.output),
+                    && function_id != self.initializer.function_id
+                    && outputs.insert(function_id),
                 Invalid,
                 "invalid/duplicate function mapping",
             )?;
@@ -536,7 +539,8 @@ impl ModuleMetadata {
                 .get(d.global_id as usize)
                 .ok_or_else(|| Error::new(Invalid, "declaration global out of range"))?;
             require(
-                f.output == d.function_id && globals.get(&d.global_id) == Some(&d.source_symbol_id),
+                f.output == Some(d.function_id)
+                    && globals.get(&d.global_id) == Some(&d.source_symbol_id),
                 Invalid,
                 "declaration identity mismatch",
             )?;

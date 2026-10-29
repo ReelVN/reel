@@ -5,9 +5,13 @@ use reel_core::budget::BudgetTicket;
 pub(super) struct Buffers {
     pub vertices: native::VertexBuffer,
     pub indices: native::IndexBuffer,
+    pub instances: Option<Box<native::VertexBuffer>>,
     pub layout: Option<crate::common::draw_batch::Layout>,
 }
 pub(super) type Storage = Box<Allocation<Buffers, super::ownership::NativeTicket>>;
+#[path = "geometry_instances.rs"]
+mod instances;
+pub(super) use instances::{instance_attributes, upload as upload_instances, vertex_attributes};
 type GlyphGeometry = crate::common::recording_cache::Cache<
     crate::common::recording_cache::GlyphDependency,
     crate::common::recording_cache::Glyphs<
@@ -86,12 +90,16 @@ impl Cache {
         batch: &crate::common::draw_batch::Batch<T>,
         local: &Budgets,
     ) -> Option<(Storage, BudgetTicket)> {
-        let storage = self.pool.take_matching(batch.capacity(), |storage| {
-            storage
-                .layout
-                .as_ref()
-                .map_or(0, |layout| layout.score(batch))
-        })?;
+        let storage = self.pool.take_eligible(
+            batch.capacity(),
+            |storage| storage.instances.is_none(),
+            |storage| {
+                storage
+                    .layout
+                    .as_ref()
+                    .map_or(0, |layout| layout.score(batch))
+            },
+        )?;
         let bytes = storage.ticket.bytes()
             + storage
                 .storage
@@ -103,7 +111,8 @@ impl Cache {
         Some((storage, ticket))
     }
     pub fn take(&mut self, capacity: Capacity) -> Option<Storage> {
-        self.pool.take(capacity)
+        self.pool
+            .take_eligible(capacity, |storage| storage.instances.is_none(), |_| 0)
     }
     pub fn put(&mut self, storage: Storage) {
         self.pool.put(storage);
@@ -279,6 +288,7 @@ pub(super) fn acquire(
             storage: Buffers {
                 vertices,
                 indices,
+                instances: None,
                 layout: None,
             },
             ticket,

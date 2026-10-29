@@ -549,3 +549,42 @@ fn completed_stream_releases_window_before_queued_infinite_successor_and_status_
     drop(fill);
     service.drain_and_join().unwrap();
 }
+
+#[test]
+fn realtime_source_evidence_follows_actual_inner_payload_destruction() {
+    struct InspectDrop {
+        service: Arc<AudioReclaimService>,
+        observed: Arc<AtomicUsize>,
+    }
+    impl Sound for InspectDrop {
+        fn process(&mut self, out: &mut [Frame], _: f64, _: &Info) {
+            out.fill(Frame::ZERO);
+        }
+        fn finished(&self) -> bool {
+            false
+        }
+    }
+    impl Drop for InspectDrop {
+        fn drop(&mut self) {
+            assert_eq!(self.service.status().live_sources, 1);
+            self.observed.fetch_add(1, Ordering::Release);
+        }
+    }
+    let service = Arc::new(
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap(),
+    );
+    let mixer = KiraMixer::new(&format(), limits(1), &service).unwrap();
+    let observed = Arc::new(AtomicUsize::new(0));
+    let owner = BudgetedSound {
+        sound: Box::new(InspectDrop {
+            service: service.clone(),
+            observed: observed.clone(),
+        }),
+        signal: mixer.signal.clone(),
+        _source: SourceOwner::new(&mixer.signal),
+    };
+    assert_eq!(service.status().live_sources, 1);
+    drop(owner);
+    assert_eq!(observed.load(Ordering::Acquire), 1);
+    assert_eq!(service.status().live_sources, 0);
+}

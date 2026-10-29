@@ -554,7 +554,7 @@ impl Widget for SceneWidget {
             }
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
-            let [width, height] = image.data().image_size().expect("particle image resource");
+            let [width, height] = image.image_size().expect("particle image resource");
             let insets = batch.batches.iter().fold(Insets::ZERO, |insets, emission| {
                 let frame = emission.frame;
                 let config = &emission.config;
@@ -601,16 +601,25 @@ impl Widget for SceneWidget {
         if let Some(state) = &mut self.virtual_list {
             state.children.clear();
             state.placement_pending = true;
+            state.index_rows(virtual_list.expect("virtual list state"));
+            measurements.extend(virtual_list.unwrap().rows.iter().map(|row| {
+                VirtualRowMeasurement {
+                    node: row.node,
+                    height: 0.,
+                }
+            }));
         }
-        for (node, child) in &mut self.children {
+        for (child_index, (node, child)) in self.children.iter_mut().enumerate() {
+            let row_index = self.virtual_list.as_ref().map(|state| {
+                state
+                    .row(node.id)
+                    .expect("virtual projection contains every mounted child")
+            });
+            if let Some(index) = row_index {
+                self.virtual_list.as_mut().unwrap().child_indices[index] = child_index;
+            }
             ctx.set_stashed(child, !node.props.visible);
             if !node.props.visible {
-                if virtual_list.is_some() {
-                    measurements.push(VirtualRowMeasurement {
-                        node: node.id,
-                        height: 0.,
-                    });
-                }
                 continue;
             }
             if matches!(node.kind, NodeKind::Cursor) {
@@ -619,12 +628,7 @@ impl Widget for SceneWidget {
                 ctx.place_child(child, Point::ORIGIN);
                 continue;
             }
-            let virtual_row = virtual_list.map(|list| {
-                list.rows
-                    .iter()
-                    .find(|row| row.node == node.id)
-                    .expect("virtual projection contains every mounted child")
-            });
+            let virtual_row = row_index.map(|index| &virtual_list.unwrap().rows[index]);
             let definition = if virtual_list.is_some() {
                 SizeDef::new(LenDef::Fixed(Length::px(inner.width)), LenDef::MaxContent)
             } else if let NodeKind::Scroll { axis, .. } = self.node.kind {
@@ -667,10 +671,7 @@ impl Widget for SceneWidget {
             );
             let chosen = ctx.compute_size(child, definition, inner.into());
             let mut offset = if let Some(row) = virtual_row {
-                measurements.push(VirtualRowMeasurement {
-                    node: node.id,
-                    height: chosen.height,
-                });
+                measurements[row_index.unwrap()].height = chosen.height;
                 self.virtual_list
                     .as_mut()
                     .unwrap()
@@ -844,8 +845,8 @@ impl Widget for SceneWidget {
             let row_offset = self
                 .virtual_list
                 .as_ref()
-                .and_then(|state| state.placement.iter().find(|(id, _)| *id == node.id))
-                .map_or(0., |(_, y)| *y);
+                .and_then(|state| state.row(node.id).map(|index| state.placement[index]))
+                .unwrap_or(0.);
             // Keep scroll and row prefixes continuous until their transforms
             // combine. Rounding each layer can move a stationary reading anchor.
             ctx.set_animated_child_scroll_translation(
@@ -948,7 +949,7 @@ impl Widget for SceneWidget {
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
             use reel_ui::{kurbo::Affine, peniko::ImageSampler};
-            let [width, height] = image.data().image_size().expect("particle image resource");
+            let [width, height] = image.image_size().expect("particle image resource");
             let instances = self.particle_sampler.record(batch);
             ctx.draw_resource_sprites(
                 painter,

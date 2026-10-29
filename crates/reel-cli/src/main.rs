@@ -102,7 +102,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
     let path = "src/main.aside";
     let cache = if let SourceCommand::Dev(args) = &command {
         progress.phase("Checking development cache");
-        let cache = reel_cli::development::Cache::probe(Path::new(".")).ok();
+        let cache = reel_cli::development::Cache::probe(Path::new("."), command.target()).ok();
         if let Some(cache) = &cache
             && let Some(story) = cache.read()
         {
@@ -178,7 +178,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
     let inputs = &loaded.sources;
     let entry = reel_cli::project::ENTRY;
     progress.phase("Compiling source");
-    let checked = match loaded.check_with_progress(&mut report) {
+    let checked = match loaded.check_with_progress(command.target(), &mut report) {
         Ok(checked) => checked,
         Err(error) => {
             progress.stop();
@@ -271,7 +271,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 &artifact,
                 &loaded.project_root,
                 &archive_directory,
-                reel_cli::prepare_effects::Target::Desktop,
+                reel_cli::prepare_effects::Target::for_export(&args.resource_target),
             ) {
                 Ok(bytes) => bytes,
                 Err(error) => {

@@ -1,5 +1,6 @@
 //! Batch independent source-over siblings before their ordered parent composites.
-//! Retained transitions, captures, backdrop reads and nested isolation delimit runs.
+//! Each source owns its internal task dependencies. External parent reads,
+//! retained transitions and captures delimit independent source windows.
 use super::{
     GpuError, glyph_plan,
     scissor::Scissor,
@@ -10,10 +11,17 @@ use reel_ui::{
     frame::{FrameDraw, FrameDrawing, FrameOp, RenderFrame},
     kurbo::Affine,
 };
+#[path = "offscreen_schedule.rs"]
+mod schedule;
+pub(crate) use schedule::ParentStep;
+#[cfg(test)]
+#[path = "offscreen_test_support.rs"]
+pub(crate) mod test_support;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Entry {
     pub push: usize,
+    pub end: usize,
     pub first: bool,
     pub last: bool,
     pub shared: bool,
@@ -27,9 +35,17 @@ pub(crate) struct Plan {
     groups: Option<(usize, usize, std::sync::Arc<super::scopes::Cached>)>,
     storage: super::target_storage::Plan,
     requirements: super::target_plan::Requirements,
+    coverage_requirements: super::target_plan::Requirements,
+    coverage_enabled: bool,
+    stable_backdrop: bool,
+    destination: super::blend::DestinationAccess,
 }
 
 impl Plan {
+    pub(crate) fn destination(&self) -> super::blend::DestinationAccess {
+        self.destination
+    }
+
     pub(crate) fn groups(
         &self,
         commands: &[reel_ui::frame::FrameCommand],
@@ -51,8 +67,20 @@ impl Plan {
             &self.requirements
         }
     }
+    pub(crate) fn coverage_requirements(&self) -> &super::target_plan::Requirements {
+        &self.coverage_requirements
+    }
+    pub(crate) fn coverage_enabled(&self) -> bool {
+        self.coverage_enabled
+    }
     pub(crate) fn storage_size(&self, logical: [u32; 2]) -> [u32; 2] {
         self.storage.storage_size(logical)
+    }
+
+    /// Backdrop allocation can keep the parent's stable capacity while its copy
+    /// still uses the finite source viewport, scissor and integer translation.
+    pub(crate) fn backdrop_size(&self, source: [u32; 2], parent: [u32; 2]) -> [u32; 2] {
+        if self.stable_backdrop { parent } else { source }
     }
 
     /// The second output of a whole-frame crossfade shares storage lifetimes,
@@ -104,7 +132,9 @@ impl Plan {
             glyphs,
             byte_limit,
             cost,
+            None,
             masks,
+            super::blend::DestinationAccess::Sampled,
             selection,
             None,
             reserve,
@@ -125,7 +155,9 @@ impl Plan {
         glyphs: &glyph_plan::Plan,
         byte_limit: u64,
         cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+        coverage_cost: Option<&dyn Fn([u32; 2]) -> Result<u64, GpuError>>,
         masks: super::target_plan::MaskExecution,
+        destination: super::blend::DestinationAccess,
         selection: &super::retained::Plan,
         groups: Option<std::sync::Arc<super::scopes::Cached>>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
@@ -135,6 +167,11 @@ impl Plan {
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],
         );
+        let mut width = 8;
+        #[cfg(test)]
+        if test_support::disabled() {
+            width = 0;
+        }
         let (mut plan, mut retained) = if second.is_none() {
             Self::build(
                 frame.drawing(),
@@ -143,7 +180,7 @@ impl Plan {
                 samples,
                 max_dimension,
                 glyphs,
-                8,
+                width,
                 capture,
                 groups.as_ref(),
                 &mut reserve,
@@ -151,13 +188,14 @@ impl Plan {
         } else {
             (Self::default(), Vec::new())
         };
-        let mut width = 8;
         let mut shared = true;
         loop {
             if plan.is_empty() {
                 plan = Self::default();
                 retained.clear();
             }
+            plan.coverage_enabled = coverage_cost.is_some();
+            plan.destination = destination.for_samples(samples);
             plan.groups = groups.as_ref().map(|groups| {
                 (
                     frame.commands().as_ptr() as usize,
@@ -179,12 +217,26 @@ impl Plan {
                 masks,
                 selection,
                 cost,
+                coverage_cost,
             };
             let mut measured = Some(input.measure(|bytes| {
                 traversal.push(reserve(bytes)?);
                 Ok(())
             })?);
+            let coverage_bytes = measured.as_ref().unwrap().coverage_bytes;
+            let mut coverage_tickets = Vec::new();
+            let coverage_requirements =
+                measured.as_ref().unwrap().coverage_requirements(|bytes| {
+                    coverage_tickets.push(reserve(bytes)?);
+                    Ok(())
+                })?;
             let mut bytes = measured.as_ref().unwrap().bytes;
+            let share_backdrops = bytes <= byte_limit
+                && measured.as_ref().unwrap().reusable
+                && measured.as_ref().unwrap().local_backdrop;
+            let single_backdrop_class = bytes <= byte_limit
+                && !measured.as_ref().unwrap().reusable
+                && measured.as_ref().unwrap().local_backdrop;
             let mut storage_tickets = Vec::new();
             if bytes > byte_limit && measured.as_ref().unwrap().reusable {
                 drop(measured.take());
@@ -195,6 +247,7 @@ impl Plan {
                 storage_tickets = tickets;
             }
             if bytes <= byte_limit || plan.is_empty() {
+                plan.coverage_requirements = coverage_requirements;
                 if plan.storage.bytes() == 0 {
                     plan.requirements = measured.as_ref().unwrap().requirements(|bytes| {
                         storage_tickets.push(reserve(bytes)?);
@@ -203,7 +256,9 @@ impl Plan {
                 }
                 // Capacity reuse is optional for both exact and lifetime-shared
                 // classes. Metadata pressure leaves the admitted plan intact.
-                let capacity_limit = byte_limit.saturating_sub(selection.persistent_bytes());
+                let capacity_limit = byte_limit
+                    .saturating_sub(selection.persistent_bytes())
+                    .saturating_sub(coverage_bytes);
                 let padded = if plan.storage.bytes() == 0 {
                     super::target_storage::Plan::capacities(
                         &plan.requirements,
@@ -223,12 +278,135 @@ impl Plan {
                     )
                 };
                 if let Ok(Some((storage, tickets))) = padded {
-                    bytes = storage.bytes() + selection.persistent_bytes();
+                    bytes = storage.bytes() + selection.persistent_bytes() + coverage_bytes;
                     plan.requirements = Default::default();
                     storage_tickets = tickets;
                     plan.storage = storage;
                 }
+                // A cropped backdrop duplicates its source's size class. Compare
+                // the whole padded pool, even below the admission limit: ordered
+                // blends can otherwise retain two targets for every source size.
+                if share_backdrops {
+                    let input = super::target_plan::Input {
+                        frame,
+                        second,
+                        size,
+                        capture,
+                        samples,
+                        max_dimension,
+                        glyphs,
+                        schedule: &plan,
+                        masks,
+                        selection,
+                        cost,
+                        coverage_cost,
+                    };
+                    if let Ok((mut storage, _, mut tickets)) = input.storage(&mut reserve) {
+                        if let Ok(Some((padded, padded_tickets))) = storage.padded_capacities(
+                            size,
+                            max_dimension,
+                            capacity_limit,
+                            cost,
+                            &mut reserve,
+                        ) {
+                            storage = padded;
+                            tickets = padded_tickets;
+                        }
+                        let shared_bytes =
+                            storage.bytes() + selection.persistent_bytes() + coverage_bytes;
+                        // Below pressure, eliminate existing allocations rather
+                        // than introducing a new class or higher multiplicity.
+                        // Otherwise animated overlap can alternate two pools and
+                        // increase creation despite a smaller individual plan.
+                        let reuses_pool = storage
+                            .requirements()
+                            .iter()
+                            .all(|(size, count)| count <= plan.requirements().count(size));
+                        if shared_bytes < bytes && reuses_pool {
+                            bytes = shared_bytes;
+                            plan.requirements = Default::default();
+                            plan.storage = storage;
+                            storage_tickets = tickets;
+                        }
+                    }
+                }
+                // With one finite scratch class, source and backdrop overlap.
+                // An affordable parent allocation avoids duplicating every
+                // source-size bucket over time. Limit its physical cost to two
+                // source capacities so a small control cannot retain a screen.
+                let stable_capacity = if single_backdrop_class {
+                    let parent_bytes = cost(size)?;
+                    plan.requirements()
+                        .iter()
+                        .find(|(storage, _)| *storage != size)
+                        .map(|(storage, _)| cost(storage))
+                        .transpose()?
+                        .is_some_and(|source| parent_bytes <= source.saturating_mul(2))
+                } else {
+                    false
+                };
+                if stable_capacity {
+                    plan.stable_backdrop = true;
+                    let candidate = (|| -> Result<_, GpuError> {
+                        let mut temporary = Vec::new();
+                        let measured = super::target_plan::Input {
+                            frame,
+                            second,
+                            size,
+                            capture,
+                            samples,
+                            max_dimension,
+                            glyphs,
+                            schedule: &plan,
+                            masks,
+                            selection,
+                            cost,
+                            coverage_cost,
+                        }
+                        .measure(|bytes| {
+                            temporary.push(reserve(bytes)?);
+                            Ok(())
+                        })?;
+                        if measured.bytes > byte_limit {
+                            return Ok(None);
+                        }
+                        let mut tickets = Vec::new();
+                        let requirements = measured.requirements(|bytes| {
+                            tickets.push(reserve(bytes)?);
+                            Ok(())
+                        })?;
+                        let padded = super::target_storage::Plan::capacities(
+                            &requirements,
+                            size,
+                            max_dimension,
+                            capacity_limit,
+                            cost,
+                            &mut reserve,
+                        );
+                        if let Ok(Some((storage, padded_tickets))) = padded {
+                            let bytes =
+                                storage.bytes() + selection.persistent_bytes() + coverage_bytes;
+                            Ok(Some((storage, Default::default(), bytes, padded_tickets)))
+                        } else {
+                            Ok(Some((
+                                Default::default(),
+                                requirements,
+                                measured.bytes,
+                                tickets,
+                            )))
+                        }
+                    })();
+                    if let Ok(Some((storage, requirements, selected_bytes, tickets))) = candidate {
+                        plan.storage = storage;
+                        plan.requirements = requirements;
+                        bytes = selected_bytes;
+                        storage_tickets = tickets;
+                    } else {
+                        plan.stable_backdrop = false;
+                    }
+                }
                 retained.extend(storage_tickets);
+                retained.extend(coverage_tickets);
                 plan.groups = groups.map(|groups| {
                     (
                         frame.commands().as_ptr() as usize,
@@ -342,13 +520,31 @@ impl Plan {
         let mut scissors = Vec::new();
         let mut scissor = Scissor::full(size);
         let mut run_start = 0;
+        let mut parent_draw = false;
         let mut next = 0;
         while let Some(command) = commands.get(next) {
+            // The build entry guard already excluded active retained/capture boundaries.
+            if let FrameOp::PushGroup(group) = &command.op
+                && let Some(consumed) = super::scopes::invisible_group(
+                    group,
+                    &commands[next + 1..],
+                    transform,
+                    size,
+                    scissor,
+                    false,
+                )
+            {
+                next += consumed + 1;
+                continue;
+            }
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => {
                     next += 1;
                 }
                 FrameOp::PushGroup(group) if groups.can_inline(next) => {
+                    if parent_draw {
+                        finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                    }
                     push_stack(&mut scissors, scissor, |bytes| {
                         traversal.push(reserve(bytes)?);
                         Ok(())
@@ -358,18 +554,25 @@ impl Plan {
                     next += 1;
                 }
                 FrameOp::PopGroup => {
+                    if parent_draw {
+                        finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                    }
                     scissor = scissors.pop().expect("validated inline group");
                     next += 1;
                 }
                 FrameOp::PushGroup(group) => {
                     let mut end = next + 1;
                     let mut depth = 1;
-                    let mut leaf = true;
+                    let mut independent = true;
                     while let Some(command) = commands.get(end) {
                         match &command.op {
-                            FrameOp::PushGroup(_) => {
+                            FrameOp::PushGroup(child) => {
                                 depth += 1;
-                                leaf &= groups.can_inline(end);
+                                // Every nested target starts inside this isolated
+                                // source. Its effects and local backdrop reads
+                                // retain their original consumer order; none can
+                                // observe the outer source's parent target.
+                                independent &= child.filters.is_empty();
                             }
                             FrameOp::PopGroup => {
                                 depth -= 1;
@@ -377,27 +580,18 @@ impl Plan {
                                     break;
                                 }
                             }
-                            FrameOp::PushContext(_) | FrameOp::PopContext => {}
+                            FrameOp::PushContext(_)
+                            | FrameOp::PopContext
+                            | FrameOp::PushClip(_)
+                            | FrameOp::PopClip => {}
                             FrameOp::Draw(draw) => {
-                                leaf &= match draw {
-                                    FrameDraw::Fill { composite, .. }
-                                    | FrameDraw::Stroke { composite, .. } => {
-                                        composite.blend == Default::default()
-                                    }
-                                    FrameDraw::GlyphRun(run) => {
-                                        run.composite.blend == Default::default()
-                                    }
-                                    FrameDraw::Sprites(s) => {
-                                        s.composite.blend == Default::default()
-                                    }
-                                    FrameDraw::BlurredRoundedRect(_) => false,
-                                };
+                                independent &= ordinary_draw(draw);
                             }
-                            _ => leaf = false,
+                            _ => independent = false,
                         }
                         end += 1;
                     }
-                    let view = (leaf && group.composite.blend == Default::default())
+                    let view = (independent && group.composite.blend == Default::default())
                         .then(|| {
                             SourceView::group(
                                 group,
@@ -418,6 +612,7 @@ impl Plan {
                             &mut entries,
                             Entry {
                                 push: next,
+                                end: end + 1,
                                 first: false,
                                 last: false,
                                 shared: false,
@@ -430,15 +625,15 @@ impl Plan {
                             },
                         )?;
                         if entries.len() - run_start == width {
-                            finish_run(&mut entries, &mut run_start);
+                            finish_run(&mut entries, &mut run_start, &mut parent_draw);
                         }
                     } else {
-                        finish_run(&mut entries, &mut run_start);
+                        finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     }
                     next = end + 1;
                 }
                 FrameOp::PushClip(_) => {
-                    finish_run(&mut entries, &mut run_start);
+                    finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     let mut depth = 1;
                     next += 1;
                     while let Some(command) = commands.get(next) {
@@ -456,13 +651,17 @@ impl Plan {
                         next += 1;
                     }
                 }
+                FrameOp::Draw(draw) if ordinary_draw(draw) => {
+                    parent_draw |= entries.len() > run_start;
+                    next += 1;
+                }
                 _ => {
-                    finish_run(&mut entries, &mut run_start);
+                    finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     next += 1;
                 }
             }
         }
-        finish_run(&mut entries, &mut run_start);
+        finish_run(&mut entries, &mut run_start, &mut parent_draw);
         Ok((
             Self {
                 entries,
@@ -470,6 +669,17 @@ impl Plan {
             },
             retained,
         ))
+    }
+}
+
+fn ordinary_draw(draw: &FrameDraw) -> bool {
+    match draw {
+        FrameDraw::Fill { composite, .. } | FrameDraw::Stroke { composite, .. } => {
+            composite.blend == Default::default()
+        }
+        FrameDraw::GlyphRun(run) => run.composite.blend == Default::default(),
+        FrameDraw::Sprites(sprites) => sprites.composite.blend == Default::default(),
+        FrameDraw::BlurredRoundedRect(_) => false,
     }
 }
 
@@ -521,7 +731,8 @@ fn atlas(entries: &[Entry], max_dimension: u32) -> Option<([u32; 2], [[u32; 2]; 
     best
 }
 
-fn finish_run(entries: &mut Vec<Entry>, start: &mut usize) {
+fn finish_run(entries: &mut Vec<Entry>, start: &mut usize, parent_draw: &mut bool) {
+    *parent_draw = false;
     if entries.len() - *start < 2 {
         entries.truncate(*start);
     } else {

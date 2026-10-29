@@ -21,6 +21,17 @@ pub struct GpuCapture {
     row: u32,
     output: Option<BudgetTicket>,
     generation: super::DeviceGeneration,
+    mapped: bool,
+    mapping_live: bool,
+    pixels: Vec<u8>,
+    wake: WakeSignal,
+}
+impl Drop for GpuCapture {
+    fn drop(&mut self) {
+        if self.mapping_live {
+            self.storage.buffer.unmap();
+        }
+    }
 }
 impl Renderer {
     pub fn capture(
@@ -102,12 +113,13 @@ impl Renderer {
         prepared.retain_capture_target(target_ticket);
         self.submit(prepared)?;
         let (sender, ready) = std::sync::mpsc::sync_channel(1);
+        let map_wake = wake.clone();
         storage
             .buffer
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
-                wake.wake();
+                map_wake.wake();
             });
         Ok(GpuCapture {
             storage,
@@ -116,45 +128,82 @@ impl Renderer {
             row,
             output: Some(output),
             generation: self.gpu.generation(),
+            mapped: false,
+            mapping_live: true,
+            pixels: Vec::new(),
+            wake,
         })
     }
     pub fn poll_capture(
         &mut self,
         capture: &mut GpuCapture,
+        max_bytes: u64,
     ) -> Result<Option<CapturedPixels>, GpuError> {
         self.gpu.check()?;
+        if !capture.mapping_live {
+            return Ok(None);
+        }
         if capture.generation != self.gpu.generation() {
             return Err(GpuError::WrongDevice);
         }
-        self.gpu
-            .device
-            .poll(wgpu::PollType::Poll)
-            .map_err(|e| GpuError::Readback(e.to_string()))?;
-        match capture.ready.try_recv() {
-            Err(TryRecvError::Empty) => return Ok(None),
-            Err(TryRecvError::Disconnected) => {
-                return Err(GpuError::Readback("capture completion disconnected".into()));
+        if !capture.mapped {
+            self.gpu
+                .device
+                .poll(wgpu::PollType::Poll)
+                .map_err(|e| GpuError::Readback(e.to_string()))?;
+            match capture.ready.try_recv() {
+                Err(TryRecvError::Empty) => return Ok(None),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(GpuError::Readback("capture completion disconnected".into()));
+                }
+                Ok(result) => result.map_err(|e| GpuError::Readback(e.to_string()))?,
             }
-            Ok(result) => result.map_err(|e| GpuError::Readback(e.to_string()))?,
+            capture.mapped = true;
+            let total = (capture.size[0] as usize * 4)
+                .checked_mul(capture.size[1] as usize)
+                .ok_or(GpuError::InvalidSize)?;
+            let pixels = Vec::with_capacity(total);
+            capture
+                .output
+                .as_mut()
+                .unwrap()
+                .resize(pixels.capacity() as u64)
+                .map_err(|e| GpuError::Readback(e.message))?;
+            capture.pixels = pixels;
         }
+        let width = capture.size[0] as usize * 4;
+        let first = capture.pixels.len() / width;
+        let rows =
+            crate::capture::readback_rows(width, capture.size[1] as usize - first, max_bytes);
         let mapped = capture
             .storage
             .buffer
             .slice(..)
             .get_mapped_range()
             .map_err(|e| GpuError::Readback(e.to_string()))?;
-        let width = capture.size[0] as usize * 4;
-        let mut rgba = Vec::with_capacity(width * capture.size[1] as usize);
-        for row in mapped.chunks_exact(capture.row as usize) {
-            rgba.extend_from_slice(&row[..width]);
+        for row in mapped
+            .chunks_exact(capture.row as usize)
+            .skip(first)
+            .take(rows)
+        {
+            capture.pixels.extend_from_slice(&row[..width]);
         }
         drop(mapped);
+        if first + rows < capture.size[1] as usize {
+            capture.wake.wake();
+            return Ok(None);
+        }
         capture.storage.buffer.unmap();
-        let rgba = OwnedBytes::new(rgba, capture.output.take().unwrap())
-            .map_err(|e| GpuError::Readback(e.reason.message))?;
+        capture.mapping_live = false;
+        let rgba = OwnedBytes::new(
+            std::mem::take(&mut capture.pixels),
+            capture.output.take().unwrap(),
+        )
+        .map_err(|e| GpuError::Readback(e.reason.message))?;
         Ok(Some(CapturedPixels {
             size: capture.size,
             rgba,
+            encoding: crate::capture::CaptureEncoding::Srgb,
         }))
     }
 }
@@ -173,7 +222,134 @@ impl CaptureBackend for WgpuBackend {
     fn poll_capture(
         &mut self,
         capture: &mut GpuCapture,
+        max_bytes: u64,
     ) -> Result<Option<CapturedPixels>, GpuError> {
-        self.renderer_mut().poll_capture(capture)
+        self.renderer_mut().poll_capture(capture, max_bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::r01_fixture::*;
+    use reel_core::{
+        budget::{BudgetCategory, QueueLimits},
+        identity::FrameId,
+    };
+    use reel_ui::{
+        frame::{FrameBuild, FrameInfo},
+        imaging::{
+            Composite,
+            record::{Draw, Geometry, Scene},
+        },
+        kurbo::{Affine, Rect},
+        peniko::{Brush, Color},
+    };
+
+    #[test]
+    #[ignore = "requires graphics adapter; synthetic numeric buffer comparison"]
+    fn sliced_capture_matches_full_and_cancel_releases_output() {
+        let mut renderer = Renderer::new(
+            pollster::block_on(super::super::Gpu::request(
+                &wgpu::Instance::default(),
+                None,
+                super::super::DeviceGeneration(1),
+                Default::default(),
+            ))
+            .unwrap(),
+        );
+        let source_pool = pool();
+        let mut scene = Scene::new();
+        for y in 0..11 {
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::from_rgba8(y * 21, 255 - y * 19, y * 13, 255)),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., f64::from(y), 65., f64::from(y + 1))),
+                composite: Composite::default(),
+            });
+        }
+        let mut widget = RecordWidget::new(scene);
+        widget.clip = false;
+        let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&source_pool),
+            FrameInfo {
+                logical_size: [65., 11.],
+                physical_size: [65, 11],
+            },
+            limits(),
+            &source_pool,
+        )
+        .unwrap();
+        while !build.step(step_budget()).unwrap().complete {}
+        let frame = build.finish().unwrap();
+        let output = BudgetPool::new(
+            BudgetCategory::Temporary,
+            QueueLimits {
+                max_requests: 4,
+                max_bytes: 1 << 20,
+            },
+        );
+        let wake = WakeSignal::new(|| {});
+        let mut full = renderer
+            .capture(&frame, [65, 11], &output, wake.clone())
+            .unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let reference = renderer.poll_capture(&mut full, u64::MAX).unwrap().unwrap();
+        assert_ne!(
+            &reference.rgba.as_slice()[0..4],
+            &reference.rgba.as_slice()[260..264]
+        );
+        let mut sliced = renderer
+            .capture(&frame, [65, 11], &output, wake.clone())
+            .unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let mut previous = 0;
+        let result = loop {
+            let result = renderer.poll_capture(&mut sliced, 520).unwrap();
+            if let Some(result) = result {
+                break result;
+            }
+            assert_eq!(sliced.pixels.len() - previous, 520);
+            previous = sliced.pixels.len();
+        };
+        assert_eq!(result.rgba.as_slice(), reference.rgba.as_slice());
+        assert_eq!(result.encoding, reference.encoding);
+        drop((result, reference, sliced, full));
+        assert_eq!(output.usage().bytes, 0);
+        renderer.poll().unwrap();
+        let mut cancelled = renderer.capture(&frame, [65, 11], &output, wake).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        assert!(renderer.poll_capture(&mut cancelled, 1).unwrap().is_none());
+        assert_eq!(cancelled.pixels.len(), 260);
+        drop(cancelled);
+        assert_eq!(output.usage().bytes, 0);
+        renderer.poll().unwrap();
+        let pending = renderer
+            .capture(&frame, [65, 11], &output, WakeSignal::new(|| {}))
+            .unwrap();
+        drop(pending);
+        assert_eq!(output.usage().bytes, 0);
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
     }
 }

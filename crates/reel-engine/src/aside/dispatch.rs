@@ -260,10 +260,7 @@ impl SessionVm {
                 self.dispatch_geometry(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
-            "reel::list" => {
-                self.dispatch_list(ticket)?;
-                Ok(NativeDispatch::Ready { work: 1 })
-            }
+            "reel::list" => self.dispatch_list(ticket, budget),
             "reel::layered_image" => {
                 let work = self.dispatch_layered_image(ticket)?;
                 Ok(NativeDispatch::Ready { work })

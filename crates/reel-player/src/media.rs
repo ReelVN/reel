@@ -246,6 +246,8 @@ impl SegmentLoader<'_> {
     }
 }
 
+mod output_idle;
+
 type OutputFactory = Box<dyn FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, String>>;
 
 /// A session-local backend. A custom host supplies AssetIo through Assets and
@@ -256,6 +258,7 @@ pub struct MediaPlayer {
     wake: WakeSignal,
     factory: Option<OutputFactory>,
     output: Option<Box<dyn AudioOutput>>,
+    pending_fill: Option<PcmFill>,
     service: Option<AudioActivityService>,
     reclaim: Option<AudioReclaimService>,
     owner: Option<AudioOwner>,
@@ -272,6 +275,7 @@ pub struct MediaPlayer {
     next: u64,
     closed: bool,
     suspended: bool,
+    output_idle: output_idle::OutputIdle,
     failure: Option<String>,
     reclaim_pending: bool,
     #[cfg(feature = "profiling")]
@@ -288,7 +292,8 @@ impl MediaPlayer {
             .as_mut()
             .unwrap()
             .play_video_audio(sound)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.run_output()
     }
     pub fn new(
         assets: Assets,
@@ -318,6 +323,7 @@ impl MediaPlayer {
             wake: wake.clone(),
             factory: Some(Box::new(create_output)),
             output: None,
+            pending_fill: None,
             service: None,
             reclaim: None,
             owner: None,
@@ -375,6 +381,7 @@ impl MediaPlayer {
             next: 0,
             closed: false,
             suspended: false,
+            output_idle: output_idle::OutputIdle::default(),
             failure: None,
             reclaim_pending: false,
             #[cfg(feature = "profiling")]
@@ -405,6 +412,7 @@ impl MediaPlayer {
             .max_pull_frames
             .max(output.capabilities().min_pull_frames);
         let format = output.configure(request).map_err(|e| e.to_string())?;
+        self.output_idle.max_pull_frames = format.max_pull_frames;
         let reclaim = AudioReclaimService::new(
             ReclaimLimits {
                 max_generations: 1,
@@ -428,15 +436,12 @@ impl MediaPlayer {
             self.wake.clone(),
         )
         .map_err(|e| e.reason.message)?;
+        service.set_output_suspended(true);
         let owner = service
             .register_owner(Scope::Process)
             .map_err(|e| e.message)?;
-        output
-            .start(service.take_fill().unwrap())
-            .map_err(|e| e.reason.message)?;
-        if self.suspended {
-            output.suspend().map_err(|e| e.to_string())?;
-        }
+        // Keep the prepared renderer until a source can actually consume PCM.
+        // Configure retains format validation without opening a native stream.
         self.owner = Some(owner);
         self.output = Some(output);
         self.service = Some(service);
@@ -444,39 +449,62 @@ impl MediaPlayer {
         Ok(())
     }
     fn output_failure(&mut self) {
+        if self.closed
+            && self.failure.is_none()
+            && let Some(error) = self
+                .output
+                .as_ref()
+                .and_then(|output| output.status().latest_device_error)
+        {
+            self.failure = Some(format!("audio close: {error}"));
+        }
         if let Some(output) = &self.output
-            && output.status().state == AudioState::Failed
+            && (output.status().state == AudioState::Failed || self.failure.is_some())
             && let Some(service) = &mut self.service
         {
             let status = output.status();
             let reason = status
                 .latest_device_error
                 .map_or(AudioErrorKind::DeviceFailure, |e| e.kind);
-            let _ = service.fail_output(reason);
-            self.failure = Some(format!("audio output: {reason:?}"));
-            for entry in self.entries.values_mut() {
-                if let Phase::Playing(media) = entry.phase
-                    && let Some(state) = service.snapshot(media)
-                {
-                    entry.observe(&state);
-                }
-                for segment in entry.queue.drain(..) {
-                    cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
-                }
-                if !matches!(entry.phase, Phase::Playing(_) | Phase::Done(_)) {
-                    if let Phase::Queued(ref control) = entry.phase {
-                        control.cancel();
-                        self.worker.cancel(entry.key);
+            let first_failure = service.fail_output(reason).is_ok();
+            let message = self
+                .failure
+                .get_or_insert_with(|| format!("audio output: {reason:?}"))
+                .clone();
+            if first_failure {
+                for entry in self.entries.values_mut() {
+                    if let Phase::Playing(media) = entry.phase
+                        && let Some(state) = service.snapshot(media)
+                    {
+                        entry.observe(&state);
                     }
-                    entry.phase =
-                        Phase::Done(MediaResult::Failed(format!("audio output: {reason:?}")));
+                    for segment in entry.queue.drain(..) {
+                        cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
+                    }
+                    if !matches!(entry.phase, Phase::Playing(_) | Phase::Done(_)) {
+                        if let Phase::Queued(ref control) = entry.phase {
+                            control.cancel();
+                            self.worker.cancel(entry.key);
+                        }
+                        entry.phase = Phase::Done(MediaResult::Failed(message.clone()));
+                    }
                 }
             }
         }
-        if self.failure.is_some()
-            && let Some(mut output) = self.output.take()
-        {
-            let _ = output.stop();
+        if self.failure.is_some() {
+            drop(self.pending_fill.take());
+            if let Some(output) = &mut self.output
+                && output.status().state != AudioState::Stopped
+            {
+                let _ = output.stop();
+            }
+            if self
+                .output
+                .as_ref()
+                .is_some_and(|output| output.close_complete())
+            {
+                self.output = None;
+            }
         }
     }
     fn stop_entry(&mut self, id: MediaId, deliver: bool) {
@@ -859,6 +887,8 @@ impl MediaBackend for MediaPlayer {
             }
         }
         entry.refresh_deadlines(self.suspended);
+        self.maintain_output();
+        self.output_failure();
         Ok(())
     }
     fn group_volume(
@@ -1095,6 +1125,16 @@ impl MediaBackend for MediaPlayer {
                 }
             }
         }
+        self.maintain_output();
+        self.output_failure();
+        if self.closed
+            && self
+                .output
+                .as_ref()
+                .is_some_and(|output| output.close_complete())
+        {
+            self.output = None;
+        }
         if self.failure.is_some()
             && self
                 .service
@@ -1127,7 +1167,8 @@ impl MediaBackend for MediaPlayer {
         })
     }
     fn poll_after(&self) -> Option<Duration> {
-        (self.video_pending()
+        (self.output_idle.quiet.is_some()
+            || self.video_pending()
             || !self.entries.is_empty()
             || self.cleanup_pending()
             || self.reclaim_pending
@@ -1148,13 +1189,21 @@ impl MediaBackend for MediaPlayer {
         for entry in self.movies.entries.values() {
             entry.pause(true);
         }
-        if let Some(output) = &mut self.output {
+        if let Some(output) = &mut self.output
+            && output.status().state == AudioState::Running
+        {
             let _ = output.suspend();
+        }
+        if let Some(service) = &mut self.service {
+            service.set_output_suspended(true);
         }
         self.output_failure();
     }
     fn resume(&mut self) {
         self.suspended = false;
+        if let Some(service) = &mut self.service {
+            service.set_output_suspended(false);
+        }
         for entry in self.entries.values_mut() {
             entry.refresh_deadlines(false);
         }
@@ -1162,13 +1211,19 @@ impl MediaBackend for MediaPlayer {
         for entry in self.movies.entries.values() {
             entry.pause(entry.paused);
         }
-        if let Some(output) = &mut self.output {
-            let _ = output.resume();
-        }
+        self.maintain_output();
         self.output_failure();
     }
     fn close(&mut self) {
         if self.closed {
+            // Explicit retry uses the same retained native owner. Maintenance
+            // only observes completion and never loops native release attempts.
+            if let Some(output) = &mut self.output
+                && !output.close_complete()
+                && output.status().latest_device_error.is_some()
+            {
+                let _ = output.stop();
+            }
             return;
         }
         self.closed = true;
@@ -1182,7 +1237,14 @@ impl MediaBackend for MediaPlayer {
         }
         #[cfg(feature = "profiling")]
         self.profile("stopped");
-        self.output = None;
+        drop(self.pending_fill.take());
+        if self
+            .output
+            .as_ref()
+            .is_some_and(|output| output.close_complete())
+        {
+            self.output = None;
+        }
         self.service = None; // Existing deferred teardown owns all accepted PCM.
         self.reclaim_pending = false;
         self.factory = None;
@@ -1191,7 +1253,11 @@ impl MediaBackend for MediaPlayer {
         // Cancelled asset reads belong to the shared service. Waiting for its
         // global input pool would also wait for the replacement session's work.
         self.closed
-            && (self.pcm.usage().bytes != 0
+            && (self
+                .output
+                .as_ref()
+                .is_some_and(|output| !output.close_complete())
+                || self.pcm.usage().bytes != 0
                 || self.video_pending()
                 || !self.worker.is_idle()
                 || self.owner.as_ref().is_some_and(|owner| !owner.is_retired())

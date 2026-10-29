@@ -4,7 +4,7 @@ use super::{
 };
 use crate::video::{AudioFrames, DecodeDemand, DecodedPacket, MediaRead, VideoDecoderFactory};
 use reel_audio::Frame;
-use reel_core::budget::{BudgetPool, BudgetTicket};
+use reel_core::budget::BudgetPool;
 use std::{
     sync::{Arc, atomic::Ordering},
     task::Poll,
@@ -14,7 +14,6 @@ use std::{
 struct PendingAudio {
     packet: AudioFrames,
     index: usize,
-    _storage: BudgetTicket,
 }
 impl PendingAudio {
     /// Publish the prefix that fits, preserving the remainder and its residency.
@@ -77,9 +76,10 @@ pub(super) fn decode(
     }
     let info = decoder.info().clone();
     let mut audio = if let Some(rate) = info.audio_sample_rate {
+        let bytes = (options.queued_audio_frames * std::mem::size_of::<Sample>()) as u64;
         let ticket = budget
-            .reserve((options.queued_audio_frames * std::mem::size_of::<Sample>()) as u64)
-            .map_err(|e| e.message)?;
+            .reserve(bytes)
+            .map_err(|e| crate::video::budget_failure(&budget, "PCM ring", bytes, e).message)?;
         let residency = Arc::new(PcmResidency { _ticket: ticket });
         let (producer, consumer) = rtrb::RingBuffer::new(options.queued_audio_frames);
         shared.state.lock().unwrap().audio = Some(StreamSoundData {
@@ -128,13 +128,21 @@ pub(super) fn decode(
         }
         if let Some(packet) = pending.as_mut() {
             let (producer, _, position) = audio.as_mut().unwrap();
-            if packet.publish(producer, position, end) {
+            let before = *position;
+            let complete = packet.publish(producer, position, end);
+            if *position > before && !shared.transport.audio_ready.swap(true, Ordering::AcqRel) {
+                shared.wake.wake();
+            }
+            if complete {
                 let returned = pending.take().unwrap();
-                decoder.recycle_audio(returned.packet, returned._storage);
+                decoder.recycle_audio(returned.packet);
             }
         }
-        if pending.is_none() && decoder.audio_finished() {
-            shared.transport.audio_end.store(true, Ordering::Release);
+        if pending.is_none()
+            && decoder.audio_finished()
+            && !shared.transport.audio_end.swap(true, Ordering::AcqRel)
+        {
+            shared.wake.wake();
         }
         if eof && pending.is_none() {
             return Ok(());
@@ -171,15 +179,20 @@ pub(super) fn decode(
             }
             // PCM consumption is lock-free and does not signal this event.
             // Picture retirement and control changes provide retained wakes.
-            let timeout = audio.as_ref().map(|_| Duration::from_millis(5));
+            let timeout = audio.as_ref().and_then(|_| {
+                (!shared.transport.paused.load(Ordering::Acquire)
+                    && shared.state.lock().unwrap().audio.is_none())
+                .then_some(Duration::from_millis(5))
+            });
             shared.available.wait(timeout)?;
             continue;
         }
         // Only requested output needs a reservation. A retained partial PCM
         // packet keeps its own ticket while a picture is being decoded.
-        let capacity =
-            if demand.video { plane_bytes } else { 0 }.max(if demand.audio { 1024 * 8 } else { 0 });
-        let mut storage = budget.reserve(capacity).map_err(|e| e.message)?;
+        let capacity = if demand.video { plane_bytes } else { 0 };
+        let mut storage = budget.reserve(capacity).map_err(|e| {
+            crate::video::budget_failure(&budget, "picture output", capacity, e).message
+        })?;
         let packet = {
             let _profile = reel_core::profile::Scope::new(reel_core::profile::Phase::VideoDecode);
             decoder.poll_packet(demand)?
@@ -203,14 +216,16 @@ pub(super) fn decode(
                     continue;
                 }
                 frame.duration = frame.duration.min(end - frame.pts);
-                storage
-                    .resize(frame.planes.iter().map(|p| p.capacity() as u64).sum())
-                    .map_err(|e| e.message)?;
+                let bytes = frame.planes.iter().map(|p| p.capacity() as u64).sum();
+                storage.resize(bytes).map_err(|e| {
+                    crate::video::budget_failure(&budget, "picture output resize", bytes, e).message
+                })?;
                 let mut state = shared.state.lock().unwrap();
                 state.frames.push_back(Arc::new(ResidentFrame {
                     frame,
                     _ticket: storage,
                 }));
+                reel_core::profile::count(reel_core::profile::Phase::VideoQueued);
                 if options.poster {
                     state.terminal = Some(VideoTerminal::Completed);
                 }
@@ -224,14 +239,15 @@ pub(super) fn decode(
                 if !demand.audio || Some(packet.sample_rate) != info.audio_sample_rate {
                     return Err("video decoder returned unexpected PCM".into());
                 }
-                storage
-                    .resize((packet.frames.capacity() * std::mem::size_of::<[f32; 2]>()) as u64)
-                    .map_err(|e| e.message)?;
-                pending = Some(PendingAudio {
-                    packet,
-                    index: 0,
-                    _storage: storage,
-                });
+                drop(storage);
+                if packet.storage.bytes()
+                    < (packet.frames.capacity() * std::mem::size_of::<[f32; 2]>()) as u64
+                {
+                    return Err(
+                        "video decoder returned PCM without sufficient storage reservation".into(),
+                    );
+                }
+                pending = Some(PendingAudio { packet, index: 0 });
             }
         }
     }

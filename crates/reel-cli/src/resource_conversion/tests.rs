@@ -412,14 +412,9 @@ fn prepared_logical_paths_reach_the_player_and_both_export_profiles() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     };
-    assert_eq!(image.data().image_size(), Some([12, 6]));
+    assert_eq!(image.image_size(), Some([12, 6]));
     assert_eq!(
-        image
-            .data()
-            .texture_descriptor()
-            .unwrap()
-            .layout
-            .content_size,
+        image.texture_descriptor().unwrap().layout.content_size,
         [6, 3]
     );
     live.close();
@@ -492,5 +487,177 @@ fn mip_opt_in_changes_recipe_and_default_remains_single_level() {
             .unwrap()
             .to_string()
             .contains("mipmaps belongs to texture rules")
+    );
+}
+
+#[test]
+fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
+    use reel_core::prepared_atlas::PreparedAtlasView;
+    let (directory, tool, target) = fixture();
+    let root = directory.path();
+    fs::write(root.join("resources.toml"), "[[targets.vita]]\nmatch = 'images/**'\nconvert = 'atlas'\nformat = 'rgba8'\npage_size = [64,64]\nscale = 0.5\n").unwrap();
+    let first = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    let room =
+        PreparedAtlasView::decode(&fs::read(&first.files["images/room.png"]).unwrap()).unwrap();
+    let ui = PreparedAtlasView::decode(&fs::read(&first.files["images/ui.png"]).unwrap()).unwrap();
+    assert_eq!(room.page, ui.page);
+    // Exercise the real selected-file resolver with offline-generated manifests.
+    let assets =
+        reel_player::assets::Assets::selected(Default::default(), first.files.clone(), None)
+            .unwrap();
+    let room_load = assets.request("images/room.png", reel_player::assets::AssetKind::Image);
+    let ui_load = assets.request("images/ui.png", reel_player::assets::AssetKind::Image);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut loaded = [None, None];
+    while loaded.iter().any(Option::is_none) {
+        assets.maintain();
+        for (slot, id) in loaded.iter_mut().zip([room_load, ui_load]) {
+            if slot.is_none() {
+                *slot = assets.poll(id).unwrap();
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "atlas load timed out");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let [room_lease, ui_lease] = loaded.map(Option::unwrap);
+    assert_eq!(
+        room_lease.image_backing().handle(),
+        ui_lease.image_backing().handle()
+    );
+    assert_eq!(room_lease.image_size(), Some([12, 6]));
+    assert_eq!(ui_lease.image_size(), Some([4, 2]));
+    assert_eq!(room.image.logical_size, [12, 6]);
+    assert_eq!(room.image.content_size, [6, 3]);
+    assert_eq!(ui.image.logical_size, [4, 2]);
+    assert_ne!(room.image.content_origin, ui.image.content_origin);
+    let page_bytes = fs::read(&first.files[&room.page]).unwrap();
+    let (header, payload) = TextureHeader::parse(&page_bytes).unwrap();
+    let size = header.descriptor().layout.storage_size;
+    assert!(size[0] < 64 && size[1] < 64);
+    assert_eq!(header.descriptor().mip_count, 1);
+    for view in [&room, &ui] {
+        view.image.validate(size).unwrap();
+        assert!(view.image.content_origin.iter().all(|n| n % 4 == 0));
+        let [x, y] = view.image.content_origin;
+        let at = |x: u32, y: u32| {
+            &payload[((y * size[0] + x) * 4) as usize..((y * size[0] + x + 1) * 4) as usize]
+        };
+        assert_eq!(at(x, y), at(x - 1, y));
+        assert_eq!(at(x, y), at(x, y - 1));
+        assert_eq!(
+            at(x + view.image.content_size[0] - 1, y),
+            at(x + view.image.content_size[0], y)
+        );
+    }
+    assert_eq!(first.report.converted, 2);
+    let second = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_eq!(first.files, second.files);
+    assert_eq!(second.report.reused, 2);
+    assert_eq!(second.report.converted, 0);
+    let tiny_cache_reuse = prepare(root, &tool, &target, 1).unwrap();
+    assert_eq!(tiny_cache_reuse.files, first.files);
+    image::RgbaImage::from_fn(13, 9, |x, y| {
+        image::Rgba([
+            ((x * 19 + y * 7) % 256) as u8,
+            ((x * 11 + y * 23) % 256) as u8,
+            ((x * 31 + y * 13) % 256) as u8,
+            ((x * 17 + y * 29) % 256) as u8,
+        ])
+    })
+    .save(root.join("resources/images/noise.png"))
+    .unwrap();
+    fs::write(
+        root.join("resources.toml"),
+        "[[targets.vita]]\nmatch='images/**'\nconvert='atlas'\nformat='bc3'\npage_size=[64,64]\n",
+    )
+    .unwrap();
+    let compressed = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    let room_bc =
+        PreparedAtlasView::decode(&fs::read(&compressed.files["images/room.png"]).unwrap())
+            .unwrap();
+    let ui_bc =
+        PreparedAtlasView::decode(&fs::read(&compressed.files["images/ui.png"]).unwrap()).unwrap();
+    let noise_bc =
+        PreparedAtlasView::decode(&fs::read(&compressed.files["images/noise.png"]).unwrap())
+            .unwrap();
+    let file = fs::read(&compressed.files[&room_bc.page]).unwrap();
+    let (header, payload) = TextureHeader::parse(&file).unwrap();
+    let descriptor = header.descriptor();
+    assert_eq!(descriptor.format, TextureFormat::Bc3Rgba);
+    let [w, h] = descriptor.layout.storage_size;
+    let mut blocks = vec![0; payload.len()];
+    for y in 0..h / 4 {
+        for x in 0..w / 4 {
+            let source = descriptor.storage_layout.block_offset([w, h], 16, x, y);
+            let dest = ((y * w / 4 + x) * 16) as usize;
+            blocks[dest..dest + 16].copy_from_slice(&payload[source..source + 16]);
+        }
+    }
+    let pixels = rgbcx::decode(w, h, &blocks, rgbcx::Format::Bc3).unwrap();
+    let sample = |view: &PreparedAtlasView| {
+        let [x, y] = view.image.content_origin;
+        let offset = ((y * w + x) * 4) as usize;
+        <[u8; 4]>::try_from(&pixels[offset..offset + 4]).unwrap()
+    };
+    for (name, view, source) in [
+        (
+            "room",
+            &room_bc,
+            root.join("resources/@vita/images/room.png"),
+        ),
+        ("ui", &ui_bc, root.join("resources/images/ui.png")),
+        ("noise", &noise_bc, root.join("resources/images/noise.png")),
+    ] {
+        let standalone_path = root.join(format!("{name}-standalone.reel-texture"));
+        crate::prepare_texture::prepare(
+            &source,
+            &standalone_path,
+            crate::prepare_texture::Options {
+                format: crate::prepare_texture::Format::Bc3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let file = fs::read(standalone_path).unwrap();
+        let (standalone_header, standalone) = TextureHeader::parse(&file).unwrap();
+        let [sw, sh] = standalone_header.descriptor().layout.storage_size;
+        for y in 0..sh / 4 {
+            for x in 0..sw / 4 {
+                let source = ((y * sw / 4 + x) * 16) as usize;
+                let target = descriptor.storage_layout.block_offset(
+                    [w, h],
+                    16,
+                    view.image.content_origin[0] / 4 + x,
+                    view.image.content_origin[1] / 4 + y,
+                );
+                assert_eq!(
+                    &payload[target..target + 16],
+                    &standalone[source..source + 16],
+                    "{name} block {x},{y}"
+                );
+            }
+        }
+    }
+    let green = sample(&room_bc);
+    let blue = sample(&ui_bc);
+    assert!(
+        green[1] > 110 && green[3] > 110 && green[0] < 8 && green[2] < 8,
+        "{green:?}"
+    );
+    assert!(
+        blue[2] > 240 && blue[3] > 240 && blue[0] < 8 && blue[1] < 8,
+        "{blue:?}"
+    );
+    fs::write(
+        root.join("resources.toml"),
+        "[[targets.vita]]\nmatch='images/**'\nconvert='atlas'\nmipmaps=true\n",
+    )
+    .unwrap();
+    assert!(
+        prepare(root, &tool, &target, MEMORY_BYTES)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("one level")
     );
 }

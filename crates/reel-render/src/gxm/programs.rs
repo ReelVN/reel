@@ -65,6 +65,8 @@ const NAMES: &[&str] = &[
     "u_fetches[0]",
     "u_seed0",
     "u_seed1",
+    "u_origin",
+    "u_origins[0]",
 ];
 pub(super) type Values<'a> = SmallVec<[UniformValue<'a>; 24]>;
 #[path = "programs/paint.rs"]
@@ -83,7 +85,27 @@ impl Shader {
         vertex: ShaderCode<'_>,
         fragment: ShaderCode<'_>,
     ) -> Result<Self, GpuError> {
-        let program = create_program_with_vertex(context, vertex, fragment, true)?;
+        Self::with_clipping(context, vertex, fragment, true)
+    }
+    fn with_clipping(
+        context: &super::ownership::Device,
+        vertex: ShaderCode<'_>,
+        fragment: ShaderCode<'_>,
+        clipped: bool,
+    ) -> Result<Self, GpuError> {
+        let program = create_program_with_vertex(context, vertex, fragment, clipped, false)?;
+        let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
+        Ok(Self { program, uniforms })
+    }
+    fn presentation(context: &super::ownership::Device) -> Result<Self, GpuError> {
+        let program = create_program_with_output(
+            context,
+            shader_code!("vertex"),
+            shader_code!("present"),
+            false,
+            false,
+            native::FragmentOutput::Srgb,
+        )?;
         let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
         Ok(Self { program, uniforms })
     }
@@ -116,6 +138,7 @@ pub(super) fn create_program(
     fragment: ShaderCode<'_>,
     implicit_source: bool,
     padded: bool,
+    clipped: bool,
 ) -> Result<Program, GpuError> {
     create_program_with_vertex(
         context,
@@ -127,7 +150,8 @@ pub(super) fn create_program(
             shader_code!("vertex")
         },
         fragment,
-        true,
+        clipped,
+        false,
     )
 }
 fn create_program_with_vertex(
@@ -135,7 +159,29 @@ fn create_program_with_vertex(
     vertex: ShaderCode<'_>,
     fragment: ShaderCode<'_>,
     clipped: bool,
+    instanced: bool,
 ) -> Result<Program, GpuError> {
+    create_program_with_output(
+        context,
+        vertex,
+        fragment,
+        clipped,
+        instanced,
+        native::FragmentOutput::Patched,
+    )
+}
+
+fn create_program_with_output(
+    context: &super::ownership::Device,
+    vertex: ShaderCode<'_>,
+    fragment: ShaderCode<'_>,
+    clipped: bool,
+    instanced: bool,
+    output: native::FragmentOutput,
+) -> Result<Program, GpuError> {
+    let vertex_attributes = super::geometry::vertex_attributes();
+    let instance_attributes = super::geometry::instance_attributes();
+    let regular_attributes = attributes();
     let program = super::super::create_program(
         context,
         vertex,
@@ -143,7 +189,7 @@ fn create_program_with_vertex(
         &[
             AttributeBinding {
                 location: 0,
-                name: "a_position",
+                name: if instanced { "a_corner" } else { "a_position" },
             },
             AttributeBinding {
                 location: 1,
@@ -157,9 +203,29 @@ fn create_program_with_vertex(
                 location: 3,
                 name: "a_window",
             },
+            AttributeBinding {
+                location: 4,
+                name: "a_positions01",
+            },
+            AttributeBinding {
+                location: 5,
+                name: "a_positions23",
+            },
         ],
-        &attributes(),
+        native::VertexLayout {
+            stride: if instanced { 7 } else { 12 },
+            attributes: if instanced {
+                &vertex_attributes
+            } else {
+                &regular_attributes
+            },
+        },
+        instanced.then_some(native::VertexLayout {
+            stride: 12,
+            attributes: &instance_attributes,
+        }),
         clipped,
+        output,
     )?;
     Ok(program)
 }
@@ -167,6 +233,9 @@ pub(super) struct Programs {
     pub paint: paint::PaintPrograms,
     pub composite: Shader,
     pub extended_blend: Shader,
+    overwrite: [std::cell::OnceCell<Shader>; 2],
+    #[cfg(feature = "gxm-tile-destination")]
+    tile: [std::cell::OnceCell<Shader>; 13],
     pub source_over: Shader,
     pub alpha_mask: Shader,
     pub mask_8: Shader,
@@ -210,6 +279,9 @@ impl Programs {
             source_window: [0.; 4],
         });
         Ok(Self {
+            overwrite: std::array::from_fn(|_| std::cell::OnceCell::new()),
+            #[cfg(feature = "gxm-tile-destination")]
+            tile: std::array::from_fn(|_| std::cell::OnceCell::new()),
             paint: paint::PaintPrograms::new(budget),
             composite: Shader::with_vertex(
                 context,
@@ -279,11 +351,84 @@ impl Programs {
                     shader_code!("mask_paired_gg_composite"),
                 )?,
             ],
-            present: Shader::new(context, shader_code!("present"))?,
+            // The final quad covers the viewport with no narrower scissor.
+            // Omitting discard lets GXM schedule the texture fetch independently.
+            present: Shader::presentation(context)?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
             indices: context.index_buffer_u16(&[0, 1, 2, 0, 2, 3])?,
             _storage: storage,
         })
+    }
+    #[cfg(feature = "gxm-tile-destination")]
+    pub fn tile(
+        &self,
+        context: &super::ownership::Device,
+        blend: u32,
+        invert: f32,
+    ) -> Result<&Shader, GpuError> {
+        let specialized = invert == 0. && matches!(blend, 1..=3 | 5..=10);
+        let slot = &self.tile[if specialized {
+            blend as usize + 1
+        } else {
+            usize::from(blend > 4)
+        }];
+        if slot.get().is_none() {
+            let fragment = if specialized {
+                match blend {
+                    1 => shader_code!("tile_blend_1"),
+                    2 => shader_code!("tile_blend_2"),
+                    3 => shader_code!("tile_blend_3"),
+                    5 => shader_code!("tile_blend_5"),
+                    6 => shader_code!("tile_blend_6"),
+                    7 => shader_code!("tile_blend_7"),
+                    8 => shader_code!("tile_blend_8"),
+                    9 => shader_code!("tile_blend_9"),
+                    10 => shader_code!("tile_blend_10"),
+                    _ => unreachable!("specialized blend family"),
+                }
+            } else if blend > 4 {
+                shader_code!("tile_extended_blend")
+            } else {
+                shader_code!("tile_composite")
+            };
+            let program = create_program_with_output(
+                context,
+                shader_code!("composite_vertex"),
+                fragment,
+                true,
+                false,
+                native::FragmentOutput::Declared,
+            )?;
+            let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
+            assert!(
+                slot.set(Shader { program, uniforms }).is_ok(),
+                "single-threaded program creation"
+            );
+        }
+        Ok(slot.get().unwrap())
+    }
+
+    pub fn overwrite(
+        &self,
+        context: &super::ownership::Device,
+        extended: bool,
+        _: crate::common::target_writes::FullOverwrite,
+    ) -> Result<&Shader, GpuError> {
+        let slot = &self.overwrite[usize::from(extended)];
+        if slot.get().is_none() {
+            let shader = Shader::with_clipping(
+                context,
+                shader_code!("composite_vertex"),
+                if extended {
+                    shader_code!("extended_blend_overwrite")
+                } else {
+                    shader_code!("composite_overwrite")
+                },
+                false,
+            )?;
+            assert!(slot.set(shader).is_ok(), "single-threaded program creation");
+        }
+        Ok(slot.get().unwrap())
     }
     pub fn quad(&self, context: &super::ownership::Device, quad: Quad<'_>) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
@@ -301,6 +446,7 @@ impl Programs {
             size,
             program: &shader.program,
             vertices: &self.vertices,
+            instances: None,
             indices: Some(&self.indices),
             range: 0..6,
             textures,
@@ -363,15 +509,57 @@ pub(super) fn attributes() -> [VertexAttribute; 4] {
         },
     ]
 }
+struct TargetStorage {
+    _ticket: super::ownership::NativeTicket,
+    effect_pins: std::cell::Cell<usize>,
+}
+struct EffectPin {
+    storage: Rc<TargetStorage>,
+    token: crate::common::effect_result::Token,
+    _metadata: BudgetTicket,
+}
+impl Drop for EffectPin {
+    fn drop(&mut self) {
+        self.storage
+            .effect_pins
+            .set(self.storage.effect_pins.get() - 1);
+    }
+}
 #[derive(Clone)]
 pub(super) struct Target {
     pub slot: usize,
     pub size: [u32; 2],
     pub view: Texture,
     pub framebuffer: Framebuffer,
-    _storage: Rc<super::ownership::NativeTicket>,
+    _storage: Rc<TargetStorage>,
+    effect_pin: Option<Rc<EffectPin>>,
 }
 impl Target {
+    pub(super) fn is_effect_pinned(&self) -> bool {
+        self._storage.effect_pins.get() != 0
+    }
+    pub(super) fn effect_token(&self) -> Option<crate::common::effect_result::Token> {
+        self.effect_pin.as_ref().map(|pin| pin.token)
+    }
+    pub(super) fn pin_effect(
+        &self,
+        token: crate::common::effect_result::Token,
+        pool: &BudgetPool,
+    ) -> Option<Self> {
+        let metadata = pool
+            .reserve((size_of::<EffectPin>() + 2 * size_of::<usize>()) as u64)
+            .ok()?;
+        self._storage
+            .effect_pins
+            .set(self._storage.effect_pins.get().checked_add(1)?);
+        let mut result = self.clone();
+        result.effect_pin = Some(Rc::new(EffectPin {
+            storage: self._storage.clone(),
+            token,
+            _metadata: metadata,
+        }));
+        Some(result)
+    }
     pub fn source_uv(&self, parent: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
         let storage = self.view.size();
         crate::common::source_view::uv_mapping(parent, storage, origin)
@@ -388,15 +576,20 @@ impl Target {
     pub fn new(
         context: &super::ownership::Device,
         size: [u32; 2],
+        format: native::TargetFormat,
         budget: &BudgetPool,
         limit: u64,
     ) -> Result<Self, (GpuError, Option<super::ownership::NativeTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
         let bytes = context
-            .target_layout(size)
+            .target_layout(size, format)
             .map_err(|error| (error.into(), None))?
             .texture_bytes;
-        let storage = budget.reserve(bytes).map_err(|_| {
+        let storage = {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetReserve);
+            budget.reserve(bytes)
+        }
+        .map_err(|_| {
             (
                 GpuError::Pressure {
                     domain: "offscreen targets",
@@ -408,20 +601,43 @@ impl Target {
         })?;
         let storage = context.ticket(storage);
         let built = (|| {
-            let view = super::super::create_target_texture(context, size)?;
-            let framebuffer = context.framebuffer(&view)?;
+            let view = {
+                let _timing =
+                    reel_core::profile::Scope::new(reel_core::profile::Phase::TargetTexture);
+                super::super::create_target_texture(context, size, format)?
+            };
+            let framebuffer = {
+                let _timing =
+                    reel_core::profile::Scope::new(reel_core::profile::Phase::TargetFramebuffer);
+                context.framebuffer(&view)?
+            };
             Ok::<_, native::Error>((view, framebuffer))
         })();
         let (view, framebuffer) = match built {
             Ok(value) => value,
-            Err(error) => return Err((error.into(), Some(storage))),
+            Err(error) => {
+                let error = GpuError::from(error);
+                if error.is_memory_pressure() {
+                    // Construction has issued no GPU work. Native owners have
+                    // been dropped; the ticket still preserves a release fault.
+                    drop(storage);
+                    context.check().map_err(|error| (error, None))?;
+                    return Err((error, None));
+                }
+                return Err((error, Some(storage)));
+            }
         };
+        reel_core::profile::count(reel_core::profile::Phase::TargetCreated);
         Ok(Self {
             slot: 0,
             view,
             framebuffer,
             size,
-            _storage: Rc::new(storage),
+            _storage: Rc::new(TargetStorage {
+                _ticket: storage,
+                effect_pins: std::cell::Cell::new(0),
+            }),
+            effect_pin: None,
         })
     }
 }

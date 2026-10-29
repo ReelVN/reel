@@ -1,6 +1,10 @@
 //! Author property decoding and validation.
 use super::*;
 
+#[cfg(test)]
+#[path = "property_values_tests.rs"]
+mod tests;
+
 pub(in crate::aside) fn read_text(
     heap: &Heap,
     value: Value,
@@ -44,9 +48,7 @@ pub(in crate::aside) fn read_fit(
         ));
     }
     let mut bytes = [0; 7];
-    for index in 0..info.len {
-        heap.read_bytes(value, index, &mut bytes[index as usize..index as usize + 1])?;
-    }
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     match &bytes[..info.len as usize] {
         b"contain" => Ok(ObjectFit::Contain),
         b"cover" => Ok(ObjectFit::Cover),
@@ -61,9 +63,15 @@ pub(in crate::aside) fn read_sampling(
     heap: &Heap,
     value: Value,
 ) -> Result<reel_ui::peniko::ImageQuality, AdapterError> {
-    match text::read_string(heap, value, 16)?.as_str() {
-        "nearest" => Ok(reel_ui::peniko::ImageQuality::Low),
-        "linear" => Ok(reel_ui::peniko::ImageQuality::Medium),
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 7 {
+        return Err(AdapterError::Input("sampling must be nearest or linear"));
+    }
+    let mut bytes = [0; 7];
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
+    match &bytes[..info.len as usize] {
+        b"nearest" => Ok(reel_ui::peniko::ImageQuality::Low),
+        b"linear" => Ok(reel_ui::peniko::ImageQuality::Medium),
         _ => Err(AdapterError::Input("sampling must be nearest or linear")),
     }
 }
@@ -73,9 +81,17 @@ pub(in crate::aside) fn read_alpha_layout(
     value: Value,
 ) -> Result<reel_ui::frame::ImageAlphaLayout, AdapterError> {
     use reel_ui::frame::ImageAlphaLayout;
-    match text::read_string(heap, value, 32)?.as_str() {
-        "native" => Ok(ImageAlphaLayout::Native),
-        "top_bottom" => Ok(ImageAlphaLayout::TopBottom),
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 10 {
+        return Err(AdapterError::Input(
+            "alpha_layout must be native or top_bottom",
+        ));
+    }
+    let mut bytes = [0; 10];
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
+    match &bytes[..info.len as usize] {
+        b"native" => Ok(ImageAlphaLayout::Native),
+        b"top_bottom" => Ok(ImageAlphaLayout::TopBottom),
         _ => Err(AdapterError::Input(
             "alpha_layout must be native or top_bottom",
         )),
@@ -168,7 +184,7 @@ pub(in crate::aside) fn read_repeat(heap: &Heap, value: Value) -> Result<[bool; 
         ));
     }
     let mut bytes = [0; 4];
-    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     match &bytes[..info.len as usize] {
         b"none" => Ok([false, false]),
         b"x" => Ok([true, false]),
@@ -421,11 +437,7 @@ pub(in crate::aside) fn color(heap: &Heap, value: Value) -> Result<[u8; 4], Adap
         return Err(AdapterError::Input("color requires #rrggbb or #rrggbbaa"));
     }
     let mut bytes = [0; 9];
-    // A color has at most nine bytes. Single-byte reads also respect the Heap's
-    // existing per-operation byte budget, without allocating or copying text.
-    for index in 0..info.len {
-        heap.read_bytes(value, index, &mut bytes[index as usize..index as usize + 1])?;
-    }
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     if bytes[0] != b'#' {
         return Err(AdapterError::Input("color requires #rrggbb or #rrggbbaa"));
     }
@@ -508,7 +520,7 @@ pub(in crate::aside) fn blend(
         return Err(HeapError::TypeMismatch);
     }
     let mut bytes = [0; 11];
-    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     Ok(match &bytes[..info.len as usize] {
         b"normal" => BlendMode::default(),
         b"add" => reel_ui::peniko::BlendMode::new(Mix::Normal, Compose::PlusLighter).into(),
@@ -714,7 +726,7 @@ pub(in crate::aside) fn writing_mode(
         return Err(HeapError::TypeMismatch);
     }
     let mut bytes = [0; 13];
-    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     match &bytes[..info.len as usize] {
         b"horizontal-tb" => Ok(reel_ui::WritingMode::HorizontalTb),
         b"vertical-rl" => Ok(reel_ui::WritingMode::VerticalRl),
@@ -735,9 +747,7 @@ pub(in crate::aside) fn text_align(
         return Err(HeapError::TypeMismatch);
     }
     let mut bytes = [0; 7];
-    for i in 0..info.len {
-        heap.read_bytes(value, i, &mut bytes[i as usize..i as usize + 1])?;
-    }
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     Ok(match &bytes[..info.len as usize] {
         b"start" => reel_ui::TextAlign::Start,
         b"end" => reel_ui::TextAlign::End,
@@ -757,7 +767,7 @@ pub(in crate::aside) fn shrink_text(heap: &Heap, value: Value) -> Result<bool, H
         return Err(HeapError::TypeMismatch);
     }
     let mut bytes = [0; 6];
-    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     match &bytes[..info.len as usize] {
         b"none" => Ok(false),
         b"shrink" => Ok(true),
@@ -777,7 +787,7 @@ pub(in crate::aside) fn stretch(
         return Err(HeapError::TypeMismatch);
     }
     let mut bytes = [0; 4];
-    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
     match &bytes[..info.len as usize] {
         b"none" => Ok(Stretch::None),
         b"x" => Ok(Stretch::X),

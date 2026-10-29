@@ -2,7 +2,7 @@
 //!
 //! An optional project-root `resources.toml` contains ordered `[[targets.NAME]]`
 //! rules. The first matching logical path selects `convert = "texture"`, `"tiles"`,
-//! `"opus"`, `"video"`, or `"copy"`; unmatched resources retain their selected source file.
+//! `"atlas"`, `"opus"`, `"video"`, or `"copy"`; unmatched resources retain their selected source file.
 //! `match` is a case-sensitive glob with `/` separators (`*` stays within one
 //! component; `**` crosses directories). Source target selection runs first.
 //! Texture `scale` changes texel density while preserving logical coordinates;
@@ -15,6 +15,9 @@
 //! Alpha remains undithered. Ordered dithering does not apply to block formats or tiles.
 //! BC textures and tiles select color fitting against the filtered source's
 //! displayed error while retaining the selected format and GPU byte count.
+//! Each atlas rule forms one explicit shared-residency cohort. `page_size` defaults to
+//! [1024, 1024]; atlas pages have one mip level and use four-texel edge gutters.
+//! Atlas members retain their original logical paths and share one page.
 //! Tile rules retain the logical image path and publish adjacent pyramid tiles.
 //! `tile_size` defaults to 510 content pixels plus a one-pixel gutter per side;
 //! `first_level = 1` starts at half density. `format` and `power_of_two` apply to
@@ -30,6 +33,7 @@
 //! source content, normalized recipe and the converter implementation identity.
 //! Payloads remain on disk; hashing uses a fixed 64 KiB buffer. A complete index
 //! is atomically published only after all selected resources are ready.
+mod atlas;
 use crate::prepare_texture;
 use globset::{GlobBuilder, GlobMatcher};
 use reel_package::resource_target::ResourceTarget;
@@ -93,6 +97,7 @@ struct RuleInput {
     dither: Option<prepare_texture::Dither>,
     mipmaps: Option<bool>,
     power_of_two: Option<bool>,
+    page_size: Option<[u32; 2]>,
     bitrate: Option<u32>,
     tile_size: Option<u32>,
     first_level: Option<u32>,
@@ -106,6 +111,7 @@ struct RuleInput {
 enum Convert {
     Copy,
     Texture,
+    Atlas,
     Tiles,
     Opus,
     Video,
@@ -123,6 +129,12 @@ enum Recipe {
         power_of_two: bool,
         dither: prepare_texture::Dither,
         mipmaps: bool,
+    },
+    Atlas {
+        scale: f64,
+        format: prepare_texture::Format,
+        dither: prepare_texture::Dither,
+        page_size: [u32; 2],
     },
     Tiles {
         tile_size: u32,
@@ -161,10 +173,15 @@ impl RuleInput {
             .build()
             .map_err(invalid)?
             .compile_matcher();
-        if self.mipmaps.is_some() && !matches!(self.convert, Convert::Texture) {
-            return Err(invalid("mipmaps belongs to texture rules"));
+        if self.mipmaps.is_some()
+            && !matches!(self.convert, Convert::Texture)
+            && (!matches!(self.convert, Convert::Atlas) || self.mipmaps == Some(true))
+        {
+            return Err(invalid(
+                "atlas pages have one level; mipmaps belongs to texture rules",
+            ));
         }
-        if self.dither.is_some() && !matches!(self.convert, Convert::Texture) {
+        if self.dither.is_some() && !matches!(self.convert, Convert::Texture | Convert::Atlas) {
             return Err(invalid("dither belongs to texture rules"));
         }
         if !matches!(self.convert, Convert::Tiles)
@@ -178,6 +195,9 @@ impl RuleInput {
         if !matches!(self.convert, Convert::Font) && (self.unicode.is_some() || self.text.is_some())
         {
             return Err(invalid("unicode and text belong to font rules"));
+        }
+        if self.page_size.is_some() && !matches!(self.convert, Convert::Atlas) {
+            return Err(invalid("page_size belongs to atlas rules"));
         }
         let recipe = match self.convert {
             Convert::Font => {
@@ -249,6 +269,43 @@ impl RuleInput {
                     return Err(invalid("copy rules only accept match and convert"));
                 }
                 Recipe::Copy
+            }
+            Convert::Atlas => {
+                if self.size.is_some() || self.power_of_two.is_some() || self.bitrate.is_some() {
+                    return Err(invalid(
+                        "atlas rules accept scale, format, dither and page_size",
+                    ));
+                }
+                let scale = self.scale.unwrap_or(1.);
+                if !scale.is_finite() || scale <= 0. || scale > 1. {
+                    return Err(invalid(
+                        "atlas scale must be finite and greater than zero up to one",
+                    ));
+                }
+                let page_size = self.page_size.unwrap_or([1024, 1024]);
+                if page_size
+                    .iter()
+                    .any(|&n| !(8..=4096).contains(&n) || !n.is_multiple_of(4))
+                {
+                    return Err(invalid(
+                        "atlas page dimensions must be multiples of four from 8 to 4096",
+                    ));
+                }
+                let format = self.format.unwrap_or_default();
+                let dither = self.dither.unwrap_or_default();
+                prepare_texture::Options {
+                    format,
+                    dither,
+                    ..Default::default()
+                }
+                .validate()
+                .map_err(invalid)?;
+                Recipe::Atlas {
+                    scale,
+                    format,
+                    dither,
+                    page_size,
+                }
             }
             Convert::Texture => {
                 let format = self.format.unwrap_or_default();
@@ -504,6 +561,7 @@ fn converter_identity(recipe: &Recipe) -> &'static str {
     match recipe {
         Recipe::Copy => unreachable!(),
         Recipe::Texture { .. } => identity::for_kind("texture"),
+        Recipe::Atlas { .. } => identity::for_kind("atlas"),
         Recipe::Tiles { .. } => identity::for_kind("tiles"),
         Recipe::Opus { .. } => identity::for_kind("opus"),
         Recipe::Video { .. } => identity::for_kind("video"),
@@ -539,7 +597,30 @@ fn prepare_with_rules<'a>(
     let mut video_tools = None;
     let mut audio_tools = None;
     let mut font_tools = None;
+    let mut groups: BTreeMap<usize, Vec<(String, PathBuf)>> = BTreeMap::new();
+    let mut ordinary = Vec::new();
     for (name, source) in selected {
+        let selected_rule = rules.iter().position(|rule| rule.matcher.is_match(&name));
+        if let Some(index) = selected_rule
+            && matches!(rules[index].recipe, Recipe::Atlas { .. })
+        {
+            groups.entry(index).or_default().push((name, source));
+        } else {
+            ordinary.push((name, source));
+        }
+    }
+    for (index, members) in groups {
+        atlas::prepare(
+            &root,
+            target,
+            &rules[index].recipe,
+            members,
+            memory_bytes,
+            identity(&rules[index].recipe),
+            &mut prepared,
+        )?;
+    }
+    for (name, source) in ordinary {
         let source = source.canonicalize()?;
         let source_bytes = fs::metadata(&source)?.len();
         prepared.report.source_bytes += source_bytes;
@@ -590,7 +671,7 @@ fn prepare_with_rules<'a>(
                     Recipe::Opus { .. } => "resource.opus",
                     Recipe::Video { .. } => "resource.mp4",
                     Recipe::Font { .. } => "resource.ttf",
-                    Recipe::Copy => unreachable!(),
+                    Recipe::Atlas { .. } | Recipe::Copy => unreachable!(),
                 };
                 let output = object.join(output_name);
                 if output.is_file() {
@@ -758,7 +839,9 @@ fn convert(
         Recipe::Opus { bitrate } => {
             crate::prepare_audio::prepare(source, output, *bitrate, memory_bytes)
         }
-        Recipe::Copy => unreachable!("copy recipes retain their selected source"),
+        Recipe::Atlas { .. } | Recipe::Copy => {
+            unreachable!("atlas groups and copy recipes are handled separately")
+        }
     }
 }
 

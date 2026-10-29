@@ -359,16 +359,9 @@ fn snapshot_metadata_refunds_workspace_and_counts_shared_resident_pixels_once() 
     else {
         panic!()
     };
-    let ResourceData::Image {
-        image: original, ..
-    } = lease.data()
-    else {
-        panic!()
-    };
-    assert_eq!(
-        image.data.as_ref().as_ptr(),
-        original.data.as_ref().as_ptr()
-    );
+    let original = lease.read_pixels().unwrap();
+    assert_eq!(image.data.as_ref().as_ptr(), original.bytes().as_ptr());
+    drop(original);
     let metadata = size_of::<Archive>()
         + 2 * size_of::<usize>()
         + saved.0.nodes.capacity() * size_of::<SavedNode>()
@@ -556,4 +549,163 @@ fn image_color_appearance_restores_with_one_shared_resource() {
         assert_eq!(image.image.appearance, expected);
         assert_eq!(image.image.source_rect, Some(Rect::new(16., 8., 32., 24.)));
     }
+}
+
+#[test]
+fn atlas_views_archive_one_page_and_restore_distinct_origins() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion},
+        texture::{ImageView, TextureDescriptor, TextureFormat, TextureLayout, TexturePayload},
+    };
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(4, 1 << 20).unwrap();
+    let version = |name: &str| ResourceVersion {
+        key: AssetKey(name.into()),
+        version: ContentVersion([0; 32]),
+    };
+    let descriptor = TextureDescriptor {
+        storage_layout: Default::default(),
+        mip_count: 1,
+        format: TextureFormat::Rgba8,
+        layout: TextureLayout::identity([16, 8]),
+        source_encoding: ColorEncoding::Srgb,
+    };
+    let bytes = vec![255; 16 * 8 * 4];
+    let payload = TexturePayload::new(
+        descriptor,
+        OwnedBytes::new(bytes, pool.reserve(512).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let page_name = "p".repeat(8192);
+    let page = registry
+        .register_texture(version(&page_name), payload)
+        .unwrap();
+    let page = registry.acquire(page).unwrap();
+    let view = |x| ImageView {
+        logical_size: [4, 4],
+        content_origin: [x, 2],
+        content_size: [4, 4],
+    };
+    let a = registry
+        .register_atlas_view(version("a"), view(1), ColorEncoding::Srgb, page.clone())
+        .unwrap();
+    let b = registry
+        .register_atlas_view(version("b"), view(9), ColorEncoding::Srgb, page.clone())
+        .unwrap();
+    let scene = retained(
+        &pool,
+        vec![registry.acquire(a).unwrap(), registry.acquire(b).unwrap()],
+        vec![],
+    );
+    let assets = scene
+        .snapshot(|lease| {
+            Some(RetainedAsset {
+                version: lease.version().clone(),
+                kind: RetainedAssetKind::Image,
+            })
+        })
+        .unwrap();
+    assert_eq!(assets.0.resources.len(), 2);
+    let expected = assets
+        .0
+        .resources
+        .iter()
+        .map(|r| {
+            512 + match &r.kind {
+                SavedResourceKind::Asset(asset) => asset.version.key.0.capacity() as u64,
+                _ => 0,
+            }
+        })
+        .sum::<u64>()
+        + 512;
+    assert_eq!(
+        assets.0.resources.iter().map(|r| r.live_bytes).sum::<u64>(),
+        expected
+    );
+    let metadata = |saved: &SavedRetainedScene| {
+        size_of::<Archive>()
+            + 2 * size_of::<usize>()
+            + saved.0.nodes.capacity() * size_of::<SavedNode>()
+            + saved.0.resources.capacity() * size_of::<SavedResource>()
+            + saved
+                .0
+                .nodes
+                .iter()
+                .map(|node| {
+                    node.resources.capacity() * size_of::<u32>()
+                        + node.transitions.capacity() * size_of::<SavedTransition>()
+                })
+                .sum::<usize>()
+            + saved
+                .0
+                .resources
+                .iter()
+                .map(|resource| match &resource.kind {
+                    SavedResourceKind::Asset(asset) => asset.version.key.0.capacity(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+    };
+    let before = pool.usage().bytes;
+    let mut described_backing = false;
+    let asset_backing = scene
+        .snapshot(|lease| {
+            if lease.handle() != page.handle() {
+                return None;
+            }
+            described_backing = true;
+            assert!(
+                pool.usage().bytes >= before + page_name.len() as u64,
+                "backing name must be admitted before the producer can clone it"
+            );
+            let mut version = lease.version().clone();
+            version.key.0.reserve(128);
+            Some(RetainedAsset {
+                version,
+                kind: RetainedAssetKind::Image,
+            })
+        })
+        .unwrap();
+    assert!(described_backing);
+    assert_eq!(asset_backing.0.resources.len(), 3);
+    assert_eq!(
+        asset_backing.0._ticket.as_ref().unwrap().bytes(),
+        metadata(&asset_backing) as u64
+    );
+    assert_eq!(pool.usage().bytes - before, metadata(&asset_backing) as u64);
+    drop(asset_backing);
+    assert_eq!(pool.usage().bytes, before);
+    let saved = scene.snapshot(|_| None).unwrap();
+    assert_eq!(
+        saved.0._ticket.as_ref().unwrap().bytes(),
+        metadata(&saved) as u64
+    );
+    assert_eq!(pool.usage().bytes - before, metadata(&saved) as u64);
+    assert_eq!(saved.0.resources.len(), 3);
+    assert_eq!(
+        saved
+            .0
+            .resources
+            .iter()
+            .filter(|r| matches!(
+                r.kind,
+                SavedResourceKind::Inline(InlineResource::Texture { .. })
+            ))
+            .count(),
+        1
+    );
+    let restored = restore(&saved).unwrap();
+    let leases = restored.drawing.resources.leases();
+    assert_eq!(leases.len(), 2);
+    assert_eq!(
+        leases[0].image_backing().handle(),
+        leases[1].image_backing().handle()
+    );
+    let mut origins: Vec<_> = leases
+        .iter()
+        .map(|lease| lease.image_view().unwrap().content_origin)
+        .collect();
+    origins.sort();
+    assert_eq!(origins, [[1, 2], [9, 2]]);
 }

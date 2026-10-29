@@ -60,7 +60,7 @@ fn ready_player(code: &str) -> (Player<Backend>, Host) {
     }
     assert!(!player.settings_pending());
     let font = player.resources[0].clone();
-    let reel_ui::resources::ResourceData::Font(data) = font.data() else {
+    let reel_ui::resources::ResourceView::Font(data) = font.view() else {
         panic!("font resource");
     };
     let pool = BudgetPool::new(

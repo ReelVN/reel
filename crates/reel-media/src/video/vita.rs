@@ -3,7 +3,7 @@ use super::{
     AudioFrames, DecodeDemand, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory,
     VideoFrame, VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
 };
-use reel_core::budget::{BudgetPool, BudgetTicket};
+use reel_core::budget::BudgetPool;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -15,13 +15,46 @@ use vita_native::{
 };
 
 #[derive(Debug)]
-struct NativeBudget(BudgetPool);
+struct NativeBudget {
+    owner: &'static str,
+    local: BudgetPool,
+    contiguous: Option<BudgetPool>,
+}
 impl MemoryBudget for NativeBudget {
-    fn reserve(&self, bytes: u64) -> Result<Box<dyn MemoryReservation>, String> {
-        self.0
-            .reserve(bytes)
-            .map(|ticket| Box::new(ticket) as Box<dyn MemoryReservation>)
-            .map_err(|error| error.message)
+    fn reserve(
+        &self,
+        class: vita_native::memory::MemoryClass,
+        bytes: u64,
+    ) -> Result<Box<dyn MemoryReservation>, vita_native::memory::MemoryBudgetError> {
+        let physical = match class {
+            vita_native::memory::MemoryClass::Heap => None,
+            vita_native::memory::MemoryClass::ContiguousKernel => self.contiguous.as_ref(),
+            vita_native::memory::MemoryClass::MainKernel => {
+                return Err(vita_native::memory::MemoryBudgetError::Other(
+                    "unexpected ordinary MAIN video allocation".into(),
+                ));
+            }
+        };
+        super::native_budget::reserve(&self.local, physical, bytes)
+            .map(|ticket| {
+                #[cfg(feature = "profiling")]
+                eprintln!(
+                    "[reel-video] reserve owner={} class={class:?} bytes={bytes} local_used={} local_peak={}",
+                    self.owner,
+                    self.local.usage().bytes,
+                    self.local.usage().peak_bytes,
+                );
+                Box::new(ticket) as Box<dyn MemoryReservation>
+            })
+            .map_err(|mut error| {
+                error.message = format!("{} {class:?}: {}", self.owner, error.message);
+                match error.code {
+                    reel_core::result::RejectCode::Busy => {
+                        vita_native::memory::MemoryBudgetError::Capacity(error.message)
+                    }
+                    _ => vita_native::memory::MemoryBudgetError::Other(error.message),
+                }
+            })
     }
 }
 
@@ -31,11 +64,14 @@ impl MemoryBudget for NativeBudget {
 pub struct VitaVideoDecoderFactory {
     /// Maximum rounded physical capacity for owned sampled NV12 blocks.
     pub frame_pool_bytes: u64,
+    /// Optional physical quota for contiguous video blocks across decoder instances.
+    pub contiguous_budget: Option<BudgetPool>,
 }
 impl Default for VitaVideoDecoderFactory {
     fn default() -> Self {
         Self {
             frame_pool_bytes: 8 << 20,
+            contiguous_budget: None,
         }
     }
 }
@@ -58,7 +94,11 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
     ) -> Result<Box<dyn VideoDecoder>, String> {
         let player = Player::open(
             Box::new(source),
-            Arc::new(NativeBudget(budget.clone())),
+            Arc::new(NativeBudget {
+                owner: "AvPlayer",
+                local: budget.clone(),
+                contiguous: self.contiguous_budget.clone(),
+            }),
             stopped.clone(),
         )?;
         let color = sequence_color(player.sequence_parameter_set())?;
@@ -75,7 +115,11 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
         let frames = Nv12Pool::new(
             [info.width, info.height],
             self.frame_pool_bytes,
-            Arc::new(NativeBudget(budget.clone())),
+            Arc::new(NativeBudget {
+                owner: "NV12 output pool",
+                local: budget.clone(),
+                contiguous: self.contiguous_budget.clone(),
+            }),
         )?;
         Ok(Box::new(VitaDecoder {
             frames,
@@ -145,6 +189,7 @@ impl VitaDecoder {
             })
         })? {
             NativePoll::Ready(next) => {
+                reel_core::profile::count(reel_core::profile::Phase::VideoDecoded);
                 let previous = self.pending.replace(next);
                 let Some(mut previous) = previous else {
                     return Ok(None);
@@ -199,10 +244,12 @@ impl VitaDecoder {
                 if skip != 0 {
                     frames.drain(..skip);
                 }
+                let (frames, storage) = self.pcm.publish();
                 Ok(Some(AudioFrames {
                     pts: packet.pts + skip as f64 / rate,
                     sample_rate: packet.sample_rate,
-                    frames: self.pcm.publish(),
+                    frames,
+                    storage,
                 }))
             }
             NativePoll::Pending => Ok(None),
@@ -217,8 +264,8 @@ impl VideoDecoder for VitaDecoder {
     fn video_output_bytes(&self) -> u64 {
         0
     }
-    fn recycle_audio(&mut self, packet: AudioFrames, storage: BudgetTicket) {
-        self.pcm.recycle(packet.frames, storage);
+    fn recycle_audio(&mut self, packet: AudioFrames) {
+        self.pcm.recycle(packet.frames, packet.storage);
     }
     fn info(&self) -> &VideoInfo {
         &self.info

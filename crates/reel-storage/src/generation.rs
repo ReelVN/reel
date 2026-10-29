@@ -257,9 +257,13 @@ pub(super) fn remove(target: &Path) -> io::Result<Published> {
         cleanup_warning: warning,
     })
 }
-pub(super) fn entries(
+pub(super) fn entries<F>(
     directory: &Path,
-) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
+    select: F,
+) -> io::Result<impl Iterator<Item = io::Result<(PathBuf, fs::File)>> + use<F>>
+where
+    F: Fn(&Path) -> bool,
+{
     // Preserve NotFound before crossing newlib's directory-open boundary.
     fs::metadata(directory)?;
     let parent = directory.to_path_buf();
@@ -271,12 +275,15 @@ pub(super) fn entries(
         let name = entry.file_name();
         let logical = name.to_str()?.strip_prefix(PREFIX)?;
         let path = parent.join(logical);
+        let selected = select(&path);
         let _commit = match COMMIT.lock() {
             Ok(lock) => lock,
             Err(_) => return Some(Err(io::Error::other("storage commit poisoned"))),
         };
         match current(&entry.path()) {
-            Ok(Some(commit)) if commit.present => Some(Ok(path)),
+            Ok(Some(commit)) if commit.present && selected => Some(
+                fs::File::open(data(&entry.path(), commit.generation)).map(|file| (path, file)),
+            ),
             Ok(_) => None,
             Err(error) => Some(Err(error)),
         }
@@ -303,7 +310,10 @@ mod tests {
         let target = dir.path.join("new.data");
         assert_eq!(open(&target).unwrap_err().kind(), io::ErrorKind::NotFound);
         assert_eq!(
-            entries(&dir.path.join("missing")).err().unwrap().kind(),
+            entries(&dir.path.join("missing"), |_| true)
+                .err()
+                .unwrap()
+                .kind(),
             io::ErrorKind::NotFound
         );
         fs::write(store(&target).unwrap(), b"not a directory").unwrap();
@@ -317,7 +327,14 @@ mod tests {
         let dir = directory();
         let path = dir.path.join("slot.save");
         publish(&path, false, |file| file.write_all(b"old")).unwrap();
-        let mut retained = open(&path).unwrap();
+        let mut retained = entries(&dir.path, |path| {
+            path.extension().is_some_and(|e| e == "save")
+        })
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .1;
         let failed = publish(&path, true, |file| {
             file.write_all(b"partial")?;
             assert_eq!(read(&path), b"old");
@@ -331,17 +348,129 @@ mod tests {
         retained.read_to_end(&mut old).unwrap();
         assert_eq!(old, b"old");
         assert_eq!(
-            entries(&dir.path)
+            entries(&dir.path, |_| true)
                 .unwrap()
+                .map(|entry| entry.map(|(path, _)| path))
                 .collect::<io::Result<Vec<_>>>()
                 .unwrap(),
             vec![path.clone()]
         );
         remove(&path).unwrap();
         assert_eq!(open(&path).err().unwrap().kind(), io::ErrorKind::NotFound);
-        assert_eq!(entries(&dir.path).unwrap().count(), 0);
+        assert_eq!(entries(&dir.path, |_| true).unwrap().count(), 0);
         publish(&path, false, |file| file.write_all(b"again")).unwrap();
         assert_eq!(read(&path), b"again");
+    }
+    #[test]
+    fn selected_entries_report_corruption_without_opening_unselected_files() {
+        let dir = directory();
+        let save = dir.path.join("slot.save");
+        let other = dir.path.join("other.data");
+        publish(&save, false, |file| file.write_all(b"valid")).unwrap();
+        publish(&other, false, |file| file.write_all(b"other")).unwrap();
+        let other_root = store(&other).unwrap();
+        fs::remove_file(data(&other_root, 1)).unwrap();
+        let mut selected = entries(&dir.path, |path| {
+            path.extension().is_some_and(|e| e == "save")
+        })
+        .unwrap()
+        .collect::<io::Result<Vec<_>>>()
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        let mut bytes = Vec::new();
+        selected.pop().unwrap().1.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"valid");
+        fs::write(record(&other_root, 1), b"broken").unwrap();
+        assert_eq!(
+            entries(&dir.path, |path| path
+                .extension()
+                .is_some_and(|e| e == "save"))
+            .unwrap()
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::write(record(&other_root, 1), b"P").unwrap();
+        fs::remove_file(data(&store(&save).unwrap(), 1)).unwrap();
+        assert_eq!(
+            entries(&dir.path, |path| path
+                .extension()
+                .is_some_and(|e| e == "save"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+    #[test]
+    fn dropping_enumeration_stops_before_opening_later_entries() {
+        let dir = directory();
+        for i in 0..3 {
+            publish(&dir.path.join(format!("{i}.save")), false, |file| {
+                file.write_all(b"x")
+            })
+            .unwrap();
+        }
+        let visited = std::cell::Cell::new(0);
+        let mut iter = entries(&dir.path, |_| {
+            visited.set(visited.get() + 1);
+            true
+        })
+        .unwrap();
+        let (_, file) = iter.next().unwrap().unwrap();
+        assert_eq!(visited.get(), 1);
+        drop(iter);
+        assert_eq!(visited.get(), 1);
+        drop(file);
+    }
+    #[test]
+    #[ignore = "filesystem enumeration cost comparison"]
+    fn list_open_cost_comparison() {
+        use std::time::Instant;
+        let dir = directory();
+        for i in 0..64 {
+            let path = dir.path.join(format!("slot-{i}.save"));
+            publish(&path, false, |file| file.write_all(b"metadata")).unwrap();
+        }
+        let iterations = 10;
+        let before = Instant::now();
+        for _ in 0..iterations {
+            for entry in fs::read_dir(&dir.path).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let Some(logical) = name.to_str().and_then(|name| name.strip_prefix(PREFIX)) else {
+                    continue;
+                };
+                let path = dir.path.join(logical);
+                let commit = {
+                    let _lock = COMMIT.lock().unwrap();
+                    current(&entry.path()).unwrap()
+                };
+                if commit.is_some_and(|commit| commit.present) {
+                    let mut file = open(&path).unwrap();
+                    let mut byte = [0; 1];
+                    file.read_exact(&mut byte).unwrap();
+                }
+            }
+        }
+        let baseline = before.elapsed();
+        let before = Instant::now();
+        for _ in 0..iterations {
+            for entry in entries(&dir.path, |_| true).unwrap() {
+                let (_, mut file) = entry.unwrap();
+                let mut byte = [0; 1];
+                file.read_exact(&mut byte).unwrap();
+            }
+        }
+        let combined = before.elapsed();
+        println!(
+            "slots=64 iterations={iterations} old_generation_resolutions={} new_generation_resolutions={} old={baseline:?} new={combined:?}",
+            64 * iterations * 2,
+            64 * iterations
+        );
     }
     #[test]
     fn incomplete_generations_are_invisible_and_create_race_preserves_winner() {

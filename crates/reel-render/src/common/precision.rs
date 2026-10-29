@@ -54,8 +54,8 @@ pub(crate) fn composite_wgsl(
         "return textureSample(source, linear_sampler, v.source_uv) * params.opacity;",
         "return vec4<f32>(vec4<f16>(textureSample(source, linear_sampler, v.source_uv)) * f16(params.opacity));"
     ).replace(
-        "return textureSample(source, linear_sampler, v.source_uv) * clamp(textureSample(mask, linear_sampler, v.mask_uv).a, 0.0, 1.0) * params.opacity;",
-        "return vec4<f32>(vec4<f16>(textureSample(source, linear_sampler, v.source_uv)) * f16(textureSample(mask, linear_sampler, v.mask_uv).a) * f16(params.opacity));"
+        "return textureSample(source, linear_sampler, v.source_uv) * clamp(mask_alpha(v), 0.0, 1.0) * params.opacity;",
+        "return vec4<f32>(vec4<f16>(textureSample(source, linear_sampler, v.source_uv)) * f16(mask_alpha(v)) * f16(params.opacity));"
     );
     std::borrow::Cow::Owned(format!("enable f16;\n{source}"))
 }

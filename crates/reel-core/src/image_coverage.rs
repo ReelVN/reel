@@ -15,6 +15,7 @@ pub struct ImageCoverage {
     size: [u32; 2],
     vertical: [u32; 2],
     spans: [[u32; 2]; IMAGE_COVERAGE_BANDS],
+    opaque: bool,
 }
 
 impl ImageCoverage {
@@ -23,6 +24,7 @@ impl ImageCoverage {
             size,
             vertical: [size[1], 0],
             spans: [[size[0], 0]; IMAGE_COVERAGE_BANDS],
+            opaque: false,
         }
     }
 
@@ -70,11 +72,14 @@ impl ImageCoverage {
             return None;
         }
         let mut coverage = Self::empty(size);
+        coverage.opaque = true;
         for y in 0..size[1] {
             let start = y as usize * stride;
             let row = &bytes[start..start + size[0] as usize * 4];
-            // Opaque/common rows inspect only their two edge pixels. Sparse
-            // rows scan inward; interior holes are deliberately enclosed.
+            // Support encloses interior holes. Opacity additionally inspects
+            // every alpha until the first nonopaque texel, once at registration.
+            coverage.opaque =
+                coverage.opaque && row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255);
             let active = |pixel: &[u8; 4]| {
                 if alpha_only {
                     pixel[3] != 0
@@ -148,6 +153,12 @@ impl ImageCoverage {
                 .all(|span| *span == [0, self.size[0]])
     }
 
+    /// Whether every visible texel has alpha one. Unlike `is_full`, this proves
+    /// interior alpha as well as the image's conservative support bounds.
+    pub fn is_opaque(&self) -> bool {
+        self.opaque
+    }
+
     /// Nonoverlapping pixel-edge rectangles, with equal neighbouring bands
     /// coalesced. Empty pictures yield no rectangles; full pictures yield one.
     pub fn rectangles(&self) -> impl Iterator<Item = [u32; 4]> + '_ {
@@ -217,6 +228,11 @@ mod tests {
         bytes.fill(255);
         let full = ImageCoverage::rgba8(size, &bytes).unwrap();
         assert_eq!(full.rectangles().collect::<Vec<_>>(), [[0, 0, 64, 64]]);
+        assert!(full.is_opaque());
+        bytes[(32 * 64 + 32) * 4 + 3] = 254;
+        let hole = ImageCoverage::rgba8(size, &bytes).unwrap();
+        assert!(hole.is_full());
+        assert!(!hole.is_opaque());
         assert!(ImageCoverage::rgba8([0, 1], &bytes).is_none());
         assert!(ImageCoverage::rgba8(size, &bytes[..bytes.len() - 1]).is_none());
     }

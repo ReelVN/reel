@@ -888,6 +888,7 @@ impl StageBinding {
         }
         let props = node.props.clone();
         self.scene.update(id, kind, props)?;
+        reel_core::profile::count(reel_core::profile::Phase::VideoStage);
         Ok(())
     }
 

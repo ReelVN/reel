@@ -714,3 +714,54 @@ fn unavailable_precision_hides_both_queries_and_preserves_generated_diagnostics(
     assert_eq!(output.clock_observation().presented_frames(), Some(1));
     output.stop().unwrap();
 }
+
+#[test]
+fn configured_notifier_has_no_periodic_wait_before_native_producers_exist() {
+    let output = DrivenOutput::new(SyncDriver::new(), WakeSignal::new(|| {})).unwrap();
+    let limit = std::time::Instant::now() + Duration::from_secs(2);
+    while output._notifier.waits.load(Ordering::Acquire) == 0 {
+        assert!(std::time::Instant::now() < limit);
+        thread::park_timeout(Duration::from_millis(1));
+    }
+    let before = output._notifier.waits.load(Ordering::Acquire);
+    thread::sleep(Duration::from_millis(40));
+    assert_eq!(output._notifier.waits.load(Ordering::Acquire), before);
+}
+#[test]
+fn suspended_output_keeps_the_bounded_native_error_notification_fallback() {
+    let (send, receive) = mpsc::channel();
+    let wake = WakeSignal::new(move || {
+        let _ = send.send(());
+    });
+    let mut output = DrivenOutput::new(SyncDriver::new(), wake.clone()).unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    assert!(output.start(Box::new(|_| {})).is_ok());
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    wake.acknowledge();
+    output.suspend().unwrap();
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    wake.acknowledge();
+    output.shared.fail(AudioErrorKind::DeviceFailure);
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(output.status().state, AudioState::Failed);
+}
+
+#[test]
+fn external_pcm_metrics_are_watched_before_device_start() {
+    let (send, receive) = mpsc::channel();
+    let output = OfflineOutput::new(
+        AudioDeviceConfig {
+            sample_rate_hz: 48000,
+            sample_format: SampleFormat::F32,
+            layout: ChannelLayout::Stereo,
+        },
+        WakeSignal::new(move || {
+            let _ = send.send(());
+        }),
+    )
+    .unwrap();
+    let (_, mut fill) = bounded_pcm_queue(2, output.underrun_signal()).unwrap();
+    fill(&mut [0.; 2]);
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(output.status().silent_frames, 1);
+}

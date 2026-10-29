@@ -33,7 +33,7 @@ mod settings;
 mod sound;
 
 pub use data::*;
-pub use frames::{FrameSource, FrameStorage, StreamStatus};
+pub use frames::{FrameSource, FrameStorage, STREAM_CACHE_BYTES, StreamStatus};
 pub use handle::*;
 pub use queue::{QueueClosed, QueuedStaticSound, StaticSoundQueue};
 pub use settings::*;

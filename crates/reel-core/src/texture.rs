@@ -144,6 +144,51 @@ impl TextureLayout {
         })
     }
 }
+/// One logical image inside a physical texture, expressed in texels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ImageView {
+    /// Author-space dimensions used for layout, cropping and slices.
+    pub logical_size: [u32; 2],
+    /// Top-left content texel in the physical texture.
+    pub content_origin: [u32; 2],
+    /// Visible content texel extent, excluding gutter and page padding.
+    pub content_size: [u32; 2],
+}
+impl ImageView {
+    /// Construct the ordinary origin-zero view of a prepared texture.
+    pub const fn from_layout(layout: TextureLayout) -> Self {
+        Self {
+            logical_size: layout.logical_size,
+            content_origin: [0; 2],
+            content_size: layout.content_size,
+        }
+    }
+    /// Check that the view fits its physical storage and has positive extents.
+    pub fn validate(self, storage: [u32; 2]) -> Result<(), TextureError> {
+        if self.logical_size.contains(&0)
+            || self.content_size.contains(&0)
+            || (0..2).any(|axis| {
+                self.content_origin[axis]
+                    .checked_add(self.content_size[axis])
+                    .is_none_or(|end| end > storage[axis])
+            })
+        {
+            return Err(TextureError::Dimensions);
+        }
+        Ok(())
+    }
+    /// Convert author coordinates to normalized physical texture coordinates.
+    pub fn uv_transform(self, storage: [u32; 2]) -> ([f64; 2], [f64; 2]) {
+        (
+            std::array::from_fn(|i| {
+                f64::from(self.content_size[i])
+                    / f64::from(self.logical_size[i])
+                    / f64::from(storage[i])
+            }),
+            std::array::from_fn(|i| f64::from(self.content_origin[i]) / f64::from(storage[i])),
+        )
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Format, coordinate mapping and source transfer metadata for prepared storage.
 pub struct TextureDescriptor {

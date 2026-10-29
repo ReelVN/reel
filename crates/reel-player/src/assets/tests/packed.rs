@@ -696,9 +696,7 @@ fn compressed_image_decoding_stays_within_the_shared_temporary_allowance() {
         let result = load_until_done(&assets, id);
         if succeeds {
             let lease = result.unwrap();
-            let ResourceData::Image { image, .. } = lease.data() else {
-                panic!("image resource")
-            };
+            let image = crate::test_image::data(&lease);
             assert_eq!(image.data.as_ref(), pixels);
         } else {
             assert!(

@@ -3,7 +3,7 @@ use super::{GpuError, scopes::push_stack};
 use reel_ui::{
     frame::{FrameDraw, FrameImageMask, FrameOp, RecordLocation, RenderFrame},
     peniko::{Brush, ImageFormat},
-    resources::{ResourceData, ResourceHandle, ResourceLease},
+    resources::{ResourceHandle, ResourceLease, ResourceView},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -13,6 +13,11 @@ pub(crate) struct Required<'a> {
     pub(crate) texture: Option<super::resources::TextureUploadLayout>,
 }
 
+/// Logical image handle resolved through a separately planned physical page.
+pub(crate) struct Alias<'a> {
+    pub(crate) source: &'a ResourceLease,
+    pub(crate) backing: &'a ResourceLease,
+}
 pub(crate) struct Mask<'a> {
     pub(crate) definition: &'a FrameImageMask,
     pub(crate) at: RecordLocation,
@@ -20,6 +25,7 @@ pub(crate) struct Mask<'a> {
 
 pub(crate) struct Plan<'a> {
     pub(crate) images: Vec<Required<'a>>,
+    pub(crate) aliases: Vec<Alias<'a>>,
     pub(crate) masks: Vec<Mask<'a>>,
 }
 
@@ -32,9 +38,11 @@ pub(crate) fn collect<'a>(
 ) -> Result<Plan<'a>, GpuError> {
     let mut plan = Plan {
         images: Vec::new(),
+        aliases: Vec::new(),
         masks: Vec::new(),
     };
     let mut seen = HashSet::new();
+    let mut seen_backings = HashSet::new();
     let mut drawings = Vec::new();
     let mut visited_drawings = HashSet::new();
     for frame in frames {
@@ -57,7 +65,7 @@ pub(crate) fn collect<'a>(
         reserve(
             (leases.len()
                 * (size_of::<Required<'_>>()
-                    + 4 * size_of::<ResourceHandle>()
+                    + 6 * size_of::<ResourceHandle>()
                     + 2 * size_of::<&ResourceLease>())
                 + (frame.masks().len() + frame.transitions().len() + 1) * 96) as u64,
         )?;
@@ -184,29 +192,34 @@ pub(crate) fn collect<'a>(
                 at,
                 record: "missing image lease",
             })?;
+            let backing = source.image_backing();
+            if backing.handle() != source.handle() {
+                push_stack(&mut plan.aliases, Alias { source, backing }, &mut reserve)?;
+            }
+            if !seen_backings.insert(backing.handle()) {
+                continue;
+            }
+            let source = backing;
             let mut texture = None;
-            let size = match source.data() {
-                ResourceData::Texture { descriptor, .. } => {
-                    let upload = super::resources::TextureUploadLayout::new(*descriptor)?;
-                    texture = Some(upload);
-                    upload.layout.storage_size
-                }
-                ResourceData::Image { image, .. } => {
-                    if image.format != ImageFormat::Rgba8 {
-                        return Err(GpuError::Unsupported {
-                            at,
-                            record: "image format",
-                        });
-                    }
-                    [image.width, image.height]
-                }
-                ResourceData::Yuv420(image) => image.size(),
-                _ => {
+            let size = if let Some(descriptor) = source.texture_descriptor() {
+                let upload = super::resources::TextureUploadLayout::new(descriptor)?;
+                texture = Some(upload);
+                upload.layout.storage_size
+            } else if let Some(image) = source.image_descriptor() {
+                if image.format != ImageFormat::Rgba8 {
                     return Err(GpuError::Unsupported {
                         at,
-                        record: "non-image resource",
+                        record: "image format",
                     });
                 }
+                [image.width, image.height]
+            } else if let ResourceView::Yuv420(image) = source.view() {
+                image.size()
+            } else {
+                return Err(GpuError::Unsupported {
+                    at,
+                    record: "non-image resource",
+                });
             };
             if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
                 return Err(GpuError::InvalidSize);
@@ -223,6 +236,76 @@ pub(crate) fn collect<'a>(
         }
     }
     Ok(plan)
+}
+
+/// Retain exact missing identities and charge their full vector capacity.
+pub(crate) fn missing_pixels<'a>(
+    sources: impl Iterator<Item = &'a ResourceLease> + Clone,
+    pool: &reel_core::budget::BudgetPool,
+    limit: u64,
+) -> Result<Option<crate::PixelDemand>, GpuError> {
+    let missing =
+        |source: &&ResourceLease| source.pixel_byte_len().is_some() && !source.pixels_resident();
+    if !sources.clone().any(|source| missing(&source)) {
+        return Ok(None);
+    }
+    pixel_demand(sources, pool, limit, missing)
+}
+
+fn pixel_demand<'a>(
+    sources: impl Iterator<Item = &'a ResourceLease>,
+    pool: &reel_core::budget::BudgetPool,
+    limit: u64,
+    include: impl FnMut(&&ResourceLease) -> bool,
+) -> Result<Option<crate::PixelDemand>, GpuError> {
+    // Residency can change between the scan and collection. Reserve the
+    // iterator's full bound so a concurrent eviction cannot grow the vector.
+    let capacity = sources.size_hint().1.ok_or(GpuError::InvalidSize)?;
+    let bytes = capacity
+        .checked_mul(size_of::<ResourceLease>())
+        .ok_or(GpuError::InvalidSize)?;
+    let mut storage = pool.reserve(bytes as u64).map_err(|_| GpuError::Pressure {
+        domain: "pixel demand metadata",
+        requested: bytes as u64,
+        available: limit.saturating_sub(pool.usage().bytes),
+    })?;
+    let mut resources = Vec::new();
+    resources
+        .try_reserve_exact(capacity)
+        .map_err(|_| GpuError::InvalidSize)?;
+    storage
+        .resize((resources.capacity() * size_of::<ResourceLease>()) as u64)
+        .map_err(|_| GpuError::Pressure {
+            domain: "pixel demand metadata",
+            requested: (resources.capacity() * size_of::<ResourceLease>()) as u64,
+            available: limit.saturating_sub(pool.usage().bytes),
+        })?;
+    resources.extend(sources.filter(include).cloned());
+    if resources.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        crate::PixelDemand::new(resources, storage).map_err(|_| GpuError::InvalidSize)?,
+    ))
+}
+
+/// Acquire a pixel reader or report a concurrently evicted source.
+pub(crate) fn required_pixels(
+    source: &ResourceLease,
+    pool: &reel_core::budget::BudgetPool,
+    limit: u64,
+) -> Result<reel_ui::resources::ResourcePixels, GpuError> {
+    if let Some(reader) = source.read_pixels() {
+        return Ok(reader);
+    }
+    if source.pixel_byte_len().is_none() {
+        return Err(GpuError::InvalidSize);
+    }
+    // A concurrent restore can satisfy this demand before the player sees it.
+    // The player already completes resident demands without starting IO.
+    let demand =
+        pixel_demand(std::iter::once(source), pool, limit, |_| true)?.expect("one image source");
+    Err(GpuError::PixelsNeeded(demand))
 }
 
 /// Every demanded image coexists; only the largest indivisible upload overlaps.

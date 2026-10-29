@@ -195,7 +195,134 @@ fn multisample_rect_clips_retain_coverage_targets() {
     let frame = clipped_frame();
     let prepared = renderer.prepare(&frame).unwrap();
     assert_eq!(prepared.quality().samples, 4);
-    assert_eq!(renderer.usage().targets, TARGET_BYTES * 2 * 5 * 3);
+    let single = renderer
+        .gpu()
+        .adapter
+        .get_texture_format_features(wgpu::TextureFormat::R16Float);
+    let supported =
+        single.allowed_usages.contains(
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        ) && single.flags.contains(
+            wgpu::TextureFormatFeatureFlags::FILTERABLE
+                | wgpu::TextureFormatFeatureFlags::BLENDABLE
+                | wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE,
+        ) && single.flags.sample_count_supported(4);
+    // Two color attachments and one same-precision coverage attachment, with
+    // the original all-RGBA path retained when the adapter cannot support it.
+    let bytes_per_pixel = 2 * 8 * 5 + if supported { 2 * 5 } else { 8 * 5 };
+    assert_eq!(
+        renderer.usage().targets,
+        u64::from(SIZE[0]) * u64::from(SIZE[1]) * bytes_per_pixel
+    );
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+}
+
+#[test]
+#[ignore = "requires a WGPU adapter; capacity and submission only"]
+fn multisample_clip_keeps_quality_at_single_channel_budget() {
+    use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+    let exact = u64::from(SIZE[0]) * u64::from(SIZE[1]) * 90;
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits {
+            target_bytes: exact,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let features = gpu
+        .adapter
+        .get_texture_format_features(wgpu::TextureFormat::R16Float);
+    if !features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+        || !features.flags.contains(
+            wgpu::TextureFormatFeatureFlags::FILTERABLE
+                | wgpu::TextureFormatFeatureFlags::BLENDABLE
+                | wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE,
+        )
+        || !features.flags.sample_count_supported(4)
+    {
+        return;
+    }
+    let mut renderer = Renderer::new(gpu);
+    let frame = clipped_frame();
+    let prepared = renderer.prepare(&frame).unwrap();
+    assert_eq!(prepared.quality().format, wgpu::TextureFormat::Rgba16Float);
+    assert_eq!(prepared.quality().samples, 4);
+    assert_eq!(renderer.usage().targets, exact);
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+}
+
+#[test]
+#[ignore = "requires a WGPU adapter; 8-bit coverage submission only"]
+fn single_sample_path_clip_uses_r8_when_color_is_rgba8() {
+    use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+    let pixels = u64::from(SIZE[0]) * u64::from(SIZE[1]);
+    let exact = pixels * 9;
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits {
+            target_bytes: exact,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let features = gpu
+        .adapter
+        .get_texture_format_features(wgpu::TextureFormat::R8Unorm);
+    if !features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+        || !features.flags.contains(
+            wgpu::TextureFormatFeatureFlags::FILTERABLE
+                | wgpu::TextureFormatFeatureFlags::BLENDABLE,
+        )
+    {
+        return;
+    }
+    let mut path = reel_ui::kurbo::BezPath::new();
+    path.move_to((30., 30.));
+    path.line_to((400., 80.));
+    path.line_to((100., 400.));
+    path.close_path();
+    let mut scene = Scene::new();
+    scene.push_clip(Clip::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        shape: Geometry::Path(path),
+    });
+    scene.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Solid(Color::WHITE),
+        brush_transform: None,
+        shape: Geometry::Rect(Rect::new(0., 0., 500., 500.)),
+        composite: Composite::default(),
+    });
+    scene.pop_clip();
+    let frame = compile_scene(scene);
+    let mut renderer = Renderer::new(gpu);
+    let prepared = renderer.prepare(&frame).unwrap();
+    assert_eq!(prepared.quality().format, wgpu::TextureFormat::Rgba8Unorm);
+    assert_eq!(prepared.quality().samples, 1);
+    assert_eq!(renderer.usage().targets, exact);
     renderer.submit(prepared).unwrap();
     renderer
         .gpu()

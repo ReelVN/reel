@@ -74,6 +74,24 @@ pub(super) fn read(heap: &Heap, value: Value, chunk: usize) -> Result<Text, Adap
     let (value, rich) = source(heap, value)?;
     decode(text::read_string(heap, value, chunk)?, rich)
 }
+/// Compare the authored representation, including markup, without parsing or allocation.
+pub(super) fn matches(
+    heap: &Heap,
+    value: Value,
+    expected: &Text,
+    chunk: usize,
+) -> Result<bool, AdapterError> {
+    let (value, rich) = source(heap, value)?;
+    if rich != expected.markup().is_some() {
+        return Ok(false);
+    }
+    text::matches_string(
+        heap,
+        value,
+        expected.markup().map_or(expected.as_ref(), |s| s.as_ref()),
+        chunk,
+    )
+}
 pub(super) fn len(heap: &Heap, value: Value) -> Result<usize, AdapterError> {
     let (_, rich) = source(heap, value)?;
     Ok(heap
@@ -87,6 +105,11 @@ pub(super) fn len(heap: &Heap, value: Value) -> Result<usize, AdapterError> {
 pub(super) fn create(heap: &mut Heap, source: Value, chunk: usize) -> Result<Value, AdapterError> {
     let parsed = decode(text::read_string(heap, source, chunk)?, true)?;
     let plain = text::alloc_string(heap, &parsed, chunk)?;
+    assemble(heap, source, plain)
+}
+
+/// Build the same immutable host graph from already validated text fields.
+fn assemble(heap: &mut Heap, source: Value, plain: Value) -> Result<Value, AdapterError> {
     let fields = heap.alloc_table()?;
     let key = heap.alloc_string("plain")?;
     heap.table_store(fields, 0, key, plain)?;
@@ -100,7 +123,8 @@ pub(super) fn create(heap: &mut Heap, source: Value, chunk: usize) -> Result<Val
 pub(super) fn alloc(heap: &mut Heap, value: &Text, chunk: usize) -> Result<Value, AdapterError> {
     if let Some(markup) = value.markup() {
         let source = text::alloc_string(heap, markup, chunk)?;
-        create(heap, source, chunk)
+        let plain = text::alloc_string(heap, value, chunk)?;
+        assemble(heap, source, plain)
     } else {
         text::alloc_string(heap, value, chunk)
     }
