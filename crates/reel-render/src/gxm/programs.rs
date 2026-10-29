@@ -97,6 +97,18 @@ impl Shader {
         let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
         Ok(Self { program, uniforms })
     }
+    fn presentation(context: &super::ownership::Device) -> Result<Self, GpuError> {
+        let program = create_program_with_output(
+            context,
+            shader_code!("vertex"),
+            shader_code!("present"),
+            false,
+            false,
+            native::FragmentOutput::Srgb,
+        )?;
+        let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
+        Ok(Self { program, uniforms })
+    }
     fn uniform(&self, name: &str) -> Option<&Uniform> {
         self.uniforms[NAMES
             .iter()
@@ -341,12 +353,7 @@ impl Programs {
             ],
             // The final quad covers the viewport with no narrower scissor.
             // Omitting discard lets GXM schedule the texture fetch independently.
-            present: Shader::with_clipping(
-                context,
-                shader_code!("vertex"),
-                shader_code!("present"),
-                false,
-            )?,
+            present: Shader::presentation(context)?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
             indices: context.index_buffer_u16(&[0, 1, 2, 0, 2, 3])?,
             _storage: storage,

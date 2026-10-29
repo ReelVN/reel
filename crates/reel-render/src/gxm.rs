@@ -44,11 +44,16 @@ mod renderer;
 /// Create a native device with Reel's offline clear programs. Hosts that issue
 /// native commands directly use the same initialization as the frame executor.
 /// Native physical admission accounts rounded blocks through physical release.
+/// Screen draws use `native::FragmentOutput::Srgb` with linear input colors;
+/// offscreen targets retain their explicit encoding, defaulting to linear RGBA8.
 pub fn create_context(
     options: &GxmOptions,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<native::Context, native::Error> {
-    let config = native::Config::default();
+    let config = native::Config {
+        display_encoding: native::SurfaceEncoding::Srgb,
+        ..native::Config::default()
+    };
     native::Context::with_config(
         config,
         options.vsync,

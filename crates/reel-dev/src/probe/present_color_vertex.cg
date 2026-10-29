@@ -1,0 +1,4 @@
+void main(float2 a_position : POSITION, float2 a_uv : TEXCOORD0,
+          out float4 position : POSITION, out float2 v_uv : TEXCOORD0) {
+ position=float4(a_position,0.0,1.0);v_uv=a_uv;
+}

@@ -3,6 +3,12 @@
 varying out float4 reel_output : COLOR;
 varying float2 v_uv : TEXCOORD0;
 uniform sampler2D u_image : TEXUNIT0;
+// The display surface encodes linear RGB in the pixel backend on tile store.
+// The reference variant is used by the device color oracle.
+#ifdef REEL_SHADER_SRGB
 float3 encode(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
+#else
+float3 encode(float3 x){return x;}
+#endif
 void main(){
  float4 color=tex2D(u_image,v_uv);reel_output=float4(encode(color.rgb),1.0);}

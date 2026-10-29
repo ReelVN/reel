@@ -6,6 +6,8 @@ mod ablation;
 mod blend_color;
 #[path = "../../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
+#[path = "present_color.rs"]
+mod present_color;
 #[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
 mod r01_fixture;
 #[path = "scenes.rs"]
@@ -527,10 +529,11 @@ fn run() -> Result {
             | "media"
             | "video_color"
             | "blend_color"
+            | "present_color"
     ) && !CASES.contains(&selected.as_str())
     {
         return Err(format!(
-            "unknown case {selected}; available: diagnostic,ablation,authored,all,render,matrix,media,video_color,blend_color,{}",
+            "unknown case {selected}; available: diagnostic,ablation,authored,all,render,matrix,media,video_color,blend_color,present_color,{}",
             CASES.join(",")
         )
         .into());
@@ -539,13 +542,21 @@ fn run() -> Result {
         "BEGIN title=REELP0002 case={selected} render_frames={frames} trace={trace} render_vsync={vsync} render_flights={flights} source={} dirty={} no_readback={}",
         env!("REEL_PROBE_REVISION"),
         env!("REEL_PROBE_DIRTY"),
-        !matches!(selected.as_str(), "video_color" | "blend_color")
+        !matches!(
+            selected.as_str(),
+            "video_color" | "blend_color" | "present_color"
+        )
     ));
     // Package sessions use the player's sampler, including VM task locations.
     let _sampler = (!matches!(selected.as_str(), "authored" | "diagnostic"))
         .then(|| Sampler::start())
         .transpose()?;
-    if matches!(selected.as_str(), "clear_swap" | "fence") {
+    if selected == "present_color" {
+        marker(&selected, "START");
+        let result = present_color::run();
+        marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
+        result?;
+    } else if matches!(selected.as_str(), "clear_swap" | "fence") {
         marker(&selected, "START");
         let result = native_case(&selected, frames);
         marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
