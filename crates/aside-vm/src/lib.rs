@@ -34,7 +34,8 @@ pub use gc::{GcBudget, GcPhase, GcProgress};
 pub use heap::{
     ChangeCursor, Heap, HeapError, HeapLimits, HeapStats, HostPropertyValidator, ObjectInfo,
     ObjectKind, PropertyBatch, PropertyBatchProgress, PropertyId, PropertyRead, PropertyWrites,
-    RootKind, RootOwner, RootToken, TableLookupProgress, TableLookupStatus, TableStringLookup,
+    RootKind, RootOwner, RootToken, TableLookupProgress, TableLookupStatus, TableRead,
+    TableStringLookup,
 };
 pub use host_types::{HostMethodSupport, HostTypeId, HostTypeSupport};
 pub use payload::{
