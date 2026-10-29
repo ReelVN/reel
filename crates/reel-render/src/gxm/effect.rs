@@ -110,6 +110,53 @@ fn compile(
 }
 
 impl Context<'_> {
+    pub(super) fn cached_effect(
+        &mut self,
+        probe: &crate::common::effect_result::Probe<'_>,
+    ) -> Result<Option<Target>, GpuError> {
+        let Some((token, hit)) = self.effect_results.lookup(probe) else {
+            return Ok(None);
+        };
+        if self
+            .effect_pins
+            .iter()
+            .any(|held| held.effect_token() == Some(token))
+        {
+            return Ok(Some(hit));
+        }
+        let bytes = self
+            .gpu
+            .target_layout(hit.view.size(), native::TargetFormat::Rgba8)?
+            .texture_bytes;
+        if !self.effect_admission.can_retain(bytes) {
+            return Ok(None);
+        }
+        let local = self
+            .budget_scope
+            .targets
+            .reserve(bytes)
+            .map_err(|_| GpuError::Budget {
+                domain: "offscreen targets",
+                requested: bytes,
+                available: self
+                    .limits
+                    .target_bytes
+                    .saturating_sub(self.budget_scope.targets.usage().bytes),
+            })?;
+        self.tickets.push(crate::common::renderer::Reservation {
+            _shared: None,
+            _local: local,
+        });
+        let mut pins = std::mem::take(&mut self.effect_pins);
+        let held = crate::common::scopes::push_stack(&mut pins, hit.clone(), |bytes| {
+            self.transient(bytes)
+        });
+        self.effect_pins = pins;
+        held?;
+        self.effect_admission.retain(bytes);
+        Ok(Some(hit))
+    }
+
     pub(super) fn effect(
         &mut self,
         drawing: &FrameDrawing,
@@ -165,45 +212,8 @@ impl Context<'_> {
             None
         };
         if let Some(probe) = probe {
-            if let Some((token, hit)) = self.effect_results.lookup(&probe) {
-                if self
-                    .effect_pins
-                    .iter()
-                    .any(|held| held.effect_token() == Some(token))
-                {
-                    return Ok(hit);
-                }
-                let bytes = self
-                    .gpu
-                    .target_layout(hit.view.size(), native::TargetFormat::Rgba8)?
-                    .texture_bytes;
-                if self.effect_admission.can_retain(bytes) {
-                    let local =
-                        self.budget_scope
-                            .targets
-                            .reserve(bytes)
-                            .map_err(|_| GpuError::Budget {
-                                domain: "offscreen targets",
-                                requested: bytes,
-                                available: self
-                                    .limits
-                                    .target_bytes
-                                    .saturating_sub(self.budget_scope.targets.usage().bytes),
-                            })?;
-                    self.tickets.push(crate::common::renderer::Reservation {
-                        _shared: None,
-                        _local: local,
-                    });
-
-                    let mut pins = std::mem::take(&mut self.effect_pins);
-                    let held = crate::common::scopes::push_stack(&mut pins, hit.clone(), |bytes| {
-                        self.transient(bytes)
-                    });
-                    self.effect_pins = pins;
-                    held?;
-                    self.effect_admission.retain(bytes);
-                    return Ok(hit);
-                }
+            if let Some(hit) = self.cached_effect(&probe)? {
+                return Ok(hit);
             }
             let output = self.effect_draw(
                 drawing,
