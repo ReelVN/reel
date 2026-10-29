@@ -4,6 +4,10 @@
 mod ablation;
 #[path = "blend_color.rs"]
 mod blend_color;
+#[path = "color_capture.rs"]
+mod color_capture;
+#[path = "composite_color.rs"]
+mod composite_color;
 #[path = "../../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
 #[path = "present_color.rs"]
@@ -529,11 +533,13 @@ fn run() -> Result {
             | "media"
             | "video_color"
             | "blend_color"
+            | "composite_color"
+            | "composite_reference"
             | "present_color"
     ) && !CASES.contains(&selected.as_str())
     {
         return Err(format!(
-            "unknown case {selected}; available: diagnostic,ablation,authored,all,render,matrix,media,video_color,blend_color,present_color,{}",
+            "unknown case {selected}; available: diagnostic,ablation,authored,all,render,matrix,media,video_color,blend_color,composite_color,composite_reference,present_color,{}",
             CASES.join(",")
         )
         .into());
@@ -544,7 +550,11 @@ fn run() -> Result {
         env!("REEL_PROBE_DIRTY"),
         !matches!(
             selected.as_str(),
-            "video_color" | "blend_color" | "present_color"
+            "video_color"
+                | "blend_color"
+                | "composite_color"
+                | "composite_reference"
+                | "present_color"
         )
     ));
     // Package sessions use the player's sampler, including VM task locations.
@@ -563,10 +573,15 @@ fn run() -> Result {
         result?;
     } else {
         reel_player::platform::vita::Runtime::run(|runtime| {
-            if matches!(selected.as_str(), "video_color" | "blend_color") {
+            if matches!(
+                selected.as_str(),
+                "video_color" | "blend_color" | "composite_color" | "composite_reference"
+            ) {
                 marker(&selected, "START");
                 let result = if selected == "video_color" {
                     video_color::run(runtime.renderer())
+                } else if selected.starts_with("composite_") {
+                    composite_color::run(runtime.renderer(), selected == "composite_reference")
                 } else {
                     blend_color::run(runtime.renderer())
                 };
