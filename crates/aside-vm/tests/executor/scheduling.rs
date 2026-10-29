@@ -2,6 +2,57 @@
 use super::*;
 
 #[test]
+fn scalar_chain_preserves_progress_at_every_instruction_and_clock_boundary() {
+    let mut package = loop_program(0);
+    let code = &mut package.functions[0].code;
+    code.truncate(2);
+    for _ in 0..97 {
+        code.push(Instruction::new(Opcode::Add, 0, 0, 1));
+    }
+    code.push(Instruction::new(Opcode::Return, 0, 0, 0));
+    for quota in [1, 2, 7, 31, 32, 33, 4096] {
+        let mut v = vm(package.clone());
+        warm_code(&v);
+        let task = v
+            .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let mut total = 0;
+        let mut clock = 0;
+        loop {
+            let deadline = clock + 1;
+            let out = v
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: quota,
+                        deadline_ns: Some(deadline),
+                        ..Default::default()
+                    },
+                    || {
+                        let now = clock;
+                        clock += 1;
+                        now
+                    },
+                )
+                .unwrap();
+            total += v.stats().usage.instructions;
+            match out {
+                RunOutcome::BudgetYield(usage) => {
+                    assert!(usage.instructions <= quota.min(32));
+                    gc(&mut v);
+                }
+                RunOutcome::Returned(id) => {
+                    assert_eq!(v.delivery_value(id).unwrap().as_int(), Some(97));
+                    assert_eq!(total, 100);
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn cancellation_is_bounded_and_invalidates_ticket_immediately() {
     let mut v = vm(fixtures::helper_native());
     v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)

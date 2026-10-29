@@ -595,6 +595,7 @@ mod completion;
 mod instructions;
 mod loading;
 mod native_calls;
+mod scalars;
 mod script_frames;
 mod script_step;
 mod task_control;
@@ -1038,6 +1039,11 @@ impl Vm {
                     event: self.serial()?,
                 });
                 continue;
+            }
+            match self.scalar_step(m)? {
+                scalars::ScalarStep::Done => continue,
+                scalars::ScalarStep::Budget => return Ok(RunOutcome::BudgetYield(m.usage)),
+                scalars::ScalarStep::General => {}
             }
             let Some(f) = self.active.frames.data.last().copied() else {
                 return Err(VmError::Idle);
