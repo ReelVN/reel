@@ -351,6 +351,7 @@ fn renderer_case(
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+    let drain_elapsed = drain.elapsed();
     let elapsed = total.elapsed();
     if completed != frames {
         return Err("missing completions".into());
@@ -380,7 +381,7 @@ fn renderer_case(
     log(format_args!(
         "CASE {case} vsync={vsync} submitted={frames} completed={completed} flights_peak={peak_pending}/{flights} polls={polls} elapsed_us={} drain_us={} accounted_usage={:?} asset_usage={:?}",
         elapsed.as_micros(),
-        drain.elapsed().as_micros(),
+        drain_elapsed.as_micros(),
         renderer.usage(),
         assets.usage()
     ));
