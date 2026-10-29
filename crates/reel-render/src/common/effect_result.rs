@@ -5,10 +5,10 @@ pub(crate) use admission::Admission;
 #[cfg(test)]
 mod tests;
 use reel_ui::{
-    frame::{FrameDraw, FrameDrawing, FrameEffect, FrameOp, LocalId},
+    frame::{FrameDraw, FrameDrawing, FrameEffect, FrameImage, FrameOp, LocalId},
     imaging::record::Scene,
     kurbo::{Affine, Rect},
-    peniko::{Brush, Extend, ImageQuality},
+    peniko::{Brush, Extend, ImageBrush, ImageQuality},
     resources::ResourceHandle,
     stage::effect::EffectValue,
 };
@@ -57,6 +57,33 @@ struct ImageProjection {
     alpha: u32,
     transform: [u64; 6],
     brush_transform: Option<[u64; 6]>,
+    appearance: Option<[[u32; 4]; 10]>,
+}
+impl ImageProjection {
+    fn new(
+        brush: &ImageBrush<FrameImage>,
+        transform: Affine,
+        brush_transform: Option<Affine>,
+        outer: Affine,
+    ) -> Self {
+        Self {
+            resource: brush.image.resource,
+            color: brush.image.color.map(f32::to_bits),
+            source_rect: brush.image.source_rect.map(rect),
+            x_extend: brush.sampler.x_extend,
+            y_extend: brush.sampler.y_extend,
+            quality: brush.sampler.quality,
+            alpha: brush.sampler.alpha.to_bits(),
+            // Replay uses this exact product for the source geometry. Separate
+            // ancestor and image transforms can change while their product stays fixed.
+            transform: affine(outer * transform),
+            brush_transform: brush_transform.map(affine),
+            appearance: brush.image.appearance.map(|appearance| {
+                super::appearance::appearance_uniform(appearance.transformed(outer))
+                    .map(|row| row.map(f32::to_bits))
+            }),
+        }
+    }
 }
 struct Recording {
     owner: u64,
@@ -119,7 +146,7 @@ impl<'a> Probe<'a> {
         drawing: &FrameDrawing,
         commands: Range<usize>,
         effect: &'a FrameEffect,
-        grid: Grid,
+        mut grid: Grid,
     ) -> Option<Self> {
         if !drawing.transitions().is_empty() || !drawing.masks().is_empty() {
             return None;
@@ -132,6 +159,7 @@ impl<'a> Probe<'a> {
             return None;
         }
         let owner = group.owner.to_raw();
+        let outer = Affine::new(grid.source_transform.map(f64::from_bits));
         let mut source = None;
         for command in &commands[1..commands.len() - 1] {
             match &command.op {
@@ -142,9 +170,6 @@ impl<'a> Probe<'a> {
                     brush: Brush::Image(brush),
                     ..
                 }) if source.is_none() => {
-                    if brush.image.appearance.is_some() {
-                        return None;
-                    }
                     let (recording, local) = drawing.recording(command.origin)?;
                     if !recording.mask_path().is_empty() {
                         return None;
@@ -153,22 +178,15 @@ impl<'a> Probe<'a> {
                         owner,
                         scene: recording.root().upgrade()?,
                         local,
-                        image: ImageProjection {
-                            resource: brush.image.resource,
-                            color: brush.image.color.map(f32::to_bits),
-                            source_rect: brush.image.source_rect.map(rect),
-                            x_extend: brush.sampler.x_extend,
-                            y_extend: brush.sampler.y_extend,
-                            quality: brush.sampler.quality,
-                            alpha: brush.sampler.alpha.to_bits(),
-                            transform: affine(*transform),
-                            brush_transform: brush_transform.map(affine),
-                        },
+                        image: ImageProjection::new(brush, *transform, *brush_transform, outer),
                     }));
                 }
                 _ => return None,
             }
         }
+        // The source matrix has been consumed by the exact geometry and
+        // appearance projections above; all physical extents and scissors remain keyed.
+        grid.source_transform = affine(Affine::IDENTITY);
         Some(Self {
             source: source?,
             effect,
@@ -176,7 +194,9 @@ impl<'a> Probe<'a> {
         })
     }
     /// The token denotes an immutable, exclusively held previous effect result.
-    pub(crate) fn from_output(token: Token, effect: &'a FrameEffect, grid: Grid) -> Self {
+    pub(crate) fn from_output(token: Token, effect: &'a FrameEffect, mut grid: Grid) -> Self {
+        // The token already identifies the rendered source pixels.
+        grid.source_transform = affine(Affine::IDENTITY);
         Self {
             source: Source::Output(token),
             effect,

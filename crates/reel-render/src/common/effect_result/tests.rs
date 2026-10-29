@@ -29,6 +29,7 @@ fn source(scene: Arc<Scene>) -> Source {
             alpha: 1f32.to_bits(),
             transform: affine(Affine::IDENTITY),
             brush_transform: None,
+            appearance: None,
         },
     })
 }
@@ -70,6 +71,75 @@ fn probe(effect: &FrameEffect, grid: Grid, scene: Arc<Scene>) -> Probe<'_> {
         grid,
     }
 }
+#[test]
+fn image_projection_compares_actual_source_raster_and_appearance() {
+    use reel_ui::frame::{
+        ImageAlphaLayout, ImageAppearance, ImageColorAdjustment, ImageColorGradient,
+    };
+    let brush = ImageBrush {
+        image: FrameImage {
+            resource: ResourceHandle {
+                registry: 1,
+                slot: 2,
+                generation: 3,
+            },
+            color: [1.; 4],
+            source_rect: None,
+            appearance: None,
+        },
+        sampler: Default::default(),
+    };
+    let original = ImageProjection::new(&brush, Affine::IDENTITY, None, Affine::IDENTITY);
+    for offset in [(8.25, -11.5), (-32., 64.)] {
+        let moved = Affine::translate(offset);
+        assert!(original == ImageProjection::new(&brush, moved, None, moved.inverse()));
+        assert!(original != ImageProjection::new(&brush, moved, None, Affine::IDENTITY));
+    }
+    let mut adjusted = brush.clone();
+    adjusted.image.appearance = Some(ImageAppearance {
+        alpha_layout: ImageAlphaLayout::Native,
+        gradient: Some(ImageColorGradient {
+            colors: [[0.25, 0.5, 0.75, 1.]; 4],
+            transform: Affine::IDENTITY,
+        }),
+        adjustment: ImageColorAdjustment {
+            saturation: 0.5,
+            ..Default::default()
+        },
+    });
+    let projection = ImageProjection::new(&adjusted, Affine::IDENTITY, None, Affine::IDENTITY);
+    assert!(projection != original);
+    let translation = Affine::translate((8., 16.));
+    let mut moved = adjusted.clone();
+    moved.image.appearance = moved.image.appearance.map(|a| a.transformed(translation));
+    assert!(projection == ImageProjection::new(&moved, translation, None, translation.inverse()));
+    for mutation in 0..4 {
+        let mut changed = adjusted.clone();
+        let appearance = changed.image.appearance.as_mut().unwrap();
+        match mutation {
+            0 => appearance.adjustment.gain[1] = 0.8,
+            1 => appearance.adjustment.offset[2] = 0.1,
+            2 => appearance.alpha_layout = ImageAlphaLayout::TopBottom,
+            _ => appearance.gradient.as_mut().unwrap().colors[2][0] = 0.9,
+        }
+        assert!(
+            projection != ImageProjection::new(&changed, Affine::IDENTITY, None, Affine::IDENTITY)
+        );
+    }
+}
+
+#[test]
+fn output_pixels_ignore_the_original_recording_transform_but_keep_the_effect_grid() {
+    let pool = pool();
+    let effect = effect();
+    let key = Key::new(Probe::from_output(Token(1, 2), &effect, grid()), &pool).unwrap();
+    let mut moved = grid();
+    moved.source_transform = affine(Affine::translate((21., -7.)));
+    assert!(key.matches(&Probe::from_output(Token(1, 2), &effect, moved)));
+    moved.effect_transform = affine(Affine::translate((0.25, 0.)));
+    assert!(!key.matches(&Probe::from_output(Token(1, 2), &effect, moved)));
+}
+
 #[test]
 fn key_preserves_recording_and_exact_dependency_bits() {
     let pool = pool();
