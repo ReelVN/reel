@@ -58,6 +58,23 @@ pub fn sources() -> Vec<Shader> {
             },
         );
     }
+    // Specialize ordinary non-inverted blends; inversion and custom modes keep
+    // the generic programs and their existing arithmetic.
+    for blend in [1, 2, 3, 5, 6, 7, 8, 9, 10] {
+        add(
+            &format!("tile_blend_{blend}"),
+            false,
+            &composite,
+            &format!(
+                "#define REEL_TILE_DESTINATION\n#define REEL_STATIC_BLEND {blend}.0\n{}",
+                if blend > 4 {
+                    "#define REEL_EXTENDED_BLEND"
+                } else {
+                    ""
+                },
+            ),
+        );
+    }
     let mask = read("mask");
     add("mask", false, &mask, "");
     for capacity in [8, 16] {

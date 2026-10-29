@@ -223,7 +223,7 @@ pub(super) struct Programs {
     pub extended_blend: Shader,
     overwrite: [std::cell::OnceCell<Shader>; 2],
     #[cfg(feature = "gxm-tile-destination")]
-    tile: [std::cell::OnceCell<Shader>; 2],
+    tile: [std::cell::OnceCell<Shader>; 13],
     pub source_over: Shader,
     pub alpha_mask: Shader,
     pub mask_8: Shader,
@@ -356,18 +356,38 @@ impl Programs {
     pub fn tile(
         &self,
         context: &super::ownership::Device,
-        extended: bool,
+        blend: u32,
+        invert: f32,
     ) -> Result<&Shader, GpuError> {
-        let slot = &self.tile[usize::from(extended)];
+        let specialized = invert == 0. && matches!(blend, 1..=3 | 5..=10);
+        let slot = &self.tile[if specialized {
+            blend as usize + 1
+        } else {
+            usize::from(blend > 4)
+        }];
         if slot.get().is_none() {
+            let fragment = if specialized {
+                match blend {
+                    1 => shader_code!("tile_blend_1"),
+                    2 => shader_code!("tile_blend_2"),
+                    3 => shader_code!("tile_blend_3"),
+                    5 => shader_code!("tile_blend_5"),
+                    6 => shader_code!("tile_blend_6"),
+                    7 => shader_code!("tile_blend_7"),
+                    8 => shader_code!("tile_blend_8"),
+                    9 => shader_code!("tile_blend_9"),
+                    10 => shader_code!("tile_blend_10"),
+                    _ => unreachable!("specialized blend family"),
+                }
+            } else if blend > 4 {
+                shader_code!("tile_extended_blend")
+            } else {
+                shader_code!("tile_composite")
+            };
             let program = create_program_with_output(
                 context,
                 shader_code!("composite_vertex"),
-                if extended {
-                    shader_code!("tile_extended_blend")
-                } else {
-                    shader_code!("tile_composite")
-                },
+                fragment,
                 true,
                 false,
                 native::FragmentOutput::Declared,

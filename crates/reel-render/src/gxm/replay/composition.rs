@@ -135,7 +135,7 @@ impl Context<'_> {
         };
         #[cfg(feature = "gxm-tile-destination")]
         let shader = if current_pixel {
-            self.programs.tile(self.gpu, blend > 4)?
+            self.programs.tile(self.gpu, blend, invert)?
         } else {
             shader
         };

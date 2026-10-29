@@ -19,7 +19,13 @@ uniform sampler2D u_mask : TEXUNIT1;
 uniform sampler2D u_backdrop : TEXUNIT2;
 uniform sampler2D u_expression : TEXUNIT3;
 uniform float4 u_params;
-uniform float u_invert,u_blend,u_has_expression;
+uniform float u_has_expression;
+#ifdef REEL_STATIC_BLEND
+#define u_blend REEL_STATIC_BLEND
+#define u_invert 0.0
+#else
+uniform float u_invert,u_blend;
+#endif
 
 float4 sample_source(){return tex2D(u_source,v_source_uv);}
 float3 encode(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
