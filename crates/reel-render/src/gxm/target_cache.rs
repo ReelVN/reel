@@ -40,6 +40,11 @@ impl Cache {
             Target::cache_only,
         )
     }
+    /// A future scratch size is a reuse preference, not a live GPU owner. Its
+    /// idle allocation may be rebuilt after a larger physical block is acquired.
+    pub fn reclaim_unclaimed(&mut self) -> bool {
+        self.reclaim(&Requirements::default(), true)
+    }
     pub fn submitted(&mut self, used: &[Target]) {
         self.owners.submitted();
         for target in used {

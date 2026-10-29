@@ -31,10 +31,11 @@ impl TargetWrites {
     pub(crate) fn begin(
         &mut self,
         slot: usize,
-        reserve: impl FnMut(u64) -> Result<(), GpuError>,
+        mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<(), GpuError> {
-        if slot / 64 == self.pending.len() {
-            push_stack(&mut self.pending, 0, reserve)?;
+        // Preallocated targets can reach their first use in any slot order.
+        while slot / 64 >= self.pending.len() {
+            push_stack(&mut self.pending, 0, &mut reserve)?;
         }
         self.pending[slot / 64] |= 1 << (slot % 64);
         Ok(())
@@ -58,6 +59,20 @@ impl TargetWrites {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preallocated_slots_can_begin_out_of_order_without_initializing_the_gaps() {
+        let mut writes = TargetWrites::default();
+        writes.begin(129, |_| Ok(())).unwrap();
+        assert!(writes.take(129));
+        assert!(!writes.take(128));
+        assert!(!writes.take(64));
+        writes.begin(0, |_| Ok(())).unwrap();
+        writes.begin(64, |_| Ok(())).unwrap();
+        assert!(writes.take(64));
+        assert!(writes.take(0));
+        assert!(!writes.take(129));
+    }
 
     #[test]
     fn overwrite_requires_the_whole_physical_surface_and_replacement() {

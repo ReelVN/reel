@@ -271,6 +271,7 @@ pub(super) fn prepare(
             effect_results_enabled && !capture,
         );
         context.offscreen = schedule;
+        context.prepare_targets()?;
         let result = context.stream(frame.drawing(), transform);
         drop(std::mem::take(&mut context.offscreen));
         drop(retained);

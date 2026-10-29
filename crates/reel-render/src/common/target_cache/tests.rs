@@ -227,3 +227,21 @@ fn effect_owned_slots_do_not_count_as_protected_scratch() {
     );
     assert!(!cache.reclaim_eligible(&demand, true, |entry| !entry.1, |_| true));
 }
+
+#[test]
+fn physical_repacking_can_drop_future_scratch_but_keeps_current_readers() {
+    let data = pool(1024);
+    let mut cache = Cache::default();
+    put(&mut cache, [8, 8], 256, &data);
+    put(&mut cache, [8, 8], 256, &data);
+    let reader = cache.get([8, 8], 1).unwrap().clone();
+    let demand = requirements(&[([8, 8], 2)]);
+    assert!(!cache.reclaim(&demand, true, unique));
+    assert!(cache.reclaim(&Requirements::default(), true, unique));
+    assert_eq!(data.usage().bytes, 256);
+    assert!(Arc::ptr_eq(cache.get([8, 8], 0).unwrap(), &reader));
+    assert!(!cache.reclaim(&Requirements::default(), true, unique));
+    drop(reader);
+    assert!(cache.reclaim(&Requirements::default(), true, unique));
+    assert_eq!(data.usage().bytes, 0);
+}
