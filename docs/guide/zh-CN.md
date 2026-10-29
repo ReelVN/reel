@@ -33,7 +33,7 @@ reel export --release --resource-target vita
 
 这两个命令使用当前平台播放器预览、导出选定素材。开发版复制所选资源，发布版打包为统一逻辑路径。
 
-用 `build.target` 在普通代码中选择平台配置或效果。`check`、`build`、`dev` 和 `export` 通过同一个 `--resource-target` 参数选择它的值。编译器保留选中分支及其内部函数，两侧源码都接受诊断检查。编辑器通过生成的 API 提供类型和定义跳转。
+用 `build.target` 选择平台配置或效果。`check`、`build`、`dev` 和 `export` 通过 `--resource-target` 设置它的值。编译器检查两侧源码，生成选中分支及其内部函数的代码。
 
 ```aside
 let particle_count = if build.target == "vita" { 80 } else { 320 };
@@ -87,7 +87,7 @@ bitrate = 4000000
 
 给渐变素材单独配置 `format = "rgba8"` 与 `dither = "ordered"`，并把该规则放在通用纹理规则之前。抖动分散颜色量化误差，alpha 保持不变；RGBA8 的纹理内存是 BC1 的八倍。单个文件可运行 `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`。
 
-同时使用的小图片可以在通用纹理规则之前配置明确的图集组：
+把同时使用的小图片合入图集，可在通用纹理规则前添加：
 
 ```toml
 [[targets.vita]]
@@ -97,7 +97,8 @@ page_size = [1024, 1024]
 format = "auto"
 ```
 
-每条规则生成一张共同驻留的图集页；使用时机不同的图片放在不同规则中。原图片路径、逻辑尺寸和裁剪坐标继续使用。图集页只包含一层，成员按压缩块对齐并保留过滤边缘。组内容无法装入时，准备过程会报错，可增大 `page_size` 或拆分分组。规则接受 `scale`、`format` 和 `dither`。
+每条规则生成一张整页加载和上传的图集；使用时机不同的图片分开配置。脚本沿用原图片路径、逻辑尺寸和裁剪坐标。图集保存一个纹理层级，图片按压缩块对齐，边缘填充用于过滤。图片装不下时，准备过程会报错，可增大 `page_size` 或拆分分组。规则接受 `scale`、`format` 和 `dither`。
+
 长图和图集可在通用纹理规则前配置 `convert = "tiles"`。`tile_size = 510` 为 512 像素纹理留出边缘，`first_level = 1` 保存半尺寸及更小层级；同一规则也接受 `format` 和 `power_of_two`。原有逻辑路径与图集裁剪坐标继续使用，运行时按可见瓦片加载。
 
 ```sh
@@ -106,7 +107,7 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-`prepare-resources` 提前准备并报告转换结果；`dev`、`run` 和 `export` 也会按配置准备。缓存位于 `build/resources/`，素材、参数、对应转换实现或依赖变化时更新相关副本。离线转换逐个处理资源或明确的图集组；`prepare-resources --memory-bytes` 可指定转换工作区限额。
+`prepare-resources` 提前准备并报告转换结果；`dev`、`run` 和 `export` 也会按配置准备。缓存位于 `build/resources/`，素材、参数、对应转换实现或依赖变化时更新相关副本。离线转换逐个处理资源或配置中的图集组；`prepare-resources --memory-bytes` 可指定转换工作区限额。
 
 视频转换调用 PATH 中的 `ffmpeg` 和 `ffprobe`，输出 H.264/AAC MP4，保持帧率并按 `size` 等比缩小。上下排列颜色与透明度的影片使用 `alpha_layout = "top_bottom"`。视频工作区按尺寸估算，编解码子进程自行分配内存。
 

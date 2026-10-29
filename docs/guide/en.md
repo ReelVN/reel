@@ -33,7 +33,7 @@ reel export --release --resource-target vita
 
 These commands preview and export the selected assets using the current platform player. Development exports copy selected files; release exports package them under their logical paths.
 
-Use `build.target` to choose platform settings or effects in ordinary code. The same `--resource-target` option selects its value for `check`, `build`, `dev` and `export`. Compilation keeps the selected branch, including its nested functions; both branches receive source diagnostics. The editor provides its type and declaration through the generated API.
+Use `build.target` to choose platform settings or effects. Set its value with `--resource-target` for `check`, `build`, `dev` and `export`. The compiler checks both branches and generates code for the selected branch and its nested functions.
 
 ```aside
 let particle_count = if build.target == "vita" { 80 } else { 320 };
@@ -87,7 +87,7 @@ The first matching rule applies; unmatched files retain their original content. 
 
 For smooth gradients, place a texture rule with `format = "rgba8"` and `dither = "ordered"` before the general texture rule. Dithering distributes color quantization error and preserves alpha; RGBA8 uses eight times the texture memory of BC1. For a single file, run `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`.
 
-For small images used together, put an explicit atlas cohort before the general texture rule:
+To pack small images used together into an atlas, add this before the general texture rule:
 
 ```toml
 [[targets.vita]]
@@ -97,7 +97,8 @@ page_size = [1024, 1024]
 format = "auto"
 ```
 
-Each rule packs one shared-residency page; split unrelated groups into separate rules. The original image paths, dimensions and crop coordinates remain usable. Pages contain one mip level with filtered edges and block-aligned members. A group that cannot fit fails preparation; increase `page_size` or split the group. The rule accepts `scale`, `format` and `dither`.
+Each rule produces one atlas page that loads and uploads as a whole; use separate rules for images needed at different times. Scripts keep the original image paths, logical dimensions and crop coordinates. The page stores one texture level, with images aligned to compression blocks and padded edges for filtering. If the images do not fit, preparation reports an error; increase `page_size` or split the group. The rule accepts `scale`, `format` and `dither`.
+
 For long images or atlases, place a `convert = "tiles"` rule before the general texture rule. `tile_size = 510` leaves room for gutters in a 512-pixel texture; `first_level = 1` stores half density and smaller levels. The rule also accepts `format` and `power_of_two`. The original logical path and atlas crop coordinates remain usable, while loading follows the visible tiles.
 
 ```sh
@@ -106,7 +107,7 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource or explicit atlas cohort at a time; `prepare-resources --memory-bytes` selects its workspace limit.
+`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource or configured atlas group at a time; `prepare-resources --memory-bytes` selects its workspace limit.
 
 Video conversion uses `ffmpeg` and `ffprobe` from PATH to produce H.264/AAC MP4, preserving the frame rate and fitting within `size`. Movies with color and alpha stacked vertically use `alpha_layout = "top_bottom"`. Video workspace is estimated from dimensions; codec subprocesses allocate their own memory.
 

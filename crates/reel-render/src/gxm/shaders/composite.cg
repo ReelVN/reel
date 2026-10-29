@@ -76,7 +76,7 @@ float4 blend_color(float4 s,float4 d){
 #ifdef REEL_TILE_DESTINATION
 // The source has already passed through its RGBA8 isolation boundary. Preserve
 // the existing half output boundary before the explicit saturated UCHAR4 pack.
-// This prototype remains opt-in until compared with the native patcher output.
+// Enabled by the gxm-tile-destination build feature.
 __nativecolor __regformat unsigned char4 main(
  __regformat unsigned char4 destination : FRAGCOLOR) : COLOR0 {
  float4 s=sample_source();

@@ -1,4 +1,4 @@
-//! Temporary device experiment; delegates drawing to production Reel/native code.
+//! Hardware profiling and color checks through production Reel/native rendering.
 #![allow(dead_code)]
 #[path = "ablation.rs"]
 mod ablation;
