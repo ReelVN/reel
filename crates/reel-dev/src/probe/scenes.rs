@@ -167,13 +167,14 @@ impl Assets {
         Ok((handle, program))
     }
     pub fn frame(&mut self, case: &str, index: usize) -> Result<RenderFrame> {
-        if case == "text" {
+        if matches!(case, "text" | "text_plain" | "text_styled") {
             if self.text.is_none() {
                 self.text = Some(text::TextScene::new(
                     &mut self.registry,
                     &self.pool,
                     &mut self.handles,
                     &mut self.versions,
+                    case,
                 )?);
             }
             return self.text.as_mut().unwrap().frame(

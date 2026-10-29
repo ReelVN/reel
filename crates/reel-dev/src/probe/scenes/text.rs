@@ -32,6 +32,7 @@ impl TextScene {
         pool: &BudgetPool,
         handles: &mut Vec<ResourceHandle>,
         versions: &mut Vec<ResourceVersion>,
+        case: &str,
     ) -> Result<Self> {
         let font = Blob::from(FONT.to_vec());
         let version = version(200);
@@ -44,42 +45,58 @@ impl TextScene {
             .map_err(error)?;
         handles.push(handle);
         versions.push(version);
-        let background = texture(registry, pool, handles, versions, 201, false)?;
-        let left = texture(registry, pool, handles, versions, 202, true)?;
-        let right = texture(registry, pool, handles, versions, 203, true)?;
-
-        let mut root = r01_fixture::RecordWidget::new(Scene::new());
+        let scenery = case == "text";
+        let styled = case != "text_plain";
+        let mut background_scene = Scene::new();
+        if !scenery {
+            background_scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::from_rgb8(20, 34, 55)),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 960., 544.)),
+                composite: Default::default(),
+            });
+        }
+        let mut root = r01_fixture::RecordWidget::new(background_scene);
         root.clip = false;
         root.inner.clip = Rect::new(0., 0., 960., 544.);
-        root.inner.add(
-            Image::from_resource(registry.acquire(background).map_err(error)?).prepare(),
-            Point::ZERO,
-            Size::new(960., 544.),
-        );
-        root.inner.add(
-            Image::from_resource(registry.acquire(left).map_err(error)?).prepare(),
-            Point::new(145., 20.),
-            Size::new(320., 427.),
-        );
-        root.inner.add(
-            Image::from_resource(registry.acquire(right).map_err(error)?).prepare(),
-            Point::new(495., 30.),
-            Size::new(320., 427.),
-        );
+        if scenery {
+            let background = texture(registry, pool, handles, versions, 201, false)?;
+            let left = texture(registry, pool, handles, versions, 202, true)?;
+            let right = texture(registry, pool, handles, versions, 203, true)?;
+            root.inner.add(
+                Image::from_resource(registry.acquire(background).map_err(error)?).prepare(),
+                Point::ZERO,
+                Size::new(960., 544.),
+            );
+            root.inner.add(
+                Image::from_resource(registry.acquire(left).map_err(error)?).prepare(),
+                Point::new(145., 20.),
+                Size::new(320., 427.),
+            );
+            root.inner.add(
+                Image::from_resource(registry.acquire(right).map_err(error)?).prepare(),
+                Point::new(495., 30.),
+                Size::new(320., 427.),
+            );
+        }
 
         let mut panel_scene = Scene::new();
-        panel_scene.draw(Draw::Fill {
-            transform: Affine::IDENTITY,
-            fill_rule: Default::default(),
-            brush: Brush::Solid(Color::from_rgba8(12, 18, 32, 230)),
-            brush_transform: None,
-            shape: Geometry::Rect(Rect::new(0., 0., 864., 104.)),
-            composite: Default::default(),
-        });
+        if scenery {
+            panel_scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::from_rgba8(12, 18, 32, 230)),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 864., 104.)),
+                composite: Default::default(),
+            });
+        }
         let mut panel = r01_fixture::RecordWidget::new(panel_scene);
         panel.clip = false;
         // Text shares a stable isolated source with its dialogue background.
-        panel.opacity = 0.96;
+        panel.opacity = if scenery { 0.96 } else { 1. };
         panel.inner = StageGroup::new(
             Rc::new(RefCell::new(Vec::new())),
             1.,
@@ -89,11 +106,11 @@ impl TextScene {
             Label::new(LINE)
                 .with_visible_bytes(0..0)
                 .with_style(StyleProperty::FontSize(22.))
-                .with_outline(Some(TextOutline {
+                .with_outline(styled.then_some(TextOutline {
                     width: 1.5,
                     color: Color::from_rgba8(0, 0, 0, 220),
                 }))
-                .with_shadow(Some(TextShadow {
+                .with_shadow(styled.then_some(TextShadow {
                     offset: Vec2::new(1., 1.),
                     color: Color::from_rgba8(0, 0, 0, 160),
                 }))

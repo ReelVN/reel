@@ -2,7 +2,16 @@
 use super::{DeviceBackend, Result, log, native, render_cases};
 
 pub fn run(renderer: &mut DeviceBackend, frames: usize, trace: bool) -> Result {
-    for case in ["empty", "solid", "rgba", "bc1", "text", "offscreen"] {
+    for case in [
+        "empty",
+        "solid",
+        "rgba",
+        "bc1",
+        "text_plain",
+        "text_styled",
+        "text",
+        "offscreen",
+    ] {
         for (vsync, flights) in [(true, 1), (true, 2), (false, 2)] {
             render_cases(renderer, case, frames, trace, vsync, flights)?;
         }

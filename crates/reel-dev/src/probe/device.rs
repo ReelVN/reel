@@ -43,6 +43,8 @@ const CASES: &[&str] = &[
     "bc1_region",
     "bc3_region",
     "text",
+    "text_plain",
+    "text_styled",
     "offscreen",
     "mask_chain",
     "mask_threshold",
@@ -236,7 +238,7 @@ fn renderer_case(
     let mut polls = 0;
     let mut geometry_uploads = reel_core::profile::GeometryUploads::snapshot();
     let mut warm_uploads = reel_core::profile::GeometryUploads::default();
-    let warm_after = if case == "text" {
+    let warm_after = if case.starts_with("text") {
         scenes::TEXT_REVEAL_FRAMES
     } else {
         8

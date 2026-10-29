@@ -35,8 +35,18 @@ impl Frames {
             self.0.first(),
             warm.len()
         ));
+        if warm_after > 8 && self.0.len() > 1 {
+            self.report_window(
+                &format!("{case}-reveal"),
+                &self.0[1..self.0.len().min(warm_after)],
+            );
+        }
+        self.report_window(case, warm);
+        Ok(())
+    }
+    fn report_window(&self, case: &str, warm: &[[u64; 6]]) {
         if warm.is_empty() {
-            return Ok(());
+            return;
         }
         for (column, name) in [
             "build",
@@ -61,6 +71,5 @@ impl Frames {
                 values.iter().filter(|&&value| value > 16_667).count()
             ));
         }
-        Ok(())
     }
 }
