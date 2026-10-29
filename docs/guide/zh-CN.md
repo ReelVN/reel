@@ -979,6 +979,8 @@ fn main() {
 
 先通过 `window.info().capabilities` 判断可用设置，再等待 `window.configure` 返回应用后的状态。窗口大小与逻辑画布分别设置。
 
+补间、粒子和转场默认跟随显示器刷新率，宿主未知时使用 60 Hz。`game.configure(frame_rate: 144)` 设置目标更新频率，`frame_rate: 0` 恢复自动；垂直同步沿用 `window.configure(vsync: ...)`。当前显示器频率可从 `window.info().refresh_rate` 读取。
+
 ```aside
 let mut display = window.info();
 if display.capabilities.resize {

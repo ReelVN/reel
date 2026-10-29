@@ -45,12 +45,14 @@ fn input_hints_are_typed_observable_and_refresh_after_restore() {
 fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
     let code = r#"fn opening() {
         if window.info().platform != "unknown" { throw "headless platform"; }
+        if window.info().refresh_rate != null { throw "headless refresh rate"; }
         if stage.pointer() != null { throw "initial pointer"; }
         narrator("attach host");
         let before = window.info();
         let pointer_before = stage.pointer();
         if pointer_before.x != 12 || pointer_before.y != 34 { throw "host pointer"; }
         if before.platform != "windows" || !before.fullscreen { throw "host platform"; }
+        if before.refresh_rate != 144 { throw "host refresh rate"; }
         let applied = await window.configure(fullscreen: false);
         if applied.platform != "windows" || applied.fullscreen { throw "configure state"; }
         narrator("save");
@@ -64,6 +66,7 @@ fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
         models::drive(&mut vm, &mut session, false);
         vm.set_window_info(Arc::new(WindowInfo {
             platform: WindowPlatform::Windows,
+            refresh_rate_millihertz: Some(144_000),
             fullscreen: true,
             capabilities: WindowCapabilities {
                 fullscreen: true,

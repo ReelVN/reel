@@ -24,6 +24,8 @@ pub struct WindowInfo {
     pub fullscreen: bool,
     pub vsync: bool,
     pub capabilities: WindowCapabilities,
+    /// Current display refresh rate in millihertz, or None when unavailable.
+    pub refresh_rate_millihertz: Option<u32>,
     pub resolutions: Arc<[WindowSize]>,
 }
 

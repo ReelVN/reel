@@ -174,7 +174,7 @@ fn accepted_animation_frames_keep_the_sampling_deadline_while_script_waits() {
         }
     }
     assert!(!player.story_mut().unwrap().driver().has_runnable_tasks());
-    host.now = MonoTime(16_000_000);
+    host.now = MonoTime(16_666_667);
     player.tick(&mut host).unwrap();
     let x = |player: &mut Player<Backend>| {
         player
@@ -205,7 +205,7 @@ fn accepted_animation_frames_keep_the_sampling_deadline_while_script_waits() {
         .inner
         .complete_render(player.backend.inner.last_submission().unwrap());
     player.poll_completions().unwrap();
-    for ms in 17..32 {
+    for ms in 17..34 {
         host.now = MonoTime(ms * 1_000_000);
         player.tick(&mut host).unwrap();
         assert_eq!(
@@ -225,7 +225,7 @@ fn accepted_animation_frames_keep_the_sampling_deadline_while_script_waits() {
             native_entries
         );
     }
-    host.now = MonoTime(32_000_000);
+    host.now = MonoTime(33_333_334);
     player.tick(&mut host).unwrap();
     assert!(x(&mut player) > sampled);
 }

@@ -114,7 +114,7 @@ pub struct SessionSnapshot {
     text_intents: Vec<stage::text_input::SavedTextInputIntent>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 1;
+    pub const FORMAT_VERSION: u32 = 2;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,

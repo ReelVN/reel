@@ -9,6 +9,7 @@ mod assets;
 mod media;
 pub use activity::ActivityProgress;
 mod budget;
+mod cadence;
 mod callbacks;
 use budget::SliceMinimum;
 pub use budget::{NativeBudget, SessionBudget};
@@ -625,13 +626,23 @@ impl SessionVm {
                 || self.transitions.needs_time())
     }
 
+    /// Delay from the latest logical sample to the next producer deadline.
+    /// Continuous animations use the configured logical-clock phase, skipping
+    /// elapsed sampling points after a late wake instead of accumulating drift.
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         if self.revoked {
             return None;
         }
-        let particles = (self.particles.needs_time() || self.transitions.needs_time())
-            .then_some(std::time::Duration::from_secs_f64(1. / 60.));
-        match (self.activities.poll_after(), particles) {
+        let rate = self
+            .game
+            .frame_rate_millihertz
+            .or(self.window_info().refresh_rate_millihertz)
+            .filter(|rate| (1_000..=1_000_000).contains(rate))
+            .unwrap_or(60_000);
+        let sampling = cadence::poll_after(self.activities.time(), rate);
+        let particles =
+            (self.particles.needs_time() || self.transitions.needs_time()).then_some(sampling);
+        match (self.activities.poll_after(sampling), particles) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         }

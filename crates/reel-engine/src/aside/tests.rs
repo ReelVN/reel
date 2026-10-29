@@ -10,6 +10,7 @@ mod buttons;
 mod clock_batches;
 mod component_cost;
 mod conditions;
+mod configuration;
 mod content_identity;
 mod continuous;
 mod curves;

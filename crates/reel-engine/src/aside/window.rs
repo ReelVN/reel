@@ -100,6 +100,11 @@ fn value(heap: &mut Heap, info: &WindowInfo) -> Result<Value, AdapterError> {
             ("scale_factor", Value::float(info.scale_factor)),
             ("fullscreen", Value::bool(info.fullscreen)),
             ("vsync", Value::bool(info.vsync)),
+            (
+                "refresh_rate",
+                info.refresh_rate_millihertz
+                    .map_or(Value::NULL, |rate| Value::float(f64::from(rate) / 1000.)),
+            ),
             ("capabilities", capabilities),
             ("resolutions", resolutions),
         ],
@@ -438,7 +443,8 @@ aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Return the host's current portable window information immediately.
         /// Fields include platform, logical width/height, remembered windowed dimensions,
-        /// scale_factor, fullscreen, vsync, supported resolutions, and capabilities for
+        /// scale_factor, fullscreen, vsync, refresh_rate in Hz (null when unknown),
+        /// supported resolutions, and capabilities for
         /// resize, fullscreen, vsync and pointer_move. This reads host state without a request.
         "reel::window::info";
         /// Request changes to logical window dimensions, fullscreen or vsync.

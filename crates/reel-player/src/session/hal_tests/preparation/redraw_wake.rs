@@ -9,7 +9,7 @@ fn retained_acceptance_leaves_a_ready_followup_before_the_next_story_deadline() 
     f.sync(0); // Accepting the first stage starts the one-second tween.
     let first = f.view.bridge.accepted_key().unwrap().clone();
 
-    f.sync(16_000_000);
+    f.sync(16_666_667);
     assert!(!f.render().accepted, "the one-slot backend is still busy");
     assert!(f.view.is_preparing());
     assert!(!f.view.needs_redraw(), "pressure must wait for completion");
@@ -18,7 +18,7 @@ fn retained_acceptance_leaves_a_ready_followup_before_the_next_story_deadline() 
 
     // A later animation sample settles while the already recorded candidate is
     // retained. The host consumes this turn's redraw request before rendering.
-    f.sync(32_000_000);
+    f.sync(33_333_334);
     assert_eq!(f.view.bridge.accepted_key(), Some(&first));
     assert!(!f.view.needs_redraw(), "new samples cannot bypass pressure");
     f.complete();
@@ -26,7 +26,7 @@ fn retained_acceptance_leaves_a_ready_followup_before_the_next_story_deadline() 
 
     // Model five milliseconds of host/backend work after the last producer
     // sample. Acceptance must not rearm that producer's sampling interval.
-    f.host.now = MonoTime(37_000_000);
+    f.host.now = MonoTime(38_333_334);
     assert!(f.render().accepted);
     assert_eq!(f.view.bridge.accepted_key(), Some(&retained));
     assert_eq!(f.builds, builds, "completion continues the old candidate");
@@ -36,7 +36,7 @@ fn retained_acceptance_leaves_a_ready_followup_before_the_next_story_deadline() 
     );
     assert!(!f.view.is_preparing());
     let next = f.story.wake_deadline(f.host.now).unwrap();
-    assert_eq!(next, MonoTime(48_000_000));
+    assert_eq!(next, MonoTime(50_000_000));
     assert!(next > f.host.now);
     eprintln!(
         "retained accepted at {}ns: ready=true, story_deadline={}ns, avoidable_wait={}ns",

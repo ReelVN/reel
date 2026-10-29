@@ -28,6 +28,88 @@ fn settle(story: &mut StoryRuntime, now: u64) {
 }
 
 #[test]
+fn particle_deadlines_do_not_accumulate_late_host_wakes_or_replay_missed_samples() {
+    let mut story = runtime(
+        r#"fn main() {
+            let p=particles("spark.png"); stage.replace(p);
+            emit(p,burst:1,rate:0,lifetime:10,duration:10);
+            narrator("waiting");
+        }"#,
+    );
+    settle(&mut story, 0);
+    let mut now = 0;
+    for frame in 1u64..=120 {
+        let expected = (frame * 1_000_000_000).div_ceil(60);
+        let deadline = story
+            .wake_deadline(reel_core::clock::MonoTime(now))
+            .unwrap()
+            .0;
+        assert!(
+            deadline.abs_diff(expected) <= 1,
+            "frame={frame}, deadline={deadline}, expected={expected}"
+        );
+        now = deadline + 400_000;
+        settle(&mut story, now);
+        assert_eq!(story.logical_ns, now);
+    }
+    now += 125_000_000;
+    settle(&mut story, now);
+    assert_eq!(
+        story.logical_ns, now,
+        "a late host samples actual time once"
+    );
+    let expected = ((now * 60 / 1_000_000_000 + 1) * 1_000_000_000).div_ceil(60);
+    let deadline = story
+        .wake_deadline(reel_core::clock::MonoTime(now))
+        .unwrap()
+        .0;
+    assert!(deadline.abs_diff(expected) <= 1);
+}
+
+#[test]
+fn animation_cadence_follows_high_refresh_displays_and_explicit_game_rates() {
+    for (configured, display, rate) in [
+        (0., 120_000, 120_000),
+        (0., 144_000, 144_000),
+        (0., 59_940, 59_940),
+        (144., 60_000, 144_000),
+    ] {
+        for producer in [
+            "let p=particles(\"spark.png\"); stage.replace(p); emit(p,burst:1,rate:0,lifetime:10,duration:10);",
+            "let p=text(\"moving\"); stage.replace(p); run(tween(p,x:100,duration:10));",
+        ] {
+            let mut story = runtime(&format!(
+                "fn main(){{ game.configure(frame_rate:{configured}); {producer} narrator(\"waiting\"); }}"
+            ));
+            story
+                .driver_mut()
+                .unwrap()
+                .adapter_mut()
+                .set_window_info(std::sync::Arc::new(reel_core::window::WindowInfo {
+                    refresh_rate_millihertz: Some(display),
+                    ..Default::default()
+                }));
+            settle(&mut story, 0);
+            let mut now = 0;
+            for frame in 1u64..=300 {
+                let expected = (frame * 1_000_000_000_000).div_ceil(rate);
+                let deadline = story
+                    .wake_deadline(reel_core::clock::MonoTime(now))
+                    .unwrap()
+                    .0;
+                assert!(
+                    deadline.abs_diff(expected) <= 1,
+                    "rate={rate} frame={frame}: {deadline} != {expected}"
+                );
+                now = deadline + 400_000;
+                settle(&mut story, now);
+                assert_eq!(story.logical_ns, now);
+            }
+        }
+    }
+}
+
+#[test]
 fn continuation_and_collection_wakes_do_not_oversample_a_running_clock() {
     let mut story = runtime(
         r#"fn main() {

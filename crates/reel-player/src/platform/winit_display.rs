@@ -102,6 +102,10 @@ impl WindowDisplay {
             scale_factor: scale,
             fullscreen,
             vsync: true,
+            refresh_rate_millihertz: self
+                .monitor
+                .as_ref()
+                .and_then(MonitorHandle::refresh_rate_millihertz),
             capabilities: WindowCapabilities {
                 resize: desktop,
                 fullscreen: desktop,
