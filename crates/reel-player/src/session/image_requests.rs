@@ -9,6 +9,7 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         root_id: WidgetId,
     ) -> Result<bool, Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiImageRequests);
         if !self.image_demand_dirty {
             return Ok(true);
         }
@@ -57,6 +58,7 @@ impl SessionUi {
         root_id: WidgetId,
         content_changed: bool,
     ) -> Result<bool, Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiImageTiles);
         let mut candidate = self.pending_stage.take();
         if candidate.is_none() && content_changed {
             candidate = self.stage.clone();

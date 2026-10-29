@@ -508,6 +508,7 @@ impl SessionVm {
 
     /// Publish the properties of the same mounted objects after script work.
     pub fn sync_stage(&mut self, session: &Session) -> Result<(), AdapterError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiStageSync);
         self.same_session(session)?;
         if !self.reactive_settled() && !self.virtual_feedback_boundary() {
             return Ok(());

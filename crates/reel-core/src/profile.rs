@@ -77,8 +77,18 @@ pub enum Phase {
     ProjectionPublished,
     /// Model invalidations delivered to presentation scheduling.
     PresentationInvalidated,
+    /// Project committed VM properties into the shared stage.
+    UiStageSync,
+    /// Build the player's immutable stage view and resource demand identity.
+    UiStageView,
+    /// Resolve visible image requests, including candidate layout when needed.
+    UiImageRequests,
+    /// Plan visible tiles and prepare their resource leases.
+    UiImageTiles,
+    /// Apply a stage view to the retained widget tree.
+    UiWidgetSync,
 }
-pub const NAMES: [&str; 51] = [
+pub const NAMES: [&str; 56] = [
     "input",
     "tick",
     "session",
@@ -130,6 +140,11 @@ pub const NAMES: [&str; 51] = [
     "projection_changed",
     "projection_published",
     "presentation_invalidated",
+    "ui_stage_sync",
+    "ui_stage_view",
+    "ui_image_requests",
+    "ui_image_tiles",
+    "ui_widget_sync",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

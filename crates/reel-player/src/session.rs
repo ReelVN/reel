@@ -946,6 +946,7 @@ impl SessionUi {
             && self.binding.borrow().accepted == Some(self.projection_stamp())
     }
     fn update_stage(&mut self, stage: &reel_ui::stage::Stage, feedback: bool) {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiStageView);
         self.virtual_images_ready = false;
         if self
             .pending_stage

@@ -945,6 +945,7 @@ impl StageWidget {
         visit(root, self.root.as_ref()?.id())
     }
     pub fn sync(this: &mut WidgetMut<'_, Self>, view: &StageView) {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiWidgetSync);
         let root = view
             .root
             .as_ref()
