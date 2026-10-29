@@ -19,9 +19,11 @@ impl Cache {
             self.size = Some(size);
         }
     }
-    pub fn get(&self, size: [u32; 2], index: usize) -> Option<Target> {
+    pub fn get(&self, size: [u32; 2], used: &[Target]) -> Option<Target> {
         self.owners
-            .get_eligible(size, index, |target| !target.is_effect_pinned())
+            .get_eligible(size, 0, |target| {
+                !target.is_effect_pinned() && !used.iter().any(|held| held.same_allocation(target))
+            })
             .cloned()
     }
     pub fn insert(&mut self, target: &Target, metadata: &BudgetPool, limit: u64) {

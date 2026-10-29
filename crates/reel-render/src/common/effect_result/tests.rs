@@ -141,6 +141,36 @@ fn output_pixels_ignore_the_original_recording_transform_but_keep_the_effect_gri
 }
 
 #[test]
+fn allocation_pressure_releases_optional_pixels_but_preserves_inflight_readers_and_family() {
+    let pool = pool();
+    let effect = effect();
+    let scene = Arc::new(Scene::new());
+    let cache = Cache::<Arc<u32>>::default();
+    let output = Arc::new(73);
+    let candidate = cache
+        .prepare(probe(&effect, grid(), scene.clone()), &pool)
+        .unwrap();
+    let token = candidate.token;
+    assert!(cache.publish(candidate.finish(output.clone()), &pool));
+    let (_, reader) = cache
+        .lookup(&probe(&effect, grid(), scene.clone()))
+        .unwrap();
+    assert!(cache.reclaim_output());
+    assert!(!cache.reclaim_output());
+    assert_eq!(*reader, 73);
+    assert_eq!(Arc::strong_count(&output), 2);
+    assert!(
+        cache
+            .lookup(&probe(&effect, grid(), scene.clone()))
+            .is_none()
+    );
+    let next = cache.prepare(probe(&effect, grid(), scene), &pool).unwrap();
+    assert_eq!(next.token.1, token.1);
+    assert_ne!(next.token.0, token.0);
+    assert!(next.retain);
+}
+
+#[test]
 fn key_preserves_recording_and_exact_dependency_bits() {
     let pool = pool();
     let scene = Arc::new(Scene::new());

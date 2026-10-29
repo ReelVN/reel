@@ -72,15 +72,6 @@ impl Context<'_> {
                 })?;
             // The previous frame's presentation draw precedes this clear on the
             // same graphics queue. Capture outputs use a separate allocation set.
-            let index = self
-                .targets
-                .iter()
-                .filter(|target| {
-                    target.view.size() == storage_size
-                        && target.view.format() == texture_format
-                        && !target.is_effect_pinned()
-                })
-                .count();
             let cache = if coverage {
                 &mut self.coverage_target_cache
             } else {
@@ -91,10 +82,11 @@ impl Context<'_> {
             } else {
                 self.offscreen.requirements()
             };
-            let mut target = if let Some(target) = cache.get(storage_size, index) {
+            let mut target = if let Some(target) = cache.get(storage_size, &self.targets) {
                 reel_core::profile::count(reel_core::profile::Phase::TargetReused);
                 target
             } else {
+                let mut recovered = false;
                 let mut allocation = Target::new(
                     self.gpu,
                     storage_size,
@@ -102,20 +94,32 @@ impl Context<'_> {
                     &self.budgets.targets,
                     self.limits.target_bytes,
                 );
-                // Retry capacity failures only after an idle target was released.
-                // Unresolved native owners retain their retirement path.
+                // Release optional owners before retrying capacity failures.
+                // In-flight native owners retain their retirement path.
                 for recent in [false, true] {
                     while allocation.as_ref().is_err_and(|(error, storage)| {
                         error.is_memory_pressure() && storage.is_none()
                     }) {
-                        if cache.reclaim(requirements, recent) {
-                            allocation = Target::new(
-                                self.gpu,
-                                storage_size,
-                                format,
-                                &self.budgets.targets,
-                                self.limits.target_bytes,
-                            );
+                        if cache.reclaim(requirements, recent)
+                            || self.effect_results.reclaim_output()
+                        {
+                            // Dropping an optional effect pin can make a matching
+                            // scratch allocation reusable without allocating again.
+                            allocation = if let Some(target) =
+                                cache.get(storage_size, &self.targets)
+                            {
+                                recovered = true;
+                                reel_core::profile::count(reel_core::profile::Phase::TargetReused);
+                                Ok(target)
+                            } else {
+                                Target::new(
+                                    self.gpu,
+                                    storage_size,
+                                    format,
+                                    &self.budgets.targets,
+                                    self.limits.target_bytes,
+                                )
+                            };
                         } else {
                             break;
                         }
@@ -134,11 +138,13 @@ impl Context<'_> {
                         return Err(error);
                     }
                 };
-                cache.insert(
-                    &target,
-                    &self.budgets.transient,
-                    self.limits.transient_bytes,
-                );
+                if !recovered {
+                    cache.insert(
+                        &target,
+                        &self.budgets.transient,
+                        self.limits.transient_bytes,
+                    );
+                }
                 target
             };
             self.tickets.push(Reservation {

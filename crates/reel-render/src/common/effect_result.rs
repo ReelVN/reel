@@ -474,4 +474,22 @@ impl<T: Clone> Cache<T> {
         state.metadata = None;
         state.cursor = 0;
     }
+    /// Release one optional pixel owner before retrying a required allocation.
+    /// Keep its observation and family; submitted readers own their own clones.
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn reclaim_output(&self) -> bool {
+        let mut state = self.0.lock().unwrap();
+        let Some(index) = state
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.output.is_some())
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(index, _)| index)
+        else {
+            return false;
+        };
+        state.entries[index].output = None;
+        true
+    }
 }
