@@ -139,6 +139,16 @@ impl Vm {
             generator: false,
         };
         self.active.frames.data.push(Frame::Script(s));
+        execution_count!(self, ScriptEntries, 1);
+        execution_count!(self, ScriptRegisters, u64::from(registers));
+        execution_count!(self, ScriptParameters, u64::from(n));
+        execution_count!(
+            self,
+            ScriptBindings,
+            self.program.package().functions[function.index()]
+                .bindings
+                .len() as u64
+        );
         Ok(())
     }
     pub fn start(
@@ -233,6 +243,10 @@ impl Vm {
         for (i, &v) in args.iter().enumerate() {
             self.put(arguments, i as u32 * 2, Value::int(-1))?;
             self.put(arguments, i as u32 * 2 + 1, v)?;
+            #[cfg(feature = "execution-counts")]
+            if matches!(frame, Frame::Script(_)) {
+                execution_count!(self, ArgumentCopies, 1);
+            }
         }
         let signature = self.program.package().functions[function.index()].signature;
         let rest = self.program.package().signatures[signature.index()]

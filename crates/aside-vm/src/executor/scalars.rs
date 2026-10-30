@@ -89,6 +89,8 @@ impl Vm {
             return Ok(ScalarStep::General);
         };
         assert!(meter.take(1, 1, 0));
+        instruction_admitted!(self, op);
+        execution_count!(self, BytecodeExecutions, 1);
         if let Err(kind) = self.write(regs, Reg(a), value) {
             let Frame::Script(mut frame) = *self.active.frames.data.last().unwrap() else {
                 unreachable!()
@@ -122,6 +124,8 @@ impl Vm {
         if !meter.take(1, work, 0) {
             return Ok(ScalarStep::Budget);
         }
+        instruction_admitted!(self, op);
+        execution_count!(self, BytecodeExecutions, 1);
         let result = match op {
             Opcode::Clear => self.slots.clear(&mut self.heap, at(regs, a)),
             Opcode::Clear2 => self.slots.clear_registers(&mut self.heap, regs, [a, b]),

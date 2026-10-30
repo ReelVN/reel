@@ -516,7 +516,16 @@ impl VmRestore<'_> {
         if !self.complete {
             return Err(SnapshotError::Busy("snapshot restoration is incomplete"));
         }
-        Ok((self.vm, self.map))
+        #[cfg(feature = "execution-counts")]
+        let mut vm = self.vm;
+        #[cfg(not(feature = "execution-counts"))]
+        let vm = self.vm;
+        #[cfg(feature = "execution-counts")]
+        {
+            vm.execution_counts = execution_counts::State::default();
+            vm.slots.reset_execution_counts();
+        }
+        Ok((vm, self.map))
     }
     fn task_mut(&mut self, key: u64) -> Result<&mut TaskState, SnapshotError> {
         if key == 0 {

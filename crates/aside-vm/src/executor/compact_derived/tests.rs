@@ -412,12 +412,28 @@ fn lazy_compact_reads_refresh_upstream_without_reentering_the_native() {
         )
         .unwrap();
     let entries = vm.native_entries;
+    #[cfg(feature = "execution-counts")]
+    let before = vm.execution_counts();
     let task = vm.start_derived(downstream, RootOwner(1)).unwrap();
     assert!(matches!(
         drive(&mut vm, task, true).0,
         RunOutcome::Returned(_)
     ));
     assert_eq!(vm.native_entries, entries);
+    #[cfg(feature = "execution-counts")]
+    {
+        let counts = vm.execution_counts().checked_delta(&before).unwrap();
+        assert_eq!(counts.derived_starts, 2);
+        assert_eq!(counts.compact_derived_starts, 2);
+        assert_eq!(counts.script_entries, 2);
+        assert_eq!(counts.compact_commits, 2);
+        assert_eq!(counts.install_bindings_visited, 0);
+        assert_eq!(counts.parameters_prepared, 0);
+        assert_eq!(counts.bytecode_execute_steps, 10);
+        assert_eq!(counts.reactive_read_suspensions, 1);
+        assert_eq!(counts.instructions, 11);
+        assert_eq!(counts.opcode_admissions().map(|(_, n)| n).sum::<u64>(), 11);
+    }
     assert_eq!(
         vm.heap
             .host_property(crate::PropertyId {

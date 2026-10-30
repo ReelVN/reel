@@ -7,6 +7,8 @@ impl Vm {
         mut s: ScriptFrame,
         m: &mut Meter,
     ) -> Result<bool, VmError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.step(&s.phase);
         let top = self.active.frames.data.len() - 1;
         let signature = self.program.package().functions[s.code.function.index()].signature;
         match s.phase {
@@ -79,6 +81,7 @@ impl Vm {
                         Ok((name, v)) => {
                             self.put(s.args, index * 2, name)?;
                             self.put(s.args, index * 2 + 1, v)?;
+                            execution_count!(self, ArgumentCopies, 1);
                             s.phase = ScriptPhase::Copy {
                                 source,
                                 index: index + 1,
@@ -268,6 +271,7 @@ impl Vm {
                     Ok(value) => {
                         self.put(s.bound, parameter, value)?;
                         self.put(s.regs, storage.reg().0, value)?;
+                        execution_count!(self, ParametersPrepared, 1);
                         s.phase = ScriptPhase::Defaults {
                             parameter: parameter + 1,
                         };
@@ -302,6 +306,7 @@ impl Vm {
                         };
                         break;
                     };
+                    execution_count!(self, InstallBindings, 1);
                     let clear = match (b.initialization, b.storage) {
                         (BindingInitialization::Explicit, BindingStorage::Value(reg)) => Some(reg),
                         _ => None,
@@ -313,6 +318,9 @@ impl Vm {
                     {
                         self.active.frames.data[top] = Frame::Script(s);
                         return Err(error);
+                    }
+                    if clear.is_some() {
+                        execution_count!(self, InstallClears, 1);
                     }
                     binding += 1;
                     s.phase = ScriptPhase::Install { binding };
@@ -349,6 +357,8 @@ impl Vm {
                 let mut op = instruction_spec(instruction.opcode)
                     .expect("verified spec")
                     .opcode;
+                #[cfg(feature = "execution-counts")]
+                let admitted_opcode = op;
                 let [a, mut b, mut c] = instruction.operands;
                 let mut index_work = 0;
                 if matches!(op, Opcode::IndexGet | Opcode::IndexSet) {
@@ -386,6 +396,7 @@ impl Vm {
                             Ok(name) => name,
                             Err(kind) => {
                                 assert!(m.take(1, index_work + 1, 0));
+                                instruction_admitted!(self, admitted_opcode);
                                 self.collection_fault(&mut s, kind)?;
                                 self.active.frames.data[top] = Frame::Script(s);
                                 return Ok(true);
@@ -410,6 +421,7 @@ impl Vm {
                                 self.active.frames.data[top] = Frame::Script(s);
                                 return Ok(false);
                             }
+                            instruction_admitted!(self, admitted_opcode);
                             self.put(s.env, 1, Value::NULL)?;
                             self.clear(s.env, 2)?;
                             s.phase = ScriptPhase::Exit {
@@ -482,6 +494,8 @@ impl Vm {
                     return Ok(false);
                 }
                 if let Some(read) = refresh {
+                    instruction_admitted!(self, admitted_opcode);
+                    execution_count!(self, ReactiveSuspensions, 1);
                     self.active.frames.data[top] = Frame::Script(s);
                     if let Err(error) = self.push_reactive_read(s, read) {
                         self.collection_fault(&mut s, vm_fault(error))?;
@@ -490,6 +504,8 @@ impl Vm {
                     return Ok(true);
                 }
                 s.instruction = None;
+                instruction_admitted!(self, admitted_opcode);
+                execution_count!(self, BytecodeExecutions, 1);
                 let step = step_cost!(
                     self,
                     Execute,

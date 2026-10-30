@@ -8,6 +8,8 @@ description = "Aside value storage and bounded incremental object tracing"
 
 [features]
 profiling = []
+# Integer-only execution diagnostics, independently enabled from timed profiling.
+execution-counts = []
 
 [dependencies]
 slotmap = "=1.1.1"

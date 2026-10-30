@@ -157,6 +157,7 @@ impl Vm {
         };
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(frame);
         self.slots.release(&mut self.heap, script.regs)?;
+        execution_count!(self, CompactCommits, 1);
         Ok(true)
     }
 }

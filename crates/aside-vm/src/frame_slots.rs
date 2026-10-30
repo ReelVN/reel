@@ -1,4 +1,6 @@
 //! Continuous root windows. All publishing writes are sealed behind Heap's barrier.
+#[cfg(feature = "execution-counts")]
+use crate::executor::execution_counts::{SlotCounter, SlotCounts, SlotState};
 use crate::root_ranges::{ChargedVec, Reservation};
 use crate::slots::{RangeKey, index};
 use crate::{
@@ -104,6 +106,8 @@ pub struct FrameSlots {
     active_ranges: u32,
     largest_free: u32,
     closed: bool,
+    #[cfg(feature = "execution-counts")]
+    execution_counts: SlotState,
     #[cfg(test)]
     pub(crate) paired_reads: bool,
     // Keep the bounded inline control metadata charged until this owner drops.
@@ -127,6 +131,15 @@ impl<'a> RootRanges<'a> {
 }
 
 impl FrameSlots {
+    #[cfg(feature = "execution-counts")]
+    pub(crate) fn execution_count_snapshot(&self) -> SlotCounts {
+        self.execution_counts.snapshot()
+    }
+    #[cfg(feature = "execution-counts")]
+    pub(crate) fn reset_execution_counts(&mut self) {
+        self.execution_counts = SlotState::default();
+    }
+
     pub fn new(heap: &mut Heap, limits: FrameSlotsLimits) -> Result<Self, HeapError> {
         if limits.max_capacity == 0
             || limits.max_window_len == 0
@@ -186,6 +199,8 @@ impl FrameSlots {
             active_ranges: 0,
             largest_free: limits.initial_capacity,
             closed: false,
+            #[cfg(feature = "execution-counts")]
+            execution_counts: SlotState::default(),
             #[cfg(test)]
             paired_reads: true,
             control_charge,
@@ -363,6 +378,14 @@ impl FrameSlots {
         }
         self.active_values += len;
         self.active_ranges += 1;
+        #[cfg(feature = "execution-counts")]
+        {
+            self.execution_counts.add(SlotCounter::Opens, 1);
+            self.execution_counts
+                .add(SlotCounter::OpenValues, u64::from(len));
+            self.execution_counts
+                .add(SlotCounter::EmptyOpens, u64::from(len == 0));
+        }
         Ok(token)
     }
     fn grow_descriptors(&mut self, slots: usize) -> Result<(), HeapError> {
@@ -480,6 +503,8 @@ impl FrameSlots {
         Ok(())
     }
     pub fn read(&self, at: RangePosition) -> Result<Value, HeapError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.add(SlotCounter::Reads, 1);
         let i = self.position(at)?;
         if !self.initialized(i) {
             return Err(HeapError::UninitializedSlot);
@@ -493,6 +518,8 @@ impl FrameSlots {
         first: u32,
         second: u32,
     ) -> Result<(Value, Value), HeapError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.add(SlotCounter::PairReads, 1);
         #[cfg(test)]
         if !self.paired_reads {
             return Ok((
@@ -520,7 +547,12 @@ impl FrameSlots {
         Ok((read(first)?, read(second)?))
     }
     pub fn borrow_initialized(&self, range: RootRangeToken) -> Result<&[Value], HeapError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.add(SlotCounter::Borrows, 1);
         let w = self.window(range)?;
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts
+            .add(SlotCounter::BorrowValues, u64::from(w.len));
         for i in w.base..w.base + w.len {
             if !self.initialized(i as usize) {
                 return Err(HeapError::UninitializedSlot);
@@ -535,6 +567,12 @@ impl FrameSlots {
         start: u32,
         len: u32,
     ) -> Result<&[Value], HeapError> {
+        #[cfg(feature = "execution-counts")]
+        {
+            self.execution_counts.add(SlotCounter::Borrows, 1);
+            self.execution_counts
+                .add(SlotCounter::BorrowValues, u64::from(len));
+        }
         let w = self.window(range)?;
         let end = start
             .checked_add(len)
@@ -553,6 +591,8 @@ impl FrameSlots {
         at: RangePosition,
         value: Value,
     ) -> Result<(), HeapError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.add(SlotCounter::Writes, 1);
         self.check_heap(heap)?;
         let i = self.position(at)?;
         heap.root_insertion_barrier(value)?;
@@ -560,6 +600,11 @@ impl FrameSlots {
         Ok(())
     }
     pub fn clear(&mut self, heap: &mut Heap, at: RangePosition) -> Result<(), HeapError> {
+        #[cfg(feature = "execution-counts")]
+        {
+            self.execution_counts.add(SlotCounter::ClearCalls, 1);
+            self.execution_counts.add(SlotCounter::ClearValues, 1);
+        }
         self.check_heap(heap)?;
         let i = self.position(at)?;
         heap.root_insertion_barrier(Value::NULL)?;
@@ -574,6 +619,12 @@ impl FrameSlots {
         range: RootRangeToken,
         registers: [u32; N],
     ) -> Result<(), HeapError> {
+        #[cfg(feature = "execution-counts")]
+        {
+            self.execution_counts.add(SlotCounter::ClearCalls, 1);
+            self.execution_counts
+                .add(SlotCounter::ClearValues, N as u64);
+        }
         self.check_heap(heap)?;
         let window = self.window(range)?;
         for register in registers {
@@ -591,6 +642,8 @@ impl FrameSlots {
         from: RangePosition,
         to: RangePosition,
     ) -> Result<(), HeapError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.add(SlotCounter::Copies, 1);
         self.check_heap(heap)?;
         let value = self.read(from)?;
         self.write(heap, to, value)
@@ -601,6 +654,8 @@ impl FrameSlots {
         from: RangePosition,
         to: RangePosition,
     ) -> Result<(), HeapError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.add(SlotCounter::Moves, 1);
         self.check_heap(heap)?;
         let value = self.read(from)?;
         let source = self.position(from)?;
@@ -685,6 +740,12 @@ impl FrameSlots {
             base: w.base,
             len: w.len,
         });
+        #[cfg(feature = "execution-counts")]
+        {
+            self.execution_counts.add(SlotCounter::Releases, 1);
+            self.execution_counts
+                .add(SlotCounter::ReleaseValues, u64::from(w.len));
+        }
         Ok(())
     }
     /// Inspect at most `slots` descriptor indices and revoke this owner's ranges.

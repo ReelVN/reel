@@ -12,6 +12,10 @@ use std::rc::Rc;
 
 #[macro_use]
 mod step_costs;
+#[macro_use]
+pub(crate) mod execution_counts;
+#[cfg(feature = "execution-counts")]
+pub use execution_counts::{ExecutionCounts, NATIVE_STEP_NAMES, SCRIPT_STEP_NAMES, SlotCounts};
 #[cfg(feature = "profiling")]
 pub use step_costs::{
     STEP_HOTSPOT_CAPACITY, STEP_MODES, STEP_NAMES, STEP_SAMPLE_STRIDE, StepCost, StepHotspot,
@@ -588,6 +592,8 @@ pub struct Vm {
     compact_derived_outputs: u64,
 
     last_usage: SliceUsage,
+    #[cfg(feature = "execution-counts")]
+    execution_counts: execution_counts::State,
     #[cfg(feature = "profiling")]
     step_costs: step_costs::State,
     #[cfg(test)]

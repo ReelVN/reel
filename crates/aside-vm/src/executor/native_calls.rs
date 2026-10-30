@@ -434,6 +434,7 @@ impl Vm {
                 NativePhase::Copy { source, index: 0 }
             },
         }));
+        execution_count!(self, NativeFrames, 1);
         Ok(())
     }
     pub(super) fn positional_native_source(&self, source: ArgSource, count: u32) -> bool {
