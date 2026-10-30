@@ -23,13 +23,17 @@ impl Vm {
         let (instruction, next) = if let Some(instruction) = cached {
             (instruction, s.instruction_end.index())
         } else {
-            let Some(decoded) = self.program.package().functions[function.index()]
-                .code
-                .fetch_budgeted(
-                    pc.index(),
-                    &mut self.code_window,
-                    &mut |work, allocation| meter.take(0, work, allocation),
-                )?
+            let Some(decoded) = step_cost!(
+                self,
+                Fetch,
+                self.program.package().functions[function.index()]
+                    .code
+                    .fetch_budgeted(
+                        pc.index(),
+                        &mut self.code_window,
+                        &mut |work, allocation| meter.take(0, work, allocation),
+                    )
+            )?
             else {
                 return Ok(ScalarStep::Budget);
             };

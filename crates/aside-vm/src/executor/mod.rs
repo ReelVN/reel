@@ -10,6 +10,11 @@ use crate::*;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
+#[macro_use]
+mod step_costs;
+#[cfg(feature = "profiling")]
+pub use step_costs::{STEP_NAMES, STEP_SAMPLE_STRIDE, StepCost};
+
 mod api;
 mod arguments;
 use arguments::{ArgumentBinding, ArgumentStep, ParameterNames};
@@ -580,6 +585,8 @@ pub struct Vm {
     compact_derived_outputs: u64,
 
     last_usage: SliceUsage,
+    #[cfg(feature = "profiling")]
+    step_costs: step_costs::State,
     #[cfg(test)]
     work_probe: WorkProbe,
 }
@@ -1040,7 +1047,7 @@ impl Vm {
                 });
                 continue;
             }
-            match self.scalar_step(m)? {
+            match step_cost!(self, Scalar, self.scalar_step(m))? {
                 scalars::ScalarStep::Done => continue,
                 scalars::ScalarStep::Budget => return Ok(RunOutcome::BudgetYield(m.usage)),
                 scalars::ScalarStep::General => {}
@@ -1050,12 +1057,12 @@ impl Vm {
             };
             match f {
                 Frame::Script(s) => {
-                    if !self.script_step(s, m)? {
+                    if !step_cost!(self, Script, self.script_step(s, m))? {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                 }
                 Frame::Native(n) => {
-                    if let Some(out) = self.native_step(n, m)? {
+                    if let Some(out) = step_cost!(self, Native, self.native_step(n, m))? {
                         return Ok(out);
                     }
                 }

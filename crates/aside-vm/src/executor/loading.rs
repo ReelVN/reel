@@ -297,6 +297,8 @@ impl Vm {
             compact_derived_outputs: 0,
 
             last_usage: SliceUsage::default(),
+            #[cfg(feature = "profiling")]
+            step_costs: Default::default(),
             #[cfg(test)]
             work_probe: WorkProbe::default(),
         })

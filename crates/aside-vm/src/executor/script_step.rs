@@ -309,25 +309,28 @@ impl Vm {
                 if !m.admits(0, 1, 0) {
                     return Ok(false);
                 }
-                let (instruction, next_pc) = if let Some(instruction) =
-                    s.instruction.filter(|_| s.instruction_pc == s.pc)
-                {
-                    (instruction, s.instruction_end.index())
-                } else {
-                    let Some(decoded) = self.program.package().functions[s.code.function.index()]
-                        .code
-                        .fetch_budgeted(
-                            s.pc.index(),
-                            &mut self.code_window,
-                            &mut |work, allocation| m.take(0, work, allocation),
+                let (instruction, next_pc) =
+                    if let Some(instruction) = s.instruction.filter(|_| s.instruction_pc == s.pc) {
+                        (instruction, s.instruction_end.index())
+                    } else {
+                        let Some(decoded) = step_cost!(
+                            self,
+                            Fetch,
+                            self.program.package().functions[s.code.function.index()]
+                                .code
+                                .fetch_budgeted(
+                                    s.pc.index(),
+                                    &mut self.code_window,
+                                    &mut |work, allocation| m.take(0, work, allocation),
+                                )
                         )?
-                    else {
-                        return Ok(false);
+                        else {
+                            return Ok(false);
+                        };
+                        s.instruction = Some(decoded.0);
+                        s.instruction_pc = s.pc;
+                        decoded
                     };
-                    s.instruction = Some(decoded.0);
-                    s.instruction_pc = s.pc;
-                    decoded
-                };
                 s.instruction_end = Pc(next_pc as u32);
                 s.member_symbol = matches!(instruction.opcode, value if value == Opcode::MemberGet as u16 || value == Opcode::MemberSet as u16).then_some(SymbolId(instruction.operands[2]));
                 let mut op = instruction_spec(instruction.opcode)
@@ -386,32 +389,33 @@ impl Vm {
                         c = name.0;
                     }
                 }
-                let (work, allocation) = match self.instruction_cost(&s, op, a, b, c) {
-                    Ok((work, allocation)) => (work + index_work, allocation),
-                    Err(error) => {
-                        if !m.take(1, 1 + index_work, 0) {
-                            self.active.frames.data[top] = Frame::Script(s);
-                            return Ok(false);
-                        }
-                        self.put(s.env, 1, Value::NULL)?;
-                        self.clear(s.env, 2)?;
-                        s.phase = ScriptPhase::Exit {
-                            origin: s.pc,
-                            reason: ExitReason::Throw(FaultSeed {
-                                fault: None,
-                                explicit: None,
-                                author_value: false,
-                                awaited: None,
+                let (work, allocation) =
+                    match step_cost!(self, Cost, self.instruction_cost(&s, op, a, b, c)) {
+                        Ok((work, allocation)) => (work + index_work, allocation),
+                        Err(error) => {
+                            if !m.take(1, 1 + index_work, 0) {
+                                self.active.frames.data[top] = Frame::Script(s);
+                                return Ok(false);
+                            }
+                            self.put(s.env, 1, Value::NULL)?;
+                            self.clear(s.env, 2)?;
+                            s.phase = ScriptPhase::Exit {
+                                origin: s.pc,
+                                reason: ExitReason::Throw(FaultSeed {
+                                    fault: None,
+                                    explicit: None,
+                                    author_value: false,
+                                    awaited: None,
 
-                                kind: vm_fault(error),
-                                location: self.loc(s, s.pc),
-                            }),
-                            skip: None,
-                        };
-                        self.active.frames.data[top] = Frame::Script(s);
-                        return Ok(true);
-                    }
-                };
+                                    kind: vm_fault(error),
+                                    location: self.loc(s, s.pc),
+                                }),
+                                skip: None,
+                            };
+                            self.active.frames.data[top] = Frame::Script(s);
+                            return Ok(true);
+                        }
+                    };
                 let mut cost = (work, allocation);
                 let refresh = if op == Opcode::MemberGet {
                     let object = self.slots.read(at(s.regs, b))?;
@@ -469,7 +473,11 @@ impl Vm {
                     return Ok(true);
                 }
                 s.instruction = None;
-                let step = self.execute(&mut s, op, a, b, c, Pc(next_pc as u32));
+                let step = step_cost!(
+                    self,
+                    Execute,
+                    self.execute(&mut s, op, a, b, c, Pc(next_pc as u32))
+                );
                 match step {
                     Ok(true) => {
                         self.active.frames.data[top] = Frame::Script(s);

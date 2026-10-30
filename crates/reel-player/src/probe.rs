@@ -53,6 +53,8 @@ static VM_SESSION: AtomicU32 = AtomicU32::new(0);
 static VM_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 static VM_AT_MS: AtomicU64 = AtomicU64::new(0);
 static VM_SAMPLE: [AtomicU64; VM_NAMES.len()] = [const { AtomicU64::new(ABSENT) }; VM_NAMES.len()];
+const VM_COST_FIELDS: usize = aside_vm::executor::STEP_NAMES.len() * 3;
+static VM_COSTS: [AtomicU64; VM_COST_FIELDS] = [const { AtomicU64::new(0) }; VM_COST_FIELDS];
 
 /// The live thread requests one snapshot per second. The event loop otherwise
 /// reads only the memory ledger and this flag, without walking VM task frames.
@@ -61,9 +63,20 @@ fn publish_vm(story: Option<&StoryRuntime>) {
         return;
     }
     let sample = vm_sample(story);
+    let costs = story
+        .map(|story| story.driver().adapter().vm().step_costs())
+        .unwrap_or_default();
     VM_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     for (slot, value) in VM_SAMPLE.iter().zip(sample) {
         slot.store(value, Ordering::Relaxed);
+    }
+    for (row, cost) in VM_COSTS.as_chunks::<3>().0.iter().zip(costs) {
+        for (slot, value) in row
+            .iter()
+            .zip([cost.calls, cost.samples, cost.sample_wall_ns])
+        {
+            slot.store(value, Ordering::Relaxed);
+        }
     }
     VM_AT_MS.store(
         VM_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64,
@@ -131,6 +144,7 @@ fn append_vm(line: &mut String) {
     let sample: [u64; VM_NAMES.len()] =
         std::array::from_fn(|i| VM_SAMPLE[i].load(Ordering::Relaxed));
     let at_ms = VM_AT_MS.load(Ordering::Relaxed);
+    let costs: [u64; VM_COST_FIELDS] = std::array::from_fn(|i| VM_COSTS[i].load(Ordering::Relaxed));
     std::sync::atomic::fence(Ordering::Acquire);
     if sequence != VM_SEQUENCE.load(Ordering::Acquire) {
         return;
@@ -146,6 +160,17 @@ fn append_vm(line: &mut String) {
         if value != ABSENT {
             let _ = write!(line, "{name}:{value},");
         }
+    }
+    let _ = write!(
+        line,
+        " vm_costs_stride={} vm_costs=",
+        aside_vm::executor::STEP_SAMPLE_STRIDE
+    );
+    for (name, [calls, samples, nanos]) in aside_vm::executor::STEP_NAMES
+        .iter()
+        .zip(costs.as_chunks::<3>().0)
+    {
+        let _ = write!(line, "{name}:{calls}/{samples}/{nanos},");
     }
 }
 
