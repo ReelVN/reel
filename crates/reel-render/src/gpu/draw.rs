@@ -706,6 +706,14 @@ impl Context<'_> {
                 .then(|| mesh.direct_paint(source, repeat, appearance.as_ref(), texture_format))
                 .flatten()
         };
+        let dimensions = image.texture().size();
+        let direct = crate::common::sampling_domain::direct_paint(
+            &mesh,
+            direct,
+            [dimensions.width, dimensions.height],
+            self.size,
+            image.texture().mip_level_count(),
+        );
         let state = PaintState {
             bounded: mesh.bounded_color.paint(direct, texture_format),
             direct,

@@ -1050,6 +1050,13 @@ impl Context<'_> {
                 .flatten()
                 .filter(|direct| paint.kind == 0. || *direct == mesh::DirectPaint::Rgba)
         };
+        let direct = crate::common::sampling_domain::direct_paint(
+            &mesh,
+            direct,
+            paint.dimensions,
+            self.size,
+            paint.texture.mip_count(),
+        );
         let bounded = mesh.bounded_color.paint(direct, paint.format);
         let state = paint.state(
             direct,
