@@ -219,63 +219,75 @@ impl Vm {
                         c = name.0;
                     }
                 }
-                let (work, allocation) =
-                    match step_cost!(self, Cost, self.instruction_cost(&s, op, a, b, c)) {
-                        Ok((work, allocation)) => (work + index_work, allocation),
-                        Err(error) => {
-                            if !m.take(1, 1 + index_work, 0) {
-                                self.active.frames.data[top] = Frame::Script(s);
-                                return Ok(false);
-                            }
-                            instruction_admitted!(self, admitted_opcode);
-                            self.put(s.env, 1, Value::NULL)?;
-                            self.clear(s.env, 2)?;
-                            s.phase = ScriptPhase::Exit {
-                                origin: s.pc,
-                                reason: ExitReason::Throw(FaultSeed {
-                                    fault: None,
-                                    explicit: None,
-                                    author_value: false,
-                                    awaited: None,
-
-                                    kind: vm_fault(error),
-                                    location: self.loc(s, s.pc),
-                                }),
-                                skip: None,
-                            };
-                            self.active.frames.data[top] = Frame::Script(s);
-                            return Ok(true);
-                        }
-                    };
-                let mut cost = (work, allocation);
                 let mut class_read = None;
+                let (work, allocation) = match step_cost!(
+                    self,
+                    Cost,
+                    self.instruction_cost(&s, op, a, b, c, &mut class_read)
+                ) {
+                    Ok((work, allocation)) => (work + index_work, allocation),
+                    Err(error) => {
+                        if !m.take(1, 1 + index_work, 0) {
+                            self.active.frames.data[top] = Frame::Script(s);
+                            return Ok(false);
+                        }
+                        instruction_admitted!(self, admitted_opcode);
+                        self.put(s.env, 1, Value::NULL)?;
+                        self.clear(s.env, 2)?;
+                        s.phase = ScriptPhase::Exit {
+                            origin: s.pc,
+                            reason: ExitReason::Throw(FaultSeed {
+                                fault: None,
+                                explicit: None,
+                                author_value: false,
+                                awaited: None,
+
+                                kind: vm_fault(error),
+                                location: self.loc(s, s.pc),
+                            }),
+                            skip: None,
+                        };
+                        self.active.frames.data[top] = Frame::Script(s);
+                        return Ok(true);
+                    }
+                };
+                let mut cost = (work, allocation);
                 let refresh = if op == Opcode::MemberGet {
-                    let object = self.slots.read(at(s.regs, b))?;
-                    let property = if self.heap.is_property_ref(object)
-                        && self.program.package().symbols[c as usize] == "value"
-                    {
-                        let (property, _) = self.heap.property_ref(object)?;
-                        Some(property)
-                    } else if self.heap.reactive_evaluating()
-                        && matches!(
-                            self.heap.info(object)?.kind,
-                            ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
-                        )
-                    {
-                        cost.0 += self.class_member_cost(object)?;
-                        match self.class_read_plan(object, SymbolId(c)) {
-                            Ok((target, property)) => {
-                                class_read = Some(target);
-                                property
-                            }
-                            Err(kind) => {
-                                self.collection_fault(&mut s, kind)?;
-                                self.active.frames.data[top] = Frame::Script(s);
-                                return Ok(true);
-                            }
+                    let property = if let Some((target, property)) = &class_read {
+                        if self.heap.reactive_evaluating() {
+                            cost.0 += target.work();
+                            *property
+                        } else {
+                            None
                         }
                     } else {
-                        None
+                        let object = self.slots.read(at(s.regs, b))?;
+                        if self.heap.is_property_ref(object)
+                            && self.program.package().symbols[c as usize] == "value"
+                        {
+                            let (property, _) = self.heap.property_ref(object)?;
+                            Some(property)
+                        } else if self.heap.reactive_evaluating()
+                            && matches!(
+                                self.heap.info(object)?.kind,
+                                ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
+                            )
+                        {
+                            cost.0 += self.class_member_cost(object)?;
+                            match self.class_read_plan(object, SymbolId(c)) {
+                                Ok((target, property)) => {
+                                    class_read = Some((target, property));
+                                    property
+                                }
+                                Err(kind) => {
+                                    self.collection_fault(&mut s, kind)?;
+                                    self.active.frames.data[top] = Frame::Script(s);
+                                    return Ok(true);
+                                }
+                            }
+                        } else {
+                            None
+                        }
                     };
                     if let Some(property) = property {
                         match self.reactive_read_plan(property, &mut cost) {
@@ -315,7 +327,7 @@ impl Vm {
                 let step = step_cost!(
                     self,
                     Execute,
-                    if let Some(target) = class_read {
+                    if let Some((target, _)) = class_read {
                         self.execute_class_read(&mut s, target, Reg(a), Pc(next_pc as u32))
                     } else {
                         self.execute(&mut s, op, a, b, c, Pc(next_pc as u32))
@@ -640,6 +652,7 @@ impl Vm {
         _a: u32,
         b: u32,
         c: u32,
+        class_read: &mut Option<(classes::ClassRead, Option<crate::PropertyId>)>,
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
@@ -816,6 +829,18 @@ impl Vm {
                     kind,
                     ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
                 ) {
+                    let prepare = op == Opcode::MemberGet;
+                    #[cfg(test)]
+                    let prepare = prepare && !self.work_probe.general_class_reads;
+                    if prepare
+                        && let Ok((target, property)) = self.class_read_plan(object, SymbolId(c))
+                    {
+                        let work = target.work();
+                        *class_read = Some((target, property));
+                        // Three-slot bound methods currently use inline Values;
+                        // this preserves their existing payload admission.
+                        return Ok((work, Values::allocation_bytes(3)));
+                    }
                     let extra = if op == Opcode::MemberSet {
                         self.class_write_cost(object, SymbolId(c))?
                     } else {

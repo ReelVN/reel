@@ -10,7 +10,18 @@ pub(super) struct ClassRead {
     receiver: Value,
     member: Value,
     cell: Option<Value>,
+    work: u64,
 }
+
+impl ClassRead {
+    /// Preserve the existing lookup work bound without resolving the layout twice.
+    pub(super) fn work(&self) -> u64 {
+        self.work
+    }
+}
+
+#[cfg(test)]
+mod read_tests;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum ClassStep {
@@ -216,8 +227,16 @@ impl Vm {
     }
     fn member_find(&self, class: Value, key: i64) -> Result<(Value, u32), HeapError> {
         let members = self.class_slot(class, ClassSlot::Members)?;
+        self.member_find_in(members, self.heap.info(members)?.len, key)
+    }
+    fn member_find_in(
+        &self,
+        members: Value,
+        len: u32,
+        key: i64,
+    ) -> Result<(Value, u32), HeapError> {
         let mut lo = 0;
-        let mut hi = self.heap.info(members)?.len;
+        let mut hi = len;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let member = self.heap.get_field(members, mid)?;
@@ -233,7 +252,7 @@ impl Vm {
                 hi = mid;
             }
         }
-        let found = if lo < self.heap.info(members)?.len {
+        let found = if lo < len {
             let member = self.heap.get_field(members, lo)?;
             (self
                 .heap
@@ -247,6 +266,14 @@ impl Vm {
         Ok((found.unwrap_or(Value::NULL), lo))
     }
     fn member_target(&self, object: Value, name: SymbolId) -> Result<(Value, Value), FaultKind> {
+        let (receiver, member, _) = self.member_read_target(object, name)?;
+        Ok((receiver, member))
+    }
+    fn member_read_target(
+        &self,
+        object: Value,
+        name: SymbolId,
+    ) -> Result<(Value, Value, u64), FaultKind> {
         let (receiver, class, is_static) = match self.heap.info(object).map_err(heap_fault)?.kind {
             ObjectKind::Instance => (
                 object,
@@ -263,13 +290,21 @@ impl Vm {
             _ => return Err(FaultKind::Type),
         };
         self.class_alive(receiver)?;
+        let members = self
+            .class_slot(class, ClassSlot::Members)
+            .map_err(heap_fault)?;
+        let len = self.heap.info(members).map_err(heap_fault)?.len;
         let (member, _) = self
-            .member_find(class, i64::from(name.0) * 2 + i64::from(is_static))
+            .member_find_in(members, len, i64::from(name.0) * 2 + i64::from(is_static))
             .map_err(heap_fault)?;
         if member.same_bits(Value::NULL) {
             return Err(FaultKind::MissingKey);
         }
-        Ok((receiver, member))
+        Ok((
+            receiver,
+            member,
+            12 + u64::from(len.checked_ilog2().unwrap_or(0)) * 3,
+        ))
     }
     fn member_cell(&self, receiver: Value, member: Value) -> Result<Value, HeapError> {
         let index = self
@@ -290,7 +325,7 @@ impl Vm {
         object: Value,
         name: SymbolId,
     ) -> Result<(ClassRead, Option<crate::PropertyId>), FaultKind> {
-        let (receiver, member) = self.member_target(object, name)?;
+        let (receiver, member, work) = self.member_read_target(object, name)?;
         if self
             .heap
             .get_field(member, MemberSlot::Method as u32)
@@ -303,24 +338,24 @@ impl Vm {
                     receiver,
                     member,
                     cell: None,
+                    work,
                 },
                 None,
             ));
         }
         let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
-        let property = self
-            .heap
-            .is_model_cell(cell)
-            .map_err(heap_fault)?
-            .then_some(crate::PropertyId {
-                host: cell,
-                field: 0,
-            });
+        let property = (self.heap.reactive_evaluating()
+            && self.heap.is_model_cell(cell).map_err(heap_fault)?)
+        .then_some(crate::PropertyId {
+            host: cell,
+            field: 0,
+        });
         Ok((
             ClassRead {
                 receiver,
                 member,
                 cell: Some(cell),
+                work,
             },
             property,
         ))
