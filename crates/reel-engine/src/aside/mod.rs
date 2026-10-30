@@ -518,6 +518,7 @@ impl SessionVm {
     }
 
     pub(super) fn sync_stage_properties(&mut self, feedback: bool) -> Result<(), AdapterError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::StageProperties);
         let before = self.stage.scene.revision();
         self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
         let revision = self.stage.scene.revision();
@@ -674,6 +675,7 @@ impl SessionVm {
         budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionSchedule);
         self.ordinary_step_executed = false;
         if self.exit_requested || self.start_requested.is_some() {
             self.live(session)?;

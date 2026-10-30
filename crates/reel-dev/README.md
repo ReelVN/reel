@@ -11,6 +11,7 @@ Run these commands from the repository root with the workspace toolchain and loc
 | `root-negative` | Mutation checks for GC root accounting; requires Bash |
 | `compiler-probe frontend/semantic/lowering [MODE]` | Compiler work and allocation measurements; requires GNU time |
 | `measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]` | UI measurements from Cargo JSON; requires GNU time |
+| `frame-cost vita/emulator/host INPUT OUTPUT [LIMITS_JSON]` | Per-segment submission intervals and nested phase percentiles from a profiling log |
 
 Build compiler probes first, for example:
 
@@ -22,6 +23,14 @@ cargo run --locked -p reel-dev -- compiler-probe lowering
 The compiler probe command currently resolves Unix executable paths. For UI
 measurements, select ignored cases with `--ignored` or `--include-ignored`.
 Logs and measurements are written under `target/reel-artifacts/`.
+
+`frame-cost` reads the latest complete version-1 frame report; an incomplete newer
+report is an error. Limits are an optional JSON map such as
+`{"session_us":6000,"vm_slice_us":3000}` in microseconds. First partial intervals
+and loops containing multiple submissions are identified separately. The report
+records declared environment, retention losses and sample size; GPU service time
+and display cadence require their own measurements. Nested phase percentiles are
+reported separately.
 
 Behavior checks live in the owning crate's Rust tests. The CLI's
 [project scenarios](../reel-cli/tests/project_scenarios.rs) exercise source/ASB,

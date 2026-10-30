@@ -355,6 +355,7 @@ impl AsideSessionUi {
         seconds: f64,
         work: u32,
     ) -> Result<reel_engine::aside::ActivityProgress, Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionActivity);
         if self.state != StoryState::Running {
             return Ok(Default::default());
         }
@@ -364,6 +365,7 @@ impl AsideSessionUi {
         Ok(self.vm.begin_collection()?)
     }
     pub fn gc_step(&mut self, budget: GcBudget) -> Result<GcProgress, Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionGc);
         Ok(self.vm.gc_step(budget)?)
     }
     pub fn widget(&self) -> SessionWidget {
