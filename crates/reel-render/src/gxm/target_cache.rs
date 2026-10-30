@@ -19,9 +19,11 @@ impl Cache {
             self.size = Some(size);
         }
     }
-    pub fn get(&self, size: [u32; 2], index: usize) -> Option<Target> {
+    pub fn get(&self, size: [u32; 2], used: &[Target]) -> Option<Target> {
         self.owners
-            .get_eligible(size, index, |target| !target.is_effect_pinned())
+            .get_eligible(size, 0, |target| {
+                !target.is_effect_pinned() && !used.iter().any(|held| held.same_allocation(target))
+            })
             .cloned()
     }
     pub fn insert(&mut self, target: &Target, metadata: &BudgetPool, limit: u64) {
@@ -37,6 +39,11 @@ impl Cache {
             |target| !target.is_effect_pinned(),
             Target::cache_only,
         )
+    }
+    /// A future scratch size is a reuse preference, not a live GPU owner. Its
+    /// idle allocation may be rebuilt after a larger physical block is acquired.
+    pub fn reclaim_unclaimed(&mut self) -> bool {
+        self.reclaim(&Requirements::default(), true)
     }
     pub fn submitted(&mut self, used: &[Target]) {
         self.owners.submitted();

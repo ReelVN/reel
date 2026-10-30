@@ -409,7 +409,7 @@ fn independent_coverage_native_submission_keeps_three_targets() {
 }
 
 #[test]
-#[ignore = "actual adapter effect cache submission; no readback"]
+#[ignore = "actual adapter effect cache submission and pixel readback"]
 fn static_image_effect_chain_reuses_materialized_passes() {
     use reel_ui::{
         core::Widget,
@@ -502,8 +502,14 @@ fn static_image_effect_chain_reuses_materialized_passes() {
                 key: AssetKey("static-image".into()),
                 version: ContentVersion([3; 32]),
             },
-            OwnedBytes::new(vec![255; 4], pool.reserve(4).unwrap()).unwrap(),
-            [1, 1],
+            OwnedBytes::new(
+                (0u8..16)
+                    .flat_map(|i| [i * 16, 255 - i * 16, 80, 255])
+                    .collect(),
+                pool.reserve(64).unwrap(),
+            )
+            .unwrap(),
+            [4, 4],
             ImageFormat::Rgba8,
             ImageAlphaType::Alpha,
             ColorEncoding::Srgb,
@@ -546,7 +552,9 @@ fn static_image_effect_chain_reuses_materialized_passes() {
             .add(widget.prepare(), Point::ZERO, Size::new(160., 120.));
         widget = parent;
     }
-    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+    let widget = widget.prepare();
+    let moving = widget.id();
+    let mut bridge = r01_fixture::bridge(crate::test_support::fixture::root(widget).0);
     let mut build = FrameBuild::new(
         bridge.record(FrameId(1)).unwrap(),
         registry.freeze(&[shader, image], &pool).unwrap(),
@@ -648,6 +656,43 @@ fn static_image_effect_chain_reuses_materialized_passes() {
     assert!(entries >= 2, "two materialized passes must be retained");
     assert!(hits[0] >= 1, "the immutable image pass must hit");
     assert!(hits[1] >= 1, "the intermediate effect output must hit");
+
+    // Move the entire chain while retaining each image's paint recording. The
+    // local source grid stays fixed; cached and fresh rendering must agree.
+    bridge.edit_widget(moving, |mut widget| {
+        widget.ctx.set_transform(Affine::translate((-8., -4.)));
+    });
+    let mut translated = FrameBuild::new(
+        bridge.record(FrameId(3)).unwrap(),
+        registry.freeze(&[shader, image], &pool).unwrap(),
+        FrameInfo {
+            logical_size: [160., 120.],
+            physical_size: [160, 120],
+        },
+        r01_fixture::limits(),
+        &pool,
+    )
+    .unwrap();
+    while !translated
+        .step(r01_fixture::step_budget())
+        .unwrap()
+        .complete
+    {}
+    let translated = translated.finish().unwrap();
+    let prepared = renderer.prepare(&translated).unwrap();
+    let cached = renderer.readback(prepared).unwrap();
+    let (_, after_translation) = renderer.effect_results.test_stats();
+    assert!(
+        after_translation[0] > hits[0],
+        "translated image source must reuse its local pixels"
+    );
+    renderer.effect_results.clear();
+    let prepared = renderer.prepare(&translated).unwrap();
+    let fresh = renderer.readback(prepared).unwrap();
+    assert_eq!(
+        cached, fresh,
+        "translation keeps the exact fresh-rendered pixels"
+    );
 
     use std::{sync::atomic::Ordering, time::Instant};
     let mut measurements = Vec::new();

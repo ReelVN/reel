@@ -221,7 +221,11 @@ impl Context<'_> {
             if self.effect_admission.can_retain(bytes)
                 && let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient)
             {
-                if !candidate.retain {
+                // CDRAM kernel blocks are aligned to 256 KiB. Each new pin can
+                // require another scratch block; resident cache hits already own theirs.
+                let physical_bytes = bytes.next_multiple_of(256 * 1024);
+                if !candidate.retain || !self.effect_admission.can_retain_new(bytes, physical_bytes)
+                {
                     let mut pending = std::mem::take(&mut self.effect_pending);
                     let _ = crate::common::scopes::push_stack(
                         &mut pending,
@@ -250,7 +254,7 @@ impl Context<'_> {
                     );
                     self.effect_pending = pending;
                     if saved.is_ok() {
-                        self.effect_admission.retain(bytes);
+                        self.effect_admission.retain_new(bytes, physical_bytes);
                         return Ok(pinned);
                     }
                     self.effect_pins.pop();
