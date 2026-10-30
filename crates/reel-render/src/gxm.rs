@@ -44,14 +44,24 @@ mod renderer;
 /// Create a native device with Reel's offline clear programs. Hosts that issue
 /// native commands directly use the same initialization as the frame executor.
 /// Native physical admission accounts rounded blocks through physical release.
+/// Shared scheduling targets are provisioned for eight scenes per frame; driver
+/// storage is included in each target footprint before allocation.
 /// Screen draws use `native::FragmentOutput::Srgb` with linear input colors;
-/// offscreen targets retain their explicit encoding, defaulting to linear RGBA8.
+/// offscreen targets retain linear color encoding and use 32x32 tiled RGBA8
+/// storage when both dimensions are at least 32. Small and Coverage8 targets
+/// remain scanline-addressed; native layout queries account complete tiles.
 pub fn create_context(
     options: &GxmOptions,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<native::Context, native::Error> {
     let config = native::Config {
         display_encoding: native::SurfaceEncoding::Srgb,
+        // Several independent color surfaces share one scheduling target. GXM
+        // blocks the CPU when that target's scene records are exhausted (libgxm
+        // Overview, Render Targets); use the supported queue depth for effect
+        // chains rather than the native adapter's general-purpose default.
+        scenes_per_frame: 8,
+        target_storage: native::TargetStorage::Tiled,
         ..native::Config::default()
     };
     native::Context::with_config(

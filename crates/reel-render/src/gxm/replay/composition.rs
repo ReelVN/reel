@@ -10,6 +10,8 @@ impl Context<'_> {
     ) -> Result<bool, GpuError> {
         if target.view.format() != native::TextureFormat::Rgba8
             || source.view.format() != native::TextureFormat::Rgba8
+            || target.view.target_storage() != Some(native::TargetStorage::Linear)
+            || source.view.target_storage() != Some(native::TargetStorage::Linear)
             || target.same_allocation(source)
         {
             return Ok(false);
