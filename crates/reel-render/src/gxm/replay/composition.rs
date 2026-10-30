@@ -8,14 +8,6 @@ impl Context<'_> {
         read: Scissor,
         write: Scissor,
     ) -> Result<bool, GpuError> {
-        if target.view.format() != native::TextureFormat::Rgba8
-            || source.view.format() != native::TextureFormat::Rgba8
-            || target.view.target_storage() != Some(native::TargetStorage::Linear)
-            || source.view.target_storage() != Some(native::TargetStorage::Linear)
-            || target.same_allocation(source)
-        {
-            return Ok(false);
-        }
         let Some(region) = crate::common::backdrop_copy::Region::new(
             source.view.size(),
             target.view.size(),
@@ -27,6 +19,13 @@ impl Context<'_> {
         };
         if !self.target_writes.pending(target.slot)
             || !region.overwrites_destination(target.view.size())
+            || !self.gpu.supports_texture_copy(
+                &source.view,
+                region.source_origin,
+                &target.view,
+                region.destination_origin,
+                region.extent,
+            )
         {
             // Keep clear and partial draw in one scene instead of storing a
             // complete clear before transferring the same pixels again. Only
