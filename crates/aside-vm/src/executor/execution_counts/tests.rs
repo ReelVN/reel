@@ -13,6 +13,42 @@ fn vm() -> Vm {
 }
 
 #[test]
+fn budget_clock_counts_only_real_queries_and_respects_short_batches() {
+    let mut meter = Meter::new(SliceBudget {
+        instructions: 1000,
+        work: 10000,
+        allocation_bytes: 1000,
+        deadline_ns: Some(u64::MAX),
+    });
+    let mut calls = 0;
+    let mut clock = || {
+        calls += 1;
+        0
+    };
+    assert!(!meter.deadline_reached(&mut clock));
+    for _ in 0..31 {
+        assert!(!meter.deadline_reached(&mut clock));
+    }
+    assert_eq!(meter.actual_budget_clock_queries, 1);
+    assert!(!meter.deadline_reached(&mut clock));
+    assert_eq!(meter.actual_budget_clock_queries, 2);
+    assert!(meter.take(0, 32, 0));
+    assert!(!meter.deadline_reached(&mut clock));
+    assert_eq!(meter.actual_budget_clock_queries, 3);
+    assert!(meter.take(0, 1, 1));
+    assert!(!meter.deadline_reached(&mut clock));
+    assert_eq!(meter.actual_budget_clock_queries, 4);
+    assert_eq!(calls, 4);
+    let mut meter = Meter::new(SliceBudget::default());
+    for _ in 0..100 {
+        assert!(
+            !meter.deadline_reached(&mut || panic!("deadline-free execution does not query time"))
+        );
+    }
+    assert_eq!(meter.actual_budget_clock_queries, 0);
+}
+
+#[test]
 fn counts_reconcile_script_native_and_sliced_work() {
     let mut vm = vm();
     let initial = vm.execution_counts();
@@ -80,10 +116,26 @@ fn counts_reconcile_script_native_and_sliced_work() {
 #[test]
 fn restore_starts_fresh_diagnostics_and_rejects_cross_identity_deltas() {
     let mut vm = vm();
-    vm.start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+    let task = vm
+        .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
         .unwrap();
+    assert!(matches!(
+        vm.run_slice(
+            task,
+            SliceBudget {
+                deadline_ns: Some(0),
+                ..Default::default()
+            },
+            || 0
+        )
+        .unwrap(),
+        RunOutcome::BudgetYield(_)
+    ));
     let before = vm.execution_counts();
     assert_eq!(before.script_entries, 1);
+    assert_eq!(before.actual_budget_clock_queries, 1);
+    #[cfg(feature = "profiling")]
+    let driver_before = vm.driver_costs();
     let registry = SnapshotRegistry::default();
     let mut capture = vm.snapshot_begin(&registry).unwrap();
     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
@@ -105,7 +157,20 @@ fn restore_starts_fresh_diagnostics_and_rejects_cross_identity_deltas() {
     let mut expected = ExecutionCounts::default();
     expected.heap_id = after.heap_id;
     expected.epoch = 43;
+    // Native/slice totals are existing persisted VM statistics, whereas the
+    // diagnostic-only state is rebuilt rather than added to the save format.
+    expected.slices = before.slices;
+    expected.native_entries = before.native_entries;
+    expected.native_resumes = before.native_resumes;
     assert_eq!(after, expected);
+    #[cfg(feature = "profiling")]
+    {
+        assert_eq!(driver_before.samples, 1);
+        let driver_after = restored.driver_costs();
+        assert_eq!(driver_after.calls, 0);
+        assert_eq!(driver_after.samples, 0);
+        assert!(driver_after.checked_delta(&driver_before).is_none());
+    }
     let mut lower = before;
     lower.script_entries = 0;
     assert!(lower.checked_delta(&before).is_none());

@@ -2,7 +2,11 @@
 //! load; snapshots restart these diagnostic counters and instruction locations.
 
 #[cfg(feature = "profiling")]
+mod driver;
+#[cfg(feature = "profiling")]
 mod hotspots;
+#[cfg(feature = "profiling")]
+pub use driver::{DRIVER_SAMPLE_STRIDE, DriverCost};
 #[cfg(feature = "profiling")]
 pub use hotspots::{STEP_HOTSPOT_CAPACITY, STEP_MODES, StepHotspot, StepPoint};
 
@@ -10,10 +14,12 @@ pub use hotspots::{STEP_HOTSPOT_CAPACITY, STEP_MODES, StepHotspot, StepPoint};
 macro_rules! step_cost {
     ($vm:expr, $phase:ident, $body:expr) => {{
         let phase = $crate::executor::step_costs::Phase::$phase;
+        let driver = $vm.step_costs.start_driver(phase);
         let start = $vm.step_costs.start(phase);
         let point = start.and_then(|_| $vm.step_profile_point());
         let result = $body;
         $vm.step_costs.finish(phase, start, point);
+        $vm.step_costs.finish_driver(driver);
         result
     }};
 }
@@ -59,14 +65,59 @@ mod enabled {
         Execute,
     }
 
-    pub(crate) struct State([Cell<StepCost>; STEP_NAMES.len()], Hotspots);
+    pub(crate) struct State(
+        [Cell<StepCost>; STEP_NAMES.len()],
+        Hotspots,
+        super::driver::State,
+    );
 
     impl State {
         pub(crate) fn new(usage: &crate::HeapBudgetUsage) -> Result<Self, crate::HeapError> {
             Ok(Self(
                 std::array::from_fn(|_| Cell::default()),
                 Hotspots::new(usage)?,
+                super::driver::State::default(),
             ))
+        }
+        pub(crate) fn begin_slice(&self) -> Option<super::driver::Slice> {
+            self.2.begin()
+        }
+        #[cfg(test)]
+        pub(crate) fn set_driver_sampling(&self, sampling: Option<bool>) {
+            self.2.set_sampling(sampling);
+        }
+        pub(crate) fn begin_run(&self, slice: &mut Option<super::driver::Slice>) {
+            self.2.begin_run(slice);
+        }
+        pub(crate) fn end_run(&self, slice: &mut Option<super::driver::Slice>) {
+            self.2.end_run(slice);
+        }
+        pub(crate) fn finish_slice(
+            &self,
+            slice: Option<super::driver::Slice>,
+            usage: super::super::SliceUsage,
+            queries: u64,
+            clock_ns: u64,
+        ) {
+            self.2.finish(slice, usage, queries, clock_ns);
+        }
+        pub(crate) fn fail_entry(&self, slice: Option<super::driver::Slice>) {
+            self.2.fail_entry(slice);
+        }
+        pub(crate) fn begin_fallback(&self) {
+            self.2.begin_fallback();
+        }
+        pub(crate) fn start_driver(&self, phase: Phase) -> Option<super::driver::Span> {
+            let index = match phase {
+                Phase::Scalar => 0,
+                Phase::Script => 1,
+                Phase::Native => 2,
+                _ => return None,
+            };
+            self.2.start_span(index)
+        }
+        pub(crate) fn finish_driver(&self, span: Option<super::driver::Span>) {
+            self.2.finish_span(span);
         }
         pub(crate) fn start(&self, phase: Phase) -> Option<Instant> {
             let cell = &self.0[phase as usize];
@@ -97,6 +148,17 @@ mod enabled {
     }
 
     impl super::super::Vm {
+        /// Read whole-slice wall observations without allocation or task traversal.
+        /// One in every DRIVER_SAMPLE_STRIDE calls is observed in full. Entry/run/
+        /// exit and run's outer spans are disjoint within each observation; these
+        /// values include instrumentation and scheduling delays, not CPU time.
+        /// The old step sampler stays independent. Successful load/restore resets
+        /// this state; compare snapshots only within the same heap and epoch.
+        pub fn driver_costs(&self) -> super::DriverCost {
+            self.step_costs
+                .2
+                .snapshot(self.heap.id().get(), self.heap.epoch().0)
+        }
         /// Read fixed per-VM stage counters without walking tasks or allocating.
         /// Profiling builds sample one entry per `STEP_SAMPLE_STRIDE`; durations
         /// include clock overhead and nested stages overlap. Restore starts cold.

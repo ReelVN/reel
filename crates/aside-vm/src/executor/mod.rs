@@ -18,8 +18,8 @@ pub(crate) mod execution_counts;
 pub use execution_counts::{ExecutionCounts, NATIVE_STEP_NAMES, SCRIPT_STEP_NAMES, SlotCounts};
 #[cfg(feature = "profiling")]
 pub use step_costs::{
-    STEP_HOTSPOT_CAPACITY, STEP_MODES, STEP_NAMES, STEP_SAMPLE_STRIDE, StepCost, StepHotspot,
-    StepPoint,
+    DRIVER_SAMPLE_STRIDE, DriverCost, STEP_HOTSPOT_CAPACITY, STEP_MODES, STEP_NAMES,
+    STEP_SAMPLE_STRIDE, StepCost, StepHotspot, StepPoint,
 };
 
 mod api;
@@ -906,18 +906,39 @@ impl Vm {
         budget: SliceBudget,
         mut now: impl FnMut() -> u64,
     ) -> Result<RunOutcome, VmError> {
-        self.select_task(task)?;
+        #[cfg(feature = "profiling")]
+        let mut observation = self.step_costs.begin_slice();
+        if let Err(error) = self.select_task(task) {
+            #[cfg(feature = "profiling")]
+            self.step_costs.fail_entry(observation);
+            return Err(error);
+        }
         self.slices += 1;
-        let mut meter = Meter {
-            budget,
-            usage: SliceUsage::default(),
-            clock_steps: 0,
-        };
+        let mut meter = Meter::new(budget);
+        #[cfg(feature = "profiling")]
+        {
+            meter.observe_clock = observation.is_some();
+            self.step_costs.begin_run(&mut observation);
+        }
         let result = self.run(&mut meter, &mut now);
+        #[cfg(feature = "profiling")]
+        self.step_costs.end_run(&mut observation);
         self.code_window = crate::bytecode::CodeWindow::default();
         self.cumulative_instructions += u64::from(meter.usage.instructions);
         self.cumulative_work += meter.usage.work;
         self.last_usage = meter.usage;
+        execution_count!(
+            self,
+            ActualBudgetClockQueries,
+            meter.actual_budget_clock_queries
+        );
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_slice(
+            observation,
+            meter.usage,
+            meter.actual_budget_clock_queries,
+            meter.budget_clock_ns,
+        );
         result
     }
     fn run(&mut self, m: &mut Meter, now: &mut impl FnMut() -> u64) -> Result<RunOutcome, VmError> {
@@ -1077,16 +1098,22 @@ impl Vm {
                 }
                 scalars::ScalarStep::General => {}
             }
+            #[cfg(feature = "profiling")]
+            self.step_costs.begin_fallback();
             match self.active.frames.data.last() {
                 Some(Frame::Script(s)) => {
-                    let s = *s;
-                    if !step_cost!(self, Script, self.script_step(s, m))? {
+                    if !step_cost!(self, Script, {
+                        let s = *s;
+                        self.script_step(s, m)
+                    })? {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                 }
                 Some(Frame::Native(n)) => {
-                    let n = *n;
-                    if let Some(out) = step_cost!(self, Native, self.native_step(n, m))? {
+                    if let Some(out) = step_cost!(self, Native, {
+                        let n = *n;
+                        self.native_step(n, m)
+                    })? {
                         return Ok(out);
                     }
                 }
@@ -1240,8 +1267,27 @@ struct Meter {
     budget: SliceBudget,
     usage: SliceUsage,
     clock_steps: u8,
+    #[cfg(any(feature = "profiling", feature = "execution-counts"))]
+    actual_budget_clock_queries: u64,
+    #[cfg(feature = "profiling")]
+    observe_clock: bool,
+    #[cfg(feature = "profiling")]
+    budget_clock_ns: u64,
 }
 impl Meter {
+    fn new(budget: SliceBudget) -> Self {
+        Self {
+            budget,
+            usage: SliceUsage::default(),
+            clock_steps: 0,
+            #[cfg(any(feature = "profiling", feature = "execution-counts"))]
+            actual_budget_clock_queries: 0,
+            #[cfg(feature = "profiling")]
+            observe_clock: false,
+            #[cfg(feature = "profiling")]
+            budget_clock_ns: 0,
+        }
+    }
     /// Consume an additional short internal step without crossing a clock
     /// boundary. Only nonallocating preparation uses this bounded fusion.
     fn next_short_step(&mut self) -> bool {
@@ -1263,7 +1309,18 @@ impl Meter {
             return false;
         }
         self.clock_steps = 31;
-        now() >= deadline
+        #[cfg(any(feature = "profiling", feature = "execution-counts"))]
+        {
+            self.actual_budget_clock_queries += 1;
+        }
+        #[cfg(feature = "profiling")]
+        let start = self.observe_clock.then(std::time::Instant::now);
+        let value = now();
+        #[cfg(feature = "profiling")]
+        if let Some(start) = start {
+            self.budget_clock_ns += start.elapsed().as_nanos() as u64;
+        }
+        value >= deadline
     }
     fn admits(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
         self.usage.required_work = work;

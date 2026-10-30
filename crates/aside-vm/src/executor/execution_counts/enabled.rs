@@ -42,8 +42,9 @@ macro_rules! fields {
             $( $counter, )*
         }
         const FIELDS: usize = [$(stringify!($counter)),*].len();
-        /// Integer-only VM diagnostics, reset at successful load/restore. These
-        /// values describe work, not time, and have no persistent encoding.
+        /// Integer-only VM diagnostics. New diagnostic counters reset on load/
+        /// restore; inherited VM totals retain their existing snapshot behavior.
+        /// Use identity-checked differences. These values have no durable encoding.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub struct ExecutionCounts {
             /// Process-local heap identity. A restored VM has a fresh identity.
@@ -227,6 +228,7 @@ macro_rules! fields {
     }
 }
 fields! {
+    ActualBudgetClockQueries=>actual_budget_clock_queries:"Actual calls to the supplied budget clock, excluding step/driver profiling clocks.";
     ScriptEntries=>script_entries:"Successfully pushed script frames, including observer and default bodies.";
     NativeFrames=>native_frames:"Successfully pushed native frames; compact commit transfers are separate.";
     GeneratorResumes=>generator_resumes:"Suspended generator frames restored onto the execution stack.";
