@@ -129,12 +129,17 @@ impl Vm {
         let receiver = self.heap.get_field(value, 1)?;
         Ok((!receiver.same_bits(Value::NULL)).then_some(receiver))
     }
-    pub(super) fn receiver_prefix(&self, s: ScriptFrame) -> Result<u32, VmError> {
-        if !s.closure || s.shared_parameters {
+    pub(super) fn receiver_prefix(
+        &self,
+        env: RootRangeToken,
+        closure: bool,
+        shared_parameters: bool,
+    ) -> Result<u32, VmError> {
+        if !closure || shared_parameters {
             return Ok(0);
         }
         Ok(u32::from(
-            self.script_receiver(self.value(s.env, 0)?)?.is_some(),
+            self.script_receiver(self.value(env, 0)?)?.is_some(),
         ))
     }
     pub(super) fn enter_initializer(

@@ -602,6 +602,7 @@ pub struct Vm {
 #[cfg(test)]
 #[derive(Default)]
 struct WorkProbe {
+    general_script_preparation: bool,
     general_clears: bool,
     single_install_step: bool,
     release_catch_checks: std::cell::Cell<u64>,
@@ -617,6 +618,7 @@ mod loading;
 mod native_calls;
 mod scalars;
 mod script_frames;
+mod script_preparation;
 mod script_step;
 mod task_control;
 
@@ -1063,6 +1065,16 @@ impl Vm {
             match step_cost!(self, Scalar, self.scalar_step(m))? {
                 scalars::ScalarStep::Done => continue,
                 scalars::ScalarStep::Budget => return Ok(RunOutcome::BudgetYield(m.usage)),
+                scalars::ScalarStep::Preparation => {
+                    #[cfg(feature = "execution-counts")]
+                    if let Some(Frame::Script(s)) = self.active.frames.data.last() {
+                        self.execution_counts.step(&s.phase);
+                    }
+                    if !step_cost!(self, Script, self.preparation_step(m))? {
+                        return Ok(RunOutcome::BudgetYield(m.usage));
+                    }
+                    continue;
+                }
                 scalars::ScalarStep::General => {}
             }
             match self.active.frames.data.last() {

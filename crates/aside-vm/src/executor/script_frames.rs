@@ -257,7 +257,11 @@ impl Vm {
                 s.phase = if rest {
                     ScriptPhase::Rest
                 } else {
-                    ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(*s)?))
+                    ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(
+                        s.env,
+                        s.closure,
+                        s.shared_parameters,
+                    )?))
                 }
             }
             Frame::Native(n) => {
