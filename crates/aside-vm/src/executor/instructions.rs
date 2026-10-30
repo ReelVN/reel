@@ -438,16 +438,14 @@ impl Vm {
                 self.write(s.regs, r(a), v)?;
             }
             Opcode::Clear | Opcode::Clear2 | Opcode::Clear3 => {
-                let count = match op {
-                    Opcode::Clear => 1,
-                    Opcode::Clear2 => 2,
-                    _ => 3,
-                };
-                for register in [a, b, c].into_iter().take(count) {
-                    self.slots
-                        .clear(&mut self.heap, at(s.regs, register))
-                        .map_err(heap_fault)?;
+                match op {
+                    Opcode::Clear => self.slots.clear(&mut self.heap, at(s.regs, a)),
+                    Opcode::Clear2 => self.slots.clear_registers(&mut self.heap, s.regs, [a, b]),
+                    _ => self
+                        .slots
+                        .clear_registers(&mut self.heap, s.regs, [a, b, c]),
                 }
+                .map_err(heap_fault)?;
             }
             Opcode::CellNew => {
                 let binding = f.bindings[a as usize].clone();
