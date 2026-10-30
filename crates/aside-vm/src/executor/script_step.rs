@@ -475,7 +475,7 @@ impl Vm {
                 if !m.take(0, 1, 0) {
                     return Ok(false);
                 }
-                self.equality_step(&mut s, dest, negated)?;
+                self.equality_step(&mut s, dest, negated, m)?;
             }
             ScriptPhase::EqualityCleanup {
                 dest,

@@ -87,3 +87,23 @@ fn reactive(n: int) -> int {
     }
     result
 }
+
+fn text_compare(n: int) -> int {
+    let left = "The clock advances while the whole scene keeps moving, including its text and menus.";
+    let right = "The clock advances while the whole scene keeps moving, including its text and " + "menus.";
+    let different = "The clock advances while the whole scene keeps moving, including its text and menus!";
+    let mut result = 0;
+    for i in 0..n {
+        if left == right { result += 1; }
+        if left != different { result += 2; }
+    }
+    result
+}
+
+fn string_keys(n: int) -> int {
+    let state = {motion_duration: 7, motion_repeat: 3, motion_easing: 5};
+    let key = "motion_" + "duration";
+    let mut result = 0;
+    for i in 0..n { result += state[key]; }
+    result
+}

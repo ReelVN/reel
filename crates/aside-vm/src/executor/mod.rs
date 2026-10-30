@@ -605,6 +605,7 @@ struct WorkProbe {
     general_script_preparation: bool,
     general_clears: bool,
     single_install_step: bool,
+    single_equality_step: bool,
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
     exit_handler_queries: std::cell::Cell<u64>,

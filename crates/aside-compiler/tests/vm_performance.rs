@@ -18,7 +18,7 @@ mod runner;
 use runner::{Fixture, Mode};
 use std::{fmt::Write as _, time::Instant};
 
-const CASES: [&str; 9] = [
+const CASES: [&str; 11] = [
     "arithmetic",
     "calls",
     "fields",
@@ -28,6 +28,8 @@ const CASES: [&str; 9] = [
     "locals",
     "allocation",
     "reactive",
+    "text_compare",
+    "string_keys",
 ];
 
 fn oracle(name: &str, n: i64) -> i64 {
@@ -39,6 +41,8 @@ fn oracle(name: &str, n: i64) -> i64 {
         "locals" => (0..n).map(|i| i * 16 + 136).sum(),
         "allocation" => (0..n).map(|i| i + 3).sum(),
         "reactive" => (0..n).map(|i| i * 3 + 7).sum(),
+        "text_compare" => n * 3,
+        "string_keys" => n * 7,
         _ => unreachable!(),
     }
 }

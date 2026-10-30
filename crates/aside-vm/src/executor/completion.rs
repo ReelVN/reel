@@ -7,6 +7,7 @@ impl Vm {
         s: &mut ScriptFrame,
         dest: Reg,
         negated: bool,
+        meter: &mut Meter,
     ) -> Result<(), VmError> {
         if self.table_changed(*s)? {
             s.phase = ScriptPhase::EqualityCleanup {
@@ -16,7 +17,10 @@ impl Vm {
             };
             return Ok(());
         }
-        if let Some(result) = self.equality_compare_step()? {
+        let meter = Some(meter);
+        #[cfg(test)]
+        let meter = meter.filter(|_| !self.work_probe.single_equality_step);
+        if let Some(result) = self.equality_compare(meter)? {
             s.phase = ScriptPhase::EqualityCleanup {
                 dest,
                 negated,
@@ -28,6 +32,13 @@ impl Vm {
 
     pub(super) fn equality_compare_step(
         &mut self,
+    ) -> Result<Option<Result<bool, FaultKind>>, VmError> {
+        self.equality_compare(None)
+    }
+
+    fn equality_compare(
+        &mut self,
+        meter: Option<&mut Meter>,
     ) -> Result<Option<Result<bool, FaultKind>>, VmError> {
         let depth = self.active.equality_cursors.data.len() as u32 - 1;
         let offset = self.active.equality_cursors.data[depth as usize];
@@ -45,6 +56,8 @@ impl Vm {
                             Some(false)
                         } else if offset == l.len {
                             Some(true)
+                        } else if let Some(meter) = meter {
+                            self.equality_byte_batch(depth, left, right, offset, meter)?
                         } else {
                             let mut a = [0];
                             let mut b = [0];
@@ -98,6 +111,36 @@ impl Vm {
             }
         }
         Ok(None)
+    }
+
+    fn equality_byte_batch(
+        &mut self,
+        depth: u32,
+        left: Value,
+        right: Value,
+        offset: u32,
+        meter: &mut Meter,
+    ) -> Result<Option<bool>, VmError> {
+        // The caller admitted the first logical byte. Fuse only the following
+        // short steps that fit both work and the existing clock batch. Borrowed
+        // immutable segments stay within this allocation/callback-free step.
+        let mut extra = 31.min(meter.budget.work - meter.usage.work);
+        if meter.budget.deadline_ns.is_some() {
+            extra = extra.min(u64::from(meter.clock_steps));
+        }
+        let a = self.heap.byte_segment(left, offset)?;
+        let b = self.heap.byte_segment(right, offset)?;
+        let count = (extra as usize + 1).min(a.len()).min(b.len());
+        let different = a[..count].iter().zip(&b[..count]).position(|(a, b)| a != b);
+        let compared = different.map_or(count, |index| index + 1);
+        for _ in 1..compared {
+            assert!(meter.next_short_step());
+            assert!(meter.take(0, 1, 0));
+        }
+        self.active.equality_cursors.data[depth as usize] += compared as u32;
+        // Even a complete equal chunk retains the original separate end step,
+        // preserving its work charge, cursor and root-release boundaries.
+        Ok(different.map(|_| false))
     }
     pub(super) fn select_exit_handler(
         &self,

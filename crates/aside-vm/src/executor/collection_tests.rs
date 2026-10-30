@@ -1,6 +1,7 @@
 //! Execution regressions for bounded collections, spread/rest and their GC roots.
 use super::*;
 mod clears;
+mod equality;
 mod operand_cost;
 mod search_tests;
 
