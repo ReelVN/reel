@@ -596,6 +596,7 @@ pub struct Vm {
 #[cfg(test)]
 #[derive(Default)]
 struct WorkProbe {
+    general_clears: bool,
     single_install_step: bool,
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
