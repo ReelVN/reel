@@ -1,12 +1,16 @@
 //! Continuous root windows. All publishing writes are sealed behind Heap's barrier.
 #[cfg(feature = "execution-counts")]
-use crate::executor::execution_counts::{SlotCounter, SlotCounts, SlotState};
+pub(crate) mod counts;
 use crate::root_ranges::{ChargedVec, Reservation};
 use crate::slots::{RangeKey, index};
 use crate::{
     Heap, HeapBudgetUsage, HeapError, HeapId, RootKind, RootOwner, RootRangeToken, RootToken,
     SessionEpoch, Value,
 };
+#[cfg(feature = "execution-counts")]
+pub use counts::SlotCounts;
+#[cfg(feature = "execution-counts")]
+use counts::{SlotCounter, SlotState};
 mod growth;
 
 #[derive(Clone, Copy, Debug)]
