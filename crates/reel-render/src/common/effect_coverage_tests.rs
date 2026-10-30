@@ -37,8 +37,11 @@ fn full_target_changes_only_wrapper_discards_and_retains_local_entry_points() {
                 1 << 20,
             )
             .unwrap();
-            let stripped = local
+            let normalized = local
                 .source
+                .replace(cg::PIXEL_KILL, cg::PIXEL_DISCARD)
+                .replace(cg::UV_KILL, cg::UV_DISCARD);
+            let stripped = normalized
                 .lines()
                 .filter(|line| !line.contains("if (any(fragment_position"))
                 .map(|line| {

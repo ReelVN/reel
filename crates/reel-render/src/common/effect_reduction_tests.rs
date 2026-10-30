@@ -2,6 +2,46 @@
 use super::*;
 
 #[test]
+fn cg_parallel_clip_keeps_predicates_and_sampling_body_with_bounded_admission() {
+    for count in [3, 17, 31, 32, 61] {
+        let offsets: Vec<_> = (0..count).map(|i| i as f32).collect();
+        let program = sampling_offsets(&offsets);
+        for tail in [OutputTail::Ordinary, OutputTail::AlphaCoverage] {
+            let local = compile_fragment_with_tail(&program, Language::Cg, tail, 1 << 20).unwrap();
+            assert_eq!(local.source.contains(cg::PIXEL_KILL), count >= 32);
+            assert_eq!(local.source.contains(cg::UV_KILL), count >= 32);
+            let generated = generate_inner(&program, Language::Cg, 1 << 20, true).unwrap();
+            assert!(local.source.contains(&generated.function));
+            if count >= 32 {
+                let single = generate_inner(&program, Language::Cg, 1 << 20, false).unwrap();
+                let original =
+                    cg::compile(&program, single, tail, FragmentCoverage::Local, 1 << 20).unwrap();
+                let reference = original
+                    .source
+                    .replace(cg::PIXEL_KILL, cg::PIXEL_DISCARD)
+                    .replace(cg::UV_KILL, cg::UV_DISCARD);
+                let admitted =
+                    compile_fragment_with_tail(&program, Language::Cg, tail, reference.len())
+                        .unwrap();
+                assert_eq!(admitted.source, reference);
+            }
+        }
+        let complex = sampling_offsets_with_complexity(&offsets, true);
+        let local = compile_fragment(&complex, Language::Cg, 1 << 20).unwrap();
+        assert!(!local.source.contains(cg::PIXEL_KILL));
+        let full = compile_fragment_variant(
+            &program,
+            Language::Cg,
+            OutputTail::Ordinary,
+            FragmentCoverage::FullTarget,
+            1 << 20,
+        )
+        .unwrap();
+        assert!(!full.source.contains("clip("));
+    }
+}
+
+#[test]
 fn blocks_reproduce_all_original_counter_bits_and_keep_short_or_complex_loops() {
     for (first, step, count, width) in [
         (0, 1, 32, 4),

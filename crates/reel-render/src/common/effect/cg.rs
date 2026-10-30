@@ -4,6 +4,12 @@
 use super::*;
 use std::fmt::Write;
 
+pub(super) const PIXEL_DISCARD: &str = "if (any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)) discard;";
+pub(super) const UV_DISCARD: &str = "if (any(uv < float2(0.0)) || any(uv > float2(1.0))) discard;";
+pub(super) const PIXEL_KILL: &str = "clip(0.5 - float(any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)));";
+pub(super) const UV_KILL: &str =
+    "clip(0.5 - float(any(uv < float2(0.0)) || any(uv > float2(1.0))));";
+
 pub(super) fn compile(
     program: &EffectProgram,
     generated: GeneratedEffect,
@@ -11,6 +17,14 @@ pub(super) fn compile(
     coverage: FragmentCoverage,
     limit: usize,
 ) -> Result<EffectFragment, GenerateError> {
+    // Sony's structured discard branches combined with a long reduction and
+    // output-tail branches force per-instance execution. A scalar kill predicate
+    // retains the same rejection, while the long loop can stay in parallel mode.
+    // Short/complex programs retain the original wrapper: predicate materializing
+    // costs more there than it saves in the loop. FullTarget writes transparency.
+    let parallel_clip = coverage == FragmentCoverage::Local
+        && reduction::Reduction::find(program, program.output())
+            .is_some_and(|proof| proof.block_width(program) == 4);
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
     let mut source =
         String::from("uniform float4 reel_context[10];\nuniform float4 reel_clip_rect;\n");
@@ -68,7 +82,12 @@ float4 reel_output(float4 color, float coverage) {
         source.push_str("float reel_tail_coverage = 1.0;\n");
     }
     if coverage == FragmentCoverage::Local {
-        source.push_str("if (any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)) discard;\n");
+        source.push_str(if parallel_clip {
+            PIXEL_KILL
+        } else {
+            PIXEL_DISCARD
+        });
+        source.push('\n');
     }
     if generated.output_type == EffectType::Float {
         source.push_str(
@@ -82,7 +101,9 @@ float4 reel_output(float4 color, float coverage) {
 "#,
     );
     if coverage == FragmentCoverage::Local {
-        source.push_str("    if (any(uv < float2(0.0)) || any(uv > float2(1.0))) discard;\n");
+        source.push_str("    ");
+        source.push_str(if parallel_clip { UV_KILL } else { UV_DISCARD });
+        source.push('\n');
     } else {
         source.push_str(
             "    if (any(uv < float2(0.0)) || any(uv > float2(1.0))) return float4(0.0);\n",
@@ -93,6 +114,12 @@ float4 reel_output(float4 color, float coverage) {
         source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { return reel_output(float4(coverage), reel_tail_coverage); } return reel_output(reel_implicit_source * coverage, reel_tail_coverage);\n}\n");
     } else {
         source.push_str("return reel_output(reel_effect(uv, position, reel_context[4].zw), reel_tail_coverage);\n}\n");
+    }
+    if source.len() > limit && parallel_clip {
+        // The longer predicates must not reject a previously admitted shader.
+        source = source
+            .replace(PIXEL_KILL, PIXEL_DISCARD)
+            .replace(UV_KILL, UV_DISCARD);
     }
     if source.len() > limit {
         return Err(GenerateError::SourceLimit { limit });
