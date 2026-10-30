@@ -53,7 +53,9 @@ static VM_SESSION: AtomicU32 = AtomicU32::new(0);
 static VM_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 static VM_AT_MS: AtomicU64 = AtomicU64::new(0);
 static VM_SAMPLE: [AtomicU64; VM_NAMES.len()] = [const { AtomicU64::new(ABSENT) }; VM_NAMES.len()];
+#[cfg(feature = "vm-profiling")]
 const VM_COST_FIELDS: usize = aside_vm::executor::STEP_NAMES.len() * 3;
+#[cfg(feature = "vm-profiling")]
 static VM_COSTS: [AtomicU64; VM_COST_FIELDS] = [const { AtomicU64::new(0) }; VM_COST_FIELDS];
 
 /// The live thread requests one snapshot per second. The event loop otherwise
@@ -63,6 +65,7 @@ fn publish_vm(story: Option<&StoryRuntime>) {
         return;
     }
     let sample = vm_sample(story);
+    #[cfg(feature = "vm-profiling")]
     let costs = story
         .map(|story| story.driver().adapter().vm().step_costs())
         .unwrap_or_default();
@@ -70,6 +73,7 @@ fn publish_vm(story: Option<&StoryRuntime>) {
     for (slot, value) in VM_SAMPLE.iter().zip(sample) {
         slot.store(value, Ordering::Relaxed);
     }
+    #[cfg(feature = "vm-profiling")]
     for (row, cost) in VM_COSTS.as_chunks::<3>().0.iter().zip(costs) {
         for (slot, value) in row
             .iter()
@@ -144,6 +148,7 @@ fn append_vm(line: &mut String) {
     let sample: [u64; VM_NAMES.len()] =
         std::array::from_fn(|i| VM_SAMPLE[i].load(Ordering::Relaxed));
     let at_ms = VM_AT_MS.load(Ordering::Relaxed);
+    #[cfg(feature = "vm-profiling")]
     let costs: [u64; VM_COST_FIELDS] = std::array::from_fn(|i| VM_COSTS[i].load(Ordering::Relaxed));
     std::sync::atomic::fence(Ordering::Acquire);
     if sequence != VM_SEQUENCE.load(Ordering::Acquire) {
@@ -161,16 +166,19 @@ fn append_vm(line: &mut String) {
             let _ = write!(line, "{name}:{value},");
         }
     }
-    let _ = write!(
-        line,
-        " vm_costs_stride={} vm_costs=",
-        aside_vm::executor::STEP_SAMPLE_STRIDE
-    );
-    for (name, [calls, samples, nanos]) in aside_vm::executor::STEP_NAMES
-        .iter()
-        .zip(costs.as_chunks::<3>().0)
+    #[cfg(feature = "vm-profiling")]
     {
-        let _ = write!(line, "{name}:{calls}/{samples}/{nanos},");
+        let _ = write!(
+            line,
+            " vm_costs_stride={} vm_costs=",
+            aside_vm::executor::STEP_SAMPLE_STRIDE
+        );
+        for (name, [calls, samples, nanos]) in aside_vm::executor::STEP_NAMES
+            .iter()
+            .zip(costs.as_chunks::<3>().0)
+        {
+            let _ = write!(line, "{name}:{calls}/{samples}/{nanos},");
+        }
     }
 }
 
