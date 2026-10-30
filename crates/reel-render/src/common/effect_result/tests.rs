@@ -1,7 +1,7 @@
 use super::*;
 use reel_core::budget::{BudgetCategory, QueueLimits};
 
-fn pool() -> BudgetPool {
+pub(super) fn pool() -> BudgetPool {
     BudgetPool::new(
         BudgetCategory::Temporary,
         QueueLimits {
@@ -139,7 +139,7 @@ fn source(scene: Arc<Scene>) -> Source {
         },
     })
 }
-fn effect() -> FrameEffect {
+pub(super) fn effect() -> FrameEffect {
     FrameEffect {
         definition: [7; 32],
         shader: ResourceHandle {
@@ -157,7 +157,7 @@ fn effect() -> FrameEffect {
         coverage_invert: false,
     }
 }
-fn grid() -> Grid {
+pub(super) fn grid() -> Grid {
     Grid {
         source_transform: affine(Affine::IDENTITY),
         effect_transform: affine(Affine::IDENTITY),
@@ -170,7 +170,7 @@ fn grid() -> Grid {
         quality: [0, 1],
     }
 }
-fn probe(effect: &FrameEffect, grid: Grid, scene: Arc<Scene>) -> Probe<'_> {
+pub(super) fn probe(effect: &FrameEffect, grid: Grid, scene: Arc<Scene>) -> Probe<'_> {
     Probe {
         source: source(scene),
         effect,

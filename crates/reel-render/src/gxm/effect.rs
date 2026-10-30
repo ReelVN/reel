@@ -211,6 +211,17 @@ impl Context<'_> {
         } else {
             None
         };
+        #[cfg(feature = "profiling")]
+        if probe.is_none() && !self.capture && !self.scissor.empty() {
+            let mut cache_misses = [0; crate::profiling::CACHE_MISS_LABELS.len()];
+            cache_misses[12] = 1;
+            crate::profiling::record_effect(crate::profiling::EffectSample {
+                definition: effect.definition,
+                variant: 3,
+                cache_misses,
+                ..Default::default()
+            });
+        }
         if let Some(probe) = probe {
             if let Some(hit) = self.cached_effect(&probe)? {
                 #[cfg(feature = "profiling")]
@@ -560,6 +571,16 @@ impl Context<'_> {
         } else {
             None
         };
+        #[cfg(feature = "profiling")]
+        let serial = crate::profiling::serial_effect_timing();
+        #[cfg(feature = "profiling")]
+        let serial_prior_drain_us = if serial {
+            let start = std::time::Instant::now();
+            self.gpu.finish()?;
+            start.elapsed().as_micros() as u64
+        } else {
+            0
+        };
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
         let _draw = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         #[cfg(feature = "profiling")]
@@ -583,6 +604,14 @@ impl Context<'_> {
         })?;
         #[cfg(feature = "profiling")]
         {
+            let submit_wall_us = submit_start.elapsed().as_micros() as u64;
+            let serial_completion_drain_us = if serial {
+                let start = std::time::Instant::now();
+                self.gpu.finish()?;
+                start.elapsed().as_micros() as u64
+            } else {
+                0
+            };
             use crate::profiling::{EffectSample, area, record_effect};
             record_effect(EffectSample {
                 definition: effect.definition,
@@ -606,7 +635,11 @@ impl Context<'_> {
                 output_storage_pixels: area(output.view.size()),
                 scissor_pixels: area([self.scissor.width, self.scissor.height]),
                 sampler_bindings: images.len() as u64,
-                submit_wall_us: submit_start.elapsed().as_micros() as u64,
+                submit_wall_us,
+                serial_draws: u64::from(serial),
+                serial_prior_drain_us,
+                serial_completion_drain_us,
+                serial_max_completion_drain_us: serial_completion_drain_us,
                 max_source: if descriptor.source_sampler {
                     source.storage_size
                 } else {

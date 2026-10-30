@@ -1,6 +1,35 @@
 use super::{Result, log};
 use std::{io::Write, time::Duration};
 
+/// Measure instrumentation cost before a package session starts. These batch
+/// costs include loop overhead; they are reported rather than subtracted.
+pub fn calibrate() {
+    const CALLS: u128 = 4096;
+    let measure = |scopes: bool| {
+        let mut batches = [0; 3];
+        for batch in &mut batches {
+            let start = std::time::Instant::now();
+            for _ in 0..CALLS {
+                if scopes {
+                    drop(std::hint::black_box(reel_core::profile::Scope::new(
+                        reel_core::profile::Phase::Sampler,
+                    )));
+                } else {
+                    std::hint::black_box(std::time::Instant::now());
+                }
+            }
+            *batch = start.elapsed().as_nanos() / CALLS;
+        }
+        batches.sort_unstable();
+        batches
+    };
+    let clock = measure(false);
+    let scope = measure(true);
+    log(format_args!(
+        "CALIBRATION calls_per_batch={CALLS} batches=3 clock_ns_min_median_max={clock:?} scope_ns_min_median_max={scope:?} includes_loop_overhead=true subtracted=false"
+    ));
+}
+
 pub struct Frames(Vec<[u64; 6]>);
 impl Frames {
     pub fn new(capacity: usize) -> Self {

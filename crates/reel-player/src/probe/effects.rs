@@ -1,5 +1,5 @@
 //! Format bounded renderer work counters outside the graphics thread.
-use reel_render::profiling::{EffectSample, drain_effects};
+use reel_render::profiling::{CACHE_MISS_LABELS, EffectSample, drain_effects};
 use std::fmt::Write as _;
 
 pub(super) fn print(rows: &mut Vec<EffectSample>, line: &mut String, elapsed_ms: u128) {
@@ -32,6 +32,21 @@ pub(super) fn print(rows: &mut Vec<EffectSample>, line: &mut String, elapsed_ms:
             row.max_output[1],
             row.largest_owner
         );
+        for (label, value) in CACHE_MISS_LABELS.iter().zip(row.cache_misses) {
+            if value != 0 {
+                let _ = write!(line, " cache_{label}={value}");
+            }
+        }
+        if row.serial_draws != 0 {
+            let _ = write!(
+                line,
+                " serial_draws={} serial_prior_drain_us={} serial_completion_drain_us={} serial_max_completion_drain_us={}",
+                row.serial_draws,
+                row.serial_prior_drain_us,
+                row.serial_completion_drain_us,
+                row.serial_max_completion_drain_us
+            );
+        }
         eprintln!("{line}");
     }
     if dropped != 0 {

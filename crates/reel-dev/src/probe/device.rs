@@ -498,6 +498,7 @@ fn run() -> Result {
     let mut trace = false;
     let mut vsync = true;
     let mut flights = 1;
+    let mut serial_effect_timing = false;
     let mut tokens: Vec<String> = std::fs::read_to_string(directory().join("case.txt"))
         .unwrap_or_default()
         .split_whitespace()
@@ -518,6 +519,8 @@ fn run() -> Result {
             }
             "vsync=on" => vsync = true,
             "vsync=off" => vsync = false,
+            "effect-timing=serial" => serial_effect_timing = true,
+            "effect-timing=off" => serial_effect_timing = false,
             value if value.starts_with("flights=") => flights = value[8..].parse()?,
             value if value.starts_with("frames=") => frames = value[7..].parse()?,
             value => selected = value.to_owned(),
@@ -564,6 +567,16 @@ fn run() -> Result {
                 | "composite_reference"
                 | "present_color"
         )
+    ));
+    reel_render::profiling::set_serial_effect_timing(serial_effect_timing);
+    timing::calibrate();
+    log(format_args!(
+        "effect_timing={} completion_includes_scene_end_and_drain=true serial_mode_changes_batching=true",
+        if serial_effect_timing {
+            "serial"
+        } else {
+            "off"
+        }
     ));
     // Package sessions use the player's sampler, including VM task locations.
     let _sampler = (!matches!(selected.as_str(), "authored" | "diagnostic"))

@@ -1,6 +1,8 @@
 //! Content identity for already-materialized ordinary effect outputs.
 use reel_core::budget::{BudgetPool, BudgetTicket};
 mod admission;
+#[cfg(all(feature = "profiling", any(target_os = "vita", test)))]
+mod diagnostics;
 pub(crate) use admission::Admission;
 #[cfg(test)]
 mod tests;
@@ -335,15 +337,26 @@ impl<T: Clone> Cache<T> {
         let start = state
             .entries
             .partition_point(|entry| entry.key.source.anchor() < anchor);
-        let index = start
-            + state.entries[start..]
-                .iter()
-                .take_while(|entry| entry.key.source.anchor() == anchor)
-                .position(|entry| entry.key.matches(probe))?;
+        let range = &state.entries[start..];
+        let Some(offset) = range
+            .iter()
+            .take_while(|entry| entry.key.source.anchor() == anchor)
+            .position(|entry| entry.key.matches(probe))
+        else {
+            #[cfg(all(feature = "profiling", feature = "gxm", target_os = "vita"))]
+            diagnostics::record(range, probe);
+            return None;
+        };
+        let index = start + offset;
         let submitted = state.submitted;
         let entry = &mut state.entries[index];
         entry.last_used = submitted;
-        let hit = (entry.token, entry.output.as_ref()?.clone());
+        let Some(output) = entry.output.as_ref() else {
+            #[cfg(all(feature = "profiling", feature = "gxm", target_os = "vita"))]
+            diagnostics::record(std::slice::from_ref(entry), probe);
+            return None;
+        };
+        let hit = (entry.token, output.clone());
         #[cfg(test)]
         {
             state.hits[anchor.0 as usize] += 1;
