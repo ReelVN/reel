@@ -10,6 +10,112 @@ fn pool() -> BudgetPool {
         },
     )
 }
+
+#[test]
+fn early_lookup_requires_a_complete_single_image_source() {
+    use crate::test_support::r01_fixture;
+    use reel_core::{budget::OwnedBytes, identity::*};
+    use reel_ui::{
+        frame::FrameBuild,
+        imaging::record::{Draw, Geometry, Group},
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::{ColorEncoding, ResourceRegistry},
+    };
+    let pool = r01_fixture::pool();
+    let mut registry = ResourceRegistry::new(4, 16384).unwrap();
+    let image = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("early-cache-source".into()),
+                version: ContentVersion([5; 32]),
+            },
+            OwnedBytes::new(vec![255; 4], pool.reserve(4).unwrap()).unwrap(),
+            [1, 1],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Linear,
+        )
+        .unwrap();
+    let effect = effect();
+    for (draws, nested) in [(1, false), (2, false), (1, true)] {
+        let mut scene = Scene::new();
+        scene.push_group(Group::default());
+        if nested {
+            scene.push_group(Group::default());
+        }
+        for _ in 0..draws {
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Image(ImageBrush::new(crate::test_support::image_data(
+                    &registry.acquire(image).unwrap(),
+                ))),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 32., 32.)),
+                composite: Default::default(),
+            });
+        }
+        if nested {
+            scene.pop_group();
+        }
+        scene.pop_group();
+        let mut widget = r01_fixture::RecordWidget::new(scene);
+        widget.clip = false;
+        let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(1)).unwrap(),
+            registry.freeze(&[image], &pool).unwrap(),
+            reel_ui::frame::FrameInfo {
+                logical_size: [32.; 2],
+                physical_size: [32; 2],
+            },
+            r01_fixture::limits(),
+            &pool,
+        )
+        .unwrap();
+        while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+        let frame = build.finish().unwrap();
+        let drawing = frame.drawing();
+        let mut stack = Vec::new();
+        let mut hits = 0;
+        let mut nested_rejections = 0;
+        for (index, command) in drawing.commands().iter().enumerate() {
+            match command.op {
+                FrameOp::PushGroup(_) => stack.push(index),
+                FrameOp::PopGroup => {
+                    let start = stack.pop().unwrap();
+                    let range = start..index + 1;
+                    let probe = Probe::new(drawing, range.clone(), &effect, grid());
+                    if probe.is_some() {
+                        hits += 1;
+                        assert!(Probe::new(drawing, start..index, &effect, grid()).is_none());
+                    }
+                    if drawing.commands()[start + 1..index]
+                        .iter()
+                        .any(|c| matches!(c.op, FrameOp::PushGroup(_)))
+                    {
+                        assert!(probe.is_none());
+                        // Early lookup stops at the first close; a nested prefix must fail too.
+                        let first = drawing.commands()[start + 1..index]
+                            .iter()
+                            .position(|c| matches!(c.op, FrameOp::PopGroup))
+                            .unwrap();
+                        assert!(
+                            Probe::new(drawing, start..start + first + 2, &effect, grid())
+                                .is_none()
+                        );
+                        nested_rejections += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(hits > 0, draws == 1);
+        if nested {
+            assert!(nested_rejections > 0);
+        }
+    }
+}
 fn source(scene: Arc<Scene>) -> Source {
     Source::Recording(Recording {
         owner: 1,

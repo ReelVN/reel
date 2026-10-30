@@ -829,6 +829,16 @@ impl Context<'_> {
                     } else {
                         output_scissor
                     };
+                    if forward_source
+                        && self.cached_source(
+                            current,
+                            group,
+                            source_parent.unwrap(),
+                            source_scissor,
+                        )?
+                    {
+                        continue;
+                    }
                     current.scopes.push(
                         Kind::Group,
                         at,
@@ -1378,3 +1388,6 @@ mod composition;
 mod schedule;
 #[path = "replay/source_free.rs"]
 mod source_free;
+
+#[path = "replay/effect_cache.rs"]
+mod effect_cache;
