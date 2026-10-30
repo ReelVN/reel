@@ -298,7 +298,7 @@ impl Vm {
         let key = i64::from(name.0) * 2 + i64::from(is_static);
         let cached = site.and_then(|(function, pc)| {
             let (entry, true) =
-                self.member_hints
+                self.class_member_hints
                     .get(function, pc, members, info.content_version)?
             else {
                 return None;
@@ -330,7 +330,7 @@ impl Vm {
             if !member.same_bits(Value::NULL)
                 && let Some((function, pc)) = site
             {
-                self.member_hints
+                self.class_member_hints
                     .remember(function, pc, entry, members, info.content_version);
             }
             member

@@ -2,6 +2,59 @@
 use super::*;
 
 #[test]
+fn class_hint_collisions_preserve_warm_table_work_and_slice_boundaries() {
+    let mut vm = load(point_lookup_package(false, false));
+    let table = vm.heap_mut().alloc_table().unwrap();
+    for (index, name) in ["other", "position"].into_iter().enumerate() {
+        let key = vm.heap_mut().alloc_string(name).unwrap();
+        vm.heap_mut()
+            .table_store(table, index as u32, key, Value::int(42))
+            .unwrap();
+    }
+    let members = vm.heap_mut().alloc_array(&[]).unwrap();
+    let mut run = |collide: bool| {
+        if collide {
+            // This is the exact table lookup site, so a shared store would
+            // replace its proven table position with an unrelated class entry.
+            vm.class_member_hints
+                .remember(FunctionId(0), Pc(0), 0, members, 0);
+        }
+        let task = vm
+            .start(FunctionId(0), &[table], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let mut trace = Vec::new();
+        loop {
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work: 128,
+                        ..SliceBudget::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            trace.push(vm.last_usage);
+            match outcome {
+                RunOutcome::BudgetYield(_) => {}
+                RunOutcome::Returned(delivery) => {
+                    assert_eq!(vm.delivery_value(delivery).unwrap().as_int(), Some(42));
+                    vm.discard_delivery(delivery).unwrap();
+                    return trace;
+                }
+                other => panic!("table lookup returned {other:?}"),
+            }
+        }
+    };
+    run(false); // Warm the position and all frame/root admission storage.
+    let expected = run(false);
+    assert_eq!(run(true), expected);
+    assert_eq!(run(false), expected);
+    assert_eq!(run(true), expected);
+}
+
+#[test]
 fn host_own_string_lookup_is_bounded_and_does_not_confuse_null_with_missing() {
     let mut vm = load(table_package(
         vec![Const::Utf8("ab".into()), Const::Utf8("ac".into())],

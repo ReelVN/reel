@@ -278,6 +278,7 @@ impl Vm {
             constants,
             constant_cache,
             member_hints: member_hints::MemberHints::default(),
+            class_member_hints: member_hints::MemberHints::default(),
             method_bindings: method_bindings::MethodBindings::default(),
             heap,
             limits,

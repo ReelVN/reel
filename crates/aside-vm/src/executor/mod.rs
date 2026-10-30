@@ -571,6 +571,7 @@ pub struct Vm {
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
     member_hints: member_hints::MemberHints,
+    class_member_hints: member_hints::MemberHints<{ member_hints::CLASS_SLOTS }>,
     method_bindings: method_bindings::MethodBindings,
     heap: Heap,
     limits: VmLimits,

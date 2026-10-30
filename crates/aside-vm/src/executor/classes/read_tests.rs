@@ -218,7 +218,7 @@ fn trace(
     hints: bool,
 ) -> Vec<Observation> {
     let (mut vm, task, cell) = loaded(reference, encoded, case, derived);
-    vm.member_hints.identities = hints;
+    vm.class_member_hints.identities = hints;
     let mut budget = SliceBudget {
         instructions: 1,
         work,
@@ -388,7 +388,7 @@ fn a_plan_is_discarded_at_budget_yield_and_snapshot_restore() {
         .unwrap();
     assert!(
         restored
-            .member_hints
+            .class_member_hints
             .get(
                 FunctionId(0),
                 Pc(0),
@@ -548,7 +548,7 @@ fn position_guards_reject_other_generations_and_layout_versions_without_owning_t
     let members = vm.heap.get_field(class, ClassSlot::Members as u32).unwrap();
     assert_eq!(finish(&mut vm, task), Ok(42));
     let (_, bits) = members.object_parts().unwrap();
-    vm.member_hints.remember(
+    vm.class_member_hints.remember(
         FunctionId(0),
         Pc(0),
         0,
@@ -639,7 +639,7 @@ fn cancellation_precedes_a_warm_position_at_the_retry_boundary() {
             .unwrap();
         let members = vm.heap.get_field(class, ClassSlot::Members as u32).unwrap();
         assert_eq!(
-            vm.member_hints.get(
+            vm.class_member_hints.get(
                 FunctionId(0),
                 Pc(0),
                 members,
@@ -694,7 +694,7 @@ fn dynamic_class_indices_keep_current_name_resolution_without_position_hints() {
         *vm.active.frames.data.last_mut().unwrap() = Frame::Script(frame);
         assert_eq!(finish(&mut vm, task), expected);
         assert!(
-            vm.member_hints
+            vm.class_member_hints
                 .get(
                     FunctionId(0),
                     Pc(0),
