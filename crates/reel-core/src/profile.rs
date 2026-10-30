@@ -95,8 +95,10 @@ pub enum Phase {
     SessionSchedule,
     /// Project VM node properties into the authored stage; nested in its caller.
     StageProperties,
+    /// Synchronous session diagnostic formatting and stderr output, nested in Session.
+    SessionDiagnostics,
 }
-pub const NAMES: [&str; 60] = [
+pub const NAMES: [&str; 61] = [
     "input",
     "tick",
     "session",
@@ -157,6 +159,7 @@ pub const NAMES: [&str; 60] = [
     "session_activity",
     "session_schedule",
     "stage_properties",
+    "session_diagnostics",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

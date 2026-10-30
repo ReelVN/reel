@@ -41,7 +41,9 @@ fn derive_phases(values: &mut BTreeMap<String, u64>) {
     let known = schedule
         .checked_add(host)
         .and_then(|n| n.checked_add(gc))
-        .and_then(|n| n.checked_add(activity));
+        .and_then(|n| n.checked_add(activity))
+        // Older version-1 traces omit diagnostic-output attribution.
+        .and_then(|n| n.checked_add(values.get("session_diagnostics_us").copied().unwrap_or(0)));
     let residual = known.and_then(|known| session.checked_sub(known));
     values.insert("schedule_non_vm_us".into(), other.unwrap_or(0));
     values.insert("session_unattributed_us".into(), residual.unwrap_or(0));
@@ -233,6 +235,14 @@ mod tests {
         assert_eq!(values["schedule_non_vm_us"], 20);
         assert_eq!(values["session_unattributed_us"], 10);
         assert_eq!(values["phase_hierarchy_errors"], 0);
+        values.insert("session_diagnostics_us".into(), 7);
+        derive_phases(&mut values);
+        assert_eq!(values["session_unattributed_us"], 3);
+        assert_eq!(values["phase_hierarchy_errors"], 0);
+        values.insert("session_diagnostics_us".into(), 11);
+        derive_phases(&mut values);
+        assert_eq!(values["phase_hierarchy_errors"], 1);
+        values.insert("session_diagnostics_us".into(), 7);
         values.insert("session_schedule_us".into(), 30);
         derive_phases(&mut values);
         assert_eq!(values["phase_hierarchy_errors"], 1);
