@@ -14,6 +14,8 @@ const SEGMENTS: usize = 64;
 mod device;
 mod effects;
 mod timeline;
+#[cfg(feature = "vm-profiling")]
+mod vm_hotspots;
 #[cfg(any(target_os = "vita", test))]
 pub(crate) use device::DeviceSample;
 static VM_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -82,11 +84,17 @@ fn publish_vm(story: Option<&StoryRuntime>) {
             slot.store(value, Ordering::Relaxed);
         }
     }
-    VM_AT_MS.store(
-        VM_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64,
-        Ordering::Relaxed,
-    );
+    let at_ms = VM_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64;
+    VM_AT_MS.store(at_ms, Ordering::Relaxed);
     VM_SEQUENCE.fetch_add(1, Ordering::Release);
+    #[cfg(feature = "vm-profiling")]
+    if let Some(story) = story {
+        vm_hotspots::publish(
+            story.driver().adapter().vm(),
+            VM_SESSION.load(Ordering::Relaxed),
+            at_ms,
+        );
+    }
 }
 
 fn vm_sample(story: Option<&StoryRuntime>) -> [u64; VM_NAMES.len()] {
@@ -198,15 +206,21 @@ impl Live {
                 let mut geometry = GeometryUploads::snapshot();
                 let mut line = String::with_capacity(8192);
                 let mut effect_rows = Vec::with_capacity(reel_render::profiling::EFFECT_CAPACITY);
+                let mut next_live = Instant::now() + std::time::Duration::from_secs(1);
+                let interval = std::time::Duration::from_millis(if cfg!(feature = "vm-profiling") { 100 } else { 1000 });
+                #[cfg(feature = "vm-profiling")]
+                let mut vm_rows = Vec::with_capacity(aside_vm::executor::STEP_HOTSPOT_CAPACITY);
                 eprintln!("[reel-probe] live sampling started; elapsed us and completed calls; nested phases overlap; VM counters cumulative, last_* latest slice; gc_phase idle=0 mark=1 weak=2 sweep=3; fn/pc identify the last selected task; vm_sample advances on main-thread snapshots");
                 while !stopped.load(Ordering::Relaxed) {
-                    let deadline = Instant::now() + std::time::Duration::from_secs(1);
+                    let deadline = Instant::now() + interval;
                     while !stopped.load(Ordering::Relaxed) {
                         let remaining = deadline.saturating_duration_since(Instant::now());
                         if remaining.is_zero() { break; }
                         std::thread::sleep(remaining);
                     }
                     if stopped.load(Ordering::Relaxed) { break; }
+                    if Instant::now() >= next_live {
+                    next_live = Instant::now() + std::time::Duration::from_secs(1);
                     let current = Sample::snapshot();
                     let delta = current.delta(previous);
                     previous = current;
@@ -232,9 +246,14 @@ impl Live {
                         eprintln!("{line}");
                     }
                     effects::print(&mut effect_rows, &mut line, start.elapsed().as_millis());
+                    }
+                    #[cfg(feature = "vm-profiling")]
+                    vm_hotspots::print(&mut vm_rows, &mut line);
                     VM_REQUESTED.store(true, Ordering::Relaxed);
                 }
                 effects::print(&mut effect_rows, &mut line, start.elapsed().as_millis());
+                #[cfg(feature = "vm-profiling")]
+                vm_hotspots::print(&mut vm_rows, &mut line);
             })?;
         Ok(Self {
             stop,

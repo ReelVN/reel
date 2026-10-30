@@ -298,7 +298,7 @@ impl Vm {
 
             last_usage: SliceUsage::default(),
             #[cfg(feature = "profiling")]
-            step_costs: Default::default(),
+            step_costs: step_costs::State::new(&usage)?,
             #[cfg(test)]
             work_probe: WorkProbe::default(),
         })

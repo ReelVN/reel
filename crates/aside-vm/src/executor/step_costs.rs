@@ -1,13 +1,19 @@
-//! Sampled execution-stage wall time. Fixed per-VM storage is included in the
-//! existing control reservation; snapshots restart these diagnostic counters.
+//! Sampled execution-stage wall time. Bounded sample storage is charged at VM
+//! load; snapshots restart these diagnostic counters and instruction locations.
+
+#[cfg(feature = "profiling")]
+mod hotspots;
+#[cfg(feature = "profiling")]
+pub use hotspots::{STEP_HOTSPOT_CAPACITY, STEP_MODES, StepHotspot, StepPoint};
 
 #[cfg(feature = "profiling")]
 macro_rules! step_cost {
     ($vm:expr, $phase:ident, $body:expr) => {{
         let phase = $crate::executor::step_costs::Phase::$phase;
         let start = $vm.step_costs.start(phase);
+        let point = start.and_then(|_| $vm.step_profile_point());
         let result = $body;
-        $vm.step_costs.finish(phase, start);
+        $vm.step_costs.finish(phase, start, point);
         result
     }};
 }
@@ -20,6 +26,8 @@ macro_rules! step_cost {
 
 #[cfg(feature = "profiling")]
 mod enabled {
+    use super::super::{Frame, ScriptPhase};
+    use super::{STEP_HOTSPOT_CAPACITY, StepHotspot, StepPoint, hotspots::Hotspots};
     use std::{cell::Cell, time::Instant};
 
     /// Execution-stage order for `Vm::step_costs`. Stages are nested: fetch,
@@ -51,10 +59,15 @@ mod enabled {
         Execute,
     }
 
-    #[derive(Default)]
-    pub(crate) struct State([Cell<StepCost>; STEP_NAMES.len()]);
+    pub(crate) struct State([Cell<StepCost>; STEP_NAMES.len()], Hotspots);
 
     impl State {
+        pub(crate) fn new(usage: &crate::HeapBudgetUsage) -> Result<Self, crate::HeapError> {
+            Ok(Self(
+                std::array::from_fn(|_| Cell::default()),
+                Hotspots::new(usage)?,
+            ))
+        }
         pub(crate) fn start(&self, phase: Phase) -> Option<Instant> {
             let cell = &self.0[phase as usize];
             let mut row = cell.get();
@@ -63,7 +76,12 @@ mod enabled {
             cell.set(row);
             sample.then(Instant::now)
         }
-        pub(crate) fn finish(&self, phase: Phase, start: Option<Instant>) {
+        pub(crate) fn finish(
+            &self,
+            phase: Phase,
+            start: Option<Instant>,
+            point: Option<StepPoint>,
+        ) {
             if let Some(start) = start {
                 let elapsed = start.elapsed().as_nanos() as u64;
                 let cell = &self.0[phase as usize];
@@ -71,6 +89,9 @@ mod enabled {
                 row.samples += 1;
                 row.sample_wall_ns += elapsed;
                 cell.set(row);
+                if let Some(point) = point {
+                    self.1.record(point, phase as u8, elapsed);
+                }
             }
         }
     }
@@ -82,17 +103,126 @@ mod enabled {
         pub fn step_costs(&self) -> [StepCost; STEP_NAMES.len()] {
             std::array::from_fn(|i| self.step_costs.0[i].get())
         }
+        /// Drain bounded instruction-location samples into caller-owned storage.
+        /// Returns observations dropped by full collision sets since the prior
+        /// drain. No allocation or logging occurs; restore starts the table cold.
+        pub fn drain_step_hotspots(
+            &self,
+            output: &mut [StepHotspot; STEP_HOTSPOT_CAPACITY],
+        ) -> u64 {
+            self.step_costs.1.drain(output)
+        }
+        pub(in crate::executor) fn step_profile_point(&self) -> Option<StepPoint> {
+            Some(match self.active.frames.data.last()? {
+                Frame::Script(script) => StepPoint {
+                    function: script.code.function.0,
+                    pc: script.pc.0,
+                    native: None,
+                    mode: match script.phase {
+                        ScriptPhase::Body => 0,
+                        ScriptPhase::Copy { .. } => 1,
+                        ScriptPhase::Rest => 2,
+                        ScriptPhase::Bind(_) => 3,
+                        ScriptPhase::Defaults { .. } => 4,
+                        ScriptPhase::Parameter { .. } => 5,
+                        ScriptPhase::Install { .. } => 6,
+                        ScriptPhase::DefaultCall { .. } => 7,
+                        ScriptPhase::CompactBegin => 8,
+                        ScriptPhase::Exit { .. } => 9,
+                        ScriptPhase::ExitApply { .. } => 10,
+                        ScriptPhase::Release { .. } => 11,
+                        ScriptPhase::GeneratorCreate
+                        | ScriptPhase::GeneratorCapture { .. }
+                        | ScriptPhase::GeneratorStart { .. }
+                        | ScriptPhase::GeneratorRestore { .. } => 13,
+                        ScriptPhase::Search(_) => 14,
+                        ScriptPhase::Sort(_) => 15,
+                        ScriptPhase::Class(_) => 16,
+                        ScriptPhase::Constant(_) | ScriptPhase::DefaultConstant { .. } => 17,
+                        ScriptPhase::Spread(_) | ScriptPhase::TableSpread(_) => 18,
+                        ScriptPhase::KeyPath { .. }
+                        | ScriptPhase::TableValidate
+                        | ScriptPhase::TableScan => 19,
+                        ScriptPhase::HostMethod { .. } => 20,
+                        ScriptPhase::Builtin(_)
+                        | ScriptPhase::Bulk(_)
+                        | ScriptPhase::Sequence { .. } => 21,
+                        ScriptPhase::TextBuiltin(_)
+                        | ScriptPhase::TextPush { .. }
+                        | ScriptPhase::TextFinish { .. }
+                        | ScriptPhase::Concat { .. } => 22,
+                        ScriptPhase::Equality { .. } | ScriptPhase::EqualityCleanup { .. } => 23,
+                    },
+                },
+                Frame::Native(native) => StepPoint {
+                    function: native.location.code.function.0,
+                    pc: native.location.pc.0,
+                    native: Some(native.native.0),
+                    mode: 12,
+                },
+            })
+        }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::executor::*;
+
+        #[test]
+        fn native_samples_keep_the_call_site_and_script_execution_keeps_its_pc() {
+            let mut vm = Vm::load(
+                verify(fixtures::helper_native(), Limits::default()).unwrap(),
+                review_tests::echo_registry(),
+                VmLimits::default(),
+                SessionEpoch(3),
+            )
+            .unwrap();
+            let task = vm
+                .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+                .unwrap();
+            assert!(matches!(
+                vm.run_slice(task, SliceBudget::default(), || 0).unwrap(),
+                RunOutcome::HostCall(_)
+            ));
+            let mut output = [StepHotspot::default(); STEP_HOTSPOT_CAPACITY];
+            assert_eq!(vm.drain_step_hotspots(&mut output), 0);
+            let native = output
+                .iter()
+                .find(|row| row.phase == Phase::Native as u8 && row.samples != 0)
+                .unwrap();
+            assert_eq!(
+                native.point,
+                StepPoint {
+                    function: 1,
+                    pc: 0,
+                    native: Some(0),
+                    mode: 12
+                }
+            );
+            let execute = output
+                .iter()
+                .find(|row| row.phase == Phase::Execute as u8 && row.samples != 0)
+                .unwrap();
+            assert_eq!(execute.point.function, fixtures::ENTRY.0);
+            assert_eq!(execute.point.mode, 0);
+            let instruction = vm.program.package().functions[execute.point.function as usize]
+                .code
+                .instruction(execute.point.pc as usize)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                instruction_spec(instruction.opcode).unwrap().opcode,
+                Opcode::Call
+            );
+        }
+
         #[test]
         fn counts_every_entry_and_samples_only_the_declared_stride() {
-            let state = State::default();
+            let state = State::new(&crate::HeapBudgetUsage::new(u64::MAX)).unwrap();
             for _ in 0..(2 * STEP_SAMPLE_STRIDE + 1) {
                 let start = state.start(Phase::Scalar);
-                state.finish(Phase::Scalar, start);
+                state.finish(Phase::Scalar, start, None);
             }
             let row = state.0[Phase::Scalar as usize].get();
             assert_eq!((row.calls, row.samples), (255, 3));

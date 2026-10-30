@@ -1,5 +1,7 @@
 use super::*;
 
+mod symbols;
+
 #[test]
 fn vm_snapshot_reports_selected_task_execution_and_collection_progress() {
     use reel_engine::{

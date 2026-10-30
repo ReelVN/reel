@@ -13,7 +13,10 @@ use std::rc::Rc;
 #[macro_use]
 mod step_costs;
 #[cfg(feature = "profiling")]
-pub use step_costs::{STEP_NAMES, STEP_SAMPLE_STRIDE, StepCost};
+pub use step_costs::{
+    STEP_HOTSPOT_CAPACITY, STEP_MODES, STEP_NAMES, STEP_SAMPLE_STRIDE, StepCost, StepHotspot,
+    StepPoint,
+};
 
 mod api;
 mod arguments;
