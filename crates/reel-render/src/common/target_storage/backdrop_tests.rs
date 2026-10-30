@@ -113,6 +113,8 @@ fn current_pixel_destination_retires_the_backdrop_without_eliding_the_source() {
     };
     let (sampled, sampled_bytes, _) = choose_access(DestinationAccess::Sampled);
     let (current, current_bytes, _) = choose_access(DestinationAccess::CurrentPixelUnorm8);
+    assert!(sampled.sampled_backdrop());
+    assert!(!current.sampled_backdrop());
     let source = sampled
         .requirements()
         .iter()

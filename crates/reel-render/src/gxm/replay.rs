@@ -196,7 +196,7 @@ pub(super) fn prepare(
         targets: Vec::new(),
         available_targets: Vec::new(),
         target_writes: Default::default(),
-        target_storage: native::TargetStorage::Tiled,
+        target_storage: super::super::target_storage(),
         geometry_cache,
         buffers: Vec::new(),
         paint_batch: None,

@@ -17,6 +17,14 @@ fn destination_access() -> crate::common::blend::DestinationAccess {
     }
 }
 
+fn target_storage() -> native::TargetStorage {
+    if cfg!(feature = "gxm-tiled-targets") {
+        native::TargetStorage::Tiled
+    } else {
+        native::TargetStorage::Linear
+    }
+}
+
 /// Native presentation and work concurrency.
 #[derive(Clone, Debug)]
 pub struct GxmOptions {
@@ -47,10 +55,10 @@ mod renderer;
 /// Shared scheduling targets are provisioned for eight scenes per frame; driver
 /// storage is included in each target footprint before allocation.
 /// Screen draws use `native::FragmentOutput::Srgb` with linear input colors;
-/// offscreen targets retain linear color encoding. Frames needing backdrop
-/// copies use linear targets; other frames use 32x32 tiled RGBA8 storage when
-/// both dimensions are at least 32. Planning accounts complete tiles before
-/// selecting the actual storage, and cache reuse requires matching layouts.
+/// offscreen targets retain linear color encoding and storage by default.
+/// `gxm-tiled-targets` selects 32x32 tiled RGBA8 for frames without sampled
+/// backdrop copies; both dimensions must be at least 32. Planning accounts
+/// complete tiles, and cache reuse requires matching actual layouts.
 pub fn create_context(
     options: &GxmOptions,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
@@ -62,7 +70,7 @@ pub fn create_context(
         // Overview, Render Targets); use the supported queue depth for effect
         // chains rather than the native adapter's general-purpose default.
         scenes_per_frame: 8,
-        target_storage: native::TargetStorage::Tiled,
+        target_storage: target_storage(),
         ..native::Config::default()
     };
     native::Context::with_config(
