@@ -4,6 +4,7 @@ use super::*;
 pub(super) enum ScalarStep {
     Done,
     General,
+    Preparation,
     Budget,
 }
 
@@ -13,6 +14,13 @@ impl Vm {
             return Ok(ScalarStep::General);
         };
         if !matches!(s.phase, ScriptPhase::Body) {
+            if script_preparation::is_preparation(&s.phase) {
+                #[cfg(test)]
+                if self.work_probe.general_script_preparation {
+                    return Ok(ScalarStep::General);
+                }
+                return Ok(ScalarStep::Preparation);
+            }
             return Ok(ScalarStep::General);
         }
         if !meter.admits(0, 1, 0) {

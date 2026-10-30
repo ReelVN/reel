@@ -72,37 +72,11 @@ impl Vm {
                     return Ok(false);
                 }
             }
-            ScriptPhase::Copy { source, index } => {
-                if !m.take(0, self.argument_work(source, index), 0) {
-                    return Ok(false);
-                }
-                if index < s.argument_count {
-                    match self.checked_argument(source, index) {
-                        Ok((name, v)) => {
-                            self.put(s.args, index * 2, name)?;
-                            self.put(s.args, index * 2 + 1, v)?;
-                            execution_count!(self, ArgumentCopies, 1);
-                            s.phase = ScriptPhase::Copy {
-                                source,
-                                index: index + 1,
-                            };
-                        }
-                        Err(e) => {
-                            let kind = language_fault(e)?;
-                            self.preparation_fault(&mut s, kind)?;
-                        }
-                    }
-                } else {
-                    s.phase = if self.program.package().signatures[signature.index()]
-                        .rest
-                        .is_some()
-                    {
-                        ScriptPhase::Rest
-                    } else {
-                        ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(s)?))
-                    };
-                }
-            }
+            ScriptPhase::Copy { .. }
+            | ScriptPhase::Bind(_)
+            | ScriptPhase::Defaults { .. }
+            | ScriptPhase::Parameter { .. }
+            | ScriptPhase::Install { .. } => return self.preparation_step(m),
             ScriptPhase::Rest => {
                 if !m.take(0, 1, 0) {
                     return Ok(false);
@@ -113,104 +87,13 @@ impl Vm {
                 match self.heap.alloc_array(&[]) {
                     Ok(rest) => {
                         self.put(s.bound, count, rest)?;
-                        s.phase = ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(s)?));
+                        s.phase = ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(
+                            s.env,
+                            s.closure,
+                            s.shared_parameters,
+                        )?));
                     }
                     Err(error) => self.preparation_fault(&mut s, heap_fault(error))?,
-                }
-            }
-            ScriptPhase::Bind(mut binding) => {
-                let result = if binding.index == s.argument_count {
-                    if !m.take(0, 1, 0) {
-                        return Ok(false);
-                    }
-                    s.phase = ScriptPhase::Defaults { parameter: 0 };
-                    None
-                } else if s.shared_parameters {
-                    if !m.take(0, 1, 0) {
-                        return Ok(false);
-                    }
-                    let value = self.value(s.args, binding.index * 2 + 1)?;
-                    self.put(s.bound, binding.index, value)?;
-                    binding.advance(Value::int(-1));
-                    Some(ArgumentStep::Ready(Ok(())))
-                } else {
-                    Some(self.bind_argument_step(
-                        signature,
-                        s.bound,
-                        s.args,
-                        &mut binding,
-                        m,
-                        false,
-                    )?)
-                };
-                if let Some(result) = result {
-                    s.phase = ScriptPhase::Bind(binding);
-                    match result {
-                        ArgumentStep::Blocked => {
-                            self.active.frames.data[top] = Frame::Script(s);
-                            return Ok(false);
-                        }
-                        ArgumentStep::Ready(Err(kind)) => self.preparation_fault(&mut s, kind)?,
-                        _ => {}
-                    }
-                }
-            }
-            ScriptPhase::Defaults { parameter } => {
-                let sig = &self.program.package().signatures[signature.index()];
-                let bound = self.slots.read(at(s.bound, parameter)).is_ok();
-                let allocation = sig
-                    .parameters
-                    .get(parameter as usize)
-                    .filter(|_| !bound)
-                    .and_then(|p| p.default)
-                    .map_or(0, |default| match default {
-                        ParameterDefault::Constant(id) => self.constant_allocation_bytes(id),
-                        _ => 0,
-                    });
-                let work = 2 + if bound {
-                    self.program.script_parameter_lookup_work()
-                } else {
-                    0
-                };
-                if !m.take(0, work, allocation) {
-                    return Ok(false);
-                }
-                if parameter as usize == sig.parameters.len() + usize::from(sig.rest.is_some()) {
-                    s.phase = ScriptPhase::Install { binding: 0 };
-                } else if bound {
-                    let storage = self
-                        .program
-                        .script_parameter_storage(s.code.function, parameter);
-                    s.phase = ScriptPhase::Parameter { parameter, storage };
-                } else if let Some(default) = sig.parameters[parameter as usize].default {
-                    match default {
-                        ParameterDefault::Function(function) => {
-                            s.phase = ScriptPhase::DefaultCall {
-                                parameter,
-                                function,
-                            }
-                        }
-                        ParameterDefault::Constant(id) => {
-                            match self.start_constant(id, s.env, [1, 2]) {
-                                Ok(Some(value)) => {
-                                    self.put(s.bound, parameter, value)?;
-                                }
-                                Ok(None) => {
-                                    s.phase = ScriptPhase::DefaultConstant {
-                                        parameter,
-                                        work: constants::ConstantWork {
-                                            dest: Reg(parameter),
-                                            id,
-                                            index: 0,
-                                        },
-                                    }
-                                }
-                                Err(kind) => self.preparation_fault(&mut s, kind)?,
-                            }
-                        }
-                    }
-                } else {
-                    self.preparation_fault(&mut s, FaultKind::MissingArgument)?;
                 }
             }
             ScriptPhase::DefaultCall {
@@ -247,83 +130,6 @@ impl Vm {
                         let kind = language_fault(e)?;
                         self.preparation_fault(&mut s, kind)?;
                     }
-                }
-            }
-            ScriptPhase::Parameter { parameter, storage } => {
-                let bytes = if matches!(storage, BindingStorage::Cell(_)) && !s.shared_parameters {
-                    std::mem::size_of::<crate::cell::CellState>() as u64
-                } else {
-                    0
-                };
-                let sig = &self.program.package().signatures[signature.index()];
-                let p = sig
-                    .parameters
-                    .get(parameter as usize)
-                    .or(sig.rest.as_ref())
-                    .unwrap();
-                if !m.take(0, 4 + self.type_checks.extra(p.ty), bytes) {
-                    return Ok(false);
-                }
-                let input = self.value(s.bound, parameter)?;
-                let contract = self.contract(ModuleId(s.parameter_module.0), p.ty, p.mutable);
-                let prepared = self.parameter_value(contract, input, storage, s.shared_parameters);
-                match prepared {
-                    Ok(value) => {
-                        self.put(s.bound, parameter, value)?;
-                        self.put(s.regs, storage.reg().0, value)?;
-                        execution_count!(self, ParametersPrepared, 1);
-                        s.phase = ScriptPhase::Defaults {
-                            parameter: parameter + 1,
-                        };
-                    }
-                    Err(kind) => self.preparation_fault(&mut s, kind)?,
-                }
-            }
-            ScriptPhase::Install { mut binding } => {
-                let batch = 8;
-                #[cfg(test)]
-                let batch = if self.work_probe.single_install_step {
-                    1
-                } else {
-                    batch
-                };
-                for step in 0..batch {
-                    // The outer loop checked the first logical step. Subsequent
-                    // steps stop before the next required clock observation.
-                    if step != 0 && !m.next_short_step() {
-                        break;
-                    }
-                    if !m.take(0, 1, 0) {
-                        self.active.frames.data[top] = Frame::Script(s);
-                        return Ok(false);
-                    }
-                    let f = &self.program.package().functions[s.code.function.index()];
-                    let Some(b) = f.bindings.get(binding as usize) else {
-                        s.phase = if f.kind == FunctionKind::Generator {
-                            ScriptPhase::GeneratorCreate
-                        } else {
-                            ScriptPhase::Body
-                        };
-                        break;
-                    };
-                    execution_count!(self, InstallBindings, 1);
-                    let clear = match (b.initialization, b.storage) {
-                        (BindingInitialization::Explicit, BindingStorage::Value(reg)) => Some(reg),
-                        _ => None,
-                    };
-                    // Parameter slots retain their prepared values. Explicit
-                    // Value bindings clear even if a default used that register.
-                    if let Some(reg) = clear
-                        && let Err(error) = self.clear(s.regs, reg.0)
-                    {
-                        self.active.frames.data[top] = Frame::Script(s);
-                        return Err(error);
-                    }
-                    if clear.is_some() {
-                        execution_count!(self, InstallClears, 1);
-                    }
-                    binding += 1;
-                    s.phase = ScriptPhase::Install { binding };
                 }
             }
             ScriptPhase::Body => {
