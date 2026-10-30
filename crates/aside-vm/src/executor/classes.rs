@@ -266,13 +266,14 @@ impl Vm {
         Ok((found.unwrap_or(Value::NULL), lo))
     }
     fn member_target(&self, object: Value, name: SymbolId) -> Result<(Value, Value), FaultKind> {
-        let (receiver, member, _) = self.member_read_target(object, name)?;
+        let (receiver, member, _) = self.member_read_target(object, name, None)?;
         Ok((receiver, member))
     }
     fn member_read_target(
         &self,
         object: Value,
         name: SymbolId,
+        site: Option<(FunctionId, Pc)>,
     ) -> Result<(Value, Value, u64), FaultKind> {
         let (receiver, class, is_static) = match self.heap.info(object).map_err(heap_fault)?.kind {
             ObjectKind::Instance => (
@@ -293,17 +294,54 @@ impl Vm {
         let members = self
             .class_slot(class, ClassSlot::Members)
             .map_err(heap_fault)?;
-        let len = self.heap.info(members).map_err(heap_fault)?.len;
-        let (member, _) = self
-            .member_find_in(members, len, i64::from(name.0) * 2 + i64::from(is_static))
-            .map_err(heap_fault)?;
+        let info = self.heap.info(members).map_err(heap_fault)?;
+        let key = i64::from(name.0) * 2 + i64::from(is_static);
+        let cached = site.and_then(|(function, pc)| {
+            let (entry, true) =
+                self.member_hints
+                    .get(function, pc, members, info.content_version)?
+            else {
+                return None;
+            };
+            if entry >= info.len {
+                return None;
+            }
+            // Resolve the current full member generation. A class/instance
+            // switch at the same PC changes the static bit even for one name.
+            let member = self.heap.get_field(members, entry).ok()?;
+            (self
+                .heap
+                .get_field(member, MemberSlot::Key as u32)
+                .ok()?
+                .as_int()
+                == Some(key))
+            .then_some(member)
+        });
+        let member = if let Some(member) = cached {
+            #[cfg(test)]
+            self.work_probe
+                .member_hint_hits
+                .set(self.work_probe.member_hint_hits.get() + 1);
+            member
+        } else {
+            let (member, entry) = self
+                .member_find_in(members, info.len, key)
+                .map_err(heap_fault)?;
+            if !member.same_bits(Value::NULL)
+                && let Some((function, pc)) = site
+            {
+                self.member_hints
+                    .remember(function, pc, entry, members, info.content_version);
+            }
+            member
+        };
         if member.same_bits(Value::NULL) {
             return Err(FaultKind::MissingKey);
         }
         Ok((
             receiver,
             member,
-            12 + u64::from(len.checked_ilog2().unwrap_or(0)) * 3,
+            12 + u64::from(info.len.checked_ilog2().unwrap_or(0)) * 3,
         ))
     }
     fn member_cell(&self, receiver: Value, member: Value) -> Result<Value, HeapError> {
@@ -324,8 +362,9 @@ impl Vm {
         &self,
         object: Value,
         name: SymbolId,
+        site: Option<(FunctionId, Pc)>,
     ) -> Result<(ClassRead, Option<crate::PropertyId>), FaultKind> {
-        let (receiver, member, work) = self.member_read_target(object, name)?;
+        let (receiver, member, work) = self.member_read_target(object, name, site)?;
         if self
             .heap
             .get_field(member, MemberSlot::Method as u32)

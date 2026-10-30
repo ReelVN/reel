@@ -1,7 +1,9 @@
 //! Bounded, non-owning positions for named member lookups. A hint never owns a
 //! value. A full object generation and structural version can reuse a proven
 //! key position; other receivers validate its current key. Snapshots restore cold.
+//! Classes guard the member array's content version and recheck symbol/static keys.
 use super::*;
+use std::cell::Cell;
 
 const SLOTS: usize = 256;
 pub(super) const MAX_KEY_BYTES: usize = 64;
@@ -16,7 +18,7 @@ struct Hint {
 }
 
 pub(super) struct MemberHints {
-    entries: [Hint; SLOTS],
+    entries: [Cell<Hint>; SLOTS],
     #[cfg(test)]
     pub(super) identities: bool,
 }
@@ -24,13 +26,15 @@ pub(super) struct MemberHints {
 impl Default for MemberHints {
     fn default() -> Self {
         Self {
-            entries: [Hint {
-                function: u32::MAX,
-                pc: 0,
-                entry: 0,
-                table: 0,
-                version: 0,
-            }; SLOTS],
+            entries: std::array::from_fn(|_| {
+                Cell::new(Hint {
+                    function: u32::MAX,
+                    pc: 0,
+                    entry: 0,
+                    table: 0,
+                    version: 0,
+                })
+            }),
             #[cfg(test)]
             identities: true,
         }
@@ -50,7 +54,7 @@ impl MemberHints {
         table: Value,
         version: u64,
     ) -> Option<(u32, bool)> {
-        let hint = self.entries[Self::slot(function, pc)];
+        let hint = self.entries[Self::slot(function, pc)].get();
         let trusted = hint.table == table.object_parts().unwrap().1 && hint.version == version;
         #[cfg(test)]
         let trusted = trusted && self.identities;
@@ -58,20 +62,20 @@ impl MemberHints {
     }
 
     pub(super) fn remember(
-        &mut self,
+        &self,
         function: FunctionId,
         pc: Pc,
         entry: u32,
         table: Value,
         version: u64,
     ) {
-        self.entries[Self::slot(function, pc)] = Hint {
+        self.entries[Self::slot(function, pc)].set(Hint {
             function: function.0,
             pc: pc.0,
             entry,
             table: table.object_parts().unwrap().1,
             version,
-        };
+        });
     }
 }
 
@@ -98,7 +102,7 @@ impl Vm {
 }
 
 // This fixed storage is included by Vm's existing control-size reservation.
-const _: () = assert!(std::mem::size_of::<[Hint; SLOTS]>() == 8_192);
+const _: () = assert!(std::mem::size_of::<[Cell<Hint>; SLOTS]>() == 8_192);
 
 #[cfg(test)]
 mod tests {
@@ -110,7 +114,7 @@ mod tests {
         let key = heap.alloc_string("value").unwrap();
         heap.table_store(table, 0, key, Value::int(1)).unwrap();
         let version = heap.info(table).unwrap().structure_version;
-        let mut hints = MemberHints::default();
+        let hints = MemberHints::default();
         hints.remember(FunctionId(0), Pc(1), 0, table, version);
         assert_eq!(
             hints.get(FunctionId(0), Pc(1), table, version),

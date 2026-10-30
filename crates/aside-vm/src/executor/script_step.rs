@@ -274,7 +274,11 @@ impl Vm {
                             )
                         {
                             cost.0 += self.class_member_cost(object)?;
-                            match self.class_read_plan(object, SymbolId(c)) {
+                            match self.class_read_plan(
+                                object,
+                                SymbolId(c),
+                                s.member_symbol.map(|_| (s.code.function, s.pc)),
+                            ) {
                                 Ok((target, property)) => {
                                     class_read = Some((target, property));
                                     property
@@ -833,7 +837,11 @@ impl Vm {
                     #[cfg(test)]
                     let prepare = prepare && !self.work_probe.general_class_reads;
                     if prepare
-                        && let Ok((target, property)) = self.class_read_plan(object, SymbolId(c))
+                        && let Ok((target, property)) = self.class_read_plan(
+                            object,
+                            SymbolId(c),
+                            s.member_symbol.map(|_| (s.code.function, s.pc)),
+                        )
                     {
                         let work = target.work();
                         *class_read = Some((target, property));

@@ -13,6 +13,11 @@ class Child: Base {
     fn read(self) -> int { self.value + self.offset }
 }
 
+class ObservedState {
+    let mut value: int = 0;
+    let factor: int = 3;
+}
+
 fn arithmetic(n: int) -> int {
     let mut result = 0;
     for i in 0..n { result += (i * 3 + 1) % 97; }
@@ -79,6 +84,18 @@ fn allocation(n: int) -> int {
 fn reactive(n: int) -> int {
     let state = bench_model({value: 0});
     let value = bench_derive(|| state.value * 3 + 7);
+    let mut result = 0;
+    for i in 0..n {
+        state.value = i;
+        bench_flush();
+        result += value.value;
+    }
+    result
+}
+
+fn reactive_fields(n: int) -> int {
+    let state = bench_model(ObservedState());
+    let value = bench_derive(|| state.value * state.factor + 7);
     let mut result = 0;
     for i in 0..n {
         state.value = i;

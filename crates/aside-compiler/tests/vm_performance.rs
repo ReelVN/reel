@@ -18,7 +18,7 @@ mod runner;
 use runner::{Fixture, Mode};
 use std::{fmt::Write as _, time::Instant};
 
-const CASES: [&str; 11] = [
+const CASES: [&str; 12] = [
     "arithmetic",
     "calls",
     "fields",
@@ -28,6 +28,7 @@ const CASES: [&str; 11] = [
     "locals",
     "allocation",
     "reactive",
+    "reactive_fields",
     "text_compare",
     "string_keys",
 ];
@@ -40,7 +41,7 @@ fn oracle(name: &str, n: i64) -> i64 {
         "host_calls" => n * (n - 1) / 2,
         "locals" => (0..n).map(|i| i * 16 + 136).sum(),
         "allocation" => (0..n).map(|i| i + 3).sum(),
-        "reactive" => (0..n).map(|i| i * 3 + 7).sum(),
+        "reactive" | "reactive_fields" => (0..n).map(|i| i * 3 + 7).sum(),
         "text_compare" => n * 3,
         "string_keys" => n * 7,
         _ => unreachable!(),
@@ -83,7 +84,7 @@ fn kernels_preserve_oracles_across_codec_gc_and_budget_boundaries() {
                 if name == "host_calls" {
                     assert_eq!(result.host_entries, 7);
                 }
-                if name == "reactive" {
+                if matches!(name, "reactive" | "reactive_fields") {
                     assert!(result.derived_starts >= 6);
                 }
             }
