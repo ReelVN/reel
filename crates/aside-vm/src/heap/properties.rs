@@ -2,6 +2,8 @@
 //! Cached values are committed only after validating the entire affected graph.
 use super::*;
 mod batch;
+#[cfg(test)]
+mod cell_reads;
 mod cursor;
 mod source;
 pub(super) use batch::{PreparedBinding, PreparedProperty};

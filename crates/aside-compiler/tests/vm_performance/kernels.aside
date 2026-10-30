@@ -53,6 +53,17 @@ fn retained_method(n: int) -> int {
     result
 }
 
+fn captured_cells(n: int) -> int {
+    let mut value = 0;
+    let read = || value;
+    let mut result = 0;
+    for i in 0..n {
+        value = i;
+        result += read();
+    }
+    result
+}
+
 fn host_calls(n: int) -> int {
     let mut result = 0;
     for i in 0..n { result += bench_echo(i); }

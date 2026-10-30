@@ -103,10 +103,28 @@ impl Heap {
         })
     }
     pub fn cell_read(&self, cell: Value) -> Result<Value, HeapError> {
-        self.cell_info(cell)?;
-        Ok(self
-            .proposed_property(cell, 0)
-            .unwrap_or(self.get_field(cell, 0)?))
+        let stored = self.cell_value(cell)?;
+        let proposed = self.proposed_property(cell, 0);
+        // A proposal never makes an uninitialized stored Cell readable.
+        let stored = stored.ok_or(HeapError::UninitializedCell)?;
+        Ok(proposed.unwrap_or(stored))
+    }
+    /// Read an initialized language field and record its semantic dependency.
+    /// An uninitialized Cell returns `None` before observation. Observation can
+    /// grow its dependency buffer, but cannot run script or collect the heap;
+    /// the original Cell edge retains the copied value throughout this call.
+    pub(crate) fn observed_cell_value(&mut self, cell: Value) -> Result<Option<Value>, HeapError> {
+        let Some(stored) = self.cell_value(cell)? else {
+            return Ok(None);
+        };
+        self.observe_read(cell, Some(0))?;
+        Ok(Some(self.proposed_property(cell, 0).unwrap_or(stored)))
+    }
+    fn cell_value(&self, cell: Value) -> Result<Option<Value>, HeapError> {
+        let Payload::Cell(state) = &self.object(self.key(cell)?)?.payload else {
+            return Err(HeapError::WrongKind);
+        };
+        Ok(state.value)
     }
     fn cell_publish(
         &mut self,

@@ -18,12 +18,13 @@ mod runner;
 use runner::{Fixture, Mode};
 use std::{fmt::Write as _, time::Instant};
 
-const CASES: [&str; 12] = [
+const CASES: [&str; 13] = [
     "arithmetic",
     "calls",
     "fields",
     "methods",
     "retained_method",
+    "captured_cells",
     "host_calls",
     "locals",
     "allocation",
@@ -39,6 +40,7 @@ fn oracle(name: &str, n: i64) -> i64 {
         "calls" => (0..n).map(|i| i * 3 + 1).sum(),
         "fields" | "methods" | "retained_method" => n * 10,
         "host_calls" => n * (n - 1) / 2,
+        "captured_cells" => n * (n - 1) / 2,
         "locals" => (0..n).map(|i| i * 16 + 136).sum(),
         "allocation" => (0..n).map(|i| i + 3).sum(),
         "reactive" | "reactive_fields" => (0..n).map(|i| i * 3 + 7).sum(),

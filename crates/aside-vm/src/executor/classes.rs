@@ -330,8 +330,13 @@ impl Vm {
             if !member.same_bits(Value::NULL)
                 && let Some((function, pc)) = site
             {
-                self.class_member_hints
-                    .remember(function, pc, entry, members, info.content_version);
+                self.class_member_hints.remember(
+                    function,
+                    pc,
+                    entry,
+                    members,
+                    info.content_version,
+                );
             }
             member
         };
@@ -469,12 +474,10 @@ impl Vm {
     }
 
     fn class_cell_value(&mut self, cell: Value) -> Result<Value, FaultKind> {
-        let info = self.heap.cell_info(cell).map_err(heap_fault)?;
-        if !info.initialized {
-            return Err(FaultKind::UninitializedField);
-        }
-        self.heap.observe_read(cell, Some(0)).map_err(heap_fault)?;
-        self.heap.cell_read(cell).map_err(heap_fault)
+        self.heap
+            .observed_cell_value(cell)
+            .map_err(heap_fault)?
+            .ok_or(FaultKind::UninitializedField)
     }
 
     pub(super) fn execute_class_read(
