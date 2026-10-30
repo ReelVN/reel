@@ -47,6 +47,13 @@ impl Vm {
         };
         let op = instruction_spec(instruction.opcode).unwrap().opcode;
         let [a, b, c] = instruction.operands;
+        if matches!(op, Opcode::Clear | Opcode::Clear2 | Opcode::Clear3) {
+            #[cfg(test)]
+            if self.work_probe.general_clears {
+                return Ok(ScalarStep::General);
+            }
+            return self.scalar_clear(regs, op, [a, b, c], next, meter);
+        }
         if !matches!(
             op,
             Opcode::LoadConst
@@ -87,6 +94,44 @@ impl Vm {
                 unreachable!()
             };
             self.collection_fault(&mut frame, kind)?;
+            *self.active.frames.data.last_mut().unwrap() = Frame::Script(frame);
+            return Ok(ScalarStep::Done);
+        }
+        let Frame::Script(frame) = self.active.frames.data.last_mut().unwrap() else {
+            unreachable!()
+        };
+        frame.pc = Pc(next as u32);
+        frame.instruction = None;
+        frame.member_symbol = None;
+        Ok(ScalarStep::Done)
+    }
+
+    fn scalar_clear(
+        &mut self,
+        regs: RootRangeToken,
+        op: Opcode,
+        [a, b, c]: [u32; 3],
+        next: usize,
+        meter: &mut Meter,
+    ) -> Result<ScalarStep, VmError> {
+        let work = match op {
+            Opcode::Clear => 1,
+            Opcode::Clear2 => 2,
+            _ => 3,
+        };
+        if !meter.take(1, work, 0) {
+            return Ok(ScalarStep::Budget);
+        }
+        let result = match op {
+            Opcode::Clear => self.slots.clear(&mut self.heap, at(regs, a)),
+            Opcode::Clear2 => self.slots.clear_registers(&mut self.heap, regs, [a, b]),
+            _ => self.slots.clear_registers(&mut self.heap, regs, [a, b, c]),
+        };
+        if let Err(error) = result {
+            let Frame::Script(mut frame) = *self.active.frames.data.last().unwrap() else {
+                unreachable!()
+            };
+            self.collection_fault(&mut frame, heap_fault(error))?;
             *self.active.frames.data.last_mut().unwrap() = Frame::Script(frame);
             return Ok(ScalarStep::Done);
         }
