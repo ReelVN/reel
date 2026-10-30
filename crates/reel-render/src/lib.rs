@@ -4,6 +4,8 @@
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
 mod capture_color;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
 mod common;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
