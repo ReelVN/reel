@@ -213,6 +213,13 @@ impl Context<'_> {
         };
         if let Some(probe) = probe {
             if let Some(hit) = self.cached_effect(&probe)? {
+                #[cfg(feature = "profiling")]
+                crate::profiling::record_effect(crate::profiling::EffectSample {
+                    definition: effect.definition,
+                    variant: 3,
+                    hits: 1,
+                    ..Default::default()
+                });
                 return Ok(hit);
             }
             let output = self.effect_draw(
@@ -555,6 +562,8 @@ impl Context<'_> {
         };
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
         let _draw = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
+        #[cfg(feature = "profiling")]
+        let submit_start = std::time::Instant::now();
         self.gpu.draw(native::Draw {
             target: native::Target::Framebuffer(&output.framebuffer),
             size: self.size,
@@ -572,6 +581,42 @@ impl Context<'_> {
             },
             scissor: self.native_scissor(),
         })?;
+        #[cfg(feature = "profiling")]
+        {
+            use crate::profiling::{EffectSample, area, record_effect};
+            record_effect(EffectSample {
+                definition: effect.definition,
+                variant: if overwrite.is_some() {
+                    2
+                } else {
+                    u8::from(coverage.is_some())
+                },
+                draws: 1,
+                source_pixels: if descriptor.source_sampler {
+                    area(source.size)
+                } else {
+                    0
+                },
+                source_storage_pixels: if descriptor.source_sampler {
+                    area(source.storage_size)
+                } else {
+                    0
+                },
+                output_pixels: area(self.size),
+                output_storage_pixels: area(output.view.size()),
+                scissor_pixels: area([self.scissor.width, self.scissor.height]),
+                sampler_bindings: images.len() as u64,
+                submit_wall_us: submit_start.elapsed().as_micros() as u64,
+                max_source: if descriptor.source_sampler {
+                    source.storage_size
+                } else {
+                    [0; 2]
+                },
+                max_output: output.view.size(),
+                largest_owner: at.owner.to_raw(),
+                ..Default::default()
+            });
+        }
         Ok(output)
     }
 }

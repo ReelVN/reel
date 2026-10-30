@@ -12,6 +12,7 @@ const WINDOWS: usize = 512;
 const SLOW: usize = 64;
 const SEGMENTS: usize = 64;
 mod device;
+mod effects;
 mod timeline;
 #[cfg(any(target_os = "vita", test))]
 pub(crate) use device::DeviceSample;
@@ -163,6 +164,7 @@ impl Live {
                 let mut previous = Sample::snapshot();
                 let mut geometry = GeometryUploads::snapshot();
                 let mut line = String::with_capacity(8192);
+                let mut effect_rows = Vec::with_capacity(reel_render::profiling::EFFECT_CAPACITY);
                 eprintln!("[reel-probe] live sampling started; elapsed us and completed calls; nested phases overlap; VM counters cumulative, last_* latest slice; gc_phase idle=0 mark=1 weak=2 sweep=3; fn/pc identify the last selected task; vm_sample advances on main-thread snapshots");
                 while !stopped.load(Ordering::Relaxed) {
                     let deadline = Instant::now() + std::time::Duration::from_secs(1);
@@ -196,8 +198,10 @@ impl Live {
                     if device::append_live(&mut line) {
                         eprintln!("{line}");
                     }
+                    effects::print(&mut effect_rows, &mut line, start.elapsed().as_millis());
                     VM_REQUESTED.store(true, Ordering::Relaxed);
                 }
+                effects::print(&mut effect_rows, &mut line, start.elapsed().as_millis());
             })?;
         Ok(Self {
             stop,

@@ -69,6 +69,14 @@ impl Context<'_> {
         let Some(hit) = self.cached_effect(&probe)? else {
             return Ok(false);
         };
+        #[cfg(feature = "profiling")]
+        crate::profiling::record_effect(crate::profiling::EffectSample {
+            definition: effect.definition,
+            variant: 3,
+            hits: 1,
+            early_hits: 1,
+            ..Default::default()
+        });
         let unused = std::mem::replace(&mut current.scopes.last_mut().target, hit);
         self.recycle_target(unused)?;
         current.next = end;
