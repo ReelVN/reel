@@ -445,7 +445,7 @@ impl Context<'_> {
             )?;
             compiled
         };
-        self.ensure_target(&output)?;
+        self.initialize_target(&output, overwrite)?;
         let mut held = std::mem::take(&mut self.effects);
         let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {
             self.transient(bytes)

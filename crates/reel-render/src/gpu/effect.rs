@@ -615,7 +615,7 @@ impl Context<'_> {
             None
         };
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
-        let attachment = output.attachment(self.target_writes.take(output.slot));
+        let attachment = output.attachment(self.target_writes.write(output.slot, overwrite));
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("prepared effect"),
             color_attachments: &[Some(attachment)],

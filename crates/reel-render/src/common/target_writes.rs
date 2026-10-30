@@ -54,6 +54,13 @@ impl TargetWrites {
         *word &= !bit;
         clear
     }
+
+    /// Mark the next write and return whether transparent initialization is
+    /// required. A proved complete replacement initializes every physical
+    /// sample itself, including padding and transparent pixels outside the node.
+    pub(crate) fn write(&mut self, slot: usize, overwrite: Option<FullOverwrite>) -> bool {
+        self.take(slot) && overwrite.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +101,25 @@ mod tests {
         ] {
             assert!(FullOverwrite::composite(size, size, scissor, true).is_none());
         }
+    }
+
+    #[test]
+    fn replacement_initializes_a_reused_slot_and_partial_writes_still_clear() {
+        use super::super::scissor::Scissor;
+        let size = [65, 11];
+        let mut writes = TargetWrites::default();
+        writes.begin(0, |_| Ok(())).unwrap();
+        let complete = FullOverwrite::composite(size, size, Scissor::full(size), true);
+        assert!(!writes.write(0, complete));
+        assert!(!writes.pending(0));
+        assert!(!writes.write(0, None), "preserve the preceding full output");
+        writes.begin(0, |_| Ok(())).unwrap();
+        let partial = FullOverwrite::composite(size, [128, 16], Scissor::full(size), true);
+        assert!(
+            writes.write(0, partial),
+            "physical padding still needs initialization"
+        );
+        assert!(!writes.write(0, None));
     }
 
     #[test]

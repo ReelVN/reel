@@ -214,7 +214,14 @@ impl Context<'_> {
         Ok(target)
     }
     pub(super) fn ensure_target(&mut self, target: &Target) -> Result<(), GpuError> {
-        if self.target_writes.take(target.slot) {
+        self.initialize_target(target, None)
+    }
+    pub(super) fn initialize_target(
+        &mut self,
+        target: &Target,
+        overwrite: Option<crate::common::target_writes::FullOverwrite>,
+    ) -> Result<(), GpuError> {
+        if self.target_writes.write(target.slot, overwrite) {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
             self.gpu
                 .clear(native::Target::Framebuffer(&target.framebuffer), [0.; 4])?;
