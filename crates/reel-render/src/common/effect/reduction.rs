@@ -29,7 +29,7 @@ impl Reduction {
     pub fn iterations(&self) -> usize {
         ((i64::from(self.end) - i64::from(self.first)) / i64::from(self.step)) as usize
     }
-    /// Four ordered taps amortize branch control without a wide live sample set.
+    /// Four or five ordered taps amortize branch control with bounded liveness.
     /// Keep short reductions, integer-conversion boundaries and complex/branched
     /// coordinate bodies on the original single-tap loop.
     pub fn block_width(&self, program: &EffectProgram) -> usize {
@@ -63,7 +63,14 @@ impl Reduction {
                 )
             })
         {
-            4
+            // Five taps reduce loop control and expose more independent reads.
+            // Keep four when five would enlarge the straight-line remainder.
+            // Wider blocks substantially increase Sony Cg temporary registers.
+            if self.iterations() % 5 <= self.iterations() % 4 {
+                5
+            } else {
+                4
+            }
         } else {
             1
         }

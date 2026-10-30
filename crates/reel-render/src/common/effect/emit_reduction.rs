@@ -52,8 +52,10 @@ impl Emitter<'_> {
         if self.language == Language::Cg {
             self.line(scope, "#pragma loop (unroll: never)")?;
         }
-        let width = if self.block_reductions && id == self.program.output() {
-            reduction.block_width(self.program)
+        let width = if id == self.program.output() {
+            reduction
+                .block_width(self.program)
+                .min(self.max_block_width)
         } else {
             1
         };

@@ -255,7 +255,7 @@ fn large_proved_reduction_keeps_integer_constants_and_final_scaling() {
     for language in [Language::Wgsl, Language::Cg] {
         let fragment = compile_fragment(&program, language, 1 << 20).unwrap();
         let function = generate(&program, language, 1 << 20).unwrap().function;
-        assert_eq!(function.matches(" = reel_source_sample(").count(), 5);
+        assert_eq!(function.matches(" = reel_source_sample(").count(), 6);
         assert!(function.contains("!= 30;"));
         assert!(function.contains("+= 1;"));
         assert!(function.contains("= -30;"));

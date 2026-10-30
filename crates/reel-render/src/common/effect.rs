@@ -124,7 +124,8 @@ pub fn compile_fragment(
 }
 /// Generate one fixed variant without changing the authored effect graph.
 /// If bounded loop blocks exceed the complete source limit, retry the original
-/// single-tap loop so an optimization cannot reject a previously admitted shader.
+/// four-tap and single-tap loops so an optimization cannot reject a previously
+/// admitted shader.
 pub fn compile_fragment_with_tail(
     program: &EffectProgram,
     language: Language,
@@ -144,7 +145,7 @@ pub fn compile_fragment_with_tail(
 /// `FullTarget` requires a full-attachment proof and accepts only the ordinary
 /// tail. UV-domain rejection returns transparent color. Source/image sampling,
 /// parameters and attachment quantization retain the local variant's behavior.
-/// Both variants retain single-tap source-limit fallback.
+/// Both variants retain four-tap and single-tap source-limit fallback.
 pub fn compile_fragment_variant(
     program: &EffectProgram,
     language: Language,
@@ -155,8 +156,8 @@ pub fn compile_fragment_variant(
     if coverage == FragmentCoverage::FullTarget && tail != OutputTail::Ordinary {
         return Err(GenerateError::UnsupportedTail);
     }
-    let compile = |blocks| -> Result<_, GenerateError> {
-        let generated = generate_inner(program, language, max_source_bytes, blocks)?;
+    let compile = |max_block_width| -> Result<_, GenerateError> {
+        let generated = generate_inner(program, language, max_source_bytes, max_block_width)?;
         if tail == OutputTail::AlphaCoverage
             && !OutputTail::supports_coverage(
                 generated.output_type,
@@ -171,10 +172,7 @@ pub fn compile_fragment_variant(
             Language::Cg => cg::compile(program, generated, tail, coverage, max_source_bytes),
         }
     };
-    match compile(true) {
-        Err(GenerateError::SourceLimit { .. }) => compile(false),
-        result => result,
-    }
+    source_fallback(compile)
 }
 
 /// The shader language of a prepared pipeline.
@@ -302,17 +300,24 @@ impl std::error::Error for GenerateError {}
 /// Traversal uses an explicit CPU work stack so graph depth cannot overflow it.
 /// The byte limit covers the returned declarations and function, including helpers;
 /// backend-owned entry points and source hooks have their own admission budget.
-/// Simple long sampling reductions use four ordered taps per iteration, with a
-/// single-tap retry when the bounded expansion exceeds this byte limit.
+/// Simple long sampling reductions use four or five ordered taps per iteration.
+/// A source-limit retry caps blocks at four taps, then retains the single-tap loop.
 pub fn generate(
     program: &EffectProgram,
     language: Language,
     max_source_bytes: usize,
 ) -> Result<GeneratedEffect, GenerateError> {
-    match generate_inner(program, language, max_source_bytes, true) {
-        Err(GenerateError::SourceLimit { .. }) => {
-            generate_inner(program, language, max_source_bytes, false)
-        }
+    source_fallback(|width| generate_inner(program, language, max_source_bytes, width))
+}
+
+fn source_fallback<T>(
+    mut build: impl FnMut(usize) -> Result<T, GenerateError>,
+) -> Result<T, GenerateError> {
+    match build(5) {
+        Err(GenerateError::SourceLimit { .. }) => match build(4) {
+            Err(GenerateError::SourceLimit { .. }) => build(1),
+            result => result,
+        },
         result => result,
     }
 }
@@ -320,7 +325,7 @@ fn generate_inner(
     program: &EffectProgram,
     language: Language,
     max_source_bytes: usize,
-    block_reductions: bool,
+    max_block_width: usize,
 ) -> Result<GeneratedEffect, GenerateError> {
     // Every declared parameter needs at least one sixteen-byte slot and more
     // than sixteen source bytes. Reject oversized layouts before allocating them.
@@ -377,7 +382,7 @@ fn generate_inner(
         next_name: 0,
         samples_source: false,
         reductions: HashMap::new(),
-        block_reductions,
+        max_block_width,
     };
     emitter.run()?;
     let output_type = program.nodes()[program.output().0 as usize].ty;
@@ -483,7 +488,7 @@ struct Emitter<'a> {
     next_name: usize,
     samples_source: bool,
     reductions: HashMap<EffectNodeId, Option<reduction::Reduction>>,
-    block_reductions: bool,
+    max_block_width: usize,
 }
 
 impl Emitter<'_> {

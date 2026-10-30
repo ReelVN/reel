@@ -24,7 +24,7 @@ pub(super) fn compile(
     // costs more there than it saves in the loop. FullTarget writes transparency.
     let parallel_clip = coverage == FragmentCoverage::Local
         && reduction::Reduction::find(program, program.output())
-            .is_some_and(|proof| proof.block_width(program) == 4);
+            .is_some_and(|proof| proof.block_width(program) > 1);
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
     let mut source =
         String::from("uniform float4 reel_context[10];\nuniform float4 reel_clip_rect;\n");
