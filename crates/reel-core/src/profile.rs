@@ -87,8 +87,16 @@ pub enum Phase {
     UiImageTiles,
     /// Apply a stage view to the retained widget tree.
     UiWidgetSync,
+    /// Incremental VM collection driven by the session scheduler.
+    SessionGc,
+    /// Session activity/time updates, including bounded animation graph work.
+    SessionActivity,
+    /// Task selection/maintenance and VM slices; excludes later host dispatch.
+    SessionSchedule,
+    /// Project VM node properties into the authored stage; nested in its caller.
+    StageProperties,
 }
-pub const NAMES: [&str; 56] = [
+pub const NAMES: [&str; 60] = [
     "input",
     "tick",
     "session",
@@ -145,6 +153,10 @@ pub const NAMES: [&str; 56] = [
     "ui_image_requests",
     "ui_image_tiles",
     "ui_widget_sync",
+    "session_gc",
+    "session_activity",
+    "session_schedule",
+    "stage_properties",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

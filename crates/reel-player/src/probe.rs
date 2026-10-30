@@ -13,6 +13,7 @@ const SLOW: usize = 64;
 const SEGMENTS: usize = 64;
 mod device;
 mod effects;
+mod frames;
 mod timeline;
 #[cfg(feature = "vm-profiling")]
 mod vm_hotspots;
@@ -317,6 +318,7 @@ pub(crate) struct Recording {
     segments: VecDeque<(String, Row)>,
     device: device::DeviceSamples,
     timeline: timeline::Timeline,
+    frames: frames::Frames,
 }
 impl Recording {
     pub(crate) fn new() -> Self {
@@ -340,6 +342,7 @@ impl Recording {
             segments: VecDeque::with_capacity(SEGMENTS),
             device: device::DeviceSamples::default(),
             timeline: timeline::Timeline::default(),
+            frames: frames::Frames::default(),
         }
     }
 
@@ -392,6 +395,7 @@ impl Recording {
         };
         self.last_geometry = geometry;
         self.timeline.record(title, &row, story);
+        self.frames.record(title, &row);
         self.total.add(row);
         self.pending.add(row);
         if self.segment.0 != title {
@@ -440,6 +444,7 @@ impl Recording {
                 + self.segment.0.capacity()
                 + self.device.bytes()
                 + self.timeline.bytes()
+                + self.frames.bytes()
         )?;
         writeln!(
             out,
@@ -504,6 +509,7 @@ impl Recording {
         self.report(&mut out, title, outcome)?;
         writeln!(out, "[reel-probe-report] end")?;
         self.timeline.report(&mut out)?;
+        self.frames.report(&mut out)?;
         let mut native = String::with_capacity(8192);
         if device::append_live(&mut native) {
             writeln!(out, "{native}")?;

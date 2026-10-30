@@ -1,5 +1,6 @@
 //! Repository validation and reproducible measurement commands.
 pub mod audio;
+pub mod frame_cost;
 pub mod maintenance;
 pub mod process;
 pub mod vita;
