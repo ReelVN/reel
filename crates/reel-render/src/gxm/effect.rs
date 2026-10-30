@@ -124,10 +124,7 @@ impl Context<'_> {
         {
             return Ok(Some(hit));
         }
-        let bytes = self
-            .gpu
-            .target_layout(hit.view.size(), native::TargetFormat::Rgba8)?
-            .texture_bytes;
+        let bytes = hit.view.allocated_bytes() as u64;
         if !self.effect_admission.can_retain(bytes) {
             return Ok(None);
         }
@@ -242,10 +239,7 @@ impl Context<'_> {
                 None,
                 at,
             )?;
-            let bytes = self
-                .gpu
-                .target_layout(output.view.size(), native::TargetFormat::Rgba8)?
-                .texture_bytes;
+            let bytes = output.view.allocated_bytes() as u64;
             if self.effect_admission.can_retain(bytes)
                 && let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient)
             {

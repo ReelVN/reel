@@ -19,10 +19,17 @@ impl Cache {
             self.size = Some(size);
         }
     }
-    pub fn get(&self, size: [u32; 2], used: &[Target]) -> Option<Target> {
+    pub fn get(
+        &self,
+        size: [u32; 2],
+        storage: super::native::TargetStorage,
+        used: &[Target],
+    ) -> Option<Target> {
         self.owners
             .get_eligible(size, 0, |target| {
-                !target.is_effect_pinned() && !used.iter().any(|held| held.same_allocation(target))
+                target.view.target_storage() == Some(storage)
+                    && !target.is_effect_pinned()
+                    && !used.iter().any(|held| held.same_allocation(target))
             })
             .cloned()
     }

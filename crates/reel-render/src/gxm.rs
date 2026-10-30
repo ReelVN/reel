@@ -47,9 +47,10 @@ mod renderer;
 /// Shared scheduling targets are provisioned for eight scenes per frame; driver
 /// storage is included in each target footprint before allocation.
 /// Screen draws use `native::FragmentOutput::Srgb` with linear input colors;
-/// offscreen targets retain linear color encoding and use 32x32 tiled RGBA8
-/// storage when both dimensions are at least 32. Small and Coverage8 targets
-/// remain scanline-addressed; native layout queries account complete tiles.
+/// offscreen targets retain linear color encoding. Frames needing backdrop
+/// copies use linear targets; other frames use 32x32 tiled RGBA8 storage when
+/// both dimensions are at least 32. Planning accounts complete tiles before
+/// selecting the actual storage, and cache reuse requires matching layouts.
 pub fn create_context(
     options: &GxmOptions,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
@@ -103,14 +104,6 @@ fn create_program(
         clip_uniform: clipped.then_some("reel_clip_rect"),
         output,
     })
-}
-
-fn create_target_texture(
-    context: &native::Context,
-    size: [u32; 2],
-    format: native::TargetFormat,
-) -> Result<native::Texture, native::Error> {
-    context.create_target_texture(size, format)
 }
 
 fn texture_bytes(size: [u32; 2], format: native::TextureFormat) -> Result<u64, GxmError> {

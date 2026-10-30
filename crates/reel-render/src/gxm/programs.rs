@@ -596,12 +596,13 @@ impl Target {
         context: &super::ownership::Device,
         size: [u32; 2],
         format: native::TargetFormat,
+        target_storage: native::TargetStorage,
         budget: &BudgetPool,
         limit: u64,
     ) -> Result<Self, (GpuError, Option<super::ownership::NativeTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
-        let bytes = context
-            .target_layout(size, format)
+        let bytes = target_storage
+            .layout(size, format)
             .map_err(|error| (error.into(), None))?
             .texture_bytes;
         let storage = {
@@ -623,7 +624,7 @@ impl Target {
             let view = {
                 let _timing =
                     reel_core::profile::Scope::new(reel_core::profile::Phase::TargetTexture);
-                super::super::create_target_texture(context, size, format)?
+                context.create_target_texture_with_storage(size, format, target_storage)?
             };
             let framebuffer = {
                 let _timing =

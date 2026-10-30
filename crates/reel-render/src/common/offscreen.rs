@@ -38,10 +38,18 @@ pub(crate) struct Plan {
     coverage_requirements: super::target_plan::Requirements,
     coverage_enabled: bool,
     stable_backdrop: bool,
+    sampled_backdrop: bool,
     destination: super::blend::DestinationAccess,
 }
 
 impl Plan {
+    /// The selected traversal needs a sampled copy of an existing destination.
+    /// Native backends can preserve arbitrary integer copy rectangles by choosing
+    /// linear storage; current-pixel blends leave this false.
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn sampled_backdrop(&self) -> bool {
+        self.sampled_backdrop
+    }
     pub(crate) fn destination(&self) -> super::blend::DestinationAccess {
         self.destination
     }
@@ -223,6 +231,7 @@ impl Plan {
                 traversal.push(reserve(bytes)?);
                 Ok(())
             })?);
+            let sampled_backdrop = measured.as_ref().unwrap().sampled_backdrop;
             let coverage_bytes = measured.as_ref().unwrap().coverage_bytes;
             let mut coverage_tickets = Vec::new();
             let coverage_requirements =
@@ -247,6 +256,7 @@ impl Plan {
                 storage_tickets = tickets;
             }
             if bytes <= byte_limit || plan.is_empty() {
+                plan.sampled_backdrop = sampled_backdrop;
                 plan.coverage_requirements = coverage_requirements;
                 if plan.storage.bytes() == 0 {
                     plan.requirements = measured.as_ref().unwrap().requirements(|bytes| {

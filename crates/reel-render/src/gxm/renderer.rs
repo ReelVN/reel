@@ -593,13 +593,10 @@ impl Backend {
         ) {
             Ok(prepared) => {
                 if let Some(token) = prepared.retained {
-                    let storage = prepared.output.view.size();
                     self.retained.stage(
                         token,
                         prepared.output.clone(),
-                        self.context
-                            .target_layout(storage, native::TargetFormat::Rgba8)?
-                            .texture_bytes,
+                        prepared.output.view.allocated_bytes() as u64,
                     );
                     self.targets.clear();
                     self.coverage_targets.clear();

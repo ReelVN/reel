@@ -660,6 +660,81 @@ fn source_windows_stop_at_backdrop_reads_and_parent_scope_changes() {
 }
 
 #[test]
+fn storage_policy_follows_sampled_destination_dependencies() {
+    use crate::common::blend::DestinationAccess;
+    for special in [false, true] {
+        let mut scene = Scene::new();
+        scene.push_group(Group {
+            composite: Composite {
+                alpha: 0.5,
+                blend: if special {
+                    reel_ui::peniko::Mix::Screen.into()
+                } else {
+                    Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        for left in [10., 25.] {
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(left, 10., left + 80., 80.)),
+                composite: Default::default(),
+            });
+        }
+        scene.pop_group();
+        let pool = r01_fixture::pool();
+        let mut widget = r01_fixture::RecordWidget::new(scene);
+        widget.clip = false;
+        let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(12)).unwrap(),
+            r01_fixture::empty_snapshot(&pool),
+            FrameInfo {
+                logical_size: [400., 300.],
+                physical_size: [400, 300],
+            },
+            r01_fixture::limits(),
+            &pool,
+        )
+        .unwrap();
+        while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+        let frame = build.finish().unwrap();
+        for access in [
+            DestinationAccess::Sampled,
+            DestinationAccess::CurrentPixelUnorm8,
+        ] {
+            let (plan, _, _) = offscreen::Plan::choose_with_groups(
+                &frame,
+                None,
+                [400, 300],
+                false,
+                1,
+                4096,
+                &crate::common::glyph_plan::Plan::default(),
+                u64::MAX,
+                &|s| Ok(u64::from(s[0]) * u64::from(s[1]) * 4),
+                None,
+                MaskExecution::Sampled,
+                access,
+                &Default::default(),
+                None,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(
+                plan.sampled_backdrop(),
+                special && access == DestinationAccess::Sampled
+            );
+        }
+    }
+}
+
+#[test]
 fn inline_parent_before_the_first_deferred_draw_keeps_its_draw_in_the_tape() {
     use crate::common::offscreen::ParentStep;
     let frame = interleaved_source_frame_with_inline(false, false, true);

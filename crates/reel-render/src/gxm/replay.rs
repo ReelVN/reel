@@ -72,6 +72,7 @@ pub(super) struct Context<'a> {
     pub targets: Vec<Target>,
     pub available_targets: Vec<Target>,
     pub target_writes: crate::common::target_writes::TargetWrites,
+    pub target_storage: native::TargetStorage,
     pub geometry_cache: &'a mut super::geometry::Cache,
     pub buffers: Vec<super::geometry::Storage>,
     pub paint_batch: Option<draw::PaintBatch>,
@@ -195,6 +196,7 @@ pub(super) fn prepare(
         targets: Vec::new(),
         available_targets: Vec::new(),
         target_writes: Default::default(),
+        target_storage: native::TargetStorage::Tiled,
         geometry_cache,
         buffers: Vec::new(),
         paint_batch: None,
@@ -271,6 +273,9 @@ pub(super) fn prepare(
             effect_results_enabled && !capture,
         );
         context.offscreen = schedule;
+        if context.offscreen.sampled_backdrop() {
+            context.target_storage = native::TargetStorage::Linear;
+        }
         context.prepare_targets()?;
         context
             .effect_admission

@@ -110,6 +110,7 @@ struct Scratch {
     buckets: Vec<Bucket>,
     coverage: Vec<Bucket>,
     local_backdrop: bool,
+    sampled_backdrop: bool,
     events: Option<Vec<super::target_storage::Event>>,
 }
 struct Bucket {
@@ -219,6 +220,7 @@ impl Scratch {
         single_mask: bool,
         reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<(), GpuError> {
+        self.sampled_backdrop |= needed;
         if mask_surface {
             if single_mask {
                 self.coverage(size, true, reserve)?;
@@ -406,6 +408,7 @@ pub(crate) struct Measured {
     pub bytes: u64,
     pub reusable: bool,
     pub local_backdrop: bool,
+    pub sampled_backdrop: bool,
     pub coverage_bytes: u64,
     scratch: Scratch,
 }
@@ -459,6 +462,7 @@ impl Input<'_> {
             bytes,
             reusable,
             local_backdrop: scratch.local_backdrop,
+            sampled_backdrop: scratch.sampled_backdrop,
             coverage_bytes,
             scratch,
         })
