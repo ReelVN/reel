@@ -2,7 +2,7 @@
 use super::{BudgetPool, GpuError, NAMES, Shader, create_program_with_vertex, native};
 use std::cell::OnceCell;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Kind {
     Direct(crate::common::mesh::DirectPaint),
     Bounded(crate::common::mesh::DirectPaint),
@@ -104,6 +104,10 @@ impl PaintPrograms {
         let slot =
             &self.entries[kind.index() * 4 + usize::from(clipped) * 2 + usize::from(instanced)];
         if slot.get().is_none() {
+            #[cfg(feature = "profiling")]
+            eprintln!(
+                "[reel-render] paint shader={kind:?} clipped={clipped} instanced={instanced}"
+            );
             let storage = device.ticket(
                 self.budget
                     .reserve(size_of::<Entry>() as u64)

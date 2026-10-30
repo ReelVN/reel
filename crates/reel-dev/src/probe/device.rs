@@ -48,6 +48,7 @@ const CASES: &[&str] = &[
     "bc3",
     "bc1_region",
     "bc3_region",
+    "portrait_pan",
     "text",
     "text_plain",
     "text_styled",
@@ -393,6 +394,13 @@ fn renderer_case(
         renderer.usage(),
         assets.usage()
     ));
+    if case == "portrait_pan" {
+        for index in [0, 37, 84] {
+            let pixels = color_capture::capture(renderer, assets.frame(case, index)?, SIZE)?;
+            std::fs::write(directory().join(format!("portrait-{index}.rgba")), pixels)?;
+        }
+        log("PORTRAIT COLOR captures=3 width=960 height=544 encoding=linear");
+    }
     Ok(())
 }
 
