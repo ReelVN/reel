@@ -1,4 +1,45 @@
 use super::*;
+
+#[test]
+fn derived_method_and_inherited_fields_refresh_after_nested_dependencies_change() {
+    let code = r#"
+    class Base {let mut amount:int=2;}
+    class Child:Base {
+        let mut forwarded:int=0;
+        fn sample(self)->int {self.amount+self.forwarded}
+    }
+    fn opening(){
+        let state=model({source:2});
+        let upstream=derive(||state.source*3);
+        let data=model(Child());
+        data.forwarded=upstream;
+        let result=derive(||data.sample());
+        stage.replace(column(){
+            text(value:derive(||f"{result.value}"));
+            button("change",on_click:||{state.source=7;data.amount=5;});
+        });
+        narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("8".into()))
+        );
+        let button = vm.stage().nodes().find(|node|
+            matches!(&node.kind, NodeKind::Button {label:Some(label),..} if label=="change")
+        ).unwrap().id;
+        vm.click(&mut session, button).unwrap();
+        models::drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("26".into()))
+        );
+    }
+}
 use reel_ui::stage::NodeKind;
 
 #[test]

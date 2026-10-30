@@ -4,6 +4,14 @@ use super::*;
 
 use crate::class::{ClassSlot, InstanceSlot, MemberSlot, State};
 
+/// Borrowed logical owners for one instruction only. A reactive callback or
+/// budget yield drops this plan and resolves again after resumption.
+pub(super) struct ClassRead {
+    receiver: Value,
+    member: Value,
+    cell: Option<Value>,
+}
+
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum ClassStep {
     Build {
@@ -272,11 +280,11 @@ impl Vm {
         };
         self.heap.get_field(fields, index)
     }
-    pub(super) fn class_read_property(
+    pub(super) fn class_read_plan(
         &self,
         object: Value,
         name: SymbolId,
-    ) -> Result<Option<crate::PropertyId>, FaultKind> {
+    ) -> Result<(ClassRead, Option<crate::PropertyId>), FaultKind> {
         let (receiver, member) = self.member_target(object, name)?;
         if self
             .heap
@@ -285,17 +293,32 @@ impl Vm {
             .as_bool()
             == Some(true)
         {
-            return Ok(None);
+            return Ok((
+                ClassRead {
+                    receiver,
+                    member,
+                    cell: None,
+                },
+                None,
+            ));
         }
         let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
-        Ok(self
+        let property = self
             .heap
             .is_model_cell(cell)
             .map_err(heap_fault)?
             .then_some(crate::PropertyId {
                 host: cell,
                 field: 0,
-            }))
+            });
+        Ok((
+            ClassRead {
+                receiver,
+                member,
+                cell: Some(cell),
+            },
+            property,
+        ))
     }
     pub(super) fn class_member(
         &mut self,
@@ -315,36 +338,11 @@ impl Vm {
             if write.is_some() {
                 return Err(FaultKind::ReadOnly);
             }
-            if effects.0 & Effects::ALLOCATE == 0 {
-                return Err(FaultKind::Effect);
-            }
-            let owner = self
-                .heap
-                .get_field(member, MemberSlot::Owner as u32)
-                .map_err(heap_fault)?;
-            let index = self
-                .heap
-                .get_field(member, MemberSlot::Index as u32)
-                .map_err(heap_fault)?
-                .as_int()
-                .unwrap() as u32;
-            let closures = self
-                .class_slot(owner, ClassSlot::Closures)
-                .map_err(heap_fault)?;
-            let closure = self.heap.get_field(closures, index).map_err(heap_fault)?;
-            let receiver =
-                if self.heap.info(receiver).map_err(heap_fault)?.kind == ObjectKind::Class {
-                    Value::NULL
-                } else {
-                    receiver
-                };
-            return self
-                .bind_script(closure, receiver, owner)
-                .map_err(heap_fault);
+            return self.class_method_value(receiver, member, effects);
         }
         let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
-        let info = self.heap.cell_info(cell).map_err(heap_fault)?;
         if let Some(value) = write {
+            let info = self.heap.cell_info(cell).map_err(heap_fault)?;
             if !self.heap.is_model_cell(cell).map_err(heap_fault)? {
                 self.check_cell_type(info.contract, value)?;
             }
@@ -354,12 +352,67 @@ impl Vm {
                 self.heap.cell_initialize(cell, value).map_err(heap_fault)?;
             }
             Ok(value)
-        } else if !info.initialized {
-            Err(FaultKind::UninitializedField)
         } else {
-            self.heap.observe_read(cell, Some(0)).map_err(heap_fault)?;
-            self.heap.cell_read(cell).map_err(heap_fault)
+            self.class_cell_value(cell)
         }
+    }
+
+    fn class_method_value(
+        &mut self,
+        receiver: Value,
+        member: Value,
+        effects: Effects,
+    ) -> Result<Value, FaultKind> {
+        if effects.0 & Effects::ALLOCATE == 0 {
+            return Err(FaultKind::Effect);
+        }
+        let owner = self
+            .heap
+            .get_field(member, MemberSlot::Owner as u32)
+            .map_err(heap_fault)?;
+        let index = self
+            .heap
+            .get_field(member, MemberSlot::Index as u32)
+            .map_err(heap_fault)?
+            .as_int()
+            .unwrap() as u32;
+        let closures = self
+            .class_slot(owner, ClassSlot::Closures)
+            .map_err(heap_fault)?;
+        let closure = self.heap.get_field(closures, index).map_err(heap_fault)?;
+        let receiver = if self.heap.info(receiver).map_err(heap_fault)?.kind == ObjectKind::Class {
+            Value::NULL
+        } else {
+            receiver
+        };
+        self.bind_script(closure, receiver, owner)
+            .map_err(heap_fault)
+    }
+
+    fn class_cell_value(&mut self, cell: Value) -> Result<Value, FaultKind> {
+        let info = self.heap.cell_info(cell).map_err(heap_fault)?;
+        if !info.initialized {
+            return Err(FaultKind::UninitializedField);
+        }
+        self.heap.observe_read(cell, Some(0)).map_err(heap_fault)?;
+        self.heap.cell_read(cell).map_err(heap_fault)
+    }
+
+    pub(super) fn execute_class_read(
+        &mut self,
+        s: &mut ScriptFrame,
+        target: ClassRead,
+        dest: Reg,
+        next: Pc,
+    ) -> Result<bool, FaultKind> {
+        let value = if let Some(cell) = target.cell {
+            self.class_cell_value(cell)?
+        } else {
+            self.class_method_value(target.receiver, target.member, s.effects)?
+        };
+        self.write(s.regs, dest, value)?;
+        s.pc = next;
+        Ok(true)
     }
 
     pub(super) fn class_property_ref(

@@ -430,6 +430,7 @@ impl Vm {
                         }
                     };
                 let mut cost = (work, allocation);
+                let mut class_read = None;
                 let refresh = if op == Opcode::MemberGet {
                     let object = self.slots.read(at(s.regs, b))?;
                     let property = if self.heap.is_property_ref(object)
@@ -444,8 +445,11 @@ impl Vm {
                         )
                     {
                         cost.0 += self.class_member_cost(object)?;
-                        match self.class_read_property(object, SymbolId(c)) {
-                            Ok(property) => property,
+                        match self.class_read_plan(object, SymbolId(c)) {
+                            Ok((target, property)) => {
+                                class_read = Some(target);
+                                property
+                            }
                             Err(kind) => {
                                 self.collection_fault(&mut s, kind)?;
                                 self.active.frames.data[top] = Frame::Script(s);
@@ -489,7 +493,11 @@ impl Vm {
                 let step = step_cost!(
                     self,
                     Execute,
-                    self.execute(&mut s, op, a, b, c, Pc(next_pc as u32))
+                    if let Some(target) = class_read {
+                        self.execute_class_read(&mut s, target, Reg(a), Pc(next_pc as u32))
+                    } else {
+                        self.execute(&mut s, op, a, b, c, Pc(next_pc as u32))
+                    }
                 );
                 match step {
                     Ok(true) => {
