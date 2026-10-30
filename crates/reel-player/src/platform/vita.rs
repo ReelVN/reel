@@ -95,6 +95,7 @@ impl WindowControl for VitaHost {
             scale_factor: 1.,
             fullscreen: true,
             vsync: self.vsync,
+            refresh_rate_millihertz: Some(60_000),
             capabilities: WindowCapabilities::default(),
             resolutions: Arc::from([size]),
         }

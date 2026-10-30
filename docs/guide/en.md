@@ -979,6 +979,8 @@ fn main() {
 
 Read `window.info().capabilities` before changing settings, then await `window.configure` for the applied state. Window size and logical canvas are configured separately.
 
+Tweens, particles and transitions follow the display refresh rate by default, using 60 Hz when the host rate is unknown. Set their target update rate with `game.configure(frame_rate: 144)` and restore automatic selection with `frame_rate: 0`; vertical synchronization remains controlled by `window.configure(vsync: ...)`. Read the current display rate from `window.info().refresh_rate`.
+
 ```aside
 let mut display = window.info();
 if display.capabilities.resize {

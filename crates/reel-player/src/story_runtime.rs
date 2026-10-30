@@ -1370,7 +1370,10 @@ mod tests {
         };
         work(&mut story, 0);
         assert!(story.needs_tick());
-        assert_eq!(story.tick_interval(), std::time::Duration::from_millis(16));
+        assert_eq!(
+            story.tick_interval(),
+            std::time::Duration::from_nanos(16_666_667)
+        );
         story.tick(SliceBudget::default(), || 500_000_000).unwrap();
         assert!(
             !story.needs_work(),

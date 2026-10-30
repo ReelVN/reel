@@ -193,7 +193,10 @@ impl capture::CaptureBackend for Backend {
 fn settle(story: &mut StoryRuntime, ns: u64) {
     for _ in 0..10_000 {
         story.tick(SliceBudget::default(), || ns).unwrap();
-        if !story.needs_tick() || story.tick_interval().as_millis() == 16 {
+        if story
+            .wake_deadline(MonoTime(ns))
+            .is_none_or(|next| next > MonoTime(ns))
+        {
             return;
         }
     }

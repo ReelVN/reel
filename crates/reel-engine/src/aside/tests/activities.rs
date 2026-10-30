@@ -380,7 +380,10 @@ fn delays_share_composition_controls_and_sleep_until_their_deadline() {
         0.,
         "projection stays explicit"
     );
-    assert_eq!(vm.activities_poll_after(), Some(Duration::from_millis(16)));
+    assert_eq!(
+        vm.activities_poll_after(),
+        Some(Duration::from_nanos(16_666_667))
+    );
     assert!(
         vm.continuous_time_pending(),
         "the following tween samples continuously"

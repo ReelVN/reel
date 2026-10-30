@@ -3,13 +3,17 @@ use super::{AdapterError, HostTicket, SessionVm, text};
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
-        /// Set title, logical canvas size, font assets and text speed. Omitted values
+        /// Set title, logical canvas size, font assets, text speed and animation rate. Omitted values
         /// remain unchanged. Register fonts before first presentation. The canvas uses
         /// contain scaling and one transform for drawing and input.
         /// `title` accepts string or null; `width` and `height` accept positive integers
         /// or null; `text_speed` accepts nonnegative numeric values or null.
         /// `fonts` accepts one asset-path string, an array or tuple of asset-path strings,
         /// or null.
+        /// `frame_rate` accepts 1..1000 Hz, rounded to 0.001 Hz; 0 selects automatic
+        /// display refresh rate (60 Hz when unknown). The default is automatic.
+        /// It controls tweens, particles and transitions; explicit clock intervals,
+        /// text reveal speed and window vsync retain their own settings.
         "reel::game::configure";
         /// Replace the current session with a fresh invocation of entry. Persistent
         /// storage remains available; tasks and transient stage state belong to the new session.
@@ -32,6 +36,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             ("width", nullable(TypeHint::Int)),
             ("height", nullable(TypeHint::Int)),
             ("text_speed", nullable(number())),
+            ("frame_rate", nullable(number())),
         ],
     );
     api.refine(
@@ -50,6 +55,8 @@ pub struct GameSettings {
     pub canvas_size: Option<[u32; 2]>,
     pub fonts: Vec<String>,
     pub text_speed: f64,
+    /// Continuous animation sampling rate in millihertz; None follows the display.
+    pub frame_rate_millihertz: Option<u32>,
     pub source: Option<String>,
 }
 impl Default for GameSettings {
@@ -59,6 +66,7 @@ impl Default for GameSettings {
             canvas_size: None,
             fonts: Vec::new(),
             text_speed: 30.,
+            frame_rate_millihertz: None,
             source: None,
         }
     }
@@ -118,6 +126,16 @@ impl SessionVm {
                     "text_speed must be finite and nonnegative",
                 ))?;
             next.text_speed = speed;
+        }
+        if args[5].tag() != ValueTag::Null {
+            let rate = args[5]
+                .as_float()
+                .or_else(|| args[5].as_int().map(|n| n as f64))
+                .filter(|rate| rate.is_finite() && (*rate == 0. || (1.0..=1000.).contains(rate)))
+                .ok_or(AdapterError::Input(
+                    "frame_rate must be 0 (automatic) or finite Hz in 1..1000",
+                ))?;
+            next.frame_rate_millihertz = (rate != 0.).then_some((rate * 1000.).round() as u32);
         }
         if next != *self.game {
             if next.fonts != self.game.fonts {

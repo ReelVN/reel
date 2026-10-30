@@ -584,15 +584,22 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::game::configure".into(),
-        abi_version: 1,
-        parameters: ["title", "width", "height", "fonts", "text_speed"]
-            .into_iter()
-            .map(|name| NativeParameter {
-                name: name.into(),
-                ty: BuiltinType::Any,
-                default: Some(bc::Const::Null),
-            })
-            .collect(),
+        abi_version: 2,
+        parameters: [
+            "title",
+            "width",
+            "height",
+            "fonts",
+            "text_speed",
+            "frame_rate",
+        ]
+        .into_iter()
+        .map(|name| NativeParameter {
+            name: name.into(),
+            ty: BuiltinType::Any,
+            default: Some(bc::Const::Null),
+        })
+        .collect(),
         result: BuiltinType::Null,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
         required_capabilities: vec!["reel.stage".into()],

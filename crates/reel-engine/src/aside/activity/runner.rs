@@ -16,7 +16,7 @@ impl Activities {
     pub fn continuous_time_pending(&self) -> bool {
         self.sampling != 0 || self.clock_events != 0
     }
-    pub fn poll_after(&self) -> Option<std::time::Duration> {
+    pub fn poll_after(&self, sampling: std::time::Duration) -> Option<std::time::Duration> {
         let (&key, _) = self.events.first_key_value()?;
         let seconds = (f64::from_bits(key.0) - self.time).max(0.);
         let mut deadline =
@@ -29,7 +29,7 @@ impl Activities {
         Some(if self.sampling == 0 {
             deadline
         } else {
-            deadline.min(std::time::Duration::from_millis(16))
+            deadline.min(sampling)
         })
     }
     pub fn pending(&self) -> bool {
