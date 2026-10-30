@@ -187,10 +187,12 @@ fn quantities(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
         })
         .collect();
     let mut metrics = BTreeMap::new();
-    for name in columns
-        .keys()
-        .filter(|name| name.starts_with("vm_") && name.ends_with("_count"))
-    {
+    for name in columns.keys().filter(|name| {
+        name.starts_with("vm_")
+            && name.ends_with("_count")
+            && !name.starts_with("vm_driver_")
+            && !name.starts_with("vm_step_")
+    }) {
         let mut values: Vec<u64> = valid.iter().map(|row| row.values[name]).collect();
         values.sort_unstable();
         if values.is_empty() {
@@ -204,6 +206,82 @@ fn quantities(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
     json!({"valid_intervals":valid.len(),"opcode_accounting_errors":counted.len()-valid.len(),
         "scope":"VM work and host frame-slot access; count-enabled diagnostics, not exclusive VmSlice time",
         "metrics":metrics})
+}
+
+fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
+    if !columns.contains_key("vm_profile_valid") {
+        return Value::Null;
+    }
+    let observed: Vec<_> = rows
+        .iter()
+        .copied()
+        .filter(|row| row.values.get("vm_profile_valid") == Some(&1))
+        .collect();
+    let closed = |row: &&Frame| {
+        let v = &row.values;
+        let get = |name: &str| v.get(&format!("vm_driver_{name}_ns")).copied();
+        let [
+            Some(wall),
+            Some(entry),
+            Some(run),
+            Some(exit),
+            Some(scalar),
+            Some(script),
+            Some(native),
+            Some(other),
+            Some(clock),
+            Some(calibration),
+        ] = [
+            "wall",
+            "entry",
+            "run",
+            "exit",
+            "scalar",
+            "script",
+            "native",
+            "loop",
+            "budget_clock",
+            "calibration",
+        ]
+        .map(get)
+        else {
+            return false;
+        };
+        entry.checked_add(run).and_then(|n| n.checked_add(exit)) == Some(wall)
+            && scalar
+                .checked_add(script)
+                .and_then(|n| n.checked_add(native))
+                .and_then(|n| n.checked_add(other))
+                == Some(run)
+            && clock <= other
+            && calibration <= entry
+    };
+    let valid: Vec<_> = observed.iter().copied().filter(closed).collect();
+    let totals: BTreeMap<_, u64> = columns
+        .keys()
+        .filter(|name| name.starts_with("vm_driver_") || name.starts_with("vm_step_"))
+        .map(|name| (name.clone(), valid.iter().map(|row| row.values[name]).sum()))
+        .collect();
+    let fraction = |part: &str, whole: &str| {
+        let whole = totals
+            .get(&format!("vm_driver_{whole}_ns"))
+            .copied()
+            .unwrap_or(0);
+        (whole != 0).then(|| {
+            totals
+                .get(&format!("vm_driver_{part}_ns"))
+                .copied()
+                .unwrap_or(0) as f64
+                / whole as f64
+        })
+    };
+    json!({"valid_intervals":valid.len(),"ledger_errors":observed.len()-valid.len(),
+        "measurement":"sampled whole-slice wall-time ledger; observer overhead included, not thread CPU time",
+        "calibration":"raw empty clock-pair time is included in entry; no subtraction",
+        "legacy_steps":"independent event samples; fetch/cost/execute overlap scalar/script; durations cannot be added",
+        "totals":totals,
+        "wall_fractions":{"entry":fraction("entry","wall"),"run":fraction("run","wall"),"exit":fraction("exit","wall")},
+        "run_fractions":{"scalar":fraction("scalar","run"),"script":fraction("script","run"),"native":fraction("native","run"),"loop":fraction("loop","run")}})
 }
 
 fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Result<Value> {
@@ -226,7 +304,7 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
                 boundary_work.insert(key,statistics(boundary.iter().filter(|row|!matches!(key.as_str(),"schedule_non_vm_us"|"session_unattributed_us") || row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)==0).map(|row|row.values[key]).collect(),None));
             }
         }
-        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns)})
+        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns),"vm_profile":vm_profile(&eligible,columns)})
     }).collect();
     Ok(
         json!({"schema":1,"declared_environment":scope,"measurement":"present_submission_intervals_and_nested_wall_time","gpu_service_time":"unmeasured","display_cadence":"unmeasured","trace_metadata":trace.metadata,"limits_kind":"optional_workload_engineering_targets","groups":groups}),
@@ -345,5 +423,51 @@ mod tests {
                 .get("p50_us")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn sampled_driver_ledger_rejects_invalid_nesting_and_keeps_raw_observer_cost() {
+        let values = BTreeMap::from([
+            ("vm_profile_valid".into(), 1),
+            ("vm_driver_wall_ns".into(), 100),
+            ("vm_driver_entry_ns".into(), 10),
+            ("vm_driver_run_ns".into(), 80),
+            ("vm_driver_exit_ns".into(), 10),
+            ("vm_driver_scalar_ns".into(), 20),
+            ("vm_driver_script_ns".into(), 30),
+            ("vm_driver_native_ns".into(), 10),
+            ("vm_driver_loop_ns".into(), 20),
+            ("vm_driver_budget_clock_ns".into(), 5),
+            ("vm_driver_calibration_ns".into(), 3),
+            ("vm_driver_samples_count".into(), 2),
+            ("vm_step_script_sample_wall_ns".into(), 999),
+        ]);
+        let valid = Frame {
+            segment: 1,
+            values: values.clone(),
+        };
+        let mut bad = Frame {
+            segment: 1,
+            values: values.clone(),
+        };
+        bad.values.insert("vm_driver_budget_clock_ns".into(), 21);
+        let mut missing = Frame {
+            segment: 1,
+            values: values.clone(),
+        };
+        missing.values.remove("vm_driver_exit_ns");
+        let mut wrong_sum = Frame {
+            segment: 1,
+            values: values.clone(),
+        };
+        wrong_sum.values.insert("vm_driver_run_ns".into(), 81);
+        let report = vm_profile(&[&valid, &bad, &missing, &wrong_sum], &values);
+        assert_eq!(report["valid_intervals"], 1);
+        assert_eq!(report["ledger_errors"], 3);
+        assert_eq!(report["totals"]["vm_driver_wall_ns"], 100);
+        assert_eq!(report["totals"]["vm_driver_calibration_ns"], 3);
+        assert_eq!(report["totals"]["vm_step_script_sample_wall_ns"], 999);
+        assert_eq!(report["run_fractions"]["script"], 0.375);
+        assert!(vm_profile(&[], &BTreeMap::new()).is_null());
     }
 }

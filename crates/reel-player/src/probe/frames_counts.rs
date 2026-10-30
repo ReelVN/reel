@@ -15,6 +15,7 @@ fn visit(
     }
     fields!(
         instructions,
+        actual_budget_clock_queries,
         work,
         slices,
         native_entries,

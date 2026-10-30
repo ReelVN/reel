@@ -37,6 +37,12 @@ deltas at submission boundaries. The report validates opcode totals and keeps
 these quantities separate from phase durations; frame-slot counts also include
 host-side access. Label boundaries and restored VM identities start fresh deltas.
 
+Add `reel-player/vm-profiling` for sampled whole-slice ledgers at those same
+boundaries. `frame-cost` checks their nested sums and reports raw sampled totals,
+clock-query counts and empty-clock calibration. Observer cost is included;
+sampled proportions describe the instrumented slices. Independent legacy step
+samples overlap and cannot be added to the ledger.
+
 Behavior checks live in the owning crate's Rust tests. The CLI's
 [project scenarios](../reel-cli/tests/project_scenarios.rs) exercise source/ASB,
 save restoration, accepted input and offline audio through the shared player.

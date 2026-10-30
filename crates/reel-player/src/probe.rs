@@ -395,7 +395,7 @@ impl Recording {
         };
         self.last_geometry = geometry;
         self.timeline.record(title, &row, story);
-        #[cfg(feature = "vm-execution-counts")]
+        #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
         if row.phases.calls[reel_core::profile::Phase::Present as usize] != 0 {
             self.frames.observe_vm(story);
         }
