@@ -593,12 +593,15 @@ pub struct Vm {
 #[cfg(test)]
 #[derive(Default)]
 struct WorkProbe {
+    single_install_step: bool,
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
     exit_handler_queries: std::cell::Cell<u64>,
     member_hint_hits: std::cell::Cell<u64>,
 }
 mod completion;
+#[cfg(test)]
+mod installation_tests;
 mod instructions;
 mod loading;
 mod native_calls;
@@ -1052,20 +1055,20 @@ impl Vm {
                 scalars::ScalarStep::Budget => return Ok(RunOutcome::BudgetYield(m.usage)),
                 scalars::ScalarStep::General => {}
             }
-            let Some(f) = self.active.frames.data.last().copied() else {
-                return Err(VmError::Idle);
-            };
-            match f {
-                Frame::Script(s) => {
+            match self.active.frames.data.last() {
+                Some(Frame::Script(s)) => {
+                    let s = *s;
                     if !step_cost!(self, Script, self.script_step(s, m))? {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                 }
-                Frame::Native(n) => {
+                Some(Frame::Native(n)) => {
+                    let n = *n;
                     if let Some(out) = step_cost!(self, Native, self.native_step(n, m))? {
                         return Ok(out);
                     }
                 }
+                None => return Err(VmError::Idle),
             }
         }
     }
@@ -1217,6 +1220,18 @@ struct Meter {
     clock_steps: u8,
 }
 impl Meter {
+    /// Consume an additional short internal step without crossing a clock
+    /// boundary. Only nonallocating preparation uses this bounded fusion.
+    fn next_short_step(&mut self) -> bool {
+        if self.budget.deadline_ns.is_none() {
+            return true;
+        }
+        if self.clock_steps == 0 {
+            return false;
+        }
+        self.clock_steps -= 1;
+        true
+    }
     fn deadline_reached(&mut self, now: &mut impl FnMut() -> u64) -> bool {
         let Some(deadline) = self.budget.deadline_ns else {
             return false;

@@ -275,34 +275,47 @@ impl Vm {
                     Err(kind) => self.preparation_fault(&mut s, kind)?,
                 }
             }
-            ScriptPhase::Install { binding } => {
-                if !m.take(0, 1, 0) {
-                    return Ok(false);
-                }
-                let f = &self.program.package().functions[s.code.function.index()];
-                if (binding as usize) < f.bindings.len() {
-                    let b = f.bindings[binding as usize].clone();
-                    match b.initialization {
-                        BindingInitialization::Explicit => {
-                            // Value binding bitmap starts uninitialized even if a temporary used it.
-                            if matches!(b.storage, BindingStorage::Value(_)) {
-                                self.clear(s.regs, b.storage.reg().0)?;
-                            }
-                        }
-                        // Prepared in parameter order before subsequent defaults.
-                        BindingInitialization::Parameter(_) => {}
-                    }
-                    s.phase = ScriptPhase::Install {
-                        binding: binding + 1,
-                    };
+            ScriptPhase::Install { mut binding } => {
+                let batch = 8;
+                #[cfg(test)]
+                let batch = if self.work_probe.single_install_step {
+                    1
                 } else {
-                    s.phase = if self.program.package().functions[s.code.function.index()].kind
-                        == FunctionKind::Generator
-                    {
-                        ScriptPhase::GeneratorCreate
-                    } else {
-                        ScriptPhase::Body
+                    batch
+                };
+                for step in 0..batch {
+                    // The outer loop checked the first logical step. Subsequent
+                    // steps stop before the next required clock observation.
+                    if step != 0 && !m.next_short_step() {
+                        break;
+                    }
+                    if !m.take(0, 1, 0) {
+                        self.active.frames.data[top] = Frame::Script(s);
+                        return Ok(false);
+                    }
+                    let f = &self.program.package().functions[s.code.function.index()];
+                    let Some(b) = f.bindings.get(binding as usize) else {
+                        s.phase = if f.kind == FunctionKind::Generator {
+                            ScriptPhase::GeneratorCreate
+                        } else {
+                            ScriptPhase::Body
+                        };
+                        break;
                     };
+                    let clear = match (b.initialization, b.storage) {
+                        (BindingInitialization::Explicit, BindingStorage::Value(reg)) => Some(reg),
+                        _ => None,
+                    };
+                    // Parameter slots retain their prepared values. Explicit
+                    // Value bindings clear even if a default used that register.
+                    if let Some(reg) = clear
+                        && let Err(error) = self.clear(s.regs, reg.0)
+                    {
+                        self.active.frames.data[top] = Frame::Script(s);
+                        return Err(error);
+                    }
+                    binding += 1;
+                    s.phase = ScriptPhase::Install { binding };
                 }
             }
             ScriptPhase::Body => {
