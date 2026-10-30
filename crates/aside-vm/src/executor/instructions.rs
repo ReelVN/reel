@@ -553,21 +553,10 @@ impl Vm {
                     .map_err(heap_fault)?;
                 }
             }
-            Opcode::Jump => {
-                s.pc = Pc(a);
-                return Ok(false);
-            }
-            Opcode::BranchBool => {
-                let condition = self.read(s.regs, r(a))?.as_bool().ok_or(FaultKind::Type)?;
-                s.pc = Pc(if condition { b } else { c });
-                return Ok(false);
-            }
-            Opcode::BranchNull => {
-                s.pc = Pc(if self.read(s.regs, r(a))?.tag() == ValueTag::Null {
-                    b
-                } else {
-                    c
-                });
+            Opcode::Jump | Opcode::BranchBool | Opcode::BranchNull => {
+                s.pc = scalars::branch_target(op, [a, b, c], |register| {
+                    self.read(s.regs, r(register))
+                })?;
                 return Ok(false);
             }
             Opcode::Neg | Opcode::Pos | Opcode::Not | Opcode::BitNot => {

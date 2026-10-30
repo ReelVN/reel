@@ -12,6 +12,8 @@ pub use counts::SlotCounts;
 #[cfg(feature = "execution-counts")]
 use counts::{SlotCounter, SlotState};
 mod growth;
+mod registers;
+pub(crate) use registers::RegisterWindow;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FrameSlotsLimits {

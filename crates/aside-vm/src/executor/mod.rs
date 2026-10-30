@@ -606,6 +606,7 @@ struct WorkProbe {
     general_clears: bool,
     single_install_step: bool,
     single_equality_step: bool,
+    single_scalar_step: bool,
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
     exit_handler_queries: std::cell::Cell<u64>,
@@ -616,6 +617,8 @@ mod completion;
 mod installation_tests;
 mod instructions;
 mod loading;
+mod meter;
+use meter::Meter;
 mod native_calls;
 mod scalars;
 mod script_frames;
@@ -1084,7 +1087,7 @@ impl Vm {
                 });
                 continue;
             }
-            match step_cost!(self, Scalar, self.scalar_step(m))? {
+            match self.scalar_step(m)? {
                 scalars::ScalarStep::Done => continue,
                 scalars::ScalarStep::Budget => return Ok(RunOutcome::BudgetYield(m.usage)),
                 scalars::ScalarStep::Preparation => {
@@ -1262,88 +1265,6 @@ fn vm_fault(e: VmError) -> FaultKind {
         VmError::Effect => FaultKind::Effect,
         VmError::Heap(e) => heap_fault(e),
         _ => FaultKind::Resource,
-    }
-}
-struct Meter {
-    budget: SliceBudget,
-    usage: SliceUsage,
-    clock_steps: u8,
-    #[cfg(any(feature = "profiling", feature = "execution-counts"))]
-    actual_budget_clock_queries: u64,
-    #[cfg(feature = "profiling")]
-    observe_clock: bool,
-    #[cfg(feature = "profiling")]
-    budget_clock_ns: u64,
-}
-impl Meter {
-    fn new(budget: SliceBudget) -> Self {
-        Self {
-            budget,
-            usage: SliceUsage::default(),
-            clock_steps: 0,
-            #[cfg(any(feature = "profiling", feature = "execution-counts"))]
-            actual_budget_clock_queries: 0,
-            #[cfg(feature = "profiling")]
-            observe_clock: false,
-            #[cfg(feature = "profiling")]
-            budget_clock_ns: 0,
-        }
-    }
-    /// Consume an additional short internal step without crossing a clock
-    /// boundary. Only nonallocating preparation uses this bounded fusion.
-    fn next_short_step(&mut self) -> bool {
-        if self.budget.deadline_ns.is_none() {
-            return true;
-        }
-        if self.clock_steps == 0 {
-            return false;
-        }
-        self.clock_steps -= 1;
-        true
-    }
-    fn deadline_reached(&mut self, now: &mut impl FnMut() -> u64) -> bool {
-        let Some(deadline) = self.budget.deadline_ns else {
-            return false;
-        };
-        if self.clock_steps != 0 {
-            self.clock_steps -= 1;
-            return false;
-        }
-        self.clock_steps = 31;
-        #[cfg(any(feature = "profiling", feature = "execution-counts"))]
-        {
-            self.actual_budget_clock_queries += 1;
-        }
-        #[cfg(feature = "profiling")]
-        let start = self.observe_clock.then(std::time::Instant::now);
-        let value = now();
-        #[cfg(feature = "profiling")]
-        if let Some(start) = start {
-            self.budget_clock_ns += start.elapsed().as_nanos() as u64;
-        }
-        value >= deadline
-    }
-    fn admits(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
-        self.usage.required_work = work;
-        self.usage.required_allocation = allocation;
-        instructions <= self.budget.instructions - self.usage.instructions
-            && work <= self.budget.work - self.usage.work
-            && allocation <= self.budget.allocation_bytes - self.usage.allocation_bytes
-    }
-    fn take(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
-        if !self.admits(instructions, work, allocation) {
-            return false;
-        }
-        self.usage.instructions += instructions;
-        self.usage.work += work;
-        self.usage.allocation_bytes += allocation;
-        // Allocations and bulk work end the current clock batch immediately.
-        if allocation != 0 || work >= 32 {
-            self.clock_steps = 0;
-        }
-        self.usage.required_work = 0;
-        self.usage.required_allocation = 0;
-        true
     }
 }
 fn unary(op: Opcode, v: Value) -> Result<Value, FaultKind> {

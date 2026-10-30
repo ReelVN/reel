@@ -12,6 +12,16 @@ pub use hotspots::{STEP_HOTSPOT_CAPACITY, STEP_MODES, StepHotspot, StepPoint};
 
 #[cfg(feature = "profiling")]
 macro_rules! step_cost {
+    // A logical event inside an already-observed driver span. Events retain
+    // the original independent sampling cadence.
+    ($state:expr, $phase:ident, $point:expr, $body:expr) => {{
+        let phase = $crate::executor::step_costs::Phase::$phase;
+        let start = $state.start(phase);
+        let point = start.and_then(|_| $point);
+        let result = $body;
+        $state.finish(phase, start, point);
+        result
+    }};
     ($vm:expr, $phase:ident, $body:expr) => {{
         let phase = $crate::executor::step_costs::Phase::$phase;
         let driver = $vm.step_costs.start_driver(phase);
@@ -25,6 +35,9 @@ macro_rules! step_cost {
 }
 #[cfg(not(feature = "profiling"))]
 macro_rules! step_cost {
+    ($state:expr, $phase:ident, $point:expr, $body:expr) => {
+        $body
+    };
     ($vm:expr, $phase:ident, $body:expr) => {
         $body
     };
