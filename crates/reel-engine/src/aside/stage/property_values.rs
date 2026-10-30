@@ -827,6 +827,7 @@ pub(super) fn read_props(
         effect_projection,
     } = context;
     let appearance = interaction_appearance::Selection::new(heap, fields, offset, selected)?;
+    let table = heap.table_read(fields)?;
     let get = |property: NodeProperty| -> Result<Value, AdapterError> {
         let index = property.index();
         if let Some(value) = overrides::selected_value(heap, selected, index)? {
@@ -834,7 +835,7 @@ pub(super) fn read_props(
         }
         Ok(match appearance.get(index) {
             Some(value) => value,
-            None => heap.table_entry(fields, (offset + index) as u32)?.1,
+            None => table.value((offset + index) as u32)?,
         })
     };
     let background = get(NodeProperty::Background)?;

@@ -209,35 +209,33 @@ impl StageBinding {
                         super::super::particles::PREFIX.len(),
                     )
                 }
-                NodeKind::Image { source, origin, .. } => (
-                    NodeKind::Image {
-                        source: if binding.shape == snapshot::Shape::Video
-                            || binding.text_source
-                                == Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
-                        {
-                            source.clone()
-                        } else {
-                            read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?
+                NodeKind::Image { source, origin, .. } => {
+                    let table = heap.table_read(fields)?;
+                    (
+                        NodeKind::Image {
+                            source: if binding.shape == snapshot::Shape::Video
+                                || binding.text_source == Some(heap.handle(table.value(0)?)?)
+                            {
+                                source.clone()
+                            } else {
+                                read_source(heap, table.value(0)?, read_limit)?
+                            },
+                            fit: read_fit(heap, table.value(1)?)?,
+                            slice: read_slice(heap, table.value(2)?)?,
+                            slice_scale: nonnegative(table.value(3)?)?,
+                            repeat: read_image_repeat(heap, table.value(4)?, table.value(2)?)?,
+                            tile_scale: positive(table.value(5)?)?,
+                            corner_colors: read_corner_colors(heap, table.value(6)?)?,
+                            slice_center: boolean(table.value(7)?)?,
+                            adjustment: read_image_adjustment(heap, fields)?,
+                            source_rect: read_source_rect(heap, table.value(11)?)?,
+                            alpha_layout: read_alpha_layout(heap, table.value(12)?)?,
+                            sampling: read_sampling(heap, table.value(13)?)?,
+                            origin: origin.clone(),
                         },
-                        fit: read_fit(heap, heap.table_entry(fields, 1)?.1)?,
-                        slice: read_slice(heap, heap.table_entry(fields, 2)?.1)?,
-                        slice_scale: nonnegative(heap.table_entry(fields, 3)?.1)?,
-                        repeat: read_image_repeat(
-                            heap,
-                            heap.table_entry(fields, 4)?.1,
-                            heap.table_entry(fields, 2)?.1,
-                        )?,
-                        tile_scale: positive(heap.table_entry(fields, 5)?.1)?,
-                        corner_colors: read_corner_colors(heap, heap.table_entry(fields, 6)?.1)?,
-                        slice_center: boolean(heap.table_entry(fields, 7)?.1)?,
-                        adjustment: read_image_adjustment(heap, fields)?,
-                        source_rect: read_source_rect(heap, heap.table_entry(fields, 11)?.1)?,
-                        alpha_layout: read_alpha_layout(heap, heap.table_entry(fields, 12)?.1)?,
-                        sampling: read_sampling(heap, heap.table_entry(fields, 13)?.1)?,
-                        origin: origin.clone(),
-                    },
-                    registry::IMAGE_PREFIX.len(),
-                ),
+                        registry::IMAGE_PREFIX.len(),
+                    )
+                }
                 kind => (kind.clone(), 0),
             };
             controls::project_group(heap, value, &mut kind)?;

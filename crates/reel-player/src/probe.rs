@@ -12,6 +12,7 @@ const WINDOWS: usize = 512;
 const SLOW: usize = 64;
 const SEGMENTS: usize = 64;
 mod device;
+mod timeline;
 #[cfg(any(target_os = "vita", test))]
 pub(crate) use device::DeviceSample;
 static VM_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -259,6 +260,7 @@ pub(crate) struct Recording {
     segment: (String, Row),
     segments: VecDeque<(String, Row)>,
     device: device::DeviceSamples,
+    timeline: timeline::Timeline,
 }
 impl Recording {
     pub(crate) fn new() -> Self {
@@ -281,6 +283,7 @@ impl Recording {
             segment: (String::new(), Row::default()),
             segments: VecDeque::with_capacity(SEGMENTS),
             device: device::DeviceSamples::default(),
+            timeline: timeline::Timeline::default(),
         }
     }
 
@@ -332,6 +335,7 @@ impl Recording {
             geometry: geometry.delta(self.last_geometry),
         };
         self.last_geometry = geometry;
+        self.timeline.record(title, &row, story);
         self.total.add(row);
         self.pending.add(row);
         if self.segment.0 != title {
@@ -379,6 +383,7 @@ impl Recording {
                     .sum::<usize>()
                 + self.segment.0.capacity()
                 + self.device.bytes()
+                + self.timeline.bytes()
         )?;
         writeln!(
             out,
@@ -442,6 +447,7 @@ impl Recording {
         writeln!(out, "[reel-probe-report] begin")?;
         self.report(&mut out, title, outcome)?;
         writeln!(out, "[reel-probe-report] end")?;
+        self.timeline.report(&mut out)?;
         let mut native = String::with_capacity(8192);
         if device::append_live(&mut native) {
             writeln!(out, "{native}")?;

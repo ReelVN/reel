@@ -1,5 +1,48 @@
 use super::*;
 
+/// Borrowed access to a table's ordered entries, without allocation or copying.
+/// The shared heap borrow keeps storage stable; entries retain the same proposed
+/// host-property values as [`Heap::table_entry`].
+pub struct TableRead<'a> {
+    heap: &'a Heap,
+    table: Value,
+    values: &'a Values,
+}
+
+impl TableRead<'_> {
+    /// Number of key/value pairs in the table.
+    pub fn len(&self) -> u32 {
+        self.values.len / 2
+    }
+
+    /// Whether the table has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.values.len == 0
+    }
+
+    /// Read an entry in insertion order, or return [`HeapError::OutOfBounds`].
+    #[inline]
+    pub fn entry(&self, position: u32) -> Result<(Value, Value), HeapError> {
+        let index = position.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
+        Ok((
+            self.values.get(index).ok_or(HeapError::OutOfBounds)?,
+            self.value(position)?,
+        ))
+    }
+
+    /// Read only the value at an insertion-order position, retaining proposals
+    /// and the same bounds checks as [`Self::entry`].
+    #[inline]
+    pub fn value(&self, position: u32) -> Result<Value, HeapError> {
+        let index = position.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
+        let stored = self.values.get(index + 1).ok_or(HeapError::OutOfBounds)?;
+        Ok(self
+            .heap
+            .proposed_property(self.table, position)
+            .unwrap_or(stored))
+    }
+}
+
 impl Heap {
     /// Clear a host-owned collection while retaining its identity and metadata.
     /// The detached payload is reclaimed by incremental GC. Like `array_push`,
@@ -132,15 +175,19 @@ impl Heap {
         ))
     }
     pub fn table_entry(&self, table: Value, position: u32) -> Result<(Value, Value), HeapError> {
+        self.table_read(table)?.entry(position)
+    }
+    /// Validate a table once and borrow its entries for repeated indexed reads.
+    /// Allocation, mutation and GC require the shared borrow to end first.
+    pub fn table_read(&self, table: Value) -> Result<TableRead<'_>, HeapError> {
         let Payload::Table(values) = &self.object(self.key(table)?)?.payload else {
             return Err(HeapError::WrongKind);
         };
-        let index = position.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
-        Ok((
-            values.get(index).ok_or(HeapError::OutOfBounds)?,
-            self.proposed_property(table, position)
-                .unwrap_or(values.get(index + 1).ok_or(HeapError::OutOfBounds)?),
-        ))
+        Ok(TableRead {
+            heap: self,
+            table,
+            values,
+        })
     }
     /// Store at a position already resolved by the caller. Appended keys must
     /// be valid and unique under Aside key equality; overwrites retain the
@@ -395,6 +442,79 @@ impl Heap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_table_reads_cross_chunks_without_allocation() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let table = heap.alloc_table().unwrap();
+        assert!(heap.table_read(table).unwrap().is_empty());
+        let count = crate::VALUE_CHUNK_LEN as u32 + 3;
+        for index in 0..count {
+            heap.table_store(
+                table,
+                index,
+                Value::int(i64::from(index)),
+                Value::int(i64::from(index) * 3),
+            )
+            .unwrap();
+        }
+        let charge = heap.stats().charged_bytes;
+        let allocations = allocation_counter::measure(|| {
+            let view = heap.table_read(table).unwrap();
+            assert_eq!(view.len(), count);
+            for index in 0..count {
+                let (key, value) = view.entry(index).unwrap();
+                assert_eq!(key.as_int(), Some(i64::from(index)));
+                assert_eq!(value.as_int(), Some(i64::from(index) * 3));
+                assert_eq!(view.value(index).unwrap().as_int(), value.as_int());
+            }
+            for index in [count, u32::MAX] {
+                assert!(matches!(view.entry(index), Err(HeapError::OutOfBounds)));
+                assert!(matches!(view.value(index), Err(HeapError::OutOfBounds)));
+            }
+        });
+        assert_eq!(allocations.count_total, 0);
+        assert_eq!(heap.stats().charged_bytes, charge);
+        heap.table_store(table, 0, Value::int(0), Value::int(71))
+            .unwrap();
+        assert_eq!(
+            heap.table_read(table).unwrap().entry(0).unwrap().1.as_int(),
+            Some(71)
+        );
+        let array = heap.alloc_array(&[]).unwrap();
+        assert!(matches!(heap.table_read(array), Err(HeapError::WrongKind)));
+    }
+
+    #[test]
+    fn borrowed_table_reads_keep_proposed_host_values_separate_from_storage() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let table = heap.alloc_table().unwrap();
+        for (index, value) in [7, 9].into_iter().enumerate() {
+            heap.table_store(
+                table,
+                index as u32,
+                Value::int(index as i64),
+                Value::int(value),
+            )
+            .unwrap();
+        }
+        let host = heap.alloc_host(table, &[], None).unwrap();
+        heap.observe_host_properties(host, 2, 0).unwrap();
+        heap.property_work.push(PropertyId { host, field: 0 });
+        heap.property_proposal = Some(Value::int(42));
+        {
+            let view = heap.table_read(table).unwrap();
+            assert_eq!(view.entry(0).unwrap().1.as_int(), Some(42));
+            assert_eq!(view.value(0).unwrap().as_int(), Some(42));
+            assert_eq!(view.entry(1).unwrap().1.as_int(), Some(9));
+        }
+        heap.property_proposal = None;
+        heap.property_work.clear();
+        assert_eq!(
+            heap.table_read(table).unwrap().entry(0).unwrap().1.as_int(),
+            Some(7)
+        );
+    }
 
     #[test]
     fn committing_into_a_black_object_requeues_moved_white_edges_without_allocation() {
