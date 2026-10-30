@@ -606,6 +606,9 @@ fn run() -> Result {
                 } else {
                     blend_color::run(runtime.renderer())
                 };
+                if let Err(error) = &result {
+                    log(format_args!("case={selected} error={error}"));
+                }
                 marker(&selected, if result.is_ok() { "PASS" } else { "ERROR" });
                 return result;
             }
