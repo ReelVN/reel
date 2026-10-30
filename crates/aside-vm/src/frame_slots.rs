@@ -566,6 +566,25 @@ impl FrameSlots {
         self.put(i, Value::NULL, false);
         Ok(())
     }
+    /// Clear packed instruction operands in order using one validated mapping.
+    /// An invalid later index retains every preceding clear, as separate calls do.
+    pub(crate) fn clear_registers<const N: usize>(
+        &mut self,
+        heap: &mut Heap,
+        range: RootRangeToken,
+        registers: [u32; N],
+    ) -> Result<(), HeapError> {
+        self.check_heap(heap)?;
+        let window = self.window(range)?;
+        for register in registers {
+            if register >= window.len {
+                return Err(HeapError::OutOfBounds);
+            }
+            heap.root_insertion_barrier(Value::NULL)?;
+            self.put((window.base + register) as usize, Value::NULL, false);
+        }
+        Ok(())
+    }
     pub fn copy_value(
         &mut self,
         heap: &mut Heap,
@@ -886,6 +905,59 @@ impl Drop for FrameSlots {
 mod tests {
     use super::*;
     use crate::{GcBudget, GcPhase, HeapLimits};
+
+    #[test]
+    fn packed_clears_preserve_operand_order_partial_failure_and_relocated_slots() {
+        for registers in [[0, 1, 2], [0, 99, 2], [99, 0, 1], [1, 1, 2]] {
+            let states = [false, true].map(|packed| {
+                let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+                let mut slots = FrameSlots::new(
+                    &mut heap,
+                    FrameSlotsLimits {
+                        initial_capacity: 8,
+                        max_capacity: 64,
+                        max_window_len: 64,
+                    },
+                )
+                .unwrap();
+                let range = slots
+                    .open(&mut heap, RootOwner(1), RootKind::TaskFrame, 4)
+                    .unwrap();
+                for index in 0..4 {
+                    slots
+                        .write(&mut heap, RangePosition { range, index }, Value::int(7))
+                        .unwrap();
+                }
+                slots.relocate(&mut heap, 32).unwrap();
+                heap.begin_collection().unwrap();
+                let result = if packed {
+                    slots.clear_registers(&mut heap, range, registers)
+                } else {
+                    registers.into_iter().try_for_each(|index| {
+                        slots.clear(&mut heap, RangePosition { range, index })
+                    })
+                };
+                let values = (0..4)
+                    .map(|index| {
+                        slots
+                            .read(RangePosition { range, index })
+                            .map(|value| value.as_int())
+                    })
+                    .collect::<Vec<_>>();
+                while heap.phase() != GcPhase::Idle {
+                    heap.gc_step_with_ranges(GcBudget::default(), slots.roots())
+                        .unwrap();
+                }
+                slots.release(&mut heap, range).unwrap();
+                assert_eq!(
+                    slots.clear_registers(&mut heap, range, [0, 1]),
+                    Err(HeapError::InvalidRootRange)
+                );
+                (result, values)
+            });
+            assert_eq!(states[0], states[1], "operands={registers:?}");
+        }
+    }
 
     #[test]
     fn paired_operands_preserve_first_failure_and_relocated_mapping() {
