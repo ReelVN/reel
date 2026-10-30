@@ -1,4 +1,5 @@
 use super::*;
+use crate::frame_slots::counts::SlotState;
 use crate::{executor::*, snapshot::*};
 
 fn vm() -> Vm {

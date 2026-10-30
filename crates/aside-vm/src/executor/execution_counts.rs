@@ -25,7 +25,7 @@ macro_rules! instruction_admitted {
 #[cfg(feature = "execution-counts")]
 mod enabled;
 #[cfg(feature = "execution-counts")]
-pub(crate) use enabled::{Counter, SlotCounter, SlotState, State};
+pub(crate) use enabled::{Counter, State};
 #[cfg(feature = "execution-counts")]
 pub use enabled::{ExecutionCounts, NATIVE_STEP_NAMES, SCRIPT_STEP_NAMES, SlotCounts};
 
