@@ -5,6 +5,8 @@
 //! error (including flushed subnormal inputs). Source-over has three such
 //! steps; coverage composition has five. Coordinates, windows, arbitrary
 //! authored expressions, transfer functions and HDR attachments remain float32.
+//! GXM transitions also admit bounded UNORM interpolation. Including input,
+//! progress, difference, product and sum rounding gives <=7*2^-12 absolute error.
 /// Construction-time proof that all vertex color components lie in [0, 1].
 /// Unknown, negative, HDR and non-finite inputs retain float32 paint arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +177,51 @@ mod tests {
         eprintln!(
             "bounded binary16 multiply maximum errors: {largest:?}; source-over RGB={blend_error}"
         );
+    }
+    #[test]
+    fn bounded_transition_rounding_stays_within_one_unorm_byte() {
+        let h = |value: f32| {
+            let rounded = half(value);
+            if rounded.abs() < 2f32.powi(-14) {
+                0.
+            } else {
+                rounded
+            }
+        };
+        let mut inputs = (0..=255).map(|v| v as f32 / 255.).collect::<Vec<_>>();
+        // Filtered samples can lie between encoded bytes or near half boundaries.
+        inputs.extend([0.00001, 0.49988, 0.50012, 0.50025, 0.99976, 0.99999]);
+        let mut maximum = 0f64;
+        let byte = |v: f64| (v.clamp(0., 1.) * 255.).round() as u8;
+        for &source in &inputs {
+            for &target in &inputs {
+                for progress in [
+                    0.,
+                    0.00001,
+                    0.0001,
+                    1. / 255.,
+                    0.1,
+                    0.13,
+                    0.5,
+                    0.51,
+                    0.9,
+                    0.999,
+                    1.,
+                ] {
+                    // Reference uses double precision and the convex-combination
+                    // form, independently of the shader's difference/FMA form.
+                    let expected = f64::from(source) * (1. - f64::from(progress))
+                        + f64::from(target) * f64::from(progress);
+                    let difference = h(h(target) - h(source));
+                    let actual = f64::from(h(h(difference * h(progress)) + h(source)));
+                    maximum = maximum.max((actual - expected).abs());
+                    assert!(byte(actual).abs_diff(byte(expected)) <= 1);
+                }
+            }
+        }
+        assert!(maximum <= 7. / 4096.);
+        assert!(maximum < 1. / 255.);
+        eprintln!("bounded transition maximum absolute error: {maximum}");
     }
     #[cfg(feature = "wgpu")]
     #[test]

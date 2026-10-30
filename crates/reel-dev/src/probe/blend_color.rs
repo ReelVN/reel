@@ -1,10 +1,6 @@
 //! Compare current-pixel blending with the sampled, isolated-clip path on device.
-use super::{DeviceBackend, Error, Result, log, r01_fixture};
-use reel_core::{identity::FrameId, wake::WakeSignal};
-use reel_render::{
-    RenderBackend,
-    capture::{CaptureBackend, CaptureEncoding},
-};
+use super::{DeviceBackend, Error, Result, color_capture::capture, log, r01_fixture};
+use reel_core::identity::FrameId;
 use reel_ui::{
     frame::{FrameBuild, FrameInfo, RenderFrame},
     imaging::{
@@ -14,7 +10,6 @@ use reel_ui::{
     kurbo::{Affine, Rect},
     peniko::{BlendMode, Brush, Color, Compose, Mix},
 };
-use std::time::{Duration, Instant};
 
 const SIZE: [u32; 2] = [128, 128];
 const COLORS: [[u8; 4]; 16] = [
@@ -125,28 +120,6 @@ fn frame(blend: BlendMode, alpha: f32, sampled: bool, id: u64) -> Result<RenderF
     build.finish().map_err(error)
 }
 
-fn capture(renderer: &mut DeviceBackend, frame: RenderFrame) -> Result<Vec<u8>> {
-    let pool = r01_fixture::pool();
-    let mut capture = renderer.capture(&frame, SIZE, &pool, WakeSignal::new(|| {}))?;
-    let start = Instant::now();
-    let pixels = loop {
-        if let Some(pixels) = renderer.poll_capture(&mut capture, 64 << 10)? {
-            break pixels;
-        }
-        if start.elapsed() > Duration::from_secs(15) {
-            return Err("blend color capture timeout".into());
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    };
-    if pixels.encoding != CaptureEncoding::Linear {
-        return Err("expected linear GXM readback".into());
-    }
-    let result = pixels.rgba.as_slice().to_vec();
-    drop((pixels, capture, frame));
-    renderer.poll(&mut Vec::new(), 32)?;
-    Ok(result)
-}
-
 pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
     let modes = [
         BlendMode {
@@ -167,8 +140,8 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
     let mut max_error = 0;
     for mode in modes {
         for alpha in [0., 0.1, 0.5, 0.9, 1.] {
-            let direct = capture(renderer, frame(mode, alpha, false, cases * 2 + 1)?)?;
-            let sampled = capture(renderer, frame(mode, alpha, true, cases * 2 + 2)?)?;
+            let direct = capture(renderer, frame(mode, alpha, false, cases * 2 + 1)?, SIZE)?;
+            let sampled = capture(renderer, frame(mode, alpha, true, cases * 2 + 2)?, SIZE)?;
             if direct.len() != sampled.len() {
                 return Err("blend readback size mismatch".into());
             }

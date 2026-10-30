@@ -41,11 +41,8 @@ pub fn sources() -> Vec<Shader> {
             "REEL_TILE_DESTINATION\n#define REEL_EXTENDED_BLEND",
         ),
         ("extended_blend", "REEL_EXTENDED_BLEND"),
-        ("composite_overwrite", "REEL_FULL_OVERWRITE"),
-        (
-            "extended_blend_overwrite",
-            "REEL_EXTENDED_BLEND\n#define REEL_FULL_OVERWRITE",
-        ),
+        ("transition", "REEL_TRANSITION_ONLY"),
+        ("masked_transition", "REEL_MASKED_TRANSITION_ONLY"),
     ] {
         add(
             name,
