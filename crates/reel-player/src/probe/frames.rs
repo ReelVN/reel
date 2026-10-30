@@ -2,6 +2,11 @@
 //! VM slice is not a frame: retained samples include all intervening loop work.
 //! These are submission intervals and wall times, not display/GPU timestamps.
 use super::Row;
+#[cfg(feature = "vm-execution-counts")]
+use aside_vm::executor::ExecutionCounts;
+#[cfg(all(feature = "vm-execution-counts", any(target_os = "vita", test)))]
+#[path = "frames_counts.rs"]
+mod counts;
 use reel_core::profile::Phase;
 use std::collections::VecDeque;
 #[cfg(any(target_os = "vita", test))]
@@ -47,6 +52,8 @@ struct Frame {
     partial: bool,
     presented: u64,
     work: Pending,
+    #[cfg(feature = "vm-execution-counts")]
+    counts: Option<ExecutionCounts>,
 }
 
 #[derive(Default)]
@@ -59,8 +66,19 @@ pub(super) struct Frames {
     pending: Pending,
     dropped: u64,
     discarded_loops: u64,
+    #[cfg(feature = "vm-execution-counts")]
+    observed_counts: Option<ExecutionCounts>,
+    #[cfg(feature = "vm-execution-counts")]
+    previous_counts: Option<ExecutionCounts>,
 }
 impl Frames {
+    /// Capture only at submission boundaries. The cumulative snapshot includes
+    /// every intervening maintenance loop and host-side frame-slot API access.
+    #[cfg(feature = "vm-execution-counts")]
+    pub(super) fn observe_vm(&mut self, story: Option<&super::StoryRuntime>) {
+        self.observed_counts = story.map(|story| story.driver().adapter().vm().execution_counts());
+    }
+
     pub(super) fn record(&mut self, title: &str, row: &Row) {
         if self.labels.back().is_none_or(|(_, label)| label != title) {
             self.discarded_loops += self.pending.loops;
@@ -68,6 +86,10 @@ impl Frames {
             self.segment += 1;
             self.index = 0;
             self.last_present = None;
+            #[cfg(feature = "vm-execution-counts")]
+            {
+                self.previous_counts = None;
+            }
             if self.labels.capacity() == 0 {
                 self.labels.reserve_exact(LABELS);
             }
@@ -103,6 +125,17 @@ impl Frames {
             self.dropped += 1;
         }
         let previous = self.last_present.replace(row.elapsed);
+        #[cfg(feature = "vm-execution-counts")]
+        let counts = {
+            let observed = self.observed_counts.take();
+            let delta = observed.and_then(|after| {
+                self.previous_counts
+                    .as_ref()
+                    .and_then(|before| after.checked_delta(before))
+            });
+            self.previous_counts = observed;
+            delta
+        };
         self.rows.push_back(Frame {
             segment: self.segment,
             index: self.index,
@@ -111,6 +144,8 @@ impl Frames {
             partial: previous.is_none(),
             presented,
             work: std::mem::take(&mut self.pending),
+            #[cfg(feature = "vm-execution-counts")]
+            counts,
         });
         self.index += presented;
     }
@@ -130,8 +165,8 @@ impl Frames {
         writeln!(out, "[reel-frame-report] begin")?;
         writeln!(
             out,
-            "frame_metadata\tversion=1\tcapacity={CAPACITY}\tdropped={}\tdiscarded_segment_loops={}\tpending_loops={}\ttiming=submission_intervals_and_nested_wall_time",
-            self.dropped, self.discarded_loops, self.pending.loops
+            "frame_metadata\tversion=1\tcapacity={CAPACITY}\tdropped={}\tdiscarded_segment_loops={}\tpending_loops={}\ttiming=submission_intervals_and_nested_wall_time\tvm_execution_counts={}",
+            self.dropped, self.discarded_loops, self.pending.loops, cfg!(feature = "vm-execution-counts")
         )?;
         for (id, label) in &self.labels {
             writeln!(
@@ -147,6 +182,8 @@ impl Frames {
         for phase in PHASES {
             write!(out, "\t{}_us", reel_core::profile::NAMES[phase as usize])?;
         }
+        #[cfg(feature = "vm-execution-counts")]
+        counts::columns(out)?;
         writeln!(out)?;
         for frame in &self.rows {
             write!(
@@ -166,6 +203,8 @@ impl Frames {
             for value in frame.work.micros {
                 write!(out, "\t{value}")?;
             }
+            #[cfg(feature = "vm-execution-counts")]
+            counts::values(out, frame.counts.as_ref())?;
             writeln!(out)?;
         }
         writeln!(out, "[reel-frame-report] end")
@@ -244,5 +283,36 @@ mod tests {
                 .iter()
                 .all(|row| frames.labels.iter().any(|(id, _)| *id == row.segment))
         );
+    }
+
+    #[cfg(feature = "vm-execution-counts")]
+    #[test]
+    fn count_deltas_cross_maintenance_loops_and_reject_labels_and_vm_changes() {
+        let mut frames = Frames::default();
+        let mut counts = ExecutionCounts::default();
+        counts.heap_id = 1;
+        counts.epoch = 2;
+        counts.script_entries = 10;
+        frames.observed_counts = Some(counts);
+        frames.record("a", &row(1000, 0, true));
+        assert!(frames.rows[0].counts.is_none());
+        frames.record("a", &row(2000, 0, false));
+        counts.script_entries = 17;
+        frames.observed_counts = Some(counts);
+        frames.record("a", &row(3000, 0, true));
+        assert_eq!(frames.rows[1].counts.unwrap().script_entries, 7);
+        counts.script_entries = 19;
+        frames.observed_counts = Some(counts);
+        frames.record("b", &row(4000, 0, true));
+        assert!(frames.rows[2].counts.is_none());
+        counts.heap_id = 3;
+        frames.observed_counts = Some(counts);
+        frames.record("b", &row(5000, 0, true));
+        assert!(frames.rows[3].counts.is_none());
+        counts.script_entries = 23;
+        frames.observed_counts = Some(counts);
+        frames.record("b", &row(6000, 0, true));
+        assert_eq!(frames.rows[4].counts.unwrap().script_entries, 4);
+        assert!(frames.bytes() >= CAPACITY * size_of::<Frame>());
     }
 }

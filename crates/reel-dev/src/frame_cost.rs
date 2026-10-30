@@ -166,6 +166,46 @@ fn statistics(mut values: Vec<u64>, limit: Option<u64>) -> Value {
     json!({"samples":values.len(),"p50_us":percentile(50),"p95_us":percentile(95),"p99_us":percentile(99),"max_us":values.last(),"limit_us":limit,"over_limit":limit.map(|limit|values.iter().filter(|&&value|value>limit).count())})
 }
 
+fn quantities(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
+    let counted: Vec<_> = rows
+        .iter()
+        .filter(|row| row.values.get("vm_counts_valid") == Some(&1))
+        .collect();
+    let valid: Vec<_> = counted
+        .iter()
+        .filter(|row| {
+            let opcodes: Vec<_> = row
+                .values
+                .iter()
+                .filter(|(name, _)| name.starts_with("vm_opcode_") && name.ends_with("_count"))
+                .collect();
+            !opcodes.is_empty()
+                && opcodes
+                    .iter()
+                    .try_fold(0u64, |sum, (_, n)| sum.checked_add(**n))
+                    == row.values.get("vm_instructions_count").copied()
+        })
+        .collect();
+    let mut metrics = BTreeMap::new();
+    for name in columns
+        .keys()
+        .filter(|name| name.starts_with("vm_") && name.ends_with("_count"))
+    {
+        let mut values: Vec<u64> = valid.iter().map(|row| row.values[name]).collect();
+        values.sort_unstable();
+        if values.is_empty() {
+            metrics.insert(name, json!({"samples":0}));
+        } else {
+            let percentile = |p: usize| values[(values.len() * p).div_ceil(100) - 1];
+            metrics.insert(name, json!({"samples":values.len(),"total":values.iter().sum::<u64>(),
+                "p50":percentile(50),"p95":percentile(95),"p99":percentile(99),"max":values.last()}));
+        }
+    }
+    json!({"valid_intervals":valid.len(),"opcode_accounting_errors":counted.len()-valid.len(),
+        "scope":"VM work and host frame-slot access; count-enabled diagnostics, not exclusive VmSlice time",
+        "metrics":metrics})
+}
+
 fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Result<Value> {
     let columns = &trace.rows[0].values;
     for key in limits.keys() {
@@ -176,8 +216,8 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
     }
     let groups: Vec<_> = trace.labels.iter().map(|(segment,label)| {
         let rows: Vec<_> = trace.rows.iter().filter(|row|row.segment==*segment).collect();
-        let eligible: Vec<_> = rows.iter().filter(|row|row.values["partial"]==0 && row.values["present_calls"]==1).collect();
-        let boundary: Vec<_> = rows.iter().filter(|row|row.values["partial"]!=0 || row.values["present_calls"]!=1).collect();
+        let eligible: Vec<_> = rows.iter().copied().filter(|row|row.values["partial"]==0 && row.values["present_calls"]==1).collect();
+        let boundary: Vec<_> = rows.iter().copied().filter(|row|row.values["partial"]!=0 || row.values["present_calls"]!=1).collect();
         let mut metrics = BTreeMap::new();
         let mut boundary_work = BTreeMap::new();
         for key in columns.keys().filter(|key|key.ends_with("_us") && key.as_str()!="elapsed_us") {
@@ -186,7 +226,7 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
                 boundary_work.insert(key,statistics(boundary.iter().filter(|row|!matches!(key.as_str(),"schedule_non_vm_us"|"session_unattributed_us") || row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)==0).map(|row|row.values[key]).collect(),None));
             }
         }
-        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work})
+        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns)})
     }).collect();
     Ok(
         json!({"schema":1,"declared_environment":scope,"measurement":"present_submission_intervals_and_nested_wall_time","gpu_service_time":"unmeasured","display_cadence":"unmeasured","trace_metadata":trace.metadata,"limits_kind":"optional_workload_engineering_targets","groups":groups}),
@@ -289,5 +329,21 @@ mod tests {
             .collect::<String>();
         assert_eq!(parse(&trimmed).unwrap().rows.len(), 3);
         assert_eq!(statistics(vec![1, 2, 3, 100], None)["p99_us"], 100);
+    }
+
+    #[test]
+    fn quantities_exclude_missing_snapshots_partial_frames_and_bad_opcode_sums() {
+        let trace = "[reel-frame-report] begin\nframe_metadata\tversion=1\nframe_segment\t1\tanimation\nframe_columns\tsegment\tpartial\tpresent_calls\tspan_us\tactive_us\tvm_counts_valid\tvm_instructions_count\tvm_opcode_Clear_count\nframe_sample\t1\t1\t1\t0\t100\t1\t100\t100\nframe_sample\t1\t0\t1\t200\t100\t0\t0\t0\nframe_sample\t1\t0\t1\t200\t100\t1\t7\t7\nframe_sample\t1\t0\t1\t200\t100\t1\t8\t7\n[reel-frame-report] end\n";
+        let report = summarize(&parse(trace).unwrap(), "host", &BTreeMap::new()).unwrap();
+        let counts = &report["groups"][0]["quantities"];
+        assert_eq!(counts["valid_intervals"], 1);
+        assert_eq!(counts["opcode_accounting_errors"], 1);
+        assert_eq!(counts["metrics"]["vm_instructions_count"]["total"], 7);
+        assert_eq!(counts["metrics"]["vm_instructions_count"]["p50"], 7);
+        assert!(
+            counts["metrics"]["vm_instructions_count"]
+                .get("p50_us")
+                .is_none()
+        );
     }
 }

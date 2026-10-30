@@ -9,6 +9,8 @@ publish = false
 default = []
 profiling = ["reel-core/profiling", "reel-render/profiling", "reel-media/profiling"]
 vm-profiling = ["profiling", "aside-vm/profiling"]
+# Integer VM work deltas at presentation boundaries; independent of VM clocks.
+vm-execution-counts = ["profiling", "aside-vm/execution-counts"]
 winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 video = ["reel-media/video"]

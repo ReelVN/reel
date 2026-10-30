@@ -32,6 +32,11 @@ records declared environment, retention losses and sample size; GPU service time
 and display cadence require their own measurements. Nested phase percentiles are
 reported separately.
 
+Build the probe with `reel-player/vm-execution-counts` to append integer VM work
+deltas at submission boundaries. The report validates opcode totals and keeps
+these quantities separate from phase durations; frame-slot counts also include
+host-side access. Label boundaries and restored VM identities start fresh deltas.
+
 Behavior checks live in the owning crate's Rust tests. The CLI's
 [project scenarios](../reel-cli/tests/project_scenarios.rs) exercise source/ASB,
 save restoration, accepted input and offline audio through the shared player.
