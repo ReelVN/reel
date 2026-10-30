@@ -47,6 +47,8 @@ pub struct Fixture {
 }
 
 pub struct Row {
+    #[cfg(feature = "execution-counts")]
+    pub counts: aside_vm::executor::ExecutionCounts,
     pub value: i64,
     pub wall_ns: u128,
     pub gc_ns: u128,
@@ -202,6 +204,8 @@ impl Fixture {
                 .unwrap() as u32,
         );
         let before = vm.stats();
+        #[cfg(feature = "execution-counts")]
+        let counts_before = vm.execution_counts();
         let mut progress = Progress::default();
         let start = Instant::now();
         let task = vm
@@ -213,6 +217,8 @@ impl Fixture {
         let wall_ns = start.elapsed().as_nanos();
         let after = vm.stats();
         Row {
+            #[cfg(feature = "execution-counts")]
+            counts: vm.execution_counts().checked_delta(&counts_before).unwrap(),
             value,
             wall_ns,
             gc_ns: progress.gc_ns,

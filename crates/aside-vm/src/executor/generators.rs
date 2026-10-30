@@ -911,6 +911,7 @@ impl Vm {
         let parent = self.index(s.id)?;
         self.active.frames.data[parent] = Frame::Script(*s);
         self.active.frames.data.push(Frame::Script(frame));
+        execution_count!(self, GeneratorResumes, 1);
         Ok(true)
     }
 

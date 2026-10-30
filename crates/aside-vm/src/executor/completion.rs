@@ -479,6 +479,8 @@ impl Vm {
         mut n: NativeFrame,
         m: &mut Meter,
     ) -> Result<Option<RunOutcome>, VmError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.native_step(&n.phase);
         let top = self.active.frames.data.len() - 1;
         match n.phase {
             NativePhase::PlannedCheck { source } => {

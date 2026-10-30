@@ -256,6 +256,8 @@ impl Vm {
             checks: type_checks.clone(),
         });
         heap.code = Some(program.clone());
+        #[cfg(feature = "execution-counts")]
+        slots.reset_execution_counts();
         Ok(Self {
             program,
             code_window: crate::bytecode::CodeWindow::default(),
@@ -297,6 +299,8 @@ impl Vm {
             compact_derived_outputs: 0,
 
             last_usage: SliceUsage::default(),
+            #[cfg(feature = "execution-counts")]
+            execution_counts: execution_counts::State::default(),
             #[cfg(feature = "profiling")]
             step_costs: step_costs::State::new(&usage)?,
             #[cfg(test)]

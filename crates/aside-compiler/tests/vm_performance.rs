@@ -57,6 +57,22 @@ fn kernels_preserve_oracles_across_codec_gc_and_budget_boundaries() {
                     "{name} {mode:?} encoded={encoded}"
                 );
                 assert!(result.instructions > 0);
+                #[cfg(feature = "execution-counts")]
+                {
+                    let counts = result.counts;
+                    assert_eq!(counts.instructions, result.instructions);
+                    assert_eq!(counts.work, result.work);
+                    assert_eq!(counts.slices, result.slices);
+                    assert_eq!(counts.native_entries, result.host_entries);
+                    assert_eq!(counts.derived_starts, result.derived_starts);
+                    assert_eq!(
+                        counts.opcode_admissions().map(|(_, n)| n).sum::<u64>(),
+                        result.instructions,
+                        "{name} {mode:?} encoded={encoded}"
+                    );
+                    assert!(counts.bytecode_execute_steps <= counts.instructions);
+                    assert!(counts.script_entries > 0);
+                }
                 if mode == Mode::IncrementalGc {
                     assert!(result.gc_units > 0);
                 }
@@ -75,6 +91,47 @@ fn setting(name: &str, default: usize, max: usize) -> usize {
     let value = std::env::var(name).map_or(default, |s| s.parse().expect(name));
     assert!((1..=max).contains(&value), "{name} must be in 1..={max}");
     value
+}
+
+#[cfg(feature = "execution-counts")]
+#[test]
+#[ignore = "count-only structural diagnostics; not performance measurement"]
+fn inspect_vm_kernel_counts() {
+    let fixture = Fixture::compile();
+    let n = setting("ASIDE_BENCH_N", 16, 1_000_000) as i64;
+    let mut output = String::new();
+    writeln!(output, "# vm-execution-counts-v1 n={n}; clocks and GC scans excluded from counts; counts include run/task/host delivery root operations; bytecode admissions include lazy-read retries").unwrap();
+    writeln!(
+        output,
+        "# opcode-order={:?}",
+        aside_vm::bytecode::INSTRUCTION_SPECS
+            .iter()
+            .map(|s| s.opcode)
+            .collect::<Vec<_>>()
+    )
+    .unwrap();
+    for name in CASES {
+        for mode in [Mode::Batch, Mode::Sliced, Mode::IncrementalGc] {
+            let (mut vm, _) = fixture.load(true);
+            fixture.collect(&mut vm);
+            let row = fixture.run(&mut vm, name, n, mode);
+            assert_eq!(row.value, oracle(name, n));
+            assert_eq!(
+                row.counts.opcode_admissions().map(|(_, n)| n).sum::<u64>(),
+                row.instructions
+            );
+            writeln!(
+                output,
+                "case={name} mode={mode:?} n={n} oracle={} counts={:?}",
+                row.value, row.counts
+            )
+            .unwrap();
+        }
+    }
+    if let Ok(path) = std::env::var("ASIDE_BENCH_OUTPUT") {
+        std::fs::write(path, &output).unwrap();
+    }
+    print!("{output}");
 }
 
 #[test]

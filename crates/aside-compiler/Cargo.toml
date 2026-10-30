@@ -6,6 +6,10 @@ rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Lossless Aside v1 source frontend"
 
+[features]
+# Explicit execution diagnostics for Rust workloads; disabled by default.
+execution-counts = ["aside-vm/execution-counts"]
+
 [dependencies]
 aside-vm = { path = "../aside-vm" }
 logos = "=0.16.1"
