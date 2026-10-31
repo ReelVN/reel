@@ -59,7 +59,7 @@ impl SerialPassTiming {
             .max(other.max_completion_drain_us);
     }
 }
-const CAPACITY: usize = 32;
+const CAPACITY: usize = 36;
 static PASSES: Mutex<[SerialPassTiming; CAPACITY]> = Mutex::new([SerialPassTiming::ZERO; CAPACITY]);
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
@@ -82,11 +82,11 @@ pub(crate) fn record_serial_pass(timing: SerialPassTiming) {
 
 /// Drain bounded pipeline rows and the dropped-record count.
 /// A busy producer leaves all records pending and returns `None`. The producer
-/// never allocates or waits on this collector; storage holds at most 32 labels.
+/// never allocates or waits on this collector; storage holds at most 36 labels.
 pub fn drain_serial_passes() -> Option<([SerialPassTiming; CAPACITY], u64)> {
     let mut passes = PASSES.try_lock().ok()?;
     Some((
-        std::mem::take(&mut *passes),
+        std::mem::replace(&mut *passes, [SerialPassTiming::ZERO; CAPACITY]),
         DROPPED.swap(0, Ordering::Relaxed),
     ))
 }

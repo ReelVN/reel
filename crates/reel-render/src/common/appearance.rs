@@ -53,3 +53,35 @@ pub(crate) fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 10] 
     ];
     values
 }
+
+/// Block-alpha sources and premultiplied vertex colors preserve zero RGB at
+/// zero alpha. A constant RGB adjustment can then use only the sampled alpha.
+#[cfg(any(feature = "gxm", test))]
+pub(crate) fn constant_alpha_tint(
+    sampling: Option<super::mesh::DirectPaint>,
+    appearance: &[[f32; 4]; 10],
+    mut colors: impl Iterator<Item = [f32; 4]>,
+) -> bool {
+    use super::mesh::DirectPaint;
+    matches!(
+        sampling,
+        Some(
+            DirectPaint::Bc1
+                | DirectPaint::Bc3
+                | DirectPaint::RegionalBc1
+                | DirectPaint::RegionalBc3
+        )
+    ) && matches!(appearance[4][3], 0. | 1.)
+        && appearance[5][3] == 0.
+        && appearance[7][3] != 0.
+        && appearance[6][..3] == [0.; 3]
+        && appearance[7][..3].iter().all(|v| v.is_finite())
+        && colors.all(|color| {
+            (0.0..=1.0).contains(&color[3])
+                && color[..3].iter().all(|v| (0.0..=color[3]).contains(v))
+        })
+}
+
+#[cfg(test)]
+#[path = "appearance_tests.rs"]
+mod tests;

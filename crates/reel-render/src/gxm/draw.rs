@@ -55,6 +55,7 @@ struct PaintState {
     direct: Option<mesh::DirectPaint>,
     sampling: Option<mesh::DirectPaint>,
     bounded: bool,
+    alpha_tint: bool,
     opaque: Option<mesh::OpaquePaint>,
     scissor: crate::common::scissor::Scissor,
 }
@@ -1082,12 +1083,17 @@ impl Context<'_> {
             None
         };
         let opaque = mesh.opaque_paint(paint.opaque_source(direct, sampling));
-        let state = paint.state(
+        let mut state = paint.state(
             direct,
             sampling,
             bounded,
             opaque,
             self.scissor.for_vertices(&mesh.vertices, self.size),
+        );
+        state.alpha_tint = crate::common::appearance::constant_alpha_tint(
+            state.sampling,
+            &state.appearance,
+            mesh.vertices.iter().map(|vertex| vertex.color),
         );
         self.expand_instances()?;
         self.queue_mesh(target, mesh, state)
@@ -1164,6 +1170,7 @@ impl Context<'_> {
                 direct: _,
                 sampling: _,
                 bounded: _,
+                alpha_tint: _,
                 opaque,
                 scissor,
             } = entry.state;

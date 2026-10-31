@@ -162,14 +162,42 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
             .map_err(error)?,
         )
         .map_err(error)?;
+    let bc3 = [
+        255, 0, 136, 198, 250, 136, 198, 250, 0, 248, 224, 7, 228, 228, 228, 228,
+    ]
+    .repeat(4);
+    let ticket = pool.reserve(bc3.capacity() as u64).map_err(error)?;
+    let bc3 = registry
+        .register_texture(
+            ResourceVersion {
+                key: AssetKey("image-color-bc3".into()),
+                version: ContentVersion([9; 32]),
+            },
+            TexturePayload::new(
+                TextureDescriptor {
+                    storage_layout: Default::default(),
+                    mip_count: 1,
+                    format: TextureFormat::Bc3Rgba,
+                    source_encoding: ColorEncoding::Linear,
+                    layout: TextureLayout::identity([8, 8]),
+                },
+                OwnedBytes::new(bc3, ticket).map_err(error)?,
+            )
+            .map_err(error)?,
+        )
+        .map_err(error)?;
     let mut cases = 0;
     let mut max_error = 0_u8;
-    for (handle, opaque) in [(handle, false), (bc1, true)] {
+    for (handle, opaque, block) in [
+        (handle, false, false),
+        (bc1, true, true),
+        (bc3, false, true),
+    ] {
         for packed in [false, true] {
-            if opaque && packed {
+            if block && packed {
                 continue;
             }
-            for corner_case in 0..if opaque { 3 } else { 1 } {
+            for corner_case in 0..if block { 3 } else { 1 } {
                 let corners = (corner_case != 0).then(|| {
                     [
                         Color::from_rgba8(255, 255, 255, 255),

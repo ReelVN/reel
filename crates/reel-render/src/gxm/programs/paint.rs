@@ -23,10 +23,23 @@ pub(crate) enum Kind {
         constant: bool,
         plain_adjust: bool,
     },
+    AlphaTint {
+        opaque: bool,
+        regional: bool,
+    },
 }
 impl Kind {
     #[cfg(feature = "profiling")]
     pub(crate) fn diagnostic_label(self) -> &'static str {
+        if let Self::AlphaTint { opaque, regional } = self {
+            return if opaque {
+                "paint.alpha_tint_solid"
+            } else if regional {
+                "paint.alpha_tint_region"
+            } else {
+                "paint.alpha_tint_direct"
+            };
+        }
         [
             "paint.rgba",
             "paint.bc1",
@@ -101,6 +114,13 @@ impl Kind {
                     + 2 * usize::from(constant)
                     + 4 * usize::from(plain_adjust)
             }
+            Self::AlphaTint { opaque, regional } => {
+                if opaque {
+                    35
+                } else {
+                    36 + usize::from(regional)
+                }
+            }
         }
     }
     fn code(self, clipped: bool) -> native::ShaderCode<'static> {
@@ -154,6 +174,9 @@ impl Kind {
             32 => pair!("paint_regional_bounded"),
             33 => pair!("paint_regional_bc1_bounded"),
             34 => pair!("paint_regional_bc3_bounded"),
+            35 => pair!("paint_alpha_solid"),
+            36 => pair!("paint_alpha_direct"),
+            37 => pair!("paint_alpha_region"),
             _ => unreachable!(),
         }
     }
@@ -163,7 +186,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 140],
+    entries: [OnceCell<Box<Entry>>; 152],
     budget: BudgetPool,
 }
 impl PaintPrograms {
@@ -194,11 +217,11 @@ impl PaintPrograms {
             );
             let program = create_program_with_vertex(
                 device,
-                if instanced && matches!(kind, Kind::Bounded(_)) {
+                if instanced && matches!(kind, Kind::Bounded(_) | Kind::AlphaTint { .. }) {
                     shader_code!("vertex_instances_bounded")
                 } else if instanced {
                     shader_code!("vertex_instances")
-                } else if matches!(kind, Kind::Bounded(_)) {
+                } else if matches!(kind, Kind::Bounded(_) | Kind::AlphaTint { .. }) {
                     shader_code!("vertex_bounded")
                 } else {
                     shader_code!("vertex")

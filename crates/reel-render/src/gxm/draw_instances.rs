@@ -98,6 +98,7 @@ impl<'a> Paint<'a> {
             direct,
             sampling,
             bounded,
+            alpha_tint: false,
             opaque,
             scissor,
         }
@@ -117,13 +118,22 @@ impl PaintState {
             && self.direct == other.direct
             && self.sampling == other.sampling
             && self.bounded == other.bounded
+            && self.alpha_tint == other.alpha_tint
             && self.opaque == other.opaque
     }
     pub(super) fn shader_kind(&self) -> super::super::programs::PaintKind {
         use super::super::programs::PaintKind;
         let styled = self.appearance[5][3] != 0. || self.appearance[7][3] != 0.;
         let constant_rgb = self.appearance[7][3] != 0. && self.appearance[6][..3] == [0.; 3];
-        if let Some(direct) = self.direct {
+        if self.alpha_tint {
+            PaintKind::AlphaTint {
+                opaque: matches!(
+                    self.sampling,
+                    Some(mesh::DirectPaint::Bc1 | mesh::DirectPaint::RegionalBc1)
+                ),
+                regional: self.sampling == Some(mesh::DirectPaint::RegionalBc3),
+            }
+        } else if let Some(direct) = self.direct {
             if self.kind > 1.5 {
                 PaintKind::VideoDirectNv12
             } else if self.bounded {

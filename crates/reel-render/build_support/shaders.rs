@@ -246,6 +246,25 @@ pub fn sources() -> Vec<Shader> {
         );
     }
     for clipped in [false, true] {
+        for (name, define) in [
+            ("paint_alpha_solid", "#define REEL_OPAQUE_SOURCE"),
+            ("paint_alpha_direct", ""),
+            ("paint_alpha_region", "#define REEL_REGIONAL"),
+        ] {
+            add(
+                &format!("{name}{}", if clipped { "" } else { "_unclipped" }),
+                false,
+                &read("paint_alpha"),
+                &format!(
+                    "{define}\n{}",
+                    if clipped {
+                        ""
+                    } else {
+                        "#define REEL_UNCLIPPED"
+                    }
+                ),
+            );
+        }
         for (name, sampling, style, plain_adjust) in [
             ("paint_appearance_direct", 1, 1, false),
             ("paint_appearance_region", 2, 1, false),
