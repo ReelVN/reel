@@ -140,7 +140,8 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
             .map_err(error)?,
         )
         .map_err(error)?;
-    let bc1 = vec![0, 248, 224, 7, 228, 228, 228, 228];
+    // Native BC textures use power-of-two dimensions of at least eight pixels.
+    let bc1 = [0, 248, 224, 7, 228, 228, 228, 228].repeat(4);
     let ticket = pool.reserve(bc1.capacity() as u64).map_err(error)?;
     let bc1 = registry
         .register_texture(
@@ -154,7 +155,7 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
                     mip_count: 1,
                     format: TextureFormat::Bc1Rgb,
                     source_encoding: ColorEncoding::Linear,
-                    layout: TextureLayout::identity([4, 4]),
+                    layout: TextureLayout::identity([8, 8]),
                 },
                 OwnedBytes::new(bc1, ticket).map_err(error)?,
             )
