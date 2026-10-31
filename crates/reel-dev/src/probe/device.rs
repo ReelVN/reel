@@ -14,6 +14,8 @@ mod fixture;
 mod image_color;
 #[path = "mask_color.rs"]
 mod mask_color;
+#[path = "power.rs"]
+mod power;
 #[path = "present_color.rs"]
 mod present_color;
 #[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
@@ -497,6 +499,7 @@ fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) 
 }
 
 fn run() -> Result {
+    power::configure()?;
     let mut selected = "diagnostic".to_owned();
     let mut frames = 120;
     let mut trace = false;
