@@ -37,5 +37,9 @@ pub(super) fn configure() -> Result {
     } else {
         log(format_args!("POWER request=inherit"));
     }
+    let result = power::request_arm_clock_frequency(444);
+    log(format_args!("POWER arm_request_mhz=444 result={result:?}"));
+    observe("after_arm_request");
+    result?;
     Ok(())
 }

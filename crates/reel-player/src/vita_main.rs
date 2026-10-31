@@ -3,6 +3,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Mode C enables the GPU performance configuration while retaining WLAN.
     vita_native::app::power::request_configuration(vita_native::app::power::ConfigurationMode::C)?;
+    vita_native::app::power::request_arm_clock_frequency(444)?;
     reel_player::platform::vita::Runtime::run(|runtime| {
         runtime.run_launcher(std::path::Path::new("ux0:/data/reel"))
     })
