@@ -4,6 +4,36 @@ use reel_render::gxm::GxmBackend;
 use std::time::Duration;
 use vita_native::app::wake::WaitResult;
 
+#[cfg(feature = "thread-profiling")]
+pub(super) fn install_thread_clock() {
+    let clocks = vita_native::app::power::clock_frequencies();
+    let raw = |value: Result<u32, vita_native::app::Error>| {
+        value.map_or_else(|error| i64::from(error.code), i64::from)
+    };
+    eprintln!(
+        "[reel-clock-frequencies] arm_mhz={} gpu_mhz={} bus_mhz={} gpu_xbar_mhz={} negative_values=native_query_errors",
+        raw(clocks.arm_mhz),
+        raw(clocks.gpu_mhz),
+        raw(clocks.bus_mhz),
+        raw(clocks.gpu_xbar_mhz)
+    );
+    reel_core::profile::install_thread_clock(|| {
+        vita_native::app::time::thread_runtime()
+            .map(|value| reel_core::profile::ThreadTime {
+                thread: value.thread_id as u64,
+                run_us: value.run_micros,
+            })
+            .map_err(|error| error.code)
+    });
+    match vita_native::app::time::thread_runtime() {
+        Ok(value) => eprintln!(
+            "[reel-thread-clock] source=kernel_runClocks thread={} priority={} affinity={} cpu={} run_us={} vm_stride=127 replay_stride=1 present_stride=1",
+            value.thread_id, value.priority, value.affinity, value.cpu, value.run_micros
+        ),
+        Err(error) => eprintln!("[reel-thread-clock] initialization_error={error}"),
+    }
+}
+
 /// Cumulative timed waits; elapsed time includes kernel scheduling after wakeup.
 #[derive(Default)]
 pub(super) struct Waits {

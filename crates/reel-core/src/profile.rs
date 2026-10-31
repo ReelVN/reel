@@ -196,6 +196,8 @@ pub struct Scope {
     start: std::time::Instant,
     #[cfg(feature = "profiling")]
     phase: Phase,
+    #[cfg(feature = "profiling")]
+    thread: Option<thread::Probe>,
 }
 impl Scope {
     #[inline]
@@ -207,6 +209,8 @@ impl Scope {
             start: std::time::Instant::now(),
             #[cfg(feature = "profiling")]
             phase,
+            #[cfg(feature = "profiling")]
+            thread: thread::Probe::begin(phase),
         };
         #[cfg(feature = "profiling")]
         enabled::begin(phase, scope.start);
@@ -333,6 +337,9 @@ mod enabled {
 
     impl Drop for Scope {
         fn drop(&mut self) {
+            if let Some(probe) = self.thread.take() {
+                probe.finish();
+            }
             let index = self.phase as usize;
             MICROS[index].fetch_add(self.start.elapsed().as_micros() as u64, Ordering::Relaxed);
             CALLS[index].fetch_add(1, Ordering::Relaxed);
@@ -399,3 +406,11 @@ mod enabled {
 }
 #[cfg(feature = "profiling")]
 pub use enabled::{GeometryUploads, RetainedCache, Sample};
+
+#[cfg(feature = "profiling")]
+mod thread;
+#[cfg(feature = "profiling")]
+pub use thread::{
+    METRICS as THREAD_METRICS, PHASES as THREAD_PHASES, ThreadCost, ThreadSnapshot, ThreadTime,
+    install_thread_clock,
+};

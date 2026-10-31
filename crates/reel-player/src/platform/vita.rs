@@ -50,6 +50,8 @@ pub struct VitaHost {
 }
 impl VitaHost {
     fn new(size: [u32; 2], wake: Arc<Wake>) -> Self {
+        #[cfg(feature = "thread-profiling")]
+        profiling::install_thread_clock();
         Self {
             size,
             wake,

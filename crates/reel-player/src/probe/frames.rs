@@ -9,6 +9,8 @@ mod counts;
 #[path = "frames_vm.rs"]
 mod vm;
 use reel_core::profile::Phase;
+#[path = "frames_thread.rs"]
+mod thread;
 use std::collections::VecDeque;
 #[cfg(any(target_os = "vita", test))]
 use std::io::{self, Write};
@@ -53,6 +55,7 @@ struct Frame {
     partial: bool,
     presented: u64,
     work: Pending,
+    thread: Option<reel_core::profile::ThreadSnapshot>,
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
     vm: Option<vm::Observation>,
 }
@@ -67,6 +70,7 @@ pub(super) struct Frames {
     pending: Pending,
     dropped: u64,
     discarded_loops: u64,
+    previous_thread: Option<reel_core::profile::ThreadSnapshot>,
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
     observed_vm: Option<vm::Observation>,
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
@@ -88,6 +92,7 @@ impl Frames {
             self.segment += 1;
             self.index = 0;
             self.last_present = None;
+            self.previous_thread = None;
             #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
             {
                 self.previous_vm = None;
@@ -127,6 +132,12 @@ impl Frames {
             self.dropped += 1;
         }
         let previous = self.last_present.replace(row.elapsed);
+        let after = reel_core::profile::ThreadSnapshot::capture();
+        let thread = self
+            .previous_thread
+            .as_ref()
+            .and_then(|before| after.checked_delta(before));
+        self.previous_thread = Some(after);
         #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
         let vm = {
             let observed = self.observed_vm.take();
@@ -146,6 +157,7 @@ impl Frames {
             partial: previous.is_none(),
             presented,
             work: std::mem::take(&mut self.pending),
+            thread,
             #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
             vm,
         });
@@ -167,12 +179,13 @@ impl Frames {
         writeln!(out, "[reel-frame-report] begin")?;
         writeln!(
             out,
-            "frame_metadata\tversion=1\tcapacity={CAPACITY}\tdropped={}\tdiscarded_segment_loops={}\tpending_loops={}\ttiming=submission_intervals_and_nested_wall_time\tvm_execution_counts={}\tvm_profiling={}",
+            "frame_metadata\tversion=1\tcapacity={CAPACITY}\tdropped={}\tdiscarded_segment_loops={}\tpending_loops={}\ttiming=submission_intervals_and_nested_wall_time\tvm_execution_counts={}\tvm_profiling={}\tthread_profiling={}\tthread_vm_stride=127",
             self.dropped,
             self.discarded_loops,
             self.pending.loops,
             cfg!(feature = "vm-execution-counts"),
-            cfg!(feature = "vm-profiling")
+            cfg!(feature = "vm-profiling"),
+            cfg!(feature = "thread-profiling")
         )?;
         for (id, label) in &self.labels {
             writeln!(
@@ -188,6 +201,7 @@ impl Frames {
         for phase in PHASES {
             write!(out, "\t{}_us", reel_core::profile::NAMES[phase as usize])?;
         }
+        thread::columns(out)?;
         #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
         vm::columns(out)?;
         writeln!(out)?;
@@ -209,6 +223,7 @@ impl Frames {
             for value in frame.work.micros {
                 write!(out, "\t{value}")?;
             }
+            thread::values(out, frame.thread.as_ref())?;
             #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
             vm::values(out, frame.vm.as_ref())?;
             writeln!(out)?;
@@ -316,9 +331,11 @@ mod tests {
         assert!(frames.rows[0].vm.is_none());
         frames.record("a", &row(2000, 0, false));
         counts.script_entries = 17;
+        counts.named_table_starts = 9;
         frames.observed_vm = Some(observation(counts));
         frames.record("a", &row(3000, 0, true));
         assert_eq!(frames.rows[1].vm.unwrap().counts.script_entries, 7);
+        assert_eq!(frames.rows[1].vm.unwrap().counts.named_table_starts, 9);
         counts.script_entries = 19;
         frames.observed_vm = Some(observation(counts));
         frames.record("b", &row(4000, 0, true));

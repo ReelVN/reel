@@ -284,11 +284,63 @@ fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
         "run_fractions":{"scalar":fraction("scalar","run"),"script":fraction("script","run"),"native":fraction("native","run"),"loop":fraction("loop","run")}})
 }
 
+fn thread_runtime(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
+    if !columns.contains_key("thread_profile_valid") {
+        return Value::Null;
+    }
+    let valid: Vec<_> = rows
+        .iter()
+        .copied()
+        .filter(|row| row.values.get("thread_profile_valid") == Some(&1))
+        .collect();
+    let mut phases = BTreeMap::new();
+    for (phase, stride) in [("vm_slice", 127), ("replay", 1), ("present", 1)] {
+        let prefix = format!("thread_{phase}_");
+        let mut totals = BTreeMap::<String, u64>::new();
+        let mut errors = std::collections::BTreeSet::new();
+        let mut invalid = 0;
+        for row in &valid {
+            let get = |metric| row.values.get(&format!("{prefix}{metric}")).copied();
+            let (Some(samples), Some(wall), Some(run)) =
+                (get("samples_count"), get("wall_us"), get("run_us"))
+            else {
+                invalid += 1;
+                continue;
+            };
+            if run > wall || samples == 0 && (run != 0 || wall != 0) {
+                invalid += 1;
+                continue;
+            }
+            for (key, value) in row
+                .values
+                .iter()
+                .filter(|(key, _)| key.starts_with(&prefix))
+            {
+                let metric = key.strip_prefix(&prefix).unwrap();
+                if metric == "last_error_code" {
+                    if *value != 0 {
+                        errors.insert(format!("{value:#010x}"));
+                    }
+                } else {
+                    *totals.entry(metric.into()).or_default() += value;
+                }
+            }
+        }
+        let wall = totals.get("wall_us").copied().unwrap_or(0);
+        let run = totals.get("run_us").copied().unwrap_or(0);
+        phases.insert(phase, json!({"sample_stride":stride,"totals":totals,"accounting_errors":invalid,"query_error_codes":errors,"sampled_run_over_wall":(wall!=0).then(||run as f64/wall as f64)}));
+    }
+    json!({"available_intervals":valid.len(),"measurement":"paired calling-thread execution and wall microseconds; raw observations include query-boundary work; VM samples are not extrapolated to whole-frame CPU time","phases":phases})
+}
+
 fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Result<Value> {
     let columns = &trace.rows[0].values;
     for key in limits.keys() {
         ensure!(
-            key.ends_with("_us") && key != "elapsed_us" && columns.contains_key(key),
+            key.ends_with("_us")
+                && !key.starts_with("thread_")
+                && key != "elapsed_us"
+                && columns.contains_key(key),
             "unknown duration limit {key}"
         );
     }
@@ -298,13 +350,13 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
         let boundary: Vec<_> = rows.iter().copied().filter(|row|row.values["partial"]!=0 || row.values["present_calls"]!=1).collect();
         let mut metrics = BTreeMap::new();
         let mut boundary_work = BTreeMap::new();
-        for key in columns.keys().filter(|key|key.ends_with("_us") && key.as_str()!="elapsed_us") {
+        for key in columns.keys().filter(|key|key.ends_with("_us") && !key.starts_with("thread_") && key.as_str()!="elapsed_us") {
             metrics.insert(key, statistics(eligible.iter().filter(|row|!matches!(key.as_str(),"schedule_non_vm_us"|"session_unattributed_us") || row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)==0).map(|row|row.values[key]).collect(),limits.get(key).copied()));
             if key.as_str()!="span_us" {
                 boundary_work.insert(key,statistics(boundary.iter().filter(|row|!matches!(key.as_str(),"schedule_non_vm_us"|"session_unattributed_us") || row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)==0).map(|row|row.values[key]).collect(),None));
             }
         }
-        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns),"vm_profile":vm_profile(&eligible,columns)})
+        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns),"vm_profile":vm_profile(&eligible,columns),"thread_runtime":thread_runtime(&eligible,columns)})
     }).collect();
     Ok(
         json!({"schema":1,"declared_environment":scope,"measurement":"present_submission_intervals_and_nested_wall_time","gpu_service_time":"unmeasured","display_cadence":"unmeasured","trace_metadata":trace.metadata,"limits_kind":"optional_workload_engineering_targets","groups":groups}),
@@ -339,6 +391,36 @@ pub fn report(scope: &str, input: &Path, output: &Path, budget: Option<&Path>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thread_observations_keep_sampling_and_clock_failures_separate_from_frame_times() {
+        let values = BTreeMap::from([
+            ("thread_profile_valid".into(), 1),
+            ("thread_vm_slice_samples_count".into(), 2),
+            ("thread_vm_slice_wall_us".into(), 400),
+            ("thread_vm_slice_run_us".into(), 40),
+            ("thread_vm_slice_query_wall_us".into(), 12),
+            ("thread_vm_slice_query_failures_count".into(), 1),
+            ("thread_vm_slice_last_error_code".into(), 0x80020001),
+        ]);
+        let valid = Frame {
+            segment: 1,
+            values: values.clone(),
+        };
+        let mut invalid = Frame {
+            segment: 1,
+            values: values.clone(),
+        };
+        invalid.values.insert("thread_vm_slice_run_us".into(), 401);
+        let result = thread_runtime(&[&valid, &invalid], &values);
+        let vm = &result["phases"]["vm_slice"];
+        assert_eq!(vm["totals"]["run_us"], 40);
+        assert_eq!(vm["totals"]["query_wall_us"], 12);
+        assert_eq!(vm["sampled_run_over_wall"], 0.1);
+        assert_eq!(vm["sample_stride"], 127);
+        assert_eq!(vm["accounting_errors"], 1);
+        assert_eq!(vm["query_error_codes"][0], "0x80020001");
+        assert!(thread_runtime(&[], &BTreeMap::new()).is_null());
+    }
     #[test]
     fn residuals_use_each_frames_phase_hierarchy_and_flag_invalid_accounting() {
         let mut values = BTreeMap::from([
