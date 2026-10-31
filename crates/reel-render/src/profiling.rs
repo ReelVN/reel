@@ -7,6 +7,11 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+mod passes;
+#[cfg(all(feature = "gxm", target_os = "vita"))]
+pub(crate) use passes::record_serial_pass;
+pub use passes::{SerialPassTiming, drain_serial_passes};
+
 /// Maximum distinct effect/variant pairs retained between sampler drains.
 pub const EFFECT_CAPACITY: usize = 128;
 
@@ -30,9 +35,10 @@ pub const CACHE_MISS_LABELS: [&str; 13] = [
 
 static SERIAL_EFFECT_TIMING: AtomicBool = AtomicBool::new(false);
 
-/// Enable diagnostic GXM drains before and after each effect draw. This changes
-/// scene batching and overlap; its results attribute isolated work and cannot
-/// serve as production frame times. Disabled by default; other backends ignore it.
+/// Enable diagnostic GXM drains around effects, clears and source-paint draws.
+/// Drains change scene batching, overlap and intermediate attachment stores;
+/// results attribute isolated work and cannot serve as production frame times
+/// or a pixel-equivalence reference. Disabled by default; other backends ignore it.
 pub fn set_serial_effect_timing(enabled: bool) {
     SERIAL_EFFECT_TIMING.store(enabled, Ordering::Relaxed);
 }

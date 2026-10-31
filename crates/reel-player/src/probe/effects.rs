@@ -3,6 +3,25 @@ use reel_render::profiling::{CACHE_MISS_LABELS, EffectSample, drain_effects};
 use std::fmt::Write as _;
 
 pub(super) fn print(rows: &mut Vec<EffectSample>, line: &mut String, elapsed_ms: u128) {
+    if let Some((passes, dropped)) = reel_render::profiling::drain_serial_passes() {
+        for (kind, pass) in ["clear", "paint"].into_iter().zip(passes) {
+            if pass.calls != 0 {
+                eprintln!(
+                    "[reel-pass] t_ms={elapsed_ms} kind={kind} calls={} viewport_pixels={} storage_pixels={} prior_drain_us={} submit_wall_us={} completion_drain_us={} max_completion_drain_us={}",
+                    pass.calls,
+                    pass.viewport_pixels,
+                    pass.storage_pixels,
+                    pass.prior_drain_us,
+                    pass.submit_wall_us,
+                    pass.completion_drain_us,
+                    pass.max_completion_drain_us
+                );
+            }
+        }
+        if dropped != 0 {
+            eprintln!("[reel-pass-loss] t_ms={elapsed_ms} dropped={dropped}");
+        }
+    }
     let Some(dropped) = drain_effects(rows) else {
         return;
     };

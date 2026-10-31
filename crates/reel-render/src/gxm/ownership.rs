@@ -9,6 +9,73 @@ pub(super) struct Device {
     fault: Rc<RefCell<Option<Arc<native::DeviceFault>>>>,
 }
 impl Device {
+    #[inline]
+    pub fn clear(&self, target: native::Target<'_>, color: [f32; 4]) -> Result<(), native::Error> {
+        #[cfg(feature = "profiling")]
+        if crate::profiling::serial_effect_timing() {
+            let size = self.attachment_size(target);
+            return self.serial_pass(false, size, size, |context| context.clear(target, color));
+        }
+        self.native.clear(target, color)
+    }
+
+    #[inline]
+    pub fn draw_filtered(
+        &self,
+        draw: native::Draw<'_>,
+        filter: native::TextureFilter,
+    ) -> Result<(), native::Error> {
+        #[cfg(feature = "profiling")]
+        if crate::profiling::serial_effect_timing() {
+            let storage = self.attachment_size(draw.target);
+            return self.serial_pass(true, draw.size, storage, |context| {
+                context.draw_filtered(draw, filter)
+            });
+        }
+        self.native.draw_filtered(draw, filter)
+    }
+
+    #[cfg(feature = "profiling")]
+    fn attachment_size(&self, target: native::Target<'_>) -> [u32; 2] {
+        match target {
+            native::Target::Screen => self.native.output_size(),
+            native::Target::Framebuffer(framebuffer) => framebuffer.size(),
+        }
+    }
+
+    #[cfg(feature = "profiling")]
+    fn serial_pass(
+        &self,
+        paint: bool,
+        viewport: [u32; 2],
+        storage: [u32; 2],
+        operation: impl FnOnce(&native::Context) -> Result<(), native::Error>,
+    ) -> Result<(), native::Error> {
+        use std::time::Instant;
+        let prior = Instant::now();
+        self.native.finish()?;
+        let prior_drain_us = prior.elapsed().as_micros() as u64;
+        let submit = Instant::now();
+        operation(&self.native)?;
+        let submit_wall_us = submit.elapsed().as_micros() as u64;
+        let completion = Instant::now();
+        self.native.finish()?;
+        let completion_drain_us = completion.elapsed().as_micros() as u64;
+        crate::profiling::record_serial_pass(
+            paint,
+            crate::profiling::SerialPassTiming {
+                calls: 1,
+                viewport_pixels: u64::from(viewport[0]) * u64::from(viewport[1]),
+                storage_pixels: u64::from(storage[0]) * u64::from(storage[1]),
+                prior_drain_us,
+                submit_wall_us,
+                completion_drain_us,
+                max_completion_drain_us: completion_drain_us,
+            },
+        );
+        Ok(())
+    }
+
     pub fn new(native: native::Context) -> Self {
         Self {
             native,
