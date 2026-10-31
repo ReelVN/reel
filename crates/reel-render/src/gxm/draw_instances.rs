@@ -17,6 +17,19 @@ impl<'a> Paint<'a> {
         appearance[7][3] = 0.;
         appearance
     }
+    // RGB adjustment preserves alpha. A bilinear corner multiplier also
+    // preserves opaque alpha exactly when every corner alpha is one.
+    pub(super) fn opaque_source(
+        &self,
+        direct: Option<mesh::DirectPaint>,
+        sampling: Option<mesh::DirectPaint>,
+    ) -> Option<mesh::DirectPaint> {
+        direct.or_else(|| {
+            (self.appearance[5][3] == 0. || self.appearance[..4].iter().all(|color| color[3] == 1.))
+                .then_some(sampling)
+                .flatten()
+        })
+    }
     pub(super) fn image(
         image: &'a Image,
         repeat: [bool; 2],
@@ -230,11 +243,12 @@ impl Context<'_> {
         } else {
             None
         };
+        let opaque = geometry.opaque_paint(paint.opaque_source(direct, sampling));
         let state = paint.state(
             direct,
             sampling,
             bounded,
-            geometry.opaque_paint(direct),
+            opaque,
             geometry.scissor(self.scissor, self.size),
         );
         if let Some(mut pending) = self.instance_batch.take() {

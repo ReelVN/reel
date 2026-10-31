@@ -1073,11 +1073,12 @@ impl Context<'_> {
         } else {
             None
         };
+        let opaque = mesh.opaque_paint(paint.opaque_source(direct, sampling));
         let state = paint.state(
             direct,
             sampling,
             bounded,
-            mesh.opaque_paint(direct),
+            opaque,
             self.scissor.for_vertices(&mesh.vertices, self.size),
         );
         self.expand_instances()?;
