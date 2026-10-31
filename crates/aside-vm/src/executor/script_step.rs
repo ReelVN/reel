@@ -554,7 +554,8 @@ impl Vm {
                 let object = self
                     .slots
                     .read(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
-                let info = self.heap.info(object)?;
+                let object_read = self.heap.read_object(object)?;
+                let info = object_read.info();
                 let kind = info.kind;
                 #[cfg(feature = "execution-counts")]
                 if op == Opcode::MemberGet && s.member_symbol.is_some() {
@@ -602,8 +603,9 @@ impl Vm {
                     #[cfg(test)]
                     let prepare = prepare && !self.work_probe.general_class_reads;
                     if prepare
-                        && let Ok((target, property)) = self.class_read_plan(
+                        && let Ok((target, property)) = self.class_read_from(
                             object,
+                            object_read,
                             SymbolId(c),
                             s.member_symbol.map(|_| (s.code.function, s.pc)),
                         )

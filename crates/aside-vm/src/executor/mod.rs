@@ -613,6 +613,7 @@ struct WorkProbe {
     single_equality_step: bool,
     single_scalar_step: bool,
     general_class_reads: bool,
+    checked_class_metadata: bool,
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
     exit_handler_queries: std::cell::Cell<u64>,

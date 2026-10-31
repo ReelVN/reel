@@ -4,6 +4,8 @@ mod model;
 pub use changes::ChangeCursor;
 mod properties;
 mod reactive;
+mod read;
+pub(crate) use read::ObjectRead;
 pub(crate) mod snapshot;
 mod storage;
 pub(crate) use reactive::DerivedSlot;
@@ -1034,29 +1036,10 @@ impl Heap {
         Ok(())
     }
     pub fn info(&self, value: Value) -> Result<ObjectInfo, HeapError> {
-        let obj = self.object(self.key(value)?)?;
-        Ok(ObjectInfo {
-            kind: obj.kind,
-            len: match &obj.payload {
-                Payload::Table(values) => values.len / 2,
-                _ => obj.payload.len(),
-            },
-            content_version: obj.content_version,
-            structure_version: obj.structure_version,
-        })
+        Ok(self.read_object(value)?.info())
     }
     pub fn get_field(&self, value: Value, position: u32) -> Result<Value, HeapError> {
-        let obj = self.object(self.key(value)?)?;
-        if !obj.kind.values() || matches!(obj.payload, Payload::Table(_)) {
-            return Err(HeapError::WrongKind);
-        }
-        if let Payload::Cell(cell) = &obj.payload {
-            if position != 0 {
-                return Err(HeapError::OutOfBounds);
-            }
-            return cell.value.ok_or(HeapError::UninitializedCell);
-        }
-        obj.payload.edge(position).ok_or(HeapError::OutOfBounds)
+        self.read_object(value)?.field(position)
     }
     fn editable_values(&self, key: HeapKey) -> Result<&Object, HeapError> {
         let obj = self.object(key)?;

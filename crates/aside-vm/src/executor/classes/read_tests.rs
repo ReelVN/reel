@@ -62,6 +62,7 @@ fn loaded(reference: bool, encoded: bool, case: u8, derived: bool) -> (Vm, TaskI
     )
     .unwrap();
     vm.work_probe.general_class_reads = reference;
+    vm.work_probe.checked_class_metadata = reference;
     let cell = if case == 5 {
         vm.heap
             .alloc_language_cell(crate::CellContract::untyped_mutable())
@@ -217,7 +218,24 @@ fn trace(
     deadline: bool,
     hints: bool,
 ) -> Vec<Observation> {
+    trace_metadata(
+        reference, encoded, case, derived, work, deadline, hints, reference,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trace_metadata(
+    reference: bool,
+    encoded: bool,
+    case: u8,
+    derived: bool,
+    work: u64,
+    deadline: bool,
+    hints: bool,
+    checked_metadata: bool,
+) -> Vec<Observation> {
     let (mut vm, task, cell) = loaded(reference, encoded, case, derived);
+    vm.work_probe.checked_class_metadata = checked_metadata;
     vm.class_member_hints.identities = hints;
     let mut budget = SliceBudget {
         instructions: 1,
@@ -299,6 +317,31 @@ fn trace(
         }
     }
     panic!("class read did not progress");
+}
+
+#[test]
+fn borrowed_metadata_preserves_checked_planning_at_each_budget_and_gc_boundary() {
+    for encoded in [false, true] {
+        for case in 0..11 {
+            for derived in [false, true] {
+                for work in [1, 31, 4096] {
+                    for deadline in [false, true] {
+                        for hints in [false, true] {
+                            assert_eq!(
+                                trace_metadata(
+                                    false, encoded, case, derived, work, deadline, hints, false
+                                ),
+                                trace_metadata(
+                                    false, encoded, case, derived, work, deadline, hints, true
+                                ),
+                                "case={case} encoded={encoded} derived={derived} work={work} deadline={deadline} hints={hints}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
