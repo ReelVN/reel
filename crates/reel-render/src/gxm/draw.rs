@@ -56,6 +56,7 @@ struct PaintState {
     sampling: Option<mesh::DirectPaint>,
     bounded: bool,
     alpha_tint: bool,
+    monochrome: Option<crate::common::appearance::Monochrome>,
     opaque: Option<mesh::OpaquePaint>,
     scissor: crate::common::scissor::Scissor,
 }
@@ -1095,6 +1096,11 @@ impl Context<'_> {
             &state.appearance,
             mesh.vertices.iter().map(|vertex| vertex.color),
         );
+        state.monochrome = crate::common::appearance::monochrome_adjustment(
+            state.sampling,
+            &state.appearance,
+            mesh.vertices.iter().map(|vertex| vertex.color),
+        );
         self.expand_instances()?;
         self.queue_mesh(target, mesh, state)
     }
@@ -1171,6 +1177,7 @@ impl Context<'_> {
                 sampling: _,
                 bounded: _,
                 alpha_tint: _,
+                monochrome: _,
                 opaque,
                 scissor,
             } = entry.state;

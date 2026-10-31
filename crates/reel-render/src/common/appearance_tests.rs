@@ -2,6 +2,115 @@ use super::*;
 use crate::common::mesh::DirectPaint;
 
 #[test]
+fn monochrome_requires_equal_finite_channels_and_proves_opaque_white_separately() {
+    let mut values = [[0.; 4]; 10];
+    values[4][3] = 1.;
+    values[6] = [1.1, 1.1, 1.1, 0.];
+    values[7] = [-0.04, -0.04, -0.04, 1.];
+    let classify =
+        |kind, values: &_, color| monochrome_adjustment(Some(kind), values, [color].into_iter());
+    for kind in [DirectPaint::Bc1, DirectPaint::RegionalBc1] {
+        for alpha in [0., f32::MIN_POSITIVE, 0.37, 1.] {
+            assert_eq!(
+                classify(kind, &values, [alpha; 4]),
+                Some(Monochrome::OpaqueWhite)
+            );
+        }
+        assert_eq!(
+            classify(kind, &values, [0.1, 0.2, 0.3, 0.5]),
+            Some(Monochrome::Premultiplied)
+        );
+    }
+    for kind in [DirectPaint::Bc3, DirectPaint::RegionalBc3] {
+        assert_eq!(
+            classify(kind, &values, [1.; 4]),
+            Some(Monochrome::Premultiplied)
+        );
+    }
+    for kind in [
+        DirectPaint::Rgba,
+        DirectPaint::RegionalRgba,
+        DirectPaint::Solid,
+        DirectPaint::Coverage,
+    ] {
+        assert_eq!(classify(kind, &values, [1.; 4]), None);
+    }
+    for (row, column, value) in [
+        (4, 3, 3.),
+        (5, 3, 1.),
+        (6, 1, 0.7),
+        (6, 3, 0.1),
+        (7, 1, 0.2),
+        (7, 3, 0.),
+        (6, 0, f32::NAN),
+        (7, 0, f32::INFINITY),
+    ] {
+        let mut changed = values;
+        changed[row][column] = value;
+        assert_eq!(classify(DirectPaint::Bc1, &changed, [1.; 4]), None);
+    }
+    for color in [
+        [1., 1., 1., 0.],
+        [-0.1, 0., 0., 1.],
+        [0., 0., 0., 1.1],
+        [f32::NAN, 0., 0., 1.],
+    ] {
+        assert_eq!(classify(DirectPaint::Bc1, &values, color), None);
+    }
+    values[6] = [3., 3., 3., 0.];
+    assert_eq!(
+        classify(DirectPaint::Bc1, &values, [1.; 4]),
+        Some(Monochrome::Premultiplied)
+    );
+}
+
+#[test]
+fn moving_white_opacity_after_monochrome_preserves_bounded_f32_color() {
+    let encode = |x: f32| {
+        if x <= 0.0031308 {
+            x * 12.92
+        } else {
+            1.055 * x.powf(1. / 2.4) - 0.055
+        }
+    };
+    let decode = |x: f32| {
+        if x <= 0.04045 {
+            x / 12.92
+        } else {
+            ((x + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let gray = |rgb: [f32; 3]| rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    let mut maximum = 0f32;
+    for sample in 0..=1024 {
+        let source = [
+            sample as f32 / 1024.,
+            ((sample * 431) % 1025) as f32 / 1024.,
+            ((sample * 769) % 1025) as f32 / 1024.,
+        ];
+        for opacity in [0., 1e-40, 1e-20, 1e-8, 1e-4, 0.03, 0.37, 0.9, 1.] {
+            let before = if opacity > 0. {
+                gray(source.map(|x| encode((x * opacity) / opacity)))
+            } else {
+                0.
+            };
+            let after = gray(source.map(encode));
+            for gain in [-2., -0.3, 0., 0.37, 1., 1.0851064, 2.] {
+                for offset in [-1., -0.039215688, 0., 0.3, 1.] {
+                    let expected = decode((before * gain + offset).clamp(0., 1.)) * opacity;
+                    let actual = decode((after * gain + offset).clamp(0., 1.)) * opacity;
+                    maximum = maximum.max((actual - expected).abs());
+                }
+            }
+        }
+    }
+    assert!(
+        maximum < 1. / 65536.,
+        "opacity cancellation error: {maximum}"
+    );
+}
+
+#[test]
 fn alpha_tint_requires_block_alpha_and_premultiplied_finite_vertex_colors() {
     let mut appearance = [[0.; 4]; 10];
     appearance[4][3] = 1.;

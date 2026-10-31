@@ -33,14 +33,14 @@ fn frame(
     crop: Option<Rect>,
     opaque: bool,
     corners: Option<[Color; 4]>,
+    white_alpha: Option<u8>,
 ) -> Result<RenderFrame> {
+    let tint = white_alpha.map_or_else(
+        || Color::from_rgba8(210, 150, 90, if opaque { 255 } else { 128 }),
+        |alpha| Color::from_rgba8(255, 255, 255, alpha),
+    );
     let widget = Image::from_resource(lease.clone())
-        .with_color(Color::from_rgba8(
-            210,
-            150,
-            90,
-            if opaque { 255 } else { 128 },
-        ))
+        .with_color(tint)
         .with_pattern([false; 2], 1., corners)
         .with_color_adjustment(adjustment)
         .with_alpha_layout(if packed {
@@ -188,10 +188,13 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
         .map_err(error)?;
     let mut cases = 0;
     let mut max_error = 0_u8;
-    for (handle, opaque, block) in [
-        (handle, false, false),
-        (bc1, true, true),
-        (bc3, false, true),
+    for (handle, opaque, block, white_alpha) in [
+        (handle, false, false, None),
+        (bc1, true, true, None),
+        (bc3, false, true, None),
+        (bc1, true, true, Some(255)),
+        (bc1, true, true, Some(128)),
+        (bc3, false, true, Some(128)),
     ] {
         for packed in [false, true] {
             if block && packed {
@@ -217,6 +220,7 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
                             crop,
                             opaque,
                             corners,
+                            white_alpha,
                         )?,
                         SIZE,
                     )?;
@@ -247,6 +251,11 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
                             gain: [0.8, 0.9, 1.2],
                             offset: [0.03, -0.01, 0.07],
                         },
+                        ImageColorAdjustment {
+                            saturation: 0.,
+                            gain: [1.0851064; 3],
+                            offset: [-0.039215688; 3],
+                        },
                     ] {
                         let actual = capture(
                             renderer,
@@ -258,6 +267,7 @@ pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
                                 crop,
                                 opaque,
                                 corners,
+                                white_alpha,
                             )?,
                             SIZE,
                         )?;

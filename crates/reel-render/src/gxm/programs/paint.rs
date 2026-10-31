@@ -27,10 +27,26 @@ pub(crate) enum Kind {
         opaque: bool,
         regional: bool,
     },
+    Monochrome {
+        opaque_white: bool,
+        regional: bool,
+    },
 }
 impl Kind {
     #[cfg(feature = "profiling")]
     pub(crate) fn diagnostic_label(self) -> &'static str {
+        if let Self::Monochrome {
+            opaque_white,
+            regional,
+        } = self
+        {
+            return match (opaque_white, regional) {
+                (false, false) => "paint.monochrome_direct",
+                (false, true) => "paint.monochrome_region",
+                (true, false) => "paint.monochrome_opaque_direct",
+                (true, true) => "paint.monochrome_opaque_region",
+            };
+        }
         if let Self::AlphaTint { opaque, regional } = self {
             return if opaque {
                 "paint.alpha_tint_solid"
@@ -69,14 +85,14 @@ impl Kind {
             "paint.appearance_region",
             "paint.constant_direct",
             "paint.constant_region",
+            "paint.adjust_direct",
+            "paint.adjust_region",
+            "paint.constant_plain_direct",
+            "paint.constant_plain_region",
             "paint.rgba_region_bounded",
             "paint.bc1_region_bounded",
             "paint.bc3_region_bounded",
-        ][if self.index() >= 28 {
-            self.index() - 4
-        } else {
-            self.index()
-        }]
+        ][self.index()]
     }
     fn index(self) -> usize {
         match self {
@@ -121,6 +137,10 @@ impl Kind {
                     36 + usize::from(regional)
                 }
             }
+            Self::Monochrome {
+                opaque_white,
+                regional,
+            } => 38 + 2 * usize::from(opaque_white) + usize::from(regional),
         }
     }
     fn code(self, clipped: bool) -> native::ShaderCode<'static> {
@@ -177,6 +197,10 @@ impl Kind {
             35 => pair!("paint_alpha_solid"),
             36 => pair!("paint_alpha_direct"),
             37 => pair!("paint_alpha_region"),
+            38 => pair!("paint_monochrome_direct"),
+            39 => pair!("paint_monochrome_region"),
+            40 => pair!("paint_monochrome_opaque_direct"),
+            41 => pair!("paint_monochrome_opaque_region"),
             _ => unreachable!(),
         }
     }
@@ -186,7 +210,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 152],
+    entries: [OnceCell<Box<Entry>>; 168],
     budget: BudgetPool,
 }
 impl PaintPrograms {

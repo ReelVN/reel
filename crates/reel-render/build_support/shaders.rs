@@ -294,6 +294,31 @@ pub fn sources() -> Vec<Shader> {
                 ),
             );
         }
+        for (name, sampling, opaque_white) in [
+            ("paint_monochrome_direct", 1, false),
+            ("paint_monochrome_region", 2, false),
+            ("paint_monochrome_opaque_direct", 1, true),
+            ("paint_monochrome_opaque_region", 2, true),
+        ] {
+            add(
+                &format!("{name}{}", if clipped { "" } else { "_unclipped" }),
+                false,
+                &paint,
+                &format!(
+                    "#define REEL_SOURCE_KIND 0\n#define REEL_STYLE 1\n#define REEL_SIMPLE_SAMPLING {sampling}\n#define REEL_PLAIN_ADJUST\n#define REEL_MONOCHROME\n{}\n{}",
+                    if opaque_white {
+                        "#define REEL_MONOCHROME_OPAQUE_WHITE"
+                    } else {
+                        ""
+                    },
+                    if clipped {
+                        ""
+                    } else {
+                        "#define REEL_UNCLIPPED"
+                    }
+                ),
+            );
+        }
         add(
             &format!(
                 "paint_video_direct_nv12{}",

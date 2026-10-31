@@ -99,6 +99,7 @@ impl<'a> Paint<'a> {
             sampling,
             bounded,
             alpha_tint: false,
+            monochrome: None,
             opaque,
             scissor,
         }
@@ -119,6 +120,7 @@ impl PaintState {
             && self.sampling == other.sampling
             && self.bounded == other.bounded
             && self.alpha_tint == other.alpha_tint
+            && self.monochrome == other.monochrome
             && self.opaque == other.opaque
     }
     pub(super) fn shader_kind(&self) -> super::super::programs::PaintKind {
@@ -132,6 +134,14 @@ impl PaintState {
                     Some(mesh::DirectPaint::Bc1 | mesh::DirectPaint::RegionalBc1)
                 ),
                 regional: self.sampling == Some(mesh::DirectPaint::RegionalBc3),
+            }
+        } else if let Some(monochrome) = self.monochrome {
+            PaintKind::Monochrome {
+                opaque_white: monochrome == crate::common::appearance::Monochrome::OpaqueWhite,
+                regional: matches!(
+                    self.sampling,
+                    Some(mesh::DirectPaint::RegionalBc1 | mesh::DirectPaint::RegionalBc3)
+                ),
             }
         } else if let Some(direct) = self.direct {
             if self.kind > 1.5 {
@@ -254,12 +264,17 @@ impl Context<'_> {
             None
         };
         let opaque = geometry.opaque_paint(paint.opaque_source(direct, sampling));
-        let state = paint.state(
+        let mut state = paint.state(
             direct,
             sampling,
             bounded,
             opaque,
             geometry.scissor(self.scissor, self.size),
+        );
+        state.monochrome = crate::common::appearance::monochrome_adjustment(
+            state.sampling,
+            &state.appearance,
+            geometry.instances.iter().map(|instance| instance.color),
         );
         if let Some(mut pending) = self.instance_batch.take() {
             if pending.state.same_instance_paint(&state)
