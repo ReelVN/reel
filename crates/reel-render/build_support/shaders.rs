@@ -246,18 +246,27 @@ pub fn sources() -> Vec<Shader> {
         );
     }
     for clipped in [false, true] {
-        for (name, sampling, style) in [
-            ("paint_appearance_direct", 1, 1),
-            ("paint_appearance_region", 2, 1),
-            ("paint_constant_direct", 1, 3),
-            ("paint_constant_region", 2, 3),
+        for (name, sampling, style, plain_adjust) in [
+            ("paint_appearance_direct", 1, 1, false),
+            ("paint_appearance_region", 2, 1, false),
+            ("paint_constant_direct", 1, 3, false),
+            ("paint_constant_region", 2, 3, false),
+            ("paint_adjust_direct", 1, 1, true),
+            ("paint_adjust_region", 2, 1, true),
+            ("paint_constant_plain_direct", 1, 3, true),
+            ("paint_constant_plain_region", 2, 3, true),
         ] {
             add(
                 &format!("{name}{}", if clipped { "" } else { "_unclipped" }),
                 false,
                 &paint,
                 &format!(
-                    "#define REEL_SOURCE_KIND 0\n#define REEL_STYLE {style}\n#define REEL_SIMPLE_SAMPLING {sampling}\n{}",
+                    "#define REEL_SOURCE_KIND 0\n#define REEL_STYLE {style}\n#define REEL_SIMPLE_SAMPLING {sampling}\n{}\n{}",
+                    if plain_adjust {
+                        "#define REEL_PLAIN_ADJUST"
+                    } else {
+                        ""
+                    },
                     if clipped {
                         ""
                     } else {

@@ -208,13 +208,20 @@ void main(){
 #if REEL_STYLE == 2
  color*=gradient(position);
 #elif REEL_STYLE == 1 || REEL_STYLE == 3
+#ifndef REEL_PLAIN_ADJUST
  if(u_appearance[5].w!=0.0){float3 p=float3(position,1.0);float x=clamp(dot(u_appearance[4].xyz,p),0.0,1.0),y=clamp(dot(u_appearance[5].xyz,p),0.0,1.0);color*=lerp(lerp(u_appearance[0],u_appearance[1],x),lerp(u_appearance[3],u_appearance[2],x),y);}
+#endif
 #if REEL_STYLE == 3
  // Zero RGB gain discards the sampled/tinted RGB after saturation. The
  // compiler places this uniform-only transfer decode in the secondary program.
  if(color.a>0.0)color.rgb=linear_srgb(clamp(u_appearance[7].xyz,0.0,1.0))*color.a;
 #else
- if(u_appearance[7].w!=0.0&&color.a>0.0){float3 rgb=encoded_srgb(max(color.rgb/color.a,float3(0.0)));float gray=dot(rgb,float3(0.2126,0.7152,0.0722));rgb=float3(gray)+u_appearance[6].w*(rgb-float3(gray));rgb=clamp(rgb*u_appearance[6].xyz+u_appearance[7].xyz,0.0,1.0);color.rgb=linear_srgb(rgb)*color.a;}
+#ifdef REEL_PLAIN_ADJUST
+ if(color.a>0.0){
+#else
+ if(u_appearance[7].w!=0.0&&color.a>0.0){
+#endif
+ float3 rgb=encoded_srgb(max(color.rgb/color.a,float3(0.0)));float gray=dot(rgb,float3(0.2126,0.7152,0.0722));rgb=float3(gray)+u_appearance[6].w*(rgb-float3(gray));rgb=clamp(rgb*u_appearance[6].xyz+u_appearance[7].xyz,0.0,1.0);color.rgb=linear_srgb(rgb)*color.a;}
 #endif
 #endif
  reel_output=color;

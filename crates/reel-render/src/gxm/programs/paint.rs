@@ -18,7 +18,11 @@ pub(crate) enum Kind {
     AppearanceConstant,
     PackedConstant,
     VideoConstant,
-    AppearanceSimple { regional: bool, constant: bool },
+    AppearanceSimple {
+        regional: bool,
+        constant: bool,
+        plain_adjust: bool,
+    },
 }
 impl Kind {
     #[cfg(feature = "profiling")]
@@ -52,7 +56,11 @@ impl Kind {
             "paint.appearance_region",
             "paint.constant_direct",
             "paint.constant_region",
-        ][self.index()]
+        ][if self.index() >= 28 {
+            self.index() - 4
+        } else {
+            self.index()
+        }]
     }
     fn index(self) -> usize {
         match self {
@@ -76,8 +84,14 @@ impl Kind {
             Self::AppearanceConstant => 21,
             Self::PackedConstant => 22,
             Self::VideoConstant => 23,
-            Self::AppearanceSimple { regional, constant } => {
-                24 + usize::from(regional) + 2 * usize::from(constant)
+            Self::AppearanceSimple {
+                regional,
+                constant,
+                plain_adjust,
+            } => {
+                24 + usize::from(regional)
+                    + 2 * usize::from(constant)
+                    + 4 * usize::from(plain_adjust)
             }
         }
     }
@@ -125,6 +139,10 @@ impl Kind {
             25 => pair!("paint_appearance_region"),
             26 => pair!("paint_constant_direct"),
             27 => pair!("paint_constant_region"),
+            28 => pair!("paint_adjust_direct"),
+            29 => pair!("paint_adjust_region"),
+            30 => pair!("paint_constant_plain_direct"),
+            31 => pair!("paint_constant_plain_region"),
             _ => unreachable!(),
         }
     }
@@ -134,7 +152,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 112],
+    entries: [OnceCell<Box<Entry>>; 128],
     budget: BudgetPool,
 }
 impl PaintPrograms {

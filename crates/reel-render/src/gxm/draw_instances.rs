@@ -149,6 +149,7 @@ impl PaintState {
                         | mesh::DirectPaint::RegionalBc3
                 ),
                 constant: constant_rgb,
+                plain_adjust: self.appearance[5][3] == 0. && self.appearance[7][3] != 0.,
             }
         } else if constant_rgb {
             PaintKind::AppearanceConstant
