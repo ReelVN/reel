@@ -18,13 +18,37 @@ class Motion {
     fn init(self, values) { self.values = values; }
     fn sample(self, seconds) { self.values.sample(seconds) }
 }
+class AuthoredMotion {
+    let values;
+    let direct: bool = true;
+    let end_time: float = 3.0;
+    let loop_start: float;
+    fn init(self, values, loop_start: float) {
+        self.values = values;
+        self.loop_start = loop_start;
+    }
+    fn sample(self, seconds: float) -> float {
+        if self.direct {
+            let time = if self.loop_start >= 0.0 && seconds >= self.end_time
+                && self.end_time > self.loop_start {
+                self.loop_start + (seconds - self.end_time) % (self.end_time - self.loop_start)
+            } else { seconds };
+            return self.values.sample(time);
+        }
+        self.values.sample(seconds)
+    }
+}
 fn construct() {
     let value = curve([{time:0,value:0},{time:3,value:6}]);
     let values = [];
+    let authored = [];
     for i in 0..143 {
         values.append(Motion(curve([{time:0,value:0},{time:3,value:6}])));
+        authored.append(AuthoredMotion(
+            curve([{time:0,value:0},{time:3,value:6}]),
+            if i % 2 == 0 { -1.0 } else { 1.0 }));
     }
-    [value, values]
+    [value, values, authored]
 }
 fn direct(value, n: int) {
     let mut sum = 0.0;
@@ -42,12 +66,17 @@ fn motion(values, n: int) {
     for i in 0..n { sum += values[i % 143].sample(i % 4); }
     sum
 }
+fn authored_motion(values, n: int) {
+    let mut sum = 0.0;
+    for i in 0..n { sum += values[i % 143].sample((i % 4) * 1.0); }
+    sum
+}
 "#;
 
 struct Fixture {
     vm: Vm,
     library: aside_std::StandardLibrary,
-    values: [Value; 2],
+    values: [Value; 3],
 }
 
 struct Row {
@@ -93,7 +122,7 @@ impl Fixture {
         let mut fixture = Self {
             vm,
             library,
-            values: [Value::NULL; 2],
+            values: [Value::NULL; 3],
         };
         let init = fixture
             .vm
@@ -106,12 +135,13 @@ impl Fixture {
             .vm
             .start(construct, &[], RootOwner(1), bc::Context::Ordinary)
             .unwrap();
-        // The unreleased construction delivery roots both reusable inputs.
+        // The unreleased construction delivery roots all reusable inputs.
         let delivery = fixture.finish(task, false);
         let array = fixture.vm.delivery_value(delivery).unwrap();
         fixture.values = [
             fixture.vm.heap().get_field(array, 0).unwrap(),
             fixture.vm.heap().get_field(array, 1).unwrap(),
+            fixture.vm.heap().get_field(array, 2).unwrap(),
         ];
         fixture
     }
@@ -176,7 +206,11 @@ impl Fixture {
 
     fn run(&mut self, name: &str, n: i64, sliced: bool) -> Row {
         let function = self.function(name);
-        let value = self.values[usize::from(name == "motion")];
+        let value = self.values[match name {
+            "motion" => 1,
+            "authored_motion" => 2,
+            _ => 0,
+        }];
         let before = self.vm.stats();
         let region = Region::new(GLOBAL);
         let start = Instant::now();
@@ -218,18 +252,27 @@ impl Fixture {
     }
 }
 
-fn oracle(n: i64) -> f64 {
-    (0..n).map(|i| (i % 4 * 2) as f64).sum()
+fn oracle(name: &str, n: i64) -> f64 {
+    (0..n)
+        .map(|i| {
+            let time = if name == "authored_motion" && i % 143 % 2 == 1 && i % 4 == 3 {
+                1
+            } else {
+                i % 4
+            };
+            (time * 2) as f64
+        })
+        .sum()
 }
 
 #[test]
 fn curve_method_workloads_preserve_values_across_slices_and_gc() {
     let mut fixture = Fixture::new();
     for sliced in [false, true] {
-        for name in ["direct", "retained", "motion"] {
+        for name in ["direct", "retained", "motion", "authored_motion"] {
             fixture.collect();
             let row = fixture.run(name, 293, sliced);
-            assert_eq!(row.value, oracle(293), "{name} sliced={sliced}");
+            assert_eq!(row.value, oracle(name, 293), "{name} sliced={sliced}");
             assert_eq!(row.native_entries, 293);
         }
     }
@@ -249,16 +292,16 @@ fn measure_curve_method_workloads() {
     let mut output = String::from(
         "# construction/compile and pre-sample collection excluded; task/run/native dispatch/delivery included; warmup=3; allocations are process allocator calls, objects are traced VM objects\ncase\tsliced\tsample\tn\twall_ns\tallocations\treallocations\tinstructions\twork\tnative_entries\tnative_hits\tnative_misses\tscript_hits\tscript_misses\tobjects_before\tobjects_after\toracle\n",
     );
-    for name in ["direct", "retained", "motion"] {
+    for name in ["direct", "retained", "motion", "authored_motion"] {
         for sliced in [false, true] {
             for _ in 0..3 {
                 fixture.collect();
-                assert_eq!(fixture.run(name, n, sliced).value, oracle(n));
+                assert_eq!(fixture.run(name, n, sliced).value, oracle(name, n));
             }
             for sample in 0..samples {
                 fixture.collect();
                 let r = fixture.run(name, n, sliced);
-                assert_eq!(r.value, oracle(n));
+                assert_eq!(r.value, oracle(name, n));
                 writeln!(output, "{name}\t{sliced}\t{sample}\t{n}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", r.wall_ns, r.allocations, r.reallocations, r.instructions, r.work, r.native_entries, r.native_hits, r.native_misses, r.script_hits, r.script_misses, r.objects_before, r.objects_after, r.value).unwrap();
             }
         }

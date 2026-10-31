@@ -2,6 +2,8 @@
 use aside_compiler::{AnalysisOptions, analyze_module, lowering, semantic::NoModules};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
+#[path = "execution/binding_reads.rs"]
+mod binding_reads;
 #[path = "execution/generators.rs"]
 mod generators;
 
