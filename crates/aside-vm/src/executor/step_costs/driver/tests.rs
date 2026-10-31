@@ -22,7 +22,7 @@ fn closed(row: DriverCost) {
 }
 
 #[test]
-fn selected_slices_close_and_do_not_replace_the_old_step_sampler() {
+fn selected_slices_close_independently_of_stage_eligibility_denominators() {
     let mut vm = vm();
     let task = vm
         .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
@@ -52,7 +52,15 @@ fn selected_slices_close_and_do_not_replace_the_old_step_sampler() {
     assert_eq!(costs.samples, 2);
     assert_eq!(costs.budget_clock_queries, 2);
     assert_eq!(costs.sampled_instructions, 0);
-    assert_eq!(vm.step_costs(), [StepCost::default(); 6]);
+    let steps = vm.step_costs();
+    assert_eq!(
+        steps.iter().map(|row| row.eligible_slices).sum::<u64>(),
+        128
+    );
+    for mut step in steps {
+        step.eligible_slices = 0;
+        assert_eq!(step, StepCost::default());
+    }
     assert_eq!(queries, 128);
     #[cfg(feature = "execution-counts")]
     assert_eq!(vm.execution_counts().actual_budget_clock_queries, queries);
@@ -171,7 +179,7 @@ fn supplied_clock_latency_belongs_to_loop_in_the_same_observation() {
 #[ignore = "host observer calibration; raw overhead, not target performance"]
 fn calibrate_whole_slice_observer() {
     let n = 10_000;
-    // The test-only switch leaves the old 1/127 step sampler active in every
+    // The test-only switch leaves rotating stage eligibility active in every
     // case. An infinite deadline keeps work/outcomes equal despite extra clocks.
     for (name, sampling) in [
         ("off", Some(false)),

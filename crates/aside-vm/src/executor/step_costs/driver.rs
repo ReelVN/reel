@@ -13,7 +13,7 @@ macro_rules! totals {
         ///
         /// Within the same observations, wall = entry + run + exit and run =
         /// scalar + script + native + loop. Budget-clock time is a loop child.
-        /// Fetch/cost/execute remain nested in the separate old step sampler.
+        /// Fetch/cost/execute remain inclusive in the rotating stage sampler.
         /// Observed slices include extra clocks and may reach deadlines sooner.
         /// Calibration is raw empty-clock-pair time, never an automatic correction.
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,7 +60,7 @@ totals! {
     loop_ns: "Run wall time outside the three mutually disjoint outer dispatch spans.";
     budget_clock_queries: "Actual supplied-clock calls in observed slices, not profiling clocks.";
     budget_clock_ns: "Observed supplied-clock callback wall time, nested in loop_ns, including timing overhead.";
-    observer_clock_queries: "Extra Instant clock reads issued by this observer; excludes old step sampling and supplied clocks.";
+    observer_clock_queries: "Extra Instant clock reads issued by this observer; excludes stage sampling (StepCost.clock_queries) and supplied clocks.";
     calibration_pairs: "Empty Instant clock pairs measured in observed entries.";
     calibration_ns: "Raw elapsed nanoseconds between those empty clock pairs; already inside entry_ns.";
     sampled_instructions: "Admitted instructions in observed slices; observation overhead can change deadline yields.";
@@ -149,19 +149,29 @@ impl State {
         active.clocks += 1;
         self.active.set(active);
     }
+    #[inline]
     pub(super) fn begin_fallback(&self) {
         if self.enabled.get() {
-            let began = Instant::now();
-            let mut active = self.active.get();
-            active.clocks += 1;
-            active.fallback = Some(began);
-            self.active.set(active);
+            self.observe_fallback();
         }
     }
+    #[cold]
+    fn observe_fallback(&self) {
+        let began = Instant::now();
+        let mut active = self.active.get();
+        active.clocks += 1;
+        active.fallback = Some(began);
+        self.active.set(active);
+    }
+    #[inline]
     pub(super) fn start_span(&self, phase: usize) -> Option<Span> {
         if !self.enabled.get() {
             return None;
         }
+        Some(self.observe_span(phase))
+    }
+    #[cold]
+    fn observe_span(&self, phase: usize) -> Span {
         let mut active = self.active.get();
         let began = if phase != 0 {
             active.fallback.take()
@@ -173,16 +183,21 @@ impl State {
             Instant::now()
         });
         self.active.set(active);
-        Some(Span { phase, began })
+        Span { phase, began }
     }
+    #[inline]
     pub(super) fn finish_span(&self, span: Option<Span>) {
         if let Some(span) = span {
-            let ended = Instant::now();
-            let mut active = self.active.get();
-            active.clocks += 1;
-            active.spans[span.phase] += nanos(ended, span.began);
-            self.active.set(active);
+            self.finish_observed_span(span);
         }
+    }
+    #[cold]
+    fn finish_observed_span(&self, span: Span) {
+        let ended = Instant::now();
+        let mut active = self.active.get();
+        active.clocks += 1;
+        active.spans[span.phase] += nanos(ended, span.began);
+        self.active.set(active);
     }
     pub(super) fn finish(
         &self,

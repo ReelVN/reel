@@ -84,7 +84,7 @@ impl Hotspots {
         hash ^= hash >> 15;
         (hash as usize & (STEP_HOTSPOT_CAPACITY / 8 - 1)) * 8
     }
-    pub(super) fn record(&self, point: StepPoint, phase: u8, elapsed: u64) {
+    pub(super) fn record(&self, point: StepPoint, phase: u8, elapsed: u64) -> bool {
         let start = Self::start(point, phase);
         for cell in &self.rows.data[start..start + 8] {
             let mut row = cell.get();
@@ -94,10 +94,11 @@ impl Hotspots {
                 row.samples += 1;
                 row.sample_wall_ns += elapsed;
                 cell.set(row);
-                return;
+                return true;
             }
         }
         self.dropped.set(self.dropped.get() + 1);
+        false
     }
     pub(super) fn drain(&self, output: &mut [StepHotspot; STEP_HOTSPOT_CAPACITY]) -> u64 {
         for (out, cell) in output.iter_mut().zip(&self.rows.data) {
