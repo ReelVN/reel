@@ -19,6 +19,16 @@ fn closed(row: DriverCost) {
     assert!(row.budget_clock_ns <= row.loop_ns);
     assert_eq!(row.calibration_pairs, row.samples);
     assert!(row.calibration_ns <= row.entry_ns);
+    assert_eq!(row.loop_gap_errors, 0);
+    assert_eq!(
+        row.loop_ns,
+        row.first_dispatch_gap_ns
+            + row.scalar_reentry_gap_ns
+            + row.classified_dispatch_gap_ns
+            + row.final_dispatch_gap_ns
+    );
+    assert!(row.final_dispatch_gaps <= row.samples);
+    assert!(row.first_dispatch_gaps <= row.final_dispatch_gaps);
 }
 
 #[test]
@@ -52,6 +62,9 @@ fn selected_slices_close_independently_of_stage_eligibility_denominators() {
     assert_eq!(costs.samples, 2);
     assert_eq!(costs.budget_clock_queries, 2);
     assert_eq!(costs.sampled_instructions, 0);
+    assert_eq!(costs.observer_clock_queries, 16);
+    assert_eq!(costs.loop_iterations, 2);
+    assert_eq!(costs.first_dispatch_gaps, 0);
     let steps = vm.step_costs();
     assert_eq!(
         steps.iter().map(|row| row.eligible_slices).sum::<u64>(),
@@ -117,6 +130,7 @@ fn dispatch_and_error_results_keep_a_closed_observation() {
     assert_eq!(costs.samples, 1);
     assert_eq!(costs.budget_clock_queries, queries);
     assert!(queries > 0);
+    assert!(costs.loop_cancelling > 0);
     #[cfg(feature = "execution-counts")]
     assert_eq!(
         cancelled.execution_counts().actual_budget_clock_queries,
@@ -173,6 +187,36 @@ fn supplied_clock_latency_belongs_to_loop_in_the_same_observation() {
     assert!(row.budget_clock_ns >= 1_000_000);
     assert_eq!(row.run_ns, row.loop_ns);
     assert_eq!(row.scalar_ns + row.script_ns + row.native_ns, 0);
+}
+
+#[test]
+fn gap_edges_reuse_driver_queries_and_unobserved_control_marks_are_erased() {
+    let state = State::default();
+    state.set_sampling(Some(false));
+    assert!(state.begin().is_none());
+    state.control(Control::Iteration);
+    state.control(Control::Cancelling);
+    assert_eq!(state.snapshot(1, 2).loop_iterations, 0);
+    state.set_sampling(Some(true));
+    let mut slice = state.begin();
+    state.begin_run(&mut slice);
+    for phase in 0..3 {
+        let span = state.start_span(phase);
+        state.control(Control::Iteration);
+        state.finish_span(span);
+    }
+    state.end_run(&mut slice);
+    state.finish(slice, SliceUsage::default(), 0, 0);
+    let row = state.snapshot(1, 2);
+    closed(row);
+    // Existing reads: three entry/calibration, run begin/end, three span pairs,
+    // and the final slice end. Gaps/control marks add no clock query.
+    assert_eq!(row.observer_clock_queries, 12);
+    assert_eq!(row.loop_iterations, 3);
+    assert_eq!(row.loop_cancelling, 0);
+    assert_eq!(row.first_dispatch_gaps, 1);
+    assert_eq!(row.classified_dispatch_gaps, 2);
+    assert_eq!(row.final_dispatch_gaps, 1);
 }
 
 #[test]

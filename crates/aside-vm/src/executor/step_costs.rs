@@ -8,6 +8,8 @@ mod hotspots;
 #[cfg(feature = "profiling")]
 mod stages;
 #[cfg(feature = "profiling")]
+pub(crate) use driver::Control;
+#[cfg(feature = "profiling")]
 pub use driver::{DRIVER_SAMPLE_STRIDE, DriverCost};
 #[cfg(feature = "profiling")]
 pub use hotspots::{STEP_HOTSPOT_CAPACITY, STEP_MODES, StepHotspot, StepPoint};
@@ -112,6 +114,10 @@ mod enabled {
         #[inline]
         pub(crate) fn begin_fallback(&self) {
             self.2.begin_fallback();
+        }
+        #[inline]
+        pub(crate) fn control(&self, control: super::Control) {
+            self.2.control(control);
         }
         #[inline]
         pub(crate) fn start_driver(&self, phase: Phase) -> Option<super::driver::Span> {

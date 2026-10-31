@@ -1,6 +1,8 @@
 //! Whole-slice observations supplement the independent per-stage sampler.
 use crate::executor::SliceUsage;
 use std::{cell::Cell, time::Instant};
+mod gaps;
+pub(crate) use gaps::Control;
 
 /// Observe calls 0, 127, 254, ... in full, independently of the step sampler.
 pub const DRIVER_SAMPLE_STRIDE: u64 = 127;
@@ -16,6 +18,9 @@ macro_rules! totals {
         /// Fetch/cost/execute remain inclusive in the rotating stage sampler.
         /// Observed slices include extra clocks and may reach deadlines sooner.
         /// Calibration is raw empty-clock-pair time, never an automatic correction.
+        /// Four disjoint gap durations sum to loop_ns within the same observations.
+        /// They reuse existing timestamps, include marker publication and waits,
+        /// and are not source-PC attribution or exclusive CPU measurements.
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
         pub struct DriverCost {
             /// Process-local VM identity; fresh after successful load/restore.
@@ -65,6 +70,21 @@ totals! {
     calibration_ns: "Raw elapsed nanoseconds between those empty clock pairs; already inside entry_ns.";
     sampled_instructions: "Admitted instructions in observed slices; observation overhead can change deadline yields.";
     sampled_work: "Interpreter work in observed slices, for checking their workload distribution.";
+    first_dispatch_gap_ns: "Run start to the first outer dispatch; includes preflight and observer publication, not CPU time.";
+    first_dispatch_gaps: "Observed runs entering at least one outer dispatch; excludes entry-only failures.";
+    scalar_reentry_gap_ns: "After an outer dispatch, wall time until the next Scalar attempt; includes preflight, control work and markers.";
+    scalar_reentry_gaps: "Observed outer dispatch gaps whose destination is Scalar, excluding the first dispatch.";
+    classified_dispatch_gap_ns: "After an outer dispatch, wall time until Script or Native begins; includes preparation/named routing and markers.";
+    classified_dispatch_gaps: "Observed Script/Native handoffs after the first dispatch, irrespective of the prior dispatch kind.";
+    final_dispatch_gap_ns: "Last outer dispatch end to run end; an observed run without dispatch puts its entire run here.";
+    final_dispatch_gaps: "Completed observed runs, including runs without dispatch; excludes entry-only failures.";
+    loop_gap_errors: "Invalid gap nesting/timestamp order or gap-sum closure mismatches; nonzero invalidates the gap attribution.";
+    loop_iterations: "Interpreter loop entries in observed slices only; includes attempts ending in a yield or terminal return.";
+    loop_cancelling: "Cancelling-branch entries in observed slices; counts attempts, not completed cancellation operations.";
+    loop_fault_build: "Fault-build-branch entries in observed slices, including insufficient-budget attempts.";
+    loop_abort_equality: "Equality-abort-branch entries in observed slices, including insufficient-budget attempts.";
+    loop_cooperative_cancel: "Cooperative-cancel-branch entries in observed slices, including insufficient-budget attempts.";
+    loop_unbuilt_fault: "Unbuilt-fault-branch entries in observed slices, including insufficient-budget attempts.";
 }
 
 #[derive(Clone, Copy, Default)]
@@ -91,6 +111,7 @@ pub(super) struct State {
     failures: Cell<u64>,
     enabled: Cell<bool>,
     active: Cell<Active>,
+    gaps: gaps::State,
     totals: Cell<DriverCost>,
     #[cfg(test)]
     sampling: Cell<Option<bool>>,
@@ -134,13 +155,17 @@ impl State {
 
     pub(super) fn begin_run(&self, slice: &mut Option<Slice>) {
         if let Some(slice) = slice {
-            slice.run = Some(Instant::now());
+            let began = Instant::now();
+            slice.run = Some(began);
+            self.gaps.begin(began);
             self.clock();
         }
     }
     pub(super) fn end_run(&self, slice: &mut Option<Slice>) {
         if let Some(slice) = slice {
-            slice.after_run = Some(Instant::now());
+            let ended = Instant::now();
+            slice.after_run = Some(ended);
+            self.gaps.end(ended);
             self.clock();
         }
     }
@@ -148,6 +173,12 @@ impl State {
         let mut active = self.active.get();
         active.clocks += 1;
         self.active.set(active);
+    }
+    #[inline]
+    pub(super) fn control(&self, control: Control) {
+        if self.enabled.get() {
+            self.gaps.control(control);
+        }
     }
     #[inline]
     pub(super) fn begin_fallback(&self) {
@@ -183,6 +214,7 @@ impl State {
             Instant::now()
         });
         self.active.set(active);
+        self.gaps.start_span(phase, began);
         Span { phase, began }
     }
     #[inline]
@@ -198,6 +230,7 @@ impl State {
         active.clocks += 1;
         active.spans[span.phase] += nanos(ended, span.began);
         self.active.set(active);
+        self.gaps.end_span(ended);
     }
     pub(super) fn finish(
         &self,
@@ -218,7 +251,7 @@ impl State {
         let dispatch = active.spans.iter().sum::<u64>();
         // The three outer dispatch spans never overlap. Saturation preserves a
         // detectable hierarchy failure rather than wrapping if a clock regresses.
-        let row = DriverCost {
+        let mut row = DriverCost {
             samples: 1,
             wall_ns: nanos(ended, slice.began),
             entry_ns: nanos(run, slice.began),
@@ -237,6 +270,7 @@ impl State {
             sampled_work: usage.work,
             ..Default::default()
         };
+        self.gaps.publish(&mut row);
         self.record(&row);
     }
     pub(super) fn fail_entry(&self, slice: Option<Slice>) {

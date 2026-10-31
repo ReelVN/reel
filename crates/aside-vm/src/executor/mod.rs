@@ -960,6 +960,8 @@ impl Vm {
     fn run(&mut self, m: &mut Meter, now: &mut impl FnMut() -> u64) -> Result<RunOutcome, VmError> {
         self.active.blocked = None;
         loop {
+            #[cfg(feature = "profiling")]
+            self.step_costs.control(step_costs::Control::Iteration);
             if let Some(blocked) = self.active.blocked {
                 return Ok(RunOutcome::ResourceBlocked(blocked));
             }
@@ -974,6 +976,8 @@ impl Vm {
                 return Ok(RunOutcome::BudgetYield(m.usage));
             }
             if self.active.cancelling {
+                #[cfg(feature = "profiling")]
+                self.step_costs.control(step_costs::Control::Cancelling);
                 let boundary = self.active.cancel_boundary.map(CallbackBoundary::frame);
                 if self.active.caught.data.last().is_some_and(|caught| {
                     boundary.is_none_or(|boundary| caught.frame.0 > boundary.0)
@@ -1045,12 +1049,16 @@ impl Vm {
                 return Err(VmError::Idle);
             }
             if self.active.fault_build.is_some() {
+                #[cfg(feature = "profiling")]
+                self.step_costs.control(step_costs::Control::FaultBuild);
                 if !self.fault_build_step(m)? {
                     return Ok(RunOutcome::BudgetYield(m.usage));
                 }
                 continue;
             }
             if self.active.abort_equality {
+                #[cfg(feature = "profiling")]
+                self.step_costs.control(step_costs::Control::AbortEquality);
                 if !m.take(0, 3, 0) {
                     return Ok(RunOutcome::BudgetYield(m.usage));
                 }
@@ -1065,6 +1073,9 @@ impl Vm {
                 continue;
             }
             if self.active.cooperative_cancel {
+                #[cfg(feature = "profiling")]
+                self.step_costs
+                    .control(step_costs::Control::CooperativeCancel);
                 if !m.take(
                     0,
                     2 * self.active.frames.data.len() as u64 + self.program_lookup_work() + 3,
@@ -1077,6 +1088,8 @@ impl Vm {
                 continue;
             }
             if let Some((frame, seed)) = self.unbuilt_fault() {
+                #[cfg(feature = "profiling")]
+                self.step_costs.control(step_costs::Control::UnbuiltFault);
                 if !m.take(0, self.active.caught.data.len() as u64 + 1, 0) {
                     return Ok(RunOutcome::BudgetYield(m.usage));
                 }
