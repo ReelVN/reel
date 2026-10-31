@@ -2,6 +2,52 @@
 //! cannot be extrapolated to a frame's CPU cost or added across nested stages.
 use super::{BTreeMap, Frame, Value, json};
 
+const GAPS: [&str; 4] = [
+    "first_dispatch",
+    "scalar_reentry",
+    "classified_dispatch",
+    "final_dispatch",
+];
+
+pub(super) fn gaps_closed(v: &BTreeMap<String, u64>) -> Option<bool> {
+    if !v
+        .keys()
+        .any(|k| k.starts_with("vm_driver_") && k.contains("_gap"))
+    {
+        return None;
+    }
+    let sum = GAPS.iter().try_fold(0u64, |sum, gap| {
+        let duration = *v.get(&format!("vm_driver_{gap}_gap_ns"))?;
+        let calls = *v.get(&format!("vm_driver_{gap}_gaps_count"))?;
+        if duration != 0 && calls == 0 {
+            return None;
+        }
+        sum.checked_add(duration)
+    });
+    let counts = [
+        "vm_driver_first_dispatch_gaps_count",
+        "vm_driver_final_dispatch_gaps_count",
+        "vm_driver_samples_count",
+    ]
+    .map(|name| v.get(name).copied());
+    Some(
+        sum.is_some()
+            && sum == v.get("vm_driver_loop_ns").copied()
+            && v.get("vm_driver_loop_gap_errors_count") == Some(&0)
+            && matches!(counts, [Some(first), Some(finals), Some(samples)] if first <= finals && finals <= samples),
+    )
+}
+
+pub(super) fn gaps(rows: &[&Frame]) -> Value {
+    let observed: Vec<_> = rows
+        .iter()
+        .filter_map(|row| gaps_closed(&row.values))
+        .collect();
+    json!({"observed_intervals":observed.len(),"unobserved_intervals":rows.len()-observed.len(),
+        "accounting_errors":observed.iter().filter(|valid| !**valid).count(),
+        "measurement":"disjoint gaps between existing outer-dispatch timestamps; sum equals loop_ns; includes preflight, handoff, observer publication, and waits; budget clock is a child, not additive"})
+}
+
 pub(super) fn summarize(rows: &[&Frame]) -> Value {
     let Some(first) = rows.first() else {
         return Value::Null;
@@ -79,6 +125,35 @@ pub(super) fn summarize(rows: &[&Frame]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gap_ledger_requires_every_boundary_counter_and_exact_partition() {
+        let mut values = BTreeMap::from([
+            ("vm_driver_loop_ns".into(), 10),
+            ("vm_driver_loop_gap_errors_count".into(), 0),
+            ("vm_driver_samples_count".into(), 1),
+        ]);
+        assert_eq!(gaps_closed(&BTreeMap::new()), None);
+        for (i, gap) in GAPS.iter().enumerate() {
+            values.insert(format!("vm_driver_{gap}_gap_ns"), i as u64 + 1);
+            values.insert(format!("vm_driver_{gap}_gaps_count"), 1);
+        }
+        assert_eq!(gaps_closed(&values), Some(true));
+        values.insert("vm_driver_final_dispatch_gaps_count".into(), 2);
+        assert_eq!(gaps_closed(&values), Some(false));
+        values.insert("vm_driver_samples_count".into(), 2);
+        assert_eq!(gaps_closed(&values), Some(true));
+        values.insert("vm_driver_first_dispatch_gaps_count".into(), 3);
+        assert_eq!(gaps_closed(&values), Some(false));
+        values.insert("vm_driver_first_dispatch_gaps_count".into(), 1);
+        values.insert("vm_driver_final_dispatch_gap_ns".into(), 5);
+        assert_eq!(gaps_closed(&values), Some(false));
+        values.insert("vm_driver_final_dispatch_gap_ns".into(), 4);
+        values.insert("vm_driver_loop_gap_errors_count".into(), 1);
+        assert_eq!(gaps_closed(&values), Some(false));
+        values.insert("vm_driver_loop_gap_errors_count".into(), 0);
+        values.remove("vm_driver_scalar_reentry_gaps_count");
+        assert_eq!(gaps_closed(&values), Some(false));
+    }
     #[test]
     fn reports_denominators_and_unfinished_samples_without_treating_them_as_zero_time() {
         let mut values = BTreeMap::new();

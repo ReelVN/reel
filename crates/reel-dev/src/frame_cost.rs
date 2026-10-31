@@ -259,6 +259,7 @@ fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
                 == Some(run)
             && clock <= other
             && calibration <= entry
+            && vm_steps::gaps_closed(v).unwrap_or(true)
     };
     let valid: Vec<_> = observed.iter().copied().filter(closed).collect();
     let totals: BTreeMap<_, u64> = columns
@@ -295,6 +296,7 @@ fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
         "calibration":"raw empty clock-pair time is included in entry; no subtraction",
         "legacy_steps":"inclusive event samples; fetch/cost/execute overlap scalar/script; durations cannot be added",
         "step_observations":vm_steps::summarize(&observed),
+        "loop_gaps":vm_steps::gaps(&observed),
         "observer_clock_queries_count":observer_clock_queries,
         "totals":totals,
         "wall_fractions":{"entry":fraction("entry","wall"),"run":fraction("run","wall"),"exit":fraction("exit","wall")},

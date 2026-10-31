@@ -68,7 +68,18 @@ fn visit_profile(
         observer_clock_queries,
         calibration_pairs,
         sampled_instructions,
-        sampled_work
+        sampled_work,
+        first_dispatch_gaps,
+        scalar_reentry_gaps,
+        classified_dispatch_gaps,
+        final_dispatch_gaps,
+        loop_gap_errors,
+        loop_iterations,
+        loop_cancelling,
+        loop_fault_build,
+        loop_abort_equality,
+        loop_cooperative_cancel,
+        loop_unbuilt_fault
     );
     durations!(
         wall_ns,
@@ -79,6 +90,10 @@ fn visit_profile(
         script_ns,
         native_ns,
         loop_ns,
+        first_dispatch_gap_ns,
+        scalar_reentry_gap_ns,
+        classified_dispatch_gap_ns,
+        final_dispatch_gap_ns,
         budget_clock_ns,
         calibration_ns
     );
@@ -138,6 +153,9 @@ mod tests {
         after.driver.epoch = 2;
         after.steps[0].eligible_calls = 6;
         after.steps[0].clock_queries = 2;
+        after.driver.first_dispatch_gap_ns = 3;
+        after.driver.first_dispatch_gaps = 1;
+        after.driver.loop_iterations = 7;
         let delta = after.checked_delta(&before).unwrap();
         assert_eq!(delta.steps[0].eligible_calls, 6);
         assert_eq!(delta.steps[0].clock_queries, 2);
@@ -155,6 +173,14 @@ mod tests {
             .position(|name| *name == "vm_step_scalar_clock_queries_count")
             .unwrap();
         assert_eq!(fields[index], "2");
+        for (name, expected) in [
+            ("vm_driver_first_dispatch_gap_ns", "3"),
+            ("vm_driver_first_dispatch_gaps_count", "1"),
+            ("vm_driver_loop_iterations_count", "7"),
+        ] {
+            let index = columns.iter().position(|column| *column == name).unwrap();
+            assert_eq!(fields[index], expected);
+        }
         after.steps[0].calls = 4;
         assert!(after.checked_delta(&before).is_none());
     }
