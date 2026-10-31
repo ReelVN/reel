@@ -219,11 +219,11 @@ impl Vm {
                         c = name.0;
                     }
                 }
-                let mut class_read = None;
+                let mut plan = InstructionPlan::None;
                 let (work, allocation) = match step_cost!(
                     self,
                     Cost,
-                    self.instruction_cost(&s, op, a, b, c, &mut class_read)
+                    self.instruction_cost(&s, op, a, b, c, &mut plan)
                 ) {
                     Ok((work, allocation)) => (work + index_work, allocation),
                     Err(error) => {
@@ -253,7 +253,7 @@ impl Vm {
                 };
                 let mut cost = (work, allocation);
                 let refresh = if op == Opcode::MemberGet {
-                    let property = if let Some((target, property)) = &class_read {
+                    let property = if let InstructionPlan::ClassRead(target, property) = &plan {
                         if self.heap.reactive_evaluating() {
                             cost.0 += target.work();
                             *property
@@ -280,7 +280,7 @@ impl Vm {
                                 s.member_symbol.map(|_| (s.code.function, s.pc)),
                             ) {
                                 Ok((target, property)) => {
-                                    class_read = Some((target, property));
+                                    plan = InstructionPlan::ClassRead(target, property);
                                     property
                                 }
                                 Err(kind) => {
@@ -331,10 +331,13 @@ impl Vm {
                 let step = step_cost!(
                     self,
                     Execute,
-                    if let Some((target, _)) = class_read {
-                        self.execute_class_read(&mut s, target, Reg(a), Pc(next_pc as u32))
-                    } else {
-                        self.execute(&mut s, op, a, b, c, Pc(next_pc as u32))
+                    match plan {
+                        InstructionPlan::ClassRead(target, _) =>
+                            self.execute_class_read(&mut s, target, Reg(a), Pc(next_pc as u32)),
+                        InstructionPlan::Callee(callee) =>
+                            self.execute_call(&mut s, op, a, b, Pc(next_pc as u32), Some(callee)),
+                        InstructionPlan::None =>
+                            self.execute(&mut s, op, a, b, c, Pc(next_pc as u32)),
                     }
                 );
                 match step {
@@ -656,7 +659,7 @@ impl Vm {
         _a: u32,
         b: u32,
         c: u32,
-        class_read: &mut Option<(classes::ClassRead, Option<crate::PropertyId>)>,
+        plan: &mut InstructionPlan,
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
@@ -711,11 +714,17 @@ impl Vm {
                             allocation = Values::allocation_bytes(4);
                             (24, 0)
                         } else {
-                            let cost = self
-                                .closure_function(target)
-                                .map(|id| self.script_push_cost(id, count))
+                            let function = self.closure_function(target);
+                            let cost = function
+                                .as_ref()
+                                .map(|id| self.script_push_cost(*id, count))
                                 .unwrap_or((1, 0));
-                            if self.is_text(target, ObjectKind::BoundScript) {
+                            if let Ok(function) = function
+                                && let Some(callee) = self.prepare_callee(target, function)
+                            {
+                                *plan = InstructionPlan::Callee(callee);
+                                cost
+                            } else if self.is_text(target, ObjectKind::BoundScript) {
                                 let (work, bytes) = self.initializer_cost(target)?;
                                 allocation = bytes;
                                 (cost.0 + work, cost.1)
@@ -844,7 +853,7 @@ impl Vm {
                         )
                     {
                         let work = target.work();
-                        *class_read = Some((target, property));
+                        *plan = InstructionPlan::ClassRead(target, property);
                         // Three-slot bound methods currently use inline Values;
                         // this preserves their existing payload admission.
                         return Ok((work, Values::allocation_bytes(3)));

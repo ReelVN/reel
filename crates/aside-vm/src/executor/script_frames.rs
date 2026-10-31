@@ -16,6 +16,27 @@ impl Vm {
         effects: Effects,
         ret: ReturnTo,
     ) -> Result<(), VmError> {
+        self.push_script_with_receiver(
+            function, closure, source, count, owner, context, effects, ret, None,
+        )
+    }
+
+    // A cached receiver is valid only inside the originating Call admission.
+    // Some(None) proves there is no receiver; None resolves at the original
+    // point. Resolve failures use the ordinary wrapper, retaining quota order.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn push_script_with_receiver(
+        &mut self,
+        function: FunctionId,
+        closure: Option<Value>,
+        source: ArgSource,
+        count: u32,
+        owner: RootOwner,
+        context: ContextFlags,
+        effects: Effects,
+        ret: ReturnTo,
+        receiver: Option<Option<Value>>,
+    ) -> Result<(), VmError> {
         if self.active.frames.data.len() == self.limits.max_frames as usize
             || count > self.limits.max_arguments
         {
@@ -24,10 +45,13 @@ impl Vm {
         let f = &self.program.package().functions[function.index()];
         if let FunctionKind::Native(native) = f.kind {
             let site = self.native_site(function, owner, context, effects, ret)?;
-            let receiver = closure
-                .map(|value| self.callable_receiver(value))
-                .transpose()?
-                .flatten();
+            let receiver = match receiver {
+                Some(receiver) => receiver,
+                None => closure
+                    .map(|value| self.callable_receiver(value))
+                    .transpose()?
+                    .flatten(),
+            };
             return self.push_native_bound(native, source, count, site, receiver);
         }
         let parameters = &self.program.package().signatures[f.signature.index()];
@@ -102,10 +126,13 @@ impl Vm {
         };
         self.put(env, 0, closure.unwrap_or(Value::NULL))?;
         if !shared_parameters
-            && let Some(receiver) = closure
-                .map(|v| self.script_receiver(v))
-                .transpose()?
-                .flatten()
+            && let Some(receiver) = match receiver {
+                Some(receiver) => receiver,
+                None => closure
+                    .map(|v| self.script_receiver(v))
+                    .transpose()?
+                    .flatten(),
+            }
         {
             self.put(bound, 0, receiver)?;
         }

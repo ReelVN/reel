@@ -603,6 +603,7 @@ pub struct Vm {
 #[cfg(test)]
 #[derive(Default)]
 struct WorkProbe {
+    general_callees: bool,
     general_script_preparation: bool,
     general_clears: bool,
     single_install_step: bool,
@@ -614,7 +615,9 @@ struct WorkProbe {
     exit_handler_queries: std::cell::Cell<u64>,
     member_hint_hits: std::cell::Cell<u64>,
 }
+mod call_plans;
 mod completion;
+use call_plans::InstructionPlan;
 #[cfg(test)]
 mod installation_tests;
 mod instructions;
