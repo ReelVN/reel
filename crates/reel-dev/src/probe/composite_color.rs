@@ -280,5 +280,6 @@ pub(super) fn run(renderer: &mut DeviceBackend, reference: bool) -> Result {
         return Err("composite output differs from device reference beyond one byte".into());
     }
     cropped_groups(renderer, reference)?;
+    super::mask_color::run(renderer, reference)?;
     Ok(())
 }

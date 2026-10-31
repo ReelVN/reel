@@ -305,14 +305,14 @@ impl Programs {
             mask: Shader::new(context, shader_code!("mask"))?,
             mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,
             mask_threshold: Shader::new(context, shader_code!("mask_threshold"))?,
-            mask_sample_chain_composite: Shader::with_vertex(
+            // Composite quads already end at the integer clip bounds. Keeping
+            // discard here would unnecessarily select a feedback pixel program.
+            mask_sample_chain_composite: Shader::composite(
                 context,
-                shader_code!("composite_vertex"),
                 shader_code!("mask_sample_chain_composite"),
             )?,
-            mask_threshold_composite: Shader::with_vertex(
+            mask_threshold_composite: Shader::composite(
                 context,
-                shader_code!("composite_vertex"),
                 shader_code!("mask_threshold_composite"),
             )?,
             mask_paired: [
@@ -322,26 +322,10 @@ impl Programs {
                 Shader::new(context, shader_code!("mask_paired_gg"))?,
             ],
             mask_paired_composite: [
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_aa_composite"),
-                )?,
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_ag_composite"),
-                )?,
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_ga_composite"),
-                )?,
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_gg_composite"),
-                )?,
+                Shader::composite(context, shader_code!("mask_paired_aa_composite"))?,
+                Shader::composite(context, shader_code!("mask_paired_ag_composite"))?,
+                Shader::composite(context, shader_code!("mask_paired_ga_composite"))?,
+                Shader::composite(context, shader_code!("mask_paired_gg_composite"))?,
             ],
             // The final quad covers the viewport with no narrower scissor.
             // Omitting discard lets GXM schedule the texture fetch independently.

@@ -131,7 +131,7 @@ pub fn sources() -> Vec<Shader> {
                 &format!(
                     "{defines}\n{}",
                     if composite {
-                        "#define REEL_MASK_COMPOSITE"
+                        "#define REEL_MASK_COMPOSITE\n#define REEL_UNCLIPPED"
                     } else {
                         ""
                     }
@@ -154,7 +154,7 @@ pub fn sources() -> Vec<Shader> {
                 &format!(
                     "{}\n{}",
                     if composite {
-                        "#define REEL_MASK_COMPOSITE"
+                        "#define REEL_MASK_COMPOSITE\n#define REEL_UNCLIPPED"
                     } else {
                         ""
                     },

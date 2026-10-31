@@ -12,6 +12,8 @@ mod composite_color;
 mod fixture;
 #[path = "image_color.rs"]
 mod image_color;
+#[path = "mask_color.rs"]
+mod mask_color;
 #[path = "present_color.rs"]
 mod present_color;
 #[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
