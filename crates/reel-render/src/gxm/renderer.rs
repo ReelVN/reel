@@ -627,6 +627,7 @@ impl Backend {
         submission: Option<(SubmissionId, FrameId)>,
     ) -> Result<(Rc<replay::Prepared>, Rc<native::Fence>), GpuError> {
         let prepared = Rc::new(prepared);
+        let fence_timing = reel_core::profile::Scope::new(reel_core::profile::Phase::RenderFence);
         let fence = match self.context.fence() {
             Ok(fence) => Rc::new(fence),
             Err(error) => {
@@ -644,6 +645,7 @@ impl Backend {
             }
             return Err(error.into());
         }
+        drop(fence_timing);
         self.effect_results.submitted();
         for pending in prepared.take_effect_pending() {
             self.effect_results

@@ -397,7 +397,11 @@ impl StoryRuntime {
                 self.clock_sample_requested = true;
             }
         }
-        if self.maintain_saves(now_ns, budget)? {
+        let save_pending = {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionSaves);
+            self.maintain_saves(now_ns, budget)?
+        };
+        if save_pending {
             return Ok(());
         }
         if self.starting.is_some() {
@@ -416,14 +420,21 @@ impl StoryRuntime {
             self.runnable = true;
             self.clock_sample_requested = true;
         }
-        if self.driver.as_mut().unwrap().maintain_media()?
-            | self.driver.as_mut().unwrap().maintain_localization()?
-            | self
-                .driver
-                .as_mut()
-                .unwrap()
-                .adapter_mut()
-                .maintain_asset_reads(64)?
+        let media_changed = {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionMedia);
+            self.driver.as_mut().unwrap().maintain_media()?
+        };
+        let assets_changed = {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionAssets);
+            self.driver.as_mut().unwrap().maintain_localization()?
+                | self
+                    .driver
+                    .as_mut()
+                    .unwrap()
+                    .adapter_mut()
+                    .maintain_asset_reads(64)?
+        };
+        if media_changed | assets_changed
             || (self.driver().adapter().task().is_none()
                 && !self.driver().adapter().has_live_work()
                 && self.driver().state() == StoryState::Running)

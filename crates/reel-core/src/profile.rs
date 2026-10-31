@@ -103,8 +103,16 @@ pub enum Phase {
     SessionMaintenance,
     /// Begin a VM collection; incremental collection slices use SessionGc.
     SessionGcBegin,
+    /// Poll media and deliver its session completions, nested in SessionMaintenance.
+    SessionMedia,
+    /// Advance save requests and storage completions, nested in SessionMaintenance.
+    SessionSaves,
+    /// Poll localization and script asset reads, nested in SessionMaintenance.
+    SessionAssets,
+    /// End the final scene and publish its completion fence; may wait for driver capacity.
+    RenderFence,
 }
-pub const NAMES: [&str; 64] = [
+pub const NAMES: [&str; 68] = [
     "input",
     "tick",
     "session",
@@ -169,6 +177,10 @@ pub const NAMES: [&str; 64] = [
     "render_submission",
     "session_maintenance",
     "session_gc_begin",
+    "session_media",
+    "session_saves",
+    "session_assets",
+    "render_fence",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.
