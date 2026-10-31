@@ -77,7 +77,7 @@ impl Vm {
         script.context.derived = true;
         script.context.no_wait = true;
         script.phase = ScriptPhase::CompactBegin;
-        self.active.frames.data[top] = Frame::Script(script);
+        self.publish_script_frame(top, &script);
         self.derived_starts += 1;
         self.compact_derived_starts += 1;
         Ok(())
@@ -104,7 +104,7 @@ impl Vm {
     }
     pub(super) fn compact_derived_commit(
         &mut self,
-        script: ScriptFrame,
+        script: &ScriptFrame,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
         // Root 1 already carries the callback closure in ordinary native frames.

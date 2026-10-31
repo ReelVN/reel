@@ -151,7 +151,7 @@ impl Vm {
         kind: FaultKind,
     ) -> Result<(), VmError> {
         s.table_work = None;
-        self.abort_class(*s)?;
+        self.abort_class(s)?;
         if kind != FaultKind::UnhashableKey {
             self.put(s.env, 1, Value::NULL)?;
         }
@@ -697,8 +697,8 @@ impl Vm {
         }
         if let Some(read) = refresh {
             let index = self.index(s.id)?;
-            self.active.frames.data[index] = Frame::Script(*s);
-            if let Err(error) = self.push_reactive_read(*s, read) {
+            self.publish_script_frame(index, s);
+            if let Err(error) = self.push_reactive_read(s, read) {
                 self.collection_fault(s, vm_fault(error))?;
             }
             return Ok(true);

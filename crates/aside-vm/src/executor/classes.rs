@@ -105,7 +105,7 @@ impl Vm {
             Ok(())
         }
     }
-    pub(super) fn abort_class(&mut self, s: ScriptFrame) -> Result<(), VmError> {
+    pub(super) fn abort_class(&mut self, s: &ScriptFrame) -> Result<(), VmError> {
         let Ok(value) = self.value(s.env, 3) else {
             return Ok(());
         };
@@ -743,7 +743,7 @@ impl Vm {
     ) -> Result<(), VmError> {
         let function = self.closure_function(closure)?;
         let i = self.index(s.id)?;
-        self.active.frames.data[i] = Frame::Script(s);
+        self.publish_script_frame(i, &s);
         self.push_script(
             function,
             Some(closure),
@@ -996,7 +996,7 @@ impl Vm {
         }
         let result = self.class_advance(s, step, root, class);
         if let Err(error) = result {
-            self.abort_class(*s)?;
+            self.abort_class(s)?;
             self.collection_fault(s, language_fault(error)?)?;
         }
         Ok(true)

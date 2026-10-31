@@ -604,6 +604,7 @@ pub struct Vm {
 #[cfg(test)]
 #[derive(Default)]
 struct WorkProbe {
+    legacy_script_publication: bool,
     single_named_read_step: bool,
     general_callees: bool,
     general_script_preparation: bool,
@@ -628,6 +629,7 @@ mod meter;
 use meter::Meter;
 mod native_calls;
 mod scalars;
+mod script_body;
 mod script_frames;
 mod script_preparation;
 mod script_step;
@@ -1122,8 +1124,8 @@ impl Vm {
             match self.active.frames.data.last() {
                 Some(Frame::Script(s)) => {
                     if !step_cost!(self, Script, {
-                        let s = *s;
-                        self.script_step(s, m)
+                        let mut s = *s;
+                        self.script_step(&mut s, m)
                     })? {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
@@ -1163,7 +1165,7 @@ impl Vm {
                     self.heap.end_derived(self.value(s.env, 4)?)?;
                 }
                 if s.derived_bridge.is_none() || matches!(s.phase, ScriptPhase::Class(_)) {
-                    self.abort_class(s)?;
+                    self.abort_class(&s)?;
                 }
                 for r in [s.regs, s.env, s.args, s.bound] {
                     self.slots.release(&mut self.heap, r)?;

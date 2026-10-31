@@ -161,7 +161,8 @@ impl Vm {
                     unreachable!()
                 };
                 self.collection_fault(&mut frame, kind)?;
-                *self.active.frames.data.last_mut().unwrap() = Frame::Script(frame);
+                let top = self.active.frames.data.len() - 1;
+                self.publish_script_frame(top, &frame);
                 ScalarStep::Done
             }
         })

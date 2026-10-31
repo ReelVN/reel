@@ -232,7 +232,7 @@ impl Vm {
                         skip: None,
                     }
                 };
-                self.active.frames.data[top] = Frame::Script(s);
+                self.publish_script_frame(top, &s);
             }
             Frame::Native(mut n) => {
                 let explicit = n.pending_fault.and_then(|s| s.fault);
@@ -590,7 +590,7 @@ impl Vm {
                             },
                             _ => return Err(VmError::Contract("FaultBuild script stage")),
                         };
-                        self.active.frames.data[top] = Frame::Script(s);
+                        self.publish_script_frame(top, &s);
                     }
                     Frame::Native(mut n) => {
                         n.pending_fault = Some(build.seed);

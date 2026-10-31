@@ -75,7 +75,7 @@ impl Vm {
 
     pub(super) fn push_reactive_read(
         &mut self,
-        s: ScriptFrame,
+        s: &ScriptFrame,
         read: ReactiveRead,
     ) -> Result<(), VmError> {
         if let Some(function) = read.compact {

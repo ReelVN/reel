@@ -504,7 +504,7 @@ impl Vm {
                     return Err(VmError::Contract("return target"));
                 };
                 if let Some(info) = error {
-                    self.abort_class(parent)?;
+                    self.abort_class(&parent)?;
                     self.put(parent.env, 1, value)?;
                     if let Some(c) = cause {
                         self.put(parent.env, 2, c)?;

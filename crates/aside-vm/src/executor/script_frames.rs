@@ -2,6 +2,21 @@
 use super::*;
 
 impl Vm {
+    // A Script-to-Script publication copies the payload directly instead of
+    // constructing a temporary enum. Keep replacement behavior for other kinds.
+    #[inline]
+    pub(super) fn publish_script_frame(&mut self, index: usize, source: &ScriptFrame) {
+        #[cfg(test)]
+        if self.work_probe.legacy_script_publication {
+            self.active.frames.data[index] = Frame::Script(*source);
+            return;
+        }
+        match &mut self.active.frames.data[index] {
+            Frame::Script(stored) => *stored = *source,
+            stored => *stored = Frame::Script(*source),
+        }
+    }
+
     // All construction inputs are explicit so failed root publication rolls back
     // as one transaction before a frame becomes visible.
     #[allow(clippy::too_many_arguments)]
@@ -334,3 +349,6 @@ impl Vm {
         Ok(slot)
     }
 }
+
+#[cfg(test)]
+mod tests;

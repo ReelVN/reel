@@ -497,7 +497,7 @@ impl Vm {
         self.clear(parent.env, 1)?;
         self.clear(parent.env, 2)?;
         parent.phase = ScriptPhase::Body;
-        self.active.frames.data[i] = Frame::Script(parent);
+        self.publish_script_frame(i, &parent);
         Ok(true)
     }
 
@@ -909,7 +909,7 @@ impl Vm {
         self.heap.set_field(generator, RESULT, Value::NULL)?;
         s.phase = ScriptPhase::Body;
         let parent = self.index(s.id)?;
-        self.active.frames.data[parent] = Frame::Script(*s);
+        self.publish_script_frame(parent, s);
         self.active.frames.data.push(Frame::Script(frame));
         execution_count!(self, GeneratorResumes, 1);
         Ok(true)

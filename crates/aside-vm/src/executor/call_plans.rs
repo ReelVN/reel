@@ -124,7 +124,7 @@ impl Vm {
         };
         s.pc = next_pc;
         let caller_index = self.index(s.id).map_err(|_| FaultKind::InvalidState)?;
-        self.active.frames.data[caller_index] = Frame::Script(*s);
+        self.publish_script_frame(caller_index, s);
         match target {
             CallTarget::Native(native) => {
                 let site = NativeSite {

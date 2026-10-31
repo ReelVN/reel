@@ -76,7 +76,7 @@ impl Vm {
         };
         let index = self.index(s.id).map_err(vm_fault)?;
         s.pc = s.instruction_end;
-        self.active.frames.data[index] = Frame::Script(*s);
+        self.publish_script_frame(index, s);
         if let Err(error) =
             self.push_native(native, ArgSource::Await { frame: s.id, value }, 1, site)
         {
