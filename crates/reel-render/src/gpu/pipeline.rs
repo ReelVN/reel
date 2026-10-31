@@ -231,14 +231,14 @@ pub(super) struct CompositeInputs<'a> {
     pub backdrop: &'a wgpu::TextureView,
 }
 pub struct Pipelines {
-    instances: Mutex<[Option<Arc<wgpu::RenderPipeline>>; 18]>,
+    instances: Mutex<[Option<Arc<wgpu::RenderPipeline>>; 22]>,
     pub paint: wgpu::RenderPipeline,
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
     pub coverage_draws: std::sync::atomic::AtomicUsize,
     pub direct: [wgpu::RenderPipeline; 8],
-    pub bounded: Option<[wgpu::RenderPipeline; 4]>,
-    pub bounded_opaque: Option<[wgpu::RenderPipeline; 2]>,
+    pub bounded: Option<[wgpu::RenderPipeline; 7]>,
+    pub bounded_opaque: Option<[wgpu::RenderPipeline; 3]>,
     #[cfg(test)]
     pub direct_draws: [std::sync::atomic::AtomicUsize; 8],
     pub opaque: [wgpu::RenderPipeline; 3],
@@ -393,13 +393,21 @@ impl Pipelines {
                 "fragment_direct_bc1",
                 "fragment_direct_bc3",
                 "fragment_solid",
+                "fragment_regional",
+                "fragment_regional_bc1",
+                "fragment_regional_bc3",
             ]
             .map(|entry| {
                 bounded_pipeline(entry, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING))
             })
         });
         let bounded_opaque = bounded_supported.then(|| {
-            ["fragment_direct_bc1", "fragment_solid"].map(|entry| bounded_pipeline(entry, None))
+            [
+                "fragment_direct_bc1",
+                "fragment_solid",
+                "fragment_regional_bc1",
+            ]
+            .map(|entry| bounded_pipeline(entry, None))
         });
         let opaque = [
             "fragment_direct_bc1",

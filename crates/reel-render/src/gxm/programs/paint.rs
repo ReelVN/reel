@@ -56,6 +56,9 @@ impl Kind {
             "paint.appearance_region",
             "paint.constant_direct",
             "paint.constant_region",
+            "paint.rgba_region_bounded",
+            "paint.bc1_region_bounded",
+            "paint.bc3_region_bounded",
         ][if self.index() >= 28 {
             self.index() - 4
         } else {
@@ -65,13 +68,18 @@ impl Kind {
     fn index(self) -> usize {
         match self {
             Self::Direct(direct) => direct as usize,
-            Self::Bounded(direct) => {
-                16 + if direct as usize == 7 {
-                    3
-                } else {
-                    direct as usize
+            Self::Bounded(direct) => match direct {
+                crate::common::mesh::DirectPaint::RegionalRgba => 32,
+                crate::common::mesh::DirectPaint::RegionalBc1 => 33,
+                crate::common::mesh::DirectPaint::RegionalBc3 => 34,
+                _ => {
+                    16 + if direct as usize == 7 {
+                        3
+                    } else {
+                        direct as usize
+                    }
                 }
-            }
+            },
             Self::Rgba => 8,
             Self::Coverage => 9,
             Self::Gradient => 10,
@@ -143,6 +151,9 @@ impl Kind {
             29 => pair!("paint_adjust_region"),
             30 => pair!("paint_constant_plain_direct"),
             31 => pair!("paint_constant_plain_region"),
+            32 => pair!("paint_regional_bounded"),
+            33 => pair!("paint_regional_bc1_bounded"),
+            34 => pair!("paint_regional_bc3_bounded"),
             _ => unreachable!(),
         }
     }
@@ -152,7 +163,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 128],
+    entries: [OnceCell<Box<Entry>>; 140],
     budget: BudgetPool,
 }
 impl PaintPrograms {

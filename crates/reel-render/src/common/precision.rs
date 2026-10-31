@@ -29,7 +29,14 @@ impl BoundedColor {
         self.0
             && match direct {
                 Some(DirectPaint::Solid) => true,
-                Some(DirectPaint::Rgba | DirectPaint::Bc1 | DirectPaint::Bc3) => matches!(
+                Some(
+                    DirectPaint::Rgba
+                    | DirectPaint::Bc1
+                    | DirectPaint::Bc3
+                    | DirectPaint::RegionalRgba
+                    | DirectPaint::RegionalBc1
+                    | DirectPaint::RegionalBc3,
+                ) => matches!(
                     format,
                     Some(
                         TextureFormat::Rgba8
@@ -40,6 +47,22 @@ impl BoundedColor {
                 ),
                 _ => false,
             }
+    }
+}
+
+/// WGPU ordinary and instance color-only pipelines share this variant order.
+#[cfg(feature = "wgpu")]
+pub(crate) fn paint_index(paint: super::mesh::DirectPaint) -> usize {
+    use super::mesh::DirectPaint;
+    match paint {
+        DirectPaint::Rgba => 0,
+        DirectPaint::Bc1 => 1,
+        DirectPaint::Bc3 => 2,
+        DirectPaint::Solid => 3,
+        DirectPaint::RegionalRgba => 4,
+        DirectPaint::RegionalBc1 => 5,
+        DirectPaint::RegionalBc3 => 6,
+        DirectPaint::Coverage => unreachable!("coverage retains its ordinary precision"),
     }
 }
 
@@ -80,7 +103,14 @@ mod tests {
             Some(TextureFormat::LinearRgba16Float)
         ));
         assert!(!bounded.paint(Some(DirectPaint::Rgba), None));
-        assert!(!bounded.paint(Some(DirectPaint::RegionalRgba), Some(TextureFormat::Rgba8)));
+        for paint in [
+            DirectPaint::RegionalRgba,
+            DirectPaint::RegionalBc1,
+            DirectPaint::RegionalBc3,
+        ] {
+            assert!(bounded.paint(Some(paint), Some(TextureFormat::Rgba8)));
+            assert!(!bounded.paint(Some(paint), Some(TextureFormat::LinearRgba16Float)));
+        }
         assert!(
             !bounded
                 .intersect(BoundedColor::UNKNOWN)

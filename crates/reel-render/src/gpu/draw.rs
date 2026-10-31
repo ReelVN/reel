@@ -975,12 +975,12 @@ impl Context<'_> {
                     .as_ref()
                     .filter(|_| entry.state.bounded)
                 {
-                    let index = if index == 7 { 3 } else { index };
+                    let index = crate::common::precision::paint_index(direct);
                     if let Some(opaque) = entry.state.opaque {
-                        let index = if matches!(opaque, mesh::OpaquePaint::Solid) {
-                            1
-                        } else {
-                            0
+                        let index = match opaque {
+                            mesh::OpaquePaint::Bc1 => 0,
+                            mesh::OpaquePaint::Solid => 1,
+                            mesh::OpaquePaint::RegionalBc1 => 2,
                         };
                         &self.pipelines.bounded_opaque.as_ref().unwrap()[index]
                     } else {

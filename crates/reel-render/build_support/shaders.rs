@@ -198,7 +198,7 @@ pub fn sources() -> Vec<Shader> {
                 ""
             }
         );
-        if !regional && alpha != 3 {
+        if alpha != 3 {
             for clipped in [false, true] {
                 add(
                     &format!("{name}_bounded{}", if clipped { "" } else { "_unclipped" }),

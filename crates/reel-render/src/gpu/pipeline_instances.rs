@@ -24,12 +24,23 @@ impl Pipelines {
         ];
         let (key, entry) = if let Some(opaque) = opaque {
             if bounded {
-                let index = usize::from(matches!(opaque, OpaquePaint::Solid));
-                (16 + index, ["fragment_direct_bc1", "fragment_solid"][index])
+                let index = match opaque {
+                    OpaquePaint::Bc1 => 0,
+                    OpaquePaint::Solid => 1,
+                    OpaquePaint::RegionalBc1 => 2,
+                };
+                (
+                    19 + index,
+                    [
+                        "fragment_direct_bc1",
+                        "fragment_solid",
+                        "fragment_regional_bc1",
+                    ][index],
+                )
             } else {
                 let index = opaque as usize;
                 (
-                    13 + index,
+                    16 + index,
                     [
                         "fragment_direct_bc1",
                         "fragment_regional_bc1",
@@ -40,7 +51,7 @@ impl Pipelines {
         } else if let Some(direct) = direct {
             let index = direct as usize;
             if bounded {
-                let index = if index == 7 { 3 } else { index };
+                let index = crate::common::precision::paint_index(direct);
                 (
                     9 + index,
                     [
@@ -48,6 +59,9 @@ impl Pipelines {
                         "fragment_direct_bc1",
                         "fragment_direct_bc3",
                         "fragment_solid",
+                        "fragment_regional",
+                        "fragment_regional_bc1",
+                        "fragment_regional_bc3",
                     ][index],
                 )
             } else {
@@ -73,14 +87,7 @@ impl Pipelines {
                 "REEL_INSTANCE_COLOR",
                 if bounded { "vec4<f16>" } else { "vec4<f32>" },
             )
-            .replace(
-                "REEL_INSTANCE_WINDOW",
-                if bounded {
-                    ""
-                } else {
-                    "out.source_window = source_window;"
-                },
-            );
+            .replace("REEL_INSTANCE_WINDOW", "out.source_window = source_window;");
         let code = format!("{shader}\n{vertex}");
         let pipeline = validated(gpu, || {
             Arc::new(pipeline_vertex(
