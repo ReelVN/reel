@@ -16,6 +16,11 @@ fn dump_vm_profile_symbols() {
     let mut functions = fs::File::create(output.join("functions.tsv")).unwrap();
     let mut instructions = fs::File::create(output.join("instructions.tsv")).unwrap();
     let mut natives = fs::File::create(output.join("natives.tsv")).unwrap();
+    let mut symbols = fs::File::create(output.join("symbols.tsv")).unwrap();
+    writeln!(symbols, "symbol\ttext").unwrap();
+    for (id, name) in p.symbols.iter().enumerate() {
+        writeln!(symbols, "{id}\t{}", name.replace(['\t', '\r', '\n'], " ")).unwrap();
+    }
     writeln!(
         functions,
         "program\tfn\tmodule\tname\tkind\tbindings\tregisters"
