@@ -410,6 +410,34 @@ pub fn report(scope: &str, input: &Path, output: &Path, budget: Option<&Path>) -
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "offline frame-ledger export; set REEL_FRAME_LOG and REEL_FRAME_ROWS"]
+    fn dump_frame_intervals() {
+        let input = std::env::var_os("REEL_FRAME_LOG").expect("REEL_FRAME_LOG");
+        let output = std::env::var_os("REEL_FRAME_ROWS").expect("REEL_FRAME_ROWS");
+        let trace = parse(&fs::read_to_string(input).unwrap()).unwrap();
+        assert!(
+            !trace.rows.is_empty(),
+            "the log contains no complete frame report"
+        );
+        let rows: Vec<_> = trace
+            .rows
+            .into_iter()
+            .map(|frame| {
+                json!({
+                    "segment": frame.segment, "values": frame.values,
+                })
+            })
+            .collect();
+        fs::write(
+            output,
+            serde_json::to_vec_pretty(&json!({
+                "labels": trace.labels, "rows": rows,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    #[test]
     fn thread_observations_keep_sampling_and_clock_failures_separate_from_frame_times() {
         let values = BTreeMap::from([
             ("thread_profile_valid".into(), 1),

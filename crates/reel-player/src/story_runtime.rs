@@ -373,6 +373,8 @@ impl StoryRuntime {
             self.suspended_ns += now_ns.saturating_sub(start);
             self.clock_sample_requested = true;
         }
+        let maintenance =
+            reel_core::profile::Scope::new(reel_core::profile::Phase::SessionMaintenance);
         if !self.frame_capture_enabled && self.capture.is_none() {
             let adapter = self.driver.as_mut().unwrap().adapter_mut();
             if let Some(request) = adapter.take_capture_request()? {
@@ -429,6 +431,7 @@ impl StoryRuntime {
             self.runnable = true;
             self.clock_sample_requested = true;
         }
+        drop(maintenance);
         if !self.closing && self.needs_tick() && !self.clock_turn_pending {
             let sample = now();
             let timed =

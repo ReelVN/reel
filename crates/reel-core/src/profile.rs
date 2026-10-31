@@ -97,8 +97,14 @@ pub enum Phase {
     StageProperties,
     /// Synchronous session diagnostic formatting and stderr output, nested in Session.
     SessionDiagnostics,
+    /// Complete backend render/present call, including its nested preparation and submission.
+    RenderSubmission,
+    /// Session host maintenance before clock and interpreter work; may contain nested services.
+    SessionMaintenance,
+    /// Begin a VM collection; incremental collection slices use SessionGc.
+    SessionGcBegin,
 }
-pub const NAMES: [&str; 61] = [
+pub const NAMES: [&str; 64] = [
     "input",
     "tick",
     "session",
@@ -160,6 +166,9 @@ pub const NAMES: [&str; 61] = [
     "session_schedule",
     "stage_properties",
     "session_diagnostics",
+    "render_submission",
+    "session_maintenance",
+    "session_gc_begin",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

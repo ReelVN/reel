@@ -244,7 +244,12 @@ impl Presentation {
                 }
             }
         };
-        let result = match backend.render_present(&frame, || host.before_present()) {
+        let submitted = {
+            let _timing =
+                reel_core::profile::Scope::new(reel_core::profile::Phase::RenderSubmission);
+            backend.render_present(&frame, || host.before_present())
+        };
+        let result = match submitted {
             Err(error) => match error.into_pixel_demand() {
                 Ok(demand) => {
                     let key = frame.key();

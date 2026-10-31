@@ -362,6 +362,7 @@ impl AsideSessionUi {
         Ok(self.vm.advance_time(self.ui.session(), seconds, work)?)
     }
     pub fn begin_collection(&mut self) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionGcBegin);
         Ok(self.vm.begin_collection()?)
     }
     pub fn gc_step(&mut self, budget: GcBudget) -> Result<GcProgress, Error> {

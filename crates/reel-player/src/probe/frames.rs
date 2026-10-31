@@ -17,7 +17,7 @@ use std::io::{self, Write};
 
 const CAPACITY: usize = 512;
 const LABELS: usize = super::SEGMENTS;
-const PHASES: [Phase; 19] = [
+const PHASES: [Phase; 28] = [
     Phase::VmSlice,
     Phase::HostCall,
     Phase::SessionGc,
@@ -37,6 +37,15 @@ const PHASES: [Phase; 19] = [
     Phase::ControlPoll,
     Phase::TargetCreate,
     Phase::SessionDiagnostics,
+    Phase::RenderSubmission,
+    Phase::SessionMaintenance,
+    Phase::SessionGcBegin,
+    Phase::Screen,
+    Phase::ImagePlan,
+    Phase::Upload,
+    Phase::OffscreenPlan,
+    Phase::RetainedPlan,
+    Phase::UiImageRequests,
 ];
 
 #[derive(Default)]
