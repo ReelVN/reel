@@ -25,7 +25,7 @@ struct ClockProfile {
 /// time and call `wake_input` after submitting input to the session driver.
 pub struct StoryRuntime {
     driver: Option<AsideSessionUi>,
-    saves: Option<crate::saves::RuntimeSaves>,
+    saves: Option<Box<crate::saves::RuntimeSaves>>,
     capture: Option<crate::saves::Capture>,
     capture_started: Option<u64>,
     frame_capture_enabled: bool,
@@ -140,11 +140,11 @@ impl StoryRuntime {
         )
     }
     pub fn with_saves(mut self, saves: crate::saves::RuntimeSaves) -> Self {
-        self.saves = Some(saves);
+        self.saves = Some(Box::new(saves));
         self
     }
     pub fn set_saves(&mut self, saves: crate::saves::RuntimeSaves) {
-        self.saves = Some(saves);
+        self.saves = Some(Box::new(saves));
     }
     /// Enable only when the host drives CaptureService against its accepted frame.
     /// Otherwise capture requests fail explicitly instead of waiting for a backend.
