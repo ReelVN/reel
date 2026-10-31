@@ -1,8 +1,7 @@
 //! Bounded scalar blocks borrow one register mapping and retain canonical exits.
+use super::body_cursor::{Cursor, Exit};
+use super::registers::Registers;
 use super::*;
-use crate::frame_slots::RegisterWindow;
-mod registers;
-use registers::Registers;
 
 pub(super) enum ScalarStep {
     Done,
@@ -12,53 +11,20 @@ pub(super) enum ScalarStep {
     Budget,
 }
 
-enum Exit {
-    Done,
-    General,
-    Budget,
-    Fault(FaultKind),
-}
-
-#[derive(Clone, Copy)]
-struct Cursor {
-    function: FunctionId,
-    pc: Pc,
-    instruction_end: Pc,
-    member_symbol: Option<SymbolId>,
-    instruction: Option<Instruction>,
-    instruction_pc: Pc,
-}
-
-impl Cursor {
-    fn capture(frame: &ScriptFrame) -> Self {
-        Self {
-            function: frame.code.function,
-            pc: frame.pc,
-            instruction_end: frame.instruction_end,
-            member_symbol: frame.member_symbol,
-            instruction: frame.instruction,
-            instruction_pc: frame.instruction_pc,
-        }
-    }
-    fn publish(self, frame: &mut ScriptFrame) {
-        frame.pc = self.pc;
-        frame.instruction_end = self.instruction_end;
-        frame.member_symbol = self.member_symbol;
-        frame.instruction = self.instruction;
-        frame.instruction_pc = self.instruction_pc;
-    }
-    fn advance(&mut self, next: Pc) {
-        self.pc = next;
-        self.instruction = None;
-        self.member_symbol = None;
-    }
-}
-
 struct Block<'a> {
     program: &'a VerifiedProgram,
     code_window: &'a mut crate::bytecode::CodeWindow,
     registers: Registers<'a>,
     cursor: Cursor,
+    effects: Effects,
+    members: &'a mut member_state::MemberState,
+    prepared_read: &'a mut Option<script_body::PreparedRead>,
+    #[cfg(test)]
+    general_class_reads: bool,
+    #[cfg(test)]
+    hint_hits: &'a std::cell::Cell<u64>,
+    #[cfg(test)]
+    hot_class_reads: &'a std::cell::Cell<u64>,
     #[cfg(feature = "profiling")]
     profile: &'a step_costs::State,
     #[cfg(feature = "execution-counts")]
@@ -70,16 +36,24 @@ struct Block<'a> {
 }
 
 impl Vm {
-    pub(super) fn scalar_step(&mut self, meter: &mut Meter) -> Result<ScalarStep, VmError> {
+    pub(super) fn scalar_step(
+        &mut self,
+        meter: &mut Meter,
+        prepared_read: &mut Option<script_body::PreparedRead>,
+    ) -> Result<ScalarStep, VmError> {
         #[cfg(feature = "profiling")]
         let driver = self.step_costs.start_driver(step_costs::Phase::Scalar);
-        let result = self.scalar_block(meter);
+        let result = self.scalar_block(meter, prepared_read);
         #[cfg(feature = "profiling")]
         self.step_costs.finish_driver(driver);
         result
     }
 
-    fn scalar_block(&mut self, meter: &mut Meter) -> Result<ScalarStep, VmError> {
+    fn scalar_block(
+        &mut self,
+        meter: &mut Meter,
+        prepared_read: &mut Option<script_body::PreparedRead>,
+    ) -> Result<ScalarStep, VmError> {
         let Some(Frame::Script(frame)) = self.active.frames.data.last() else {
             return step_cost!(
                 self.step_costs,
@@ -110,6 +84,7 @@ impl Vm {
         }
         let cursor = Cursor::capture(frame);
         let range = frame.regs;
+        let effects = frame.effects;
         #[cfg(test)]
         let registers = if self.work_probe.single_scalar_step {
             Registers::Checked {
@@ -135,6 +110,16 @@ impl Vm {
             code_window: &mut self.code_window,
             registers,
             cursor,
+            effects,
+            members: &mut self.member_state,
+            prepared_read,
+            #[cfg(test)]
+            general_class_reads: self.work_probe.general_class_reads
+                || self.work_probe.checked_class_metadata,
+            #[cfg(test)]
+            hint_hits: &self.work_probe.member_hint_hits,
+            #[cfg(test)]
+            hot_class_reads: &self.work_probe.hot_class_reads,
             #[cfg(feature = "profiling")]
             profile: &self.step_costs,
             #[cfg(feature = "execution-counts")]
@@ -276,6 +261,26 @@ impl Block<'_> {
             return Ok(Exit::Done);
         } else {
             if !supported(op) {
+                if op == Opcode::MemberGet {
+                    let mut context = body_context::Context {
+                        registers: &mut self.registers,
+                        cursor: &mut self.cursor,
+                        effects: self.effects,
+                        members: &mut *self.members,
+                        prepared_read: &mut *self.prepared_read,
+                        #[cfg(feature = "profiling")]
+                        profile: self.profile,
+                        #[cfg(feature = "execution-counts")]
+                        execution_counts: self.execution_counts,
+                        #[cfg(test)]
+                        general_class_reads: self.general_class_reads,
+                        #[cfg(test)]
+                        hint_hits: self.hint_hits,
+                        #[cfg(test)]
+                        hot_class_reads: self.hot_class_reads,
+                    };
+                    return context.class_read([a, b, c], next, meter);
+                }
                 return Ok(Exit::General);
             }
             if !meter.admits(1, 1, 0) {

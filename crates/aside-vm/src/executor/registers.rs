@@ -1,5 +1,6 @@
 //! Production window access and the test-only checked single-step oracle.
 use super::*;
+use crate::frame_slots::RegisterWindow;
 
 pub(super) enum Registers<'a> {
     Window(RegisterWindow<'a>),
@@ -12,6 +13,21 @@ pub(super) enum Registers<'a> {
 }
 
 impl Registers<'_> {
+    pub(super) fn heap(&self) -> &Heap {
+        match self {
+            Self::Window(window) => window.heap(),
+            #[cfg(test)]
+            Self::Checked { heap, .. } => heap,
+        }
+    }
+    pub(super) fn with_heap<T>(&mut self, operation: impl FnOnce(&mut Heap) -> T) -> T {
+        match self {
+            Self::Window(window) => window.with_heap(operation),
+            #[cfg(test)]
+            Self::Checked { heap, .. } => operation(heap),
+        }
+    }
+
     pub(super) fn read(&self, register: u32) -> Result<Value, HeapError> {
         match self {
             Self::Window(window) => window.read(register),

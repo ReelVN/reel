@@ -252,8 +252,8 @@ fn native_binding_working_set_cost() {
             vm.bind_native(receiver, FunctionId(4)).unwrap();
         }
         let before = vm.heap.stats();
-        let hits = vm.native_binding_hits;
-        let misses = vm.native_binding_misses;
+        let hits = vm.member_state.native_hits;
+        let misses = vm.member_state.native_misses;
         let start = std::time::Instant::now();
         for _ in 0..128 {
             for &receiver in &receivers {
@@ -263,8 +263,8 @@ fn native_binding_working_set_cost() {
         eprintln!(
             "native_bindings count={count} rounds=128 elapsed_us={} hits={} misses={} added_objects={} added_bytes={}",
             start.elapsed().as_micros(),
-            vm.native_binding_hits - hits,
-            vm.native_binding_misses - misses,
+            vm.member_state.native_hits - hits,
+            vm.member_state.native_misses - misses,
             vm.heap.stats().live_objects - before.live_objects,
             vm.heap.stats().charged_bytes - before.charged_bytes
         );

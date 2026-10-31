@@ -16,7 +16,8 @@ fn class_hint_collisions_preserve_warm_table_work_and_slice_boundaries() {
         if collide {
             // This is the exact table lookup site, so a shared store would
             // replace its proven table position with an unrelated class entry.
-            vm.class_member_hints
+            vm.member_state
+                .class_hints
                 .remember(FunctionId(0), Pc(0), 0, members, 0);
         }
         let task = vm

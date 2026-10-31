@@ -1,11 +1,25 @@
 //! Instruction admission and execution, before general continuation dispatch.
 use super::*;
 
+/// Same-iteration metadata handoff after dropping a borrowed register context.
+/// The original receiver register roots every value; a yield discards this plan.
+pub(super) enum PreparedRead {
+    Class {
+        target: classes::ClassRead,
+        property: Option<crate::PropertyId>,
+    },
+    Member {
+        object: Value,
+        info: ObjectInfo,
+    },
+}
+
 impl Vm {
     pub(super) fn script_body_step(
         &mut self,
         s: &mut ScriptFrame,
         m: &mut Meter,
+        prepared: &mut Option<PreparedRead>,
     ) -> Result<bool, VmError> {
         let top = self.active.frames.data.len() - 1;
         if !m.admits(0, 1, 0) {
@@ -94,35 +108,47 @@ impl Vm {
                 c = name.0;
             }
         }
-        let mut plan = InstructionPlan::None;
-        let (work, allocation) =
-            match step_cost!(self, Cost, self.instruction_cost(s, op, a, b, c, &mut plan)) {
-                Ok((work, allocation)) => (work + index_work, allocation),
-                Err(error) => {
-                    if !m.take(1, 1 + index_work, 0) {
-                        self.publish_script_frame(top, s);
-                        return Ok(false);
-                    }
-                    instruction_admitted!(self, admitted_opcode);
-                    self.put(s.env, 1, Value::NULL)?;
-                    self.clear(s.env, 2)?;
-                    s.phase = ScriptPhase::Exit {
-                        origin: s.pc,
-                        reason: ExitReason::Throw(FaultSeed {
-                            fault: None,
-                            explicit: None,
-                            author_value: false,
-                            awaited: None,
-
-                            kind: vm_fault(error),
-                            location: self.loc(*s, s.pc),
-                        }),
-                        skip: None,
-                    };
+        let (mut plan, prepared_cost) = match prepared.take() {
+            Some(PreparedRead::Class { target, property }) => {
+                let cost = (target.work(), Values::allocation_bytes(3));
+                (InstructionPlan::ClassRead(target, property), Some(cost))
+            }
+            Some(PreparedRead::Member { object, info }) => {
+                (InstructionPlan::MemberInfo(object, info), None)
+            }
+            None => (InstructionPlan::None, None),
+        };
+        let (work, allocation) = match if let Some(cost) = prepared_cost {
+            Ok(cost)
+        } else {
+            step_cost!(self, Cost, self.instruction_cost(s, op, a, b, c, &mut plan))
+        } {
+            Ok((work, allocation)) => (work + index_work, allocation),
+            Err(error) => {
+                if !m.take(1, 1 + index_work, 0) {
                     self.publish_script_frame(top, s);
-                    return Ok(true);
+                    return Ok(false);
                 }
-            };
+                instruction_admitted!(self, admitted_opcode);
+                self.put(s.env, 1, Value::NULL)?;
+                self.clear(s.env, 2)?;
+                s.phase = ScriptPhase::Exit {
+                    origin: s.pc,
+                    reason: ExitReason::Throw(FaultSeed {
+                        fault: None,
+                        explicit: None,
+                        author_value: false,
+                        awaited: None,
+
+                        kind: vm_fault(error),
+                        location: self.loc(*s, s.pc),
+                    }),
+                    skip: None,
+                };
+                self.publish_script_frame(top, s);
+                return Ok(true);
+            }
+        };
         let mut cost = (work, allocation);
         let refresh = if op == Opcode::MemberGet {
             let property = if matches!(plan, InstructionPlan::NamedRead(_)) {
@@ -212,7 +238,8 @@ impl Vm {
                     self.execute_call(s, op, a, b, Pc(next_pc as u32), Some(callee)),
                 InstructionPlan::NamedRead(read) =>
                     self.execute_named_read(s, read, Reg(a), Reg(b), SymbolId(c)),
-                InstructionPlan::None => self.execute(s, op, a, b, c, Pc(next_pc as u32)),
+                InstructionPlan::None | InstructionPlan::MemberInfo(..) =>
+                    self.execute(s, op, a, b, c, Pc(next_pc as u32)),
             }
         );
         match step {

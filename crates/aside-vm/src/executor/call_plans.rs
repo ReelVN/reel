@@ -6,6 +6,7 @@ pub(super) enum InstructionPlan {
     ClassRead(classes::ClassRead, Option<crate::PropertyId>),
     Callee(PreparedCallee),
     NamedRead(named_reads::NamedRead),
+    MemberInfo(Value, ObjectInfo),
 }
 
 /// Values remain reachable through the caller's original target register until
