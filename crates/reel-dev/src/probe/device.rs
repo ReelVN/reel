@@ -501,6 +501,7 @@ fn run() -> Result {
     let mut vsync = true;
     let mut flights = 1;
     let mut serial_effect_timing = false;
+    let mut frame_completion = false;
     let mut wall_ledger = false;
     let mut tokens: Vec<String> = std::fs::read_to_string(directory().join("case.txt"))
         .unwrap_or_default()
@@ -524,6 +525,8 @@ fn run() -> Result {
             "vsync=off" => vsync = false,
             "effect-timing=serial" => serial_effect_timing = true,
             "effect-timing=off" => serial_effect_timing = false,
+            "frame-completion=on" => frame_completion = true,
+            "frame-completion=off" => frame_completion = false,
             "wall-ledger=on" => wall_ledger = true,
             "wall-ledger=off" => wall_ledger = false,
             value if value.starts_with("flights=") => flights = value[8..].parse()?,
@@ -534,6 +537,11 @@ fn run() -> Result {
     }
     if !(1..=2).contains(&flights) {
         return Err("flights must be 1 or 2".into());
+    }
+    if frame_completion && serial_effect_timing {
+        return Err(
+            "frame-completion=on requires effect-timing=off to preserve pass batching".into(),
+        );
     }
     if !(1..=10_000).contains(&frames) {
         return Err("frames must be in 1..10000".into());
@@ -574,6 +582,10 @@ fn run() -> Result {
         )
     ));
     reel_render::profiling::set_serial_effect_timing(serial_effect_timing);
+    reel_render::profiling::set_frame_completion(frame_completion);
+    log(format_args!(
+        "frame_completion={frame_completion} units=wall_us includes=cpu_submission_prior_queued_work_and_notification_wait excludes=display_enqueue gpu_timestamp=false wait_timeout_ms=2000 reduces_frame_overlap=true"
+    ));
     let _wall_recording = if wall_ledger {
         Some(reel_core::profile::WallRecording::start().ok_or("wall ledger already active")?)
     } else {

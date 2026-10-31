@@ -7,7 +7,11 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+mod frames;
 mod passes;
+#[cfg(all(feature = "gxm", target_os = "vita"))]
+pub(crate) use frames::FrameCompletion;
+pub use frames::{FrameCompletionTiming, drain_frame_completion, set_frame_completion};
 #[cfg(all(feature = "gxm", target_os = "vita"))]
 pub(crate) use passes::record_serial_pass;
 pub use passes::{SerialPassTiming, drain_serial_passes};

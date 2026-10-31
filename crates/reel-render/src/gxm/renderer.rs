@@ -784,6 +784,8 @@ impl RenderBackend for Backend {
             .next_submission
             .checked_add(1)
             .ok_or(GpuError::IdentityExhausted)?;
+        #[cfg(feature = "profiling")]
+        let completion = crate::profiling::FrameCompletion::start();
         let prepared = match self.prepare(frame, info.physical_size, false) {
             Err(GpuError::Preparing) => return Ok(PresentOutcome::Preparing),
             result => result?,
@@ -799,7 +801,15 @@ impl RenderBackend for Backend {
             return Err(error);
         }
         self.next_submission = next;
-        self.submit(frame, prepared, Some((id, frame.frame_id())))?;
+        let (_, fence) = self.submit(frame, prepared, Some((id, frame.frame_id())))?;
+        #[cfg(feature = "profiling")]
+        if let Some(completion) = completion {
+            completion
+                .complete(|timeout| fence.wait(timeout))
+                .map_err(native_error)?;
+        }
+        #[cfg(not(feature = "profiling"))]
+        let _ = fence;
         before_present();
         {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Present);
