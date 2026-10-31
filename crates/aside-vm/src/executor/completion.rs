@@ -2,6 +2,71 @@
 use super::*;
 
 impl Vm {
+    pub(super) fn equality_phase_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        meter: &mut Meter,
+    ) -> Result<bool, VmError> {
+        if !meter.take(0, 1, 0) {
+            return Ok(false);
+        }
+        #[cfg(feature = "execution-counts")]
+        if s.table_work
+            .as_ref()
+            .is_some_and(|work| work.named_read(s.member_symbol))
+        {
+            execution_count!(self, NamedTableEqualitySteps, 1);
+        }
+        match s.phase {
+            ScriptPhase::Equality { dest, negated } => {
+                self.equality_step(s, dest, negated, meter)?
+            }
+            ScriptPhase::EqualityCleanup {
+                dest,
+                negated,
+                result,
+            } => {
+                if !self.active.equality_cursors.data.is_empty() {
+                    let depth = self.active.equality_cursors.data.len() as u32 - 1;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
+                    self.active.equality_cursors.data.pop();
+                } else {
+                    if s.table_work.is_some() {
+                        self.table_comparison_done(s, result)?;
+                    } else {
+                        match result {
+                            Ok(equal) => {
+                                self.put(s.regs, dest.0, Value::bool(equal != negated))?;
+                                s.pc = s.instruction_end;
+                                s.phase = ScriptPhase::Body;
+                            }
+                            Err(kind) => {
+                                self.put(s.env, 1, Value::NULL)?;
+                                self.clear(s.env, 2)?;
+                                s.phase = ScriptPhase::Exit {
+                                    origin: s.pc,
+                                    reason: ExitReason::Throw(FaultSeed {
+                                        fault: None,
+                                        explicit: None,
+                                        author_value: false,
+                                        awaited: None,
+
+                                        kind,
+                                        location: self.loc(*s, s.pc),
+                                    }),
+                                    skip: None,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+            _ => unreachable!("equality phase dispatch"),
+        }
+        Ok(true)
+    }
+
     pub(super) fn equality_step(
         &mut self,
         s: &mut ScriptFrame,
@@ -9,7 +74,7 @@ impl Vm {
         negated: bool,
         meter: &mut Meter,
     ) -> Result<(), VmError> {
-        if self.table_changed(*s)? {
+        if self.table_changed(s)? {
             s.phase = ScriptPhase::EqualityCleanup {
                 dest,
                 negated,

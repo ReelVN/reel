@@ -313,6 +313,23 @@ pub(super) struct TableWork {
     matched: bool,
 }
 
+impl TableWork {
+    pub(super) fn named_read(&self, symbol: Option<SymbolId>) -> bool {
+        symbol.is_some()
+            && matches!(
+                self.action,
+                TableAction::MemberGet { .. } | TableAction::GetHost { .. }
+            )
+    }
+
+    pub(super) fn publish_named_cursor(&self, target: &mut Self) {
+        // A named read keeps its action/version throughout this synchronous
+        // block. Only the lookup cursor changes before commit or a refresh.
+        target.entry = self.entry;
+        target.matched = self.matched;
+    }
+}
+
 #[cfg(test)]
 impl TableWork {
     pub(super) fn matched(self) -> bool {
@@ -340,6 +357,19 @@ impl Vm {
         }
         self.heap.table_len(table).map_err(heap_fault)?;
         let version = self.table_version(table, action).map_err(vm_fault)?;
+        self.start_table_at_version(s, table, key, action, version)
+    }
+
+    /// Publish scratch roots after the same instruction proved this table's
+    /// current kind/version. No GC or author callback intervenes in admission.
+    pub(super) fn start_table_at_version(
+        &mut self,
+        s: &mut ScriptFrame,
+        table: Value,
+        key: Value,
+        action: TableAction,
+        version: u64,
+    ) -> Result<(), FaultKind> {
         self.put(s.env, 1, table).map_err(vm_fault)?;
         self.put(s.env, 2, key).map_err(vm_fault)?;
         s.table_work = Some(TableWork {
@@ -349,6 +379,10 @@ impl Vm {
             matched: false,
         });
         self.key_stack_push(key).map_err(vm_fault)?;
+        #[cfg(feature = "execution-counts")]
+        if s.table_work.as_ref().unwrap().named_read(s.member_symbol) {
+            execution_count!(self, NamedTableStarts, 1);
+        }
         s.phase = ScriptPhase::TableValidate;
         Ok(())
     }
@@ -422,10 +456,14 @@ impl Vm {
     }
     fn table_version(&self, table: Value, action: TableAction) -> Result<u64, VmError> {
         let info = self.heap.info(table)?;
+        Ok(Self::table_stamp(info, action))
+    }
+
+    fn table_stamp(info: ObjectInfo, action: TableAction) -> u64 {
         // Point lookups commit against the current slot after comparing stable
         // keys. Value overwrites cannot invalidate that scan. Bulk operations
         // retain their complete source-content snapshot.
-        Ok(match action {
+        match action {
             TableAction::Get(_)
             | TableAction::MemberGet { .. }
             | TableAction::GetDefault { .. }
@@ -437,10 +475,10 @@ impl Vm {
             TableAction::Build { .. } | TableAction::Spread(_) | TableAction::Remove(_) => {
                 info.content_version
             }
-        })
+        }
     }
 
-    pub(super) fn table_changed(&self, s: ScriptFrame) -> Result<bool, VmError> {
+    pub(super) fn table_changed(&self, s: &ScriptFrame) -> Result<bool, VmError> {
         let Some(work) = s.table_work else {
             return Ok(false);
         };
@@ -462,9 +500,22 @@ impl Vm {
     ) -> Result<bool, VmError> {
         let work = s.table_work.unwrap();
         let table = self.value(s.env, 1)?;
-        if self.table_changed(*s)? {
+        let named = work.named_read(s.member_symbol);
+        let metadata = if named {
+            Some(self.heap.info(table)?)
+        } else {
+            None
+        };
+        let changed = match metadata {
+            Some(info) => Self::table_stamp(info, work.action) != work.version,
+            None => self.table_changed(s)?,
+        };
+        if changed {
             if !meter.take(0, 1, 0) {
                 return Ok(false);
+            }
+            if named {
+                execution_count!(self, NamedTableSteps, 1);
             }
             // Validate the saved entry before resolving or refreshing its bound
             // source. Key validation may still own a rooted comparison stack.
@@ -475,7 +526,10 @@ impl Vm {
             };
             return Ok(true);
         }
-        let len = self.heap.info(table)?.len;
+        let len = match metadata {
+            Some(info) => info.len,
+            None => self.heap.info(table)?.len,
+        };
         // Source keys are unique. Entries appended by this spread cannot
         // match a later source key, so only scan the original destination.
         let scan_len = match work.action {
@@ -557,6 +611,9 @@ impl Vm {
                 Ok(method) => method,
                 Err(error) => {
                     assert!(meter.take(0, cost.0, 0));
+                    if named {
+                        execution_count!(self, NamedTableSteps, 1);
+                    }
                     self.collection_fault(s, heap_fault(error))?;
                     return Ok(true);
                 }
@@ -609,19 +666,34 @@ impl Vm {
             meter.usage.work += host_lookup_work;
             return Ok(false);
         }
-        if let Some((entry, symbol, _, trusted)) = hint
-            && (trusted || self.member_hint_matches(table, entry, symbol)?)
-        {
-            let lookup = s.table_work.as_mut().unwrap();
-            lookup.entry = entry;
-            lookup.matched = true;
-            #[cfg(test)]
-            self.work_probe
-                .member_hint_hits
-                .set(self.work_probe.member_hint_hits.get() + 1);
-            // The following ordinary lookup step still checks its version,
-            // resolves reactive reads and admits the original commit work.
-            return Ok(true);
+        if named {
+            execution_count!(self, NamedTableSteps, 1);
+            if scan && !work.matched && work.entry == 0 && hint.is_none() {
+                execution_count!(self, NamedTableHintAbsent, 1);
+            }
+        }
+        if let Some((entry, symbol, _, trusted)) = hint {
+            if trusted || self.member_hint_matches(table, entry, symbol)? {
+                if named {
+                    if trusted {
+                        execution_count!(self, NamedTableHintTrusted, 1);
+                    } else {
+                        execution_count!(self, NamedTableHintChecked, 1);
+                    }
+                }
+                let lookup = s.table_work.as_mut().unwrap();
+                lookup.entry = entry;
+                lookup.matched = true;
+                #[cfg(test)]
+                self.work_probe
+                    .member_hint_hits
+                    .set(self.work_probe.member_hint_hits.get() + 1);
+                // The following ordinary lookup step still checks its version,
+                // resolves reactive reads and admits the original commit work.
+                return Ok(true);
+            } else if named {
+                execution_count!(self, NamedTableHintRejected, 1);
+            }
         }
         if let Some(read) = refresh {
             let index = self.index(s.id)?;
@@ -644,6 +716,9 @@ impl Vm {
         } else if store || work.matched || work.entry == scan_len {
             self.table_commit(s, host_method)?;
         } else {
+            if named {
+                execution_count!(self, NamedTableCandidates, 1);
+            }
             let key = self.value(s.env, 2)?;
             let (candidate, _) = self.heap.table_entry(table, work.entry)?;
             self.put(self.active.equality_roots.unwrap(), 0, key)?;
@@ -724,7 +799,7 @@ impl Vm {
         if let Err(kind) = result {
             return self.collection_fault(s, kind);
         }
-        if self.table_changed(*s)? {
+        if self.table_changed(s)? {
             return self.collection_fault(s, FaultKind::ConcurrentModification);
         }
         let work = s.table_work.as_mut().unwrap();
@@ -817,6 +892,9 @@ impl Vm {
                         Err(error) => return self.collection_fault(s, vm_fault(error)),
                     };
                     self.put(s.regs, dest.0, value)?;
+                    if work.named_read(s.member_symbol) {
+                        execution_count!(self, NamedHostMethods, 1);
+                    }
                     s.table_work = None;
                     self.clear(s.env, 1)?;
                     self.clear(s.env, 2)?;

@@ -102,6 +102,7 @@ impl Fixture {
             ("bench_model", Some("value")),
             ("bench_derive", Some("callback")),
             ("bench_flush", None),
+            ("bench_host", Some("value")),
         ]
         .into_iter()
         .enumerate()
@@ -280,6 +281,15 @@ impl Fixture {
                         }
                         vm.respond(ticket, HostResponse::Ready(Value::NULL))
                             .unwrap();
+                    }
+                    4 => {
+                        let fields = vm.host_arguments(ticket).unwrap()[0];
+                        let count = vm.heap().table_len(fields).unwrap();
+                        let host = vm.heap_mut().alloc_host(fields, &[], None).unwrap();
+                        vm.heap_mut()
+                            .observe_host_properties(host, 0, count)
+                            .unwrap();
+                        vm.respond(ticket, HostResponse::Ready(host)).unwrap();
                     }
                     _ => unreachable!(),
                 },

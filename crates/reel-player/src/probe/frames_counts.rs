@@ -39,6 +39,20 @@ fn visit(
         compact_commits,
         bytecode_execute_steps,
         reactive_read_suspensions,
+        member_get_table_costs,
+        member_get_host_costs,
+        member_get_class_costs,
+        member_get_property_costs,
+        member_get_other_costs,
+        named_table_starts,
+        named_table_hint_trusted,
+        named_table_hint_checked,
+        named_table_hint_rejected,
+        named_table_hint_absent,
+        named_table_candidates,
+        named_table_steps,
+        named_table_equality_steps,
+        named_host_methods,
     );
     macro_rules! slots {
         ($($field:ident),* $(,)?) => {$(

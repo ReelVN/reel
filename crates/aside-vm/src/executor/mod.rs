@@ -44,6 +44,7 @@ mod iterators;
 mod member_hints;
 mod method_bindings;
 mod models;
+mod named_reads;
 mod native_roots;
 mod reactive;
 pub(crate) mod snapshot;
@@ -603,6 +604,7 @@ pub struct Vm {
 #[cfg(test)]
 #[derive(Default)]
 struct WorkProbe {
+    single_named_read_step: bool,
     general_callees: bool,
     general_script_preparation: bool,
     general_clears: bool,
@@ -917,11 +919,13 @@ impl Vm {
     ) -> Result<RunOutcome, VmError> {
         #[cfg(feature = "profiling")]
         let mut observation = self.step_costs.begin_slice();
+        #[cfg(feature = "profiling")]
         if let Err(error) = self.select_task(task) {
-            #[cfg(feature = "profiling")]
             self.step_costs.fail_entry(observation);
             return Err(error);
         }
+        #[cfg(not(feature = "profiling"))]
+        self.select_task(task)?;
         self.slices += 1;
         let mut meter = Meter::new(budget);
         #[cfg(feature = "profiling")]
@@ -1101,6 +1105,12 @@ impl Vm {
                         self.execution_counts.step(&s.phase);
                     }
                     if !step_cost!(self, Script, self.preparation_step(m))? {
+                        return Ok(RunOutcome::BudgetYield(m.usage));
+                    }
+                    continue;
+                }
+                scalars::ScalarStep::NamedRead => {
+                    if !self.named_read_step(m)? {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                     continue;

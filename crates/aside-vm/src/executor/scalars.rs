@@ -8,6 +8,7 @@ pub(super) enum ScalarStep {
     Done,
     General,
     Preparation,
+    NamedRead,
     Budget,
 }
 
@@ -91,12 +92,17 @@ impl Vm {
             let preparation = script_preparation::is_preparation(&frame.phase);
             #[cfg(test)]
             let preparation = preparation && !self.work_probe.general_script_preparation;
+            let named = !preparation && named_reads::eligible(frame, meter);
+            #[cfg(test)]
+            let named = named && !self.work_probe.single_named_read_step;
             return step_cost!(
                 self.step_costs,
                 Scalar,
                 self.step_profile_point(),
                 Ok(if preparation {
                     ScalarStep::Preparation
+                } else if named {
+                    ScalarStep::NamedRead
                 } else {
                     ScalarStep::General
                 })

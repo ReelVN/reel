@@ -242,6 +242,20 @@ fields! {
     CompactCommits=>compact_commits:"Successful compact script-to-native commit transfers.";
     BytecodeExecutions=>bytecode_execute_steps:"Actual scalar/general instruction executions, including faulting operations.";
     ReactiveSuspensions=>reactive_read_suspensions:"Admitted reads that suspend to evaluate a dirty derived input.";
+    MemberGetTableCosts=>member_get_table_costs:"Literal MemberGet cost attempts whose decoded receiver is a Table, including admission retries.";
+    MemberGetHostCosts=>member_get_host_costs:"Literal MemberGet cost attempts whose decoded receiver is a Host, including admission retries.";
+    MemberGetClassCosts=>member_get_class_costs:"Literal MemberGet cost attempts for Class, Instance or Super receivers, including admission retries.";
+    MemberGetPropertyCosts=>member_get_property_costs:"Literal MemberGet cost attempts for PropertyRef receivers, including admission retries.";
+    MemberGetOtherCosts=>member_get_other_costs:"Literal MemberGet cost attempts for other successfully decoded object kinds, including admission retries.";
+    NamedTableStarts=>named_table_starts:"Started literal named table/host-field reads after their scratch roots are published.";
+    NamedTableHintTrusted=>named_table_hint_trusted:"Admitted first scans using a matching table generation and structure-version hint.";
+    NamedTableHintChecked=>named_table_hint_checked:"Admitted first scans accepting an untrusted position after current symbol-key comparison.";
+    NamedTableHintRejected=>named_table_hint_rejected:"Admitted first scans rejecting an untrusted position's current symbol key.";
+    NamedTableHintAbsent=>named_table_hint_absent:"Admitted first scans without a usable position hint, including long names and invalid positions.";
+    NamedTableCandidates=>named_table_candidates:"Ordered candidate probes admitted by literal named table/host-field reads.";
+    NamedTableSteps=>named_table_steps:"Admitted TableValidate/TableScan logical steps of literal named reads; refresh retries count again.";
+    NamedTableEqualitySteps=>named_table_equality_steps:"Admitted Equality/EqualityCleanup dispatches of literal named reads; batched byte work remains in work.";
+    NamedHostMethods=>named_host_methods:"Successful shared host-method fallbacks after a literal named own-field lookup misses.";
 }
 
 impl Vm {

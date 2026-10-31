@@ -253,7 +253,9 @@ impl Vm {
                 };
                 let mut cost = (work, allocation);
                 let refresh = if op == Opcode::MemberGet {
-                    let property = if let InstructionPlan::ClassRead(target, property) = &plan {
+                    let property = if matches!(plan, InstructionPlan::NamedRead(_)) {
+                        None
+                    } else if let InstructionPlan::ClassRead(target, property) = &plan {
                         if self.heap.reactive_evaluating() {
                             cost.0 += target.work();
                             *property
@@ -336,6 +338,8 @@ impl Vm {
                             self.execute_class_read(&mut s, target, Reg(a), Pc(next_pc as u32)),
                         InstructionPlan::Callee(callee) =>
                             self.execute_call(&mut s, op, a, b, Pc(next_pc as u32), Some(callee)),
+                        InstructionPlan::NamedRead(read) =>
+                            self.execute_named_read(&mut s, read, Reg(a), Reg(b), SymbolId(c)),
                         InstructionPlan::None =>
                             self.execute(&mut s, op, a, b, c, Pc(next_pc as u32)),
                     }
@@ -490,54 +494,9 @@ impl Vm {
                     return Ok(false);
                 }
             }
-            ScriptPhase::Equality { dest, negated } => {
-                if !m.take(0, 1, 0) {
+            ScriptPhase::Equality { .. } | ScriptPhase::EqualityCleanup { .. } => {
+                if !self.equality_phase_step(&mut s, m)? {
                     return Ok(false);
-                }
-                self.equality_step(&mut s, dest, negated, m)?;
-            }
-            ScriptPhase::EqualityCleanup {
-                dest,
-                negated,
-                result,
-            } => {
-                if !m.take(0, 1, 0) {
-                    return Ok(false);
-                }
-                if !self.active.equality_cursors.data.is_empty() {
-                    let depth = self.active.equality_cursors.data.len() as u32 - 1;
-                    self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
-                    self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
-                    self.active.equality_cursors.data.pop();
-                } else {
-                    if s.table_work.is_some() {
-                        self.table_comparison_done(&mut s, result)?;
-                    } else {
-                        match result {
-                            Ok(equal) => {
-                                self.put(s.regs, dest.0, Value::bool(equal != negated))?;
-                                s.pc = s.instruction_end;
-                                s.phase = ScriptPhase::Body;
-                            }
-                            Err(kind) => {
-                                self.put(s.env, 1, Value::NULL)?;
-                                self.clear(s.env, 2)?;
-                                s.phase = ScriptPhase::Exit {
-                                    origin: s.pc,
-                                    reason: ExitReason::Throw(FaultSeed {
-                                        fault: None,
-                                        explicit: None,
-                                        author_value: false,
-                                        awaited: None,
-
-                                        kind,
-                                        location: self.loc(s, s.pc),
-                                    }),
-                                    skip: None,
-                                };
-                            }
-                        }
-                    }
                 }
             }
             ScriptPhase::Exit {
@@ -821,7 +780,30 @@ impl Vm {
                 let object = self
                     .slots
                     .read(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
-                let kind = self.heap.info(object)?.kind;
+                let info = self.heap.info(object)?;
+                let kind = info.kind;
+                #[cfg(feature = "execution-counts")]
+                if op == Opcode::MemberGet && s.member_symbol.is_some() {
+                    let counter = match kind {
+                        ObjectKind::Table => execution_counts::Counter::MemberGetTableCosts,
+                        ObjectKind::Host => execution_counts::Counter::MemberGetHostCosts,
+                        ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super => {
+                            execution_counts::Counter::MemberGetClassCosts
+                        }
+                        ObjectKind::PropertyRef => {
+                            execution_counts::Counter::MemberGetPropertyCosts
+                        }
+                        _ => execution_counts::Counter::MemberGetOtherCosts,
+                    };
+                    self.execution_counts.add(counter, 1);
+                }
+                if op == Opcode::MemberGet
+                    && s.member_symbol.is_some()
+                    && let Some(read) = self.prepare_named_read(object, info)
+                {
+                    *plan = InstructionPlan::NamedRead(read);
+                    return Ok((1, 0));
+                }
                 if matches!(
                     kind,
                     ObjectKind::FaultEnvelope

@@ -3,6 +3,7 @@ fn bench_echo(value: any) -> any { value }
 fn bench_model(value: any) -> any { value }
 fn bench_derive(callback: any) -> any { callback() }
 fn bench_flush() -> any { null }
+fn bench_host(value: any) -> any { value }
 
 class Base {
     let value: int = 7;
@@ -33,6 +34,30 @@ fn calls(n: int) -> int {
 
 fn fields(n: int) -> int {
     let value = Child();
+    let mut result = 0;
+    for i in 0..n { result += value.value + value.offset; }
+    result
+}
+
+fn named_tables(n: int) -> int {
+    let value = {value: 7, offset: 3};
+    let mut result = 0;
+    for i in 0..n { result += value.value + value.offset; }
+    result
+}
+
+fn polymorphic_tables(n: int) -> int {
+    let values = [{value: 7, offset: 3}, {offset: 3, value: 7}];
+    let mut result = 0;
+    for i in 0..n {
+        let value = values[i % 2];
+        result += value.value + value.offset;
+    }
+    result
+}
+
+fn named_host_fields(n: int) -> int {
+    let value = bench_host({value: 7, offset: 3});
     let mut result = 0;
     for i in 0..n { result += value.value + value.offset; }
     result
