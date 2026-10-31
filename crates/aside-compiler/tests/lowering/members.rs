@@ -586,16 +586,34 @@ fn member_positions_and_symbols_obey_register_work_capacity_and_depth_limits() {
     assert_eq!(pcs(f, bc::Opcode::IndexSet).len(), 300);
     for opcode in [bc::Opcode::MemberGet, bc::Opcode::MemberSet] {
         for pc in pcs(f, opcode) {
-            assert_cleared(
-                f,
-                f.code.instruction(pc).unwrap().unwrap().operands[if opcode == bc::Opcode::MemberGet
-                {
-                    1
-                } else {
-                    0
-                }],
-                pc,
-            );
+            let receiver = f.code.instruction(pc).unwrap().unwrap().operands[if opcode
+                == bc::Opcode::MemberGet
+            {
+                1
+            } else {
+                0
+            }];
+            if let Some(binding) = f.bindings.get(receiver as usize) {
+                // An immutable parameter can be read from its existing root;
+                // that root stays live through the complete function call.
+                assert!(!binding.mutable);
+                assert_eq!(
+                    binding.storage,
+                    bc::BindingStorage::Value(bc::Reg(receiver))
+                );
+                assert!(matches!(
+                    binding.initialization,
+                    bc::BindingInitialization::Parameter(_)
+                ));
+                assert!(
+                    f.code
+                        .iter()
+                        .map(Result::unwrap)
+                        .all(|i| !clears(&i, receiver))
+                );
+            } else {
+                assert_cleared(f, receiver, pc);
+            }
         }
     }
 }
