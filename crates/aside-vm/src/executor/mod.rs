@@ -42,7 +42,6 @@ use generators::GeneratorAction;
 mod generator_tests;
 mod iterators;
 mod member_hints;
-mod member_state;
 mod method_bindings;
 mod models;
 mod named_reads;
@@ -573,12 +572,17 @@ pub struct Vm {
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
     member_hints: member_hints::MemberHints,
-    member_state: member_state::MemberState,
+    class_member_hints: member_hints::MemberHints<{ member_hints::CLASS_SLOTS }>,
+    method_bindings: method_bindings::MethodBindings,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
     next_id: u64,
     native_entries: u64,
+    native_binding_hits: u64,
+    native_binding_misses: u64,
+    script_binding_hits: u64,
+    script_binding_misses: u64,
     native_resumes: u64,
     native_null_publications: u64,
     slices: u64,
@@ -610,7 +614,6 @@ struct WorkProbe {
     single_scalar_step: bool,
     general_class_reads: bool,
     checked_class_metadata: bool,
-    hot_class_reads: std::cell::Cell<u64>,
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
     exit_handler_queries: std::cell::Cell<u64>,
@@ -625,10 +628,7 @@ mod instructions;
 mod loading;
 mod meter;
 use meter::Meter;
-mod body_context;
-mod body_cursor;
 mod native_calls;
-mod registers;
 mod scalars;
 mod script_body;
 mod script_frames;
@@ -707,10 +707,10 @@ impl Vm {
                     .map(|t| t.equality_cursors.data.len())
                     .sum::<usize>()) as u32,
             native_entries: self.native_entries,
-            native_binding_hits: self.member_state.native_hits,
-            native_binding_misses: self.member_state.native_misses,
-            script_binding_hits: self.member_state.script_hits,
-            script_binding_misses: self.member_state.script_misses,
+            native_binding_hits: self.native_binding_hits,
+            native_binding_misses: self.native_binding_misses,
+            script_binding_hits: self.script_binding_hits,
+            script_binding_misses: self.script_binding_misses,
             native_resumes: self.native_resumes,
             native_null_publications: self.native_null_publications,
             slices: self.slices,
@@ -959,9 +959,6 @@ impl Vm {
     }
     fn run(&mut self, m: &mut Meter, now: &mut impl FnMut() -> u64) -> Result<RunOutcome, VmError> {
         self.active.blocked = None;
-        // A pure leaf plan can cross only the immediate hot-to-cold dispatch.
-        // It is consumed in this loop iteration and never stored in the VM.
-        let mut prepared_read = None;
         loop {
             if let Some(blocked) = self.active.blocked {
                 return Ok(RunOutcome::ResourceBlocked(blocked));
@@ -1102,7 +1099,7 @@ impl Vm {
                 });
                 continue;
             }
-            match self.scalar_step(m, &mut prepared_read)? {
+            match self.scalar_step(m)? {
                 scalars::ScalarStep::Done => continue,
                 scalars::ScalarStep::Budget => return Ok(RunOutcome::BudgetYield(m.usage)),
                 scalars::ScalarStep::Preparation => {
@@ -1129,7 +1126,7 @@ impl Vm {
                 Some(Frame::Script(s)) => {
                     if !step_cost!(self, Script, {
                         let mut s = *s;
-                        self.script_step(&mut s, m, &mut prepared_read)
+                        self.script_step(&mut s, m)
                     })? {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }

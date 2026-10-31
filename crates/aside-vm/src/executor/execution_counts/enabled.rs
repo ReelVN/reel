@@ -272,10 +272,10 @@ impl Vm {
         counts.native_resumes = self.native_resumes;
         counts.derived_starts = self.derived_starts;
         counts.compact_derived_starts = self.compact_derived_starts;
-        counts.native_binding_hits = self.member_state.native_hits;
-        counts.native_binding_misses = self.member_state.native_misses;
-        counts.script_binding_hits = self.member_state.script_hits;
-        counts.script_binding_misses = self.member_state.script_misses;
+        counts.native_binding_hits = self.native_binding_hits;
+        counts.native_binding_misses = self.native_binding_misses;
+        counts.script_binding_hits = self.script_binding_hits;
+        counts.script_binding_misses = self.script_binding_misses;
         counts.slots = self.slots.execution_count_snapshot();
         counts
     }

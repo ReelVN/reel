@@ -54,7 +54,7 @@ totals! {
     entry_ns: "Task selection and Meter setup, including empty-clock-pair calibration.";
     run_ns: "Entire interpreter run, including dispatch, loops, clock queries and instrumentation.";
     exit_ns: "Code-window release and cumulative usage/count publication after run returns.";
-    scalar_ns: "Complete bounded register/leaf-Body attempts, including General handoffs and nested fetch/cost/execute; hot class reads are included here.";
+    scalar_ns: "Complete outer scalar attempts, including attempts returning General and nested fetches.";
     script_ns: "Complete outer script dispatch, including fallback classification/frame copy and nested stages.";
     native_ns: "Complete outer native dispatch, including fallback classification/frame copy; excludes external hosts.";
     loop_ns: "Run wall time outside the three mutually disjoint outer dispatch spans.";

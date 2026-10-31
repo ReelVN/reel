@@ -236,7 +236,7 @@ fn trace_metadata(
 ) -> Vec<Observation> {
     let (mut vm, task, cell) = loaded(reference, encoded, case, derived);
     vm.work_probe.checked_class_metadata = checked_metadata;
-    vm.member_state.class_hints.identities = hints;
+    vm.class_member_hints.identities = hints;
     let mut budget = SliceBudget {
         instructions: 1,
         work,
@@ -293,8 +293,8 @@ fn trace_metadata(
                 let value = vm.delivery_value(delivery).unwrap();
                 if case == 3 {
                     assert_eq!(vm.heap.info(value).unwrap().kind, ObjectKind::BoundScript);
-                    assert_eq!(vm.member_state.script_misses, 1);
-                    assert_eq!(vm.member_state.script_hits, 1);
+                    assert_eq!(vm.script_binding_misses, 1);
+                    assert_eq!(vm.script_binding_hits, 1);
                 } else {
                     assert_eq!(value.as_int(), Some(if changed { 99 } else { 42 }));
                 }
@@ -317,48 +317,6 @@ fn trace_metadata(
         }
     }
     panic!("class read did not progress");
-}
-
-#[test]
-fn leaf_body_reads_use_the_borrowed_context_for_fields_super_statics_and_methods() {
-    for encoded in [false, true] {
-        for case in 0..4 {
-            let (mut vm, task, _) = loaded(false, encoded, case, false);
-            loop {
-                match vm
-                    .run_slice(
-                        task,
-                        SliceBudget {
-                            instructions: 128,
-                            work: 1 << 20,
-                            allocation_bytes: 1 << 20,
-                            deadline_ns: None,
-                        },
-                        || 0,
-                    )
-                    .unwrap()
-                {
-                    RunOutcome::BudgetYield(_) => {}
-                    RunOutcome::Returned(delivery) => {
-                        let value = vm.delivery_value(delivery).unwrap();
-                        if case == 3 {
-                            assert_eq!(vm.heap.info(value).unwrap().kind, ObjectKind::BoundScript);
-                            assert_eq!(vm.member_state.script_hits, 1);
-                            assert_eq!(vm.member_state.script_misses, 1);
-                        } else {
-                            assert_eq!(value.as_int(), Some(42));
-                        }
-                        assert_eq!(
-                            vm.work_probe.hot_class_reads.get(),
-                            if case == 3 { 2 } else { 1 }
-                        );
-                        break;
-                    }
-                    other => panic!("unexpected hot read outcome {other:?}"),
-                }
-            }
-        }
-    }
 }
 
 #[test]
@@ -473,8 +431,7 @@ fn a_plan_is_discarded_at_budget_yield_and_snapshot_restore() {
         .unwrap();
     assert!(
         restored
-            .member_state
-            .class_hints
+            .class_member_hints
             .get(
                 FunctionId(0),
                 Pc(0),
@@ -634,7 +591,7 @@ fn position_guards_reject_other_generations_and_layout_versions_without_owning_t
     let members = vm.heap.get_field(class, ClassSlot::Members as u32).unwrap();
     assert_eq!(finish(&mut vm, task), Ok(42));
     let (_, bits) = members.object_parts().unwrap();
-    vm.member_state.class_hints.remember(
+    vm.class_member_hints.remember(
         FunctionId(0),
         Pc(0),
         0,
@@ -725,7 +682,7 @@ fn cancellation_precedes_a_warm_position_at_the_retry_boundary() {
             .unwrap();
         let members = vm.heap.get_field(class, ClassSlot::Members as u32).unwrap();
         assert_eq!(
-            vm.member_state.class_hints.get(
+            vm.class_member_hints.get(
                 FunctionId(0),
                 Pc(0),
                 members,
@@ -780,8 +737,7 @@ fn dynamic_class_indices_keep_current_name_resolution_without_position_hints() {
         *vm.active.frames.data.last_mut().unwrap() = Frame::Script(frame);
         assert_eq!(finish(&mut vm, task), expected);
         assert!(
-            vm.member_state
-                .class_hints
+            vm.class_member_hints
                 .get(
                     FunctionId(0),
                     Pc(0),

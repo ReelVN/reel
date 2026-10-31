@@ -36,17 +36,6 @@ impl FrameSlots {
 }
 
 impl RegisterWindow<'_> {
-    /// Borrow the heap for pure metadata while this register mapping is pinned.
-    pub(crate) fn heap(&self) -> &Heap {
-        self.heap
-    }
-
-    /// Run synchronous value work without exposing the pool or its root provider.
-    /// The executor ends this borrow before publishing another frame or collecting.
-    pub(crate) fn with_heap<T>(&mut self, operation: impl FnOnce(&mut Heap) -> T) -> T {
-        operation(self.heap)
-    }
-
     fn read_value(&self, register: u32) -> Result<Value, HeapError> {
         let index = register as usize;
         let value = self.values.get(index).ok_or(HeapError::OutOfBounds)?;

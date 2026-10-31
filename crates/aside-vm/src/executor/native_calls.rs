@@ -56,17 +56,16 @@ impl Vm {
         let receiver_key = receiver.object_parts().map(|(_, key)| key);
         if let Some(key) = receiver_key
             && let Some(callable) = self
-                .member_state
-                .bindings
+                .method_bindings
                 .get(method_bindings::MethodKey::native(key, function))
         {
             let value = Value::object(self.heap.id(), callable);
             if self.heap.info(value).is_ok() {
-                self.member_state.native_hits += 1;
+                self.native_binding_hits += 1;
                 return Ok(value);
             }
         }
-        self.member_state.native_misses += 1;
+        self.native_binding_misses += 1;
         let p = self.program.package();
         let f = &p.functions[function.index()];
 
@@ -80,7 +79,7 @@ impl Vm {
             ],
         )?;
         if let Some(key) = receiver_key {
-            self.member_state.bindings.remember(
+            self.method_bindings.remember(
                 method_bindings::MethodKey::native(key, function),
                 value.object_parts().unwrap().1,
             );

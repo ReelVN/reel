@@ -6,12 +6,11 @@ impl Vm {
         &mut self,
         s: &mut ScriptFrame,
         m: &mut Meter,
-        prepared: &mut Option<script_body::PreparedRead>,
     ) -> Result<bool, VmError> {
         #[cfg(feature = "execution-counts")]
         self.execution_counts.step(&s.phase);
         if matches!(s.phase, ScriptPhase::Body) {
-            return self.script_body_step(s, m, prepared);
+            return self.script_body_step(s, m);
         }
         self.script_continuation_step(s, m)
     }
@@ -552,18 +551,11 @@ impl Vm {
                 }
             }
             Opcode::MemberGet | Opcode::MemberSet => {
-                let (object, object_read, info) =
-                    if let InstructionPlan::MemberInfo(object, info) = plan {
-                        let result = (*object, None, *info);
-                        *plan = InstructionPlan::None;
-                        result
-                    } else {
-                        let object = self
-                            .slots
-                            .read(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
-                        let read = self.heap.read_object(object)?;
-                        (object, Some(read), read.info())
-                    };
+                let object = self
+                    .slots
+                    .read(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
+                let object_read = self.heap.read_object(object)?;
+                let info = object_read.info();
                 let kind = info.kind;
                 #[cfg(feature = "execution-counts")]
                 if op == Opcode::MemberGet && s.member_symbol.is_some() {
@@ -613,10 +605,7 @@ impl Vm {
                     if prepare
                         && let Ok((target, property)) = self.class_read_from(
                             object,
-                            match object_read {
-                                Some(read) => read,
-                                None => self.heap.read_object(object)?,
-                            },
+                            object_read,
                             SymbolId(c),
                             s.member_symbol.map(|_| (s.code.function, s.pc)),
                         )
