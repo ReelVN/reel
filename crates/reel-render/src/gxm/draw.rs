@@ -1194,6 +1194,8 @@ impl Context<'_> {
                 } else {
                     native::TextureFilter::Linear
                 },
+                #[cfg(feature = "profiling")]
+                program.diagnostic_label(),
             )?;
         }
         Ok(())

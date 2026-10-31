@@ -17,6 +17,32 @@ pub(crate) enum Kind {
     VideoDirectNv12,
 }
 impl Kind {
+    #[cfg(feature = "profiling")]
+    pub(crate) fn diagnostic_label(self) -> &'static str {
+        [
+            "paint.rgba",
+            "paint.bc1",
+            "paint.bc3",
+            "paint.regional",
+            "paint.regional_bc1",
+            "paint.regional_bc3",
+            "paint.coverage_direct",
+            "paint.solid",
+            "paint.rgba_general",
+            "paint.coverage",
+            "paint.gradient",
+            "paint.glyph_gradient",
+            "paint.appearance",
+            "paint.packed",
+            "paint.video",
+            "paint.video_appearance",
+            "paint.rgba_bounded",
+            "paint.bc1_bounded",
+            "paint.bc3_bounded",
+            "paint.solid_bounded",
+            "paint.nv12_direct",
+        ][self.index()]
+    }
     fn index(self) -> usize {
         match self {
             Self::Direct(direct) => direct as usize,

@@ -14,7 +14,10 @@ impl Device {
         #[cfg(feature = "profiling")]
         if crate::profiling::serial_effect_timing() {
             let size = self.attachment_size(target);
-            return self.serial_pass(false, size, size, |context| context.clear(target, color));
+            let pixels = u64::from(size[0]) * u64::from(size[1]);
+            return self.serial_pass("clear", size, size, pixels, 3, |context| {
+                context.clear(target, color)
+            });
         }
         self.native.clear(target, color)
     }
@@ -24,11 +27,26 @@ impl Device {
         &self,
         draw: native::Draw<'_>,
         filter: native::TextureFilter,
+        #[cfg(feature = "profiling")] label: &'static str,
     ) -> Result<(), native::Error> {
         #[cfg(feature = "profiling")]
         if crate::profiling::serial_effect_timing() {
             let storage = self.attachment_size(draw.target);
-            return self.serial_pass(true, draw.size, storage, |context| {
+            let scissor = draw.scissor.unwrap_or([0, 0, draw.size[0], draw.size[1]]);
+            let extent = [0, 1].map(|axis| draw.size[axis].min(storage[axis]));
+            let covered = [0, 1].map(|axis| {
+                scissor[axis]
+                    .saturating_add(scissor[axis + 2])
+                    .min(extent[axis])
+                    .saturating_sub(scissor[axis].min(extent[axis]))
+            });
+            let pixels = u64::from(covered[0]) * u64::from(covered[1]);
+            let instances = draw.instances.as_ref().map_or(1, |instances| {
+                instances.range.end.saturating_sub(instances.range.start)
+            });
+            let references =
+                u64::from(draw.range.end.saturating_sub(draw.range.start)) * u64::from(instances);
+            return self.serial_pass(label, draw.size, storage, pixels, references, |context| {
                 context.draw_filtered(draw, filter)
             });
         }
@@ -46,9 +64,11 @@ impl Device {
     #[cfg(feature = "profiling")]
     fn serial_pass(
         &self,
-        paint: bool,
+        label: &'static str,
         viewport: [u32; 2],
         storage: [u32; 2],
+        scissor_pixels: u64,
+        geometry_references: u64,
         operation: impl FnOnce(&native::Context) -> Result<(), native::Error>,
     ) -> Result<(), native::Error> {
         use std::time::Instant;
@@ -61,18 +81,18 @@ impl Device {
         let completion = Instant::now();
         self.native.finish()?;
         let completion_drain_us = completion.elapsed().as_micros() as u64;
-        crate::profiling::record_serial_pass(
-            paint,
-            crate::profiling::SerialPassTiming {
-                calls: 1,
-                viewport_pixels: u64::from(viewport[0]) * u64::from(viewport[1]),
-                storage_pixels: u64::from(storage[0]) * u64::from(storage[1]),
-                prior_drain_us,
-                submit_wall_us,
-                completion_drain_us,
-                max_completion_drain_us: completion_drain_us,
-            },
-        );
+        crate::profiling::record_serial_pass(crate::profiling::SerialPassTiming {
+            label,
+            calls: 1,
+            viewport_pixels: u64::from(viewport[0]) * u64::from(viewport[1]),
+            storage_pixels: u64::from(storage[0]) * u64::from(storage[1]),
+            scissor_pixels,
+            geometry_references,
+            prior_drain_us,
+            submit_wall_us,
+            completion_drain_us,
+            max_completion_drain_us: completion_drain_us,
+        });
         Ok(())
     }
 

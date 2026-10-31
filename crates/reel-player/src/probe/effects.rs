@@ -4,13 +4,16 @@ use std::fmt::Write as _;
 
 pub(super) fn print(rows: &mut Vec<EffectSample>, line: &mut String, elapsed_ms: u128) {
     if let Some((passes, dropped)) = reel_render::profiling::drain_serial_passes() {
-        for (kind, pass) in ["clear", "paint"].into_iter().zip(passes) {
+        for pass in passes {
             if pass.calls != 0 {
                 eprintln!(
-                    "[reel-pass] t_ms={elapsed_ms} kind={kind} calls={} viewport_pixels={} storage_pixels={} prior_drain_us={} submit_wall_us={} completion_drain_us={} max_completion_drain_us={}",
+                    "[reel-pass] t_ms={elapsed_ms} kind={} calls={} viewport_pixels={} storage_pixels={} scissor_pixels={} geometry_references={} prior_drain_us={} submit_wall_us={} completion_drain_us={} max_completion_drain_us={}",
+                    pass.label,
                     pass.calls,
                     pass.viewport_pixels,
                     pass.storage_pixels,
+                    pass.scissor_pixels,
+                    pass.geometry_references,
                     pass.prior_drain_us,
                     pass.submit_wall_us,
                     pass.completion_drain_us,

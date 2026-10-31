@@ -342,6 +342,8 @@ impl Context<'_> {
                 } else {
                     native::TextureFilter::Linear
                 },
+                #[cfg(feature = "profiling")]
+                state.shader_kind().diagnostic_label(),
             )?;
         }
         Ok(())
