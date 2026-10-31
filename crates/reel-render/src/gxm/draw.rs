@@ -1056,6 +1056,7 @@ impl Context<'_> {
             direct,
             paint.dimensions,
             self.size,
+            self.scissor,
             paint.texture.mip_count(),
         );
         let bounded = mesh.bounded_color.paint(direct, paint.format);
@@ -1064,11 +1065,18 @@ impl Context<'_> {
             && !paint.coverage
             && paint.source == mesh::PaintSource::Texture
         {
-            mesh.direct_paint(
-                paint.source,
-                paint.repeat,
-                Some(&paint.sampling_appearance()),
-                paint.format,
+            crate::common::sampling_domain::direct_paint(
+                &mesh,
+                mesh.direct_paint(
+                    paint.source,
+                    paint.repeat,
+                    Some(&paint.sampling_appearance()),
+                    paint.format,
+                ),
+                paint.dimensions,
+                self.size,
+                self.scissor,
+                paint.texture.mip_count(),
             )
         } else {
             None

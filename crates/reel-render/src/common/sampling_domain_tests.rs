@@ -29,28 +29,69 @@ fn padded_interior_keeps_block_alpha_kinds_and_rejects_active_edges_and_mip_lod_
         (DirectPaint::RegionalBc3, DirectPaint::Bc3),
     ] {
         assert_eq!(
-            direct_paint(&mesh, Some(regional), [512; 2], [960, 544], 1),
+            direct_paint(
+                &mesh,
+                Some(regional),
+                [512; 2],
+                [960, 544],
+                Scissor::full([960, 544]),
+                1
+            ),
             Some(direct)
         );
         assert_eq!(
-            direct_paint(&mesh, Some(regional), [512; 2], [960, 544], 2),
+            direct_paint(
+                &mesh,
+                Some(regional),
+                [512; 2],
+                [960, 544],
+                Scissor::full([960, 544]),
+                2
+            ),
             Some(regional)
         );
     }
-    assert_eq!(direct_paint(&mesh, None, [512; 2], [960, 544], 1), None);
+    assert_eq!(
+        direct_paint(
+            &mesh,
+            None,
+            [512; 2],
+            [960, 544],
+            Scissor::full([960, 544]),
+            1
+        ),
+        None
+    );
     let regional = Some(DirectPaint::RegionalBc3);
     for edge in [0., 0.75, 1.] {
         mesh.vertices[0].uv[0] = edge;
         assert_eq!(
-            direct_paint(&mesh, regional, [512; 2], [960, 544], 1),
+            direct_paint(
+                &mesh,
+                regional,
+                [512; 2],
+                [960, 544],
+                Scissor::full([960, 544]),
+                1
+            ),
             regional
         );
     }
     mesh.vertices[0].uv[0] = 0.1;
-    assert_eq!(direct_paint(&mesh, regional, [512; 2], [1, 1], 1), regional);
+    assert_eq!(
+        direct_paint(&mesh, regional, [512; 2], [1, 1], Scissor::full([1, 1]), 1),
+        regional
+    );
     mesh.vertices[0].source_window[0] = 0.01;
     assert_eq!(
-        direct_paint(&mesh, regional, [512; 2], [960, 544], 1),
+        direct_paint(
+            &mesh,
+            regional,
+            [512; 2],
+            [960, 544],
+            Scissor::full([960, 544]),
+            1
+        ),
         regional
     );
 }
@@ -93,7 +134,12 @@ fn admitted_rotated_mirrored_and_sheared_triangles_match_regional_sampling_at_ra
                     source_window: window,
                 }
             });
-            assert!(triangle(vertices.each_ref(), [512; 2], [960, 544]));
+            assert!(triangle(
+                vertices.each_ref(),
+                [512; 2],
+                [960, 544],
+                Scissor::full([960, 544])
+            ));
             for y in 0..=32 {
                 for x in 0..=32 - y {
                     let p = Point::new(x as f64 / 32., y as f64 / 32.);
@@ -115,4 +161,145 @@ fn admitted_rotated_mirrored_and_sheared_triangles_match_regional_sampling_at_ra
             }
         }
     }
+}
+
+#[test]
+fn offscreen_edges_and_clipped_atlas_edges_use_only_the_visible_sampling_domain() {
+    let mut mesh = geometry();
+    mesh.vertices.clear();
+    mesh.indices.clear();
+    mesh.quad(
+        Rect::new(-4., -4., 4., 4.),
+        Rect::new(-0.175, -0.175, 0.825, 0.825),
+    )
+    .unwrap();
+    for vertex in &mut mesh.vertices {
+        vertex.source_window = [0., 0., 0.75, 0.75];
+    }
+    let viewport = [960, 544];
+    assert_eq!(
+        direct_paint(
+            &mesh,
+            Some(DirectPaint::RegionalBc3),
+            [512; 2],
+            viewport,
+            Scissor::full(viewport),
+            1
+        ),
+        Some(DirectPaint::Bc3)
+    );
+
+    mesh.vertices.clear();
+    mesh.indices.clear();
+    mesh.quad(Rect::new(-1., -1., 1., 1.), Rect::new(-0.5, -0.5, 0.5, 0.5))
+        .unwrap();
+    for vertex in &mut mesh.vertices {
+        vertex.source_window = [0., 0., 0.75, 0.75];
+    }
+    let regional = Some(DirectPaint::RegionalRgba);
+    assert_eq!(
+        direct_paint(
+            &mesh,
+            regional,
+            [512; 2],
+            viewport,
+            Scissor::full(viewport),
+            1
+        ),
+        regional
+    );
+    let scissor = Scissor {
+        x: 640,
+        y: 0,
+        width: 320,
+        height: 160,
+    };
+    assert_eq!(
+        direct_paint(&mesh, regional, [512; 2], viewport, scissor, 1),
+        Some(DirectPaint::Rgba)
+    );
+    assert_eq!(
+        direct_paint(&mesh, regional, [512; 2], viewport, scissor, 2),
+        regional
+    );
+    mesh.vertices[0].source_window[2] = -0.75;
+    assert_eq!(
+        direct_paint(&mesh, regional, [512; 2], viewport, scissor, 1),
+        regional
+    );
+}
+
+#[test]
+fn visible_domain_proof_matches_sampler_at_covered_pixels_with_extrapolated_offsets() {
+    let viewport = [128, 96];
+    let local = [Point::new(0., 0.), Point::new(1., 0.), Point::new(0., 1.)];
+    let window = [0.125, 0.125, 0.5, 0.5];
+    let uv = Affine::translate((-0.25, -0.25)) * Affine::scale(1.5);
+    let mut admitted = 0;
+    let mut compared = 0;
+    for scale in [64., 512., 2048.] {
+        for angle in [0., 0.7, 1.9] {
+            for mirror in [-1., 1.] {
+                let physical = Affine::translate((64., 48.))
+                    * Affine::rotate(angle)
+                    * Affine::scale_non_uniform(scale * mirror, scale)
+                    * Affine::translate((-0.4, -0.4));
+                let vertices = local.map(|p| {
+                    let position = physical * p;
+                    let uv = uv * p;
+                    Vertex {
+                        position: [
+                            (position.x / 64. - 1.) as f32,
+                            (1. - position.y / 48.) as f32,
+                        ],
+                        uv: [uv.x as f32, uv.y as f32],
+                        color: [1.; 4],
+                        source_window: window,
+                    }
+                });
+                for scissor in [
+                    Scissor::full(viewport),
+                    Scissor {
+                        x: 48,
+                        y: 32,
+                        width: 24,
+                        height: 24,
+                    },
+                ] {
+                    if !triangle(vertices.each_ref(), [512; 2], viewport, scissor) {
+                        continue;
+                    }
+                    admitted += 1;
+                    for y in scissor.y..scissor.y + scissor.height {
+                        for x in scissor.x..scissor.x + scissor.width {
+                            let point = Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                            let p = physical.inverse() * point;
+                            if p.x < 0. || p.y < 0. || p.x + p.y > 1. {
+                                continue;
+                            }
+                            for offset in [
+                                (-0.9375, -0.9375),
+                                (0.9375, -0.9375),
+                                (-0.9375, 0.9375),
+                                (0.9375, 0.9375),
+                            ] {
+                                let at = uv
+                                    * (physical.inverse()
+                                        * (point + reel_ui::kurbo::Vec2::from(offset)));
+                                assert_eq!(
+                                    sample_uv(at, window, false),
+                                    sample_uv(at, window, true)
+                                );
+                                compared += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        admitted >= 8 && compared >= 10_000,
+        "{admitted} admissions / {compared} sampled locations"
+    );
 }

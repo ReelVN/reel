@@ -104,6 +104,34 @@ fn oracle(bytes: &[u8], scale: f64, quality: ImageQuality, crop: Option<Rect>) -
         .collect()
 }
 
+fn panned_image(lease: ResourceLease, pool: &BudgetPool) -> RenderFrame {
+    let mut widget = r01_fixture::RecordWidget::new(reel_ui::imaging::record::Scene::new());
+    widget.clip = false;
+    widget.resource_draws.push((
+        lease.clone(),
+        Rect::new(0., 0., 4., 4.),
+        Affine::translate((-200., -200.)) * Affine::scale(200.),
+        reel_ui::peniko::ImageSampler {
+            alpha: 0.5,
+            ..Default::default()
+        },
+    ));
+    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(3)).unwrap(),
+        ResourceSnapshot::capture([Ok(lease)].into_iter(), pool).unwrap(),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [400, 300],
+        },
+        r01_fixture::limits(),
+        pool,
+    )
+    .unwrap();
+    while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+    build.finish().unwrap()
+}
+
 #[test]
 #[ignore = "actual GPU numeric sampling; no visual acceptance"]
 fn atlas_repeat_seams_identity_alias_and_direct_paths_match_their_numeric_contract() {
@@ -179,6 +207,50 @@ fn atlas_repeat_seams_identity_alias_and_direct_paths_match_their_numeric_contra
         ))
         .unwrap(),
     );
+    let single = panned_image(registry.acquire(standalone).unwrap(), &pool);
+    let panned = panned_image(registry.acquire(alias).unwrap(), &pool);
+    let prepared = renderer.prepare(&single).unwrap();
+    let draws = renderer
+        .pipelines
+        .get(&renderer.gpu, prepared.quality)
+        .unwrap();
+    let single = renderer.readback(prepared).unwrap();
+    let before_direct =
+        draws.direct_draws[crate::common::mesh::DirectPaint::Rgba as usize].load(Ordering::Relaxed);
+    let prepared = renderer.prepare(&panned).unwrap();
+    let panned = renderer.readback(prepared).unwrap();
+    assert!(
+        draws.direct_draws[crate::common::mesh::DirectPaint::Rgba as usize].load(Ordering::Relaxed)
+            > before_direct,
+        "the visible interior of the offscreen atlas quad selects whole-texture sampling"
+    );
+    let mut oracle_error = 0f32;
+    for y in 0..300 {
+        for x in 0..400 {
+            let at = [
+                (x as f64 + 0.5 + 200.) / 200. - 0.5,
+                (y as f64 + 0.5 + 200.) / 200. - 0.5,
+            ];
+            let base = at.map(|v| v.floor() as usize);
+            let t = at.map(|v| v - v.floor());
+            for channel in 0..4 {
+                let texel = |dx: usize, dy: usize| {
+                    f64::from(pixels[((base[1] + dy) * 4 + base[0] + dx) * 4 + channel]) / 255.
+                };
+                let expected = ((texel(0, 0) * (1. - t[0]) + texel(1, 0) * t[0]) * (1. - t[1])
+                    + (texel(0, 1) * (1. - t[0]) + texel(1, 1) * t[0]) * t[1])
+                    * 0.5;
+                oracle_error =
+                    oracle_error.max((panned[y * 400 + x][channel] - expected as f32).abs());
+            }
+        }
+    }
+    assert!(error(&single, &panned) < 0.002);
+    assert!(
+        oracle_error < 0.002,
+        "visible atlas interior numeric oracle: {oracle_error}"
+    );
+    eprintln!("offscreen atlas direct-sampling max error={oracle_error}");
     for (view, scale, quality, crop) in [
         (alias, 1.75, ImageQuality::Medium, None),
         (

@@ -712,6 +712,7 @@ impl Context<'_> {
             direct,
             [dimensions.width, dimensions.height],
             self.size,
+            self.scissor,
             image.texture().mip_level_count(),
         );
         let state = PaintState {

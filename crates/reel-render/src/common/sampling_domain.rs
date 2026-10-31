@@ -1,5 +1,8 @@
 //! Prove that a regional clamp cannot affect any shaded texture coordinate.
-use super::mesh::{DirectPaint, Mesh, Vertex};
+use super::{
+    mesh::{DirectPaint, Mesh, Vertex},
+    scissor::Scissor,
+};
 
 /// Keep original UVs and geometry. Removing an inactive fragment clamp permits
 /// non-dependent texture reads on GXM and the same direct program on WGPU.
@@ -8,6 +11,7 @@ pub(crate) fn direct_paint(
     paint: Option<DirectPaint>,
     texture: [u32; 2],
     viewport: [u32; 2],
+    scissor: Scissor,
     mip_count: u32,
 ) -> Option<DirectPaint> {
     let direct = match paint? {
@@ -26,6 +30,7 @@ pub(crate) fn direct_paint(
             std::array::from_fn(|i| &mesh.vertices[indices[i] as usize]),
             texture,
             viewport,
+            scissor.intersect(Scissor::full(viewport)),
         )
     }) {
         Some(direct)
@@ -34,7 +39,12 @@ pub(crate) fn direct_paint(
     }
 }
 
-fn triangle(vertices: [&Vertex; 3], texture: [u32; 2], viewport: [u32; 2]) -> bool {
+fn triangle(
+    vertices: [&Vertex; 3],
+    texture: [u32; 2],
+    viewport: [u32; 2],
+    scissor: Scissor,
+) -> bool {
     let window = vertices[0].source_window;
     if window.iter().any(|v| !v.is_finite())
         || window[2] <= 0.
@@ -46,10 +56,14 @@ fn triangle(vertices: [&Vertex; 3], texture: [u32; 2], viewport: [u32; 2]) -> bo
         return false;
     }
     let position = vertices.map(|v| {
-        std::array::from_fn::<_, 2, _>(|axis| {
-            f64::from(v.position[axis]) * f64::from(viewport[axis]) * 0.5
-        })
+        [
+            (f64::from(v.position[0]) + 1.) * f64::from(viewport[0]) * 0.5,
+            (1. - f64::from(v.position[1])) * f64::from(viewport[1]) * 0.5,
+        ]
     });
+    if position.iter().flatten().any(|v| !v.is_finite()) {
+        return false;
+    }
     let dx = [
         position[1][0] - position[0][0],
         position[2][0] - position[0][0],
@@ -77,10 +91,58 @@ fn triangle(vertices: [&Vertex; 3], texture: [u32; 2], viewport: [u32; 2]) -> bo
         // guard keeps interpolation roundoff away from the inactive clamp.
         let border = gradient[0].abs() + gradient[1].abs() + 8. * f64::from(f32::EPSILON);
         let inset = (0.5 / f64::from(texture[axis])).min((high - low) * 0.5);
-        if !border.is_finite()
-            || uv
-                .iter()
-                .any(|v| !v.is_finite() || *v < low + inset + border || *v > high - inset - border)
+        if !border.is_finite() {
+            return false;
+        }
+        if uv
+            .iter()
+            .all(|v| *v >= low + inset + border && *v <= high - inset - border)
+        {
+            continue;
+        }
+        // The intersection of the triangle's bounding box and the actual
+        // scissor contains every visible coverage location. Expand each by one
+        // physical pixel for raster quantization and extrapolated shading.
+        // Affine UV extrema on this larger rectangle bound the triangle too;
+        // no clipping geometry or scratch allocation is needed.
+        let range = std::array::from_fn::<_, 2, _>(|dimension| {
+            let origin = f64::from(if dimension == 0 { scissor.x } else { scissor.y });
+            let extent = f64::from(if dimension == 0 {
+                scissor.width
+            } else {
+                scissor.height
+            });
+            [
+                position
+                    .iter()
+                    .map(|p| p[dimension])
+                    .fold(f64::INFINITY, f64::min)
+                    .max(origin)
+                    - 1.,
+                position
+                    .iter()
+                    .map(|p| p[dimension])
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .min(origin + extent)
+                    + 1.,
+            ]
+        });
+        if range.iter().any(|r| r[0] > r[1]) {
+            continue;
+        }
+        let mut bounds = [uv[0]; 2];
+        let mut magnitude = uv[0].abs();
+        for dimension in 0..2 {
+            let terms =
+                range[dimension].map(|p| gradient[dimension] * (p - position[0][dimension]));
+            bounds[0] += terms[0].min(terms[1]);
+            bounds[1] += terms[0].max(terms[1]);
+            magnitude += terms[0].abs().max(terms[1].abs());
+        }
+        let error = 8. * f64::from(f32::EPSILON) * magnitude.max(1.);
+        if !bounds.iter().all(|v| v.is_finite())
+            || bounds[0] < low + inset + error
+            || bounds[1] > high - inset - error
         {
             return false;
         }
