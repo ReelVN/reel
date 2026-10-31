@@ -46,6 +46,29 @@ impl Vm {
         frame.member_symbol
     }
 
+    pub(super) fn host_binding_cost(&self, function: FunctionId) -> (u64, u64) {
+        let p = self.program.package();
+        let signature = p.functions[function.index()].signature;
+        let receiver = p.signatures[signature.index()].parameters[0].ty;
+        (
+            4 + self.type_checks.extra(receiver),
+            Values::allocation_bytes(4),
+        )
+    }
+
+    pub(super) fn host_binding_value(
+        &mut self,
+        host: Value,
+        function: FunctionId,
+        effects: Effects,
+    ) -> Result<Value, FaultKind> {
+        if effects.0 & Effects::ALLOCATE == 0 {
+            Err(FaultKind::Effect)
+        } else {
+            self.bind_native(host, function).map_err(vm_fault)
+        }
+    }
+
     /// Bind the receiver of an admitted native callable. The immutable value
     /// traces its receiver and shares ordinary native argument preparation.
     /// Live bindings may be reused through the bounded weak cache shared with

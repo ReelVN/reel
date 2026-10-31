@@ -41,6 +41,13 @@ impl Meter {
         true
     }
 
+    /// Check a complete short sequence without consuming or extending the
+    /// current soft-clock batch. Insufficient room retains ordinary resumable
+    /// dispatch, including its original required-work result.
+    pub(super) fn admits_short_steps(&self, steps: u8) -> bool {
+        self.budget.deadline_ns.is_none() || self.clock_steps >= steps
+    }
+
     pub(super) fn deadline_reached(&mut self, now: &mut impl FnMut() -> u64) -> bool {
         let Some(deadline) = self.budget.deadline_ns else {
             return false;

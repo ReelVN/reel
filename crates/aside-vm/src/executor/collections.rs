@@ -55,21 +55,12 @@ impl Vm {
                 return Ok(true);
             }
         };
-        let signature = self.program.package().functions[function.index()].signature;
-        let receiver = self.program.package().signatures[signature.index()].parameters[0].ty;
-        if !meter.take(
-            0,
-            lookup + 4 + self.type_checks.extra(receiver),
-            Values::allocation_bytes(4),
-        ) {
+        let (binding_work, binding_allocation) = self.host_binding_cost(function);
+        if !meter.take(0, lookup + binding_work, binding_allocation) {
             meter.usage.work += lookup;
             return Ok(false);
         }
-        let result = if frame.effects.0 & Effects::ALLOCATE == 0 {
-            Err(FaultKind::Effect)
-        } else {
-            self.bind_native(host, function).map_err(vm_fault)
-        };
+        let result = self.host_binding_value(host, function, frame.effects);
         match result {
             Ok(value) => {
                 self.put(frame.regs, dest.0, value)?;
@@ -621,11 +612,9 @@ impl Vm {
             if matches!(work.action, TableAction::GetHost { .. })
                 && let Some(function) = host_method
             {
-                cost.1 += Values::allocation_bytes(4);
-                let signature = self.program.package().functions[function.index()].signature;
-                let receiver =
-                    self.program.package().signatures[signature.index()].parameters[0].ty;
-                cost.0 += 4 + self.type_checks.extra(receiver);
+                let (binding_work, binding_allocation) = self.host_binding_cost(function);
+                cost.1 += binding_allocation;
+                cost.0 += binding_work;
             }
         }
         let property = if scan && work.matched {
@@ -884,12 +873,9 @@ impl Vm {
                     let Some(function) = host_method else {
                         return self.collection_fault(s, FaultKind::MissingKey);
                     };
-                    if s.effects.0 & Effects::ALLOCATE == 0 {
-                        return self.collection_fault(s, FaultKind::Effect);
-                    }
-                    let value = match self.bind_native(host, function) {
+                    let value = match self.host_binding_value(host, function, s.effects) {
                         Ok(value) => value,
-                        Err(error) => return self.collection_fault(s, vm_fault(error)),
+                        Err(kind) => return self.collection_fault(s, kind),
                     };
                     self.put(s.regs, dest.0, value)?;
                     if work.named_read(s.member_symbol) {

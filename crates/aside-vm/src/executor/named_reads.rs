@@ -1,5 +1,6 @@
 //! Named point reads reuse pure admission metadata and existing resumable steps.
 use super::*;
+mod host_methods;
 
 /// Current table metadata for one literal MemberGet admission only. The caller's
 /// receiver register retains the table; neither values nor borrowed storage are
@@ -8,6 +9,7 @@ pub(super) struct NamedRead {
     table: Value,
     version: u64,
     host: bool,
+    empty: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +111,7 @@ impl Vm {
             table,
             version: info.structure_version,
             host,
+            empty: info.len == 0,
         })
     }
 
@@ -119,8 +122,15 @@ impl Vm {
         dest: Reg,
         object: Reg,
         symbol: SymbolId,
+        meter: &mut Meter,
     ) -> Result<bool, FaultKind> {
         let key = self.value(self.constants, symbol.0).map_err(vm_fault)?;
+        if plan.host
+            && plan.empty
+            && self.empty_host_method(frame, dest, object, symbol, key, meter)?
+        {
+            return Ok(true);
+        }
         let action = if plan.host {
             collections::TableAction::GetHost { object, dest }
         } else {

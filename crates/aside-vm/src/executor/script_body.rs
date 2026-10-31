@@ -211,7 +211,7 @@ impl Vm {
                 InstructionPlan::Callee(callee) =>
                     self.execute_call(s, op, a, b, Pc(next_pc as u32), Some(callee)),
                 InstructionPlan::NamedRead(read) =>
-                    self.execute_named_read(s, read, Reg(a), Reg(b), SymbolId(c)),
+                    self.execute_named_read(s, read, Reg(a), Reg(b), SymbolId(c), m),
                 InstructionPlan::None => self.execute(s, op, a, b, c, Pc(next_pc as u32)),
             }
         );
