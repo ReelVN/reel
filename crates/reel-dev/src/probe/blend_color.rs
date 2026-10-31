@@ -121,6 +121,7 @@ fn frame(blend: BlendMode, alpha: f32, sampled: bool, id: u64) -> Result<RenderF
 }
 
 pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
+    super::image_color::run(renderer)?;
     let modes = [
         BlendMode {
             mix: Mix::Normal,

@@ -10,6 +10,8 @@ mod color_capture;
 mod composite_color;
 #[path = "../../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
+#[path = "image_color.rs"]
+mod image_color;
 #[path = "present_color.rs"]
 mod present_color;
 #[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
