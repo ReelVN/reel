@@ -534,7 +534,9 @@ impl Recording {
 
     #[cfg(target_os = "vita")]
     pub(crate) fn print(&self, title: &str, outcome: &str) -> io::Result<()> {
-        let mut out = io::stderr().lock();
+        // Field-by-field terminal writes can overflow the transport's log queue.
+        // Buffer complete rows only during export, after frame capture has ended.
+        let mut out = io::LineWriter::with_capacity(64 << 10, io::stderr().lock());
         writeln!(out, "[reel-probe-report] begin")?;
         self.report(&mut out, title, outcome)?;
         writeln!(out, "[reel-probe-report] end")?;
