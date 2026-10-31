@@ -333,8 +333,6 @@ fn thread_runtime(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
             "identity_mismatches_count",
             "clock_regressions_count",
             "inconsistent_pairs_count",
-            "ambiguous_wraps_count",
-            "clock_source_errors_count",
         ]
         .iter()
         .any(|key| totals.get(*key).is_some_and(|value| *value != 0));
@@ -342,11 +340,6 @@ fn thread_runtime(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
             "rejected_observations"
         } else if wall == 0 {
             "no_paired_time"
-        } else if totals
-            .get("cycle_samples_count")
-            .is_some_and(|value| *value != 0)
-        {
-            "raw_cycle_counter"
         } else if run == 0 {
             "counter_did_not_advance"
         } else {
@@ -355,7 +348,7 @@ fn thread_runtime(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
         let ratio = (status == "paired_observations").then(|| run as f64 / wall as f64);
         phases.insert(phase, json!({"sample_stride":stride,"totals":totals,"accounting_errors":invalid,"query_error_codes":errors,"status":status,"sampled_run_over_wall":ratio}));
     }
-    json!({"available_intervals":valid.len(),"measurement":"paired calling-thread execution counters and wall microseconds; cycle ticks retain their raw units; raw observations include query-boundary work; VM samples are not extrapolated to whole-frame CPU time","phases":phases})
+    json!({"available_intervals":valid.len(),"measurement":"paired calling-thread execution and wall microseconds; raw observations include query-boundary work; VM samples are not extrapolated to whole-frame CPU time","phases":phases})
 }
 
 fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Result<Value> {
@@ -445,33 +438,6 @@ mod tests {
         assert_eq!(vm["sample_stride"], 127);
         assert_eq!(vm["accounting_errors"], 1);
         assert_eq!(vm["query_error_codes"][0], "0x80020001");
-        let mut clean = Frame {
-            segment: 1,
-            values: values.clone(),
-        };
-        clean
-            .values
-            .insert("thread_vm_slice_query_failures_count".into(), 0);
-        let result = thread_runtime(&[&clean], &values);
-        assert_eq!(result["phases"]["vm_slice"]["sampled_run_over_wall"], 0.1);
-        clean.values.insert("thread_vm_slice_run_us".into(), 0);
-        let result = thread_runtime(&[&clean], &values);
-        assert!(result["phases"]["vm_slice"]["sampled_run_over_wall"].is_null());
-        assert_eq!(
-            result["phases"]["vm_slice"]["status"],
-            "counter_did_not_advance"
-        );
-        clean
-            .values
-            .insert("thread_vm_slice_cycle_samples_count".into(), 2);
-        clean
-            .values
-            .insert("thread_vm_slice_cycle_ticks_count".into(), 1000);
-        let result = thread_runtime(&[&clean], &values);
-        let vm = &result["phases"]["vm_slice"];
-        assert_eq!(vm["status"], "raw_cycle_counter");
-        assert_eq!(vm["totals"]["cycle_ticks_count"], 1000);
-        assert!(vm["sampled_run_over_wall"].is_null());
         assert!(thread_runtime(&[], &BTreeMap::new()).is_null());
     }
     #[test]

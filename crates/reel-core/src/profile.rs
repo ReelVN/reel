@@ -411,6 +411,6 @@ pub use enabled::{GeometryUploads, RetainedCache, Sample};
 mod thread;
 #[cfg(feature = "profiling")]
 pub use thread::{
-    METRICS as THREAD_METRICS, PHASES as THREAD_PHASES, ThreadCost, ThreadCounter, ThreadSnapshot,
-    ThreadTime, install_thread_clock,
+    METRICS as THREAD_METRICS, PHASES as THREAD_PHASES, ThreadCost, ThreadSnapshot, ThreadTime,
+    install_thread_clock,
 };
