@@ -81,7 +81,7 @@ pub fn create_context(
             fragment: shader_code!("clear"),
             position_attribute: "a_position",
             color_uniform: "u_clear_color",
-            clip_uniform: "reel_clip_rect",
+            clip_uniform: None,
         },
         wake,
         None,

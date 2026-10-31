@@ -91,6 +91,63 @@ fn encoded(value: f64) -> u8 {
     (srgb * 255.).round() as u8
 }
 
+fn clear_colors(context: &native::Context) -> Result {
+    let mut cases = 0usize;
+    let mut pixels_checked = 0usize;
+    let mut maximum = 0u8;
+    for size in [[513, 273], [1, 1], [31, 33]] {
+        let storage = context.create_target_texture(size, native::TargetFormat::Rgba8)?;
+        for srgb in [false, true] {
+            let target = context.framebuffer_encoded(
+                &storage,
+                if srgb {
+                    SurfaceEncoding::Srgb
+                } else {
+                    SurfaceEncoding::Linear
+                },
+            )?;
+            let mut pixels = vec![0; (size[0] * size[1] * 4) as usize];
+            for color in [[0.5f32, 0.25, 0.0031308, 0.37], [0.0, 1.0, 0.75, 0.13]] {
+                // Opposite byte values make retained pixels visible, including the
+                // last physical row/column and partially occupied hardware tiles.
+                let dirty = color.map(|value| if value < 0.5 { 1.0 } else { 0.0 });
+                context.clear(Target::Framebuffer(&target), dirty)?;
+                context.clear(Target::Framebuffer(&target), color)?;
+                context.finish()?;
+                context.read_rgba(&target, 0, &mut pixels)?;
+                let expected: [u8; 4] = std::array::from_fn(|channel| {
+                    let value = f64::from(color[channel]);
+                    if srgb && channel < 3 {
+                        encoded(value)
+                    } else {
+                        (value * 255.).round() as u8
+                    }
+                });
+                for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+                    for (channel, (&actual, expected)) in pixel.iter().zip(expected).enumerate() {
+                        let error = actual.abs_diff(expected);
+                        maximum = maximum.max(error);
+                        if error > 1 {
+                            return Err(format!(
+                                "CLEAR COLOR size={}x{} encoding={} color={color:?} x={} y={} channel={channel} actual={actual} expected={expected} tolerance=1",
+                                size[0], size[1], if srgb { "srgb" } else { "linear" },
+                                index % size[0] as usize, index / size[0] as usize,
+                            ).into());
+                        }
+                    }
+                }
+                cases += 1;
+                pixels_checked += pixels.len() / 4;
+            }
+        }
+    }
+    log(format_args!(
+        "CLEAR COLOR cases={cases} pixels={pixels_checked} bytes={} max_error={maximum} formats=rgba8 encodings=linear,srgb alpha=nonopaque coverage=all_rows_and_edges tolerance=1",
+        pixels_checked * 4,
+    ));
+    Ok(())
+}
+
 fn compare(context: &native::Context) -> Result {
     let source = context.create_target_texture(SOURCE, native::TargetFormat::Rgba8)?;
     // Every byte code, reversed channels, dark/bright steps, and varying source
@@ -139,19 +196,6 @@ fn compare(context: &native::Context) -> Result {
                 return Err("mismatched fragment output must be rejected before submission".into());
             }
             drop(wrong);
-            if pbe {
-                context.clear(Target::Framebuffer(&target), [0.5, 0.25, 0.0031308, 0.37])?;
-                context.finish()?;
-                let mut row = vec![0; SIZE[0] as usize * 4];
-                context.read_rgba(&target, 0, &mut row)?;
-                let expected = [encoded(0.5), encoded(0.25), encoded(0.0031308), 94];
-                if row
-                    .chunks_exact(4)
-                    .any(|p| p.iter().zip(expected).any(|(a, b)| a.abs_diff(b) > 1))
-                {
-                    return Err("sRGB clear must encode RGB and preserve linear alpha".into());
-                }
-            }
             let program = program(context, pbe)?;
             draw(context, &target, &program, &vertices, &source, filter)?;
             context.finish()?;
@@ -188,7 +232,7 @@ fn compare(context: &native::Context) -> Result {
 
 pub(super) fn run() -> Result {
     let context = reel_render::gxm::create_context(&Default::default(), None)?;
-    let result = compare(&context);
+    let result = clear_colors(&context).and_then(|()| compare(&context));
     context.finish()?;
     context.close().map_err(|(_, error)| error)?;
     result
