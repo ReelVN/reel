@@ -62,9 +62,10 @@ fn alpha_only_tint_matches_zero_gain_and_stays_in_the_bounded_color_error_domain
         if v.abs() < 2f32.powi(-14) { 0. } else { v }
     };
     let mut maximum = 0f64;
+    let opacities = [0., 1e-40, 1e-8, 0.1, 0.51, 0.9, 1.];
     for source_alpha in 0..=255 {
         let source_alpha = f64::from(source_alpha) / 255.;
-        for opacity in [0., 1e-40, 1e-8, 0.1, 0.51, 0.9, 1.] {
+        for opacity in opacities {
             for offset in [-0.2_f64, 0., 0.03, 0.37, 0.62, 0.9, 1.2] {
                 let expected = decode(offset.clamp(0., 1.)) * source_alpha * opacity;
                 let actual = h(
@@ -76,4 +77,34 @@ fn alpha_only_tint_matches_zero_gain_and_stays_in_the_bounded_color_error_domain
         }
     }
     assert!(maximum <= 4. / 4096., "bounded alpha tint error: {maximum}");
+    let mut blend_error = 0f64;
+    for a in opacities {
+        for b in opacities {
+            for step in 0..=16 {
+                let t = f64::from(step) / 16.;
+                let opacity = a * (1. - t) + b * t;
+                let vertex_alpha = h(h(a as f32) * (1. - t as f32) + h(b as f32) * t as f32);
+                for source in 0..=255 {
+                    let source = f64::from(source) / 255.;
+                    let alpha = h(h(source as f32) * vertex_alpha);
+                    for offset in [0., 0.03, 0.37, 0.9, 1.] {
+                        let rgb = h(h(h(decode(offset) as f32) * h(source as f32)) * vertex_alpha);
+                        for background in [0., 0.37, 1.] {
+                            let expected = decode(offset) * source * opacity
+                                + background * (1. - source * opacity);
+                            let actual = f64::from(rgb) + background * (1. - f64::from(alpha));
+                            blend_error = blend_error.max((actual - expected).abs());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Uniform color, filtered alpha, vertex interpolation and two products
+    // contribute six roundings to RGB and four to alpha under source-over.
+    // The resulting 10/4096 bound is below one UNORM byte (1/255).
+    assert!(
+        blend_error <= 10. / 4096.,
+        "bounded tint blend error: {blend_error}"
+    );
 }
