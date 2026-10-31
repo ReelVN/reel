@@ -4,6 +4,12 @@ fn bench_model(value: any) -> any { value }
 fn bench_derive(callback: any) -> any { callback() }
 fn bench_flush() -> any { null }
 fn bench_host(value: any) -> any { value }
+fn bench_method(receiver: any, value: any) -> any { value }
+
+class MotionHost {
+    let curve: any = bench_host({});
+    fn sample(self, seconds: int) -> int { self.curve.sample(seconds) }
+}
 
 class Base {
     let value: int = 7;
@@ -92,6 +98,29 @@ fn captured_cells(n: int) -> int {
 fn host_calls(n: int) -> int {
     let mut result = 0;
     for i in 0..n { result += bench_echo(i); }
+    result
+}
+
+fn host_methods(n: int) -> int {
+    let curve = bench_host({});
+    let mut result = 0;
+    for i in 0..n { result += curve.sample(i); }
+    result
+}
+
+fn retained_host_method(n: int) -> int {
+    let curve = bench_host({});
+    let sample = curve.sample;
+    let mut result = 0;
+    for i in 0..n { result += sample(i); }
+    result
+}
+
+fn host_motion_methods(n: int) -> int {
+    let values = [];
+    for i in 0..143 { values.append(MotionHost()); }
+    let mut result = 0;
+    for i in 0..n { result += values[i % 143].sample(i); }
     result
 }
 

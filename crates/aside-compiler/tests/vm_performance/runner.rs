@@ -98,11 +98,12 @@ impl Fixture {
         // The test owns both these explicit host declarations and their source
         // stubs. Conversion uses the shared verifier and ordinary native binder.
         for (index, (name, parameter)) in [
-            ("bench_echo", Some("value")),
-            ("bench_model", Some("value")),
-            ("bench_derive", Some("callback")),
-            ("bench_flush", None),
-            ("bench_host", Some("value")),
+            ("bench_echo", &["value"][..]),
+            ("bench_model", &["value"][..]),
+            ("bench_derive", &["callback"][..]),
+            ("bench_flush", &[][..]),
+            ("bench_host", &["value"][..]),
+            ("bench_method", &["receiver", "value"][..]),
         ]
         .into_iter()
         .enumerate()
@@ -117,13 +118,13 @@ impl Fixture {
             package.symbols.push(symbol.clone());
             let signature = bc::Signature {
                 parameters: parameter
-                    .into_iter()
+                    .iter()
                     .map(|name| bc::Parameter {
                         name: bc::SymbolId(
                             package
                                 .symbols
                                 .iter()
-                                .position(|symbol| symbol == name)
+                                .position(|symbol| symbol == *name)
                                 .unwrap() as u32,
                         ),
                         ty: any,
@@ -161,6 +162,16 @@ impl Fixture {
                 required_capabilities: vec![],
             });
         }
+        support.host_types.push(bc::HostTypeSupport {
+            name: "benchmark::Host".into(),
+            version: 1,
+            bases: Vec::new(),
+            methods: vec![bc::HostMethodSupport {
+                name: "sample".into(),
+                native: "benchmark::bench_method".into(),
+                abi_version: 1,
+            }],
+        });
         let program = bc::verify(package, bc::Limits::default()).unwrap();
         let encoded = bc::encode(program.package(), bc::Limits::default()).unwrap();
         Self {
@@ -286,10 +297,16 @@ impl Fixture {
                         let fields = vm.host_arguments(ticket).unwrap()[0];
                         let count = vm.heap().table_len(fields).unwrap();
                         let host = vm.heap_mut().alloc_host(fields, &[], None).unwrap();
+                        let ty = vm.heap().host_type("benchmark::Host").unwrap();
+                        vm.heap_mut().set_host_type(host, ty).unwrap();
                         vm.heap_mut()
                             .observe_host_properties(host, 0, count)
                             .unwrap();
                         vm.respond(ticket, HostResponse::Ready(host)).unwrap();
+                    }
+                    5 => {
+                        let value = vm.host_arguments(ticket).unwrap()[1];
+                        vm.respond(ticket, HostResponse::Ready(value)).unwrap();
                     }
                     _ => unreachable!(),
                 },
