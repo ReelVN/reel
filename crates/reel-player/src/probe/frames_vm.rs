@@ -34,11 +34,7 @@ impl Observation {
         let steps = {
             let mut delta = [StepCost::default(); STEP_NAMES.len()];
             for (i, value) in delta.iter_mut().enumerate() {
-                value.calls = self.steps[i].calls.checked_sub(before.steps[i].calls)?;
-                value.samples = self.steps[i].samples.checked_sub(before.steps[i].samples)?;
-                value.sample_wall_ns = self.steps[i]
-                    .sample_wall_ns
-                    .checked_sub(before.steps[i].sample_wall_ns)?;
+                *value = self.steps[i].checked_delta(&before.steps[i])?;
             }
             delta
         };
@@ -87,12 +83,14 @@ fn visit_profile(
         calibration_ns
     );
     for (name, row) in STEP_NAMES.iter().zip(sample.steps) {
-        emit(&format!("vm_step_{name}_calls_count"), row.calls)?;
-        emit(&format!("vm_step_{name}_samples_count"), row.samples)?;
-        emit(
-            &format!("vm_step_{name}_sample_wall_ns"),
-            row.sample_wall_ns,
-        )?;
+        for (metric, value) in StepCost::METRIC_NAMES.into_iter().zip(row.metrics()) {
+            let suffix = if metric.ends_with("_ns") {
+                ""
+            } else {
+                "_count"
+            };
+            emit(&format!("vm_step_{name}_{metric}{suffix}"), value)?;
+        }
     }
     Ok(())
 }
@@ -138,6 +136,25 @@ mod tests {
         after.driver.epoch = 3;
         assert!(after.checked_delta(&before).is_none());
         after.driver.epoch = 2;
+        after.steps[0].eligible_calls = 6;
+        after.steps[0].clock_queries = 2;
+        let delta = after.checked_delta(&before).unwrap();
+        assert_eq!(delta.steps[0].eligible_calls, 6);
+        assert_eq!(delta.steps[0].clock_queries, 2);
+        let mut output = Vec::new();
+        values(&mut output, Some(&delta)).unwrap();
+        let mut names = Vec::new();
+        columns(&mut names).unwrap();
+        let names = String::from_utf8(names).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let columns: Vec<_> = names.split('\t').collect();
+        let fields: Vec<_> = output.split('\t').collect();
+        assert_eq!(columns.len(), fields.len());
+        let index = columns
+            .iter()
+            .position(|name| *name == "vm_step_scalar_clock_queries_count")
+            .unwrap();
+        assert_eq!(fields[index], "2");
         after.steps[0].calls = 4;
         assert!(after.checked_delta(&before).is_none());
     }

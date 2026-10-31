@@ -98,6 +98,7 @@ pub(super) fn record_device(
     contiguous: &reel_core::budget::BudgetPool,
     waits: &Waits,
 ) {
+    let _observer = reel_core::profile::Scope::new(reel_core::profile::Phase::Observer);
     let Ok(native) = backend.native_memory_usage() else {
         return;
     };
@@ -229,4 +230,34 @@ pub(super) fn record_device(
         slow.after.oldest_age_us,
         u64::from(slow.result as u32),
     ]);
+}
+
+/// Read existing accounting without polling or adding a GPU synchronization.
+pub(super) fn record_submission(recording: &mut Recording, backend: &GxmBackend) {
+    let _observer = reel_core::profile::Scope::new(reel_core::profile::Phase::Observer);
+    let sample = backend.native_memory_usage().ok().map(|usage| {
+        let t = usage.submission_timing;
+        [
+            t.scene_begin.calls,
+            t.scene_begin.cpu_us,
+            t.scene_end.calls,
+            t.scene_end.cpu_us,
+            t.uniform_reserve.calls,
+            t.uniform_reserve.cpu_us,
+            t.draw.calls,
+            t.draw.cpu_us,
+            t.notification_capacity_wait.calls,
+            t.notification_capacity_wait.cpu_us,
+            t.upload_capacity_wait.calls,
+            t.upload_capacity_wait.cpu_us,
+            t.resource_replacement_wait.calls,
+            t.resource_replacement_wait.cpu_us,
+            t.notifications.submissions,
+            t.notifications.observations,
+            t.notifications.observed_age_us,
+            u64::from(t.notifications.pending.count),
+            t.notifications.pending.oldest_age_us,
+        ]
+    });
+    recording.record_submission(sample);
 }

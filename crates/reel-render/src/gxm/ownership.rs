@@ -10,6 +10,12 @@ pub(super) struct Device {
 }
 impl Device {
     #[inline]
+    pub fn draw(&self, draw: native::Draw<'_>) -> Result<(), native::Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::DriverDraw);
+        self.native.draw(draw)
+    }
+
+    #[inline]
     pub fn clear(&self, target: native::Target<'_>, color: [f32; 4]) -> Result<(), native::Error> {
         #[cfg(feature = "profiling")]
         if crate::profiling::serial_effect_timing() {
@@ -19,6 +25,7 @@ impl Device {
                 context.clear(target, color)
             });
         }
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::DriverClear);
         self.native.clear(target, color)
     }
 
@@ -50,6 +57,7 @@ impl Device {
                 context.draw_filtered(draw, filter)
             });
         }
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::DriverDraw);
         self.native.draw_filtered(draw, filter)
     }
 

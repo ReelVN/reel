@@ -4,6 +4,10 @@
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
+#[path = "frame_cost/vm_steps.rs"]
+mod vm_steps;
+#[path = "frame_cost/wall.rs"]
+mod wall;
 
 struct Frame {
     segment: u64,
@@ -275,10 +279,23 @@ fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
                 / whole as f64
         })
     };
+    let observer_clock_queries = totals
+        .get("vm_driver_observer_clock_queries_count")
+        .copied()
+        .unwrap_or(0)
+        + totals
+            .iter()
+            .filter(|(name, _)| {
+                name.starts_with("vm_step_") && name.ends_with("_clock_queries_count")
+            })
+            .map(|(_, count)| count)
+            .sum::<u64>();
     json!({"valid_intervals":valid.len(),"ledger_errors":observed.len()-valid.len(),
         "measurement":"sampled whole-slice wall-time ledger; observer overhead included, not thread CPU time",
         "calibration":"raw empty clock-pair time is included in entry; no subtraction",
-        "legacy_steps":"independent event samples; fetch/cost/execute overlap scalar/script; durations cannot be added",
+        "legacy_steps":"inclusive event samples; fetch/cost/execute overlap scalar/script; durations cannot be added",
+        "step_observations":vm_steps::summarize(&observed),
+        "observer_clock_queries_count":observer_clock_queries,
         "totals":totals,
         "wall_fractions":{"entry":fraction("entry","wall"),"run":fraction("run","wall"),"exit":fraction("exit","wall")},
         "run_fractions":{"scalar":fraction("scalar","run"),"script":fraction("script","run"),"native":fraction("native","run"),"loop":fraction("loop","run")}})
@@ -356,6 +373,7 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
     for key in limits.keys() {
         ensure!(
             key.ends_with("_us")
+                && !key.starts_with("native_")
                 && !key.starts_with("thread_")
                 && key != "elapsed_us"
                 && columns.contains_key(key),
@@ -368,13 +386,13 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
         let boundary: Vec<_> = rows.iter().copied().filter(|row|row.values["partial"]!=0 || row.values["present_calls"]!=1).collect();
         let mut metrics = BTreeMap::new();
         let mut boundary_work = BTreeMap::new();
-        for key in columns.keys().filter(|key|key.ends_with("_us") && !key.starts_with("thread_") && key.as_str()!="elapsed_us") {
+        for key in columns.keys().filter(|key|key.ends_with("_us") && !key.starts_with("thread_") && !key.starts_with("native_") && key.as_str()!="elapsed_us") {
             metrics.insert(key, statistics(eligible.iter().filter(|row|!matches!(key.as_str(),"schedule_non_vm_us"|"session_unattributed_us") || row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)==0).map(|row|row.values[key]).collect(),limits.get(key).copied()));
             if key.as_str()!="span_us" {
                 boundary_work.insert(key,statistics(boundary.iter().filter(|row|!matches!(key.as_str(),"schedule_non_vm_us"|"session_unattributed_us") || row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)==0).map(|row|row.values[key]).collect(),None));
             }
         }
-        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns),"vm_profile":vm_profile(&eligible,columns),"thread_runtime":thread_runtime(&eligible,columns)})
+        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns),"vm_profile":vm_profile(&eligible,columns),"thread_runtime":thread_runtime(&eligible,columns),"exclusive_wall":wall::summarize(&eligible),"native_submission":wall::native(&eligible)})
     }).collect();
     Ok(
         json!({"schema":1,"declared_environment":scope,"measurement":"present_submission_intervals_and_nested_wall_time","gpu_service_time":"unmeasured","display_cadence":"unmeasured","trace_metadata":trace.metadata,"limits_kind":"optional_workload_engineering_targets","groups":groups}),

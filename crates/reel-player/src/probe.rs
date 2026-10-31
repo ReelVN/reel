@@ -57,7 +57,9 @@ static VM_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 static VM_AT_MS: AtomicU64 = AtomicU64::new(0);
 static VM_SAMPLE: [AtomicU64; VM_NAMES.len()] = [const { AtomicU64::new(ABSENT) }; VM_NAMES.len()];
 #[cfg(feature = "vm-profiling")]
-const VM_COST_FIELDS: usize = aside_vm::executor::STEP_NAMES.len() * 3;
+const VM_COST_METRICS: usize = aside_vm::executor::StepCost::METRIC_NAMES.len();
+#[cfg(feature = "vm-profiling")]
+const VM_COST_FIELDS: usize = aside_vm::executor::STEP_NAMES.len() * VM_COST_METRICS;
 #[cfg(feature = "vm-profiling")]
 static VM_COSTS: [AtomicU64; VM_COST_FIELDS] = [const { AtomicU64::new(0) }; VM_COST_FIELDS];
 
@@ -77,11 +79,8 @@ fn publish_vm(story: Option<&StoryRuntime>) {
         slot.store(value, Ordering::Relaxed);
     }
     #[cfg(feature = "vm-profiling")]
-    for (row, cost) in VM_COSTS.as_chunks::<3>().0.iter().zip(costs) {
-        for (slot, value) in row
-            .iter()
-            .zip([cost.calls, cost.samples, cost.sample_wall_ns])
-        {
+    for (row, cost) in VM_COSTS.as_chunks::<VM_COST_METRICS>().0.iter().zip(costs) {
+        for (slot, value) in row.iter().zip(cost.metrics()) {
             slot.store(value, Ordering::Relaxed);
         }
     }
@@ -182,11 +181,25 @@ fn append_vm(line: &mut String) {
             " vm_costs_stride={} vm_costs=",
             aside_vm::executor::STEP_SAMPLE_STRIDE
         );
-        for (name, [calls, samples, nanos]) in aside_vm::executor::STEP_NAMES
+        for (name, row) in aside_vm::executor::STEP_NAMES
             .iter()
-            .zip(costs.as_chunks::<3>().0)
+            .zip(costs.as_chunks::<VM_COST_METRICS>().0)
         {
+            let [calls, samples, nanos] = [row[0], row[1], row[2]];
             let _ = write!(line, "{name}:{calls}/{samples}/{nanos},");
+        }
+        line.push_str(" vm_step_observations=");
+        for (name, row) in aside_vm::executor::STEP_NAMES
+            .iter()
+            .zip(costs.as_chunks::<VM_COST_METRICS>().0)
+        {
+            for (metric, value) in aside_vm::executor::StepCost::METRIC_NAMES
+                .iter()
+                .zip(row)
+                .skip(3)
+            {
+                let _ = write!(line, "{name}.{metric}:{value},");
+            }
         }
     }
 }
@@ -364,7 +377,8 @@ impl Recording {
         story: Option<&StoryRuntime>,
         gpu: u64,
         title: &str,
-    ) {
+    ) -> bool {
+        let _observer = reel_core::profile::Scope::new(reel_core::profile::Phase::Observer);
         let vm = story.map_or(0, |story| {
             story
                 .driver()
@@ -431,6 +445,12 @@ impl Recording {
             self.windows.push_back(std::mem::take(&mut self.pending));
             self.window_start = elapsed;
         }
+        row.phases.calls[reel_core::profile::Phase::Present as usize] != 0
+    }
+
+    #[cfg(target_os = "vita")]
+    pub(crate) fn record_submission(&mut self, values: Option<[u64; frames::NATIVE_FIELDS]>) {
+        self.frames.record_native(values);
     }
 
     pub(crate) fn report(

@@ -501,6 +501,7 @@ fn run() -> Result {
     let mut vsync = true;
     let mut flights = 1;
     let mut serial_effect_timing = false;
+    let mut wall_ledger = false;
     let mut tokens: Vec<String> = std::fs::read_to_string(directory().join("case.txt"))
         .unwrap_or_default()
         .split_whitespace()
@@ -523,6 +524,8 @@ fn run() -> Result {
             "vsync=off" => vsync = false,
             "effect-timing=serial" => serial_effect_timing = true,
             "effect-timing=off" => serial_effect_timing = false,
+            "wall-ledger=on" => wall_ledger = true,
+            "wall-ledger=off" => wall_ledger = false,
             value if value.starts_with("flights=") => flights = value[8..].parse()?,
             value if value.starts_with("frames=") => frames = value[7..].parse()?,
             value => selected = value.to_owned(),
@@ -571,6 +574,14 @@ fn run() -> Result {
         )
     ));
     reel_render::profiling::set_serial_effect_timing(serial_effect_timing);
+    let _wall_recording = if wall_ledger {
+        Some(reel_core::profile::WallRecording::start().ok_or("wall ledger already active")?)
+    } else {
+        None
+    };
+    log(format_args!(
+        "wall_ledger={wall_ledger} scope=current_thread units=ns nested=exclusive"
+    ));
     timing::calibrate();
     log(format_args!(
         "effect_timing={} completion_includes_scene_end_and_drain=true serial_mode_changes_batching=true",

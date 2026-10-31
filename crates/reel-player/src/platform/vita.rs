@@ -590,12 +590,15 @@ impl NativeLoop {
                 #[cfg(feature = "profiling")]
                 {
                     let usage = player.backend.usage();
-                    recording.record(
+                    let presented = recording.record(
                         probe_started,
                         player.story_mut().as_deref(),
                         usage.total(),
                         &host.signals.title.borrow(),
                     );
+                    if presented && reel_core::profile::WallSnapshot::is_active() {
+                        profiling::record_submission(&mut recording, player.backend);
+                    }
                     if now >= next_memory_sample {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
                         profiling::record_device(

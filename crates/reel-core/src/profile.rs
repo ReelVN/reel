@@ -111,8 +111,14 @@ pub enum Phase {
     SessionAssets,
     /// End the final scene and publish its completion fence; may wait for driver capacity.
     RenderFence,
+    /// Native draw call wall time, including driver backpressure.
+    DriverDraw,
+    /// Native clear call wall time, including driver backpressure.
+    DriverClear,
+    /// Main-thread diagnostic collection and recording.
+    Observer,
 }
-pub const NAMES: [&str; 68] = [
+pub const NAMES: [&str; 71] = [
     "input",
     "tick",
     "session",
@@ -181,6 +187,9 @@ pub const NAMES: [&str; 68] = [
     "session_saves",
     "session_assets",
     "render_fence",
+    "driver_draw",
+    "driver_clear",
+    "observer",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.
@@ -219,19 +228,29 @@ pub struct Scope {
     phase: Phase,
     #[cfg(feature = "profiling")]
     thread: Option<thread::Probe>,
+    #[cfg(feature = "profiling")]
+    wall: Option<wall::Token>,
+    #[cfg(feature = "profiling")]
+    owner: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl Scope {
     #[inline]
     pub fn new(phase: Phase) -> Self {
+        #[cfg(feature = "profiling")]
+        let start = std::time::Instant::now();
         #[cfg(not(feature = "profiling"))]
         let _ = phase;
         let scope = Self {
             #[cfg(feature = "profiling")]
-            start: std::time::Instant::now(),
+            start,
             #[cfg(feature = "profiling")]
             phase,
             #[cfg(feature = "profiling")]
             thread: thread::Probe::begin(phase),
+            #[cfg(feature = "profiling")]
+            wall: wall::begin(phase, start),
+            #[cfg(feature = "profiling")]
+            owner: std::marker::PhantomData,
         };
         #[cfg(feature = "profiling")]
         enabled::begin(phase, scope.start);
@@ -362,7 +381,12 @@ mod enabled {
                 probe.finish();
             }
             let index = self.phase as usize;
-            MICROS[index].fetch_add(self.start.elapsed().as_micros() as u64, Ordering::Relaxed);
+            let end = std::time::Instant::now();
+            wall::end(self.wall.take(), end);
+            MICROS[index].fetch_add(
+                end.duration_since(self.start).as_micros() as u64,
+                Ordering::Relaxed,
+            );
             CALLS[index].fetch_add(1, Ordering::Relaxed);
             if tracked(self.phase) {
                 ACTIVE[index].fetch_sub(1, Ordering::Relaxed);
@@ -427,6 +451,11 @@ mod enabled {
 }
 #[cfg(feature = "profiling")]
 pub use enabled::{GeometryUploads, RetainedCache, Sample};
+
+#[cfg(feature = "profiling")]
+mod wall;
+#[cfg(feature = "profiling")]
+pub use wall::{WallRecording, WallSnapshot};
 
 #[cfg(feature = "profiling")]
 mod thread;

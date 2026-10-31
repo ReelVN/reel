@@ -9,8 +9,14 @@ mod counts;
 #[path = "frames_vm.rs"]
 mod vm;
 use reel_core::profile::Phase;
+#[path = "frames_native.rs"]
+mod native;
 #[path = "frames_thread.rs"]
 mod thread;
+#[path = "frames_wall.rs"]
+mod wall;
+#[cfg(target_os = "vita")]
+pub(super) const NATIVE_FIELDS: usize = native::FIELDS;
 use std::collections::VecDeque;
 #[cfg(any(target_os = "vita", test))]
 use std::io::{self, Write};
@@ -69,6 +75,8 @@ struct Frame {
     presented: u64,
     work: Pending,
     thread: Option<reel_core::profile::ThreadSnapshot>,
+    wall: Option<reel_core::profile::WallSnapshot>,
+    native: Option<[u64; native::FIELDS]>,
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
     vm: Option<vm::Observation>,
 }
@@ -84,12 +92,25 @@ pub(super) struct Frames {
     dropped: u64,
     discarded_loops: u64,
     previous_thread: Option<reel_core::profile::ThreadSnapshot>,
+    previous_wall: Option<reel_core::profile::WallSnapshot>,
+    previous_native: Option<[u64; native::FIELDS]>,
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
     observed_vm: Option<vm::Observation>,
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
     previous_vm: Option<vm::Observation>,
 }
 impl Frames {
+    #[cfg(any(target_os = "vita", test))]
+    pub(super) fn record_native(&mut self, current: Option<[u64; native::FIELDS]>) {
+        if let Some(frame) = self.rows.back_mut() {
+            frame.native = current.as_ref().and_then(|after| {
+                self.previous_native
+                    .as_ref()
+                    .and_then(|before| native::delta(after, before))
+            });
+        }
+        self.previous_native = current;
+    }
     /// Capture only at submission boundaries. The cumulative snapshot includes
     /// every intervening maintenance loop and host-side frame-slot API access.
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
@@ -106,6 +127,8 @@ impl Frames {
             self.index = 0;
             self.last_present = None;
             self.previous_thread = None;
+            self.previous_wall = None;
+            self.previous_native = None;
             #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
             {
                 self.previous_vm = None;
@@ -151,6 +174,13 @@ impl Frames {
             .as_ref()
             .and_then(|before| after.checked_delta(before));
         self.previous_thread = Some(after);
+        let after = reel_core::profile::WallSnapshot::capture();
+        let wall = after.as_ref().and_then(|after| {
+            self.previous_wall
+                .as_ref()
+                .and_then(|before| after.checked_delta(before))
+        });
+        self.previous_wall = after;
         #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
         let vm = {
             let observed = self.observed_vm.take();
@@ -171,6 +201,8 @@ impl Frames {
             presented,
             work: std::mem::take(&mut self.pending),
             thread,
+            wall,
+            native: None,
             #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
             vm,
         });
@@ -214,6 +246,8 @@ impl Frames {
         for phase in PHASES {
             write!(out, "\t{}_us", reel_core::profile::NAMES[phase as usize])?;
         }
+        wall::columns(out)?;
+        native::columns(out)?;
         thread::columns(out)?;
         #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
         vm::columns(out)?;
@@ -236,6 +270,8 @@ impl Frames {
             for value in frame.work.micros {
                 write!(out, "\t{value}")?;
             }
+            wall::values(out, frame.wall.as_ref())?;
+            native::values(out, frame.native.as_ref())?;
             thread::values(out, frame.thread.as_ref())?;
             #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
             vm::values(out, frame.vm.as_ref())?;
@@ -272,6 +308,44 @@ mod tests {
         row.phases.calls[Phase::Present as usize] = u64::from(present);
         row
     }
+    #[test]
+    fn native_samples_cross_loops_reset_at_labels_and_preserve_gauges() {
+        let mut frames = Frames::default();
+        frames.record("a", &row(1000, 0, true));
+        frames.record_native(Some([10; native::FIELDS]));
+        assert!(frames.rows[0].native.is_none());
+        frames.record("a", &row(1100, 0, false));
+        frames.record("a", &row(2000, 0, true));
+        frames.record_native(Some([15; native::FIELDS]));
+        let sample = frames.rows[1].native.unwrap();
+        assert_eq!(&sample[..native::FIELDS - 2], &[5; native::FIELDS - 2]);
+        assert_eq!(&sample[native::FIELDS - 2..], &[15; 2]);
+        frames.record("b", &row(3000, 0, true));
+        frames.record_native(Some([20; native::FIELDS]));
+        assert!(frames.rows[2].native.is_none());
+        frames.record("b", &row(4000, 0, true));
+        frames.record_native(None);
+        frames.record("b", &row(5000, 0, true));
+        frames.record_native(Some([25; native::FIELDS]));
+        assert!(frames.rows[4].native.is_none());
+    }
+
+    #[test]
+    fn wall_frames_close_across_active_scopes_and_do_not_span_labels() {
+        let _ledger = reel_core::profile::WallRecording::start().unwrap();
+        let mut frames = Frames::default();
+        let _scope = reel_core::profile::Scope::new(Phase::Session);
+        frames.record("a", &row(1000, 0, true));
+        frames.record("a", &row(2000, 0, false));
+        frames.record("a", &row(3000, 0, true));
+        let wall = frames.rows[1].wall.as_ref().unwrap();
+        assert_eq!(wall.wall_ns, wall.nanos[Phase::Session as usize]);
+        assert_eq!(wall.errors, 0);
+        assert!(frames.rows[0].wall.is_none());
+        frames.record("b", &row(4000, 0, true));
+        assert!(frames.rows[2].wall.is_none());
+    }
+
     #[test]
     fn small_slices_accumulate_until_present_and_span_includes_idle_time() {
         let mut frames = Frames::default();
