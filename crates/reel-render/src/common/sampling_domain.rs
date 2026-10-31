@@ -21,7 +21,7 @@ pub(crate) fn direct_paint(
     if mip_count != 1 || texture.contains(&0) || viewport.contains(&0) {
         return paint;
     }
-    if mesh.indices.chunks_exact(3).all(|indices| {
+    if mesh.indices.as_chunks::<3>().0.iter().all(|indices| {
         triangle(
             std::array::from_fn(|i| &mesh.vertices[indices[i] as usize]),
             texture,

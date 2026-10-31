@@ -232,6 +232,9 @@ pub fn sources() -> Vec<Shader> {
         ("paint_packed", 3, 1),
         ("paint_video", 2, 0),
         ("paint_video_appearance", 2, 1),
+        ("paint_appearance_constant", 0, 3),
+        ("paint_packed_constant", 3, 3),
+        ("paint_video_constant", 2, 3),
     ] {
         let defines = format!("#define REEL_SOURCE_KIND {kind}\n#define REEL_STYLE {style}");
         add(name, false, &paint, &defines);
@@ -243,6 +246,26 @@ pub fn sources() -> Vec<Shader> {
         );
     }
     for clipped in [false, true] {
+        for (name, sampling, style) in [
+            ("paint_appearance_direct", 1, 1),
+            ("paint_appearance_region", 2, 1),
+            ("paint_constant_direct", 1, 3),
+            ("paint_constant_region", 2, 3),
+        ] {
+            add(
+                &format!("{name}{}", if clipped { "" } else { "_unclipped" }),
+                false,
+                &paint,
+                &format!(
+                    "#define REEL_SOURCE_KIND 0\n#define REEL_STYLE {style}\n#define REEL_SIMPLE_SAMPLING {sampling}\n{}",
+                    if clipped {
+                        ""
+                    } else {
+                        "#define REEL_UNCLIPPED"
+                    }
+                ),
+            );
+        }
         add(
             &format!(
                 "paint_video_direct_nv12{}",

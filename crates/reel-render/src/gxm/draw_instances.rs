@@ -9,6 +9,14 @@ pub(in crate::gxm) struct InstanceBatch {
     clip: crate::common::scissor::Scissor,
 }
 impl<'a> Paint<'a> {
+    // Classify only sampling with the existing whole/region proof. Tint and
+    // adjustment remain in their own shader stage, after the same sample.
+    pub(super) fn sampling_appearance(&self) -> [[f32; 4]; 10] {
+        let mut appearance = self.appearance;
+        appearance[5][3] = 0.;
+        appearance[7][3] = 0.;
+        appearance
+    }
     pub(super) fn image(
         image: &'a Image,
         repeat: [bool; 2],
@@ -55,6 +63,7 @@ impl<'a> Paint<'a> {
     pub(super) fn state(
         self,
         direct: Option<mesh::DirectPaint>,
+        sampling: Option<mesh::DirectPaint>,
         bounded: bool,
         opaque: Option<mesh::OpaquePaint>,
         scissor: crate::common::scissor::Scissor,
@@ -74,6 +83,7 @@ impl<'a> Paint<'a> {
             quality: self.quality,
             coverage: self.coverage,
             direct,
+            sampling,
             bounded,
             opaque,
             scissor,
@@ -92,12 +102,14 @@ impl PaintState {
             && self.quality == other.quality
             && self.coverage == other.coverage
             && self.direct == other.direct
+            && self.sampling == other.sampling
             && self.bounded == other.bounded
             && self.opaque == other.opaque
     }
     pub(super) fn shader_kind(&self) -> super::super::programs::PaintKind {
         use super::super::programs::PaintKind;
         let styled = self.appearance[5][3] != 0. || self.appearance[7][3] != 0.;
+        let constant_rgb = self.appearance[7][3] != 0. && self.appearance[6][..3] == [0.; 3];
         if let Some(direct) = self.direct {
             if self.kind > 1.5 {
                 PaintKind::VideoDirectNv12
@@ -107,7 +119,9 @@ impl PaintState {
                 PaintKind::Direct(direct)
             }
         } else if self.kind > 0. {
-            if styled {
+            if constant_rgb {
+                PaintKind::VideoConstant
+            } else if styled {
                 PaintKind::VideoAppearance
             } else {
                 PaintKind::Video
@@ -119,9 +133,25 @@ impl PaintState {
                 PaintKind::Coverage
             }
         } else if self.appearance[4][3] >= 3. {
-            PaintKind::Packed
+            if constant_rgb {
+                PaintKind::PackedConstant
+            } else {
+                PaintKind::Packed
+            }
         } else if self.appearance[4][3] == 2. {
             PaintKind::Gradient
+        } else if let Some(sampling) = self.sampling {
+            PaintKind::AppearanceSimple {
+                regional: matches!(
+                    sampling,
+                    mesh::DirectPaint::RegionalRgba
+                        | mesh::DirectPaint::RegionalBc1
+                        | mesh::DirectPaint::RegionalBc3
+                ),
+                constant: constant_rgb,
+            }
+        } else if constant_rgb {
+            PaintKind::AppearanceConstant
         } else if styled {
             PaintKind::Appearance
         } else {
@@ -189,8 +219,19 @@ impl Context<'_> {
             geometry.direct_paint(paint.source, repeat, Some(&paint.appearance), paint.format)
         };
         let bounded = geometry.bounded_color.paint(direct, paint.format);
+        let sampling = if direct.is_none() && !paint.coverage {
+            geometry.direct_paint(
+                paint.source,
+                repeat,
+                Some(&paint.sampling_appearance()),
+                paint.format,
+            )
+        } else {
+            None
+        };
         let state = paint.state(
             direct,
+            sampling,
             bounded,
             geometry.opaque_paint(direct),
             geometry.scissor(self.scissor, self.size),

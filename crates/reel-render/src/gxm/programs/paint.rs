@@ -15,6 +15,10 @@ pub(crate) enum Kind {
     Video,
     VideoAppearance,
     VideoDirectNv12,
+    AppearanceConstant,
+    PackedConstant,
+    VideoConstant,
+    AppearanceSimple { regional: bool, constant: bool },
 }
 impl Kind {
     #[cfg(feature = "profiling")]
@@ -41,6 +45,13 @@ impl Kind {
             "paint.bc3_bounded",
             "paint.solid_bounded",
             "paint.nv12_direct",
+            "paint.appearance_constant",
+            "paint.packed_constant",
+            "paint.video_constant",
+            "paint.appearance_direct",
+            "paint.appearance_region",
+            "paint.constant_direct",
+            "paint.constant_region",
         ][self.index()]
     }
     fn index(self) -> usize {
@@ -62,6 +73,12 @@ impl Kind {
             Self::Video => 14,
             Self::VideoAppearance => 15,
             Self::VideoDirectNv12 => 20,
+            Self::AppearanceConstant => 21,
+            Self::PackedConstant => 22,
+            Self::VideoConstant => 23,
+            Self::AppearanceSimple { regional, constant } => {
+                24 + usize::from(regional) + 2 * usize::from(constant)
+            }
         }
     }
     fn code(self, clipped: bool) -> native::ShaderCode<'static> {
@@ -101,6 +118,13 @@ impl Kind {
             18 => pair!("paint_direct_bc3_bounded"),
             19 => pair!("paint_solid_bounded"),
             20 => pair!("paint_video_direct_nv12"),
+            21 => pair!("paint_appearance_constant"),
+            22 => pair!("paint_packed_constant"),
+            23 => pair!("paint_video_constant"),
+            24 => pair!("paint_appearance_direct"),
+            25 => pair!("paint_appearance_region"),
+            26 => pair!("paint_constant_direct"),
+            27 => pair!("paint_constant_region"),
             _ => unreachable!(),
         }
     }
@@ -110,7 +134,7 @@ struct Entry {
     _storage: super::super::ownership::NativeTicket,
 }
 pub(crate) struct PaintPrograms {
-    entries: [OnceCell<Box<Entry>>; 84],
+    entries: [OnceCell<Box<Entry>>; 112],
     budget: BudgetPool,
 }
 impl PaintPrograms {

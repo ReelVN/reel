@@ -2,6 +2,8 @@
 //! The separate atlas sampling module adds finite numeric readback checks.
 #[path = "atlas_sampling_tests.rs"]
 mod atlas_sampling_tests;
+#[path = "image_adjustment_tests.rs"]
+mod image_adjustment_tests;
 use super::super::{DeviceGeneration, GpuLimits, resources};
 use super::*;
 use crate::test_support::r01_fixture;

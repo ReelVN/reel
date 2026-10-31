@@ -4,10 +4,10 @@
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
 mod capture_color;
-#[cfg(feature = "profiling")]
-pub mod profiling;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
 mod common;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
 pub use common::usage::Usage;
 /// CPU-only generation of complete prepared stage-effect fragments.

@@ -53,6 +53,7 @@ struct PaintState {
     quality: ImageQuality,
     coverage: bool,
     direct: Option<mesh::DirectPaint>,
+    sampling: Option<mesh::DirectPaint>,
     bounded: bool,
     opaque: Option<mesh::OpaquePaint>,
     scissor: crate::common::scissor::Scissor,
@@ -1058,8 +1059,23 @@ impl Context<'_> {
             paint.texture.mip_count(),
         );
         let bounded = mesh.bounded_color.paint(direct, paint.format);
+        let sampling = if direct.is_none()
+            && paint.kind == 0.
+            && !paint.coverage
+            && paint.source == mesh::PaintSource::Texture
+        {
+            mesh.direct_paint(
+                paint.source,
+                paint.repeat,
+                Some(&paint.sampling_appearance()),
+                paint.format,
+            )
+        } else {
+            None
+        };
         let state = paint.state(
             direct,
+            sampling,
             bounded,
             mesh.opaque_paint(direct),
             self.scissor.for_vertices(&mesh.vertices, self.size),
@@ -1137,6 +1153,7 @@ impl Context<'_> {
                 quality,
                 coverage,
                 direct: _,
+                sampling: _,
                 bounded: _,
                 opaque,
                 scissor,
