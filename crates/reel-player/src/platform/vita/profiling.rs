@@ -5,7 +5,64 @@ use std::time::Duration;
 use vita_native::app::wake::WaitResult;
 
 #[cfg(feature = "thread-profiling")]
+std::thread_local! {
+    static CPU_COUNTER: std::cell::RefCell<Option<(vita_native::app::time::Pmon, u64)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(feature = "thread-profiling")]
+fn read_thread_clock() -> Result<reel_core::profile::ThreadTime, i32> {
+    CPU_COUNTER.with(|state| {
+        let state = state.borrow();
+        let (counter, max_frequency_hz) = state.as_ref().ok_or(-1)?;
+        let observed = counter.read().map_err(|error| error.code)?;
+        Ok(reel_core::profile::ThreadTime {
+            thread: observed.thread_id as u64,
+            counter: reel_core::profile::ThreadCounter::Cycles32 {
+                ticks: observed.raw_cycle_ticks,
+                max_frequency_hz: *max_frequency_hz,
+            },
+        })
+    })
+}
+
+#[cfg(feature = "thread-profiling")]
+fn validate_thread_counter(
+    counter: &vita_native::app::time::Pmon,
+    max_frequency_hz: u64,
+) -> Result<(), vita_native::app::Error> {
+    let before = counter.read()?;
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_millis(2) {
+        std::hint::spin_loop();
+    }
+    let busy = counter.read()?;
+    let busy_wall = start.elapsed().as_micros() as u64;
+    vita_native::app::time::sleep(Duration::from_millis(2))?;
+    let after = counter.read()?;
+    let busy_ticks = busy.raw_cycle_ticks.wrapping_sub(before.raw_cycle_ticks);
+    let sleep_ticks = after.raw_cycle_ticks.wrapping_sub(busy.raw_cycle_ticks);
+    eprintln!(
+        "[reel-thread-counter-check] busy_wall_us={busy_wall} busy_ticks={busy_ticks} sleep_ticks={sleep_ticks} max_frequency_hz={max_frequency_hz} units=raw_cycle_ticks"
+    );
+    if busy_ticks == 0
+        || u128::from(busy_ticks) * 1_000_000 > u128::from(busy_wall) * u128::from(max_frequency_hz)
+        || u64::from(sleep_ticks) * 2 >= u64::from(busy_ticks)
+    {
+        return Err(vita_native::app::Error {
+            operation: "thread cycle counter startup check",
+            code: -1,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "thread-profiling")]
 pub(super) fn install_thread_clock() {
+    if CPU_COUNTER.with(|state| state.borrow().is_some()) {
+        return;
+    }
     let clocks = vita_native::app::power::clock_frequencies();
     let raw = |value: Result<u32, vita_native::app::Error>| {
         value.map_or_else(|error| i64::from(error.code), i64::from)
@@ -17,17 +74,21 @@ pub(super) fn install_thread_clock() {
         raw(clocks.bus_mhz),
         raw(clocks.gpu_xbar_mhz)
     );
-    reel_core::profile::install_thread_clock(|| {
-        vita_native::app::time::thread_runtime()
-            .map(|value| reel_core::profile::ThreadTime {
-                thread: value.thread_id as u64,
-                run_us: value.run_micros,
-            })
-            .map_err(|error| error.code)
-    });
+    let initialized = (|| {
+        let max_frequency_hz = u64::from(clocks.arm_mhz?) * 1_000_000;
+        let counter = vita_native::app::time::Pmon::start()?;
+        validate_thread_counter(&counter, max_frequency_hz)?;
+        CPU_COUNTER.with(|state| *state.borrow_mut() = Some((counter, max_frequency_hz)));
+        Ok::<(), vita_native::app::Error>(())
+    })();
+    if let Err(error) = initialized {
+        eprintln!("[reel-thread-clock] initialization_error={error}");
+        return;
+    }
+    reel_core::profile::install_thread_clock(read_thread_clock);
     match vita_native::app::time::thread_runtime() {
         Ok(value) => eprintln!(
-            "[reel-thread-clock] source=kernel_runClocks thread={} priority={} affinity={} cpu={} run_us={} vm_stride=127 replay_stride=1 present_stride=1",
+            "[reel-thread-clock] source=pmon_cycle32 thread={} priority={} affinity={} cpu={} kernel_run_us={} vm_stride=127 replay_stride=1 present_stride=1",
             value.thread_id, value.priority, value.affinity, value.cpu, value.run_micros
         ),
         Err(error) => eprintln!("[reel-thread-clock] initialization_error={error}"),

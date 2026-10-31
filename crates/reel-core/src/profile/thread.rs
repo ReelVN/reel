@@ -13,7 +13,7 @@ use std::{
 /// replay and presentation scopes sample every call when a clock is installed.
 pub const PHASES: [Phase; 3] = [Phase::VmSlice, Phase::Replay, Phase::Present];
 /// Raw paired counters; times are microseconds, counts retain their suffix.
-pub const METRICS: [&str; 9] = [
+pub const METRICS: [&str; 13] = [
     "samples_count",
     "wall_us",
     "run_us",
@@ -23,6 +23,10 @@ pub const METRICS: [&str; 9] = [
     "identity_mismatches_count",
     "clock_regressions_count",
     "inconsistent_pairs_count",
+    "cycle_samples_count",
+    "cycle_ticks_count",
+    "ambiguous_wraps_count",
+    "clock_source_errors_count",
 ];
 const SAMPLES: usize = 0;
 const WALL: usize = 1;
@@ -33,14 +37,34 @@ const FAILURES: usize = 5;
 const IDENTITIES: usize = 6;
 const REGRESSIONS: usize = 7;
 const INCONSISTENT: usize = 8;
+const CYCLE_SAMPLES: usize = 9;
+const CYCLE_TICKS: usize = 10;
+const AMBIGUOUS_WRAP: usize = 11;
+const SOURCE: usize = 12;
+
+/// Units and rollover contract of a platform execution counter.
+#[derive(Clone, Copy, Debug)]
+pub enum ThreadCounter {
+    /// Cumulative execution microseconds from an immediately updated source.
+    Microseconds(u64),
+    /// Raw thread-local hardware cycle ticks. The frequency bound rejects
+    /// intervals that could span a complete rollover; it is not a conversion
+    /// factor. The platform keeps this counter running and owns its configuration.
+    Cycles32 {
+        /// Current unsigned hardware counter.
+        ticks: u32,
+        /// Maximum possible tick frequency during this interval, in Hz.
+        max_frequency_hz: u64,
+    },
+}
 
 /// A platform observation of one thread's cumulative execution time.
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadTime {
     /// Stable process-local OS thread identity.
     pub thread: u64,
-    /// Cumulative execution microseconds, excluding time while descheduled.
-    pub run_us: u64,
+    /// Execution observation with its explicit units and rollover contract.
+    pub counter: ThreadCounter,
 }
 type Clock = fn() -> Result<ThreadTime, i32>;
 static CLOCK: OnceLock<Clock> = OnceLock::new();
@@ -141,9 +165,13 @@ impl Probe {
         record_query(self.phase, after, query_wall);
         if let Ok(after) = after {
             match pair(self.before, after, wall) {
-                Ok(run) => {
+                Ok((run, cycles)) => {
                     add(self.phase, WALL, wall);
                     add(self.phase, RUN, run);
+                    if let Some(cycles) = cycles {
+                        add(self.phase, CYCLE_SAMPLES, 1);
+                        add(self.phase, CYCLE_TICKS, cycles);
+                    }
                     add(self.phase, SAMPLES, 1);
                 }
                 Err(metric) => add(self.phase, metric, 1),
@@ -151,15 +179,42 @@ impl Probe {
         }
     }
 }
-fn pair(before: ThreadTime, after: ThreadTime, wall: u64) -> Result<u64, usize> {
+fn pair(before: ThreadTime, after: ThreadTime, wall: u64) -> Result<(u64, Option<u64>), usize> {
     if before.thread != after.thread {
         return Err(IDENTITIES);
     }
-    let run = after.run_us.checked_sub(before.run_us).ok_or(REGRESSIONS)?;
-    if run > wall {
-        return Err(INCONSISTENT);
+    match (before.counter, after.counter) {
+        (ThreadCounter::Microseconds(before), ThreadCounter::Microseconds(after)) => {
+            let run = after.checked_sub(before).ok_or(REGRESSIONS)?;
+            if run > wall {
+                return Err(INCONSISTENT);
+            }
+            Ok((run, None))
+        }
+        (
+            ThreadCounter::Cycles32 {
+                ticks: before,
+                max_frequency_hz: before_hz,
+            },
+            ThreadCounter::Cycles32 {
+                ticks: after,
+                max_frequency_hz: after_hz,
+            },
+        ) => {
+            if before_hz == 0 || before_hz != after_hz {
+                return Err(SOURCE);
+            }
+            if u128::from(wall) * u128::from(before_hz) >= (1u128 << 32) * 1_000_000 {
+                return Err(AMBIGUOUS_WRAP);
+            }
+            let ticks = u64::from(after.wrapping_sub(before));
+            if u128::from(ticks) * 1_000_000 > u128::from(wall) * u128::from(before_hz) {
+                return Err(INCONSISTENT);
+            }
+            Ok((0, Some(ticks)))
+        }
+        _ => Err(SOURCE),
     }
-    Ok(run)
 }
 fn add(phase: usize, metric: usize, value: u64) {
     COUNTERS[phase][metric].fetch_add(value, Ordering::Relaxed);
@@ -180,25 +235,25 @@ mod tests {
     fn pairs_separate_descheduled_time_and_reject_changed_identity_or_clock() {
         let before = ThreadTime {
             thread: 7,
-            run_us: 100,
+            counter: ThreadCounter::Microseconds(100),
         };
         assert_eq!(
             pair(
                 before,
                 ThreadTime {
                     thread: 7,
-                    run_us: 120
+                    counter: ThreadCounter::Microseconds(120)
                 },
                 200
             ),
-            Ok(20)
+            Ok((20, None))
         );
         assert_eq!(
             pair(
                 before,
                 ThreadTime {
                     thread: 8,
-                    run_us: 120
+                    counter: ThreadCounter::Microseconds(120)
                 },
                 200
             ),
@@ -209,7 +264,7 @@ mod tests {
                 before,
                 ThreadTime {
                     thread: 7,
-                    run_us: 99
+                    counter: ThreadCounter::Microseconds(99)
                 },
                 200
             ),
@@ -220,7 +275,7 @@ mod tests {
                 before,
                 ThreadTime {
                     thread: 7,
-                    run_us: 301
+                    counter: ThreadCounter::Microseconds(301)
                 },
                 200
             ),
@@ -234,11 +289,31 @@ mod tests {
             ..Default::default()
         };
         let mut after = before;
-        after.costs[0].values = [2, 400, 40, 4, 12, 0, 0, 0, 0];
+        after.costs[0].values = [2, 400, 40, 4, 12, 0, 0, 0, 0, 0, 0, 0, 0];
         let delta = after.checked_delta(&before).unwrap();
-        assert_eq!(delta.costs[0].values, [2, 400, 40, 4, 12, 0, 0, 0, 0]);
+        assert_eq!(delta.costs[0].values, after.costs[0].values);
         assert!(before.checked_delta(&after).is_none());
         before.available = false;
         assert!(after.checked_delta(&before).is_none());
+    }
+
+    #[test]
+    fn raw_cycles_keep_units_and_reject_ambiguous_wraps_or_source_changes() {
+        let clock = |ticks, max_frequency_hz| ThreadTime {
+            thread: 7,
+            counter: ThreadCounter::Cycles32 {
+                ticks,
+                max_frequency_hz,
+            },
+        };
+        let before = clock(u32::MAX - 4, 500_000_000);
+        assert_eq!(pair(before, clock(5, 500_000_000), 1), Ok((0, Some(10))));
+        assert_eq!(
+            pair(before, clock(5, 500_000_000), 10_000_000),
+            Err(AMBIGUOUS_WRAP)
+        );
+        assert_eq!(pair(before, clock(5, 333_000_000), 1), Err(SOURCE));
+        assert_eq!(pair(before, clock(5, 0), 1), Err(SOURCE));
+        assert_eq!(pair(before, clock(5000, 500_000_000), 1), Err(INCONSISTENT));
     }
 }
