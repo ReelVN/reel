@@ -199,7 +199,13 @@ impl Live {
     pub(crate) fn start() -> io::Result<Self> {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = stop.clone();
-        let thread = std::thread::Builder::new().name("reel-probe".into()).stack_size(64 << 10)
+        // Unoptimized snapshot/formatting calls retain larger temporary frames.
+        let stack_bytes = if cfg!(debug_assertions) {
+            256 << 10
+        } else {
+            64 << 10
+        };
+        let thread = std::thread::Builder::new().name("reel-probe".into()).stack_size(stack_bytes)
             .spawn(move || {
                 use std::fmt::Write as _;
                 let start = Instant::now();
