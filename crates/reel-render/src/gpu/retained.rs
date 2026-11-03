@@ -11,7 +11,7 @@ pub(super) struct Output {
 }
 
 pub(super) struct Pending {
-    pub token: usize,
+    pub notify_ready: bool,
     pub flight: Inflight,
 }
 #[derive(Default)]

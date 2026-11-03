@@ -182,8 +182,14 @@ pub enum Phase {
     HostEvent,
     /// Configure native presentation images after geometry or surface changes.
     SurfaceConfigure,
+    /// Scale and transform a font outline before rasterization.
+    GlyphOutline,
+    /// Expand a glyph stroke into a fillable path.
+    GlyphStroke,
+    /// Allocate and rasterize the glyph's alpha coverage.
+    GlyphCoverage,
 }
-pub const NAMES: [&str; 103] = [
+pub const NAMES: [&str; 106] = [
     "input",
     "tick",
     "session",
@@ -287,6 +293,9 @@ pub const NAMES: [&str; 103] = [
     "frame_accept",
     "host_event",
     "surface_configure",
+    "glyph_outline",
+    "glyph_stroke",
+    "glyph_coverage",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

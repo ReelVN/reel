@@ -117,6 +117,8 @@ pub fn rasterize(
         budget,
     }: RasterLimits,
 ) -> Result<Option<GlyphBitmap>, GpuError> {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
+    let outline_timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphOutline);
     let resource = frame
         .resources()
         .leases()
@@ -212,6 +214,7 @@ pub fn rasterize(
         });
     }
     let dashes;
+    drop(outline_timing);
     let style = match &run.style {
         peniko::Style::Fill(fill) => zeno::Style::Fill(match fill {
             peniko::Fill::NonZero => zeno::Fill::NonZero,
@@ -268,6 +271,7 @@ pub fn rasterize(
         budget,
     };
     if matches!(style, zeno::Style::Stroke(_)) {
+        let stroke_timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphStroke);
         // Zeno otherwise expands the stroke once for bounds and again for pixels.
         let mut path = stroke::StrokePath::new(&limits.budget, limits.available)?;
         let fill = context
@@ -275,6 +279,7 @@ pub fn rasterize(
             .apply(outline.path(), style, None, &mut path);
         path.finish()?;
         let available = limits.available.saturating_sub(path.bytes());
+        drop(stroke_timing);
         raster_mask(
             path.commands(),
             fill.into(),
@@ -301,6 +306,7 @@ fn raster_mask(
         budget,
     }: RasterLimits,
 ) -> Result<Option<GlyphBitmap>, GpuError> {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphCoverage);
     let mut mask = zeno::Mask::with_scratch(path, scratch);
     let mut size = [0; 2];
     mask.format(zeno::Format::Alpha)

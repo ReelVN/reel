@@ -56,12 +56,21 @@ fn retained_text_preparation_publishes_glyphs_for_the_following_draw() {
         })
         .collect();
     assert!(!glyphs.is_empty());
-    subject
-        .gpu
-        .device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .unwrap();
-    subject.poll().unwrap();
+    assert!(
+        subject
+            .retained
+            .pending
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .all(|pending| {
+                !pending
+                    .flight
+                    .done
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+    );
     let prepared = subject.prepare(&transitioning).unwrap();
     for (key, glyph) in &glyphs {
         assert!(

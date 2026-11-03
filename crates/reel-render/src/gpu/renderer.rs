@@ -229,7 +229,11 @@ impl Renderer {
         if resources_available {
             limit -= 1;
         }
-        for pending in &self.retained.pending.lock().unwrap().entries {
+        for pending in &mut self.retained.pending.lock().unwrap().entries {
+            if limit != 0 && std::mem::take(&mut pending.notify_ready) {
+                resources_available = true;
+                limit -= 1;
+            }
             if pending.flight.done.load(Ordering::Acquire) {
                 for slot in &pending.flight.geometry {
                     slot.storage.ready()?;
@@ -255,7 +259,6 @@ impl Renderer {
                         &mut pending.flight.effect_uniform_slots,
                         &self.budgets.transient,
                     );
-                    self.retained.inputs.complete(pending.token);
                     resources_available = true;
                     limit -= 1;
                     false
@@ -1023,7 +1026,7 @@ impl Renderer {
                     .unwrap()
                     .entries
                     .push(super::retained::Pending {
-                        token,
+                        notify_ready: true,
                         flight: Inflight {
                             capture: None,
                             id: 0,
@@ -1041,6 +1044,9 @@ impl Renderer {
                             geometry: prepared.geometry,
                         },
                     });
+                // Subsequent sampling uses this queue, just like effect-result
+                // reuse. The flight keeps every producer lease until completion.
+                self.retained.inputs.complete(token);
                 return Err(GpuError::Preparing);
             }
             return Ok(prepared);

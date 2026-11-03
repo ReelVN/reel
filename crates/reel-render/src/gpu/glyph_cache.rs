@@ -227,7 +227,6 @@ impl GlyphCache {
         images: &super::image_cache::ImageCache,
         uploads: &mut crate::common::glyph_upload::Batch<Arc<Glyph>>,
     ) -> Result<Arc<Glyph>, GpuError> {
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
         let source = ResourceSource::new(
             frame
                 .resources()

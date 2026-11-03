@@ -173,7 +173,6 @@ impl GlyphCache {
             budgets,
             limits,
         } = device;
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
         let (density, index) = sample;
         let source = crate::common::resources::ResourceSource::new(
             frame
