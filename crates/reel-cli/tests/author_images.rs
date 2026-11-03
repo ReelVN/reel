@@ -305,7 +305,17 @@ fn source_and_asb_share_real_image_frames_with_an_independent_asset_root() {
             let frame = render(story, root);
             let actual = images(&frame);
             if let Some(expected) = &expected {
-                assert_eq!(&actual, expected);
+                let expected: &Vec<ImageDraw> = expected;
+                assert_eq!(actual.len(), expected.len());
+                for (actual, expected) in actual.iter().zip(expected) {
+                    assert_eq!(actual.version.key, expected.version.key);
+                    assert_eq!(actual.transform, expected.transform);
+                    assert_eq!(actual.dimensions, expected.dimensions);
+                    assert!(
+                        actual.pixels == expected.pixels,
+                        "relocated resource pixels"
+                    );
+                }
             } else {
                 expected = Some(actual);
             }

@@ -1,8 +1,8 @@
 use super::{Error, Result, SIZE, r01_fixture};
 #[path = "masks.rs"]
 mod masks;
-#[path = "scenes/portraits.rs"]
-mod portraits;
+#[path = "scenes/regional_instances.rs"]
+mod regional_instances;
 #[path = "scenes/text.rs"]
 mod text;
 pub const TEXT_REVEAL_FRAMES: usize = text::LINE.len();
@@ -32,7 +32,7 @@ pub struct Assets {
     pub versions: Vec<ResourceVersion>,
     text: Option<text::TextScene>,
     static_mask: Option<(ResourceHandle, Arc<EffectProgram>)>,
-    portraits: Option<portraits::Portraits>,
+    regional_instances: Option<regional_instances::RegionalInstances>,
 }
 fn error(error: impl std::fmt::Debug) -> Error {
     format!("{error:?}").into()
@@ -52,13 +52,13 @@ impl Assets {
             versions: Vec::new(),
             text: None,
             static_mask: None,
-            portraits: None,
+            regional_instances: None,
         })
     }
     pub fn retire(&mut self) {
         self.text = None;
         self.static_mask = None;
-        self.portraits = None;
+        self.regional_instances = None;
         for handle in self.handles.drain(..) {
             self.registry.retire(handle);
             self.registry.release(handle);
@@ -172,11 +172,20 @@ impl Assets {
         Ok((handle, program))
     }
     pub fn frame(&mut self, case: &str, index: usize) -> Result<RenderFrame> {
-        if case == "portrait_pan" {
-            if self.portraits.is_none() {
-                self.portraits = Some(portraits::Portraits::load()?);
+        if case == "regional_instances" {
+            if self.regional_instances.is_none() {
+                self.regional_instances = Some(regional_instances::RegionalInstances::new(
+                    &mut self.registry,
+                    &self.pool,
+                    &mut self.handles,
+                    &mut self.versions,
+                )?);
             }
-            return self.portraits.as_ref().unwrap().frame(index, &self.pool);
+            return self
+                .regional_instances
+                .as_ref()
+                .unwrap()
+                .frame(index, &self.pool);
         }
         if matches!(case, "text" | "text_plain" | "text_styled") {
             if self.text.is_none() {
@@ -247,6 +256,7 @@ impl Assets {
                     images: vec![lease],
                     bounds: Rect::new(0., 0., 960., 544.),
                     coverage_invert: false,
+                    resolution_scale: 1.,
                 });
             } else if case.starts_with("mask_") {
                 widget.mask = Some(PaintImageMask {
@@ -292,6 +302,10 @@ impl Assets {
         }
         build.finish().map_err(error)
     }
+}
+
+pub(super) fn check_regional_pixels(pixels: &[u8]) -> Result {
+    regional_instances::check_pixels(pixels)
 }
 
 fn fill(scene: &mut Scene, rect: Rect, transform: Affine) {

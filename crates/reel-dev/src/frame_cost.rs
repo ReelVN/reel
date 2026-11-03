@@ -57,7 +57,7 @@ fn derive_phases(values: &mut BTreeMap<String, u64>) {
     );
 }
 
-fn normalize(text: &str) -> String {
+pub(crate) fn normalize(text: &str) -> String {
     if !text.contains("*** TTY: ") {
         return text.into();
     }
@@ -73,6 +73,9 @@ fn normalize(text: &str) -> String {
                 "frame_segment\t",
                 "frame_columns\t",
                 "frame_sample\t",
+                "trace_",
+                "frozen_",
+                "[reel-frozen-report]",
             ]
             .iter()
             .any(|prefix| fragment.starts_with(prefix))
@@ -220,6 +223,11 @@ fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
         .iter()
         .copied()
         .filter(|row| row.values.get("vm_profile_valid") == Some(&1))
+        .filter(|row| {
+            row.values
+                .get("vm_driver_samples_count")
+                .is_some_and(|n| *n > 0)
+        })
         .collect();
     let closed = |row: &&Frame| {
         let v = &row.values;
@@ -257,9 +265,10 @@ fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
                 .and_then(|n| n.checked_add(native))
                 .and_then(|n| n.checked_add(other))
                 == Some(run)
-            && clock <= other
+            && clock <= run
             && calibration <= entry
             && vm_steps::gaps_closed(v).unwrap_or(true)
+            && vm_steps::parts_closed(v).unwrap_or(true)
     };
     let valid: Vec<_> = observed.iter().copied().filter(closed).collect();
     let totals: BTreeMap<_, u64> = columns
@@ -291,12 +300,13 @@ fn vm_profile(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
             })
             .map(|(_, count)| count)
             .sum::<u64>();
-    json!({"valid_intervals":valid.len(),"ledger_errors":observed.len()-valid.len(),
+    json!({"valid_intervals":valid.len(),"unobserved_intervals":rows.len()-observed.len(),"ledger_errors":observed.len()-valid.len(),
         "measurement":"sampled whole-slice wall-time ledger; observer overhead included, not thread CPU time",
         "calibration":"raw empty clock-pair time is included in entry; no subtraction",
         "legacy_steps":"inclusive event samples; fetch/cost/execute overlap scalar/script; durations cannot be added",
         "step_observations":vm_steps::summarize(&observed),
         "loop_gaps":vm_steps::gaps(&observed),
+        "lifecycle":vm_steps::lifecycle(&observed),
         "observer_clock_queries_count":observer_clock_queries,
         "totals":totals,
         "wall_fractions":{"entry":fraction("entry","wall"),"run":fraction("run","wall"),"exit":fraction("exit","wall")},
@@ -384,8 +394,11 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
     }
     let groups: Vec<_> = trace.labels.iter().map(|(segment,label)| {
         let rows: Vec<_> = trace.rows.iter().filter(|row|row.segment==*segment).collect();
-        let eligible: Vec<_> = rows.iter().copied().filter(|row|row.values["partial"]==0 && row.values["present_calls"]==1).collect();
-        let boundary: Vec<_> = rows.iter().copied().filter(|row|row.values["partial"]!=0 || row.values["present_calls"]!=1).collect();
+        let (slow, recent): (Vec<_>, Vec<_>) = rows.iter().copied().partition(|row| row.values.get("retained_slow") == Some(&1));
+        let eligible: Vec<_> = recent.iter().copied().filter(|row|row.values["partial"]==0 && row.values["present_calls"]==1).collect();
+        let boundary: Vec<_> = recent.iter().copied().filter(|row|row.values["partial"]!=0 || row.values["present_calls"]!=1).collect();
+        let interval_span_us: u64 = eligible.iter().map(|row| row.values["span_us"]).sum();
+        let interval_presents: u64 = eligible.iter().map(|row| row.values["present_calls"]).sum();
         let mut metrics = BTreeMap::new();
         let mut boundary_work = BTreeMap::new();
         for key in columns.keys().filter(|key|key.ends_with("_us") && !key.starts_with("thread_") && !key.starts_with("native_") && key.as_str()!="elapsed_us") {
@@ -394,7 +407,7 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
                 boundary_work.insert(key,statistics(boundary.iter().filter(|row|!matches!(key.as_str(),"schedule_non_vm_us"|"session_unattributed_us") || row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)==0).map(|row|row.values[key]).collect(),None));
             }
         }
-        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":rows.len()-eligible.len(),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns),"vm_profile":vm_profile(&eligible,columns),"thread_runtime":thread_runtime(&eligible,columns),"exclusive_wall":wall::summarize(&eligible),"native_submission":wall::native(&eligible)})
+        json!({"segment":segment,"label":label,"retained_frames":rows.len(),"retained_slow_frames":slow.len(),"historical_slow_samples":slow.iter().map(|row| &row.values).collect::<Vec<_>>(),"eligible_intervals":eligible.len(),"sample_size":if eligible.len()>=120 {"at_least_120"}else{"short_descriptive_sample"},"partial_or_multi_present":boundary.len(),"submission_interval_totals":{"span_us":interval_span_us,"present_calls":interval_presents},"observed_submission_fps":(interval_span_us != 0).then(|| 1_000_000. * interval_presents as f64 / interval_span_us as f64),"phase_hierarchy_errors":eligible.iter().map(|row|row.values.get("phase_hierarchy_errors").copied().unwrap_or(0)).sum::<u64>(),"metrics":metrics,"boundary_work_metrics":boundary_work,"quantities":quantities(&eligible,columns),"vm_profile":vm_profile(&eligible,columns),"vm_execution":vm_steps::execution(&eligible),"thread_runtime":thread_runtime(&eligible,columns),"exclusive_wall":wall::summarize(&eligible),"native_submission":wall::native(&eligible)})
     }).collect();
     Ok(
         json!({"schema":1,"declared_environment":scope,"measurement":"present_submission_intervals_and_nested_wall_time","gpu_service_time":"unmeasured","display_cadence":"unmeasured","trace_metadata":trace.metadata,"limits_kind":"optional_workload_engineering_targets","groups":groups}),
@@ -429,6 +442,42 @@ pub fn report(scope: &str, input: &Path, output: &Path, budget: Option<&Path>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn submission_rate_uses_complete_interval_totals_including_stalls() {
+        let row = |partial, presents, span| Frame {
+            segment: 1,
+            values: BTreeMap::from([
+                ("segment".into(), 1),
+                ("partial".into(), partial),
+                ("present_calls".into(), presents),
+                ("span_us".into(), span),
+                ("active_us".into(), 1),
+            ]),
+        };
+        let mut slow = row(0, 1, 20_000_000);
+        slow.values.insert("retained_slow".into(), 1);
+        let trace = Trace {
+            labels: BTreeMap::from([(1, "scene".into())]),
+            metadata: "frame_metadata\tversion=1".into(),
+            rows: vec![
+                row(0, 1, 10_000),
+                row(0, 1, 10_000),
+                row(0, 1, 980_000),
+                row(1, 1, 9_000_000),
+                row(0, 2, 10_000_000),
+                slow,
+            ],
+        };
+        let report = summarize(&trace, "host", &BTreeMap::new()).unwrap();
+        let group = &report["groups"][0];
+        assert_eq!(group["submission_interval_totals"]["span_us"], 1_000_000);
+        assert_eq!(group["submission_interval_totals"]["present_calls"], 3);
+        assert_eq!(group["observed_submission_fps"], 3.0);
+        assert_eq!(group["metrics"]["span_us"]["p50_us"], 10_000);
+        assert_eq!(group["partial_or_multi_present"], 2);
+        assert_eq!(group["retained_slow_frames"], 1);
+        assert_eq!(group["historical_slow_samples"][0]["span_us"], 20_000_000);
+    }
     #[test]
     #[ignore = "offline frame-ledger export; set REEL_FRAME_LOG and REEL_FRAME_ROWS"]
     fn dump_frame_intervals() {
@@ -599,7 +648,7 @@ mod tests {
             segment: 1,
             values: values.clone(),
         };
-        bad.values.insert("vm_driver_budget_clock_ns".into(), 21);
+        bad.values.insert("vm_driver_budget_clock_ns".into(), 81);
         let mut missing = Frame {
             segment: 1,
             values: values.clone(),
@@ -617,6 +666,15 @@ mod tests {
         assert_eq!(report["totals"]["vm_driver_calibration_ns"], 3);
         assert_eq!(report["totals"]["vm_step_script_sample_wall_ns"], 999);
         assert_eq!(report["run_fractions"]["script"], 0.375);
+        let mut off = Frame {
+            segment: valid.segment,
+            values: valid.values.clone(),
+        };
+        off.values.insert("vm_driver_samples_count".into(), 0);
+        let off = vm_profile(&[&off], &values);
+        assert_eq!(off["unobserved_intervals"], 1);
+        assert_eq!(off["valid_intervals"], 0);
+        assert_eq!(off["ledger_errors"], 0);
         assert!(vm_profile(&[], &BTreeMap::new()).is_null());
     }
 }

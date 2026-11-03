@@ -4,8 +4,7 @@ use reel_engine::aside::source::{CatalogProducts, CompiledStory};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
-    io::{self, Read},
+    fs, io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -26,18 +25,18 @@ pub struct Cache {
 }
 
 fn collect(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(directory)? {
+    for entry in walkdir::WalkDir::new(directory).min_depth(1) {
         let entry = entry?;
-        let kind = entry.file_type()?;
+        let kind = entry.file_type();
         if kind.is_dir() {
-            collect(&entry.path(), files)?;
+            continue;
         } else if kind.is_file() {
             if entry
                 .path()
                 .extension()
                 .is_some_and(|extension| extension == "aside")
             {
-                files.push(entry.path());
+                files.push(entry.into_path());
             }
         } else {
             // The ordinary loader still handles projects outside this cache's file model.
@@ -49,16 +48,10 @@ fn collect(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-fn hash_file(path: &Path, buffer: &mut [u8]) -> io::Result<blake3::Hash> {
+fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
     let mut file = fs::File::open(path)?;
     let mut hash = blake3::Hasher::new();
-    loop {
-        let count = file.read(buffer)?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
+    hash.update_reader(&mut file)?;
     Ok(hash.finalize())
 }
 
@@ -66,12 +59,11 @@ fn fingerprint(root: &Path, tool: &Path, target: &str) -> io::Result<String> {
     let mut files = Vec::new();
     collect(&root.join("src"), &mut files)?;
     files.sort();
-    let mut buffer = [0; 64 * 1024];
     let mut hash = blake3::Hasher::new();
     hash.update(b"Reel development cache v1\0");
     hash.update(&(target.len() as u64).to_le_bytes());
     hash.update(target.as_bytes());
-    hash.update(hash_file(tool, &mut buffer)?.as_bytes());
+    hash.update(hash_file(tool)?.as_bytes());
     for file in files {
         let name = file
             .strip_prefix(root)
@@ -80,7 +72,7 @@ fn fingerprint(root: &Path, tool: &Path, target: &str) -> io::Result<String> {
             .as_encoded_bytes();
         hash.update(&(name.len() as u64).to_le_bytes());
         hash.update(name);
-        hash.update(hash_file(&file, &mut buffer)?.as_bytes());
+        hash.update(hash_file(&file)?.as_bytes());
     }
     Ok(hash.finalize().to_hex().to_string())
 }

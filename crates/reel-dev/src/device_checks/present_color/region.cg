@@ -1,0 +1,11 @@
+// Preserve the original varying and exact power-of-two source mapping.
+varying out float4 reel_output : COLOR;
+varying float2 v_uv : TEXCOORD0;
+uniform sampler2D u_image : TEXUNIT0;
+uniform float2 u_scale;
+uniform float4 reel_clip_rect;
+void main(float4 fragment_position : WPOS) {
+    clip(0.5 - float(any(fragment_position.xy < reel_clip_rect.xy)
+        || any(fragment_position.xy >= reel_clip_rect.zw)));
+    reel_output = tex2D(u_image, v_uv * u_scale);
+}

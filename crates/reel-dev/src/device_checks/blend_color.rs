@@ -97,6 +97,10 @@ fn frame(blend: BlendMode, alpha: f32, sampled: bool, id: u64) -> Result<RenderF
         Rect::new(1., 61., 127., 65.),
         [180, 70, 210, 93],
     );
+    build(scene, id)
+}
+
+fn build(scene: Scene, id: u64) -> Result<RenderFrame> {
     let mut widget = r01_fixture::RecordWidget::new(scene);
     widget.clip = false;
     let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
@@ -120,7 +124,103 @@ fn frame(blend: BlendMode, alpha: f32, sampled: bool, id: u64) -> Result<RenderF
     build.finish().map_err(error)
 }
 
+fn scheduled_frame(separate_scopes: bool, id: u64) -> Result<RenderFrame> {
+    let mut scene = Scene::new();
+    fill(
+        &mut scene,
+        Rect::new(0., 0., 128., 128.),
+        [40, 90, 160, 255],
+    );
+    for (index, blend) in [Mix::Multiply, Mix::Screen, Mix::Overlay, Mix::Difference]
+        .into_iter()
+        .enumerate()
+    {
+        let x = 8. + 17. * index as f64;
+        let y = 12. + 11. * index as f64;
+        if separate_scopes {
+            scene.push_clip(Clip::Fill {
+                transform: Affine::IDENTITY,
+                shape: Geometry::Rect(Rect::new(0., 0., 128., 128.)),
+                fill_rule: Default::default(),
+            });
+        }
+        scene.push_group(Group {
+            composite: Composite {
+                alpha: 0.75,
+                blend: blend.into(),
+            },
+            ..Default::default()
+        });
+        fill(
+            &mut scene,
+            Rect::new(x, y, x + 48., y + 48.),
+            COLORS[10 + index],
+        );
+        fill(
+            &mut scene,
+            Rect::new(x + 12., y + 8., x + 52., y + 44.),
+            COLORS[6 + index],
+        );
+        scene.pop_group();
+        if separate_scopes {
+            scene.pop_clip();
+        }
+    }
+    build(scene, id)
+}
+
+fn scheduled_colors(renderer: &mut DeviceBackend) -> Result {
+    let previous = reel_render::profiling::shared_source_atlas();
+    let result = scheduled_color_cases(renderer);
+    reel_render::profiling::set_shared_source_atlas(previous);
+    result
+}
+
+fn scheduled_color_cases(renderer: &mut DeviceBackend) -> Result {
+    let reference = capture(renderer, scheduled_frame(true, 1002)?, SIZE)?;
+    let mut failed = false;
+    for shared in [false, true] {
+        reel_render::profiling::set_shared_source_atlas(shared);
+        let before = reel_core::profile::Sample::snapshot();
+        let direct = capture(
+            renderer,
+            scheduled_frame(false, 1003 + u64::from(shared))?,
+            SIZE,
+        )?;
+        let batch_calls = reel_core::profile::Sample::snapshot().delta(before).calls
+            [reel_core::profile::Phase::CompositeBatch as usize];
+        let changed = direct
+            .iter()
+            .zip(&reference)
+            .filter(|(a, b)| a != b)
+            .count();
+        let max_error = direct
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        log(format_args!(
+            "BATCH COLOR shared={shared} batch_calls={batch_calls} changed_bytes={changed} max_error={max_error}"
+        ));
+        if batch_calls == 0 || changed != 0 {
+            std::fs::write(
+                super::directory().join(format!("batch-shared-{shared}.rgba")),
+                direct,
+            )?;
+            std::fs::write(super::directory().join("batch-reference.rgba"), &reference)?;
+            failed = true;
+        }
+    }
+    if failed {
+        Err("scheduled blend pixels differ or the batch was not exercised".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub(super) fn run(renderer: &mut DeviceBackend) -> Result {
+    scheduled_colors(renderer)?;
     super::image_color::run(renderer)?;
     let modes = [
         BlendMode {

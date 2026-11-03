@@ -59,7 +59,7 @@ reel export --release --resource-target vita --data-only
 
 Copy the exported directory to `ux0:/data/reel/GameName/`. The launcher lists directories containing `game.asb`; each game keeps its progress in its own `saves/` directory. Press SELECT + START during a game to return to the list.
 
-Press SELECT in the launcher to choose its language and theme; preferences are saved in `ux0:/data/reel/launcher.tsv`. Press START to refresh the list after copying a new game.
+Press SELECT in the launcher to choose its language and theme; preferences are saved in `ux0:/data/reel/launcher.json`. Press START to refresh the list after copying a new game.
 
 Add `resources.toml` at the project root to generate target-specific asset copies:
 
@@ -1145,6 +1145,8 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 Use `sampling: "nearest"` on an image to preserve pixel edges; the default `"linear"` smooths scaling. Switching filtering shares the same image resource. Atlas crops and tiled images retain their source windows.
 
 Use `effect` to apply a drawing function to a node and its children. `Fragment.sample()` reads their composed color; return a color to replace it or a float to control coverage. Bind parameters to ordinary state so controls and animation can change the effect.
+
+The node property `effect_resolution_scale` controls its effect output resolution and defaults to `1.0`. For example, `effect_resolution_scale: if build.target == "vita" { 0.5 } else { 1.0 }` halves both axes on Vita and bilinearly enlarges the result to the original region. The input subtree retains its resolution; keep text and buttons in separate nodes when reducing a background effect.
 
 ```aside
 use reel::types::Fragment;

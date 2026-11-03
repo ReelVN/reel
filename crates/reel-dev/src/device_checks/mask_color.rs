@@ -175,7 +175,10 @@ pub(super) fn run(renderer: &mut DeviceBackend, reference: bool) -> Result {
     let directory = super::directory().join("mask-color-v1");
     if reference {
         std::fs::create_dir_all(&directory)?;
-        std::fs::write(directory.join("source.txt"), env!("REEL_PROBE_REVISION"))?;
+        std::fs::write(
+            directory.join("source.txt"),
+            env!("REEL_DEVICE_CHECKS_REVISION"),
+        )?;
     } else {
         log(format_args!(
             "MASK COLOR reference_source={}",

@@ -171,46 +171,38 @@ pub struct Exported {
 
 /// Collect names only. Large media payloads never enter the compiler's memory.
 fn collect(root: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) -> io::Result<()> {
-    fn walk(
-        root: &Path,
-        directory: &Path,
-        prefix: &str,
-        out: &mut BTreeMap<String, PathBuf>,
-    ) -> io::Result<()> {
-        for item in fs::read_dir(directory)? {
-            let item = item?;
-            let ty = item.file_type()?;
-            if ty.is_dir() {
-                walk(root, &item.path(), prefix, out)?;
-            } else if ty.is_file() {
-                let file = item.path();
-                let suffix = file
-                    .strip_prefix(root)
-                    .unwrap()
-                    .to_str()
-                    .ok_or_else(|| io::Error::other("resource path must be UTF-8"))?
-                    .replace('\\', "/");
-                let name = if prefix == "." {
-                    suffix
-                } else {
-                    format!("{prefix}/{suffix}")
-                };
-                relative_path(&name)?;
-                if out.insert(name.clone(), file).is_some() {
-                    return Err(io::Error::other(format!(
-                        "duplicate exported resource: {name}"
-                    )));
-                }
+    for item in walkdir::WalkDir::new(root).min_depth(1) {
+        let item = item?;
+        let ty = item.file_type();
+        if ty.is_dir() {
+            continue;
+        } else if ty.is_file() {
+            let file = item.into_path();
+            let suffix = file
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .ok_or_else(|| io::Error::other("resource path must be UTF-8"))?
+                .replace('\\', "/");
+            let name = if prefix == "." {
+                suffix
             } else {
+                format!("{prefix}/{suffix}")
+            };
+            relative_path(&name)?;
+            if out.insert(name.clone(), file).is_some() {
                 return Err(io::Error::other(format!(
-                    "export requires regular files: {}",
-                    item.path().display()
+                    "duplicate exported resource: {name}"
                 )));
             }
+        } else {
+            return Err(io::Error::other(format!(
+                "export requires regular files: {}",
+                item.path().display()
+            )));
         }
-        Ok(())
     }
-    walk(root, root, prefix, out)
+    Ok(())
 }
 
 fn copy(file: &Path, target: &Path) -> io::Result<u64> {

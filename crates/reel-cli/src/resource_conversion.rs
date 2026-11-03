@@ -29,7 +29,8 @@
 //! Font rules opt into subsetting with explicit `unicode` ranges and UTF-8 `text`
 //! file globs. Include the characters accepted by player input as well as story text.
 //!
-//! Conversion runs one resource at a time. Immutable cache objects are keyed by
+//! Conversion runs one resource at a time, with BC blocks encoded in parallel
+//! within its reserved image workspace. Immutable cache objects are keyed by
 //! source content, normalized recipe and the converter implementation identity.
 //! Payloads remain on disk; hashing uses a fixed 64 KiB buffer. A complete index
 //! is atomically published only after all selected resources are ready.
@@ -41,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{self, Read},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -545,14 +546,7 @@ pub fn prepare_selected(
 fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
     let mut file = File::open(path)?;
     let mut hash = blake3::Hasher::new();
-    let mut scratch = [0; 64 << 10];
-    loop {
-        let count = file.read(&mut scratch)?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&scratch[..count]);
-    }
+    hash.update_reader(&mut file)?;
     Ok(hash.finalize())
 }
 

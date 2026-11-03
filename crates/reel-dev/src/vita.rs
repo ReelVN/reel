@@ -2,9 +2,22 @@
 //! consumed by `reel-player`'s `package.metadata.vita.assets` directory.
 //! `cargo +nightly vita build vpk` owns executable conversion and VPK packaging.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use reel_package::archive::{ArchiveKind, ArchiveWriter};
-use std::{fs, io::BufWriter, path::Path};
+use std::{
+    fs,
+    io::BufWriter,
+    path::{Path, PathBuf},
+};
+
+/// Font and redistribution license installed in the Vita launcher archive.
+#[derive(clap::Args)]
+pub struct Assets {
+    #[arg(long)]
+    font: PathBuf,
+    #[arg(long)]
+    font_license: PathBuf,
+}
 
 /// Update `crates/reel-player/runtime/vita` for the launcher VPK.
 ///
@@ -14,23 +27,9 @@ use std::{fs, io::BufWriter, path::Path};
 /// packaging so startup mounts only the archive index before loading the font.
 /// The font's redistribution license is copied to `licenses/launcher-font.txt`.
 /// LiveArea artwork is maintained beside these inputs and remains unchanged.
-pub fn assets(args: &[String]) -> Result<()> {
-    let mut font = None;
-    let mut license = None;
-    for pair in args.chunks(2) {
-        let [option, value] = pair else {
-            bail!("vita-assets expects --font FILE --font-license FILE");
-        };
-        let slot = match option.as_str() {
-            "--font" => &mut font,
-            "--font-license" => &mut license,
-            _ => bail!("unknown vita-assets option: {option}"),
-        };
-        ensure!(slot.is_none(), "duplicate vita-assets option: {option}");
-        *slot = Some(Path::new(value));
-    }
-    let font = font.context("vita-assets requires --font FILE")?;
-    let license = license.context("vita-assets requires --font-license FILE")?;
+pub fn assets(options: Assets) -> Result<()> {
+    let font = options.font.as_path();
+    let license = options.font_license.as_path();
     for path in [font.to_owned(), license.to_owned()] {
         ensure!(
             fs::metadata(&path)

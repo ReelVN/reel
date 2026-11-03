@@ -10,7 +10,7 @@ fn project_effects_compile_to_gxp() {
     fs::create_dir_all(&output).unwrap();
     let project =
         reel_cli::project::load(&root).unwrap_or_else(|error| panic!("{:?}", error.failure));
-    let checked = project.check().unwrap();
+    let checked = project.check_with_progress("vita", &mut |_| {}).unwrap();
     let compiler = reel_render::effect::gxp_compiler::Compiler::new().unwrap();
     let mut count = 0;
     for definition in checked.effects.definitions() {

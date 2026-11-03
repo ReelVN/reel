@@ -2,25 +2,46 @@
 use super::{Result, log, native};
 use native::{Blend, FragmentOutput, SurfaceEncoding, Target, TextureFilter};
 
+#[path = "present_color/effect_output.rs"]
+mod effect_output;
+#[path = "present_color/effect_region.rs"]
+mod effect_region;
+#[path = "present_color/macrotile.rs"]
+mod macrotile;
+#[path = "present_color/paint_region.rs"]
+mod paint_region;
+
 const SOURCE: [u32; 2] = [256, 16];
 const SIZE: [u32; 2] = [1024, 16];
 
 fn program(context: &native::Context, pbe: bool) -> Result<native::Program> {
-    Ok(context.create_program(native::ProgramDescriptor {
-        output: if pbe {
+    sampling_program(
+        context,
+        if pbe {
             FragmentOutput::Srgb
         } else {
             FragmentOutput::Patched
         },
+        if pbe {
+            include_bytes!(concat!(env!("OUT_DIR"), "/present-color-pbe.gxp"))
+        } else {
+            include_bytes!(concat!(env!("OUT_DIR"), "/present-color-reference.gxp"))
+        },
+    )
+}
+
+fn sampling_program(
+    context: &native::Context,
+    output: FragmentOutput,
+    fragment: &[u8],
+) -> Result<native::Program> {
+    Ok(context.create_program(native::ProgramDescriptor {
+        output,
         vertex: native::ShaderCode::GxpBinary(include_bytes!(concat!(
             env!("OUT_DIR"),
             "/present-color-vertex.gxp"
         ))),
-        fragment: native::ShaderCode::GxpBinary(if pbe {
-            include_bytes!(concat!(env!("OUT_DIR"), "/present-color-pbe.gxp"))
-        } else {
-            include_bytes!(concat!(env!("OUT_DIR"), "/present-color-reference.gxp"))
-        }),
+        fragment: native::ShaderCode::GxpBinary(fragment),
         bindings: &[
             native::AttributeBinding {
                 location: 0,
@@ -231,8 +252,26 @@ fn compare(context: &native::Context) -> Result {
 }
 
 pub(super) fn run() -> Result {
+    with_context(|context| {
+        clear_colors(context)
+            .and_then(|()| compare(context))
+            .and_then(|()| macrotile::run(context))
+            .and_then(|()| effect_output::run(context))
+            .and_then(|()| paint_region::run(context))
+    })
+}
+
+pub(super) fn paint_regions() -> Result {
+    with_context(paint_region::run)
+}
+
+pub(super) fn effect_regions() -> Result {
+    with_context(effect_region::run)
+}
+
+fn with_context(run: impl FnOnce(&native::Context) -> Result) -> Result {
     let context = reel_render::gxm::create_context(&Default::default(), None)?;
-    let result = clear_colors(&context).and_then(|()| compare(&context));
+    let result = run(&context);
     context.finish()?;
     context.close().map_err(|(_, error)| error)?;
     result

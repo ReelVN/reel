@@ -2,6 +2,7 @@
 use image::{ImageDecoder, ImageReader, RgbaImage};
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::prepared_image::{PreparedImage, TileEncoding};
+use reel_ui::peniko::color::{ColorSpace, Srgb};
 use std::{fs, io::Write, path::Path, sync::LazyLock};
 
 /// Offline tile file encoding. Compressed textures are selected by default.
@@ -216,25 +217,13 @@ fn workspace(
 }
 
 static SRGB_TO_LINEAR: LazyLock<[f64; 256]> = LazyLock::new(|| {
-    std::array::from_fn(|index| {
-        let value = index as f64 / 255.;
-        if value <= 0.04045 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    })
+    std::array::from_fn(|index| f64::from(Srgb::to_linear_srgb([index as f32 / 255.; 3])[0]))
 });
 
 static LINEAR_TO_SRGB: LazyLock<Box<[u8]>> = LazyLock::new(|| {
     (0..=65535)
         .map(|index| {
-            let value = f64::from(index) / 65535.;
-            let encoded = if value <= 0.0031308 {
-                value * 12.92
-            } else {
-                1.055 * value.powf(1. / 2.4) - 0.055
-            };
+            let encoded = Srgb::from_linear_srgb([index as f32 / 65535.; 3])[0];
             (encoded * 255.).round() as u8
         })
         .collect::<Vec<_>>()
