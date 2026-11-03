@@ -2,6 +2,101 @@
 use super::*;
 
 #[test]
+#[ignore = "requires REEL_R01_TEST_FONT; alternating font raster cost and pixel equivalence"]
+fn alternating_font_raster_cost() {
+    use reel_ui::{
+        app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
+        core::*,
+        dpi::PhysicalSize,
+        peniko::Blob,
+        resources::{ResourceData, ResourceRegistry},
+    };
+    let pool = pool();
+    let bytes = std::fs::read(std::env::var("REEL_R01_TEST_FONT").unwrap()).unwrap();
+    let mut registry = ResourceRegistry::new(2, 65264).unwrap();
+    let mut handles = Vec::new();
+    let mut fonts = Vec::new();
+    for index in 0..2 {
+        let storage = pool.reserve(bytes.len() as u64).unwrap();
+        let font = Blob::from(bytes.clone());
+        handles.push(
+            registry
+                .register(
+                    reel_core::identity::ResourceVersion {
+                        key: reel_core::identity::AssetKey(format!("font-{index}").into()),
+                        version: reel_core::identity::ContentVersion([index; 32]),
+                    },
+                    ResourceData::Font(font.clone()),
+                    storage,
+                )
+                .unwrap(),
+        );
+        fonts.push(font);
+    }
+    let root = RenderRoot::new(
+        NewWidget::new(reel_ui::widgets::Label::new("M").with_style(StyleProperty::FontSize(24.))),
+        |_| {},
+        RenderRootOptions {
+            default_properties: Arc::new(DefaultProperties::new()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(100, 100),
+            scale_factor: 1.,
+            default_font: Some(fonts[0].clone()),
+        },
+    );
+    let mut bridge = r01_fixture::bridge(root);
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        registry.freeze(&handles, &pool).unwrap(),
+        &pool,
+    );
+    let (run, at) = frame
+        .commands()
+        .iter()
+        .find_map(|command| match &command.op {
+            reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) => {
+                Some((run, command.origin.at))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let mut run = run.clone();
+    run.hint = true;
+    let mut raster = crate::common::glyph::Rasterizer::default();
+    let mut reference = None;
+    let began = std::time::Instant::now();
+    for iteration in 0..2000 {
+        run.font = handles[iteration % 2];
+        let bitmap = crate::common::glyph::rasterize(
+            &mut raster,
+            frame.drawing(),
+            &run,
+            1.,
+            0,
+            at,
+            crate::common::glyph::RasterLimits {
+                available: u64::MAX,
+                max_dimension: 8192,
+                budget: pool.clone(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let value = (bitmap.x, bitmap.y, bitmap.size, bitmap.alpha);
+        if let Some(reference) = &reference {
+            assert_eq!(&value, reference);
+        } else {
+            reference = Some(value);
+        }
+    }
+    println!(
+        "alternating_font_raster glyphs=2000 elapsed_us={}",
+        began.elapsed().as_micros()
+    );
+}
+
+#[test]
 #[ignore = "requires REEL_R01_TEST_FONT; CPU only, no graphics adapter"]
 fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
     use reel_ui::{

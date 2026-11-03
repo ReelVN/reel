@@ -248,6 +248,7 @@ pub struct Pipelines {
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
     pub source_over: wgpu::RenderPipeline,
+    pub effect_resample: [wgpu::RenderPipeline; 2],
     pub alpha_mask: wgpu::RenderPipeline,
     pub composite_blend: wgpu::RenderPipeline,
     pub extended_blend: wgpu::RenderPipeline,
@@ -504,6 +505,21 @@ impl Pipelines {
             quality.format == wgpu::TextureFormat::Rgba8Unorm,
             device.features().contains(wgpu::Features::SHADER_F16),
         );
+        let effect_resample = [false, true].map(|over| {
+            pipeline_entry(
+                device,
+                quality,
+                &composite_layout,
+                &bounded_composite,
+                false,
+                FragmentOutput {
+                    entry: "effect_resample",
+                    blend: over.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                },
+                #[cfg(test)]
+                Some(counts),
+            )
+        });
         let source_over = pipeline_entry(
             device,
             quality,
@@ -593,6 +609,7 @@ impl Pipelines {
             yuv_layout,
             composite,
             source_over,
+            effect_resample,
             alpha_mask,
             composite_blend,
             extended_blend,
@@ -619,9 +636,30 @@ impl Pipelines {
             backdrop,
         } = inputs;
         let words = params.uniform_words(target, source, mask, backdrop);
+        self.composite_group_words(
+            device,
+            CompositeInputs {
+                source,
+                mask,
+                backdrop,
+            },
+            &words,
+        )
+    }
+    pub(super) fn composite_group_words(
+        &self,
+        device: &wgpu::Device,
+        inputs: CompositeInputs<'_>,
+        words: &[u32; COMPOSITE_WORDS],
+    ) -> wgpu::BindGroup {
+        let CompositeInputs {
+            source,
+            mask,
+            backdrop,
+        } = inputs;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),
-            contents: bytemuck::cast_slice(&words),
+            contents: bytemuck::cast_slice(words),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         device.create_bind_group(&wgpu::BindGroupDescriptor {

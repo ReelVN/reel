@@ -90,6 +90,9 @@ pub fn rasterize(
             record: "font resource type",
         });
     };
+    // Blob identity survives fallback-font switches and resource re-registration.
+    // The collection index distinguishes faces sharing the same immutable bytes.
+    let scaler_id = [font.id(), u64::from(run.font_index)];
     let (offset, key) = match context.face {
         Some((handle, index, offset, key)) if handle == run.font && index == run.font_index => {
             (offset, key)
@@ -117,7 +120,7 @@ pub fn rasterize(
     })?;
     let mut scaler = context
         .scale
-        .builder(font)
+        .builder_with_id(font, scaler_id)
         .size(run.font_size * density as f32)
         .hint(run.hint)
         .normalized_coords(run.normalized_coords.iter().copied())

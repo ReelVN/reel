@@ -94,6 +94,7 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
         images: vec![],
         bounds: Rect::new(0., 0., 160., 120.),
         coverage_invert: false,
+        resolution_scale: 1.,
     };
     for transform in [
         Affine::IDENTITY,
@@ -231,6 +232,43 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                         pixels, expected,
                         "depth={depth} opacity={opacity} transform={transform:?}"
                     );
+                    if transform == Affine::IDENTITY {
+                        let glyphs = crate::common::glyph_plan::Plan::default();
+                        let schedule = offscreen::Plan::default();
+                        let selection = Default::default();
+                        let input = Input {
+                            frame: &frame,
+                            second: None,
+                            size: [160, 120],
+                            capture: false,
+                            samples: 1,
+                            max_dimension: 4096,
+                            glyphs: &glyphs,
+                            schedule: &schedule,
+                            masks,
+                            selection: &selection,
+                            cost: &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
+                            coverage_cost: None,
+                        };
+                        let selected = input.macrotile_selection(u64::MAX, |_| Ok(())).unwrap();
+                        if depth == 2 && opacity == 1. {
+                            let selected = selected.unwrap();
+                            assert_eq!(selected.entries.len(), 1);
+                            assert_eq!(selected.requirements.count([160, 120]), 1);
+                            assert_eq!(selected.bytes, 160 * 120 * 4 + 256 * 256 * 4);
+                            assert!(
+                                Input {
+                                    capture: true,
+                                    ..input
+                                }
+                                .macrotile_selection(u64::MAX, |_| Ok(()))
+                                .unwrap()
+                                .is_none()
+                            );
+                        } else {
+                            assert!(selected.is_none(), "depth={depth} opacity={opacity}");
+                        }
+                    }
                 }
             }
         }
@@ -290,6 +328,7 @@ fn scalar_masks_keep_two_local_sources_and_project_plain_groups_into_the_parent(
         images: vec![],
         bounds: Rect::new(0., 0., 240., 80.),
         coverage_invert: true,
+        resolution_scale: 1.,
     };
     for (clip, invert, target_count) in [(false, 0., 3), (false, 0.5, 4), (true, 0., 5)] {
         for color_effect in [false, true] {
@@ -762,7 +801,7 @@ fn invisible_siblings_leave_a_balanced_visible_atlas_and_no_target_demand() {
     assert_eq!(entries.iter().filter(|entry| entry.last).count(), 1);
     assert!(entries.iter().all(|entry| entry.shared));
     assert!(entries.windows(2).all(|pair| pair[0].push < pair[1].push));
-    let size = entries[0].view.storage_size;
+    let size = entries[0].view.unwrap().storage_size;
     assert_eq!(pixels, 960 * 544 + u64::from(size[0]) * u64::from(size[1]));
     assert_eq!(
         schedule
@@ -812,11 +851,11 @@ fn sibling_admission_counts_all_live_sources_and_keeps_original_composite_order(
                 8 / width as usize
             );
             assert!(entries.windows(2).all(|pair| pair[0].push < pair[1].push
-                && pair[0].view.origin()[0] < pair[1].view.origin()[0]));
+                && pair[0].view.unwrap().origin()[0] < pair[1].view.unwrap().origin()[0]));
             assert!(
                 entries
                     .iter()
-                    .all(|entry| entry.view.storage_size == [128, 64])
+                    .all(|entry| entry.view.unwrap().storage_size == [128, 64])
             );
         }
     }
@@ -919,29 +958,30 @@ fn atlas_regions_preserve_parent_samples_and_share_one_accounted_surface() {
     assert_eq!(entries.len(), 8);
     assert_eq!(entries.iter().filter(|e| e.first).count(), 1);
     assert_eq!(entries.iter().filter(|e| e.last).count(), 1);
-    let size = entries[0].view.storage_size;
+    let size = entries[0].view.unwrap().storage_size;
     assert_eq!(size, [128, 544]);
     assert_eq!(pixels, 960 * 544 + u64::from(size[0]) * u64::from(size[1]));
     for (index, entry) in entries.iter().enumerate() {
         assert!(entry.shared);
-        assert_eq!(entry.view.storage_size, size);
-        let rect = entry.view.source_rect;
+        let view = entry.view.unwrap();
+        assert_eq!(view.storage_size, size);
+        let rect = view.source_rect;
         assert!(rect.x > 0 && rect.y > 0);
         assert!(rect.x + rect.width < size[0] && rect.y + rect.height < size[1]);
         for other in &entries[..index] {
-            assert!(rect.intersect(other.view.source_rect).empty());
+            assert!(rect.intersect(other.view.unwrap().source_rect).empty());
         }
-        let origin = entry.view.origin();
+        let origin = view.origin();
         let uv = crate::common::source_view::uv_mapping([960, 544], size, origin);
         for (x, y) in [
             (0.5, 0.5),
             (f64::from(rect.width) - 0.5, f64::from(rect.height) - 0.5),
         ] {
             let parent = reel_ui::kurbo::Point::new(
-                f64::from(entry.view.parent_rect.x) + x,
-                f64::from(entry.view.parent_rect.y) + y,
+                f64::from(view.parent_rect.x) + x,
+                f64::from(view.parent_rect.y) + y,
             );
-            let source = entry.view.parent_to_source * parent;
+            let source = view.parent_to_source * parent;
             assert_eq!(source.x, f64::from(rect.x) + x);
             assert_eq!(source.y, f64::from(rect.y) + y);
             for (axis, (p, s)) in [(parent.x, source.x), (parent.y, source.y)]
@@ -954,7 +994,7 @@ fn atlas_regions_preserve_parent_samples_and_share_one_accounted_surface() {
             }
         }
     }
-    assert!(entries.iter().any(|e| e.view.origin()[1] < 0));
+    assert!(entries.iter().any(|e| e.view.unwrap().origin()[1] < 0));
 }
 
 #[test]

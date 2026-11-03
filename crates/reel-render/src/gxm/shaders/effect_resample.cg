@@ -1,0 +1,11 @@
+// Reconstruct authored low-density output, clamping away pooled storage padding.
+uniform sampler2D u_source : TEXUNIT0;
+uniform sampler2D u_mask : TEXUNIT1;
+uniform float4 u_backdrop_uv, u_params;
+void main(float2 uv : TEXCOORD0, float2 mask_uv : TEXCOORD1, out float4 color : COLOR) {
+    float4 value = tex2D(u_source, clamp(uv, u_backdrop_uv.xy, u_backdrop_uv.zw));
+    value *= u_params.x;
+    if (u_params.z != 0.0) value = floor(clamp(value, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+    if (u_params.y != 0.0) value *= clamp(tex2D(u_mask, mask_uv).a, 0.0, 1.0);
+    color = value;
+}

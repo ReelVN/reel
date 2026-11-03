@@ -7,10 +7,14 @@ pub struct Shader {
 }
 
 pub fn sources() -> Vec<Shader> {
+    sources_at(std::path::Path::new("."))
+}
+
+pub fn sources_at(root: &std::path::Path) -> Vec<Shader> {
     let mut shaders = Vec::new();
     let read = |name: &str| {
-        let path = format!("src/gxm/shaders/{name}.cg");
-        println!("cargo:rerun-if-changed={path}");
+        let path = root.join(format!("src/gxm/shaders/{name}.cg"));
+        println!("cargo:rerun-if-changed={}", path.display());
         std::fs::read_to_string(path).expect("read shader source")
     };
     let mut add = |name: &str, vertex, source: &str, defines: &str| {
@@ -30,6 +34,7 @@ pub fn sources() -> Vec<Shader> {
     ] {
         add(name, true, &read(name), "");
     }
+    add("effect_resample", false, &read("effect_resample"), "");
     let composite = read("composite");
     for (name, define) in [
         ("composite", ""),

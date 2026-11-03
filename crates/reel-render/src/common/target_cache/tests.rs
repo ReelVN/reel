@@ -245,3 +245,109 @@ fn physical_repacking_can_drop_future_scratch_but_keeps_current_readers() {
     assert!(cache.reclaim(&Requirements::default(), true, unique));
     assert_eq!(data.usage().bytes, 0);
 }
+
+#[test]
+fn claiming_the_complete_plan_preserves_later_owners_during_early_allocation() {
+    fn prepare(claim_first: bool) -> (usize, u64) {
+        let data = pool(128);
+        let mut cache = Cache::default();
+        put(&mut cache, [4, 4], 64, &data);
+        put(&mut cache, [2, 2], 16, &data);
+        let previous = Arc::downgrade(cache.get([4, 4], 0).unwrap());
+        let claimed = claim_first.then(|| cache.get([4, 4], 0).unwrap().clone());
+        let mut created = 0;
+        let mut allocate = |cache: &mut Cache<Arc<Owner>>| {
+            let ticket = loop {
+                match data.reserve(64) {
+                    Ok(ticket) => break ticket,
+                    Err(_) => assert!(cache.reclaim(&Requirements::default(), true, unique)),
+                }
+            };
+            created += 1;
+            Arc::new(Owner { _storage: ticket })
+        };
+        let first = allocate(&mut cache);
+        let second = claimed
+            .or_else(|| cache.get([4, 4], 0).cloned())
+            .unwrap_or_else(|| allocate(&mut cache));
+        assert_eq!(previous.upgrade().is_some(), claim_first);
+        assert_eq!(data.usage().bytes, 128);
+        drop(first);
+        drop(second);
+        cache.release_idle(unique);
+        assert_eq!(data.usage().bytes, 0);
+        (created, data.usage().peak_bytes)
+    }
+
+    assert_eq!(prepare(false), (2, 128));
+    assert_eq!(prepare(true), (1, 128));
+}
+
+#[test]
+fn replacing_an_immutable_view_rekeys_one_owner_and_preserves_readers_and_recency() {
+    #[derive(Clone)]
+    struct View {
+        size: [u32; 2],
+        owner: Arc<Owner>,
+    }
+    let data = pool(128);
+    let metadata = pool(4096);
+    let mut cache = Cache::default();
+    cache.reserve(3, &metadata, 4096).unwrap();
+    for size in [[2, 4], [4, 2], [8, 1]] {
+        let owner = Arc::new(Owner {
+            _storage: data.reserve(32).unwrap(),
+        });
+        cache.insert(size, View { size, owner });
+    }
+    let old = cache.get([2, 4], 0).unwrap().clone();
+    cache.submitted();
+    cache.mark_used(old.size, |view| Arc::ptr_eq(&view.owner, &old.owner));
+    let ticket_bytes = metadata.usage().bytes;
+    let slot_capacity = cache.slots.capacity();
+    let rebound = cache
+        .map_eligible(
+            [1, 8],
+            |view| Arc::ptr_eq(&view.owner, &old.owner),
+            |view| {
+                Ok(View {
+                    size: [1, 8],
+                    owner: view.owner.clone(),
+                })
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.size, [2, 4]);
+    assert_eq!(rebound.size, [1, 8]);
+    assert!(Arc::ptr_eq(&old.owner, &rebound.owner));
+    assert!(cache.get([2, 4], 0).is_none());
+    assert!(Arc::ptr_eq(
+        &cache.get([1, 8], 0).unwrap().owner,
+        &old.owner
+    ));
+    assert_eq!(cache.slots[0].age, 0);
+    assert_eq!(cache.slots[0].uses, 1);
+    assert_eq!(cache.slots.capacity(), slot_capacity);
+    assert_eq!(metadata.usage().bytes, ticket_bytes);
+    assert_eq!(data.usage().bytes, 96);
+    assert_eq!(data.usage().peak_bytes, 96);
+    assert!(
+        cache
+            .map_eligible(
+                [16, 1],
+                |view| view.size == [1, 8],
+                |_| Err(GpuError::InvalidSize),
+            )
+            .is_err()
+    );
+    assert!(cache.get([1, 8], 0).is_some());
+    assert!(cache.get([16, 1], 0).is_none());
+    cache.release_idle(|view| Arc::strong_count(&view.owner) == 1);
+    assert_eq!(data.usage().bytes, 32);
+    drop(old);
+    drop(rebound);
+    cache.release_idle(|view| Arc::strong_count(&view.owner) == 1);
+    assert_eq!(data.usage().bytes, 0);
+    assert_eq!(metadata.usage().bytes, 0);
+}

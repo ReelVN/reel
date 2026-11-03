@@ -3,6 +3,8 @@ use super::{
     programs::{Target, Values},
     replay::Context,
 };
+#[cfg(feature = "profiling")]
+use crate::common::scissor::Scissor;
 use crate::common::{
     appearance::appearance_uniform,
     glyph,
@@ -58,7 +60,9 @@ struct PaintState {
     alpha_tint: bool,
     monochrome: Option<crate::common::appearance::Monochrome>,
     opaque: Option<mesh::OpaquePaint>,
+    replace_transparent: bool,
     scissor: crate::common::scissor::Scissor,
+    interior: Option<crate::common::scissor::Scissor>,
 }
 
 pub(super) struct Page {
@@ -244,7 +248,9 @@ impl GlyphCache {
             ) {
                 Ok(texture) => texture,
                 Err(error) => {
-                    if gpu.finish().is_err() {
+                    // Texture construction issues no GPU commands. Its native
+                    // partial owners already retire their own allocations.
+                    if gpu.refresh() {
                         self.failures.push(storage);
                     }
                     return Err(error.into());
@@ -837,6 +843,7 @@ impl Context<'_> {
         outer: Affine,
         origin: reel_ui::frame::CommandOrigin,
     ) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GeometryPrepare);
         let at = origin.at;
         self.composite_supported(run.composite, at)?;
         let (color, paint) = match &run.brush {
@@ -1101,6 +1108,15 @@ impl Context<'_> {
             &state.appearance,
             mesh.vertices.iter().map(|vertex| vertex.color),
         );
+        if state.shader_kind().unclamped().is_some() {
+            state.interior = crate::common::sampling_domain::regional_interior(
+                &mesh,
+                state.dimensions,
+                self.size,
+                state.scissor,
+                state.texture.mip_count(),
+            );
+        }
         self.expand_instances()?;
         self.queue_mesh(target, mesh, state)
     }
@@ -1108,7 +1124,7 @@ impl Context<'_> {
         &mut self,
         target: &Target,
         mesh: crate::common::recording_cache::Reference,
-        state: PaintState,
+        mut state: PaintState,
     ) -> Result<(), GpuError> {
         if self
             .paint_batch
@@ -1117,6 +1133,12 @@ impl Context<'_> {
         {
             self.flush_draws()?;
         }
+        // Keep this first draw in its own entry: merging a later overlapping
+        // image would no longer be source-over on a transparent destination.
+        state.replace_transparent = self.paint_batch.is_none()
+            && self.target_writes.pending(target.slot)
+            && state.opaque.is_none()
+            && crate::common::target_writes::single_quad(&mesh, self.size);
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);
             self.paint_batch = Some(batch);
@@ -1162,6 +1184,7 @@ impl Context<'_> {
         let vertices = &storage.vertices;
         let indices = &storage.indices;
         for entry in batch.geometry.entries {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::DrawPrepare);
             let program = entry.state.shader_kind();
             let PaintState {
                 texture,
@@ -1179,26 +1202,13 @@ impl Context<'_> {
                 alpha_tint: _,
                 monochrome: _,
                 opaque,
+                replace_transparent,
                 scissor,
+                interior,
             } = entry.state;
-            let shader = self.programs.paint.get(
-                self.gpu,
-                program,
-                !scissor.tile_exact(32, batch.target.view.size()),
-                false,
-            )?;
-            let mut values = Values::new();
-            for (name, unit) in [("u_image", 0), ("u_chroma_u", 1), ("u_chroma_v", 2)] {
-                values.extend(shader.int(name, unit));
-            }
-            values.extend(shader.vec2("u_dimensions", dimensions.map(|n| n as f32)));
-            values.extend(shader.vec2("u_output_size", self.size.map(|n| n as f32)));
-            values.extend(shader.vec2("u_repeat", repeat.map(f32::from)));
-            values.extend(shader.array("u_appearance[0]", &appearance));
-            values.extend(shader.array("u_video[0]", &video));
-            values.extend(shader.float("u_video_kind", kind));
-            values.extend(shader.float("u_image_flip", 0.));
-            values.extend(shader.float("u_coverage", f32::from(coverage)));
+            let regions = interior.map_or([scissor; 5], |inner| {
+                crate::common::sampling_domain::partition(scissor, inner)
+            });
             {
                 let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Sampler);
                 self.gpu.set_repeat(&texture, repeat)?;
@@ -1206,37 +1216,127 @@ impl Context<'_> {
                     self.gpu.set_repeat(plane, repeat)?;
                 }
             }
-            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
-            self.gpu.draw_filtered(
-                native::Draw {
-                    target: native::Target::Framebuffer(&batch.target.framebuffer),
-                    size: self.size,
-                    program: &shader.program,
-                    vertices,
-                    instances: None,
-                    indices: Some(indices),
-                    range: entry.range,
-                    textures: &[
-                        &texture,
-                        planes.first().unwrap_or(&texture),
-                        planes.get(1).or(planes.first()).unwrap_or(&texture),
-                    ],
-                    uniforms: &values,
-                    blend: if opaque.is_some() {
-                        native::Blend::Replace
-                    } else {
-                        native::Blend::Premultiplied
-                    },
-                    scissor: Some([scissor.x, scissor.y, scissor.width, scissor.height]),
-                },
-                if quality == ImageQuality::Low {
-                    native::TextureFilter::Nearest
+            for (index, scissor) in regions
+                .into_iter()
+                .take(if interior.is_some() { 5 } else { 1 })
+                .enumerate()
+            {
+                if scissor.empty() {
+                    continue;
+                }
+                let program = if index == 0 && interior.is_some() {
+                    program.unclamped().expect("proved regional interior")
                 } else {
-                    native::TextureFilter::Linear
-                },
+                    program
+                };
+                let shader = self.programs.paint.get(
+                    self.gpu,
+                    program,
+                    !scissor.tile_exact(32, batch.target.view.size()),
+                    false,
+                )?;
+                let mut values = Values::new();
+                for (name, unit) in [("u_image", 0), ("u_chroma_u", 1), ("u_chroma_v", 2)] {
+                    values.extend(shader.int(name, unit));
+                }
+                values.extend(shader.vec2("u_dimensions", dimensions.map(|n| n as f32)));
+                values.extend(shader.vec2("u_output_size", self.size.map(|n| n as f32)));
+                values.extend(shader.vec2("u_repeat", repeat.map(f32::from)));
+                values.extend(shader.array("u_appearance[0]", &appearance));
+                values.extend(shader.array("u_video[0]", &video));
+                values.extend(shader.float("u_video_kind", kind));
+                values.extend(shader.float("u_image_flip", 0.));
+                values.extend(shader.float("u_coverage", f32::from(coverage)));
+                let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
                 #[cfg(feature = "profiling")]
-                program.diagnostic_label(),
-            )?;
+                let trace_data = {
+                    let mut data = batch.target.trace_data();
+                    data.logical = self.size;
+                    data.source_extent = texture.size();
+                    let mut region = scissor.intersect(Scissor::full(batch.target.view.size()));
+                    if batch.target.macrotile_extent().is_none()
+                        && data.known & crate::profiling::KNOWN_WRITE_REGION != 0
+                    {
+                        let [x, y, width, height] = data.write_region;
+                        region = region.intersect(Scissor {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
+                    data.scissor = [region.x, region.y, region.width, region.height];
+                    data.known |= crate::profiling::KNOWN_LOGICAL
+                        | crate::profiling::KNOWN_SOURCE_EXTENT
+                        | crate::profiling::KNOWN_SCISSOR;
+                    data.count = 1;
+                    data.texture_bindings = 3;
+                    data.known |= crate::profiling::KNOWN_TEXTURE_BINDINGS;
+                    data
+                };
+                #[cfg(feature = "profiling")]
+                let trace =
+                    crate::profiling::TracePass::begin(program.diagnostic_label(), trace_data);
+                let result = self.gpu.draw_filtered(
+                    native::Draw {
+                        target: native::Target::Framebuffer(&batch.target.framebuffer),
+                        size: self.size,
+                        program: &shader.program,
+                        vertices,
+                        instances: None,
+                        indices: Some(indices),
+                        range: entry.range.clone(),
+                        textures: &[
+                            &texture,
+                            planes.first().unwrap_or(&texture),
+                            planes.get(1).or(planes.first()).unwrap_or(&texture),
+                        ],
+                        uniforms: &values,
+                        blend: if opaque.is_some() || replace_transparent {
+                            native::Blend::Replace
+                        } else {
+                            native::Blend::Premultiplied
+                        },
+                        scissor: Some([scissor.x, scissor.y, scissor.width, scissor.height]),
+                    },
+                    if quality == ImageQuality::Low {
+                        native::TextureFilter::Nearest
+                    } else {
+                        native::TextureFilter::Linear
+                    },
+                    #[cfg(feature = "profiling")]
+                    program.diagnostic_label(),
+                );
+                #[cfg(feature = "profiling")]
+                if let Some(trace) = trace {
+                    trace.finish(
+                        if result.is_ok() {
+                            crate::profiling::TraceStatus::Ok
+                        } else {
+                            crate::profiling::TraceStatus::Error
+                        },
+                        trace_data,
+                    );
+                }
+                result?;
+            }
+            #[cfg(feature = "profiling")]
+            if interior.is_some() || replace_transparent {
+                crate::profiling::record_paint_regions(crate::profiling::PaintRegions {
+                    batches: u64::from(interior.is_some()),
+                    extra_draws: interior.map_or(0, |_| {
+                        regions.iter().filter(|r| !r.empty()).count() as u64 - 1
+                    }),
+                    original_pixels: interior
+                        .map_or(0, |_| u64::from(scissor.width) * u64::from(scissor.height)),
+                    direct_pixels: interior
+                        .map_or(0, |inner| u64::from(inner.width) * u64::from(inner.height)),
+                    transparent_replacements: u64::from(replace_transparent),
+                    transparent_pixels: u64::from(replace_transparent)
+                        * u64::from(scissor.width)
+                        * u64::from(scissor.height),
+                });
+            }
         }
         Ok(())
     }

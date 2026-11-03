@@ -18,6 +18,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[path = "effect/cg.rs"]
 mod cg;
+#[path = "effect/control_flow.rs"]
+mod control_flow;
+#[path = "effect/diagonal.rs"]
+mod diagonal;
 #[path = "effect/emit_reduction.rs"]
 mod emit_reduction;
 #[path = "effect/footprint.rs"]
@@ -175,6 +179,34 @@ pub fn compile_fragment_variant(
     source_fallback(compile)
 }
 
+/// Generate an optional ordinary color Cg fragment for a finite diagonal source
+/// mapping. The renderer must check the final uploaded mapping before selecting
+/// this code. A proved single-axis reduction maps and clamps its unchanged axis
+/// once before the loop; every authored tap, varying coordinate expression and
+/// ordered RGBA addition remains intact. Other programs return `None`.
+///
+/// This fragment retains uniform ABI 1 and local coverage. It does not replace
+/// the ordinary, alpha-coverage or full-target fallback fragments. Source-limit
+/// errors use the same complete-fragment byte limit as ordinary generation.
+pub fn compile_diagonal_fragment(
+    program: &EffectProgram,
+    max_source_bytes: usize,
+) -> Result<Option<EffectFragment>, GenerateError> {
+    let Some(proof) = diagonal::Proof::find(program) else {
+        return Ok(None);
+    };
+    source_fallback(|width| {
+        let generated = generate_inner_with_diagonal(
+            program,
+            Language::Cg,
+            max_source_bytes,
+            width,
+            Some(proof),
+        )?;
+        cg::compile_diagonal(program, generated, proof.axis, max_source_bytes).map(Some)
+    })
+}
+
 /// The shader language of a prepared pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
@@ -327,6 +359,16 @@ fn generate_inner(
     max_source_bytes: usize,
     max_block_width: usize,
 ) -> Result<GeneratedEffect, GenerateError> {
+    generate_inner_with_diagonal(program, language, max_source_bytes, max_block_width, None)
+}
+
+fn generate_inner_with_diagonal(
+    program: &EffectProgram,
+    language: Language,
+    max_source_bytes: usize,
+    max_block_width: usize,
+    diagonal: Option<diagonal::Proof>,
+) -> Result<GeneratedEffect, GenerateError> {
     // Every declared parameter needs at least one sixteen-byte slot and more
     // than sixteen source bytes. Reject oversized layouts before allocating them.
     if program.parameters().len() > max_source_bytes / 16 {
@@ -383,6 +425,8 @@ fn generate_inner(
         samples_source: false,
         reductions: HashMap::new(),
         max_block_width,
+        diagonal,
+        varying: control_flow::varying(program),
     };
     emitter.run()?;
     let output_type = program.nodes()[program.output().0 as usize].ty;
@@ -489,6 +533,8 @@ struct Emitter<'a> {
     samples_source: bool,
     reductions: HashMap<EffectNodeId, Option<reduction::Reduction>>,
     max_block_width: usize,
+    diagonal: Option<diagonal::Proof>,
+    varying: Vec<bool>,
 }
 
 impl Emitter<'_> {
@@ -591,12 +637,15 @@ impl Emitter<'_> {
                     if let EffectOp::Select {
                         condition,
                         when_true,
-                        ..
+                        when_false,
                     } = node.op
                     {
                         let name = self.next_name;
                         self.next_name += 1;
                         self.line(scope, &self.language.mutable(node.ty, name))?;
+                        if self.flatten_selection(scope, condition, [when_true, when_false]) {
+                            self.line(scope, "#pragma branch (flatten: always)")?;
+                        }
                         self.line(scope, &format!("if ({}) {{", self.value(scope, condition)))?;
                         let child = self.child(scope);
                         tasks.push(Task::Otherwise {
@@ -608,7 +657,7 @@ impl Emitter<'_> {
                         tasks.push(Task::Scope(child, when_true));
                         continue;
                     }
-                    let expression = self.expression(scope, node.ty, &node.op)?;
+                    let expression = self.expression(scope, id, node.ty, &node.op)?;
                     let name = self.next_name;
                     self.next_name += 1;
                     self.line(
@@ -672,6 +721,7 @@ impl Emitter<'_> {
     fn expression(
         &mut self,
         scope: usize,
+        id: EffectNodeId,
         ty: EffectType,
         op: &EffectOp,
     ) -> Result<String, GenerateError> {
@@ -712,7 +762,11 @@ impl Emitter<'_> {
             EffectOp::SourceSample { uv } => {
                 let uv = value(uv);
                 self.samples_source = true;
-                format!("reel_source_sample({uv})")
+                if self.diagonal.is_some_and(|proof| proof.sample == id) {
+                    format!("reel_source_sample_diagonal({uv}, reel_source_fixed)")
+                } else {
+                    format!("reel_source_sample({uv})")
+                }
             }
             EffectOp::Vec2(ids) => construct(self.language, ty, ids.map(value).as_slice()),
             EffectOp::Vec3(ids) => construct(self.language, ty, ids.map(value).as_slice()),

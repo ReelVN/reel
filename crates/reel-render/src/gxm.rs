@@ -149,7 +149,7 @@ fn native_error(error: native::Error) -> GxmError {
             pending: false,
         },
         native::Error::Budget {
-            domain: domain @ ("physical MAIN" | "physical CDRAM"),
+            domain: domain @ ("physical MAIN" | "physical CDRAM" | "GXM render targets"),
             requested,
             limit,
         } => GxmError::Pressure {

@@ -148,7 +148,7 @@ impl GroupPlan {
     }
 }
 
-fn source_over(group: &FrameGroup, empty: bool) -> bool {
+pub(super) fn source_over(group: &FrameGroup, empty: bool) -> bool {
     (group.composite.alpha == 1. || empty)
         && group.composite.blend == Default::default()
         && group.clip.is_none()

@@ -125,3 +125,13 @@ fn mask_alpha(v: Varying) -> f32 {
 @fragment fn extended_blend(v: Varying) -> @location(0) vec4<f32> {
     return separable(covered_source(v), textureSample(backdrop, linear_sampler, v.backdrop_uv), params.blend);
 }
+
+@fragment fn effect_resample(v: Varying) -> @location(0) vec4<f32> {
+    var value = textureSample(source, linear_sampler, clamp(v.source_uv, params.backdrop_uv.xy, params.backdrop_uv.zw)) * params.opacity;
+    if params.blend != 0u { value = floor(clamp(value, vec4(0.0), vec4(1.0)) * 255.0 + 0.5) / 255.0; }
+    if params.mode != 0u {
+        let m = textureSample(mask, linear_sampler, v.mask_uv);
+        value *= clamp(select(m.a, m.r, params.mask_red != 0u), 0.0, 1.0);
+    }
+    return value;
+}

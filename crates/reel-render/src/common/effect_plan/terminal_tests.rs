@@ -30,8 +30,48 @@ fn group() -> FrameGroup {
             images: vec![],
             bounds: Rect::new(0., 0., 160., 120.),
             coverage_invert: false,
+            resolution_scale: 1.,
         }),
     }
+}
+#[test]
+fn exact_effect_grid_keeps_shared_atlas_regions_owned_by_the_batch() {
+    // A clipped 52x48 region can contain a sole effect whose complete domain
+    // matches the 64x224 atlas. Grid equality alone must not transfer its owner.
+    let mut child = group();
+    child.composite.alpha = 1.;
+    child.effect.as_mut().unwrap().bounds = Rect::new(0., 0., 64., 224.);
+    child.effect_to_target = Affine::translate((-1., -51.));
+    let parent_transform = Affine::translate((1., 51.));
+    let source = source_layout(
+        child.effect.as_ref().unwrap(),
+        child.effect_to_target,
+        parent_transform,
+        4096,
+        RecordLocation {
+            fragment: 0,
+            command: 0,
+            mask_depth: 0,
+            owner: child.owner,
+        },
+    )
+    .unwrap();
+    assert_eq!(source.size, [64, 224]);
+    assert_eq!(source.frame_to_source, parent_transform);
+    assert!(forwards_source(
+        &child,
+        &source,
+        parent_transform,
+        [64, 224],
+        false
+    ));
+    assert!(!forwards_source(
+        &child,
+        &source,
+        parent_transform,
+        [64, 224],
+        true
+    ));
 }
 #[test]
 fn terminal_effect_proof_keeps_sampling_boundaries_and_precision_sensitive_operations() {

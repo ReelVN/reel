@@ -15,6 +15,7 @@ impl Context<'_> {
         let source = source_plan::layout(
             group,
             parent.group,
+            parent.source_effect_transform,
             current.transform,
             self.size,
             self.gpu.adapter.limits().max_texture_dimension_2d,
@@ -22,10 +23,20 @@ impl Context<'_> {
         )?;
         let forward = current.groups.is_source_child(current.next - 1)
             && parent.isolated
-            && effect_plan::forwards_source(group, &source, current.transform, self.size);
+            && effect_plan::forwards_source(
+                group,
+                &source,
+                current.transform,
+                self.size,
+                parent.shared_source,
+            );
         let effect = group.effect.as_ref().expect("planned color effect");
-        let transform = current.transform * group.effect_to_target;
-        let target = parent.target.clone();
+        let transform = effect_plan::output_transform(
+            group,
+            parent.group.zip(parent.source_effect_transform),
+            current.transform,
+        );
+        let target = parent.target().clone();
         let parent_scissor = self.scissor;
         self.scissor = Scissor::group_bounds(group, current.transform, self.size, false)
             .map_or(self.scissor, |bounds| self.scissor.intersect(bounds));
@@ -42,10 +53,16 @@ impl Context<'_> {
                 opacity: group.composite.alpha,
                 coverage: None,
             }),
+            None,
             at,
         )?;
         if forward {
-            let previous = std::mem::replace(&mut current.scopes.last_mut().target, output);
+            let previous = current
+                .scopes
+                .last_mut()
+                .target
+                .replace(output)
+                .expect("source-free parent");
             self.recycle_target(previous)?;
         } else if !terminal {
             let processed = output;

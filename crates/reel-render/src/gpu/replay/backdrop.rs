@@ -3,6 +3,20 @@ use super::*;
 use crate::common::source_view::SourceView;
 
 impl Context<'_> {
+    pub(in crate::gpu) fn composite_supported(
+        &self,
+        c: Composite,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        if c.blend != Composite::default().blend {
+            Err(GpuError::Unsupported {
+                at,
+                record: "blend mode",
+            })
+        } else {
+            Ok(())
+        }
+    }
     /// Copy an initialized parent grid into an untouched, fully covered target.
     pub(super) fn copy_backdrop(
         &mut self,

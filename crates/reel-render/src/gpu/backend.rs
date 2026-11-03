@@ -211,8 +211,11 @@ impl RenderBackend for WgpuBackend {
             );
         self.renderer.submit(prepared)?;
         before_present();
+        let present = reel_core::profile::Scope::new(reel_core::profile::Phase::Present);
         self.renderer.gpu().queue.present(texture);
-        self.renderer.gpu().check()?;
+        let completed = self.renderer.gpu().check();
+        present.finish_counted(completed.is_ok());
+        completed?;
         Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {

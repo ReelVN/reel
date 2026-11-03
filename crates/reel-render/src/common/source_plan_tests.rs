@@ -136,6 +136,7 @@ fn paint(
         images: vec![pattern.unwrap_or_else(|| image(registry, pool, 9))],
         bounds: Rect::new(0., 0., 160., 120.),
         coverage_invert: false,
+        resolution_scale: 1.,
     }
 }
 fn glyphs(registry: &mut ResourceRegistry, pool: &BudgetPool) -> (Scene, ResourceLease) {
@@ -466,6 +467,7 @@ fn nested_source_transfer_keeps_the_inherited_grid_and_target_high_water() {
     let layout = layout(
         child,
         Some(parent),
+        Some(transform),
         transform,
         [133, 86],
         4096,
@@ -487,7 +489,8 @@ fn nested_source_transfer_keeps_the_inherited_grid_and_target_high_water() {
         child,
         &layout,
         transform,
-        [133, 86]
+        [133, 86],
+        false,
     ));
     for samples in [1, 4] {
         assert_eq!(

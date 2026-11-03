@@ -1,5 +1,5 @@
 //! Actual device regressions; counters are compiled only into the library test build.
-use super::*;
+use super::super::*;
 use crate::test_support::r01_fixture;
 use r01_fixture::*;
 use reel_core::identity::FrameId;
@@ -14,12 +14,12 @@ use reel_ui::{
 };
 use std::time::{Duration, Instant};
 
-fn renderer(limits: super::super::GpuLimits) -> Renderer {
+fn renderer(limits: crate::gpu::GpuLimits) -> Renderer {
     Renderer::new(
         pollster::block_on(Gpu::request(
             &wgpu::Instance::default(),
             None,
-            super::super::DeviceGeneration(1),
+            crate::gpu::DeviceGeneration(1),
             limits,
         ))
         .expect("actual adapter required"),
@@ -156,7 +156,7 @@ fn nv12_submit_preserves_producer_and_reuses_only_matching_completed_planes() {
         (build.finish().unwrap(), weak)
     };
     // Keep two submitted pictures and their upload batches alive together.
-    let mut renderer = renderer(super::super::GpuLimits {
+    let mut renderer = renderer(crate::gpu::GpuLimits {
         max_inflight: 4,
         ..Default::default()
     });
@@ -509,7 +509,7 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
             drawing.pop_group();
             let frame = frame(drawing, [400, 300], &pool);
             let expected_targets = if masked || clipped { 4 } else { 3 };
-            let planned = super::super::targets::target_pixels(
+            let planned = crate::gpu::targets::target_pixels(
                 &frame,
                 None,
                 [400, 300],
@@ -526,7 +526,7 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
             assert_eq!(planned, expected_targets * 400 * 300);
             // Exactly one-sample RGBA16F storage: an omitted backdrop in planning
             // would choose a quality whose replay does not fit this budget.
-            let mut renderer = renderer(super::super::GpuLimits {
+            let mut renderer = renderer(crate::gpu::GpuLimits {
                 target_bytes: expected_targets * 400 * 300 * 8,
                 ..Default::default()
             });
@@ -560,7 +560,7 @@ fn pipeline_reuse_all_tiers_and_cpu_measurement() {
     let pool = pool();
     let frames =
         [[400, 300], [800, 600], [1000, 800]].map(|size| frame(scene(Color::WHITE), size, &pool));
-    let limits = super::super::GpuLimits {
+    let limits = crate::gpu::GpuLimits {
         target_bytes: 4_800_000,
         ..Default::default()
     };
@@ -661,7 +661,7 @@ fn pipeline_reuse_all_tiers_and_cpu_measurement() {
 fn pipeline_reuse_concurrent_cold_preparations() {
     let pool = pool();
     let frame = frame(scene(Color::WHITE), [400, 300], &pool);
-    let renderer = renderer(super::super::GpuLimits {
+    let renderer = renderer(crate::gpu::GpuLimits {
         max_inflight: 8,
         ..Default::default()
     });
@@ -737,7 +737,7 @@ fn pipeline_reuse_refusals_and_completion_lifecycle() {
     let pool = pool();
     let white = frame(scene(Color::WHITE), [400, 300], &pool);
     let blue = frame(scene(Color::from_rgb8(0, 0, 255)), [400, 300], &pool);
-    let mut renderer = renderer(super::super::GpuLimits {
+    let mut renderer = renderer(crate::gpu::GpuLimits {
         target_bytes: 4_800_000 * 3,
         max_inflight: 3,
         ..Default::default()
@@ -880,7 +880,7 @@ fn pipeline_reuse_cold_warm_cpu_distribution() {
         let mut warm = Vec::<Duration>::new();
         let mut quality = None;
         for _ in 0..30 {
-            let renderer = renderer(super::super::GpuLimits {
+            let renderer = renderer(crate::gpu::GpuLimits {
                 target_bytes: 4_800_000,
                 ..Default::default()
             });
@@ -921,7 +921,7 @@ fn pipeline_reuse_budget_domains_and_renderer_drop() {
     let frame = frame(scene(Color::WHITE), [400, 300], &pool);
     for (limits, domain, sets) in [
         (
-            super::super::GpuLimits {
+            crate::gpu::GpuLimits {
                 target_bytes: 1,
                 ..Default::default()
             },
@@ -929,7 +929,7 @@ fn pipeline_reuse_budget_domains_and_renderer_drop() {
             0,
         ),
         (
-            super::super::GpuLimits {
+            crate::gpu::GpuLimits {
                 resource_bytes: 0,
                 ..Default::default()
             },
@@ -937,7 +937,7 @@ fn pipeline_reuse_budget_domains_and_renderer_drop() {
             1,
         ),
         (
-            super::super::GpuLimits {
+            crate::gpu::GpuLimits {
                 transient_bytes: 0,
                 ..Default::default()
             },
@@ -954,7 +954,7 @@ fn pipeline_reuse_budget_domains_and_renderer_drop() {
             empty(&renderer);
         }
     }
-    let mut low = renderer(super::super::GpuLimits {
+    let mut low = renderer(crate::gpu::GpuLimits {
         transient_bytes: 3 << 20,
         ..Default::default()
     });

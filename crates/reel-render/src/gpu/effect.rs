@@ -185,22 +185,34 @@ impl Context<'_> {
         effect: &FrameEffect,
         transform: Affine,
         source: &Target,
-        source_commands: Option<(std::ops::Range<usize>, Affine, super::targets::Scissor)>,
+        source_commands: Option<crate::common::effect_result::SourceCommands>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         use crate::common::effect_result::{Grid, Probe};
         self.flush_draws()?;
+        let output_crop = source_commands
+            .as_ref()
+            .and_then(|source| self.offscreen.output_crop(source.commands.start));
         let proof_transform = source_commands
             .as_ref()
-            .map_or(Affine::IDENTITY, |(_, value, _)| *value);
-        let region = source_commands.as_ref().map_or(
-            super::targets::Scissor::full(source.size),
-            |(_, _, region)| *region,
-        );
+            .map_or(Affine::IDENTITY, |source| source.transform);
+        let region = source_commands
+            .as_ref()
+            .map_or(super::targets::Scissor::full(source.size), |source| {
+                source.region
+            });
+        let canonical_source = source
+            .source_crop
+            .is_none_or(|crop| crop.original_coordinates());
+        let early_reusable = canonical_source
+            && source_commands
+                .as_ref()
+                .is_some_and(|source| source.early_reusable);
         let (source_transform, effect_transform) = Grid::transforms(proof_transform, transform);
-        let grid = Grid {
+        let mut grid = Grid {
             source_transform,
             effect_transform,
+            effect_context: None,
             source_size: source.size,
             source_storage: source.storage_size(),
             source_scissor: [region.x, region.y, region.width, region.height],
@@ -228,6 +240,7 @@ impl Context<'_> {
                             ),
                             None,
                             None,
+                            output_crop,
                             at,
                         );
                     }
@@ -235,15 +248,30 @@ impl Context<'_> {
                 self.quality.samples,
             ],
         };
+        if let Some(crop) = source.source_crop {
+            grid = crop.original_grid(grid);
+        }
         let probe = if self.effect_admission.enabled()
             && !self.capture
             && !self.scissor.empty()
             && effect_plan::context(effect, transform, self.size, source.size).is_some()
         {
+            if canonical_source
+                && effect_plan::shader(drawing, effect, at)?.descriptor.output
+                    == reel_ui::stage::effect::EffectType::Vec4
+            {
+                grid = grid.color_context(effect);
+            }
             if let Some(token) = source.effect_token() {
                 Some(Probe::from_output(token, effect, grid))
-            } else if let Some((commands, _, _)) = source_commands {
-                Probe::new(drawing, commands, effect, grid)
+            } else if let Some(source_commands) = source_commands {
+                Probe::new(
+                    drawing,
+                    source_commands.commands,
+                    effect,
+                    grid,
+                    canonical_source,
+                )
             } else {
                 None
             }
@@ -251,73 +279,44 @@ impl Context<'_> {
             None
         };
         if let Some(probe) = probe {
-            if let Some((token, hit)) = self.effect_results.lookup(&probe) {
-                if self
-                    .effect_pins
-                    .iter()
-                    .any(|held| held.effect_token() == Some(token))
-                {
-                    return Ok(hit.target);
-                }
-                let bytes = super::targets::target_bytes(hit.target.storage_size(), self.quality)?;
-                if self.effect_admission.can_retain(bytes) {
-                    let local =
-                        self.budget_scope
-                            .targets
-                            .reserve(bytes)
-                            .map_err(|_| GpuError::Budget {
-                                domain: "offscreen targets",
-                                requested: bytes,
-                                available: self
-                                    .gpu
-                                    .limits
-                                    .target_bytes
-                                    .saturating_sub(self.budget_scope.targets.usage().bytes),
-                            })?;
-                    self.tickets.push(crate::common::renderer::Reservation {
-                        _shared: None,
-                        _local: local,
-                    });
-                    let mut owners = std::mem::take(&mut self.retained_inputs);
-                    let held = crate::common::scopes::push_stack(
-                        &mut owners,
-                        hit.allocation.clone(),
-                        |bytes| self.transient(bytes),
-                    );
-                    self.retained_inputs = owners;
-                    held?;
-                    let mut pins = std::mem::take(&mut self.effect_pins);
-                    let held =
-                        crate::common::scopes::push_stack(&mut pins, hit.target.clone(), |bytes| {
-                            self.transient(bytes)
-                        });
-                    self.effect_pins = pins;
-                    held?;
-                    self.effect_admission.retain(bytes);
-                    return Ok(hit.target);
-                }
+            if let Some(hit) = self.cached_effect(&probe)? {
+                #[cfg(feature = "profiling")]
+                crate::profiling::record_effect(crate::profiling::EffectSample {
+                    definition: effect.definition,
+                    variant: 3,
+                    hits: 1,
+                    ..Default::default()
+                });
+                return Ok(hit);
             }
-            let output = self.effect_draw(
+            let mut output = self.effect_draw(
                 drawing,
                 effect,
                 transform,
-                effect_plan::Source::sampled(source, source.size, source.storage_size()),
+                effect_plan::Source::sampled(source, source.size, source.storage_size())
+                    .cropped(source.source_crop),
                 None,
                 None,
+                output_crop,
                 at,
             )?;
             let bytes = super::targets::target_bytes(output.storage_size(), self.quality)?;
-            if self.effect_admission.can_retain(bytes)
-                && let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient)
-            {
-                if !candidate.retain {
+            if let Some(candidate) = self.effect_results.prepare(probe, &self.budgets.transient) {
+                output = output.with_effect_content(candidate.token);
+                if !candidate.retain || !self.effect_admission.can_retain(bytes) {
+                    let tail = candidate.retain && early_reusable;
+                    let token = candidate.token;
+                    let index = self.effect_pending.len();
                     let mut pending = std::mem::take(&mut self.effect_pending);
-                    let _ = crate::common::scopes::push_stack(
+                    let saved = crate::common::scopes::push_stack(
                         &mut pending,
                         candidate.observe(),
                         |bytes| self.transient(bytes),
                     );
                     self.effect_pending = pending;
+                    if saved.is_ok() && tail {
+                        self.watch_effect_tail(index, &output, token);
+                    }
                     return Ok(output);
                 }
                 let Some(pinned) = output.pin_effect(candidate.token, &self.budgets.transient)
@@ -338,7 +337,11 @@ impl Context<'_> {
                     let mut pending = std::mem::take(&mut self.effect_pending);
                     let saved = crate::common::scopes::push_stack(
                         &mut pending,
-                        candidate.finish(stored),
+                        if early_reusable {
+                            candidate.finish_replacing_source(stored)
+                        } else {
+                            candidate.finish(stored)
+                        },
                         |bytes| self.transient(bytes),
                     );
                     self.effect_pending = pending;
@@ -355,9 +358,11 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            effect_plan::Source::sampled(source, source.size, source.storage_size()),
+            effect_plan::Source::sampled(source, source.size, source.storage_size())
+                .cropped(source.source_crop),
             None,
             None,
+            output_crop,
             at,
         )
     }
@@ -375,8 +380,10 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            effect_plan::Source::sampled(source, source.size, source.storage_size()),
+            effect_plan::Source::sampled(source, source.size, source.storage_size())
+                .cropped(source.source_crop),
             Some(source_frame_to_pixels),
+            None,
             None,
             at,
         )
@@ -400,13 +407,15 @@ impl Context<'_> {
             drawing,
             effect,
             transform,
-            effect_plan::Source::sampled(source, source.size, source.storage_size()),
+            effect_plan::Source::sampled(source, source.size, source.storage_size())
+                .cropped(source.source_crop),
             None,
             Some(effect_plan::Terminal {
                 target,
                 opacity,
                 coverage,
             }),
+            None,
             at,
         )
         .map(|_| ())
@@ -415,7 +424,7 @@ impl Context<'_> {
         clippy::too_many_arguments,
         reason = "one prepared effect and optional terminal composite"
     )]
-    pub(super) fn effect_draw(
+    pub(super) fn effect_draw_full(
         &mut self,
         drawing: &FrameDrawing,
         effect: &FrameEffect,
@@ -423,6 +432,7 @@ impl Context<'_> {
         source: effect_plan::Source<'_, Target>,
         source_view: Option<Affine>,
         terminal: Option<effect_plan::Terminal<'_, Target>>,
+        output_crop: Option<crate::common::source_crop::Crop>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         self.flush_draws()?;
@@ -434,6 +444,8 @@ impl Context<'_> {
             && source.size != source.storage_size;
         let output = if let Some(output) = &terminal {
             output.target.clone()
+        } else if let Some(crop) = output_crop {
+            self.cropped_target(crop)?
         } else {
             self.target()?
         };
@@ -454,7 +466,11 @@ impl Context<'_> {
             context[2][3] = opacity;
             context[3][3] = f32::from(nested);
         }
-        effect_plan::map_storage(&mut context, source.size, source.storage_size);
+        if let Some(crop) = source.crop {
+            crop.map(&mut context);
+        } else {
+            effect_plan::map_storage(&mut context, source.size, source.storage_size);
+        }
         if let Some(mask) = coverage {
             context[9] =
                 crate::common::source_view::uv_mapping(self.size, mask.storage_size(), [0; 2]);
@@ -647,6 +663,41 @@ impl Context<'_> {
             pass.draw(0..3, 0..1);
         }
         drop(pass);
+        #[cfg(feature = "profiling")]
+        {
+            use crate::profiling::{EffectSample, area, record_effect};
+            record_effect(EffectSample {
+                definition: effect.definition,
+                variant: if overwrite.is_some() {
+                    2
+                } else {
+                    u8::from(coverage.is_some())
+                },
+                draws: 1,
+                source_pixels: if shader.descriptor.source_sampler {
+                    area(source.size)
+                } else {
+                    0
+                },
+                source_storage_pixels: if shader.descriptor.source_sampler {
+                    area(source.storage_size)
+                } else {
+                    0
+                },
+                crop_source_draws: u64::from(source.crop.is_some()),
+                crop_source_original_storage_pixels: source
+                    .crop
+                    .map_or(0, |crop| area(crop.canonical_storage())),
+                crop_source_storage_pixels: source.crop.map_or(0, |_| area(source.storage_size)),
+                output_pixels: area(self.size),
+                output_storage_pixels: area(output.storage_size()),
+                scissor_pixels: area([self.scissor.width, self.scissor.height]),
+                max_source: source.storage_size,
+                max_output: output.storage_size(),
+                largest_owner: at.owner.to_raw(),
+                ..Default::default()
+            });
+        }
         Ok(output)
     }
 }

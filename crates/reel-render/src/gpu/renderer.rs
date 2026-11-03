@@ -4,11 +4,6 @@ use super::{
     replay::Context,
 };
 use crate::Usage;
-#[cfg(test)]
-mod effect_admission_tests;
-#[cfg(test)]
-#[path = "texture_tests.rs"]
-mod texture_tests;
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits};
 use reel_ui::frame::RenderFrame;
 use reel_ui::kurbo::Affine;
@@ -364,6 +359,29 @@ impl Renderer {
         size: [u32; 2],
         capture: bool,
     ) -> Result<Prepared, GpuError> {
+        let result = self.prepare_frames_inner(frame, second, size, capture);
+        #[cfg(feature = "profiling")]
+        {
+            use crate::profiling::EffectInputEvent;
+            let event = match &result {
+                Err(GpuError::Busy) => Some(EffectInputEvent::BusyReturns),
+                Err(GpuError::Preparing) => Some(EffectInputEvent::PreparingReturns),
+                Err(GpuError::Pressure { .. }) => Some(EffectInputEvent::PressureReturns),
+                _ => None,
+            };
+            if let Some(event) = event {
+                crate::profiling::record_effect_input_event(event, 1);
+            }
+        }
+        result
+    }
+    fn prepare_frames_inner(
+        &self,
+        frame: &RenderFrame,
+        second: Option<(&RenderFrame, f32)>,
+        size: [u32; 2],
+        capture: bool,
+    ) -> Result<Prepared, GpuError> {
         let mut epoch = self.retained.epoch.lock().unwrap();
         if *epoch != Some(frame.surface_epoch()) {
             self.retained.inputs.clear();
@@ -399,10 +417,26 @@ impl Renderer {
             );
         if fallback || matches!(result, Err(GpuError::Pressure { .. })) {
             let cause = result.err().unwrap();
+            #[cfg(feature = "profiling")]
+            {
+                use crate::profiling::{EffectInputEvent, record_effect_input_event};
+                record_effect_input_event(EffectInputEvent::PrepareRetries, 1);
+                if pressure_pool(&cause) == Some(BudgetCategory::Offscreen) {
+                    record_effect_input_event(EffectInputEvent::OffscreenRetries, 1);
+                }
+            }
             let resident = pressured_usage(&cause, self.usage());
-            self.effect_results.clear();
+            if pressure_pool(&cause) == Some(BudgetCategory::Offscreen) {
+                self.effect_results.release_outputs();
+            } else {
+                self.effect_results.clear();
+            }
             self.effect_uniforms.clear();
-            if fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary) {
+            let metadata_pressure =
+                fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary);
+            if metadata_pressure {
+                self.targets.1.lock().unwrap().disable();
+                self.coverage_targets.1.lock().unwrap().disable();
                 self.geometry.clear();
                 self.targets.release_idle();
                 self.coverage_targets.release_idle();
@@ -424,7 +458,7 @@ impl Renderer {
                 .fetch_add(1, Ordering::Relaxed);
             // Rebuild demand before replaying. If optional cache reclamation
             // releases no capacity, preserve the original pressure result.
-            return self.prepare_cached(
+            let result = self.prepare_cached(
                 frame,
                 second,
                 size,
@@ -439,6 +473,11 @@ impl Renderer {
                     cause,
                 }),
             );
+            if metadata_pressure {
+                self.targets.1.lock().unwrap().clear();
+                self.coverage_targets.1.lock().unwrap().clear();
+            }
+            return result;
         }
         result
     }
@@ -599,14 +638,27 @@ impl Renderer {
             let mut offscreen = crate::common::offscreen::Plan::default();
             let mut offscreen_tickets = Vec::new();
             let mut required_target_bytes = 0;
+            let mut selected_effect_inputs = None;
             let mut target_plan = |quality: Quality| {
+                selected_effect_inputs = None;
                 offscreen = Default::default();
                 offscreen_tickets.clear();
                 let coverage_quality = self.gpu.coverage_quality(quality);
                 let coverage_cost = |extent| {
                     super::targets::target_bytes(extent, coverage_quality.expect("coverage format"))
                 };
-                let (schedule, targets, retained) =
+                let mut resident_tickets = Vec::new();
+                let resident = self.targets.capacities(size, quality, |bytes| {
+                    resident_tickets.push(reserve(
+                        &self.budgets.transient,
+                        &budget_scope.transient,
+                        bytes,
+                        self.gpu.limits.transient_bytes,
+                        "target capacities",
+                    )?);
+                    Ok(())
+                })?;
+                let (schedule, targets, retained, inputs) =
                     crate::common::offscreen::Plan::choose_with_groups(
                         frame,
                         second.map(|(frame, _)| frame),
@@ -623,6 +675,41 @@ impl Renderer {
                         crate::common::blend::DestinationAccess::Sampled,
                         &selection,
                         groups.clone(),
+                        Some(crate::common::offscreen::ResidentTargets {
+                            direct: &resident,
+                            sampled: &resident,
+                        }),
+                        |schedule, bytes| {
+                            Context::collect_effect_inputs(
+                                &crate::common::target_plan::Input {
+                                    frame,
+                                    second: second.map(|(frame, _)| frame),
+                                    size,
+                                    capture,
+                                    samples: quality.samples,
+                                    max_dimension: self
+                                        .gpu
+                                        .device
+                                        .limits()
+                                        .max_texture_dimension_2d,
+                                    glyphs: &glyph_plan,
+                                    schedule,
+                                    masks: crate::common::target_plan::MaskExecution::Inline,
+                                    selection: &selection,
+                                    cost: &|extent| super::targets::target_bytes(extent, quality),
+                                    coverage_cost: coverage_quality.map(|_| {
+                                        &coverage_cost as &dyn Fn([u32; 2]) -> Result<u64, GpuError>
+                                    }),
+                                },
+                                &self.effect_results,
+                                quality,
+                                &self.budgets,
+                                &budget_scope,
+                                self.gpu.limits,
+                                effect_results_enabled,
+                                bytes,
+                            )
+                        },
                         |bytes| {
                             reserve(
                                 &self.budgets.transient,
@@ -636,6 +723,7 @@ impl Renderer {
                 offscreen = schedule;
                 required_target_bytes = targets;
                 offscreen_tickets = retained;
+                selected_effect_inputs = Some(inputs);
                 Ok(targets)
             };
             let quality = if let Some(quality) = preferred {
@@ -762,6 +850,8 @@ impl Renderer {
                 ),
                 effect_pending: Vec::new(),
                 effect_pins: Vec::new(),
+                effect_tails: Vec::new(),
+                effect_inputs: Vec::new(),
                 effect_uniform_cache: &self.effect_uniforms,
                 effect_uniform_slots: Vec::new(),
                 selection,
@@ -785,6 +875,9 @@ impl Renderer {
                 f64::from(size[0]) / frame.info().logical_size[0],
                 f64::from(size[1]) / frame.info().logical_size[1],
             );
+            ctx.adopt_effect_inputs(
+                selected_effect_inputs.expect("selected target plan owns its resolved inputs"),
+            )?;
             let mut output = ctx.stream(frame.drawing(), transform)?;
             ctx.offscreen.disable_batches();
             let mut frames = vec![frame.clone()];
@@ -808,6 +901,7 @@ impl Renderer {
                 }
                 frames.push(second.clone());
             }
+            ctx.seal_effect_tails();
             drop(ctx.offscreen);
             drop(offscreen_tickets);
             self.gpu.check()?;
@@ -1017,8 +1111,5 @@ impl Drop for Renderer {
         self.inflight.clear();
     }
 }
-#[cfg(test)]
-#[path = "pipeline_tests.rs"]
-mod pipeline_tests;
 #[cfg(test)]
 mod tests;

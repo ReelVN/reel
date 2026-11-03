@@ -4,6 +4,13 @@ use super::{
     scissor::Scissor,
 };
 
+#[cfg(any(feature = "gxm", test, all(feature = "wgpu", feature = "profiling")))]
+mod interior;
+#[cfg(feature = "gxm")]
+pub(crate) use interior::partition;
+#[cfg(any(feature = "gxm", all(feature = "wgpu", feature = "profiling")))]
+pub(crate) use interior::regional_interior;
+
 /// Keep original UVs and geometry. Removing an inactive fragment clamp permits
 /// non-dependent texture reads on GXM and the same direct program on WGPU.
 pub(crate) fn direct_paint(

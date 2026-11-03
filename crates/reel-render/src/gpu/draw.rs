@@ -448,6 +448,7 @@ impl Context<'_> {
         outer: Affine,
         origin: reel_ui::frame::CommandOrigin,
     ) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GeometryPrepare);
         let at = origin.at;
         if !self.capture && self.geometry_policy.reuse && frame.recording(origin).is_some() {
             self.geometry_policy.optional.set(true);
@@ -715,6 +716,48 @@ impl Context<'_> {
             self.scissor,
             image.texture().mip_level_count(),
         );
+        #[cfg(feature = "profiling")]
+        if crate::profiling::paint_domain_enabled()
+            && !coverage
+            && yuv.is_none()
+            && source == mesh::PaintSource::Texture
+        {
+            let mut plain = appearance.unwrap_or_default();
+            plain[5][3] = 0.;
+            plain[7][3] = 0.;
+            let sampling =
+                direct.or_else(|| mesh.direct_paint(source, repeat, Some(&plain), texture_format));
+            if matches!(
+                sampling,
+                Some(
+                    mesh::DirectPaint::RegionalRgba
+                        | mesh::DirectPaint::RegionalBc1
+                        | mesh::DirectPaint::RegionalBc3
+                )
+            ) {
+                let scissor = self.scissor.for_vertices(&mesh.vertices, self.size);
+                let pixels = u64::from(scissor.width) * u64::from(scissor.height);
+                let inner = crate::common::sampling_domain::regional_interior(
+                    &mesh,
+                    [dimensions.width, dimensions.height],
+                    self.size,
+                    scissor,
+                    image.texture().mip_level_count(),
+                );
+                crate::profiling::record_paint_domain(crate::profiling::PaintDomain {
+                    candidates: 1,
+                    single_quads: u64::from(mesh.vertices.len() == 4 && mesh.indices.len() == 6),
+                    mipmapped: u64::from(image.texture().mip_level_count() > 1),
+                    small_scissors: u64::from(pixels < 65_536),
+                    vertices: mesh.vertices.len() as u64,
+                    original_pixels: pixels,
+                    admitted: u64::from(inner.is_some()),
+                    direct_pixels: inner.map_or(0, |s| u64::from(s.width) * u64::from(s.height)),
+                    dropped: 0,
+                    ..Default::default()
+                });
+            }
+        }
         let state = PaintState {
             bounded: mesh.bounded_color.paint(direct, texture_format),
             direct,
@@ -746,6 +789,20 @@ impl Context<'_> {
             .is_some_and(|batch| batch.geometry.full(&mesh))
         {
             self.flush_draws()?;
+        }
+        #[cfg(feature = "profiling")]
+        if crate::profiling::paint_domain_enabled()
+            && self.paint_batch.is_none()
+            && self.target_writes.pending(target.slot)
+            && state.opaque.is_none()
+            && crate::common::target_writes::single_quad(&mesh, self.size)
+        {
+            crate::profiling::record_paint_domain(crate::profiling::PaintDomain {
+                transparent_quads: 1,
+                transparent_pixels: u64::from(state.scissor.width)
+                    * u64::from(state.scissor.height),
+                ..Default::default()
+            });
         }
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);
@@ -909,6 +966,7 @@ impl Context<'_> {
         let storage = &self.geometry.last().expect("retained geometry").storage;
         let vertices = &storage.vertices;
         let indices = &storage.indices;
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::DrawPrepare);
         let mut groups = Vec::with_capacity(group_count);
         for (index, entry) in materials() {
             groups.push((index, self.paint_group(&entry.state)));

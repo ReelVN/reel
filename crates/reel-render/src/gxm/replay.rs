@@ -61,7 +61,15 @@ pub(super) struct Context<'a> {
     pub effect_results: &'a crate::common::effect_result::Cache<Target>,
     pub effect_admission: crate::common::effect_result::Admission,
     pub effect_pending: Vec<crate::common::effect_result::Pending<Target>>,
+    effect_tails: Vec<effect_tail::Tail>,
     pub effect_pins: Vec<Target>,
+    effect_inputs: Vec<(crate::common::effect_result::Token, Target)>,
+    pub effect_replacements: super::targets::Replacements,
+    pub macrotile_outputs: Vec<(usize, Target)>,
+    macrotile_sources: Vec<macrotile::Source>,
+    pub planned_targets: Option<crate::common::target_plan::Requirements>,
+    pub preparing_targets: bool,
+    pub staged_targets: Vec<Target>,
     pub target_cache: &'a mut super::target_cache::Cache,
     pub coverage_target_cache: &'a mut super::target_cache::Cache,
     pub retained_cache: &'a crate::common::retained::Cache<Target, u8>,
@@ -82,6 +90,7 @@ pub(super) struct Context<'a> {
     pub at: Option<RecordLocation>,
 }
 pub(super) struct Work {
+    pub stream_started: bool,
     _tickets: Vec<Reservation>,
     _failed_native: Vec<super::ownership::NativeTicket>,
     _images: HashMap<ResourceHandle, Rc<Image>>,
@@ -89,6 +98,7 @@ pub(super) struct Work {
     _effects: Vec<Rc<super::effect::Compiled>>,
     effect_pending: std::cell::RefCell<Vec<crate::common::effect_result::Pending<Target>>>,
     _effect_pins: Vec<Target>,
+    _effect_inputs: Vec<(crate::common::effect_result::Token, Target)>,
     _targets: Vec<Target>,
     _retained_inputs: Vec<Target>,
     buffers: std::cell::RefCell<Vec<super::geometry::Storage>>,
@@ -127,197 +137,20 @@ pub(super) struct Caches<'a> {
     pub retained: &'a crate::common::retained::Cache<Target, u8>,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one immutable frame and its native preparation owners"
-)]
-pub(super) fn prepare(
-    device: DeviceResources<'_>,
-    programs: &programs::Programs,
-    caches: Caches<'_>,
-    images: HashMap<ResourceHandle, Rc<Image>>,
-    frame: &RenderFrame,
-    size: [u32; 2],
-    capture: bool,
-    selection: std::sync::Arc<crate::common::retained::Plan>,
-    warm: Option<usize>,
-) -> Result<Prepared, (GpuError, Work)> {
-    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Replay);
-    let DeviceResources {
-        gpu,
-        budgets,
-        limits,
-    } = device;
-    let Caches {
-        images: image_cache,
-        glyphs: glyph_cache,
-        effects: effect_cache,
-        effect_results,
-        effect_results_enabled,
-        masks: mask_cache,
-        targets: target_cache,
-        coverage_targets: coverage_target_cache,
-        geometry: geometry_cache,
-        retained: retained_cache,
-    } = caches;
-    glyph_cache.begin_preparation();
-    geometry_cache.begin_replay();
-    let mut context = Context {
-        capture,
-        gpu,
-        programs,
-        limits,
-        size,
-        budgets,
-        budget_scope: Budgets::new(limits),
-        tickets: Vec::new(),
-        failed_native: Vec::new(),
-        images,
-        image_cache,
-        glyph_cache,
-        glyphs: Vec::new(),
-        glyph_uploads: Default::default(),
-        glyph_plan: Default::default(),
-        offscreen: Default::default(),
-        effect_cache,
-        mask_cache,
-        effects: Vec::new(),
-        effect_results,
-        effect_admission: Default::default(),
-        effect_pending: Vec::new(),
-        effect_pins: Vec::new(),
-        target_cache,
-        coverage_target_cache,
-        retained_cache,
-        selection: selection.clone(),
-        retained_inputs: Vec::new(),
-        warm,
-        warmed: false,
-        targets: Vec::new(),
-        available_targets: Vec::new(),
-        target_writes: Default::default(),
-        target_storage: super::super::target_storage(),
-        geometry_cache,
-        buffers: Vec::new(),
-        paint_batch: None,
-        instance_batch: None,
-        scissor: Scissor::full(size),
-        mesh_clip: None,
-        at: None,
-    };
-    let transform = Affine::scale_non_uniform(
-        f64::from(size[0]) / frame.info().logical_size[0],
-        f64::from(size[1]) / frame.info().logical_size[1],
-    );
-    let output = crate::common::glyph_plan::Plan::collect(
-        std::iter::once(frame),
-        transform,
-        gpu.capabilities().max_texture_size,
-        capture,
-        &selection,
-        &mut context,
-    )
-    .and_then(|plan| {
-        context.glyph_plan = plan;
-        // Glyph preparation has established this frame's non-target CDRAM
-        // owners. Existing target payload can be reused; other committed pages
-        // remain occupied while choosing the scratch schedule and cache lifetime.
-        let memory = gpu.memory_state();
-        let target_capacity = memory
-            .cdram
-            .available_bytes()
-            .saturating_add(budgets.targets.usage().bytes)
-            .min(limits.target_bytes);
-        context.limits.target_bytes = target_capacity;
-        let groups = context
-            .target_cache
-            .groups
-            .get(frame.drawing(), capture, &budgets.transient);
-        let color_cost = |size| super::targets::cost(gpu, size, false);
-        let coverage_cost = |size| super::targets::cost(gpu, size, true);
-        let (schedule, bytes, retained) = crate::common::offscreen::Plan::choose_with_groups(
-            frame,
-            None,
-            size,
-            capture,
-            1,
-            gpu.capabilities().max_texture_size,
-            &context.glyph_plan,
-            target_capacity,
-            &color_cost,
-            Some(&coverage_cost),
-            crate::common::target_plan::MaskExecution::Sampled,
-            super::super::destination_access(),
-            &selection,
-            groups,
-            |bytes| {
-                reserve(
-                    &budgets.transient,
-                    &context.budget_scope.transient,
-                    bytes,
-                    limits.transient_bytes,
-                    "transient",
-                )
-            },
-        )?;
-        if bytes > target_capacity {
-            return Err(GpuError::Budget {
-                domain: "offscreen targets",
-                requested: bytes,
-                available: target_capacity,
-            });
-        }
-        context.effect_admission = crate::common::effect_result::Admission::new(
-            bytes,
-            target_capacity,
-            effect_results_enabled && !capture,
-        );
-        context.offscreen = schedule;
-        if context.offscreen.sampled_backdrop() {
-            context.target_storage = native::TargetStorage::Linear;
-        }
-        context.prepare_targets()?;
-        context
-            .effect_admission
-            .limit_additional(gpu.memory_state().cdram.available_bytes());
-        let result = context.stream(frame.drawing(), transform);
-        drop(std::mem::take(&mut context.offscreen));
-        drop(retained);
-        result
-    });
-    // Keep the compatible high-water pool across effect endpoints. Residency
-    // pressure and output-size changes retire it at the admission boundary.
-    context.glyphs.extend(context.glyph_cache.take_uploads());
-    let work = Work {
-        _tickets: context.tickets,
-        _failed_native: context.failed_native,
-        _images: context.images,
-        _glyphs: context.glyphs,
-        _effects: context.effects,
-        effect_pending: std::cell::RefCell::new(context.effect_pending),
-        _effect_pins: context.effect_pins,
-        _targets: context.targets,
-        _retained_inputs: context.retained_inputs,
-        buffers: std::cell::RefCell::new(context.buffers),
-    };
-    match output {
-        Ok(output) => Ok(Prepared {
-            output,
-            retained: context.warmed.then_some(context.warm).flatten(),
-            _work: work,
-        }),
-        Err(error) => Err((error, work)),
-    }
-}
+#[path = "replay/prepare.rs"]
+mod prepare;
+pub(super) use prepare::prepare;
 
 struct Scope<'a> {
     source_input: Option<(usize, Affine, Scissor)>,
     clip_child: Option<&'a reel_ui::frame::FrameGroup>,
     delayed: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation, f32)>,
     group: Option<&'a reel_ui::frame::FrameGroup>,
+    source_effect_transform: Option<Affine>,
     scheduled: Option<bool>,
     shared_source: bool,
-    target: Target,
+    target: Option<Target>,
+    effect_input: Option<usize>,
     clip: Option<&'a Clip>,
     mask: Option<reel_ui::frame::MaskUse>,
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
@@ -333,6 +166,12 @@ struct Scope<'a> {
     mesh_clip: Option<crate::common::mesh::RectClip>,
     isolated: bool,
     forward_source: bool,
+    early_reusable: bool,
+}
+impl Scope<'_> {
+    fn target(&self) -> &Target {
+        self.target.as_ref().expect("materialized replay scope")
+    }
 }
 struct MaskComposition<'a> {
     terminal_effect: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation)>,
@@ -353,18 +192,24 @@ enum Pending<'a> {
         cached: bool,
     },
 }
-struct DeferredComposite {
+#[derive(Clone)]
+struct DeferredComposite<'a> {
     push: usize,
     source: Target,
-    view: crate::common::source_view::SourceView,
+    effect: Option<(&'a reel_ui::frame::FrameEffect, Affine, RecordLocation)>,
+    view: Option<crate::common::source_view::SourceView>,
+    blend: reel_ui::frame::BlendMode,
     opacity: f32,
     invert: f32,
     scissor: Scissor,
+    size: [u32; 2],
+    mesh_clip: Option<crate::common::mesh::RectClip>,
 }
 struct Stream<'a> {
+    source_crop: Option<crate::common::source_crop::Planned>,
     retained_context: usize,
     scheduled: bool,
-    deferred: Vec<DeferredComposite>,
+    deferred: Vec<DeferredComposite<'a>>,
     drawing: &'a FrameDrawing,
     // Masks have their own command space; frame exclusions apply to drawing ranges.
     offset: Option<usize>,
@@ -437,9 +282,9 @@ impl Context<'_> {
                         self.scissor,
                     )?;
                     self.combine(
-                        &child.scopes.last().target,
-                        &current.scopes.last().target,
-                        &current.scopes.last().target,
+                        child.scopes.last().target(),
+                        current.scopes.last().target(),
+                        current.scopes.last().target(),
                         1.,
                         0.,
                         CompositeOperation::Transition(0.),
@@ -465,9 +310,9 @@ impl Context<'_> {
                 )?;
                 child.retained_context = entry.map_or(0, |index| index + 1);
                 self.combine(
-                    &child.scopes.last().target,
-                    &current.scopes.last().target,
-                    &current.scopes.last().target,
+                    child.scopes.last().target(),
+                    current.scopes.last().target(),
+                    current.scopes.last().target(),
                     1.,
                     0.,
                     CompositeOperation::Transition(0.),
@@ -495,7 +340,13 @@ impl Context<'_> {
             }
             let Some(command) = current.commands.get(current.next) else {
                 self.flush_draws()?;
-                let finished = streams.pop().unwrap().scopes.finish()?.target;
+                let finished = streams
+                    .pop()
+                    .unwrap()
+                    .scopes
+                    .finish()?
+                    .target
+                    .expect("finished replay target");
                 self.ensure_sampled(&finished.view)?;
                 let Some(parent) = streams.last_mut() else {
                     return Ok(finished);
@@ -511,14 +362,14 @@ impl Context<'_> {
                                 effect,
                                 transform,
                                 &mask.source,
-                                &parent.scopes.last().target,
+                                parent.scopes.last().target(),
                                 mask.opacity,
                                 Some((&finished, false)),
                                 at,
                             )?;
                         } else {
                             self.combine_group(
-                                &parent.scopes.last().target,
+                                parent.scopes.last().target(),
                                 &mask.source,
                                 &finished,
                                 GroupPaint {
@@ -555,9 +406,9 @@ impl Context<'_> {
                             self.scissor,
                         )?;
                         self.combine(
-                            &child.scopes.last().target,
-                            &parent.scopes.last().target,
-                            &parent.scopes.last().target,
+                            child.scopes.last().target(),
+                            parent.scopes.last().target(),
+                            parent.scopes.last().target(),
                             1.,
                             0.,
                             CompositeOperation::Transition(0.),
@@ -577,7 +428,7 @@ impl Context<'_> {
                         ..
                     } => {
                         self.combine_transition(
-                            &parent.scopes.last().target,
+                            parent.scopes.last().target(),
                             &previous,
                             &finished,
                             definition,
@@ -639,11 +490,12 @@ impl Context<'_> {
                             delayed: None,
                             scheduled: None,
                             shared_source: false,
-                            target: if !isolated {
-                                current.scopes.last().target.clone()
+                            effect_input: None,
+                            target: Some(if !isolated {
+                                current.scopes.last().target().clone()
                             } else {
                                 self.target()?
-                            },
+                            }),
                             clip: isolated.then_some(clip),
                             mesh_clip: mesh_clip.or(self.mesh_clip),
                             mask: None,
@@ -652,6 +504,7 @@ impl Context<'_> {
                             mask_effect: None,
                             direct_mask_projection: false,
                             source_parent: None,
+                            source_effect_transform: None,
                             source_view: None,
                             opacity: 1.,
                             invert: 0.,
@@ -661,6 +514,7 @@ impl Context<'_> {
                                 .map_or(self.scissor, |s| self.scissor.intersect(s)),
                             isolated,
                             forward_source: false,
+                            early_reusable: false,
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -708,7 +562,7 @@ impl Context<'_> {
                         self.scissor = self.scissor.intersect(fill.scissor);
                         self.draw(
                             current.drawing,
-                            &current.scopes.last().target,
+                            current.scopes.last().target(),
                             &fill.draw,
                             transform,
                             reel_ui::frame::CommandOrigin {
@@ -736,7 +590,35 @@ impl Context<'_> {
                         .then(|| self.offscreen.entry(current.next - 1))
                         .flatten()
                         .copied();
+                    if let Some(entry) = batch
+                        && let Some(canonical) = entry.canonical_push
+                    {
+                        let mut item = current
+                            .deferred
+                            .iter()
+                            .find(|item| item.push == canonical)
+                            .expect("planned source remains live through its window")
+                            .clone();
+                        item.push = entry.push;
+                        #[cfg(feature = "profiling")]
+                        item.source.trace_event(
+                            crate::profiling::TraceKind::SourceReuse,
+                            "same-frame-source",
+                        );
+                        current.next = entry.end;
+                        self.defer_composite(current, item, entry.last, false)?;
+                        continue;
+                    }
                     let ink = self.glyph_plan.group_ink(group);
+                    let effect_transform = crate::common::effect_plan::output_transform(
+                        group,
+                        current
+                            .scopes
+                            .last()
+                            .group
+                            .zip(current.scopes.last().source_effect_transform),
+                        transform,
+                    );
                     let output_scissor = Scissor::group_bounds(
                         group,
                         transform,
@@ -744,7 +626,7 @@ impl Context<'_> {
                         current.transitions_enabled && !current.drawing.transitions().is_empty(),
                     )
                     .map_or(self.scissor, |bounds| self.scissor.intersect(bounds));
-                    let mut source_view = batch.map(|entry| entry.view).or_else(|| {
+                    let mut source_view = batch.and_then(|entry| entry.view).or_else(|| {
                         isolated
                             .then(|| {
                                 crate::common::source_view::SourceView::group(
@@ -762,6 +644,10 @@ impl Context<'_> {
                     });
                     let mut forward_source = false;
                     let mut effect_source_scissor = None;
+                    let mut source_initialize = None;
+                    let mut source_crop = None;
+                    let mut defer_source = false;
+                    let mut source_effect_transform = None;
                     let source_parent = if let Some(view) = source_view {
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, view.parent_rect);
@@ -781,6 +667,7 @@ impl Context<'_> {
                             crate::common::effect_plan::SourceLayout {
                                 size: self.size,
                                 frame_to_source: transform,
+                                effect_to_source: effect_transform,
                             }
                         } else {
                             crate::common::effect_plan::source_layout(
@@ -791,21 +678,61 @@ impl Context<'_> {
                                 at,
                             )?
                         };
-                        effect_source_scissor =
-                            Some(crate::common::effect_plan::roi::source_scissor(
-                                current.drawing,
-                                group,
-                                transform * group.effect_to_target,
-                                self.size,
-                                output_scissor,
-                                source.size,
-                                self.offscreen.storage_size(source.size),
-                            ));
+                        let demand = crate::common::effect_plan::roi::source_demand(
+                            current.drawing,
+                            group,
+                            effect_transform,
+                            self.size,
+                            output_scissor,
+                            source.size,
+                            self.offscreen.storage_size(source.size),
+                        );
+                        effect_source_scissor = Some(
+                            demand
+                                .as_ref()
+                                .map_or(Scissor::full(source.size), |demand| demand.draw),
+                        );
+                        source_initialize = demand.map(|demand| demand.initialize);
                         forward_source = current.groups.is_source_child(current.next - 1)
                             && current.scopes.last().isolated
                             && crate::common::effect_plan::forwards_source(
-                                group, &source, transform, self.size,
+                                group,
+                                &source,
+                                transform,
+                                self.size,
+                                current.scopes.last().shared_source,
                             );
+                        if current.source_crop.is_none()
+                            && isolated
+                            && !forward_source
+                            && batch.is_none_or(|entry| entry.view.is_none())
+                            && self.offscreen.source_crops()
+                            && (self.offscreen.crop_backing(source.size).is_some()
+                                || self.offscreen.storage_size(source.size) == source.size)
+                        {
+                            current.source_crop = crate::common::source_crop::plan(
+                                current.drawing,
+                                current.commands,
+                                current.next - 1,
+                                &current.groups,
+                                &source,
+                                self.offscreen.crop_backing(source.size),
+                                effect_source_scissor.unwrap(),
+                                self.capture,
+                            )
+                            .filter(|plan| {
+                                self.offscreen.storage_size(plan.crop.size) == plan.crop.size
+                            });
+                        }
+                        defer_source = current
+                            .source_crop
+                            .is_some_and(|plan| plan.leaf != current.next - 1);
+                        if current
+                            .source_crop
+                            .is_some_and(|plan| plan.leaf == current.next - 1)
+                        {
+                            source_crop = current.source_crop.take().map(|plan| plan.crop);
+                        }
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, output_scissor);
                         if group.mask_effect.is_some() {
@@ -819,9 +746,19 @@ impl Context<'_> {
                                 output_scissor,
                             ));
                         }
-                        current.transform = source.frame_to_source;
-                        current.size = source.size;
-                        self.size = source.size;
+                        current.transform = source_crop.map_or(source.frame_to_source, |crop| {
+                            crop.transform(source.frame_to_source)
+                        });
+                        source_effect_transform =
+                            Some(source_crop.map_or(source.effect_to_source, |crop| {
+                                crop.transform(source.effect_to_source)
+                            }));
+                        current.size = source_crop.map_or(source.size, |crop| crop.raster_size());
+                        self.size = current.size;
+                        if let Some(crop) = source_crop {
+                            effect_source_scissor =
+                                effect_source_scissor.map(|region| crop.scissor(region));
+                        }
                         self.mesh_clip = None;
                         Some(parent)
                     } else {
@@ -834,56 +771,99 @@ impl Context<'_> {
                     } else {
                         output_scissor
                     };
-                    if forward_source
-                        && self.cached_source(
+                    let source_push = current.offset.map(|offset| offset + current.next - 1);
+                    let (effect_input, selected_input) =
+                        self.selected_effect_input(current, forward_source, source_scissor);
+                    let cached_source = if effect_input.is_none()
+                        && forward_source
+                        && current.source_crop.is_none()
+                    {
+                        self.cached_source(
                             current,
                             group,
                             source_parent.unwrap(),
                             source_scissor,
+                            source_crop,
                         )?
-                    {
+                    } else {
+                        Default::default()
+                    };
+                    if cached_source.hit {
                         continue;
+                    }
+                    let macrotile_source = if effect_input.is_none()
+                        && isolated
+                        && source_view.is_none()
+                        && batch.is_none_or(|entry| entry.view.is_none())
+                    {
+                        self.macrotile_source(current)?
+                    } else {
+                        None
+                    };
+                    let mut source_target = if effect_input.is_some() {
+                        selected_input
+                    } else {
+                        Some(if defer_source {
+                            current.scopes.last().target().clone()
+                        } else if let Some(crop) = source_crop {
+                            self.cropped_target(crop)?
+                        } else if let Some(source) = macrotile_source {
+                            source
+                        } else if forward_source {
+                            current.scopes.last().target().clone()
+                        } else if batch.is_some_and(|entry| entry.shared && !entry.first) {
+                            current
+                                .deferred
+                                .last()
+                                .expect("active source atlas")
+                                .source
+                                .clone()
+                        } else if isolated {
+                            self.target()?
+                        } else {
+                            current.scopes.last().target().clone()
+                        })
+                    };
+                    if effect_input.is_none()
+                        && isolated
+                        && batch.is_none()
+                        && source_view.is_none()
+                        && source_crop.is_none()
+                        && !defer_source
+                        && let Some(initialize) = source_initialize
+                        && let Some(target) = &mut source_target
+                    {
+                        self.restrict_source_initialization(target, initialize, current)?;
                     }
                     current.scopes.push(
                         Kind::Group,
                         at,
                         Scope {
-                            source_input: current.offset.map(|offset| {
-                                (offset + current.next - 1, current.transform, source_scissor)
-                            }),
+                            source_input: source_push
+                                .map(|push| (push, current.transform, source_scissor)),
                             group: Some(group),
                             clip_child: None,
                             delayed: None,
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
                             forward_source,
-                            target: if forward_source {
-                                current.scopes.last().target.clone()
-                            } else if batch.is_some_and(|entry| entry.shared && !entry.first) {
-                                current
-                                    .deferred
-                                    .last()
-                                    .expect("active source atlas")
-                                    .source
-                                    .clone()
-                            } else if isolated {
-                                self.target()?
-                            } else {
-                                current.scopes.last().target.clone()
-                            },
+                            early_reusable: cached_source.early_reusable,
+                            effect_input,
+                            target: source_target,
                             mesh_clip: self.mesh_clip,
                             source_parent,
+                            source_effect_transform,
                             source_view,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             effect: group
                                 .effect
                                 .as_ref()
-                                .map(|effect| (effect, transform * group.effect_to_target)),
+                                .map(|effect| (effect, effect_transform)),
                             mask_effect: group
                                 .mask_effect
                                 .as_ref()
-                                .map(|effect| (effect, transform * group.effect_to_target)),
+                                .map(|effect| (effect, effect_transform)),
                             direct_mask_projection:
                                 crate::common::effect_plan::direct_mask_projection(
                                     group,
@@ -893,7 +873,7 @@ impl Context<'_> {
                             image_mask: group
                                 .image_mask
                                 .as_ref()
-                                .map(|mask| (mask, transform * group.effect_to_target)),
+                                .map(|mask| (mask, effect_transform)),
                             opacity: group.composite.alpha,
                             invert: group.invert,
                             blend: group.composite.blend,
@@ -930,7 +910,7 @@ impl Context<'_> {
                         .delayed
                         .map_or(group.opacity, |(_, _, _, opacity)| opacity);
                     let nested = group.delayed.is_some();
-                    let mut source = group.target;
+                    let mut source = group.target.expect("completed source target");
                     if let Some((coverage, to_parent)) = group.mask_effect {
                         let view = group.source_view.expect("local coverage source");
                         self.scissor = group.scissor;
@@ -984,38 +964,33 @@ impl Context<'_> {
                             entry.at,
                         )?;
                         self.recycle_target(source)?;
-                        current.scopes.last_mut().target = processed;
+                        current.scopes.last_mut().target = Some(processed);
                         continue;
                     }
                     if let Some(view) = group.source_view.filter(|_| group.mask_effect.is_none()) {
-                        if let Some(last) = group.scheduled {
-                            push_stack(
-                                &mut current.deferred,
+                        if group.scheduled.is_some() {
+                            self.defer_composite(
+                                current,
                                 DeferredComposite {
                                     push: group.source_input.expect("scheduled source").0,
                                     source,
-                                    view,
+                                    effect: None,
+                                    view: Some(view),
+                                    blend: group.blend,
                                     opacity: group.opacity,
                                     invert: group.invert,
                                     scissor: self.scissor,
+                                    size: self.size,
+                                    mesh_clip: self.mesh_clip,
                                 },
-                                |bytes| self.transient(bytes),
+                                group.scheduled == Some(true),
+                                group.shared_source,
                             )?;
-                            if last {
-                                let mut pending = std::mem::take(&mut current.deferred);
-                                self.scheduled_parent(current, &pending)?;
-                                for (index, item) in pending.drain(..).enumerate() {
-                                    if !group.shared_source || index == 0 {
-                                        self.recycle_target(item.source)?;
-                                    }
-                                }
-                                current.deferred = pending;
-                            }
                             continue;
                         }
                         if group.blend == Default::default() {
                             self.combine_view(
-                                &current.scopes.last().target,
+                                current.scopes.last().target(),
                                 &source,
                                 view,
                                 group.opacity,
@@ -1023,7 +998,7 @@ impl Context<'_> {
                             )?;
                         } else {
                             self.combine_cropped(
-                                &current.scopes.last().target,
+                                current.scopes.last().target(),
                                 &source,
                                 view,
                                 reel_ui::frame::GroupComposite {
@@ -1039,7 +1014,7 @@ impl Context<'_> {
                     if let Some(view) = group.source_view.filter(|_| group.mask_effect.is_some()) {
                         if group.direct_mask_projection {
                             self.project_source(
-                                &current.scopes.last().target,
+                                current.scopes.last().target(),
                                 &source,
                                 view.parent_to_source,
                                 group.opacity,
@@ -1070,7 +1045,7 @@ impl Context<'_> {
                             self.size,
                         ) {
                             let parent = current.scopes.last_mut();
-                            let empty = std::mem::replace(&mut parent.target, source);
+                            let empty = parent.target.replace(source).expect("clip source target");
                             parent.delayed = Some((effect, transform, entry.at, group.opacity));
                             self.recycle_target(empty)?;
                             continue;
@@ -1083,17 +1058,37 @@ impl Context<'_> {
                                 self.capture || !current.drawing.transitions().is_empty(),
                             )
                         }) {
-                            self.effect_into(
-                                current.drawing,
-                                effect,
-                                transform,
-                                &source,
-                                &current.scopes.last().target,
-                                group.opacity,
-                                None,
-                                entry.at,
-                            )?;
-                            self.recycle_target(source)?;
+                            if group.scheduled.is_some() {
+                                self.defer_composite(
+                                    current,
+                                    DeferredComposite {
+                                        push: group.source_input.expect("scheduled source").0,
+                                        source,
+                                        effect: Some((effect, transform, entry.at)),
+                                        view: None,
+                                        blend: group.blend,
+                                        opacity: group.opacity,
+                                        invert: group.invert,
+                                        scissor: self.scissor,
+                                        size: self.size,
+                                        mesh_clip: self.mesh_clip,
+                                    },
+                                    group.scheduled == Some(true),
+                                    false,
+                                )?;
+                            } else {
+                                self.effect_into(
+                                    current.drawing,
+                                    effect,
+                                    transform,
+                                    &source,
+                                    current.scopes.last().target(),
+                                    group.opacity,
+                                    None,
+                                    entry.at,
+                                )?;
+                                self.recycle_target(source)?;
+                            }
                             continue;
                         }
                         if terminal_tail == Some(crate::effect::OutputTail::AlphaCoverage)
@@ -1128,7 +1123,7 @@ impl Context<'_> {
                                 effect,
                                 effect_transform,
                                 &source,
-                                &current.scopes.last().target,
+                                current.scopes.last().target(),
                                 terminal_opacity,
                                 Some((&coverage, nested)),
                                 at,
@@ -1142,7 +1137,7 @@ impl Context<'_> {
                             // Fold coverage and opacity into the final source-over pass.
                             // No intermediate full-size clipped texture is needed.
                             self.combine_group(
-                                &current.scopes.last().target,
+                                current.scopes.last().target(),
                                 &source,
                                 &coverage,
                                 GroupPaint {
@@ -1202,9 +1197,27 @@ impl Context<'_> {
                             self.scissor,
                         )?;
                         push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                    } else if group.scheduled.is_some() {
+                        self.defer_composite(
+                            current,
+                            DeferredComposite {
+                                push: group.source_input.expect("scheduled source").0,
+                                source,
+                                effect: None,
+                                view: None,
+                                blend: group.blend,
+                                opacity: group.opacity,
+                                invert: group.invert,
+                                scissor: self.scissor,
+                                size: self.size,
+                                mesh_clip: self.mesh_clip,
+                            },
+                            group.scheduled == Some(true),
+                            group.shared_source,
+                        )?;
                     } else {
                         self.combine_group(
-                            &current.scopes.last().target,
+                            current.scopes.last().target(),
                             &source,
                             &source,
                             GroupPaint {
@@ -1255,14 +1268,14 @@ impl Context<'_> {
                     let batch_end =
                         current.draw_batch_end(&self.selection, current.next - 1, batch_end);
                     let consumed = self.image_batch(
-                        &current.scopes.last().target,
+                        current.scopes.last().target(),
                         &current.commands[current.next - 1..batch_end],
                         transform,
                     )?;
                     if consumed == 0 {
                         self.draw(
                             current.drawing,
-                            &current.scopes.last().target,
+                            current.scopes.last().target(),
                             draw,
                             transform,
                             command.origin,
@@ -1310,6 +1323,7 @@ impl Context<'_> {
             )?)
         };
         Ok(Stream {
+            source_crop: None,
             retained_context: 0,
             scheduled: false,
             deferred: Vec::new(),
@@ -1331,7 +1345,8 @@ impl Context<'_> {
                 delayed: None,
                 scheduled: None,
                 shared_source: false,
-                target: self.target()?,
+                target: Some(self.target()?),
+                effect_input: None,
                 mesh_clip: None,
                 clip: None,
                 mask: None,
@@ -1340,6 +1355,7 @@ impl Context<'_> {
                 mask_effect: None,
                 direct_mask_projection: false,
                 source_parent: None,
+                source_effect_transform: None,
                 source_view: None,
                 opacity: 1.,
                 invert: 0.,
@@ -1347,6 +1363,7 @@ impl Context<'_> {
                 scissor,
                 isolated: true,
                 forward_source: false,
+                early_reusable: false,
             }),
             pending: None,
         })
@@ -1396,3 +1413,13 @@ mod source_free;
 
 #[path = "replay/effect_cache.rs"]
 mod effect_cache;
+#[path = "replay/effect_inputs.rs"]
+mod effect_inputs;
+#[path = "replay/effect_resolution.rs"]
+mod effect_resolution;
+#[path = "replay/effect_tail.rs"]
+mod effect_tail;
+#[path = "replay/macrotile.rs"]
+mod macrotile;
+#[path = "replay/source_initialization.rs"]
+mod source_initialization;

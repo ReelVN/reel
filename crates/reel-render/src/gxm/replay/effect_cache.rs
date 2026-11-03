@@ -12,37 +12,46 @@ impl Context<'_> {
         group: &reel_ui::frame::FrameGroup,
         parent: (Affine, [u32; 2], Scissor),
         region: Scissor,
-    ) -> Result<bool, GpuError> {
+        crop: Option<crate::common::source_crop::Crop>,
+    ) -> Result<crate::common::effect_result::chain::Lookup, GpuError> {
+        let mut lookup = crate::common::effect_result::chain::Lookup::default();
         if !self.effect_admission.enabled()
             || self.capture
             || !current.drawing.transitions().is_empty()
             || !current.drawing.capture_exclusions().is_empty()
         {
-            return Ok(false);
+            return Ok(lookup);
         }
         let Some(offset) = current.offset else {
-            return Ok(false);
+            return Ok(lookup);
         };
-        let Some(end) = current.commands[current.next..]
-            .iter()
-            .position(|command| matches!(command.op, FrameOp::PopGroup))
-            .map(|end| current.next + end + 1)
+        let Some(end) =
+            crate::common::effect_result::source_end(current.commands, current.next - 1)
         else {
-            return Ok(false);
+            return Ok(lookup);
         };
         let effect = group.effect.as_ref().expect("forwarded effect");
-        let effect_transform = parent.0 * group.effect_to_target;
+        let effect_transform = effect_plan::output_transform(
+            group,
+            current
+                .scopes
+                .last()
+                .group
+                .zip(current.scopes.last().source_effect_transform),
+            parent.0,
+        );
         let output_scissor = current.scopes.last().scissor.intersect(parent.2);
         if output_scissor.empty()
             || effect_plan::context(effect, effect_transform, parent.1, self.size).is_none()
         {
-            return Ok(false);
+            return Ok(lookup);
         }
         let (source_transform, effect_transform) =
             Grid::transforms(current.transform, effect_transform);
-        let grid = Grid {
+        let mut grid = Grid {
             source_transform,
             effect_transform,
+            effect_context: None,
             source_size: self.size,
             source_storage: self.offscreen.storage_size(self.size),
             source_scissor: [region.x, region.y, region.width, region.height],
@@ -56,18 +65,46 @@ impl Context<'_> {
             ],
             quality: [0, 1],
         };
-        // Probe validates the complete source range. A nested group, clip,
-        // additional draw or mask rejects this early lookup.
-        let Some(probe) = Probe::new(
-            current.drawing,
-            offset + current.next - 1..offset + end,
-            effect,
-            grid,
-        ) else {
-            return Ok(false);
+        if let Some(crop) = crop {
+            grid = crop.original_grid(grid);
+        }
+        let canonical_source = crop.is_none_or(|crop| crop.original_coordinates());
+        if canonical_source
+            && effect_plan::shader(
+                current.drawing,
+                effect,
+                current.commands[current.next - 1].origin.at,
+            )?
+            .descriptor
+            .output
+                == reel_ui::stage::effect::EffectType::Vec4
+        {
+            grid = grid.color_context(effect);
+        }
+        // The complete source proof includes neutral wrappers and their actual
+        // scissors; additional draws, masks and effect dependencies keep replay.
+        let range = offset + current.next - 1..offset + end;
+        let probe = if canonical_source {
+            let Some(source) = crate::common::effect_result::chain::source(
+                current.drawing,
+                range,
+                grid,
+                &current.groups,
+                &|size| self.offscreen.storage_size(size),
+                &self.budgets.transient,
+            ) else {
+                return Ok(lookup);
+            };
+            lookup.early_reusable = true;
+            source.resolve(self.effect_results)
+        } else {
+            Probe::new(current.drawing, range, effect, grid, false)
+        };
+        let Some(probe) = probe else {
+            return Ok(lookup);
         };
         let Some(hit) = self.cached_effect(&probe)? else {
-            return Ok(false);
+            return Ok(lookup);
         };
         #[cfg(feature = "profiling")]
         crate::profiling::record_effect(crate::profiling::EffectSample {
@@ -77,14 +114,24 @@ impl Context<'_> {
             early_hits: 1,
             ..Default::default()
         });
-        let unused = std::mem::replace(&mut current.scopes.last_mut().target, hit);
-        self.recycle_target(unused)?;
+        let unused = current
+            .scopes
+            .last_mut()
+            .target
+            .replace(hit)
+            .expect("forwarded source target");
+        // A deferred crop borrowed the ancestor's live target as a placeholder.
+        // Only an actual ordinary source allocation can become frame-local idle.
+        if crop.is_none() {
+            self.recycle_target(unused)?;
+        }
         current.next = end;
         current.transform = parent.0;
         current.size = parent.1;
         self.size = parent.1;
         self.scissor = output_scissor;
         self.mesh_clip = current.scopes.last().mesh_clip;
-        Ok(true)
+        lookup.hit = true;
+        Ok(lookup)
     }
 }

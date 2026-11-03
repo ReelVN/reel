@@ -131,3 +131,74 @@ fn ordered_lookup_falls_back_for_reordering_and_keeps_inflight_owners() {
     drop(flight);
     assert_eq!(budgets.transient.usage().bytes, 0);
 }
+
+#[test]
+fn moving_recordings_admit_after_settling_and_preserve_inflight_geometry() {
+    let (_bridge, frame) = frame(8);
+    let origins: Vec<_> = frame
+        .commands()
+        .iter()
+        .filter(|command| matches!(command.op, FrameOp::Draw(_)))
+        .map(|command| command.origin)
+        .collect();
+    let limits = crate::common::GpuLimits::default();
+    let budgets = Budgets::new(limits);
+    let mut cache = Cache::default();
+    for (index, &origin) in origins.iter().enumerate() {
+        cache.insert(
+            frame.drawing(),
+            origin,
+            0u32,
+            Payload(index as u32),
+            &budgets,
+            limits.transient_bytes,
+        );
+    }
+    let flight = cache.get(frame.drawing(), origins[3], &0).unwrap();
+    let resident_bytes = cache.bytes();
+    for revision in 1..20 {
+        cache.begin_replay();
+        for &index in &[7, 3, 4, 5, 0, 1, 2, 6] {
+            let origin = origins[index];
+            assert!(cache.get(frame.drawing(), origin, &revision).is_none());
+            assert!(!cache.observe(
+                frame.drawing(),
+                origin,
+                &revision,
+                &budgets,
+                limits.transient_bytes
+            ));
+            assert!(cache.get(frame.drawing(), origin, &revision).is_none());
+        }
+        assert_eq!(cache.bytes(), resident_bytes);
+        assert_eq!(flight.value().0, 3);
+    }
+    cache.begin_replay();
+    for (index, &origin) in origins.iter().enumerate() {
+        assert!(cache.observe(
+            frame.drawing(),
+            origin,
+            &19,
+            &budgets,
+            limits.transient_bytes
+        ));
+        cache.insert(
+            frame.drawing(),
+            origin,
+            19,
+            Payload(100 + index as u32),
+            &budgets,
+            limits.transient_bytes,
+        );
+        assert_eq!(
+            cache.get(frame.drawing(), origin, &19).unwrap().value().0,
+            100 + index as u32
+        );
+    }
+    assert_eq!(flight.value().0, 3);
+    cache.clear();
+    assert!(cache.get(frame.drawing(), origins[3], &19).is_none());
+    assert!(budgets.transient.usage().bytes > 0);
+    drop(flight);
+    assert_eq!(budgets.transient.usage().bytes, 0);
+}

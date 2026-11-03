@@ -33,6 +33,45 @@ pub(crate) enum Kind {
     },
 }
 impl Kind {
+    /// The same color arithmetic with an independently proved inactive clamp.
+    pub(crate) fn unclamped(self) -> Option<Self> {
+        use crate::common::mesh::DirectPaint;
+        let direct = |kind| match kind {
+            DirectPaint::RegionalRgba => Some(DirectPaint::Rgba),
+            DirectPaint::RegionalBc1 => Some(DirectPaint::Bc1),
+            DirectPaint::RegionalBc3 => Some(DirectPaint::Bc3),
+            _ => None,
+        };
+        match self {
+            Self::Direct(kind) => direct(kind).map(Self::Direct),
+            Self::Bounded(kind) => direct(kind).map(Self::Bounded),
+            Self::AppearanceSimple {
+                regional: true,
+                constant,
+                plain_adjust,
+            } => Some(Self::AppearanceSimple {
+                regional: false,
+                constant,
+                plain_adjust,
+            }),
+            Self::AlphaTint {
+                opaque: false,
+                regional: true,
+            } => Some(Self::AlphaTint {
+                opaque: false,
+                regional: false,
+            }),
+            Self::Monochrome {
+                opaque_white,
+                regional: true,
+            } => Some(Self::Monochrome {
+                opaque_white,
+                regional: false,
+            }),
+            _ => None,
+        }
+    }
+
     #[cfg(feature = "profiling")]
     pub(crate) fn diagnostic_label(self) -> &'static str {
         if let Self::Monochrome {

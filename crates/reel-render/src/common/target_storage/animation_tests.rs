@@ -84,6 +84,7 @@ fn frame_domains(domains: [[u32; 2]; 2]) -> RenderFrame {
             images: vec![],
             bounds,
             coverage_invert: false,
+            resolution_scale: 1.,
         };
         let mut scene = Scene::new();
         scene.draw(Draw::Fill {

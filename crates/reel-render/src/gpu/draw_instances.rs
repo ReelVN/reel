@@ -156,6 +156,7 @@ impl Context<'_> {
         self.submit_instances(pending)
     }
     fn submit_instances(&mut self, pending: InstanceBatch) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::DrawPrepare);
         let pipeline = self.pipelines.instance_pipeline(
             self.gpu,
             self.quality,

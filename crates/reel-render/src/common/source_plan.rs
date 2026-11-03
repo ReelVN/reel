@@ -181,6 +181,7 @@ fn scope_end(commands: &[reel_ui::frame::FrameCommand], push: usize) -> Option<u
 pub(crate) fn layout(
     group: &FrameGroup,
     parent: Option<&FrameGroup>,
+    parent_local: Option<Affine>,
     transform: Affine,
     size: [u32; 2],
     max_dimension: u32,
@@ -190,6 +191,11 @@ pub(crate) fn layout(
         Ok(effect_plan::SourceLayout {
             size,
             frame_to_source: transform,
+            effect_to_source: effect_plan::output_transform(
+                group,
+                parent.zip(parent_local),
+                transform,
+            ),
         })
     } else {
         effect_plan::source_layout(

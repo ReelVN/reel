@@ -101,7 +101,9 @@ impl<'a> Paint<'a> {
             alpha_tint: false,
             monochrome: None,
             opaque,
+            replace_transparent: false,
             scissor,
+            interior: None,
         }
     }
 }
@@ -122,6 +124,7 @@ impl PaintState {
             && self.alpha_tint == other.alpha_tint
             && self.monochrome == other.monochrome
             && self.opaque == other.opaque
+            && self.replace_transparent == other.replace_transparent
     }
     pub(super) fn shader_kind(&self) -> super::super::programs::PaintKind {
         use super::super::programs::PaintKind;
@@ -345,6 +348,7 @@ impl Context<'_> {
         self.submit_instances(pending)
     }
     fn submit_instances(&mut self, pending: InstanceBatch) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::DrawPrepare);
         self.ensure_target(&pending.target)?;
         let (storage, local) = super::super::geometry::upload_instances(
             self.geometry_cache,

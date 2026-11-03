@@ -40,7 +40,6 @@ pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
 
 struct EffectPin {
     allocation: std::sync::Arc<super::target_cache::Allocation>,
-    token: crate::common::effect_result::Token,
     _metadata: reel_core::budget::BudgetTicket,
 }
 impl Drop for EffectPin {
@@ -54,10 +53,12 @@ impl Drop for EffectPin {
 pub struct Target {
     pub(super) slot: usize,
     pub size: [u32; 2],
+    pub(super) source_crop: Option<crate::common::source_crop::Crop>,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub multisample: Option<wgpu::TextureView>,
     pub(super) allocation: Option<std::sync::Weak<super::target_cache::Allocation>>,
+    effect_content: Option<crate::common::effect_result::Token>,
     effect_pin: Option<std::sync::Arc<EffectPin>>,
 }
 impl Target {
@@ -73,7 +74,22 @@ impl Target {
             })
     }
     pub(super) fn effect_token(&self) -> Option<crate::common::effect_result::Token> {
-        self.effect_pin.as_ref().map(|pin| pin.token)
+        self.effect_content
+    }
+    /// Label the completed pixels of this logical view without retaining them.
+    pub(super) fn with_effect_content(
+        mut self,
+        token: crate::common::effect_result::Token,
+    ) -> Self {
+        self.effect_content = Some(token);
+        self
+    }
+    /// End the old logical content before this scratch view can be written again.
+    pub(super) fn clear_effect_content(&mut self) {
+        self.effect_content = None;
+    }
+    pub(super) fn same_allocation(&self, other: &Self) -> bool {
+        self.texture == other.texture
     }
     pub(super) fn pin_effect(
         &self,
@@ -87,10 +103,9 @@ impl Target {
         allocation
             .effect_pins
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let mut result = self.clone();
+        let mut result = self.clone().with_effect_content(token);
         result.effect_pin = Some(std::sync::Arc::new(EffectPin {
             allocation,
-            token,
             _metadata: metadata,
         }));
         Some(result)
@@ -132,11 +147,13 @@ impl Target {
         reel_core::profile::count(reel_core::profile::Phase::TargetCreated);
         Self {
             slot: 0,
+            source_crop: None,
             size,
             texture,
             view,
             multisample,
             allocation: None,
+            effect_content: None,
             effect_pin: None,
         }
     }

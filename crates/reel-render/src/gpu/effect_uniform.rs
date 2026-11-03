@@ -154,6 +154,29 @@ impl Cache {
         let mut state = self.0.lock().unwrap();
         state.clear();
     }
+    /// Release completed bindings before reclaiming physical scratch owners.
+    /// Buffer storage and its uploaded bytes stay reusable. Prepared and
+    /// in-flight slots are outside this idle list and retain their resources.
+    pub(super) fn release_target_bindings(&self) -> usize {
+        let mut state = self.0.lock().unwrap();
+        let mut released = 0;
+        for slot in &mut state.slots {
+            if slot.source.is_some() || slot.coverage.is_some() {
+                slot.group = None;
+                slot.compiled = None;
+                slot.source = None;
+                slot.coverage = None;
+                slot.images.clear();
+                released += 1;
+            }
+        }
+        #[cfg(feature = "profiling")]
+        crate::profiling::record_effect_input_event(
+            crate::profiling::EffectInputEvent::IdleTargetBindingsReleased,
+            released as u64,
+        );
+        released
+    }
     #[cfg(test)]
     pub(super) fn test_len(&self) -> usize {
         self.0.lock().unwrap().slots.len()

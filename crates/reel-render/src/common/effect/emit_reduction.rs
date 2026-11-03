@@ -49,6 +49,18 @@ impl Emitter<'_> {
                 construct(self.language, EffectType::Vec4, &initial)
             ),
         )?;
+        if let Some(proof) = self
+            .diagonal
+            .filter(|proof| proof.sample == reduction.sample)
+        {
+            self.line(
+                scope,
+                &format!(
+                    "float reel_source_fixed = reel_source_fixed_axis({});",
+                    self.value(scope, proof.fixed)
+                ),
+            )?;
+        }
         if self.language == Language::Cg {
             self.line(scope, "#pragma loop (unroll: never)")?;
         }

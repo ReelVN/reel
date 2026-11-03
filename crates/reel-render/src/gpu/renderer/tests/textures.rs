@@ -1,11 +1,9 @@
 //! Actual-device submission, allocation and authored-coordinate contracts.
 //! The separate atlas sampling module adds finite numeric readback checks.
-#[path = "atlas_sampling_tests.rs"]
-mod atlas_sampling_tests;
-#[path = "image_adjustment_tests.rs"]
-mod image_adjustment_tests;
-use super::super::{DeviceGeneration, GpuLimits, resources};
-use super::*;
+mod adjustment;
+mod atlas_sampling;
+use super::super::*;
+use crate::gpu::{DeviceGeneration, GpuLimits, resources};
 use crate::test_support::r01_fixture;
 use reel_core::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
@@ -1142,6 +1140,7 @@ fn effect_frame(lease: ResourceLease, pool: &BudgetPool) -> RenderFrame {
         images: vec![lease.clone()],
         bounds,
         coverage_invert: false,
+        resolution_scale: 1.,
     });
     let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
     let resources = ResourceSnapshot::capture([Ok(lease), Ok(shader)].into_iter(), pool).unwrap();

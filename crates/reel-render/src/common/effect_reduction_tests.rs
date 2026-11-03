@@ -35,27 +35,18 @@ fn cg_parallel_clip_keeps_predicates_and_sampling_body_with_bounded_admission() 
         let program = sampling_offsets(&offsets);
         for tail in [OutputTail::Ordinary, OutputTail::AlphaCoverage] {
             let local = compile_fragment_with_tail(&program, Language::Cg, tail, 1 << 20).unwrap();
-            assert_eq!(local.source.contains(cg::PIXEL_KILL), count >= 32);
-            assert_eq!(local.source.contains(cg::UV_KILL), count >= 32);
+            assert!(local.source.contains(cg::PIXEL_KILL));
+            assert!(local.source.contains(cg::UV_KILL));
             let generated = generate_inner(&program, Language::Cg, 1 << 20, 5).unwrap();
             assert!(local.source.contains(&generated.function));
-            if count >= 32 {
-                let single = generate_inner(&program, Language::Cg, 1 << 20, 1).unwrap();
-                let original =
-                    cg::compile(&program, single, tail, FragmentCoverage::Local, 1 << 20).unwrap();
-                let reference = original
-                    .source
-                    .replace(cg::PIXEL_KILL, cg::PIXEL_DISCARD)
-                    .replace(cg::UV_KILL, cg::UV_DISCARD);
-                let admitted =
-                    compile_fragment_with_tail(&program, Language::Cg, tail, reference.len())
-                        .unwrap();
-                assert_eq!(admitted.source, reference);
-            }
+            let admitted =
+                compile_fragment_with_tail(&program, Language::Cg, tail, local.source.len())
+                    .unwrap();
+            assert_eq!(admitted.source, local.source);
         }
         let complex = sampling_offsets_with_complexity(&offsets, true);
         let local = compile_fragment(&complex, Language::Cg, 1 << 20).unwrap();
-        assert!(!local.source.contains(cg::PIXEL_KILL));
+        assert!(local.source.contains(cg::PIXEL_KILL));
         let full = compile_fragment_variant(
             &program,
             Language::Cg,
