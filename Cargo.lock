@@ -3587,6 +3587,7 @@ dependencies = [
  "lyon_tessellation",
  "pollster",
  "postcard",
+ "rayon",
  "reel-core",
  "reel-ui",
  "serde",

@@ -159,7 +159,7 @@ fn upload_with(
     encoder: &mut wgpu::CommandEncoder,
     size: [u32; 2],
     available: u64,
-    mut pixel: impl FnMut(usize) -> [f32; 4],
+    pixel: impl Fn(usize) -> [f32; 4] + Sync,
 ) -> Result<(Image, u64), GpuError> {
     gpu.check()?;
     let max = gpu.device.limits().max_texture_dimension_2d;
@@ -406,7 +406,7 @@ fn upload_rows_with(
     image: &Image,
     rows: std::ops::Range<u32>,
     reusable: Option<&super::upload::Buffer>,
-    mut pixel: impl FnMut(usize) -> [u16; 4],
+    pixel: impl Fn(usize) -> [u16; 4] + Sync,
 ) -> Result<(), GpuError> {
     gpu.check()?;
     let size = image.size;
@@ -432,29 +432,37 @@ fn upload_rows_with(
     };
     gpu.check()?;
     {
-        let mut mapped = staging.slice(..).get_mapped_range_mut().map_err(|error| {
-            // Prefer the device's original loss/allocation error to a secondary
-            // map failure, so the host can recover the correct device generation.
-            gpu.check()
-                .err()
-                .unwrap_or_else(|| GpuError::Device(error.to_string()))
-        })?;
-        // Convert each batch in CPU memory, then copy it to the upload mapping.
-        let mut mapped = mapped.slice(..);
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageConvert);
-        let mut batch = [[0u16; 4]; 128];
-        for y in 0..height as usize {
-            for x in (0..size[0] as usize).step_by(batch.len()) {
-                let count = batch.len().min(size[0] as usize - x);
-                let source = (y + rows.start as usize) * size[0] as usize + x;
-                for (index, converted) in batch[..count].iter_mut().enumerate() {
-                    *converted = pixel(source + index).map(u16::to_le);
-                }
-                let start = y * row as usize + x * 8;
-                mapped
-                    .slice(start..start + count * 8)
-                    .copy_from_slice(bytemuck::cast_slice(&batch[..count]));
-            }
+        let batch_rows = (128 * 1024 / size[0]).max(1);
+        let convert = |batch: u32| {
+            let first = batch * batch_rows;
+            let end = (first + batch_rows).min(height);
+            // WGPU grants each worker its disjoint mapping. WriteOnly slices
+            // stay on the thread which obtained the view.
+            let mut mapped = staging
+                .slice(u64::from(first) * u64::from(row)..u64::from(end) * u64::from(row))
+                .get_mapped_range_mut()
+                .map_err(|error| {
+                    gpu.check()
+                        .err()
+                        .unwrap_or_else(|| GpuError::Device(error.to_string()))
+                })?;
+            write_rows(
+                mapped.slice(..),
+                size[0] as usize,
+                row as usize,
+                (rows.start + first) as usize,
+                &pixel,
+            );
+            Ok::<_, GpuError>(())
+        };
+        if height <= batch_rows {
+            convert(0)?;
+        } else {
+            use rayon::prelude::*;
+            (0..height.div_ceil(batch_rows))
+                .into_par_iter()
+                .try_for_each(convert)?;
         }
     }
     staging.unmap();
@@ -493,9 +501,64 @@ fn upload_rows_with(
     Ok(())
 }
 
+/// Convert in cacheable stack memory before copying into a write-only mapping.
+fn write_rows(
+    mut mapped: wgpu::WriteOnly<'_, [u8]>,
+    width: usize,
+    stride: usize,
+    first_row: usize,
+    pixel: &(impl Fn(usize) -> [u16; 4] + Sync),
+) {
+    let height = mapped.len() / stride;
+    let mut batch = [[0u16; 4]; 128];
+    for y in 0..height {
+        for x in (0..width).step_by(batch.len()) {
+            let count = batch.len().min(width - x);
+            let source = (y + first_row) * width + x;
+            for (index, converted) in batch[..count].iter_mut().enumerate() {
+                *converted = pixel(source + index).map(u16::to_le);
+            }
+            let start = y * stride + x * 8;
+            mapped
+                .slice(start..start + count * 8)
+                .copy_from_slice(bytemuck::cast_slice(&batch[..count]));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_preserves_partial_rows_color_bits_and_padding() {
+        let width = 1027;
+        let stride = row_bytes(width as u32) as usize;
+        let rows = 3..520;
+        let mut actual = vec![0xa7; (rows.end - rows.start) * stride];
+        let mut expected = actual.clone();
+        for encoding in [ColorEncoding::Srgb, ColorEncoding::Linear] {
+            for alpha_type in [ImageAlphaType::Alpha, ImageAlphaType::AlphaPremultiplied] {
+                let conversion = Rgba8LinearF16::new(encoding, alpha_type);
+                let pixel = |index: usize| {
+                    conversion.convert(&[
+                        index as u8,
+                        (index >> 8) as u8,
+                        (index * 17) as u8,
+                        (index >> 4) as u8,
+                    ])
+                };
+                for (y, row) in expected.chunks_exact_mut(stride).enumerate() {
+                    for x in 0..width {
+                        let bits = pixel((y + rows.start) * width + x).map(u16::to_le);
+                        row[x * 8..x * 8 + 8].copy_from_slice(bytemuck::bytes_of(&bits));
+                    }
+                }
+                write_rows((&mut actual[..]).into(), width, stride, rows.start, &pixel);
+                assert_eq!(actual, expected, "{encoding:?} {alpha_type:?}");
+            }
+        }
+    }
 
     #[test]
     fn rgba8_upload_quantization_matches_color_contract_for_every_channel_and_alpha() {
