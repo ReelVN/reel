@@ -57,15 +57,11 @@ fn frame(scene: Scene, size: [u32; 2], pool: &BudgetPool) -> RenderFrame {
 }
 fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
+    let programs =
+        21 * sets + renderer.pipelines.coverage_count() + renderer.pipelines.bounded_count();
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [
-            3 * sets,
-            19 * sets + renderer.pipelines.coverage_count(),
-            19 * sets + renderer.pipelines.coverage_count(),
-            19 * sets + renderer.pipelines.coverage_count(),
-            8 * sets
-        ]
+        [3 * sets, programs, programs, programs, 8 * sets]
     );
 }
 
@@ -255,12 +251,25 @@ fn initialization_reuses_builtin_mask_without_holding_program_or_images() {
     let renderer = renderer(Default::default());
     renderer.prepare_pipelines().unwrap();
     let sets = renderer.gpu.supported_qualities().count();
+    let coverage_sets = renderer
+        .gpu
+        .supported_qualities()
+        .filter(|&quality| renderer.gpu.coverage_quality(quality).is_some())
+        .count();
+    assert_eq!(renderer.pipelines.coverage_count(), coverage_sets);
     counts(&renderer, sets);
+    let creations = renderer.pipelines.creations.snapshot();
     let initialized = renderer.usage();
     assert_eq!(initialized.targets, 0);
     assert_eq!(initialized.transient, 0);
     for quality in renderer.gpu.supported_qualities() {
         let pipelines = renderer.pipelines.get(&renderer.gpu, quality).unwrap();
+        if renderer.gpu.coverage_quality(quality).is_some() {
+            renderer
+                .pipelines
+                .get_coverage(&renderer.gpu, quality, &pipelines)
+                .unwrap();
+        }
         let first = MaskProgram::image("first".into());
         let weak = Arc::downgrade(&first);
         let a = pipelines
@@ -292,6 +301,7 @@ fn initialization_reuses_builtin_mask_without_holding_program_or_images() {
     }
     renderer.prepare_pipelines().unwrap();
     counts(&renderer, sets);
+    assert_eq!(renderer.pipelines.creations.snapshot(), creations);
     assert_eq!(renderer.usage().resources, initialized.resources);
 }
 

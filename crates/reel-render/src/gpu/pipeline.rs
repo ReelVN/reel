@@ -34,6 +34,18 @@ impl PipelineSlots {
             .filter(|slot| slot.lock().unwrap().is_some())
             .count()
     }
+    #[cfg(test)]
+    pub(super) fn bounded_count(&self) -> usize {
+        self.slots
+            .iter()
+            .map(|slot| {
+                slot.lock().unwrap().as_ref().map_or(0, |pipelines| {
+                    pipelines.bounded.as_ref().map_or(0, |p| p.len())
+                        + pipelines.bounded_opaque.as_ref().map_or(0, |p| p.len())
+                })
+            })
+            .sum()
+    }
     pub(super) fn get_coverage(
         &self,
         gpu: &Gpu,

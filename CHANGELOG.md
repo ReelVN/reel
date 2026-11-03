@@ -9,10 +9,14 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Wait for image and font readiness before requesting another redraw, avoiding repeated UI work while resources load.
 - Reuse glyphs uploaded during retained-scene preparation in the following WGPU draw.
 - Convert desktop RGBA8 uploads with exact channel/alpha lookup tables and copy pixels to mapped GPU buffers in batches.
+- Divide large desktop image conversions into disjoint rows on Rayon workers, preserving pixel values and upload memory limits.
+- Reuse the desktop audio device's query client when resuming an existing stream, avoiding repeated capability enumeration on UI sounds.
+- Prepare WGPU coverage pipelines during startup so the first clipped page reuses an existing pipeline.
 
 ### Added
 
 - Shader creation, image upload preparation and surface acquisition timing in performance captures.
+- Audio device checks, format queries and native stream control timing in performance captures.
 
 ## 0.3.0 — 2026-11-03
 

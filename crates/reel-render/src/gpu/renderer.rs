@@ -154,13 +154,19 @@ impl Renderer {
             effect_uniforms: Default::default(),
         }
     }
-    /// Prepare the device's supported quality tiers and built-in image masks
+    /// Prepare the device's supported quality tiers, coverage and built-in image masks
     /// before showing the first frame. Repeated calls reuse the same slots.
     /// This creates no frame targets or decoded image buffers.
     pub fn prepare_pipelines(&self) -> Result<(), GpuError> {
+        // Start desktop upload workers before the first interactive frame.
+        rayon::current_num_threads();
         for quality in self.gpu.supported_qualities() {
-            self.pipelines
-                .get(&self.gpu, quality)?
+            let pipelines = self.pipelines.get(&self.gpu, quality)?;
+            if self.gpu.coverage_quality(quality).is_some() {
+                self.pipelines
+                    .get_coverage(&self.gpu, quality, &pipelines)?;
+            }
+            pipelines
                 .masks
                 .prepare_builtin(&self.gpu, quality, &self.budgets.resources)?;
         }

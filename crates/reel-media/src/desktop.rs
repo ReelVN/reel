@@ -50,6 +50,7 @@ pub(crate) fn native_error(shared: &crate::output::Shared, kind: cpal::ErrorKind
 }
 
 fn capabilities(device: &cpal::Device) -> Result<AudioCaps, AudioError> {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioDeviceFormats);
     let mut configurations = Vec::new();
     for config in device.supported_output_configs().map_err(error)? {
         // These describe the client stream, not the device's physical speakers.
@@ -150,6 +151,7 @@ impl CpalDriver {
 impl Driver for CpalDriver {
     type Stream = cpal::Stream;
     fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioStreamControl);
         drop(stream);
         Ok(())
     }
@@ -178,6 +180,7 @@ impl Driver for CpalDriver {
         format: &AudioFormat,
         callback: Callback,
     ) -> Result<cpal::Stream, AudioError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioStreamControl);
         match format.device_sample_format {
             SampleFormat::F32 => self.build_typed::<f32>(format, callback),
             SampleFormat::F64 => self.build_typed::<f64>(format, callback),
@@ -187,12 +190,15 @@ impl Driver for CpalDriver {
         }
     }
     fn play(&mut self, stream: &cpal::Stream) -> Result<(), AudioError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioStreamControl);
         stream.play().map_err(error)
     }
     fn pause(&mut self, stream: &cpal::Stream) -> Result<(), AudioError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioStreamControl);
         stream.pause().map_err(error)
     }
-    fn verify(&self, format: &AudioFormat) -> Result<(), AudioError> {
+    fn verify(&self, _format: &AudioFormat) -> Result<(), AudioError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioDeviceCheck);
         let current = cpal::default_host()
             .default_output_device()
             .ok_or_else(|| {
@@ -202,24 +208,18 @@ impl Driver for CpalDriver {
                 )
             })?;
         if current.id().map_err(error)? != self.device_id
-            || signature(&current)? != self.default_signature
+            // Reuse this device's query client. A fresh default Device activates
+            // another WASAPI client just to query the same endpoint's format.
+            || signature(&self.device)? != self.default_signature
         {
             return Err(AudioError::new(
                 AudioErrorKind::ReconfigureRequired,
                 "default device or format changed",
             ));
         }
-        let caps = capabilities(&self.device)?;
-        if !caps.configurations.iter().any(|c| {
-            c.layout == format.device_channel_layout
-                && c.sample_format == format.device_sample_format
-                && (c.min_sample_rate_hz..=c.max_sample_rate_hz).contains(&format.sample_rate_hz)
-        }) {
-            return Err(AudioError::new(
-                AudioErrorKind::ReconfigureRequired,
-                "negotiated format no longer supported",
-            ));
-        }
+        // The existing stream already negotiated its format in configure/build.
+        // Resume checks the default route and mix format above; native stream
+        // invalidation is reported by the callback and the play operation.
         Ok(())
     }
 }

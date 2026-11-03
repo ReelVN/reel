@@ -166,8 +166,14 @@ pub enum Phase {
     PipelineCreate,
     /// Acquire a native presentation image, including display or driver waits.
     SurfaceAcquire,
+    /// Check the active desktop audio device and its negotiated format.
+    AudioDeviceCheck,
+    /// Enumerate native audio format capabilities.
+    AudioDeviceFormats,
+    /// Create, start, suspend or close the native audio stream.
+    AudioStreamControl,
 }
-pub const NAMES: [&str; 95] = [
+pub const NAMES: [&str; 98] = [
     "input",
     "tick",
     "session",
@@ -263,6 +269,9 @@ pub const NAMES: [&str; 95] = [
     "ui_paint_record",
     "pipeline_create",
     "surface_acquire",
+    "audio_device_check",
+    "audio_device_formats",
+    "audio_stream_control",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.
