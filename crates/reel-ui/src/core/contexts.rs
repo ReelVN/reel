@@ -398,7 +398,7 @@ impl<'w> QueryCtx<'w> {
     /// Returns a [`WidgetRef`] to a child widget.
     pub fn get(self, child: WidgetId) -> Option<WidgetRef<'w, dyn Widget>> {
         let geometry = self.geometry.child(child)?;
-        let child_node = self.children.item(child)?;
+        let child_node = self.children.into_item(child)?;
         let child_type_id = (*child_node.item.widget).type_id();
         let child_stack = self
             .property_arena

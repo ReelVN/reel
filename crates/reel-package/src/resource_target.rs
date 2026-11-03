@@ -93,9 +93,12 @@ fn collect_directory(
     directory: &Path,
     files: &mut BTreeMap<String, PathBuf>,
 ) -> io::Result<()> {
-    for item in fs::read_dir(directory)? {
+    for item in walkdir::WalkDir::new(directory).min_depth(1) {
         let item = item?;
-        collect_entry(root, &item.path(), item.file_type()?, files)?;
+        if item.file_type().is_dir() {
+            continue;
+        }
+        collect_entry(root, item.path(), item.file_type(), files)?;
     }
     Ok(())
 }

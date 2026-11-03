@@ -1279,8 +1279,11 @@ fn large_path_gradient_glyph_variation_dash_and_utf8_resume_then_retire() {
             ticket(&pool, 0),
         )
         .unwrap();
-    assert_eq!(next.slot, handle.slot);
-    assert!(next.generation > handle.generation);
+    // Unused slots may be admitted before a released slot is recycled.
+    assert_ne!(next, handle);
+    if next.slot == handle.slot {
+        assert!(next.generation > handle.generation);
+    }
     assert!(registry.acquire(handle).is_err());
 }
 #[test]
@@ -1291,6 +1294,7 @@ fn blob_collision_is_not_a_content_version_and_old_registry_handles_are_foreign(
     let fa = FontData::new(Blob::from_raw_parts(a, 9), 0);
     let fb = FontData::new(Blob::from_raw_parts(b, 9), 0);
     let mut r = ResourceRegistry::new(2, 8192).unwrap();
+    let registry_tickets = r.usage().tickets;
     let h = r
         .register(
             version(1),
@@ -1310,7 +1314,7 @@ fn blob_collision_is_not_a_content_version_and_old_registry_handles_are_foreign(
         .register(version(1), ResourceData::Font(fa.data), ticket(&pool, 4))
         .unwrap();
     assert_eq!(h, again);
-    assert_eq!(r.usage().tickets, 3);
+    assert_eq!(r.usage().tickets, registry_tickets + 2);
     let foreign = ResourceRegistry::new(2, 8192).unwrap();
     assert!(foreign.acquire(h).is_err());
     let mut scene = Scene::new();

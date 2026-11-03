@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use accesskit::{Node, Role};
-use kurbo::{Axis, Point, Rect, Size};
+use kurbo::{Affine, Axis, Point, Rect, Size};
 use smallvec::SmallVec;
 use tracing::field::DisplayValue;
 use tracing::{Span, trace_span};
@@ -465,12 +465,14 @@ pub trait Widget: AsDynWidget + Any {
         painter: &mut Painter<'_>,
     );
 
-    /// Updates the conservative visible bounds in content coordinates before
-    /// replaying cached paint. `None` means the transform cannot be inverted.
+    /// Supplies conservative window-space bounds and the content-to-window
+    /// transform before replaying cached paint. Widgets that cull their content
+    /// convert these bounds to local coordinates when needed; a non-invertible
+    /// transform requires retaining the complete content.
     ///
     /// Widgets that omit invisible content can return `true` to record their
     /// paint again when these bounds change. This does not invalidate layout.
-    fn set_paint_viewport(&mut self, viewport: Option<Rect>) -> bool {
+    fn set_paint_viewport(&mut self, viewport: Rect, content_to_window: Affine) -> bool {
         false
     }
 

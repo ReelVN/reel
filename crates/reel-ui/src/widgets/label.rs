@@ -1078,7 +1078,11 @@ impl Widget for Label {
         }
     }
 
-    fn set_paint_viewport(&mut self, viewport: Option<Rect>) -> bool {
+    fn set_paint_viewport(&mut self, viewport: Rect, content_to_window: Affine) -> bool {
+        let inverse = content_to_window.inverse();
+        let viewport = inverse
+            .is_finite()
+            .then(|| inverse.transform_rect_bbox(viewport));
         self.paint_viewport = viewport;
         let axes = self.axes();
         let mut range =
@@ -1637,9 +1641,10 @@ mod reveal_tests {
             let label = widget.downcast::<Label>();
             let viewport = label.widget.paint_viewport.unwrap();
             assert!(
-                !label
-                    .widget
-                    .set_paint_viewport(Some(viewport + crate::kurbo::Vec2::new(20., 0.))),
+                !label.widget.set_paint_viewport(
+                    viewport + crate::kurbo::Vec2::new(20., 0.),
+                    Affine::IDENTITY,
+                ),
                 "horizontal motion with the same visible lines must preserve cached paint"
             );
         });

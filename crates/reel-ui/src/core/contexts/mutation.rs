@@ -242,6 +242,7 @@ impl_context_method!(
                 }
 
                 global_state.scene_cache.remove(&state.id);
+                global_state.registered_widgets -= 1;
                 if let Some(index) = global_state
                     .input_layers
                     .iter()
@@ -840,6 +841,7 @@ impl RegisterCtx<'_> {
             },
         };
         self.children.insert(id, node);
+        self.global_state.registered_widgets += 1;
     }
 }
 

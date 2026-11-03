@@ -89,6 +89,7 @@ fn compose_widget(
 // --- MARK: ROOT
 /// See the [passes documentation](crate::doc::pass_system#compose-pass).
 pub(crate) fn run_compose_pass(root: &mut RenderRoot) {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiCompose);
     let _span = info_span!("compose").entered();
 
     // If widgets have moved, pointer-related info may be stale.

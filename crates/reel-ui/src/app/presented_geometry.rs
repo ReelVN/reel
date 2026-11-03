@@ -468,6 +468,7 @@ impl RenderRoot {
         &self,
         limits: GeometryLimits,
     ) -> Result<PresentedGeometryView, GeometryError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiGeometry);
         if let Some(view) = self.cached_presented_geometry(limits)? {
             return Ok(view);
         }
@@ -476,7 +477,7 @@ impl RenderRoot {
             parent: Option<(usize, usize)>,
             depth: usize,
         }
-        let registered = self.widget_arena.nodes.len();
+        let registered = self.global_state.registered_widgets;
         let snapshot_bytes = PresentedGeometryView::bytes_for_nodes(registered)
             .and_then(|bytes| {
                 bytes.checked_add(
@@ -512,7 +513,7 @@ impl RenderRoot {
             .widget_arena
             .nodes
             .roots()
-            .item(self.root_id())
+            .into_item(self.root_id())
             .expect("registered root");
         let mut pending = Vec::with_capacity(registered);
         pending.push(Visit {
@@ -567,7 +568,10 @@ impl RenderRoot {
             }
             for (slot, child) in (start..end).zip(children).rev() {
                 pending.push(Visit {
-                    node: node.children.item(child).expect("registered direct child"),
+                    node: node
+                        .children
+                        .into_item(child)
+                        .expect("registered direct child"),
                     parent: Some((index, slot)),
                     depth: depth + 1,
                 });
@@ -616,7 +620,6 @@ impl RenderRoot {
     }
     /// Reserve reusable pointer routes before presentation; existing active paths are preserved.
     pub fn configure_input_path_storage(&mut self, limit: usize) -> usize {
-        self.widget_arena.nodes.configure_lookup_path_storage(limit);
         self.global_state.max_input_path = limit;
         self.global_state.pointer_route = Vec::with_capacity(limit);
         self.global_state.navigation_walk = Vec::with_capacity(limit);
@@ -650,7 +653,6 @@ impl RenderRoot {
             + size_of::<Box<[WidgetId]>>()
             + std::mem::size_of_val(s.input_gates.as_ref())
             + s.other_pointers.capacity() * size_of::<super::pointer::PointerContact>()
-            + self.widget_arena.nodes.lookup_path_storage_bytes()
     }
 
     /// Planned storage for a root with only its primary pointer.
@@ -682,12 +684,7 @@ impl RenderRoot {
             .checked_mul(size_of::<WidgetId>())?
             .checked_add(6 * size_of::<Vec<WidgetId>>())?
             .checked_add(size_of::<Box<[WidgetId]>>())?
-            .checked_add(capacity.checked_mul(size_of::<super::pointer::PointerContact>())?)?
-            .checked_add(
-                crate::tree_arena::TreeArena::<WidgetArenaNode>::lookup_path_storage_bytes_for(
-                    depth,
-                )?,
-            )
+            .checked_add(capacity.checked_mul(size_of::<super::pointer::PointerContact>())?)
     }
     pub(crate) fn pointer_hit_test(&self, pos: Point, view: GeometryView<'_>) -> Option<WidgetId> {
         let hit = match view {

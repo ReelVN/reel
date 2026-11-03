@@ -460,6 +460,9 @@ pub struct NodeProps {
     /// Transform the completed subtree before its group opacity, mask and blend.
     /// Scalar results are coverage; RGBA results are linear premultiplied color.
     pub effect: Option<Arc<effect::EffectInstance>>,
+    /// Linear output resolution multiplier in (0, 1]; bilinear reconstruction
+    /// preserves the effect's logical coordinates and input subtree resolution.
+    pub effect_resolution_scale: f64,
     /// A scalar compiled effect evaluated in the final group mask stage.
     pub mask_effect: Option<Arc<effect::EffectInstance>>,
     pub appearance_origin: Option<Arc<str>>,
@@ -527,6 +530,7 @@ impl Default for NodeProps {
             anchor_y: 0.,
             mask: None,
             effect: None,
+            effect_resolution_scale: 1.,
             mask_effect: None,
             appearance_origin: None,
             mask_progress: 1.,
