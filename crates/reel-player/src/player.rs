@@ -253,7 +253,29 @@ where
 
     /// Whether rendering or a frozen exposure repaint is currently eligible.
     pub fn needs_redraw(&self) -> bool {
-        self.presentation.needs_redraw()
+        self.presentation.needs_redraw() && self.frame_inputs_ready()
+    }
+
+    fn frame_inputs_ready(&self) -> bool {
+        if self.presentation.is_preparing() {
+            return true;
+        }
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.ui().images_block_presentation())
+        {
+            return false;
+        }
+        if !self.is_diagnostic() && self.active_fonts.is_empty() {
+            return false;
+        }
+        !self.first_frame_pending
+            || (!self.settings_pending()
+                && self
+                    .session
+                    .as_ref()
+                    .is_some_and(PlayerSession::initial_frame_ready))
     }
 
     /// Apply the geometry carried by a display event. Suspended displays retain
@@ -676,30 +698,7 @@ where
 
     /// Prepare and present ready content. Only acceptance publishes input geometry.
     pub fn render(&mut self, host: &mut impl Host) -> Result<(), Error> {
-        // Candidate metadata layout is never eligible for paint/presentation.
-        if !self.presentation.is_preparing()
-            && self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.ui().images_block_presentation())
-        {
-            return Ok(());
-        }
-        // Startup may span several VM slices before main supplies the font files.
-        if !self.presentation.is_preparing()
-            && !self.is_diagnostic()
-            && self.active_fonts.is_empty()
-        {
-            return Ok(());
-        }
-        if !self.presentation.is_preparing()
-            && self.first_frame_pending
-            && (self.settings_pending()
-                || !self
-                    .session
-                    .as_ref()
-                    .is_some_and(PlayerSession::initial_frame_ready))
-        {
+        if !self.frame_inputs_ready() {
             return Ok(());
         }
         self.poll_completions()?;

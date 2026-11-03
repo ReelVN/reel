@@ -971,6 +971,7 @@ pub(super) fn uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 pub(super) fn validated<T>(gpu: &Gpu, create: impl FnOnce() -> T) -> Result<T, GpuError> {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::PipelineCreate);
     gpu.check()?;
     let scopes = [
         wgpu::ErrorFilter::Validation,

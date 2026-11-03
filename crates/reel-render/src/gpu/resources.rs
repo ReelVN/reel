@@ -11,7 +11,7 @@ use reel_ui::peniko::{
 };
 use reel_ui::resources::{ColorEncoding, ResourceLease};
 
-use crate::common::resources::rgba8_linear_f16;
+use crate::common::resources::Rgba8LinearF16;
 
 #[cfg(test)]
 #[derive(Default)]
@@ -126,9 +126,10 @@ pub(super) fn image_rows(
             record: "image format",
         });
     }
+    let conversion = Rgba8LinearF16::new(image.encoding, image.alpha_type);
     upload_rows_with(gpu, encoder, target, rows, staging, |index| {
         let rgba = &pixels.bytes()[index * 4..index * 4 + 4];
-        rgba8_linear_f16(rgba, image.encoding, image.alpha_type)
+        conversion.convert(rgba)
     })
 }
 pub use crate::common::resources::upload_cost;
@@ -438,18 +439,21 @@ fn upload_rows_with(
                 .err()
                 .unwrap_or_else(|| GpuError::Device(error.to_string()))
         })?;
-        // Resolve the backend's write mapping once per upload. BufferViewMut::slice
-        // enters the backend dynamically; slicing the resulting WriteOnly view
-        // is ordinary bounds-checked pointer arithmetic for each pixel.
+        // Convert each batch in CPU memory, then copy it to the upload mapping.
         let mut mapped = mapped.slice(..);
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageConvert);
+        let mut batch = [[0u16; 4]; 128];
         for y in 0..height as usize {
-            for x in 0..size[0] as usize {
-                let components =
-                    pixel((y + rows.start as usize) * size[0] as usize + x).map(u16::to_le_bytes);
+            for x in (0..size[0] as usize).step_by(batch.len()) {
+                let count = batch.len().min(size[0] as usize - x);
+                let source = (y + rows.start as usize) * size[0] as usize + x;
+                for (index, converted) in batch[..count].iter_mut().enumerate() {
+                    *converted = pixel(source + index).map(u16::to_le);
+                }
                 let start = y * row as usize + x * 8;
                 mapped
-                    .slice(start..start + 8)
-                    .copy_from_slice(components.as_flattened());
+                    .slice(start..start + count * 8)
+                    .copy_from_slice(bytemuck::cast_slice(&batch[..count]));
             }
         }
     }
@@ -497,6 +501,7 @@ mod tests {
     fn rgba8_upload_quantization_matches_color_contract_for_every_channel_and_alpha() {
         for encoding in [ColorEncoding::Srgb, ColorEncoding::Linear] {
             for alpha_type in [ImageAlphaType::Alpha, ImageAlphaType::AlphaPremultiplied] {
+                let conversion = Rgba8LinearF16::new(encoding, alpha_type);
                 for alpha in 0..=255u8 {
                     for channel in 0..=255u8 {
                         let mut rgba = [channel, 255 - channel, channel.rotate_left(3), alpha];
@@ -533,7 +538,7 @@ mod tests {
                         }
                         .map(|value| half::f16::from_f32(value).to_bits());
                         assert_eq!(
-                            rgba8_linear_f16(&rgba, encoding, alpha_type),
+                            conversion.convert(&rgba),
                             expected,
                             "encoding={encoding:?} alpha={alpha_type:?} rgba={rgba:?}"
                         );

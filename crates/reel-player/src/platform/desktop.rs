@@ -437,11 +437,13 @@ impl ApplicationHandler for App {
                 self.recover_or_fail(event_loop, Box::new(e));
                 return;
             }
-            if state.player.presentation.needs_redraw() {
+            if state.player.needs_redraw() {
                 state.host.request_redraw();
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
-            let completion_deadline = (state.player.presentation.needs_redraw()
+            // Hidden startup windows may not deliver resource redraw wakes.
+            let completion_deadline = (state.player.first_frame_pending
+                || state.player.needs_redraw()
                 || state.player.backend.has_pending())
             .then(|| {
                 let interval = if state.player.backend.has_pending_image_uploads() {

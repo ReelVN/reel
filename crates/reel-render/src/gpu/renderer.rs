@@ -980,6 +980,7 @@ impl Renderer {
                 self.gpu.queue.submit([prepared.encoder.finish()]);
                 self.effect_results.submitted();
                 self.effect_uniforms.submitted();
+                self.glyphs.publish(&prepared.glyphs);
                 for pending in prepared.effect_pending {
                     self.effect_results
                         .publish(pending, &self.budgets.transient);

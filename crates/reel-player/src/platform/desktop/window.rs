@@ -1698,7 +1698,7 @@ impl State {
     }
     pub(crate) fn invalidate(&mut self) {
         self.player.invalidate();
-        if self.player.presentation.needs_redraw() {
+        if self.player.needs_redraw() {
             self.host.request_redraw();
         }
     }

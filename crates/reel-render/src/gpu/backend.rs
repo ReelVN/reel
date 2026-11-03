@@ -176,7 +176,11 @@ impl RenderBackend for WgpuBackend {
             Err(GpuError::Preparing) => return Ok(PresentOutcome::Preparing),
             result => result?,
         };
-        let texture = match surface.get_current_texture() {
+        let acquired = {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SurfaceAcquire);
+            surface.get_current_texture()
+        };
+        let texture = match acquired {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
             status => {

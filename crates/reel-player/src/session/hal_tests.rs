@@ -302,6 +302,10 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     }
     assert!(player.settings_pending());
     assert!(!player.font_requests.is_empty());
+    assert!(
+        !player.needs_redraw(),
+        "pending font IO must not spin redraws"
+    );
     assert!(!player.session.as_ref().unwrap().needs_tick());
     for kind in ["move", "down", "up"] {
         player.dispatch_pointer(mouse(kind, (50., 30.))).unwrap();
@@ -323,6 +327,10 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     assert!(!player.settings_pending(), "completed font must be applied");
     assert_eq!(player.active_fonts, ["body.ttf"]);
     assert!(player.font_requests.is_empty());
+    assert!(
+        player.needs_redraw(),
+        "completed inputs restore draw eligibility"
+    );
     assert_eq!(host.title, "Portable lifecycle");
 
     // The recording consumer requires explicit upload completion, just as its

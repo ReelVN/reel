@@ -296,6 +296,63 @@ pub(crate) fn rgba8_linear_u8(
 }
 
 #[cfg(any(feature = "wgpu", test))]
+pub(crate) struct Rgba8LinearF16 {
+    colors: &'static [[u16; 256]; 256],
+    alpha: &'static [u16; 256],
+}
+
+#[cfg(any(feature = "wgpu", test))]
+impl Rgba8LinearF16 {
+    pub(crate) fn new(encoding: ColorEncoding, alpha_type: ImageAlphaType) -> Self {
+        // Eight-bit channels and alpha have only 65,536 combinations. Each
+        // table occupies 128 KiB of shared desktop storage and preserves the
+        // scalar color contract's exact half-float rounding.
+        fn table(encoding: ColorEncoding, alpha_type: ImageAlphaType) -> [[u16; 256]; 256] {
+            std::array::from_fn(|alpha| {
+                std::array::from_fn(|channel| {
+                    let channel = channel as u8;
+                    rgba8_linear_f16(
+                        &[channel, channel, channel, alpha as u8],
+                        encoding,
+                        alpha_type,
+                    )[0]
+                })
+            })
+        }
+        static SRGB: LazyLock<[[u16; 256]; 256]> =
+            LazyLock::new(|| table(ColorEncoding::Srgb, ImageAlphaType::Alpha));
+        static SRGB_PREMULTIPLIED: LazyLock<[[u16; 256]; 256]> =
+            LazyLock::new(|| table(ColorEncoding::Srgb, ImageAlphaType::AlphaPremultiplied));
+        static LINEAR: LazyLock<[[u16; 256]; 256]> =
+            LazyLock::new(|| table(ColorEncoding::Linear, ImageAlphaType::Alpha));
+        static LINEAR_PREMULTIPLIED: LazyLock<[[u16; 256]; 256]> =
+            LazyLock::new(|| table(ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied));
+        Self {
+            colors: match (encoding, alpha_type) {
+                (ColorEncoding::Srgb, ImageAlphaType::Alpha) => &SRGB,
+                (ColorEncoding::Srgb, ImageAlphaType::AlphaPremultiplied) => &SRGB_PREMULTIPLIED,
+                (ColorEncoding::Linear, ImageAlphaType::Alpha) => &LINEAR,
+                (ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied) => {
+                    &LINEAR_PREMULTIPLIED
+                }
+            },
+            alpha: &NORMALIZED_F16,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn convert(&self, rgba: &[u8]) -> [u16; 4] {
+        let colors = &self.colors[rgba[3] as usize];
+        [
+            colors[rgba[0] as usize],
+            colors[rgba[1] as usize],
+            colors[rgba[2] as usize],
+            self.alpha[rgba[3] as usize],
+        ]
+    }
+}
+
+#[cfg(any(feature = "wgpu", test))]
 pub(crate) fn rgba8_linear_f16(
     rgba: &[u8],
     encoding: ColorEncoding,

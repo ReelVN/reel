@@ -98,6 +98,8 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
     let resident = u64::from(size[0]) * u64::from(size[1]) * 8;
     let mut renderer = renderer(crate::gpu::GpuLimits {
         resource_bytes: 64 << 20,
+        // Exercise residency pressure independently of the per-prepare work quota.
+        image_upload_bytes_per_prepare: 2 * resident,
         ..Default::default()
     });
     assert!(matches!(
@@ -115,6 +117,8 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
         Err(GpuError::Pressure { .. })
     ));
     counts(&renderer, 2); // Retrying before completion does not recreate textures.
+    renderer.images.clear_idle();
+    assert_eq!(renderer.usage().resources, 4 * resident);
     renderer
         .gpu
         .device
@@ -129,6 +133,8 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
         renderer.poll().unwrap().is_empty(),
         "uploads have no presentation identity"
     );
+    assert_eq!(renderer.usage().resources, 4 * resident);
+    renderer.images.clear_idle(); // Completed staging is now cached and reclaimable.
     assert_eq!(renderer.usage().resources, 2 * resident);
     let first = renderer.prepare(&frame).unwrap();
     counts(&renderer, 3);
@@ -142,13 +148,15 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     assert_eq!(renderer.poll().unwrap().len(), 1);
+    assert_eq!(renderer.usage().resources, 4 * resident);
+    renderer.images.clear_idle();
     assert_eq!(renderer.usage().resources, 3 * resident);
     let reused = renderer.prepare(&frame).unwrap();
     let pixels = renderer.readback(reused).unwrap();
-    assert!(pixels.iter().all(|p| {
-        p.iter()
-            .zip([0., 0., 1., 1.])
-            .all(|(a, b)| (*a - b).abs() < 0.006)
+    assert!(pixels.iter().enumerate().all(|(index, p)| {
+        let mut expected = [0., 0., 0., 1.];
+        expected[((index % 64) / 20).min(2)] = 1.;
+        p.iter().zip(expected).all(|(a, b)| (*a - b).abs() < 0.006)
     }));
     counts(&renderer, 3);
     let retained = renderer.prepare(&frame).unwrap();

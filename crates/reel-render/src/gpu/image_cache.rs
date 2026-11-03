@@ -131,6 +131,7 @@ impl ImageCache {
         admission: &BudgetPool,
         glyphs: &GlyphCache,
     ) -> Result<HashMap<ResourceHandle, Arc<Image>>, GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageAllocate);
         // Serialize cold preparations, so concurrent callers cannot upload the
         // same texture twice. Queue ordering makes submitted copies reusable.
         let mut uploads = self.uploads.lock().unwrap();
