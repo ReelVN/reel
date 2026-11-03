@@ -446,6 +446,23 @@ impl CompactCode {
             end,
         )))
     }
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub(crate) fn resident_range(
+        &self,
+        window: &CodeWindow,
+        start_pc: usize,
+        end_pc: usize,
+    ) -> bool {
+        if start_pc >= end_pc || end_pc > self.end_pc() {
+            return false;
+        }
+        match &self.data {
+            CodeData::Owned(_) => true,
+            CodeData::Shared { store, start, .. } => {
+                window.contains(store, *start as usize + start_pc, *start as usize + end_pc)
+            }
+        }
+    }
     #[inline]
     fn decode_quad(raw: &[u8; 16], pc: usize) -> (Instruction, usize) {
         let head = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);

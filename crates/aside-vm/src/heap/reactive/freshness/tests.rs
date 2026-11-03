@@ -53,13 +53,72 @@ fn semantic_read_accounts_first_dependency_scan_and_reuses_the_stable_index() {
         let before = heap.stats().charged_bytes;
         let (refresh, stable_work) = heap.reactive_read_source(property).unwrap();
         assert!(refresh.is_none());
-        assert_eq!(first_work - stable_work, u64::from(count));
-        assert_eq!(stable_work, 4);
+        assert_eq!(first_work - stable_work, u64::from(count) + 2);
+        assert_eq!(stable_work, 3);
         assert_eq!(heap.stats().charged_bytes, before);
         println!(
             "semantic-read model-fields={count} first-work={first_work} stable-work={stable_work} stable-allocation=0"
         );
         heap.end_derived(consumer).unwrap();
+    }
+}
+
+#[test]
+fn repeated_freshness_reads_skip_the_graph_until_scheduling_or_capture_changes() {
+    let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    let source = model(&mut heap);
+    let shared = derived(&mut heap, source, 0);
+    let mut output = shared;
+    for _ in 0..32 {
+        output = derived(&mut heap, output, 0);
+    }
+    assert!(heap.derived_is_current(output, None).unwrap());
+    let walk = heap.freshness_walk;
+    for _ in 0..32 {
+        assert!(heap.derived_is_current(output, None).unwrap());
+    }
+    assert_eq!(heap.freshness_walk, walk);
+
+    heap.schedule_derived(shared).unwrap();
+    assert!(!heap.derived_is_current(output, None).unwrap());
+    heap.claim_derived(shared).unwrap();
+    assert!(heap.derived_is_current(output, None).unwrap());
+    heap.begin_untracked(shared).unwrap();
+    assert!(!heap.derived_is_current(output, None).unwrap());
+    heap.end_derived(shared).unwrap();
+    assert!(heap.derived_is_current(output, None).unwrap());
+}
+
+#[test]
+fn nested_refresh_only_requeues_an_observer_that_already_consumed_the_changed_input() {
+    for subscribed in [false, true] {
+        for already_read in [false, true] {
+            let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+            let source = model(&mut heap);
+            let upstream = derived(&mut heap, source, 0);
+            let output = if subscribed {
+                derived(&mut heap, upstream, 0)
+            } else {
+                derived(&mut heap, source, 1)
+            };
+            heap.schedule_derived(output).unwrap();
+            heap.claim_derived(output).unwrap();
+            heap.begin_derived(output).unwrap();
+            if already_read {
+                heap.observe_read(upstream, Some(0)).unwrap();
+            }
+            // Refresh the input before the outer observer's pending read resumes.
+            heap.begin_derived(upstream).unwrap();
+            heap.observe_read(source, Some(0)).unwrap();
+            heap.commit_derived(upstream, Value::int(1)).unwrap();
+            let queued = heap
+                .pending_derived_outputs()
+                .any(|value| value.same_bits(output));
+            assert_eq!(queued, already_read);
+            heap.observe_read(upstream, Some(0)).unwrap();
+            heap.commit_derived(output, Value::int(1)).unwrap();
+            assert_eq!(heap.next_derived().unwrap().is_some(), already_read);
+        }
     }
 }
 

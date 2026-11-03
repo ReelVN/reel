@@ -90,7 +90,7 @@ fn next(vm: &mut Vm, task: TaskId) -> RunOutcome {
         }
     }
 }
-fn restore(vm: Vm, task: TaskId, support: RuntimeSupport) -> (Vm, TaskId) {
+pub(super) fn restore(vm: Vm, task: TaskId, support: RuntimeSupport) -> (Vm, TaskId) {
     let registry = SnapshotRegistry::default();
     let mut capture = vm.snapshot_begin(&registry).unwrap();
     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}

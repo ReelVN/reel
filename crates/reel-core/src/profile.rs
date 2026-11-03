@@ -117,8 +117,53 @@ pub enum Phase {
     DriverClear,
     /// Main-thread diagnostic collection and recording.
     Observer,
+    /// Successfully admitted ordered effect chains; instantaneous count.
+    MacrotileChain,
+    /// Effect outputs selected from ordered macrotile cells; instantaneous count.
+    MacrotilePass,
+    /// Error recovery waiting for all native graphics, transfer and display work.
+    RenderDrain,
+    /// Physical pressure before drawing begins; instantaneous count.
+    RenderPreparationPressure,
+    /// Physical pressure after drawing begins; instantaneous count.
+    RenderStreamPressure,
+    /// Scratch acquisitions during drawing beyond the prepared set; instantaneous count.
+    TargetUnplanned,
+    /// Rebuilding an equal-capacity scratch view; includes scheduling metadata,
+    /// without allocating color storage. Counts attempts, including failures.
+    TargetReshape,
+    /// Settle widget mutations, layout, transforms and input state.
+    UiRewrite,
+    /// Measure and arrange dirty widget subtrees, nested in UiRewrite.
+    UiLayout,
+    /// Update widget transforms and clipping, nested in UiRewrite.
+    UiCompose,
+    /// Record retained widget paint commands.
+    UiPaint,
+    /// Capture or reuse candidate input/layout geometry.
+    UiGeometry,
+    /// Resolve image metadata and resource leases in a stage projection.
+    UiImageResolve,
+    /// Prepare glyph residency and measured group ink before replay.
+    GlyphPrepare,
+    /// Look up or construct drawable geometry during replay, including nested draws.
+    GeometryPrepare,
+    /// Prepare image storage and metadata, including nested pixel transfers.
+    ImageAllocate,
+    /// Transfer prepared image pixels into native texture storage.
+    ImageTransfer,
+    /// Convert source pixels to the backend's upload encoding.
+    ImageConvert,
+    /// Select reusable geometry buffers and upload changed vertex/index ranges.
+    GeometryUpload,
+    /// Pack ordered geometry segments into a backend upload layout.
+    GeometryPack,
+    /// Resolve paint programs, uniforms and state, including nested driver calls.
+    DrawPrepare,
+    /// Record invalidated widget paint; excludes traversal of cached widgets.
+    UiPaintRecord,
 }
-pub const NAMES: [&str; 71] = [
+pub const NAMES: [&str; 93] = [
     "input",
     "tick",
     "session",
@@ -190,6 +235,28 @@ pub const NAMES: [&str; 71] = [
     "driver_draw",
     "driver_clear",
     "observer",
+    "macrotile_chain",
+    "macrotile_pass",
+    "render_drain",
+    "render_preparation_pressure",
+    "render_stream_pressure",
+    "target_unplanned",
+    "target_reshape",
+    "ui_rewrite",
+    "ui_layout",
+    "ui_compose",
+    "ui_paint",
+    "ui_geometry",
+    "ui_image_resolve",
+    "glyph_prepare",
+    "geometry_prepare",
+    "image_allocate",
+    "image_transfer",
+    "image_convert",
+    "geometry_upload",
+    "geometry_pack",
+    "draw_prepare",
+    "ui_paint_record",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.
@@ -231,6 +298,8 @@ pub struct Scope {
     #[cfg(feature = "profiling")]
     wall: Option<wall::Token>,
     #[cfg(feature = "profiling")]
+    counted: bool,
+    #[cfg(feature = "profiling")]
     owner: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl Scope {
@@ -250,11 +319,26 @@ impl Scope {
             #[cfg(feature = "profiling")]
             wall: wall::begin(phase, start),
             #[cfg(feature = "profiling")]
+            counted: true,
+            #[cfg(feature = "profiling")]
             owner: std::marker::PhantomData,
         };
         #[cfg(feature = "profiling")]
         enabled::begin(phase, scope.start);
         scope
+    }
+
+    /// Finish this interval, adding a call only when `completed` is true.
+    /// Both outcomes retain elapsed duration and close thread/wall accounting;
+    /// ordinary scope destruction continues to count one call unconditionally.
+    #[inline]
+    pub fn finish_counted(mut self, completed: bool) {
+        #[cfg(feature = "profiling")]
+        {
+            self.counted = completed;
+        }
+        #[cfg(not(feature = "profiling"))]
+        let _ = (&mut self, completed);
     }
 }
 #[cfg(not(feature = "profiling"))]
@@ -387,7 +471,9 @@ mod enabled {
                 end.duration_since(self.start).as_micros() as u64,
                 Ordering::Relaxed,
             );
-            CALLS[index].fetch_add(1, Ordering::Relaxed);
+            if self.counted {
+                CALLS[index].fetch_add(1, Ordering::Relaxed);
+            }
             if tracked(self.phase) {
                 ACTIVE[index].fetch_sub(1, Ordering::Relaxed);
             }
@@ -464,3 +550,35 @@ pub use thread::{
     METRICS as THREAD_METRICS, PHASES as THREAD_PHASES, ThreadCost, ThreadSnapshot, ThreadTime,
     install_thread_clock,
 };
+
+#[cfg(all(test, feature = "profiling"))]
+mod counted_scope_tests {
+    use super::*;
+
+    #[test]
+    fn failed_interval_keeps_time_without_counting_success_or_leaking_wall_scope() {
+        let _recording = WallRecording::start().unwrap();
+        let before_wall = WallSnapshot::capture().unwrap();
+        let before = Sample::snapshot();
+        let phase = Phase::TargetReshape;
+        let failed = Scope::new(phase);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        failed.finish_counted(false);
+        Scope::new(phase).finish_counted(true);
+        drop(Scope::new(phase));
+        let delta = Sample::snapshot().delta(before);
+        assert_eq!(delta.calls[phase as usize], 2);
+        assert!(delta.micros[phase as usize] > 0);
+        assert!(Sample::active()[phase as usize].is_none());
+        let wall = WallSnapshot::capture()
+            .unwrap()
+            .checked_delta(&before_wall)
+            .unwrap();
+        assert_eq!(wall.calls[phase as usize], 3);
+        assert_eq!(wall.errors, 0);
+        assert_eq!(
+            wall.wall_ns,
+            wall.nanos.iter().sum::<u64>() + wall.unscoped_ns + wall.lost_ns
+        );
+    }
+}

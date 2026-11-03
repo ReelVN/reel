@@ -1,4 +1,5 @@
 use super::*;
+pub(crate) mod index;
 
 /// Borrowed access to a table's ordered entries, without allocation or copying.
 /// The shared heap borrow keeps storage stable; entries retain the same proposed
@@ -7,9 +8,14 @@ pub struct TableRead<'a> {
     heap: &'a Heap,
     table: Value,
     values: &'a Values,
+    index: Option<&'a crate::payload::table::TextIndex>,
 }
 
 impl TableRead<'_> {
+    fn key(&self, position: u32) -> Result<Value, HeapError> {
+        let index = position.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
+        self.values.get(index).ok_or(HeapError::OutOfBounds)
+    }
     /// Number of key/value pairs in the table.
     pub fn len(&self) -> u32 {
         self.values.len / 2
@@ -159,7 +165,7 @@ impl Heap {
         Ok(())
     }
     pub fn table_len(&self, table: Value) -> Result<u32, HeapError> {
-        let Payload::Table(values) = &self.object(self.key(table)?)?.payload else {
+        let Payload::Table(Table { values, .. }) = &self.object(self.key(table)?)?.payload else {
             return Err(HeapError::WrongKind);
         };
         Ok(values.len / 2)
@@ -167,26 +173,28 @@ impl Heap {
     pub fn alloc_table(&mut self) -> Result<Value, HeapError> {
         self.input_values(&[])?;
         self.ensure_object_slot()?;
-        Ok(self.allocate(
-            ObjectKind::Table,
-            Payload::Table(Values::default()),
-            None,
-            0,
-        ))
+        Ok(self.allocate(ObjectKind::Table, Payload::Table(Table::default()), None, 0))
     }
     pub fn table_entry(&self, table: Value, position: u32) -> Result<(Value, Value), HeapError> {
         self.table_read(table)?.entry(position)
     }
+    /// Read a key for equality lookup without resolving the value's pending
+    /// model-property proposal. Keys remain stable during value proposals.
+    pub(crate) fn table_key(&self, table: Value, position: u32) -> Result<Value, HeapError> {
+        self.table_read(table)?.key(position)
+    }
     /// Validate a table once and borrow its entries for repeated indexed reads.
     /// Allocation, mutation and GC require the shared borrow to end first.
     pub fn table_read(&self, table: Value) -> Result<TableRead<'_>, HeapError> {
-        let Payload::Table(values) = &self.object(self.key(table)?)?.payload else {
+        let Payload::Table(Table { values, index }) = &self.object(self.key(table)?)?.payload
+        else {
             return Err(HeapError::WrongKind);
         };
         Ok(TableRead {
             heap: self,
             table,
             values,
+            index: index.as_deref(),
         })
     }
     /// Store at a position already resolved by the caller. Appended keys must
@@ -217,7 +225,10 @@ impl Heap {
                     // admission preserves the original entries and iterator versions.
                     let key = self.key(table)?;
                     let object = self.objects.get_mut(key).unwrap();
-                    let Payload::Table(entries) = &mut object.payload else {
+                    let Payload::Table(Table {
+                        values: entries, ..
+                    }) = &mut object.payload
+                    else {
                         unreachable!()
                     };
                     let freed = entries.pop().unwrap().1 + entries.pop().unwrap().1;
@@ -244,7 +255,7 @@ impl Heap {
         value: Value,
     ) -> Result<(), HeapError> {
         let key = self.key(table)?;
-        let Payload::Table(values) = &self.object(key)?.payload else {
+        let Payload::Table(Table { values, .. }) = &self.object(key)?.payload else {
             return Err(HeapError::WrongKind);
         };
         let index = position.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
@@ -275,7 +286,7 @@ impl Heap {
         }
         self.charge(extra, u64::from(extra != 0));
         let object = self.objects.get_mut(key).unwrap();
-        let Payload::Table(values) = &mut object.payload else {
+        let Payload::Table(Table { values, .. }) = &mut object.payload else {
             unreachable!()
         };
         if append {
@@ -309,7 +320,7 @@ impl Heap {
         let field = self.model_field(table, position)?;
         self.barrier(value)?;
         let object = self.objects.get_mut(key).unwrap();
-        let Payload::Table(values) = &mut object.payload else {
+        let Payload::Table(Table { values, .. }) = &mut object.payload else {
             unreachable!()
         };
         values.set(position * 2 + 1, value);
@@ -331,6 +342,7 @@ pub struct TableStringLookup<'a> {
     entry: u32,
     offset: Option<u32>,
     result: Option<Option<Value>>,
+    fingerprint: Option<u64>,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum TableLookupStatus {
@@ -345,14 +357,14 @@ pub struct TableLookupProgress {
 impl Heap {
     /// Length of an array, tuple or private dependency sequence, without traversal.
     pub fn sequence_len(&self, sequence: Value) -> Result<u32, HeapError> {
-        let info = self.info(sequence)?;
+        let read = self.read_object(sequence)?;
         if !matches!(
-            info.kind,
+            read.kind(),
             ObjectKind::Array | ObjectKind::Tuple | ObjectKind::Dependencies
         ) {
             return Err(HeapError::WrongKind);
         }
-        Ok(info.len)
+        Ok(read.len())
     }
     /// One semantic sequence read; the caller owns the budget and retention.
     pub fn sequence_get(&self, sequence: Value, index: u32) -> Result<Value, HeapError> {
@@ -381,10 +393,13 @@ impl Heap {
             entry: 0,
             offset: None,
             result: None,
+            fingerprint: None,
         })
     }
     /// Each examined entry, compared byte, and completion costs one work unit.
-    /// No allocation, hidden linear scan, or whole-string comparison occurs.
+    /// An existing short-text index can skip unrelated entries. Its bounded hash
+    /// and logarithmic probe are charged before access; smaller grants scan normally.
+    /// No allocation or whole-string comparison occurs.
     /// Any content mutation invalidates the cursor, including value overwrites.
     /// Complete(Some(NULL)) means a present null, distinct from Complete(None).
     pub fn table_own_string_step(
@@ -396,17 +411,37 @@ impl Heap {
         if info.content_version != cursor.version {
             return Err(HeapError::ConcurrentModification);
         }
+        let entries = self.table_read(cursor.table)?;
         let mut work = 0;
         while work < budget && cursor.result.is_none() {
+            if cursor.offset.is_none()
+                && cursor.key.len() <= crate::payload::table::KEY_BYTES
+                && let Some(index) = entries.index
+                && cursor.entry < index.scanned
+            {
+                let hash_work = if cursor.fingerprint.is_none() {
+                    2 * cursor.key.len() as u32 + 1
+                } else {
+                    0
+                };
+                let probe_work = crate::payload::table::search_work(info.len) as u32;
+                if hash_work + probe_work < budget - work {
+                    let hash = *cursor.fingerprint.get_or_insert_with(|| {
+                        crate::payload::table::text_hash(true, cursor.key.as_bytes())
+                    });
+                    cursor.entry = index.candidate(hash, cursor.entry);
+                    work += hash_work + probe_work;
+                }
+            }
             work += 1;
             if cursor.entry == info.len {
                 cursor.result = Some(None);
                 break;
             }
-            let (key, value) = self.table_entry(cursor.table, cursor.entry)?;
+            let key = entries.key(cursor.entry)?;
             if let Some(offset) = cursor.offset {
                 if offset as usize == cursor.key.len() {
-                    cursor.result = Some(Some(value));
+                    cursor.result = Some(Some(entries.value(cursor.entry)?));
                     break;
                 }
                 let mut byte = [0];
@@ -465,11 +500,16 @@ mod tests {
             for index in 0..count {
                 let (key, value) = view.entry(index).unwrap();
                 assert_eq!(key.as_int(), Some(i64::from(index)));
+                assert!(heap.table_key(table, index).unwrap().same_bits(key));
                 assert_eq!(value.as_int(), Some(i64::from(index) * 3));
                 assert_eq!(view.value(index).unwrap().as_int(), value.as_int());
             }
             for index in [count, u32::MAX] {
                 assert!(matches!(view.entry(index), Err(HeapError::OutOfBounds)));
+                assert!(matches!(
+                    heap.table_key(table, index),
+                    Err(HeapError::OutOfBounds)
+                ));
                 assert!(matches!(view.value(index), Err(HeapError::OutOfBounds)));
             }
         });

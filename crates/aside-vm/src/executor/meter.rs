@@ -48,7 +48,7 @@ impl Meter {
         self.budget.deadline_ns.is_none() || self.clock_steps >= steps
     }
 
-    pub(super) fn deadline_reached(&mut self, now: &mut impl FnMut() -> u64) -> bool {
+    pub(super) fn deadline_reached(&mut self, now: &mut (impl FnMut() -> u64 + ?Sized)) -> bool {
         let Some(deadline) = self.budget.deadline_ns else {
             return false;
         };
@@ -92,6 +92,22 @@ impl Meter {
         }
         self.usage.required_work = 0;
         self.usage.required_allocation = 0;
+        true
+    }
+
+    /// Admit zero-allocation, zero-instruction steps whose individual work
+    /// grants are all below 32. Their sum retains the original clock cadence.
+    pub(super) fn take_short_sequence(&mut self, work: u64, steps: u8) -> bool {
+        let extra = steps - 1;
+        if !self.admits_short_steps(extra) || !self.admits(0, work, 0) {
+            return false;
+        }
+        self.usage.work += work;
+        self.usage.required_work = 0;
+        self.usage.required_allocation = 0;
+        if self.budget.deadline_ns.is_some() {
+            self.clock_steps -= extra;
+        }
         true
     }
 }

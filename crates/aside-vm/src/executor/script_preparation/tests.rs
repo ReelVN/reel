@@ -1,4 +1,8 @@
 use super::*;
+#[path = "scalar_entry_tests.rs"]
+mod scalar_entry_tests;
+#[path = "value_entry_tests.rs"]
+mod value_entry_tests;
 
 #[derive(Debug, PartialEq)]
 struct Observation {
@@ -70,6 +74,9 @@ fn trace(general: bool, encoded: bool, case: u8, work: u64, deadline: bool) -> V
         program
     };
     let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(51)).unwrap();
+    // Isolate the transient preparation view and retain its exact physical-slot
+    // oracle. The scalar transaction has a separate full-state differential.
+    vm.legacy_scalar_entry = true;
     vm.work_probe.general_script_preparation = general;
     let task = vm
         .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)

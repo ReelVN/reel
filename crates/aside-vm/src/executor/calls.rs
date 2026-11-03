@@ -21,8 +21,8 @@ impl Vm {
     ) -> Result<NativeSite, VmError> {
         let caller = ret.caller();
         let (module, location) = if let Some((frame, call)) = caller {
-            match self.active.frames.data[self.index(frame)?] {
-                Frame::Script(s) => (s.module, self.loc(s, call.unwrap_or(s.pc))),
+            match &self.active.frames.data[self.index(frame)?] {
+                Frame::Script(s) => (s.module, self.loc(s.code, call.unwrap_or(s.pc))),
                 Frame::Native(n) => (n.module, n.location),
             }
         } else {

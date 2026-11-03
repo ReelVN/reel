@@ -6,11 +6,35 @@ mod driver;
 #[cfg(feature = "profiling")]
 mod hotspots;
 #[cfg(feature = "profiling")]
+mod lifecycle;
+#[cfg(feature = "profiling")]
 mod stages;
+#[cfg(feature = "profiling")]
+pub(crate) use lifecycle::Part;
+#[cfg(feature = "profiling")]
+pub use lifecycle::{LIFECYCLE_NAMES, LIFECYCLE_OUTER_NAMES, LifecycleCost, LifecyclePart};
+
+#[cfg(feature = "profiling")]
+macro_rules! part_cost {
+    ($state:expr, $part:ident, $body:expr) => {{
+        let span = $state.start_part($crate::executor::step_costs::Part::$part);
+        let result = $body;
+        $state.finish_part(span, None);
+        result
+    }};
+}
+#[cfg(not(feature = "profiling"))]
+macro_rules! part_cost {
+    ($state:expr, $part:ident, $body:expr) => {
+        $body
+    };
+}
 #[cfg(feature = "profiling")]
 pub(crate) use driver::Control;
 #[cfg(feature = "profiling")]
 pub use driver::{DRIVER_SAMPLE_STRIDE, DriverCost};
+#[cfg(feature = "profiling")]
+pub use enabled::set_profiling_enabled;
 #[cfg(feature = "profiling")]
 pub use hotspots::{STEP_HOTSPOT_CAPACITY, STEP_MODES, StepHotspot, StepPoint};
 
@@ -52,7 +76,31 @@ mod enabled {
     use super::super::{Frame, ScriptPhase};
     pub use super::stages::{STEP_SAMPLE_STRIDE, StepCost};
     use super::{STEP_HOTSPOT_CAPACITY, StepHotspot, StepPoint, hotspots::Hotspots};
-    use std::time::Instant;
+    use std::{cell::Cell, time::Instant};
+
+    /// Exact successful script activations, independent of timing selection.
+    /// Diagnostic state resets on load/restore and is excluded from snapshots.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct FunctionEntries {
+        /// Declared function in the VM's current immutable program.
+        pub function: crate::bytecode::FunctionId,
+        /// Successfully pushed script frames, including host-started tasks.
+        pub script: u64,
+        /// Activations subsequently transferred to a compact derived bridge.
+        pub compact: u64,
+    }
+
+    thread_local! {
+        static ENABLED: Cell<bool> = const { Cell::new(true) };
+    }
+
+    /// Enable sampled VM diagnostics on the calling thread; returns its prior setting.
+    /// Each `run_slice` latches this setting at entry. Disabled slices issue no
+    /// observer clocks or timing-counter writes; compiled observer branches and
+    /// code layout remain. This does not change the supplied budget clock.
+    pub fn set_profiling_enabled(enabled: bool) -> bool {
+        ENABLED.replace(enabled)
+    }
 
     /// Execution-stage order for `Vm::step_costs`. Stages are nested: fetch,
     /// instruction cost and execution are included in scalar/script totals.
@@ -68,19 +116,38 @@ mod enabled {
         Execute,
     }
 
-    pub(crate) struct State(super::stages::Stages, Hotspots, super::driver::State);
+    pub(crate) struct State(
+        super::stages::Stages,
+        Hotspots,
+        super::driver::State,
+        Cell<Option<bool>>,
+        crate::root_ranges::ChargedVec<[Cell<u64>; 2]>,
+    );
 
     impl State {
-        pub(crate) fn new(usage: &crate::HeapBudgetUsage) -> Result<Self, crate::HeapError> {
+        pub(crate) fn new(
+            usage: &crate::HeapBudgetUsage,
+            functions: usize,
+        ) -> Result<Self, crate::HeapError> {
+            let mut entries = crate::root_ranges::ChargedVec::new(usage, functions)?;
+            entries.data.resize_with(functions, Default::default);
             Ok(Self(
                 super::stages::Stages::default(),
                 Hotspots::new(usage)?,
                 super::driver::State::default(),
+                Cell::new(None),
+                entries,
             ))
         }
         pub(crate) fn begin_slice(&self) -> Option<super::driver::Slice> {
-            self.0.begin_slice();
-            self.2.begin()
+            let enabled = ENABLED.get();
+            self.3.set(Some(enabled));
+            if enabled {
+                self.0.begin_slice();
+            } else {
+                self.0.end_slice();
+            }
+            self.2.begin_if(enabled)
         }
         #[cfg(test)]
         pub(crate) fn set_step_phase(&self, phase: Option<Option<Phase>>) {
@@ -106,10 +173,14 @@ mod enabled {
         ) {
             self.2.finish(slice, usage, queries, clock_ns);
             self.0.end_slice();
+            self.3.set(None);
         }
         pub(crate) fn fail_entry(&self, slice: Option<super::driver::Slice>) {
-            self.2.fail_entry(slice);
+            if self.3.get() == Some(true) {
+                self.2.fail_entry(slice);
+            }
             self.0.end_slice();
+            self.3.set(None);
         }
         #[inline]
         pub(crate) fn begin_fallback(&self) {
@@ -134,8 +205,24 @@ mod enabled {
             self.2.finish_span(span);
         }
         #[inline]
+        pub(crate) fn start_part(&self, part: super::Part) -> Option<super::lifecycle::Span> {
+            self.2.start_part(part)
+        }
+        #[inline]
+        pub(crate) fn finish_part(
+            &self,
+            span: Option<super::lifecycle::Span>,
+            part: Option<super::Part>,
+        ) {
+            self.2.finish_part(span, part);
+        }
+        #[inline]
         pub(crate) fn start(&self, phase: Phase) -> Option<Instant> {
-            self.0.start(phase as usize)
+            if self.3.get() == Some(true) {
+                self.0.start(phase as usize)
+            } else {
+                None
+            }
         }
         #[inline]
         pub(crate) fn finish(
@@ -145,6 +232,13 @@ mod enabled {
             point: Option<StepPoint>,
         ) {
             self.0.finish(phase as usize, start, point, &self.1);
+        }
+
+        pub(crate) fn script_entry(&self, function: crate::bytecode::FunctionId, compact: bool) {
+            if self.3.get().unwrap_or_else(|| ENABLED.get()) {
+                let count = &self.4.data[function.index()][usize::from(compact)];
+                count.set(count.get() + 1);
+            }
         }
     }
 
@@ -170,6 +264,21 @@ mod enabled {
         /// Restore starts cold; pair differences with the driver's VM identity.
         pub fn step_costs(&self) -> [StepCost; STEP_NAMES.len()] {
             self.step_costs.0.snapshot()
+        }
+        /// Borrow exact script/compact activation counters in FunctionId order.
+        /// Native activations are excluded; compact transitions also retain their
+        /// original script entry. Timing off leaves these counters unchanged.
+        pub fn function_entries(&self) -> impl ExactSizeIterator<Item = FunctionEntries> + '_ {
+            self.step_costs
+                .4
+                .data
+                .iter()
+                .enumerate()
+                .map(|(index, row)| FunctionEntries {
+                    function: crate::bytecode::FunctionId(index as u32),
+                    script: row[0].get(),
+                    compact: row[1].get(),
+                })
         }
         /// Drain bounded instruction-location samples into caller-owned storage.
         /// Returns observations dropped by full collision sets since the prior
@@ -294,8 +403,8 @@ mod enabled {
 
         #[test]
         fn counts_every_entry_and_samples_only_the_declared_stride() {
-            let state = State::new(&crate::HeapBudgetUsage::new(u64::MAX)).unwrap();
-            state.0.begin_slice();
+            let state = State::new(&crate::HeapBudgetUsage::new(u64::MAX), 0).unwrap();
+            let _slice = state.begin_slice();
             for _ in 0..(2 * STEP_SAMPLE_STRIDE + 1) {
                 let start = state.start(Phase::Scalar);
                 state.finish(Phase::Scalar, start, None);
@@ -310,6 +419,6 @@ mod enabled {
     }
 }
 #[cfg(feature = "profiling")]
-pub(crate) use enabled::{Phase, State};
+pub use enabled::{FunctionEntries, STEP_NAMES, STEP_SAMPLE_STRIDE, StepCost};
 #[cfg(feature = "profiling")]
-pub use enabled::{STEP_NAMES, STEP_SAMPLE_STRIDE, StepCost};
+pub(crate) use enabled::{Phase, State};

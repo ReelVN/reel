@@ -66,7 +66,7 @@ methods! {
     Pop: "pop" [Array] (), None => "any", true,
         "Remove and return the last value. An empty array raises OutOfBounds.";
     HasOwn: "has_own" [Table] ("key":"any"=None), None => "bool", false,
-        "Return whether this table contains its own key.";
+        "Return whether this table contains its own key. Reactive reads observe the matched field, or the collection when the key is missing.";
     Slice: "slice" [Array,Tuple] ("range":"Range"=None), None => "Self", false,
         "Copy the selected range into a new sequence of the same kind.";
     Insert: "insert" [Array] ("index":"int"=None,"value":"any"=None), None => "array", true,
@@ -116,7 +116,7 @@ methods! {
     TrimEnd: "trim_end" [String] (), None => "string", false,
         "Remove trailing Unicode whitespace.";
     Get: "get" [Table] ("key":"any"=None,"default":"any"=Some("null")), None => "any", false,
-        "Return the stored value, or default when the key is absent.";
+        "Return the stored value, or default when the key is absent. Reactive reads observe the matched field, or the collection when the key is missing.";
     Split: "split" [String] ("separator":"string"=None), None => "array", false,
         "Split at a string separator, preserving empty fields. An empty separator splits at Unicode scalar boundaries.";
     Sort: "sort" [Array] ("compare":"any"=Some("null")), None => "array", true,

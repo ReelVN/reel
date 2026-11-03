@@ -4,10 +4,16 @@ mod refinement;
 mod results;
 use crate::hir::*;
 use crate::{DiagnosticCode as D, RelatedRange, SyntaxKind as K, TextRange};
+use hashbrown::HashTable;
 use smallvec::{SmallVec, smallvec};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher, Hash};
 use std::mem::size_of;
 use std::sync::Arc;
+
+fn intern_hash(value: &(impl Hash + ?Sized)) -> u64 {
+    BuildHasherDefault::<DefaultHasher>::default().hash_one(value)
+}
 
 const ANY: TypeId = TypeId(0);
 const NULL: TypeId = TypeId(1);
@@ -170,8 +176,8 @@ struct Binder<'a> {
     scope: ScopeId,
     root_scope: ScopeId,
     maps: Vec<HashMap<NameId, SymbolId>>,
-    names: HashMap<String, NameId>,
-    types: HashMap<Type, TypeId>,
+    names: HashTable<NameId>,
+    types: HashTable<TypeId>,
     initialized: Vec<bool>,
     annotations: HashSet<SymbolId>,
     refinements: HashMap<SymbolId, TypeId>,
@@ -223,7 +229,7 @@ pub(super) fn analyze_editor(
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> crate::editor::EditorAnalysis {
-    // Admit the seeded name index before cloning/allocating any binding metadata.
+    // Admit the seeded name index before allocating binding metadata.
     let admitted = hir.names.len().saturating_add(1);
     if admitted > options.limits.max_work {
         return crate::editor::EditorAnalysis {
@@ -241,12 +247,17 @@ pub(super) fn analyze_editor(
             },
         };
     }
-    let names = hir
-        .names
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.clone(), NameId(i as u32)))
-        .collect();
+    let mut names = HashTable::with_capacity(hir.names.len());
+    for (i, name) in hir.names.iter().enumerate() {
+        let hash = intern_hash(name);
+        if let Some(id) = names.find_mut(hash, |id: &NameId| hir.names[id.0 as usize] == *name) {
+            *id = NameId(i as u32);
+        } else {
+            names.insert_unique(hash, NameId(i as u32), |id| {
+                intern_hash(&hir.names[id.0 as usize])
+            });
+        }
+    }
     let types = vec![
         Type::Any,
         Type::Null,
@@ -259,12 +270,12 @@ pub(super) fn analyze_editor(
         Type::Future,
         Type::Generator,
     ];
-    let type_map = types
-        .iter()
-        .cloned()
-        .enumerate()
-        .map(|(i, t)| (t, TypeId(i as u32)))
-        .collect();
+    let mut type_map = HashTable::with_capacity(types.len());
+    for (i, ty) in types.iter().enumerate() {
+        type_map.insert_unique(intern_hash(ty), TypeId(i as u32), |id| {
+            intern_hash(&types[id.0 as usize])
+        });
+    }
     let span = hir.node(NodeId(0)).span;
     let facts = vec![
         NodeFacts {
@@ -496,21 +507,32 @@ impl Binder<'_> {
         true
     }
     fn intern_name(&mut self, s: &str) -> NameId {
-        if let Some(&id) = self.names.get(s) {
+        let hash = intern_hash(s);
+        if let Some(&id) = self
+            .names
+            .find(hash, |id| self.out.hir.names[id.0 as usize] == s)
+        {
             return id;
         }
         let id = NameId(self.out.hir.names.len() as u32);
         self.out.hir.names.push(s.to_owned());
-        self.names.insert(s.to_owned(), id);
+        self.names.insert_unique(hash, id, |id| {
+            intern_hash(&self.out.hir.names[id.0 as usize])
+        });
         id
     }
     fn intern_type(&mut self, t: Type) -> TypeId {
-        if let Some(&id) = self.types.get(&t) {
+        let hash = intern_hash(&t);
+        if let Some(&id) = self
+            .types
+            .find(hash, |id| self.out.types[id.0 as usize] == t)
+        {
             return id;
         }
         let id = TypeId(self.out.types.len() as u32);
-        self.types.insert(t.clone(), id);
         self.out.types.push(t);
+        self.types
+            .insert_unique(hash, id, |id| intern_hash(&self.out.types[id.0 as usize]));
         id
     }
     fn external_type(&mut self, symbol: &ExternalSymbol) -> TypeId {

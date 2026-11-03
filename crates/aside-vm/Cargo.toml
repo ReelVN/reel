@@ -10,8 +10,11 @@ description = "Aside value storage and bounded incremental object tracing"
 profiling = []
 # Integer-only execution diagnostics, independently enabled from timed profiling.
 execution-counts = []
+# Test-harness oracles: checked roots and legacy Body execution boundaries.
+vm-validation-oracle = []
 
 [dependencies]
+hashbrown.workspace = true
 slotmap = "=1.1.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }

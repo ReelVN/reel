@@ -140,7 +140,9 @@ impl Vm {
     }
     /// Implement the standard read-only derived-value contract. Admitted parameterless
     /// expressions retain their script instructions and may defer the native bridge
-    /// until this same commit continuation; custom observers use `call_reactive`.
+    /// until this same commit continuation. `standard_derived_commit` registration
+    /// permits the VM to absorb an existing compact observer's commit ticket;
+    /// custom observers use `call_reactive` and retain host interception.
     pub fn respond_derive(&mut self, ticket: HostTicket) -> Result<(), VmError> {
         self.select_task(ticket.task)?;
         let native = self.ticket(ticket)?;
@@ -328,8 +330,9 @@ impl Vm {
     }
 
     /// Schedule an existing observer, retaining its output before execution begins.
-    /// Standard compact expressions publish the same host commit ticket after their
-    /// budgeted script phase. Both phases retain ordinary GC and snapshot ownership.
+    /// Standard compact expressions enter their commit continuation after the
+    /// budgeted script phase. The native registration controls host interception;
+    /// both paths retain ordinary GC and snapshot ownership.
     pub fn start_derived(&mut self, output: Value, owner: RootOwner) -> Result<TaskId, VmError> {
         if self.compact_output(output)? {
             let function = FunctionId(

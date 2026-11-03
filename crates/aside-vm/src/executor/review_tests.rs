@@ -23,6 +23,8 @@ pub(super) fn echo_registry() -> RuntimeSupport {
         opcodes: vec![],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             signature: Signature {
@@ -55,6 +57,8 @@ fn default_registry() -> RuntimeSupport {
         opcodes: vec![],
         capabilities: vec!["host.parameter_defaults".into()],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::parameter_defaults".into(),
             abi_version: 1,
             signature: Signature {
@@ -266,14 +270,14 @@ fn parameter_preparation_work_is_independent_of_local_bindings() {
 #[test]
 fn native_call_admission_uses_charged_cache_and_parameter_queries_wait_for_work() {
     let mut vm = load(fixtures::native_parameter_defaults(), default_registry());
+    assert_eq!(vm.native_parameters.data.len(), 1);
+    let parameters = vm.native_parameters.data[0];
+    assert!(parameters.needs_cells && parameters.has_defaults);
+    assert!(parameters.read_only_leaf.is_none());
     assert_eq!(
-        vm.native_parameters.data,
-        [NativeParameters {
-            needs_cells: true,
-            has_defaults: true,
-        }]
+        vm.native_parameters.bytes(),
+        std::mem::size_of::<NativeParameters>() as u64
     );
-    assert_eq!(vm.native_parameters.bytes(), 2);
     let task = vm
         .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();

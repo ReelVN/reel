@@ -12,32 +12,32 @@ pub(super) enum InstructionPlan {
 /// ordinary callee roots are published. No borrowed address or plan is persisted.
 #[derive(Clone, Copy)]
 pub(super) struct PreparedCallee {
-    function: FunctionId,
+    pub(super) function: FunctionId,
     closure: Value,
-    receiver: Option<Value>,
+    pub(super) receiver: Option<Value>,
 }
 
 impl Vm {
     pub(super) fn prepare_callee(
         &self,
         closure: Value,
-        function: FunctionId,
+        read: native_calls::CalleeRead<'_>,
     ) -> Option<PreparedCallee> {
         #[cfg(test)]
         if self.work_probe.general_callees {
             return None;
         }
+        let function = read.function;
         let f = &self.program.package().functions[function.index()];
         // Initializer lookup, admission and mutation keep their original path.
         if self.init_symbol == Some(f.name) {
             return None;
         }
         let receiver = if matches!(f.kind, FunctionKind::Native(_)) {
-            self.callable_receiver(closure)
+            self.callable_receiver_from(closure, read.target).ok()?
         } else {
-            self.script_receiver(closure)
-        }
-        .ok()?;
+            read.script_receiver
+        };
         // Failed speculative receiver decoding does not escape this function:
         // the original frame/argument quota checks still precede its real error.
         Some(PreparedCallee {
@@ -93,9 +93,10 @@ impl Vm {
                 std::cmp::Ordering::Equal => {}
             }
         }
-        let mut caller = *s;
+        let call_pc = s.pc;
+        let mut context = s.context;
         if op == Opcode::CallNoWait || self.active.unwinds.data.iter().any(|u| u.frame == s.id) {
-            caller.context = inherit(caller.context, Context::NoWait);
+            context = inherit(context, Context::NoWait);
         }
         let dynamic = if let Some(callee) = prepared {
             Some((callee.closure, callee.function))
@@ -124,23 +125,23 @@ impl Vm {
         };
         s.pc = next_pc;
         let caller_index = self.index(s.id).map_err(|_| FaultKind::InvalidState)?;
-        self.publish_script_frame(caller_index, s);
+        self.publish_script_cursor(caller_index, s);
         match target {
             CallTarget::Native(native) => {
                 let site = NativeSite {
-                    owner: caller.owner,
-                    module: caller.module,
-                    context: caller.context,
-                    effects: caller.effects,
-                    location: self.loc(caller, caller.pc),
+                    owner: s.owner,
+                    module: s.module,
+                    context,
+                    effects: s.effects,
+                    location: self.loc(s.code, call_pc),
                     ret: ReturnTo::Register {
-                        frame: caller.id,
+                        frame: s.id,
                         reg: r(a),
-                        call: caller.pc,
+                        call: call_pc,
                     },
                 };
                 if let Err(e) = self.push_native(native, source, count, site) {
-                    s.pc = caller.pc;
+                    s.pc = call_pc;
                     return Err(vm_fault(e));
                 }
             }
@@ -151,15 +152,15 @@ impl Vm {
                     source,
                     count,
                     s.owner,
-                    caller.context,
+                    context,
                     s.effects,
                     ReturnTo::Register {
                         frame: s.id,
                         reg: r(a),
-                        call: caller.pc,
+                        call: call_pc,
                     },
                 ) {
-                    s.pc = caller.pc;
+                    s.pc = call_pc;
                     return Err(vm_fault(e));
                 }
             }
@@ -171,16 +172,16 @@ impl Vm {
                     source,
                     count,
                     s.owner,
-                    caller.context,
+                    context,
                     s.effects,
                     ReturnTo::Register {
                         frame: s.id,
                         reg: r(a),
-                        call: caller.pc,
+                        call: call_pc,
                     },
                     prepared.map(|callee| callee.receiver),
                 ) {
-                    s.pc = caller.pc;
+                    s.pc = call_pc;
                     return Err(vm_fault(e));
                 }
             }

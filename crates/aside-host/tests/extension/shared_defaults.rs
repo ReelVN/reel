@@ -10,6 +10,8 @@ fn parameter(name: &str, ty: bc::BuiltinType, default: Option<bc::Const>) -> Nat
 }
 fn contract(name: &str, parameters: Vec<NativeParameter>) -> NativeContract {
     NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         symbol: format!("sample::{name}"),
         abi_version: 1,
         parameters,

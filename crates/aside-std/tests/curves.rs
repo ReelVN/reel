@@ -23,7 +23,10 @@ fn drive(vm: &mut Vm, library: &mut aside_std::StandardLibrary, task: TaskId) ->
 
 #[test]
 fn independent_curves_construct_and_sample_without_native_allocations() {
-    for count in [4, 128, 4096] {
+    for (count, leaves) in [4, 128, 4096]
+        .into_iter()
+        .flat_map(|count| [false, true].map(|leaves| (count, leaves)))
+    {
         let source = format!(
             r#"
         use std::math::curve;
@@ -68,8 +71,13 @@ fn independent_curves_construct_and_sample_without_native_allocations() {
         };
         let main = function("main");
         let samples = function("samples");
-        let support =
+        let mut support =
             aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
+        if !leaves {
+            for native in &mut support.natives {
+                native.read_only_leaf = None;
+            }
+        }
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         let init = vm
@@ -141,9 +149,9 @@ fn independent_curves_construct_and_sample_without_native_allocations() {
         let elapsed = start.elapsed();
         let whole = whole.change();
         assert_eq!((sample_allocations, sample_reallocations), (0, 0));
-        assert_eq!(sample_count, 1000);
+        assert_eq!(sample_count, if leaves { 0 } else { 1000 });
         eprintln!(
-            "curve keys={count}: construct allocations={} reallocations={} VM_chunks={construction_chunks} native_work={construction_work} ns={construction_ns}; samples=1000 native_allocations={sample_allocations} native_reallocations={sample_reallocations}; complete_loop allocations={} reallocations={} VM_chunks={} elapsed={elapsed:?}",
+            "curve keys={count} leaves={leaves}: construct allocations={} reallocations={} VM_chunks={construction_chunks} native_work={construction_work} ns={construction_ns}; samples=1000 native_allocations={sample_allocations} native_reallocations={sample_reallocations}; complete_loop allocations={} reallocations={} VM_chunks={} elapsed={elapsed:?}",
             construction.allocations,
             construction.reallocations,
             whole.allocations,

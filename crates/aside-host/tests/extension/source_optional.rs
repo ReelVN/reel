@@ -5,6 +5,8 @@ fn supplied_only_declarations_preserve_optional_presence_and_explicit_value_type
     use aside_compiler::semantic::{NoModules, TypeHint};
     use aside_host::source::{Api, Declaration, ParameterDefault};
     let contract = aside_host::NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         symbol: "sample::record".into(),
         abi_version: 1,
         parameters: [

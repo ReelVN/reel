@@ -12,6 +12,83 @@ pub(super) enum Registers<'a> {
 }
 
 impl Registers<'_> {
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub(super) fn write_suffix(
+        &mut self,
+        destination: u32,
+        value: Value,
+        clears: &[u32],
+        dead: bool,
+        admit: impl FnOnce(),
+    ) -> Result<(), HeapError> {
+        match self {
+            Self::Window(window) => window.write_suffix(destination, value, clears, dead, admit),
+            #[cfg(test)]
+            Self::Checked { .. } => {
+                unreachable!("the checked oracle executes original instructions")
+            }
+        }
+    }
+    pub(super) fn heap_read(&self) -> &Heap {
+        match self {
+            Self::Window(window) => window.heap_read(),
+            #[cfg(test)]
+            Self::Checked { heap, .. } => heap,
+        }
+    }
+    pub(super) fn cell_initialize(&mut self, cell: Value, value: Value) -> Result<(), HeapError> {
+        match self {
+            Self::Window(window) => window.cell_initialize(cell, value),
+            #[cfg(test)]
+            Self::Checked { heap, .. } => heap.cell_initialize(cell, value),
+        }
+    }
+    pub(super) fn cell_write(&mut self, cell: Value, value: Value) -> Result<(), HeapError> {
+        match self {
+            Self::Window(window) => window.cell_write(cell, value),
+            #[cfg(test)]
+            Self::Checked { heap, .. } => heap.cell_write(cell, value),
+        }
+    }
+    pub(super) fn observed_cell_value(&mut self, cell: Value) -> Result<Option<Value>, HeapError> {
+        match self {
+            Self::Window(window) => window.observed_cell_value(cell),
+            #[cfg(test)]
+            Self::Checked { heap, .. } => heap.observed_cell_value(cell),
+        }
+    }
+    pub(super) fn environment(
+        &self,
+        environment: &crate::frame_slots::EnvironmentWindow<'_>,
+        index: u32,
+    ) -> Result<Value, HeapError> {
+        match self {
+            Self::Window(window) => window.read_environment(environment, index),
+            #[cfg(test)]
+            Self::Checked { .. } => unreachable!("checked scalar oracle has no Body environment"),
+        }
+    }
+    pub(super) fn peek(&self, register: u32) -> Result<Value, HeapError> {
+        match self {
+            Self::Window(window) => window.peek(register),
+            #[cfg(test)]
+            Self::Checked { .. } => unreachable!("checked scalar oracle does not speculate"),
+        }
+    }
+    pub(super) fn count_peek_read(&self) {
+        match self {
+            Self::Window(window) => window.count_peek_read(),
+            #[cfg(test)]
+            Self::Checked { .. } => unreachable!("checked scalar oracle does not speculate"),
+        }
+    }
+    pub(super) fn count_peek_pair(&self) {
+        match self {
+            Self::Window(window) => window.count_peek_pair(),
+            #[cfg(test)]
+            Self::Checked { .. } => unreachable!("checked scalar oracle does not speculate"),
+        }
+    }
     pub(super) fn read(&self, register: u32) -> Result<Value, HeapError> {
         match self {
             Self::Window(window) => window.read(register),

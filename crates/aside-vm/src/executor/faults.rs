@@ -216,7 +216,7 @@ impl Vm {
                     location: if preparing {
                         self.binding_location(s)
                     } else {
-                        self.loc(s, s.pc)
+                        self.loc(s.code, s.pc)
                     },
                     fault: None,
                     explicit,
@@ -348,7 +348,7 @@ impl Vm {
                 };
                 StackEntry {
                     frame: s.id,
-                    location: self.loc(s, pc),
+                    location: self.loc(s.code, pc),
                     module: s.module,
                     module_version: version,
                     source_version: version,

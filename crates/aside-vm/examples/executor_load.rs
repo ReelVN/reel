@@ -7,6 +7,8 @@ fn vm(p: BytecodePackage) -> Vm {
         opcodes: vec![],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             signature: Signature {

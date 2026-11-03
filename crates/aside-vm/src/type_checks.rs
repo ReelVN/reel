@@ -121,7 +121,7 @@ impl TypeChecks {
         if !heap.accepts_builtin(BuiltinType::String, key)? {
             return Err(HeapError::TypeMismatch);
         }
-        let bytes = heap.info(key)?.len as usize;
+        let bytes = heap.read_object(key)?.len() as usize;
         let mut low = 0;
         let mut high = self.symbols.data.len();
         while low < high {
@@ -177,7 +177,7 @@ impl TypeChecks {
                         TypeDef::Function { .. } => {
                             accepted = heap.accepts_builtin(BuiltinType::Closure, value)?
                                 || (value.tag() == crate::ValueTag::Object
-                                    && heap.info(value)?.kind == crate::ObjectKind::Host
+                                    && heap.read_object(value)?.kind() == crate::ObjectKind::Host
                                     && heap.host_call(value).is_ok());
                         }
                         TypeDef::Named { .. } => {

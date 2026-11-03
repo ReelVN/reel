@@ -25,6 +25,10 @@ pub(super) fn build(
     p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     b: &mut Budget,
 ) -> Result<Vec<u32>, Error> {
+    #[cfg(feature = "vm-validation-oracle")]
+    let tuple_derives = std::env::var("ASIDE_VM_LEGACY_TUPLE_DERIVES").as_deref() != Ok("1");
+    #[cfg(not(feature = "vm-validation-oracle"))]
+    let tuple_derives = true;
     let mut eligible = b.vec::<u32>(p.functions.len().div_ceil(32))?;
     b.work(p.functions.len().div_ceil(32) as u64)?;
     eligible.resize(p.functions.len().div_ceil(32), 0);
@@ -94,7 +98,7 @@ pub(super) fn build(
                         | Opcode::TextNew
                         | Opcode::TextPush
                         | Opcode::TextFinish
-                )
+                ) || op == Opcode::MakeTuple && tuple_derives
             };
         }
         if valid {

@@ -25,13 +25,18 @@ impl ObjectRead<'_> {
     }
 
     #[inline]
+    pub(crate) fn len(self) -> u32 {
+        match &self.object.payload {
+            Payload::Table(table) => table.values.len / 2,
+            _ => self.object.payload.len(),
+        }
+    }
+
+    #[inline]
     pub(crate) fn info(self) -> ObjectInfo {
         ObjectInfo {
             kind: self.object.kind,
-            len: match &self.object.payload {
-                Payload::Table(values) => values.len / 2,
-                _ => self.object.payload.len(),
-            },
+            len: self.len(),
             content_version: self.object.content_version,
             structure_version: self.object.structure_version,
         }
@@ -51,6 +56,33 @@ impl ObjectRead<'_> {
             return cell.value.ok_or(HeapError::UninitializedCell);
         }
         obj.payload.edge(position).ok_or(HeapError::OutOfBounds)
+    }
+
+    #[inline]
+    pub(crate) fn host_fields(self) -> Result<Value, HeapError> {
+        if self.kind() != ObjectKind::Host {
+            return Err(HeapError::WrongKind);
+        }
+        let fields = self.field(0)?;
+        if fields.same_bits(Value::NULL) {
+            return Err(HeapError::RetiredHost);
+        }
+        Ok(fields)
+    }
+
+    #[inline]
+    pub(crate) fn host_payload_len(self) -> Result<u32, HeapError> {
+        if self.kind() != ObjectKind::Host {
+            return Err(HeapError::WrongKind);
+        }
+        self.len().checked_sub(4).ok_or(HeapError::WrongKind)
+    }
+
+    /// Callable hosts retain their ordinary fields/retirement check.
+    #[inline]
+    pub(crate) fn host_call(self) -> Result<crate::bytecode::FunctionId, HeapError> {
+        self.host_fields()?;
+        self.object.host_call.ok_or(HeapError::WrongKind)
     }
 }
 

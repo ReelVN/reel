@@ -3,7 +3,10 @@
 //! existing frame/return-slot teardown, so partially built values never escape.
 use super::builtins::BuiltinCall;
 use super::*;
+mod key_compare;
+pub(super) mod query_cache;
 mod spread;
+pub(super) mod table_index;
 pub(super) use spread::{CaptureKind, SpreadCapture, TableFinish, TableSpread};
 
 impl Vm {
@@ -84,8 +87,8 @@ impl Vm {
     ) -> Result<bool, VmError> {
         // The immutable operands remain rooted in their original registers until
         // publication, including when dest aliases one of those registers.
-        let left_value = self.slots.read(at(s.regs, left.0))?;
-        let right_value = self.slots.read(at(s.regs, right.0))?;
+        let left_value = self.slots.read_vm(at(s.regs, left.0))?;
+        let right_value = self.slots.read_vm(at(s.regs, right.0))?;
         let left_len = self.heap.info(left_value)?.len;
         let total = left_len + self.heap.info(right_value)?.len;
         let builder = self.value(s.env, 1)?;
@@ -151,7 +154,7 @@ impl Vm {
             origin: s.pc,
             reason: ExitReason::Throw(FaultSeed {
                 kind,
-                location: self.loc(*s, s.pc),
+                location: self.loc(s.code, s.pc),
                 fault: None,
                 explicit: None,
                 author_value: false,
@@ -305,6 +308,14 @@ pub(super) struct TableWork {
 }
 
 impl TableWork {
+    pub(super) fn matched_read(action: TableAction, entry: u32, version: u64) -> Self {
+        Self {
+            action,
+            entry,
+            version,
+            matched: true,
+        }
+    }
     pub(super) fn named_read(&self, symbol: Option<SymbolId>) -> bool {
         symbol.is_some()
             && matches!(
@@ -484,12 +495,38 @@ impl Vm {
         Ok(source_changed
             || self.table_version(self.value(s.env, 1)?, work.action)? != work.version)
     }
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub(super) fn table_step(
         &mut self,
         s: &mut ScriptFrame,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
-        let work = s.table_work.unwrap();
+        #[cfg(feature = "profiling")]
+        let span = self.step_costs.start_part(
+            if s.table_work
+                .as_ref()
+                .is_some_and(|work| work.named_read(s.member_symbol))
+            {
+                if matches!(s.phase, ScriptPhase::TableValidate) {
+                    step_costs::Part::NamedValidate
+                } else {
+                    step_costs::Part::NamedScan
+                }
+            } else {
+                step_costs::Part::OtherTable
+            },
+        );
+        let result = self.table_step_inner(s, meter);
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_part(span, None);
+        result
+    }
+    fn table_step_inner(
+        &mut self,
+        s: &mut ScriptFrame,
+        meter: &mut Meter,
+    ) -> Result<bool, VmError> {
+        let mut work = s.table_work.unwrap();
         let table = self.value(s.env, 1)?;
         let named = work.named_read(s.member_symbol);
         let metadata = if named {
@@ -521,6 +558,15 @@ impl Vm {
             Some(info) => info.len,
             None => self.heap.info(table)?.len,
         };
+        if matches!(s.phase, ScriptPhase::TableScan) && !work.matched && work.entry == 0 {
+            if let Some(key) = self.query_key(s, len)?
+                && let Some(entry) = self.table_queries.get(table, key, work.version)
+            {
+                work.entry = entry;
+                work.matched = entry < len;
+                s.table_work = Some(work);
+            }
+        }
         // Source keys are unique. Entries appended by this spread cannot
         // match a later source key, so only scan the original destination.
         let scan_len = match work.action {
@@ -534,12 +580,22 @@ impl Vm {
                     self.member_hints
                         .get(s.code.function, s.pc, table, work.version)?;
                 let bytes = self.program.package().symbols[symbol.index()].len();
-                (entry < len && bytes <= member_hints::MAX_KEY_BYTES)
+                ((entry < len || (trusted && entry != 0 && entry == len))
+                    && bytes <= member_hints::MAX_KEY_BYTES)
                     .then_some((entry, symbol, bytes, trusted))
             })
         } else {
             None
         };
+        if scan
+            && !work.matched
+            && hint.is_none()
+            && work.entry < scan_len
+            && let Some(entry) = self.indexed_table_candidate(s, table, len, meter)?
+        {
+            work.entry = entry.min(scan_len);
+            s.table_work = Some(work);
+        }
         let store = scan
             && (work.matched || work.entry == scan_len)
             && !matches!(
@@ -672,7 +728,7 @@ impl Vm {
                 }
                 let lookup = s.table_work.as_mut().unwrap();
                 lookup.entry = entry;
-                lookup.matched = true;
+                lookup.matched = entry < len;
                 #[cfg(test)]
                 self.work_probe
                     .member_hint_hits
@@ -709,7 +765,10 @@ impl Vm {
                 execution_count!(self, NamedTableCandidates, 1);
             }
             let key = self.value(s.env, 2)?;
-            let (candidate, _) = self.heap.table_entry(table, work.entry)?;
+            let candidate = self.heap.table_key(table, work.entry)?;
+            if self.compare_table_text_key(s, key, candidate, meter)? {
+                return Ok(true);
+            }
             self.put(self.active.equality_roots.unwrap(), 0, key)?;
             self.put(self.active.equality_roots.unwrap(), 1, candidate)?;
             self.active.equality_cursors.data.push(0);
@@ -799,7 +858,24 @@ impl Vm {
         s.phase = ScriptPhase::TableScan;
         Ok(())
     }
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     fn table_commit(
+        &mut self,
+        s: &mut ScriptFrame,
+        host_method: Option<FunctionId>,
+    ) -> Result<(), VmError> {
+        #[cfg(feature = "profiling")]
+        let span = s
+            .table_work
+            .as_ref()
+            .filter(|work| work.named_read(s.member_symbol))
+            .and_then(|_| self.step_costs.start_part(step_costs::Part::NamedCommit));
+        let result = self.table_commit_inner(s, host_method);
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_part(span, None);
+        result
+    }
+    fn table_commit_inner(
         &mut self,
         s: &mut ScriptFrame,
         host_method: Option<FunctionId>,
@@ -807,7 +883,15 @@ impl Vm {
         let work = s.table_work.unwrap();
         let table = self.value(s.env, 1)?;
         let key = self.value(s.env, 2)?;
-        if work.matched
+        if matches!(
+            work.action,
+            TableAction::Get(_) | TableAction::GetDefault { .. } | TableAction::HasOwn(_)
+        ) && self.query_key(s, self.heap.table_len(table)?)?.is_some()
+        {
+            self.table_queries
+                .remember(table, key, work.version, work.entry);
+        }
+        if (work.matched || matches!(work.action, TableAction::MemberGet { .. }))
             && let Some(symbol) = self.host_member_symbol(s)
             && self.program.package().symbols[symbol.index()].len() <= member_hints::MAX_KEY_BYTES
         {
@@ -864,7 +948,11 @@ impl Vm {
                 }
             }
             TableAction::HasOwn(dest) => {
-                self.heap.observe_read(table, None)?;
+                let field = work
+                    .matched
+                    .then(|| self.heap.model_field(table, work.entry))
+                    .transpose()?;
+                self.heap.observe_read(table, field)?;
                 self.put(s.regs, dest.0, Value::bool(work.matched))?;
             }
             TableAction::GetHost { object, dest } => {
@@ -888,26 +976,20 @@ impl Vm {
                     s.phase = ScriptPhase::Body;
                     return Ok(());
                 }
-                let property = crate::PropertyId {
-                    host,
-                    field: work.entry,
+                let Some(value) = self.read_matched_member(s, table, work.entry, Some(host))?
+                else {
+                    return Ok(());
                 };
-                // Revalidate liveness and read the current value at commit. The
-                // rooted fields table alone may outlive a retired host.
-                let value = match self.heap.host_property(property) {
-                    Ok(value) => value,
-                    Err(error) => return self.collection_fault(s, heap_fault(error)),
-                };
-                self.heap.observe_read(host, Some(work.entry))?;
                 self.put(s.regs, dest.0, value)?;
             }
             TableAction::Get(dest)
             | TableAction::GetDefault { dest, .. }
             | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {
-                    self.heap
-                        .observe_read(table, Some(self.heap.model_field(table, work.entry)?))?;
-                    self.heap.table_entry(table, work.entry)?.1
+                    let Some(value) = self.read_matched_member(s, table, work.entry, None)? else {
+                        return Ok(());
+                    };
+                    value
                 } else if let TableAction::GetDefault {
                     descriptor,
                     fallback,

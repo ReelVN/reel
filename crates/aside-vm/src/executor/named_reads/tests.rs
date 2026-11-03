@@ -1,6 +1,8 @@
 //! Named reads retain the original table/equality cursor at every safe point.
 use super::*;
 use crate::snapshot::{SnapshotBudget, SnapshotRegistry, VmSnapshot};
+mod direct;
+mod execution;
 
 fn load(host: bool, model: bool, long: bool, encoded: bool, reference: bool) -> (Vm, Value, Value) {
     let mut p = fixtures::helper_native();

@@ -1,5 +1,6 @@
 //! Named point reads reuse pure admission metadata and existing resumable steps.
 use super::*;
+mod direct;
 mod host_methods;
 
 /// Current table metadata for one literal MemberGet admission only. The caller's
@@ -9,7 +10,7 @@ pub(super) struct NamedRead {
     table: Value,
     version: u64,
     host: bool,
-    empty: bool,
+    len: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -111,7 +112,7 @@ impl Vm {
             table,
             version: info.structure_version,
             host,
-            empty: info.len == 0,
+            len: info.len,
         })
     }
 
@@ -126,7 +127,7 @@ impl Vm {
     ) -> Result<bool, FaultKind> {
         let key = self.value(self.constants, symbol.0).map_err(vm_fault)?;
         if plan.host
-            && plan.empty
+            && plan.len == 0
             && self.empty_host_method(frame, dest, object, symbol, key, meter)?
         {
             return Ok(true);
@@ -158,9 +159,9 @@ impl Vm {
             unreachable!()
         };
         for step in 0..32 {
-            let Some(phase) = Phase::capture(&frame.phase) else {
+            if Phase::capture(&frame.phase).is_none() {
                 break;
-            };
+            }
             if !frame
                 .table_work
                 .as_ref()
@@ -172,38 +173,50 @@ impl Vm {
             if step != 0 && !meter.next_short_step() {
                 break;
             }
-            #[cfg(feature = "execution-counts")]
-            self.execution_counts.step(&frame.phase);
-            let progressed = step_cost!(
-                self.step_costs,
-                Script,
-                phase.point(&frame),
-                match phase {
-                    Phase::Validate | Phase::Scan => self.table_step(&mut frame, meter),
-                    Phase::Equality { .. } | Phase::Cleanup { .. } =>
-                        self.equality_phase_step(&mut frame, meter),
-                }
-            )?;
-            if !progressed {
+            if !self.named_read_working_step(&mut frame, meter)? {
                 return Ok(false);
-            }
-            let Frame::Script(stored) = &mut self.active.frames.data[index] else {
-                unreachable!()
-            };
-            if let Some(phase) = Phase::capture(&frame.phase) {
-                phase.publish(&mut stored.phase);
-                match (&frame.table_work, &mut stored.table_work) {
-                    (Some(current), Some(stored)) => current.publish_named_cursor(stored),
-                    _ => stored.table_work = frame.table_work,
-                }
-            } else {
-                *stored = frame;
             }
             // A reactive refresh publishes this canonical caller before pushing
             // its ordinary frame. Stop before that callback or any possible GC.
             if self.active.frames.data.len() != depth {
                 break;
             }
+        }
+        Ok(true)
+    }
+
+    pub(super) fn named_read_working_step(
+        &mut self,
+        frame: &mut ScriptFrame,
+        meter: &mut Meter,
+    ) -> Result<bool, VmError> {
+        let index = self.active.frames.data.len() - 1;
+        let phase = Phase::capture(&frame.phase).expect("eligible named read phase");
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.step(&frame.phase);
+        if !step_cost!(
+            self.step_costs,
+            Script,
+            phase.point(frame),
+            match phase {
+                Phase::Validate | Phase::Scan => self.table_step(frame, meter),
+                Phase::Equality { .. } | Phase::Cleanup { .. } =>
+                    self.equality_phase_step(frame, meter),
+            }
+        )? {
+            return Ok(false);
+        }
+        let Frame::Script(stored) = &mut self.active.frames.data[index] else {
+            unreachable!()
+        };
+        if let Some(phase) = Phase::capture(&frame.phase) {
+            phase.publish(&mut stored.phase);
+            match (&frame.table_work, &mut stored.table_work) {
+                (Some(current), Some(stored)) => current.publish_named_cursor(stored),
+                _ => stored.table_work = frame.table_work,
+            }
+        } else {
+            *stored = *frame;
         }
         Ok(true)
     }

@@ -11,10 +11,10 @@ macro_rules! totals {
     ($($field:ident: $doc:literal;)*) => {
         /// Cumulative wall observations, not CPU running time. Only selected
         /// slices contribute durations and sampled work; calls/entry_failures
-        /// count all entries. Fixed-period sampling can correlate with work.
+        /// count diagnostics-enabled entries. Fixed-period sampling can correlate with work.
         ///
         /// Within the same observations, wall = entry + run + exit and run =
-        /// scalar + script + native + loop. Budget-clock time is a loop child.
+        /// scalar + script + native + loop. Budget-clock time is a run child.
         /// Fetch/cost/execute remain inclusive in the rotating stage sampler.
         /// Observed slices include extra clocks and may reach deadlines sooner.
         /// Calibration is raw empty-clock-pair time, never an automatic correction.
@@ -27,10 +27,12 @@ macro_rules! totals {
             pub heap_id: u32,
             /// Session epoch paired with heap_id for snapshot differences.
             pub epoch: u64,
-            /// All run_slice entries, including invalid task selections.
+            /// Diagnostics-enabled run_slice entries, including invalid task selections.
             pub calls: u64,
             /// Task selections returning an error, including unobserved calls.
             pub entry_failures: u64,
+            /// Exclusive operation buckets from exactly these selected runs.
+            pub lifecycle: super::lifecycle::LifecycleCost,
             $(#[doc = $doc] pub $field: u64,)*
         }
         impl DriverCost {
@@ -44,10 +46,12 @@ macro_rules! totals {
                     heap_id: self.heap_id, epoch: self.epoch,
                     calls: self.calls.checked_sub(before.calls)?,
                     entry_failures: self.entry_failures.checked_sub(before.entry_failures)?,
+                    lifecycle: self.lifecycle.checked_delta(&before.lifecycle)?,
                     $($field: self.$field.checked_sub(before.$field)?,)*
                 })
             }
             fn add_observation(&mut self, row: &Self) {
+                self.lifecycle.add(&row.lifecycle);
                 $(self.$field += row.$field;)*
             }
         }
@@ -64,7 +68,7 @@ totals! {
     native_ns: "Complete outer native dispatch, including fallback classification/frame copy; excludes external hosts.";
     loop_ns: "Run wall time outside the three mutually disjoint outer dispatch spans.";
     budget_clock_queries: "Actual supplied-clock calls in observed slices, not profiling clocks.";
-    budget_clock_ns: "Observed supplied-clock callback wall time, nested in loop_ns, including timing overhead.";
+    budget_clock_ns: "Observed supplied-clock callback wall time, nested in run_ns, including timing overhead; retained blocks can query inside Scalar.";
     observer_clock_queries: "Extra Instant clock reads issued by this observer; excludes stage sampling (StepCost.clock_queries) and supplied clocks.";
     calibration_pairs: "Empty Instant clock pairs measured in observed entries.";
     calibration_ns: "Raw elapsed nanoseconds between those empty clock pairs; already inside entry_ns.";
@@ -112,6 +116,7 @@ pub(super) struct State {
     enabled: Cell<bool>,
     active: Cell<Active>,
     gaps: gaps::State,
+    lifecycle: super::lifecycle::State,
     totals: Cell<DriverCost>,
     #[cfg(test)]
     sampling: Cell<Option<bool>>,
@@ -124,7 +129,16 @@ fn nanos(end: Instant, begin: Instant) -> u64 {
 }
 
 impl State {
+    #[cfg(test)]
     pub(super) fn begin(&self) -> Option<Slice> {
+        self.begin_if(true)
+    }
+    pub(super) fn begin_if(&self, enabled: bool) -> Option<Slice> {
+        self.enabled.set(false);
+        self.lifecycle.reset();
+        if !enabled {
+            return None;
+        }
         let call = self.calls.get();
         self.calls.set(call + 1);
         let sample = call.is_multiple_of(DRIVER_SAMPLE_STRIDE);
@@ -159,6 +173,7 @@ impl State {
             slice.run = Some(began);
             self.gaps.begin(began);
             self.clock();
+            self.lifecycle.begin(began);
         }
     }
     pub(super) fn end_run(&self, slice: &mut Option<Slice>) {
@@ -167,12 +182,25 @@ impl State {
             slice.after_run = Some(ended);
             self.gaps.end(ended);
             self.clock();
+            self.lifecycle.end(ended);
         }
     }
     fn clock(&self) {
         let mut active = self.active.get();
         active.clocks += 1;
         self.active.set(active);
+    }
+    #[inline]
+    pub(super) fn start_part(&self, part: super::Part) -> Option<super::lifecycle::Span> {
+        self.lifecycle.start(part)
+    }
+    #[inline]
+    pub(super) fn finish_part(
+        &self,
+        span: Option<super::lifecycle::Span>,
+        part: Option<super::Part>,
+    ) {
+        self.lifecycle.finish(span, part);
     }
     #[inline]
     pub(super) fn control(&self, control: Control) {
@@ -215,6 +243,7 @@ impl State {
         });
         self.active.set(active);
         self.gaps.start_span(phase, began);
+        self.lifecycle.outer_at(phase, began);
         Span { phase, began }
     }
     #[inline]
@@ -231,6 +260,7 @@ impl State {
         active.spans[span.phase] += nanos(ended, span.began);
         self.active.set(active);
         self.gaps.end_span(ended);
+        self.lifecycle.outer_end(ended);
     }
     pub(super) fn finish(
         &self,
@@ -249,6 +279,7 @@ impl State {
         let after_run = slice.after_run.expect("observed run ended");
         let run_ns = nanos(after_run, run);
         let dispatch = active.spans.iter().sum::<u64>();
+        let lifecycle = self.lifecycle.snapshot();
         // The three outer dispatch spans never overlap. Saturation preserves a
         // detectable hierarchy failure rather than wrapping if a clock regresses.
         let mut row = DriverCost {
@@ -263,7 +294,11 @@ impl State {
             loop_ns: run_ns.saturating_sub(dispatch),
             budget_clock_queries: queries,
             budget_clock_ns: clock_ns,
-            observer_clock_queries: active.clocks + 1 + queries * 2,
+            observer_clock_queries: active.clocks
+                + 1
+                + queries * 2
+                + lifecycle.observer_clock_queries,
+            lifecycle,
             calibration_pairs: 1,
             calibration_ns: active.calibration,
             sampled_instructions: u64::from(usage.instructions),

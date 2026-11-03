@@ -1,11 +1,13 @@
 //! Borrowed register access validates ownership once for one synchronous block.
 use super::*;
+mod body;
+pub(crate) use body::EnvironmentWindow;
 
 /// A current register window. Its mutable pool/heap borrow excludes relocation,
 /// range release, GC and reentrant publication until the executor drops the view.
 pub(crate) struct RegisterWindow<'a> {
     values: &'a mut [Value],
-    bitmap: &'a mut [u64],
+    bitmap: &'a mut [bitmap::Word],
     first_bit: usize,
     heap: &'a mut Heap,
     #[cfg(feature = "execution-counts")]
@@ -20,8 +22,25 @@ impl FrameSlots {
         heap: &'a mut Heap,
         range: RootRangeToken,
     ) -> Result<RegisterWindow<'a>, HeapError> {
-        self.check_heap(heap)?;
-        let window = self.window(range)?;
+        self.registers_in::<false>(heap, range)
+    }
+    pub(crate) fn registers_vm<'a>(
+        &'a mut self,
+        heap: &'a mut Heap,
+        range: RootRangeToken,
+    ) -> Result<RegisterWindow<'a>, HeapError> {
+        if !self.vm_access_active() {
+            return self.registers(heap, range);
+        }
+        self.registers_in::<true>(heap, range)
+    }
+    fn registers_in<'a, const VM: bool>(
+        &'a mut self,
+        heap: &'a mut Heap,
+        range: RootRangeToken,
+    ) -> Result<RegisterWindow<'a>, HeapError> {
+        self.check_heap_in::<VM>(heap)?;
+        let window = self.window_in::<VM>(range)?;
         let start = window.base as usize;
         let end = start + window.len as usize;
         Ok(RegisterWindow {
@@ -40,7 +59,7 @@ impl RegisterWindow<'_> {
         let index = register as usize;
         let value = self.values.get(index).ok_or(HeapError::OutOfBounds)?;
         let bit = self.first_bit + index;
-        if self.bitmap[bit / 64] & (1 << (bit % 64)) == 0 {
+        if !self.bitmap[bit / 64].contains(bit) {
             return Err(HeapError::UninitializedSlot);
         }
         Ok(*value)
@@ -65,6 +84,19 @@ impl RegisterWindow<'_> {
         self.heap.cell_read(value)
     }
 
+    pub(crate) fn heap_read(&self) -> &Heap {
+        self.heap
+    }
+    pub(crate) fn cell_initialize(&mut self, cell: Value, value: Value) -> Result<(), HeapError> {
+        self.heap.cell_initialize(cell, value)
+    }
+    pub(crate) fn cell_write(&mut self, cell: Value, value: Value) -> Result<(), HeapError> {
+        self.heap.cell_write(cell, value)
+    }
+    pub(crate) fn observed_cell_value(&mut self, cell: Value) -> Result<Option<Value>, HeapError> {
+        self.heap.observed_cell_value(cell)
+    }
+
     /// Publish through the ordinary insertion barrier before setting its bitmap.
     pub(crate) fn write(&mut self, register: u32, value: Value) -> Result<(), HeapError> {
         #[cfg(feature = "execution-counts")]
@@ -85,19 +117,55 @@ impl RegisterWindow<'_> {
         Ok(())
     }
 
+    /// Admit once after the original producer's fallible insertion barrier. The
+    /// caller has proved there is no clock/GC boundary inside this lifetime tail.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub(crate) fn write_suffix(
+        &mut self,
+        destination: u32,
+        value: Value,
+        clears: &[u32],
+        dead: bool,
+        admit: impl FnOnce(),
+    ) -> Result<(), HeapError> {
+        if destination as usize >= self.values.len()
+            || clears.iter().any(|&r| r as usize >= self.values.len())
+        {
+            return Err(HeapError::OutOfBounds);
+        }
+        self.heap.root_insertion_barrier(value)?;
+        admit();
+        if !dead {
+            #[cfg(feature = "execution-counts")]
+            self.counts.add(SlotCounter::Writes, 1);
+            self.values[destination as usize] = value;
+            let bit = self.first_bit + destination as usize;
+            self.bitmap[bit / 64].set(bit, true);
+        }
+        #[cfg(feature = "execution-counts")]
+        {
+            self.counts.add(SlotCounter::ClearCalls, 1);
+            self.counts
+                .add(SlotCounter::ClearValues, clears.len() as u64);
+        }
+        for &register in clears {
+            if !dead && register == destination {
+                continue;
+            }
+            self.values[register as usize] = Value::NULL;
+            let bit = self.first_bit + register as usize;
+            self.bitmap[bit / 64].set(bit, false);
+        }
+        Ok(())
+    }
+
     fn put(&mut self, register: u32, value: Value, initialized: bool) -> Result<(), HeapError> {
         let index = register as usize;
         let slot = self.values.get_mut(index).ok_or(HeapError::OutOfBounds)?;
         self.heap.root_insertion_barrier(value)?;
         *slot = value;
         let bit = self.first_bit + index;
-        let word = &mut self.bitmap[bit / 64];
-        let mask = 1 << (bit % 64);
-        if initialized {
-            *word |= mask;
-        } else {
-            *word &= !mask;
-        }
+        self.bitmap[bit / 64].set(bit, initialized);
         Ok(())
     }
 }

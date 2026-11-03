@@ -1,6 +1,180 @@
 //! Class plans remain local to one admission/execute attempt.
 use super::*;
 use crate::snapshot::{SnapshotBudget, SnapshotRegistry, VmSnapshot};
+mod clock;
+
+#[test]
+fn synchronous_class_fields_and_scalar_equality_share_one_body_context() {
+    let run = |legacy: bool, derived: bool, deadline: bool| {
+        let (mut vm, task, cell) = loaded(false, true, 11, derived);
+        vm.legacy_body_context = legacy;
+        let mut clocks = 0;
+        assert!(matches!(
+            vm.run_slice(
+                task,
+                SliceBudget {
+                    instructions: u32::MAX,
+                    work: u64::MAX,
+                    allocation_bytes: u64::MAX,
+                    deadline_ns: deadline.then_some(1),
+                },
+                || {
+                    clocks += 1;
+                    0
+                }
+            )
+            .unwrap(),
+            RunOutcome::Returned(_)
+        ));
+        let outcome = Observation {
+            usage: vm.last_usage,
+            frames: postcard::to_allocvec(&vm.active.frames.data).unwrap(),
+            values: Vec::new(),
+            clocks,
+        };
+        (vm, outcome, cell)
+    };
+    for derived in [false, true] {
+        for deadline in [false, true] {
+            let (mut current, observation, cell) = run(false, derived, deadline);
+            let (mut baseline, old_observation, old_cell) = run(true, derived, deadline);
+            assert_eq!(observation, old_observation);
+            #[cfg(feature = "execution-counts")]
+            {
+                let mut current = current.execution_counts();
+                current.heap_id = 0;
+                let mut baseline = baseline.execution_counts();
+                baseline.heap_id = 0;
+                assert_eq!(current, baseline);
+            }
+            assert_eq!(current.work_probe.body_fields.get(), 2);
+            assert_eq!(current.work_probe.body_equalities.get(), 1);
+            assert_eq!(current.work_probe.scalar_windows.get(), 1);
+            assert_eq!(current.work_probe.body_handoffs.get(), 1);
+            assert_eq!(baseline.work_probe.body_fields.get(), 0);
+            assert_eq!(baseline.work_probe.body_handoffs.get(), 4);
+            println!(
+                "shared-body derived={derived} deadline={deadline} fields=2 equality=1 handoffs=1/4 windows={}/{}",
+                current.work_probe.scalar_windows.get(),
+                baseline.work_probe.scalar_windows.get()
+            );
+            if derived {
+                for (vm, cell) in [(&mut current, cell), (&mut baseline, old_cell)] {
+                    let output = derived_output(vm);
+                    let candidate = vm
+                        .heap
+                        .host_payload(output, crate::heap::DerivedSlot::Candidate as u32)
+                        .unwrap();
+                    let key = vm.heap.key(candidate).unwrap();
+                    let crate::payload::Payload::Dependencies(capture) =
+                        &vm.heap.objects.get(key).unwrap().payload
+                    else {
+                        unreachable!()
+                    };
+                    assert_eq!(capture.values.len, 2);
+                    assert!(capture.values.get(0).unwrap().same_bits(cell));
+                    assert_eq!(capture.values.get(1).unwrap().as_int(), Some(0));
+                    vm.heap.commit_derived(output, Value::int(42)).unwrap();
+                    vm.heap.cell_write(cell, Value::int(43)).unwrap();
+                    assert!(vm.heap.derived_is_queued(output).unwrap());
+                }
+            }
+        }
+    }
+}
+
+fn derived_output(vm: &Vm) -> Value {
+    use slotmap::Key;
+    let key = *vm
+        .heap
+        .allocations
+        .iter()
+        .find(|&&key| {
+            vm.heap
+                .objects
+                .get(key)
+                .is_some_and(|object| object.derived)
+        })
+        .unwrap();
+    Value::object(vm.heap.id(), key.data().as_ffi())
+}
+
+#[test]
+fn zero_instruction_grant_retains_field_pc_and_reloads_on_resume() {
+    let mut observations = Vec::new();
+    for legacy in [false, true] {
+        let (mut vm, task, cell) = loaded(false, true, 0, false);
+        vm.legacy_body_context = legacy;
+        let RunOutcome::BudgetYield(usage) = vm
+            .run_slice(
+                task,
+                SliceBudget {
+                    instructions: 0,
+                    work: u64::MAX,
+                    allocation_bytes: u64::MAX,
+                    deadline_ns: None,
+                },
+                || 0,
+            )
+            .unwrap()
+        else {
+            panic!("the field must remain unconsumed")
+        };
+        assert_eq!(usage.instructions, 0);
+        assert_eq!(usage.work, 0);
+        let Some(Frame::Script(frame)) = vm.active.frames.data.last() else {
+            unreachable!()
+        };
+        assert_eq!(frame.pc, Pc(0));
+        observations.push((usage, postcard::to_allocvec(frame).unwrap()));
+        assert_eq!(vm.work_probe.body_fields.get(), 0);
+        vm.heap.cell_write(cell, Value::int(99)).unwrap();
+        assert_eq!(finish(&mut vm, task), Ok(99));
+    }
+    assert_eq!(observations[0], observations[1]);
+}
+
+#[test]
+fn derived_class_sources_leave_the_window_before_refresh_even_when_dirty() {
+    for dirty in [false, true] {
+        let (mut vm, _, cell) = loaded(false, true, 0, true);
+        let upstream = vm.heap.alloc_derived(Value::NULL).unwrap();
+        vm.heap.begin_derived(upstream).unwrap();
+        vm.heap.commit_derived(upstream, Value::int(42)).unwrap();
+        let reference = vm
+            .heap
+            .alloc_property_ref(
+                crate::PropertyId {
+                    host: upstream,
+                    field: 0,
+                },
+                false,
+            )
+            .unwrap();
+        vm.heap
+            .bind_host_property(
+                crate::PropertyId {
+                    host: cell,
+                    field: 0,
+                },
+                reference,
+            )
+            .unwrap();
+        if dirty {
+            vm.heap.schedule_derived(upstream).unwrap();
+        }
+        let mut meter = Meter::new(SliceBudget::default());
+        assert!(matches!(
+            vm.scalar_step(&mut meter).unwrap(),
+            scalars::ScalarStep::Body(Opcode::MemberGet)
+        ));
+        assert_eq!(meter.usage.instructions, 0);
+        assert_eq!(meter.usage.work, 0);
+        assert_eq!(vm.work_probe.body_fields.get(), 0);
+        assert_eq!(vm.active.frames.data.len(), 1);
+        assert_eq!(vm.heap.derived_is_queued(upstream).unwrap(), dirty);
+    }
+}
 
 fn loaded(reference: bool, encoded: bool, case: u8, derived: bool) -> (Vm, TaskId, Value) {
     let mut p = fixtures::helper_native();
@@ -21,6 +195,14 @@ fn loaded(reference: bool, encoded: bool, case: u8, derived: bool) -> (Vm, TaskI
             Instruction::new(Opcode::MemberGet, 1, 0, 4),
             Instruction::new(Opcode::Move, 2, 1, 0),
             Instruction::new(Opcode::MemberGet, 1, 0, 4),
+            Instruction::new(Opcode::Return, 1, 0, 0),
+        ]
+    } else if case == 11 {
+        vec![
+            Instruction::new(Opcode::MemberGet, 1, 0, 4),
+            Instruction::new(Opcode::Move, 2, 1, 0),
+            Instruction::new(Opcode::MemberGet, 1, 0, 4),
+            Instruction::new(Opcode::Eq, 2, 1, 2),
             Instruction::new(Opcode::Return, 1, 0, 0),
         ]
     } else if case == 10 {

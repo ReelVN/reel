@@ -122,6 +122,8 @@ fn source_type(ty: &Type, conversion: TokenStream) -> TokenStream {
 /// `doc_result` and a parameter's `#[aside(doc_type = ...)]` accept compiler
 /// `TypeHint` expressions for validator-backed types. They refine source metadata;
 /// the Rust conversion and registered runtime contract remain authoritative.
+/// `read_only_leaf` accepts a trusted `ReadOnlyLeaf` expression. It shares the
+/// ordinary signature and supplies an allocation-free scalar implementation.
 #[proc_macro_attribute]
 pub fn native(
     meta: proc_macro::TokenStream,
@@ -159,7 +161,14 @@ fn native_impl(
 ) -> Result<(TokenStream, TokenStream), ParseError> {
     let opts = options(
         meta,
-        &["symbol", "abi", "effects", "capabilities", "doc_result"],
+        &[
+            "symbol",
+            "abi",
+            "effects",
+            "capabilities",
+            "doc_result",
+            "read_only_leaf",
+        ],
     )?;
     let mut function: ItemFn = moxy::parse!(item)?;
     if function.sig.asyncness.is_some()
@@ -199,6 +208,13 @@ fn native_impl(
         .map(expression)
         .transpose()?
         .unwrap_or_else(|| moxy::template! { [] as [&str; 0] });
+    let read_only_leaf = find(&opts, "read_only_leaf")
+        .map(expression)
+        .transpose()?
+        .map_or_else(
+            || moxy::template! { None },
+            |leaf| moxy::template! { Some({{ leaf }}) },
+        );
     let mut host = moxy::template! { () };
     let mut context_seen = false;
     let mut params = Vec::new();
@@ -364,6 +380,8 @@ fn native_impl(
                 ::aside_host::NativeBinding {
                     contract: ::aside_host::NativeContract {
                         symbol: SYMBOL.into(), abi_version: {{ abi }},
+                        standard_derived_commit: false,
+                        read_only_leaf: {{ read_only_leaf }},
                         parameters: vec![ @for p in &params { {{ p }}, } ],
                         rest: {{ rest }},
                         result: <{{ result }} as ::aside_host::IntoValue>::TYPE,

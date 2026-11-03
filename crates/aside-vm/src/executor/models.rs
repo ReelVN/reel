@@ -284,7 +284,7 @@ impl Vm {
         let native = self.ticket(ticket)?;
         let result = (|| -> Result<(u32, bool), HeapError> {
             if matches!(ticket.input, NativeInput::Entry) {
-                let defaults = self.slots.read(at(native.bound, 0))?;
+                let defaults = self.slots.read_vm(at(native.bound, 0))?;
                 self.active.model_copy = Some(ModelCopy::new(&mut self.heap, native.id, defaults)?);
             }
             let copy = self

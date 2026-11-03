@@ -1,6 +1,8 @@
 //! Compare bounded borrowed execution with checked one-instruction execution.
 use super::*;
 use crate::snapshot::{SnapshotBudget, SnapshotRegistry, VmSnapshot};
+#[path = "suffix_cost.rs"]
+mod suffix_cost;
 
 fn op(opcode: Opcode, a: u32, b: u32, c: u32) -> Instruction {
     Instruction::new(opcode, a, b, c)
@@ -49,6 +51,65 @@ fn package(case: u8) -> BytecodePackage {
                 op(Opcode::Clear, 0, 0, 0),
                 op(Opcode::Return, 1, 0, 0),
             ]
+        }
+        6 => {
+            let mut code = vec![
+                op(Opcode::LoadConst, 0, 2, 0),
+                op(Opcode::LoadConst, 1, 0, 0),
+            ];
+            for _ in 0..48 {
+                code.extend([
+                    op(Opcode::Add, 2, 0, 1),
+                    op(Opcode::Clear2, 0, 1, 0),
+                    op(Opcode::Move, 0, 2, 0),
+                    op(Opcode::Clear, 2, 0, 0),
+                    op(Opcode::LoadConst, 1, 0, 0),
+                ]);
+            }
+            code.push(op(Opcode::Return, 0, 0, 0));
+            code
+        }
+        7 => vec![
+            op(Opcode::LoadConst, 2, 2, 0),
+            op(Opcode::Move, 0, 2, 0),
+            op(Opcode::Clear, 2, 0, 0),
+            op(Opcode::Return, 0, 0, 0),
+        ],
+        8 => vec![
+            op(Opcode::LoadConst, 0, 2, 0),
+            op(Opcode::LoadConst, 1, 0, 0),
+            op(Opcode::Add, 2, 0, 1),
+            op(Opcode::Clear3, 2, 0, 1),
+            op(Opcode::LoadConst, 0, 2, 0),
+            op(Opcode::Return, 0, 0, 0),
+        ],
+        9 => vec![
+            op(Opcode::LoadConst, 0, 2, 0),
+            op(Opcode::LoadConst, 1, 0, 0),
+            op(Opcode::Div, 2, 0, 1),
+            op(Opcode::Clear2, 0, 1, 0),
+            op(Opcode::Move, 0, 2, 0),
+            op(Opcode::Clear, 2, 0, 0),
+            op(Opcode::Return, 0, 0, 0),
+        ],
+        10 => {
+            let mut code = vec![
+                op(Opcode::LoadConst, 0, 2, 0),
+                op(Opcode::LoadConst, 1, 0, 0),
+            ];
+            let words = CompactCode::from_ordinal(&code).unwrap().0.end_pc();
+            code.resize(
+                code.len() + crate::bytecode::PAGE_WORDS - 3 - words,
+                op(Opcode::Clear, 5, 0, 0),
+            );
+            code.extend([
+                op(Opcode::Add, 2, 0, 1),
+                op(Opcode::Clear2, 0, 1, 0),
+                op(Opcode::Move, 0, 2, 0),
+                op(Opcode::Clear, 2, 0, 0),
+                op(Opcode::Return, 0, 0, 0),
+            ]);
+            code
         }
         _ => vec![
             op(Opcode::LoadConst, 0, 2, 0),
@@ -196,7 +257,7 @@ fn trace(
                     kind,
                     match case {
                         2 => FaultKind::Uninitialized,
-                        3 => FaultKind::DivisionByZero,
+                        3 | 9 => FaultKind::DivisionByZero,
                         4 => FaultKind::Type,
                         _ => panic!("unexpected fault {kind:?}"),
                     }
@@ -212,7 +273,7 @@ fn trace(
 #[test]
 fn borrowed_blocks_preserve_each_budget_clock_and_fault_boundary() {
     for encoded in [false, true] {
-        for case in 0..6 {
+        for case in 0..10 {
             for work in [1, 3, 7, 31, 32, 64, 4096] {
                 for instructions in [1, 7, 64] {
                     for deadline in [false, true] {
@@ -224,6 +285,18 @@ fn borrowed_blocks_preserve_each_budget_clock_and_fault_boundary() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn lifetime_suffix_preserves_code_page_admission_and_resume() {
+    for encoded in [false, true] {
+        for deadline in [false, true] {
+            assert_eq!(
+                trace(10, encoded, false, 512, 128, deadline),
+                trace(10, encoded, true, 512, 128, deadline)
+            );
         }
     }
 }

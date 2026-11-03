@@ -180,6 +180,11 @@ macro_rules! fields {
                 let cell = &self.opcodes[instruction_spec_index(op)];
                 cell.set(cell.get() + 1);
             }
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            pub(crate) fn admitted_count(&self, op: Opcode, count: u64) {
+                let cell = &self.opcodes[instruction_spec_index(op)];
+                cell.set(cell.get() + count);
+            }
             pub(in crate::executor) fn step(&self, phase: &ScriptPhase) {
                 let index = match phase {
                     ScriptPhase::Copy { .. } => 0,

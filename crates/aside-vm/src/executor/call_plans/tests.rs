@@ -250,8 +250,11 @@ fn only_valid_non_initializer_calls_prepare_and_quotas_precede_receiver_errors()
     assert!(matches!(plan, InstructionPlan::Callee(_)));
     vm.init_symbol = Some(vm.program.package().functions[1].name);
     assert!(
-        vm.prepare_callee(vm.value(frame.regs, 0).unwrap(), FunctionId(1))
-            .is_none()
+        vm.prepare_callee(
+            vm.value(frame.regs, 0).unwrap(),
+            vm.read_callee(vm.value(frame.regs, 0).unwrap()).unwrap(),
+        )
+        .is_none()
     );
     // Failed speculative decoding does not replace the original admission error.
     vm.limits.max_frames = 1;
@@ -399,4 +402,132 @@ fn cancellation_before_retry_releases_the_call_without_entering_its_callee() {
             assert_eq!(vm.native_entries, entries);
         }
     }
+}
+
+// The original accessor sequence remains independent of ObjectRead decoding.
+fn original_function(vm: &Vm, mut closure: Value) -> Result<FunctionId, VmError> {
+    if vm.heap.info(closure)?.kind == ObjectKind::BoundScript {
+        let receiver = vm.heap.get_field(closure, 1)?;
+        if !receiver.same_bits(Value::NULL) {
+            let slot = match vm
+                .heap
+                .info(receiver)
+                .map_err(|_| HeapError::ConstructionFailed)?
+                .kind
+            {
+                ObjectKind::Class => crate::class::ClassSlot::State as u32,
+                ObjectKind::Instance => InstanceSlot::State as u32,
+                _ => return Err(HeapError::ConstructionFailed.into()),
+            };
+            if vm
+                .heap
+                .get_field(receiver, slot)
+                .map_err(|_| HeapError::ConstructionFailed)?
+                .as_int()
+                == Some(State::Failed as i64)
+            {
+                return Err(HeapError::ConstructionFailed.into());
+            }
+        }
+        closure = vm.heap.get_field(closure, 0)?;
+    }
+    let info = vm.heap.info(closure)?;
+    if info.kind == ObjectKind::Host {
+        return Ok(vm.heap.host_call(closure)?);
+    }
+    let bound = info.kind == ObjectKind::BoundNative;
+    if info.kind != ObjectKind::Closure && !bound {
+        return Err(VmError::Contract("callee is not a closure"));
+    }
+    let fi = vm
+        .heap
+        .get_field(closure, 0)?
+        .as_int()
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or(VmError::Contract("invalid closure code"))?;
+    let version = vm
+        .heap
+        .get_field(closure, 1)?
+        .as_int()
+        .ok_or(VmError::Contract("invalid closure version"))? as u64;
+    let f = vm
+        .program
+        .package()
+        .functions
+        .get(fi as usize)
+        .ok_or(VmError::Contract("foreign closure code"))?;
+    if version != vm.program.package().content_version
+        || vm.heap.get_field(closure, 2)?.as_int() != Some(f.module.0 as i64)
+        || info.len != f.captures.len() as u32 + 3 + u32::from(bound)
+        || (bound && !matches!(f.kind, FunctionKind::Native(_)))
+    {
+        return Err(VmError::Contract("foreign closure environment/version"));
+    }
+    Ok(FunctionId(fi))
+}
+
+#[test]
+fn borrowed_callee_decode_matches_original_errors_and_receiver_values() {
+    fn compare(vm: &Vm, value: Value) {
+        assert_eq!(
+            format!("{:?}", vm.closure_function(value)),
+            format!("{:?}", original_function(vm, value))
+        );
+        if let Ok(read) = vm.read_callee(value) {
+            let function = read.function;
+            let expected = if matches!(
+                vm.program.package().functions[function.index()].kind,
+                FunctionKind::Native(_)
+            ) {
+                match vm.heap.info(value).unwrap().kind {
+                    ObjectKind::BoundNative => Some(vm.heap.get_field(value, 3).unwrap()),
+                    ObjectKind::Host => {
+                        vm.heap.host_call(value).unwrap();
+                        Some(value)
+                    }
+                    _ => None,
+                }
+            } else if vm.heap.info(value).unwrap().kind == ObjectKind::BoundScript {
+                let receiver = vm.heap.get_field(value, 1).unwrap();
+                (!receiver.same_bits(Value::NULL)).then_some(receiver)
+            } else {
+                None
+            };
+            let actual = vm.prepare_callee(value, read).unwrap().receiver;
+            assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+        }
+    }
+    for case in 0..=8 {
+        let (vm, _, _) = loaded(case, true, false);
+        let Frame::Script(frame) = vm.active.frames.data.last().unwrap() else {
+            unreachable!()
+        };
+        compare(&vm, vm.value(frame.regs, 0).unwrap());
+    }
+    let (mut vm, _, _) = loaded(0, false, false);
+    for kind in [ObjectKind::Closure, ObjectKind::BoundNative] {
+        for fields in [
+            vec![],
+            vec![Value::NULL],
+            vec![Value::int(-1), Value::int(1)],
+            vec![Value::int(1), Value::NULL],
+            vec![Value::int(99), Value::int(1)],
+            vec![Value::int(1), Value::int(2)],
+            vec![Value::int(1), Value::int(1), Value::int(8)],
+            vec![Value::int(1), Value::int(1), Value::int(0)],
+            vec![Value::int(2), Value::int(1), Value::int(0), Value::NULL],
+        ] {
+            let value = vm.heap.alloc_record(kind, &fields).unwrap();
+            compare(&vm, value);
+        }
+    }
+    let wrapper = vm
+        .heap
+        .alloc_record(ObjectKind::BoundScript, &[Value::NULL, Value::NULL])
+        .unwrap();
+    assert!(vm.script_closure(wrapper).unwrap().same_bits(Value::NULL));
+    compare(&vm, wrapper);
+    let (_, bits) = wrapper.object_parts().unwrap();
+    compare(&vm, Value::object(vm.heap.id(), bits ^ (1 << 32)));
+    compare(&vm, Value::object(crate::HeapId(0), bits));
 }

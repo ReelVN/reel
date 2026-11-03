@@ -12,6 +12,7 @@ pub enum Mode {
     Batch,
     Sliced,
     IncrementalGc,
+    Deadline,
 }
 
 impl Mode {
@@ -34,6 +35,11 @@ impl Mode {
                 work: 4096,
                 allocation_bytes: 64 << 10,
                 deadline_ns: None,
+            },
+            Self::Deadline => SliceBudget {
+                // Renew the player's 2 ms monotonic deadline before each slice.
+                deadline_ns: Some(0),
+                ..SliceBudget::default()
             },
         }
     }
@@ -62,12 +68,14 @@ pub struct Row {
     pub charged_before: u64,
     pub charged_after: u64,
     pub peak_charged: u64,
+    pub clock_queries: u64,
 }
 
 #[derive(Default)]
 struct Progress {
     slices: u64,
     gc_ns: u128,
+    clock_queries: u64,
 }
 
 impl Fixture {
@@ -156,6 +164,8 @@ impl Fixture {
             f.regions.clear();
             f.source_map.clear();
             support.natives.push(bc::NativeSupport {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol,
                 abi_version: 1,
                 signature,
@@ -244,13 +254,25 @@ impl Fixture {
             charged_before: before.heap.charged_bytes,
             charged_after: after.heap.charged_bytes,
             peak_charged: after.heap.peak_charged_bytes,
+            clock_queries: progress.clock_queries,
         }
     }
 
     fn finish(vm: &mut Vm, task: TaskId, mode: Mode, progress: &mut Progress) -> Value {
         let mut budget = mode.budget();
+        let clock = (mode == Mode::Deadline).then(Instant::now);
         loop {
-            let outcome = vm.run_slice(task, budget, || 0).unwrap();
+            let outcome = if mode == Mode::Deadline {
+                let elapsed = || u64::try_from(clock.unwrap().elapsed().as_nanos()).unwrap();
+                budget.deadline_ns = Some(elapsed().saturating_add(2_000_000));
+                vm.run_slice(task, budget, || {
+                    progress.clock_queries += 1;
+                    elapsed()
+                })
+                .unwrap()
+            } else {
+                vm.run_slice(task, budget, || 0).unwrap()
+            };
             progress.slices += 1;
             if mode == Mode::IncrementalGc
                 && (progress.slices == 1 || progress.slices.is_multiple_of(8))

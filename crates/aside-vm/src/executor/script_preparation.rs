@@ -1,6 +1,7 @@
 //! Preparation uses a transient view; canonical frame fields and serialized
 //! phase/cursors remain in the task stack throughout every step.
 use super::*;
+mod scalar_entry;
 #[cfg(test)]
 mod tests;
 
@@ -69,7 +70,7 @@ impl PreparationPhase {
     }
 }
 
-struct PreparationFrame {
+pub(super) struct PreparationFrame {
     function: FunctionId,
     regs: RootRangeToken,
     env: RootRangeToken,
@@ -82,7 +83,7 @@ struct PreparationFrame {
     phase: PreparationPhase,
 }
 impl PreparationFrame {
-    fn capture(s: &ScriptFrame) -> Self {
+    pub(super) fn capture(s: &ScriptFrame) -> Self {
         let phase = match &s.phase {
             ScriptPhase::Copy { source, index } => PreparationPhase::Copy {
                 source: *source,
@@ -115,11 +116,51 @@ impl PreparationFrame {
 }
 
 impl Vm {
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub(super) fn preparation_step(&mut self, m: &mut Meter) -> Result<bool, VmError> {
+        part_cost!(
+            self.step_costs,
+            ScriptPrepare,
+            self.preparation_step_inner(m)
+        )
+    }
+    fn preparation_step_inner(&mut self, m: &mut Meter) -> Result<bool, VmError> {
         let Some(Frame::Script(frame)) = self.active.frames.data.last() else {
             unreachable!("preparation has an active script frame")
         };
         let mut s = PreparationFrame::capture(frame);
+        self.preparation_context_step(&mut s, m)
+    }
+
+    pub(super) fn preparation_working_step(
+        &mut self,
+        working: &mut ScriptFrame,
+        preparation: &mut Option<PreparationFrame>,
+        m: &mut Meter,
+    ) -> Result<bool, VmError> {
+        let s = preparation.get_or_insert_with(|| PreparationFrame::capture(working));
+        let result = part_cost!(
+            self.step_costs,
+            ScriptPrepare,
+            self.preparation_context_step(s, m)
+        );
+        // Fault publication belongs to the original helper and returns to the
+        // driver before this retained preparation view can be used again.
+        if !self.has_unbuilt_script_fault() {
+            working.phase = s.phase.canonical();
+        }
+        result
+    }
+
+    fn preparation_context_step(
+        &mut self,
+        s: &mut PreparationFrame,
+        m: &mut Meter,
+    ) -> Result<bool, VmError> {
+        if self.scalar_entry_step(s, m) {
+            self.publish_preparation_phase(s.phase);
+            return Ok(true);
+        }
         let signature = self.program.package().functions[s.function.index()].signature;
         match s.phase {
             PreparationPhase::Copy { source, index } => {
@@ -196,7 +237,7 @@ impl Vm {
             }
             PreparationPhase::Defaults { parameter } => {
                 let sig = &self.program.package().signatures[signature.index()];
-                let bound = self.slots.read(at(s.bound, parameter)).is_ok();
+                let bound = self.slots.read_vm(at(s.bound, parameter)).is_ok();
                 let allocation = sig
                     .parameters
                     .get(parameter as usize)

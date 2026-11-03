@@ -17,6 +17,8 @@ mod verify;
 
 pub use crate::{HostMethodSupport, HostTypeSupport};
 pub(crate) use code_residency::CodeWindow;
+#[cfg(test)]
+pub(crate) use code_residency::PAGE_WORDS;
 pub use code_residency::{CodeCacheStats, CodeStore};
 pub use codec::{decode, encode};
 pub use compact::{CompactCode, CompactIter, InstructionSequence};
@@ -25,6 +27,7 @@ pub use model::*;
 pub use source_map::{CompactSourceMap, SourceMapIter, SourceMapSequence};
 pub use spec::*;
 pub use text_pool::{TextPool, externalize_text};
+pub(crate) use verify::ValueEntry;
 pub use verify::{
     CleanupDestination, EditableCloneCost, GlobalBinding, HandlerKind, HandlerTarget, PackageStats,
     VerifiablePackage, VerifiedProgram, disassemble, verify,

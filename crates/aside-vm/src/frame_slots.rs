@@ -1,7 +1,7 @@
 //! Continuous root windows. All publishing writes are sealed behind Heap's barrier.
 #[cfg(feature = "execution-counts")]
 pub(crate) mod counts;
-use crate::root_ranges::{ChargedVec, Reservation};
+use crate::root_ranges::{ChargedVec, Reservation, RootProviderState};
 use crate::slots::{RangeKey, index};
 use crate::{
     Heap, HeapBudgetUsage, HeapError, HeapId, RootKind, RootOwner, RootRangeToken, RootToken,
@@ -11,9 +11,12 @@ use crate::{
 pub use counts::SlotCounts;
 #[cfg(feature = "execution-counts")]
 use counts::{SlotCounter, SlotState};
+mod bitmap;
 mod growth;
 mod registers;
-pub(crate) use registers::RegisterWindow;
+mod scalar_entry;
+mod vm_access;
+pub(crate) use registers::{EnvironmentWindow, RegisterWindow};
 
 #[derive(Clone, Copy, Debug)]
 pub struct FrameSlotsLimits {
@@ -100,7 +103,7 @@ pub struct RangeReleaseProgress {
 /// ```
 pub struct FrameSlots {
     values: Option<ChargedVec<Value>>,
-    bitmap: Option<ChargedVec<u64>>,
+    bitmap: Option<ChargedVec<bitmap::Word>>,
     mappings: Option<ChargedVec<Option<Window>>>,
     free: Option<ChargedVec<Span>>,
     usage: HeapBudgetUsage,
@@ -116,6 +119,10 @@ pub struct FrameSlots {
     execution_counts: SlotState,
     #[cfg(test)]
     pub(crate) paired_reads: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub(crate) checked_vm_access: bool,
+    #[cfg(test)]
+    pub(crate) vm_access_stats: vm_access::AccessStats,
     // Keep the bounded inline control metadata charged until this owner drops.
     control_charge: Reservation,
 }
@@ -156,7 +163,7 @@ impl FrameSlots {
             return Err(HeapError::InvalidLimits);
         }
         if heap.usage.0.attachment.get().is_some() {
-            if heap.usage.0.provider_alive.get() {
+            if heap.usage.0.provider_state.get().is_alive() {
                 return Err(HeapError::RootProviderAttached);
             }
             if heap.ranges.occupied() != 0 {
@@ -174,9 +181,10 @@ impl FrameSlots {
             .data
             .resize(limits.initial_capacity as usize, Value::NULL);
         let mut bitmap = ChargedVec::new(&usage, (limits.initial_capacity as usize).div_ceil(64))?;
-        bitmap
-            .data
-            .resize((limits.initial_capacity as usize).div_ceil(64), 0);
+        bitmap.data.resize(
+            (limits.initial_capacity as usize).div_ceil(64),
+            bitmap::Word::default(),
+        );
         let slots = heap.range_index.len();
         let mut mappings = ChargedVec::new(&usage, slots)?;
         mappings.data.resize(slots, None);
@@ -190,7 +198,7 @@ impl FrameSlots {
         // Nothing above published a descriptor or attachment; errors own/drop their buffers.
         heap.next_attachment = attachment;
         usage.0.attachment.set(Some(attachment));
-        usage.0.provider_alive.set(true);
+        usage.0.provider_state.set(RootProviderState::Attached);
         Ok(Self {
             values: Some(values),
             bitmap: Some(bitmap),
@@ -209,17 +217,25 @@ impl FrameSlots {
             execution_counts: SlotState::default(),
             #[cfg(test)]
             paired_reads: true,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            checked_vm_access: vm_access::checked_oracle(),
+            #[cfg(test)]
+            vm_access_stats: vm_access::AccessStats::default(),
             control_charge,
         })
     }
     fn attached(&self) -> Result<(), HeapError> {
+        #[cfg(test)]
+        self.vm_access_stats
+            .provider_checks
+            .set(self.vm_access_stats.provider_checks.get() + 1);
         if !self.usage.0.heap_alive.get() {
             return Err(HeapError::HeapUnavailable);
         }
         if self.closed || self.usage.0.attachment.get() != Some(self.attachment) {
             return Err(HeapError::WrongRootProvider);
         }
-        if !self.usage.0.provider_alive.get() {
+        if !self.usage.0.provider_state.get().is_alive() {
             return Err(HeapError::MissingRootProvider);
         }
         Ok(())
@@ -241,6 +257,9 @@ impl FrameSlots {
             return Err(HeapError::WrongEpoch);
         }
         self.attached()?;
+        self.window_mapping(token)
+    }
+    fn window_mapping(&self, token: RootRangeToken) -> Result<Window, HeapError> {
         self.mappings
             .as_ref()
             .unwrap()
@@ -259,16 +278,10 @@ impl FrameSlots {
         Ok((w.base + at.index) as usize)
     }
     fn initialized(&self, i: usize) -> bool {
-        self.bitmap.as_ref().unwrap().data[i / 64] & (1 << (i % 64)) != 0
+        self.bitmap.as_ref().unwrap().data[i / 64].contains(i)
     }
     fn set_initialized(&mut self, i: usize, set: bool) {
-        let word = &mut self.bitmap.as_mut().unwrap().data[i / 64];
-        let bit = 1 << (i % 64);
-        if set {
-            *word |= bit;
-        } else {
-            *word &= !bit;
-        }
+        self.bitmap.as_mut().unwrap().data[i / 64].set(i, set);
     }
     fn clear_initialized(&mut self, start: usize, len: usize) {
         if len == 0 {
@@ -277,15 +290,13 @@ impl FrameSlots {
         let end = start + len - 1;
         let first = start / 64;
         let last = end / 64;
-        let from = u64::MAX << (start % 64);
-        let through = u64::MAX >> (63 - end % 64);
         let words = &mut self.bitmap.as_mut().unwrap().data;
         if first == last {
-            words[first] &= !(from & through);
+            words[first].clear(start % 64, end % 64);
         } else {
-            words[first] &= !from;
-            words[first + 1..last].fill(0);
-            words[last] &= !through;
+            words[first].clear(start % 64, 63);
+            words[first + 1..last].fill(bitmap::Word::default());
+            words[last].clear(0, end % 64);
         }
     }
     fn put(&mut self, i: usize, value: Value, initialized: bool) {
@@ -312,7 +323,7 @@ impl FrameSlots {
         kind: RootKind,
         len: u32,
     ) -> Result<RootRangeToken, HeapError> {
-        self.open_with_limit(heap, owner, kind, len, self.limits.max_window_len)
+        self.open_with_limit::<false>(heap, owner, kind, len, self.limits.max_window_len)
     }
     /// Loaded module roots are bounded by pool residency, not a single execution
     /// operation. Opening them happens during explicit package admission.
@@ -322,7 +333,7 @@ impl FrameSlots {
         owner: RootOwner,
         len: u32,
     ) -> Result<RootRangeToken, HeapError> {
-        self.open_with_limit(
+        self.open_with_limit::<false>(
             heap,
             owner,
             RootKind::ModuleSet,
@@ -330,7 +341,7 @@ impl FrameSlots {
             self.limits.max_capacity,
         )
     }
-    fn open_with_limit(
+    fn open_with_limit<const VM: bool>(
         &mut self,
         heap: &mut Heap,
         owner: RootOwner,
@@ -338,7 +349,7 @@ impl FrameSlots {
         len: u32,
         limit: u32,
     ) -> Result<RootRangeToken, HeapError> {
-        self.check_heap(heap)?;
+        self.check_heap_in::<VM>(heap)?;
         if len > limit {
             return Err(HeapError::OperationLimit {
                 requested: len as u64,
@@ -509,9 +520,12 @@ impl FrameSlots {
         Ok(())
     }
     pub fn read(&self, at: RangePosition) -> Result<Value, HeapError> {
+        self.read_in::<false>(at)
+    }
+    fn read_in<const VM: bool>(&self, at: RangePosition) -> Result<Value, HeapError> {
         #[cfg(feature = "execution-counts")]
         self.execution_counts.add(SlotCounter::Reads, 1);
-        let i = self.position(at)?;
+        let i = self.position_in::<VM>(at)?;
         if !self.initialized(i) {
             return Err(HeapError::UninitializedSlot);
         }
@@ -524,22 +538,30 @@ impl FrameSlots {
         first: u32,
         second: u32,
     ) -> Result<(Value, Value), HeapError> {
+        self.read_pair_in::<false>(range, first, second)
+    }
+    fn read_pair_in<const VM: bool>(
+        &self,
+        range: RootRangeToken,
+        first: u32,
+        second: u32,
+    ) -> Result<(Value, Value), HeapError> {
         #[cfg(feature = "execution-counts")]
         self.execution_counts.add(SlotCounter::PairReads, 1);
         #[cfg(test)]
         if !self.paired_reads {
             return Ok((
-                self.read(RangePosition {
+                self.read_in::<VM>(RangePosition {
                     range,
                     index: first,
                 })?,
-                self.read(RangePosition {
+                self.read_in::<VM>(RangePosition {
                     range,
                     index: second,
                 })?,
             ));
         }
-        let w = self.window(range)?;
+        let w = self.window_in::<VM>(range)?;
         let read = |index: u32| {
             if index >= w.len {
                 return Err(HeapError::OutOfBounds);
@@ -597,22 +619,37 @@ impl FrameSlots {
         at: RangePosition,
         value: Value,
     ) -> Result<(), HeapError> {
+        self.write_in::<false>(heap, at, value)
+    }
+    fn write_in<const VM: bool>(
+        &mut self,
+        heap: &mut Heap,
+        at: RangePosition,
+        value: Value,
+    ) -> Result<(), HeapError> {
         #[cfg(feature = "execution-counts")]
         self.execution_counts.add(SlotCounter::Writes, 1);
-        self.check_heap(heap)?;
-        let i = self.position(at)?;
+        self.check_heap_in::<VM>(heap)?;
+        let i = self.position_in::<VM>(at)?;
         heap.root_insertion_barrier(value)?;
         self.put(i, value, true);
         Ok(())
     }
     pub fn clear(&mut self, heap: &mut Heap, at: RangePosition) -> Result<(), HeapError> {
+        self.clear_in::<false>(heap, at)
+    }
+    fn clear_in<const VM: bool>(
+        &mut self,
+        heap: &mut Heap,
+        at: RangePosition,
+    ) -> Result<(), HeapError> {
         #[cfg(feature = "execution-counts")]
         {
             self.execution_counts.add(SlotCounter::ClearCalls, 1);
             self.execution_counts.add(SlotCounter::ClearValues, 1);
         }
-        self.check_heap(heap)?;
-        let i = self.position(at)?;
+        self.check_heap_in::<VM>(heap)?;
+        let i = self.position_in::<VM>(at)?;
         heap.root_insertion_barrier(Value::NULL)?;
         self.put(i, Value::NULL, false);
         Ok(())
@@ -625,14 +662,22 @@ impl FrameSlots {
         range: RootRangeToken,
         registers: [u32; N],
     ) -> Result<(), HeapError> {
+        self.clear_registers_in::<false, N>(heap, range, registers)
+    }
+    fn clear_registers_in<const VM: bool, const N: usize>(
+        &mut self,
+        heap: &mut Heap,
+        range: RootRangeToken,
+        registers: [u32; N],
+    ) -> Result<(), HeapError> {
         #[cfg(feature = "execution-counts")]
         {
             self.execution_counts.add(SlotCounter::ClearCalls, 1);
             self.execution_counts
                 .add(SlotCounter::ClearValues, N as u64);
         }
-        self.check_heap(heap)?;
-        let window = self.window(range)?;
+        self.check_heap_in::<VM>(heap)?;
+        let window = self.window_in::<VM>(range)?;
         for register in registers {
             if register >= window.len {
                 return Err(HeapError::OutOfBounds);
@@ -858,7 +903,9 @@ impl FrameSlots {
         let mut new_values = ChargedVec::new(&self.usage, capacity as usize)?;
         new_values.data.resize(capacity as usize, Value::NULL);
         let mut new_bitmap = ChargedVec::new(&self.usage, (capacity as usize).div_ceil(64))?;
-        new_bitmap.data.resize((capacity as usize).div_ceil(64), 0);
+        new_bitmap
+            .data
+            .resize((capacity as usize).div_ceil(64), bitmap::Word::default());
         let mut next = 0;
         for w in self.mappings.as_ref().unwrap().data.iter().flatten() {
             for n in 0..w.len {
@@ -868,7 +915,7 @@ impl FrameSlots {
                 heap.root_insertion_barrier(value)?;
                 new_values.data[to] = value;
                 if self.initialized(old) {
-                    new_bitmap.data[to / 64] |= 1 << (to % 64);
+                    new_bitmap.data[to / 64].set(to, true);
                 }
             }
             next += growth
@@ -936,7 +983,7 @@ impl FrameSlots {
         drop(self.bitmap.take());
         drop(self.mappings.take());
         drop(self.free.take());
-        self.usage.0.provider_alive.set(false);
+        self.usage.0.provider_state.set(RootProviderState::Detached);
         self.usage.0.attachment.set(None);
         Ok(())
     }
@@ -962,7 +1009,7 @@ impl Drop for FrameSlots {
     fn drop(&mut self) {
         if !self.closed && self.usage.0.attachment.get() == Some(self.attachment) {
             // The heap keeps descriptors; any subsequent collection fails explicitly.
-            self.usage.0.provider_alive.set(false);
+            self.usage.0.provider_state.set(RootProviderState::Detached);
         }
         // ChargedVec fields deallocate then refund, before inline control_charge drops.
     }

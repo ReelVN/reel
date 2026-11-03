@@ -1,5 +1,6 @@
 //! Script frame admission and task allocation.
 use super::*;
+mod body;
 
 impl Vm {
     // A Script-to-Script publication copies the payload directly instead of
@@ -40,7 +41,29 @@ impl Vm {
     // Some(None) proves there is no receiver; None resolves at the original
     // point. Resolve failures use the ordinary wrapper, retaining quota order.
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub(super) fn push_script_with_receiver(
+        &mut self,
+        function: FunctionId,
+        closure: Option<Value>,
+        source: ArgSource,
+        count: u32,
+        owner: RootOwner,
+        context: ContextFlags,
+        effects: Effects,
+        ret: ReturnTo,
+        receiver: Option<Option<Value>>,
+    ) -> Result<(), VmError> {
+        part_cost!(
+            self.step_costs,
+            CallPushScript,
+            self.push_script_with_receiver_inner(
+                function, closure, source, count, owner, context, effects, ret, receiver
+            )
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn push_script_with_receiver_inner(
         &mut self,
         function: FunctionId,
         closure: Option<Value>,
@@ -181,6 +204,8 @@ impl Vm {
             generator: false,
         };
         self.active.frames.data.push(Frame::Script(s));
+        #[cfg(feature = "profiling")]
+        self.step_costs.script_entry(function, false);
         execution_count!(self, ScriptEntries, 1);
         execution_count!(self, ScriptRegisters, u64::from(registers));
         execution_count!(self, ScriptParameters, u64::from(n));

@@ -26,23 +26,18 @@ impl Encoding {
 
 #[derive(Debug, Clone)]
 pub(crate) struct LineIndex {
-    starts: Arc<[usize]>,
+    index: Arc<aside_compiler::LineIndex>,
 }
 impl LineIndex {
     pub fn new(source: &str) -> Self {
         Self {
-            starts: std::iter::once(0)
-                .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-                .collect(),
+            index: Arc::new(aside_compiler::LineIndex::new(source)),
         }
     }
     pub fn offset(&self, source: &str, position: Position, encoding: Encoding) -> Option<usize> {
-        let start = *self.starts.get(position.line as usize)?;
-        let end = self
-            .starts
-            .get(position.line as usize + 1)
-            .copied()
-            .unwrap_or(source.len());
+        let range = self.index.line(position.line)?;
+        let start = u32::from(range.start()) as usize;
+        let end = u32::from(range.end()) as usize;
         let line = source[start..end].trim_end_matches(['\r', '\n']);
         let column = position.character as usize;
         match encoding {
@@ -51,17 +46,22 @@ impl LineIndex {
                 line.is_char_boundary(column).then_some(start + column)
             }
             Encoding::Utf16 => {
-                let mut units = 0;
-                for (offset, ch) in line.char_indices() {
-                    if units == column {
-                        return Some(start + offset);
-                    }
-                    units += ch.len_utf16();
-                    if units > column {
-                        return None;
-                    }
-                }
-                Some(start + line.len())
+                let end = self.index.to_wide(
+                    aside_compiler::WideEncoding::Utf16,
+                    aside_compiler::LineCol {
+                        line: position.line,
+                        col: line.len() as u32,
+                    },
+                )?;
+                let native = self.index.to_utf8(
+                    aside_compiler::WideEncoding::Utf16,
+                    aside_compiler::WideLineCol {
+                        line: position.line,
+                        col: position.character.min(end.col),
+                    },
+                )?;
+                line.is_char_boundary(native.col as usize)
+                    .then_some(start + native.col as usize)
             }
         }
     }
@@ -69,15 +69,22 @@ impl LineIndex {
         if offset > source.len() || !source.is_char_boundary(offset) {
             return None;
         }
-        let line = self.starts.partition_point(|&start| start <= offset) - 1;
-        let end = self.starts.get(line + 1).copied().unwrap_or(source.len());
-        let visible = source[self.starts[line]..end].trim_end_matches(['\r', '\n']);
-        let prefix = &source[self.starts[line]..offset.min(self.starts[line] + visible.len())];
+        let mut native = self
+            .index
+            .try_line_col(u32::try_from(offset).ok()?.into())?;
+        let range = self.index.line(native.line)?;
+        let visible = source[u32::from(range.start()) as usize..u32::from(range.end()) as usize]
+            .trim_end_matches(['\r', '\n']);
+        native.col = native.col.min(visible.len() as u32);
         let column = match encoding {
-            Encoding::Utf8 => prefix.len(),
-            Encoding::Utf16 => prefix.encode_utf16().count(),
+            Encoding::Utf8 => native.col,
+            Encoding::Utf16 => {
+                self.index
+                    .to_wide(aside_compiler::WideEncoding::Utf16, native)?
+                    .col
+            }
         };
-        Some(Position::new(line as u32, column as u32))
+        Some(Position::new(native.line, column))
     }
     pub fn range(
         &self,

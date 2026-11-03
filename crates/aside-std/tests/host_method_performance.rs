@@ -96,7 +96,7 @@ struct Row {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    fn new(leaves: bool) -> Self {
         let contracts = aside_std::contracts();
         let module =
             aside_compiler::analyze_module(SOURCE, &Default::default(), &mut support::resolver())
@@ -115,8 +115,13 @@ impl Fixture {
         let init = compiled.entry;
         let encoded = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
         let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
-        let support =
+        let mut support =
             aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
+        if !leaves {
+            for native in &mut support.natives {
+                native.read_only_leaf = None;
+            }
+        }
         let library = aside_std::StandardLibrary::new(&program);
         let vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         let mut fixture = Self {
@@ -267,13 +272,19 @@ fn oracle(name: &str, n: i64) -> f64 {
 
 #[test]
 fn curve_method_workloads_preserve_values_across_slices_and_gc() {
-    let mut fixture = Fixture::new();
-    for sliced in [false, true] {
-        for name in ["direct", "retained", "motion", "authored_motion"] {
-            fixture.collect();
-            let row = fixture.run(name, 293, sliced);
-            assert_eq!(row.value, oracle(name, 293), "{name} sliced={sliced}");
-            assert_eq!(row.native_entries, 293);
+    for leaves in [false, true] {
+        let mut fixture = Fixture::new(leaves);
+        for sliced in [false, true] {
+            for name in ["direct", "retained", "motion", "authored_motion"] {
+                fixture.collect();
+                let row = fixture.run(name, 293, sliced);
+                assert_eq!(
+                    row.value,
+                    oracle(name, 293),
+                    "{name} sliced={sliced} leaves={leaves}"
+                );
+                assert_eq!(row.native_entries, if leaves { 0 } else { 293 });
+            }
         }
     }
 }
@@ -288,21 +299,23 @@ fn measure_curve_method_workloads() {
     let n: i64 = std::env::var("ASIDE_BENCH_N").map_or(2000, |s| s.parse().unwrap());
     let samples: usize = std::env::var("ASIDE_BENCH_SAMPLES").map_or(9, |s| s.parse().unwrap());
     assert!((1..=1_000_000).contains(&n) && (1..=1000).contains(&samples));
-    let mut fixture = Fixture::new();
     let mut output = String::from(
-        "# construction/compile and pre-sample collection excluded; task/run/native dispatch/delivery included; warmup=3; allocations are process allocator calls, objects are traced VM objects\ncase\tsliced\tsample\tn\twall_ns\tallocations\treallocations\tinstructions\twork\tnative_entries\tnative_hits\tnative_misses\tscript_hits\tscript_misses\tobjects_before\tobjects_after\toracle\n",
+        "# construction/compile and pre-sample collection excluded; task/run/native dispatch/delivery included; warmup=3; allocations are process allocator calls, objects are traced VM objects\ncase\tleaves\tsliced\tsample\tn\twall_ns\tallocations\treallocations\tinstructions\twork\tnative_entries\tnative_hits\tnative_misses\tscript_hits\tscript_misses\tobjects_before\tobjects_after\toracle\n",
     );
-    for name in ["direct", "retained", "motion", "authored_motion"] {
-        for sliced in [false, true] {
-            for _ in 0..3 {
-                fixture.collect();
-                assert_eq!(fixture.run(name, n, sliced).value, oracle(name, n));
-            }
-            for sample in 0..samples {
-                fixture.collect();
-                let r = fixture.run(name, n, sliced);
-                assert_eq!(r.value, oracle(name, n));
-                writeln!(output, "{name}\t{sliced}\t{sample}\t{n}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", r.wall_ns, r.allocations, r.reallocations, r.instructions, r.work, r.native_entries, r.native_hits, r.native_misses, r.script_hits, r.script_misses, r.objects_before, r.objects_after, r.value).unwrap();
+    for leaves in [false, true] {
+        let mut fixture = Fixture::new(leaves);
+        for name in ["direct", "retained", "motion", "authored_motion"] {
+            for sliced in [false, true] {
+                for _ in 0..3 {
+                    fixture.collect();
+                    assert_eq!(fixture.run(name, n, sliced).value, oracle(name, n));
+                }
+                for sample in 0..samples {
+                    fixture.collect();
+                    let r = fixture.run(name, n, sliced);
+                    assert_eq!(r.value, oracle(name, n));
+                    writeln!(output, "{name}\t{leaves}\t{sliced}\t{sample}\t{n}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", r.wall_ns, r.allocations, r.reallocations, r.instructions, r.work, r.native_entries, r.native_hits, r.native_misses, r.script_hits, r.script_misses, r.objects_before, r.objects_after, r.value).unwrap();
+                }
             }
         }
     }

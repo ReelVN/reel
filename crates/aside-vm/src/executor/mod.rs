@@ -18,8 +18,9 @@ pub(crate) mod execution_counts;
 pub use execution_counts::{ExecutionCounts, NATIVE_STEP_NAMES, SCRIPT_STEP_NAMES, SlotCounts};
 #[cfg(feature = "profiling")]
 pub use step_costs::{
-    DRIVER_SAMPLE_STRIDE, DriverCost, STEP_HOTSPOT_CAPACITY, STEP_MODES, STEP_NAMES,
-    STEP_SAMPLE_STRIDE, StepCost, StepHotspot, StepPoint,
+    DRIVER_SAMPLE_STRIDE, DriverCost, FunctionEntries, LIFECYCLE_NAMES, LIFECYCLE_OUTER_NAMES,
+    LifecycleCost, LifecyclePart, STEP_HOTSPOT_CAPACITY, STEP_MODES, STEP_NAMES,
+    STEP_SAMPLE_STRIDE, StepCost, StepHotspot, StepPoint, set_profiling_enabled,
 };
 
 mod api;
@@ -45,7 +46,11 @@ mod member_hints;
 mod method_bindings;
 mod models;
 mod named_reads;
+mod native_leaf;
+#[cfg(test)]
+mod native_leaf_tests;
 mod native_roots;
+use native_leaf::NativeParameters;
 mod reactive;
 pub(crate) mod snapshot;
 mod text;
@@ -544,15 +549,11 @@ impl TaskState {
         })
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct NativeParameters {
-    needs_cells: bool,
-    has_defaults: bool,
-}
-
 /// Task selection swaps bounded state owners; all registered windows remain in
 /// the single FrameSlots provider. Field order deallocates before budget refunds.
 pub struct Vm {
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_native_leaf_calls: bool,
     program: Rc<CodeLease>,
     code_window: crate::bytecode::CodeWindow,
     slots: FrameSlots,
@@ -572,8 +573,11 @@ pub struct Vm {
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
     member_hints: member_hints::MemberHints,
+    table_queries: collections::query_cache::Queries,
     class_member_hints: member_hints::MemberHints<{ member_hints::CLASS_SLOTS }>,
     method_bindings: method_bindings::MethodBindings,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    residual_body: scalars::ResidualState,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
@@ -600,17 +604,54 @@ pub struct Vm {
     step_costs: step_costs::State,
     #[cfg(test)]
     work_probe: WorkProbe,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_body_dispatch: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_body_context: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_body_clock: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_script_execution: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_scalar_suffixes: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_scalar_entry: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    value_entries: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    legacy_named_read_completion: bool,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    value_entry_transactions: u64,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    value_entry_receivers: u64,
 }
 #[cfg(test)]
 #[derive(Default)]
 struct WorkProbe {
+    linear_table_scan: bool,
+    scalar_suffix_groups: std::cell::Cell<u64>,
+    scalar_entries: std::cell::Cell<u64>,
+    scalar_suffix_steps: std::cell::Cell<u64>,
+    script_execution_entries: std::cell::Cell<u64>,
+    script_execution_steps: std::cell::Cell<[u64; 6]>,
+    driver_phase_entries: std::cell::Cell<[u64; 7]>,
+    scalar_windows: std::cell::Cell<u64>,
+    body_handoffs: std::cell::Cell<u64>,
+    body_bindings: std::cell::Cell<u64>,
+    body_captures: std::cell::Cell<u64>,
+    body_equalities: std::cell::Cell<u64>,
+    body_fields: std::cell::Cell<u64>,
     legacy_script_publication: bool,
+    script_working_captures: std::cell::Cell<u64>,
+    script_call_cursor_publications: std::cell::Cell<u64>,
+    script_body_cursor_publications: std::cell::Cell<u64>,
     single_named_read_step: bool,
     general_callees: bool,
     general_script_preparation: bool,
     general_clears: bool,
     single_install_step: bool,
     single_equality_step: bool,
+    general_table_key_comparison: bool,
     single_scalar_step: bool,
     general_class_reads: bool,
     checked_class_metadata: bool,
@@ -618,7 +659,9 @@ struct WorkProbe {
     native_layout_queries: std::cell::Cell<u64>,
     exit_handler_queries: std::cell::Cell<u64>,
     member_hint_hits: std::cell::Cell<u64>,
+    direct_named_reads: std::cell::Cell<u64>,
 }
+mod body_operations;
 mod call_plans;
 mod completion;
 use call_plans::InstructionPlan;
@@ -631,6 +674,7 @@ use meter::Meter;
 mod native_calls;
 mod scalars;
 mod script_body;
+mod script_execution;
 mod script_frames;
 mod script_preparation;
 mod script_step;
@@ -663,7 +707,7 @@ impl Vm {
             .data
             .last()
             .map(|frame| match frame {
-                Frame::Script(script) => self.loc(*script, script.pc),
+                Frame::Script(script) => self.loc(script.code, script.pc),
                 Frame::Native(native) => native.location,
             }))
     }
@@ -720,6 +764,24 @@ impl Vm {
             compact_derived_starts: self.compact_derived_starts,
             derived_outputs: self.derived_outputs,
             compact_derived_outputs: self.compact_derived_outputs,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            value_entry_transactions: self.value_entry_transactions,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            value_entry_receivers: self.value_entry_receivers,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            residual_body_spans: self.residual_body.counts().0,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            residual_body_instructions: self.residual_body.counts().1,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            residual_body_hits: self.residual_body.hits.get(),
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            residual_body_guard_fallbacks: self.residual_body.guard_fallbacks.get(),
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            residual_body_budget_fallbacks: self.residual_body.budget_fallbacks.get(),
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            residual_body_clock_fallbacks: self.residual_body.clock_fallbacks.get(),
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            residual_body_memo_hits: self.residual_body.memo_hits.get(),
 
             usage: self.last_usage,
             heap: self.heap.stats(),
@@ -745,11 +807,11 @@ impl Vm {
         }
         Err(VmError::Contract("missing immediate caller"))
     }
-    fn loc(&self, s: ScriptFrame, pc: Pc) -> Location {
+    fn loc(&self, code: CodeRef, pc: Pc) -> Location {
         Location {
-            code: s.code,
+            code,
             pc,
-            source: self.program.source_at(s.code.function, pc),
+            source: self.program.source_at(code.function, pc),
         }
     }
     fn binding_location(&self, s: ScriptFrame) -> Location {
@@ -765,7 +827,7 @@ impl Vm {
                         current = parent;
                         index -= 1;
                     } else {
-                        return self.loc(current, current.pc);
+                        return self.loc(current.code, current.pc);
                     }
                 }
                 ReturnTo::Register { frame, call, .. }
@@ -773,23 +835,27 @@ impl Vm {
                 | ReturnTo::Sort { frame, call }
                 | ReturnTo::ReactiveRead { frame, call } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
-                        Some(Frame::Script(parent)) if parent.id == frame => self.loc(parent, call),
-                        _ => self.loc(current, current.pc),
+                        Some(Frame::Script(parent)) if parent.id == frame => {
+                            self.loc(parent.code, call)
+                        }
+                        _ => self.loc(current.code, current.pc),
                     };
                 }
                 ReturnTo::Generator { frame, call, .. } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
-                        Some(Frame::Script(parent)) if parent.id == frame => self.loc(parent, call),
-                        _ => self.loc(current, current.pc),
+                        Some(Frame::Script(parent)) if parent.id == frame => {
+                            self.loc(parent.code, call)
+                        }
+                        _ => self.loc(current.code, current.pc),
                     };
                 }
                 ReturnTo::Native { frame } | ReturnTo::NativeDefault { frame, .. } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
                         Some(Frame::Native(n)) if n.id == frame => n.location,
-                        _ => self.loc(current, current.pc),
+                        _ => self.loc(current.code, current.pc),
                     };
                 }
-                ReturnTo::Delivery => return self.loc(current, current.pc),
+                ReturnTo::Delivery => return self.loc(current.code, current.pc),
             }
         }
     }
@@ -819,7 +885,7 @@ impl Vm {
         }
     }
     fn read(&self, regs: RootRangeToken, reg: Reg) -> Result<Value, FaultKind> {
-        self.slots.read(at(regs, reg.0)).map_err(heap_fault)
+        self.slots.read_vm(at(regs, reg.0)).map_err(heap_fault)
     }
     fn read_pair(
         &self,
@@ -828,22 +894,22 @@ impl Vm {
         second: u32,
     ) -> Result<(Value, Value), FaultKind> {
         self.slots
-            .read_pair(regs, first, second)
+            .read_pair_vm(regs, first, second)
             .map_err(heap_fault)
     }
     fn write(&mut self, regs: RootRangeToken, reg: Reg, v: Value) -> Result<(), FaultKind> {
         self.slots
-            .write(&mut self.heap, at(regs, reg.0), v)
+            .write_vm(&mut self.heap, at(regs, reg.0), v)
             .map_err(heap_fault)
     }
     fn value(&self, r: RootRangeToken, i: u32) -> Result<Value, VmError> {
-        Ok(self.slots.read(at(r, i))?)
+        Ok(self.slots.read_vm(at(r, i))?)
     }
     fn put(&mut self, r: RootRangeToken, i: u32, v: Value) -> Result<(), VmError> {
-        Ok(self.slots.write(&mut self.heap, at(r, i), v)?)
+        Ok(self.slots.write_vm(&mut self.heap, at(r, i), v)?)
     }
     fn clear(&mut self, r: RootRangeToken, i: u32) -> Result<(), VmError> {
-        Ok(self.slots.clear(&mut self.heap, at(r, i))?)
+        Ok(self.slots.clear_vm(&mut self.heap, at(r, i))?)
     }
     fn open(
         &mut self,
@@ -851,9 +917,12 @@ impl Vm {
         kind: RootKind,
         len: u32,
     ) -> Result<RootRangeToken, VmError> {
-        Ok(self
-            .slots
-            .open(&mut self.heap, self.active.root_owner, kind, len)?)
+        Ok(part_cost!(
+            self.step_costs,
+            RootOpen,
+            self.slots
+                .open_vm(&mut self.heap, self.active.root_owner, kind, len)
+        )?)
     }
     fn release_cost(&self, count: u64) -> u64 {
         // Each release can add one span before binary search and up to three
@@ -936,7 +1005,11 @@ impl Vm {
             meter.observe_clock = observation.is_some();
             self.step_costs.begin_run(&mut observation);
         }
+        // The exclusive Vm borrow keeps Heap/provider ownership stable across
+        // clock calls and read-only validators. Native tickets leave after Drop.
+        let root_access = self.slots.begin_vm_access(&self.heap);
         let result = self.run(&mut meter, &mut now);
+        drop(root_access);
         #[cfg(feature = "profiling")]
         self.step_costs.end_run(&mut observation);
         self.code_window = crate::bytecode::CodeWindow::default();
@@ -1112,7 +1185,18 @@ impl Vm {
                 });
                 continue;
             }
-            match self.scalar_step(m)? {
+            #[cfg(test)]
+            self.count_script_driver_phase();
+            if self.script_execution_enabled()
+                && matches!(self.active.frames.data.last(), Some(Frame::Script(frame)) if !matches!(frame.phase, ScriptPhase::Body))
+            {
+                if !self.script_execution_block(m, now)? {
+                    return Ok(RunOutcome::BudgetYield(m.usage));
+                }
+                continue;
+            }
+            let scalar = self.scalar_step_clocked(m, now)?;
+            match scalar {
                 scalars::ScalarStep::Done => continue,
                 scalars::ScalarStep::Budget => return Ok(RunOutcome::BudgetYield(m.usage)),
                 scalars::ScalarStep::Preparation => {
@@ -1131,16 +1215,24 @@ impl Vm {
                     }
                     continue;
                 }
-                scalars::ScalarStep::General => {}
+                scalars::ScalarStep::General | scalars::ScalarStep::Body(_) => {}
             }
             #[cfg(feature = "profiling")]
             self.step_costs.begin_fallback();
             match self.active.frames.data.last() {
-                Some(Frame::Script(s)) => {
+                Some(Frame::Script(source)) => {
+                    let depth = self.active.frames.data.len();
+                    let mut working;
                     if !step_cost!(self, Script, {
-                        let mut s = *s;
-                        self.script_step(&mut s, m)
-                    })? {
+                        working = self.script_working_copy(source);
+                        match scalar {
+                            scalars::ScalarStep::Body(opcode) => {
+                                self.script_body_decoded_step(&mut working, m, opcode)
+                            }
+                            _ => self.script_step(&mut working, m),
+                        }
+                    })? || !self.script_block(&mut working, m, depth, now)?
+                    {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                 }
@@ -1155,57 +1247,6 @@ impl Vm {
                 None => return Err(VmError::Idle),
             }
         }
-    }
-    fn commit_work(&self, ret: ReturnTo) -> u64 {
-        match ret {
-            ReturnTo::Native { frame } => {
-                match self.index(frame).ok().map(|i| self.active.frames.data[i]) {
-                    Some(Frame::Native(n)) => {
-                        2 * (n.fault_count as u64 + n.continuation_len as u64) + 8
-                    }
-                    _ => 8,
-                }
-            }
-            _ => 2,
-        }
-    }
-    fn release_frame(&mut self, f: Frame) -> Result<(), VmError> {
-        match f {
-            Frame::Script(s) => {
-                if s.generator {
-                    self.generator_abandon(s)?;
-                }
-                if s.derived_bridge.is_some() {
-                    self.heap.end_derived(self.value(s.env, 4)?)?;
-                }
-                if s.derived_bridge.is_none() || matches!(s.phase, ScriptPhase::Class(_)) {
-                    self.abort_class(&s)?;
-                }
-                for r in [s.regs, s.env, s.args, s.bound] {
-                    self.slots.release(&mut self.heap, r)?;
-                }
-            }
-            Frame::Native(n) => {
-                if let Some(output) = n.derived_output {
-                    self.heap.end_derived(output)?;
-                }
-                if self
-                    .active
-                    .model_copy
-                    .as_ref()
-                    .is_some_and(|copy| copy.frame == n.id)
-                {
-                    self.active.model_copy = None;
-                }
-                if let Some(r) = n.bindings {
-                    self.slots.release(&mut self.heap, r)?;
-                }
-                for r in [n.args, n.bound, n.roots] {
-                    self.slots.release(&mut self.heap, r)?;
-                }
-            }
-        }
-        Ok(())
     }
     fn preparation_fault(&mut self, s: &mut ScriptFrame, kind: FaultKind) -> Result<(), VmError> {
         self.put(s.env, 1, Value::NULL)?;

@@ -1,5 +1,6 @@
-//! Borrow initialized immutable bindings instead of rooting a short-lived copy.
+//! Borrow initialized frame-local values instead of rooting short-lived copies.
 use super::*;
+mod initialization;
 
 pub(super) fn eliminate(
     function: &mut Function,
@@ -13,6 +14,7 @@ pub(super) fn eliminate(
         budget.work(1)?;
         bindings[binding.storage.reg().index()] = Some(index);
     }
+    let entries = initialization::entries(function, definition, &bindings, budget)?;
     // A backedge to entry must not inherit fresh-frame initialization facts.
     let entry = function.layout.first().copied();
     let mut fresh = definition.kind == bc::FunctionKind::Plain;
@@ -32,26 +34,48 @@ pub(super) fn eliminate(
     for (id, block) in function.blocks.iter_mut().enumerate() {
         budget.work((empty.len() + initialized.len()) as u64)?;
         empty.fill(fresh && entry == Some(BlockId(id as u32)));
+        initialized.copy_from_slice(
+            &entries[id * definition.bindings.len()..(id + 1) * definition.bindings.len()],
+        );
         for (index, binding) in definition.bindings.iter().enumerate() {
-            initialized[index] = matches!(
-                binding.initialization,
-                bc::BindingInitialization::Parameter(_)
-            );
-            if initialized[index] {
+            if initialized[index] || matches!(binding.storage, bc::BindingStorage::Cell(_)) {
                 empty[binding.storage.reg().index()] = false;
             }
         }
+        let mut removed = budget.filled(block.operations.len(), false)?;
         let (mut read, mut write) = (0, 0);
         while read < block.operations.len() {
             budget.work(1)?;
             budget.span = block.operations[read].span;
-            if let Some((temporary, consumer)) = replacement(
+            if removed[read] {
+                read += 1;
+                continue;
+            }
+            let instruction = block.operations[read].instruction;
+            // A new plain activation owns empty value registers. Cells are
+            // created during preparation; parameters and other block entries
+            // retain their existing roots. Later writes update this fact below.
+            if instruction.opcode == bc::Opcode::Clear as u16
+                && empty[instruction.operands[0] as usize]
+            {
+                read += 1;
+                continue;
+            }
+            if let Some(replacement) = replacement(
                 &block.operations[read..],
                 definition,
                 &bindings,
                 &initialized,
                 budget,
             )? {
+                let Replacement {
+                    temporary,
+                    consumer,
+                    clear,
+                    instruction: consumer_instruction,
+                } = replacement;
+                block.operations[read + consumer].instruction = consumer_instruction;
+                removed[read + clear] = true;
                 if !empty[temporary.index()] {
                     // The old BindRead overwrote this root before its consumer.
                     // Retain that release point even when its contents are unknown.
@@ -70,21 +94,7 @@ pub(super) fn eliminate(
                     )?;
                     write += 1;
                 }
-                let span = block.operations[read + 1].span;
-                block.operations[write] = Operation {
-                    instruction: consumer,
-                    span,
-                };
-                state(
-                    consumer,
-                    definition,
-                    &bindings,
-                    &mut empty,
-                    &mut initialized,
-                    budget,
-                )?;
-                write += 1;
-                read += 3;
+                read += 1;
             } else {
                 let operation = &block.operations[read];
                 state(
@@ -104,11 +114,20 @@ pub(super) fn eliminate(
             }
         }
         block.operations.truncate(write);
+        budget.release(removed);
     }
     budget.release(empty);
     budget.release(initialized);
     budget.release(bindings);
+    budget.release(entries);
     Ok(())
+}
+
+struct Replacement {
+    temporary: bc::Reg,
+    consumer: usize,
+    clear: usize,
+    instruction: bc::Instruction,
 }
 
 fn replacement(
@@ -117,10 +136,7 @@ fn replacement(
     bindings: &[Option<usize>],
     initialized: &[bool],
     budget: &mut super::super::budget::Budget,
-) -> Result<Option<(bc::Reg, bc::Instruction)>, Box<Error>> {
-    let Some(operations) = operations.get(..3) else {
-        return Ok(None);
-    };
+) -> Result<Option<Replacement>, Box<Error>> {
     let read = operations[0].instruction;
     if read.opcode != bc::Opcode::BindRead as u16 {
         return Ok(None);
@@ -130,40 +146,55 @@ fn replacement(
     let bc::BindingStorage::Value(source) = binding.storage else {
         return Ok(None);
     };
-    if binding.mutable
-        || !initialized[read.operands[1] as usize]
-        || bindings[temporary.index()].is_some()
-        || operations[2].instruction.opcode != bc::Opcode::Clear as u16
-        || operations[2].instruction.operands[0] != temporary.0
-    {
+    if !initialized[read.operands[1] as usize] || bindings[temporary.index()].is_some() {
         return Ok(None);
     }
-    let mut consumer = operations[1].instruction;
-    let spec = bc::instruction_spec(consumer.opcode).expect("lowered opcode");
-    let (mut direct_reads, mut reads, mut writes) = (0, 0, false);
-    for (operand, kind) in consumer.operands.iter().zip(spec.operands) {
-        if kind == bc::OperandKind::ReadReg && *operand == temporary.0 {
-            direct_reads += 1;
+    let mut consumer = None;
+    for (index, operation) in operations.iter().enumerate().skip(1) {
+        budget.work(1)?;
+        let instruction = operation.instruction;
+        if instruction.opcode == bc::Opcode::Clear as u16 && instruction.operands[0] == temporary.0
+        {
+            return Ok(consumer.map(|(consumer, instruction)| Replacement {
+                temporary,
+                consumer,
+                clear: index,
+                instruction,
+            }));
+        }
+        let spec = bc::instruction_spec(instruction.opcode).expect("lowered opcode");
+        let direct_reads = instruction
+            .operands
+            .iter()
+            .zip(spec.operands)
+            .filter(|(operand, kind)| *kind == bc::OperandKind::ReadReg && **operand == temporary.0)
+            .count();
+        let (mut reads, mut writes) = (0, false);
+        visit(definition, &instruction, budget, |reg, access| {
+            if access == bc::Access::Read && reg == temporary {
+                reads += 1;
+            }
+            if access != bc::Access::Read && (reg == temporary || reg == source) {
+                writes = true;
+            }
+        })?;
+        // A mutable Value slot belongs to this activation, unlike a shared
+        // Cell. Its value can be borrowed until an instruction writes the slot.
+        // Descriptor windows keep their original argument capture and roots.
+        if reads != direct_reads || writes || (reads != 0 && consumer.is_some()) {
+            return Ok(None);
+        }
+        if direct_reads != 0 {
+            let mut replacement = instruction;
+            for (operand, kind) in replacement.operands.iter_mut().zip(spec.operands) {
+                if kind == bc::OperandKind::ReadReg && *operand == temporary.0 {
+                    *operand = source.0;
+                }
+            }
+            consumer = Some((index, replacement));
         }
     }
-    visit(definition, &consumer, budget, |reg, access| {
-        if access == bc::Access::Read && reg == temporary {
-            reads += 1;
-        }
-        if access != bc::Access::Read && (reg == temporary || reg == source) {
-            writes = true;
-        }
-    })?;
-    // Descriptor windows and hidden binding operands retain their existing path.
-    if direct_reads == 0 || reads != direct_reads || writes {
-        return Ok(None);
-    }
-    for (operand, kind) in consumer.operands.iter_mut().zip(spec.operands) {
-        if kind == bc::OperandKind::ReadReg && *operand == temporary.0 {
-            *operand = source.0;
-        }
-    }
-    Ok(Some((temporary, consumer)))
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -177,18 +208,48 @@ fn state(
     initialized: &mut [bool],
     budget: &mut super::super::budget::Budget,
 ) -> Result<(), Box<Error>> {
-    visit(definition, &instruction, budget, |reg, access| {
-        if access != bc::Access::Read {
+    writes(
+        definition,
+        &instruction,
+        bindings,
+        budget,
+        |reg, binding| {
             empty[reg.index()] = instruction.opcode == bc::Opcode::Clear as u16;
-            if let Some(binding) = bindings[reg.index()] {
+            if let Some(binding) = binding {
                 initialized[binding] = false;
             }
-        }
-    })?;
-    if instruction.opcode == bc::Opcode::BindInit as u16 {
-        initialized[instruction.operands[0] as usize] = true;
+        },
+    )?;
+    if let Some(binding) = initialized_by(instruction) {
+        initialized[binding] = true;
     }
     Ok(())
+}
+
+fn initialized_by(instruction: bc::Instruction) -> Option<usize> {
+    match instruction.opcode {
+        opcode
+            if opcode == bc::Opcode::BindInit as u16 || opcode == bc::Opcode::BindWrite as u16 =>
+        {
+            Some(instruction.operands[0] as usize)
+        }
+        opcode if opcode == bc::Opcode::BindRead as u16 => Some(instruction.operands[1] as usize),
+        _ => None,
+    }
+}
+
+fn writes(
+    definition: &bc::FunctionDef,
+    instruction: &bc::Instruction,
+    bindings: &[Option<usize>],
+    budget: &mut super::super::budget::Budget,
+    mut writer: impl FnMut(bc::Reg, Option<usize>),
+) -> Result<(), Box<Error>> {
+    visit(definition, instruction, budget, |reg, access| {
+        if access != bc::Access::Read {
+            writer(reg, bindings[reg.index()]);
+        }
+    })
 }
 
 fn visit(

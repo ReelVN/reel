@@ -40,6 +40,13 @@ const CASES: [&str; 19] = [
     "string_keys",
 ];
 
+const DEADLINE_CASES: [&str; 4] = [
+    "fields",
+    "reactive_fields",
+    "reactive_wide_fields",
+    "host_motion_methods",
+];
+
 fn oracle(name: &str, n: i64) -> i64 {
     match name {
         "arithmetic" => (0..n).map(|i| (i * 3 + 1) % 97).sum(),
@@ -54,8 +61,24 @@ fn oracle(name: &str, n: i64) -> i64 {
         "allocation" => (0..n).map(|i| i + 3).sum(),
         "reactive" | "reactive_fields" => (0..n).map(|i| i * 3 + 7).sum(),
         "text_compare" => n * 3,
+        "reactive_wide_fields" => n * 36 + n * (n - 1) / 2,
         "string_keys" => n * 7,
         _ => unreachable!(),
+    }
+}
+
+#[test]
+fn deadline_kernels_preserve_oracles_in_encoded_and_unpacked_code() {
+    let fixture = Fixture::compile();
+    for encoded in [false, true] {
+        for name in DEADLINE_CASES {
+            let (mut vm, _) = fixture.load(encoded);
+            let baseline = fixture.run(&mut vm, name, 7, Mode::Batch);
+            let row = fixture.run(&mut vm, name, 7, Mode::Deadline);
+            assert_eq!(row.value, oracle(name, 7), "{name} encoded={encoded}");
+            assert_eq!(row.value, baseline.value);
+            assert!(row.clock_queries > 0);
+        }
     }
 }
 
@@ -153,6 +176,79 @@ fn inspect_vm_kernel_counts() {
 #[test]
 #[ignore = "release interpreter performance measurement; uses wall time, not target FPS"]
 fn measure_vm_kernels() {
+    measure(&CASES, &[Mode::Batch, Mode::Sliced, Mode::IncrementalGc]);
+}
+
+#[test]
+#[ignore = "release VM measurements with the player's monotonic 2 ms deadline"]
+fn measure_vm_deadline_kernels() {
+    measure(&DEADLINE_CASES, &[Mode::Batch, Mode::Deadline]);
+}
+
+#[cfg(feature = "profiling")]
+#[test]
+#[ignore = "sampled operation attribution, not an exclusive CPU or speedup measurement"]
+fn inspect_vm_lifecycle() {
+    assert!(
+        !std::hint::black_box(cfg!(debug_assertions)),
+        "use --release"
+    );
+    let fixture = Fixture::compile();
+    let n = setting("ASIDE_BENCH_N", 10000, 1_000_000) as i64;
+    let mut output = String::new();
+    for name in [
+        "calls",
+        "fields",
+        "captured_cells",
+        "host_motion_methods",
+        "reactive_wide_fields",
+    ] {
+        for mode in [Mode::Batch, Mode::Deadline] {
+            let (mut vm, _) = fixture.load(true);
+            for _ in 0..3 {
+                fixture.collect(&mut vm);
+                assert_eq!(fixture.run(&mut vm, name, n, mode).value, oracle(name, n));
+            }
+            fixture.collect(&mut vm);
+            let before = vm.driver_costs();
+            let row = fixture.run(&mut vm, name, n, mode);
+            let driver = vm.driver_costs().checked_delta(&before).unwrap();
+            let part = driver.lifecycle;
+            assert_eq!(row.value, oracle(name, n));
+            assert_eq!(part.errors, 0);
+            assert_eq!(part.run_ns, driver.run_ns);
+            assert_eq!(
+                part.parts.iter().map(|p| p.wall_ns).sum::<u64>()
+                    + part.unattributed_ns
+                    + part.observer_ns,
+                part.run_ns
+            );
+            let parts: std::collections::BTreeMap<_, _> = aside_vm::executor::LIFECYCLE_NAMES
+                .into_iter()
+                .zip(part.parts)
+                .map(|(name, p)| {
+                    (
+                        name,
+                        serde_json::json!({"calls":p.calls,"wall_ns":p.wall_ns}),
+                    )
+                })
+                .collect();
+            writeln!(output, "{}", serde_json::json!({"case":name,"mode":format!("{mode:?}"),"n":n,
+                "wall_ns":row.wall_ns,"instructions":row.instructions,"work":row.work,"slices":row.slices,
+                "clock_queries":row.clock_queries,"host_entries":row.host_entries,"derived_starts":row.derived_starts,
+                "samples":driver.samples,"driver_run_ns":driver.run_ns,"driver_loop_ns":driver.loop_ns,
+                "sampled_instructions":driver.sampled_instructions,"sampled_work":driver.sampled_work,
+                "unattributed_ns":part.unattributed_ns,"observer_ns":part.observer_ns,
+                "observer_clock_queries":part.observer_clock_queries,"errors":part.errors,"parts":parts})).unwrap();
+        }
+    }
+    if let Ok(path) = std::env::var("ASIDE_BENCH_OUTPUT") {
+        std::fs::write(path, &output).unwrap();
+    }
+    print!("{output}");
+}
+
+fn measure(cases: &[&str], modes: &[Mode]) {
     assert!(
         !std::hint::black_box(cfg!(debug_assertions)),
         "use --release for VM measurements"
@@ -161,7 +257,7 @@ fn measure_vm_kernels() {
     let samples = setting("ASIDE_BENCH_SAMPLES", 9, 1000);
     let filter = std::env::var("ASIDE_BENCH_FILTER").unwrap_or_default();
     assert!(
-        CASES
+        cases
             .iter()
             .any(|name| filter.is_empty() || name.contains(&filter)),
         "ASIDE_BENCH_FILTER matched no workload"
@@ -180,12 +276,13 @@ fn measure_vm_kernels() {
     )
     .unwrap();
     writeln!(output, "# timing=wall_ns includes task entry, run_slice, host dispatch, delivery release; gc_ns is nested; compile_ns={compile_ns}; decode/load/init measured separately; explicit collection between samples excluded; peak_charged is VM-lifetime cumulative").unwrap();
-    writeln!(output, "kind\tcase\tmode\tsample\tn\twall_ns\tgc_ns\tinstructions\twork\tslices\thost_entries\tderived_starts\tcollections\tgc_units\tcharged_before\tcharged_after\tpeak_charged\toracle").unwrap();
-    for name in CASES
-        .into_iter()
+    writeln!(output, "kind\tcase\tmode\tsample\tn\twall_ns\tgc_ns\tinstructions\twork\tslices\thost_entries\tderived_starts\tcollections\tgc_units\tcharged_before\tcharged_after\tpeak_charged\toracle\tclock_queries").unwrap();
+    for name in cases
+        .iter()
+        .copied()
         .filter(|name| filter.is_empty() || name.contains(&filter))
     {
-        for mode in [Mode::Batch, Mode::Sliced, Mode::IncrementalGc] {
+        for &mode in modes {
             if mode == Mode::IncrementalGc && name != "allocation" {
                 continue;
             }
@@ -207,7 +304,7 @@ fn measure_vm_kernels() {
                 fixture.collect(&mut vm);
                 let row = fixture.run(&mut vm, name, n as i64, mode);
                 assert_eq!(row.value, oracle(name, n as i64), "{name} {mode:?}");
-                writeln!(output, "sample\t{name}\t{mode:?}\t{sample}\t{n}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", row.wall_ns, row.gc_ns, row.instructions, row.work, row.slices, row.host_entries, row.derived_starts, row.collections, row.gc_units, row.charged_before, row.charged_after, row.peak_charged, row.value).unwrap();
+                writeln!(output, "sample\t{name}\t{mode:?}\t{sample}\t{n}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", row.wall_ns, row.gc_ns, row.instructions, row.work, row.slices, row.host_entries, row.derived_starts, row.collections, row.gc_units, row.charged_before, row.charged_after, row.peak_charged, row.value, row.clock_queries).unwrap();
             }
         }
     }

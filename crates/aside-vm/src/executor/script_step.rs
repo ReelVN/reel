@@ -15,7 +15,30 @@ impl Vm {
         self.script_continuation_step(s, m)
     }
 
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     fn script_continuation_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        m: &mut Meter,
+    ) -> Result<bool, VmError> {
+        #[cfg(feature = "profiling")]
+        let span = match s.phase {
+            ScriptPhase::Exit { .. }
+            | ScriptPhase::ExitApply { .. }
+            | ScriptPhase::Release { .. } => {
+                self.step_costs.start_part(step_costs::Part::ScriptExit)
+            }
+            ScriptPhase::DefaultCall { .. } | ScriptPhase::DefaultConstant { .. } => {
+                self.step_costs.start_part(step_costs::Part::ScriptPrepare)
+            }
+            _ => None,
+        };
+        let result = self.script_continuation_inner(s, m);
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_part(span, None);
+        result
+    }
+    fn script_continuation_inner(
         &mut self,
         s: &mut ScriptFrame,
         m: &mut Meter,
@@ -288,7 +311,7 @@ impl Vm {
                 if !m.take(0, work, 0) {
                     return Ok(false);
                 }
-                let handler = self.select_exit_handler(*s, origin, reason, skip)?;
+                let handler = self.select_exit_handler(s, origin, reason, skip)?;
                 s.phase = ScriptPhase::ExitApply {
                     origin,
                     reason,
@@ -300,7 +323,7 @@ impl Vm {
                 reason,
                 handler,
             } => {
-                let superseded = self.superseded_unwind(*s, origin, reason, handler);
+                let superseded = self.superseded_unwind(s, origin, reason, handler);
                 let replacing_fault =
                     superseded.is_some() && matches!(reason, ExitReason::Throw(_));
                 let roots = if superseded.is_some() {
@@ -405,7 +428,7 @@ impl Vm {
             Opcode::CellWrite => {
                 let contract = self
                     .heap
-                    .cell_info(self.slots.read(at(s.regs, _a))?)?
+                    .cell_info(self.slots.read_vm(at(s.regs, _a))?)?
                     .contract;
                 (
                     1 + contract.type_id.map_or(0, |ty| self.type_checks.extra(ty)),
@@ -428,7 +451,7 @@ impl Vm {
                     Arguments::Window(w) => w.len,
                     Arguments::Packed(r) => {
                         self.heap
-                            .packed_array_len(self.slots.read(at(s.regs, r.0))?)?
+                            .packed_array_len(self.slots.read_vm(at(s.regs, r.0))?)?
                             / 2
                     }
                 };
@@ -442,22 +465,31 @@ impl Vm {
                     CallTarget::Function(id) => self.script_push_cost(id, native_count),
                     CallTarget::Native(id) => self.native_push_cost(id, native_count),
                     CallTarget::Register(r) => {
-                        let target = self.slots.read(at(s.regs, r.0))?;
-                        if self.is_text(target, ObjectKind::Class) {
+                        let target = self.slots.read_vm(at(s.regs, r.0))?;
+                        let target_read = self.heap.read_object(target);
+                        if target_read
+                            .as_ref()
+                            .is_ok_and(|read| read.kind() == ObjectKind::Class)
+                        {
                             allocation = Values::allocation_bytes(4);
                             (24, 0)
                         } else {
-                            let function = self.closure_function(target);
-                            let cost = function
+                            let bound = target_read
                                 .as_ref()
-                                .map(|id| self.script_push_cost(*id, count))
+                                .is_ok_and(|read| read.kind() == ObjectKind::BoundScript);
+                            let callee = target_read
+                                .map_err(VmError::from)
+                                .and_then(|read| self.read_callee_from(target, read));
+                            let cost = callee
+                                .as_ref()
+                                .map(|read| self.script_push_cost(read.function, count))
                                 .unwrap_or((1, 0));
-                            if let Ok(function) = function
-                                && let Some(callee) = self.prepare_callee(target, function)
+                            if let Ok(read) = callee
+                                && let Some(callee) = self.prepare_callee(target, read)
                             {
                                 *plan = InstructionPlan::Callee(callee);
                                 cost
-                            } else if self.is_text(target, ObjectKind::BoundScript) {
+                            } else if bound {
                                 let (work, bytes) = self.initializer_cost(target)?;
                                 allocation = bytes;
                                 (cost.0 + work, cost.1)
@@ -478,7 +510,7 @@ impl Vm {
             Opcode::Await => {
                 let cost = self
                     .heap
-                    .host_await(self.slots.read(at(s.regs, b))?)
+                    .host_await(self.slots.read_vm(at(s.regs, b))?)
                     .map(|id| self.native_push_cost(id, 1))
                     .unwrap_or((1, 0));
                 (
@@ -526,19 +558,19 @@ impl Vm {
             Opcode::MakeClass => (24, Values::allocation_bytes(9)),
             Opcode::SuperRef => (4, Values::allocation_bytes(2)),
             Opcode::PropertyRef => {
-                let object = self.slots.read(at(s.regs, b))?;
+                let object = self.slots.read_vm(at(s.regs, b))?;
                 if object.tag() == ValueTag::Object
                     && matches!(
-                        self.heap.info(object)?.kind,
+                        self.heap.read_object(object)?.kind(),
                         ObjectKind::Instance | ObjectKind::Super
                     )
                 {
                     let Descriptor::Property { key, .. } = f.descriptors[c as usize] else {
                         unreachable!()
                     };
-                    let key = self.slots.read(at(s.regs, key.0))?;
+                    let key = self.slots.read_vm(at(s.regs, key.0))?;
                     let bytes = if key.tag() == ValueTag::Object {
-                        self.heap.info(key)?.len
+                        self.heap.read_object(key)?.len()
                     } else {
                         0
                     };
@@ -553,7 +585,7 @@ impl Vm {
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self
                     .slots
-                    .read(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
+                    .read_vm(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
                 let object_read = self.heap.read_object(object)?;
                 let info = object_read.info();
                 let kind = info.kind;
@@ -642,8 +674,8 @@ impl Vm {
             | Opcode::MakeRange
             | Opcode::MakeRangeInclusive => (4, Values::allocation_bytes(3)),
             Opcode::ChildrenPush | Opcode::ArrayPush => {
-                let array = self.slots.read(at(s.regs, _a))?;
-                let value = self.slots.read(at(s.regs, b))?;
+                let array = self.slots.read_vm(at(s.regs, _a))?;
+                let value = self.slots.read_vm(at(s.regs, b))?;
                 let len = self.heap.info(array)?.len;
                 (
                     1,
@@ -655,7 +687,7 @@ impl Vm {
                 )
             }
             Opcode::ArgsPush | Opcode::ArgsNamed => {
-                let packed = self.slots.read(at(s.regs, _a))?;
+                let packed = self.slots.read_vm(at(s.regs, _a))?;
                 let len = self.heap.packed_array_len(packed)?;
                 (2, Values::growth_bytes(len.into(), 2))
             }

@@ -4,6 +4,10 @@ use aside_vm::{bytecode as bc, executor::*, *};
 use std::path::Path;
 
 const HOSTS: [&str; 3] = ["assert", "print", "println"];
+#[path = "quirrel_vm/binding_reads.rs"]
+mod binding_reads;
+#[path = "quirrel_vm/discard.rs"]
+mod discard;
 
 fn registry() -> (bc::VerifiedProgram, AnalysisOptions, bc::RuntimeSupport) {
     let signature = bc::Signature {
@@ -77,6 +81,8 @@ fn registry() -> (bc::VerifiedProgram, AnalysisOptions, bc::RuntimeSupport) {
         natives: HOSTS
             .iter()
             .map(|name| bc::NativeSupport {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol: format!("test::{name}"),
                 abi_version: 1,
                 signature: signature.clone(),

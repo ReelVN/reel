@@ -204,8 +204,14 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
                 })
                 .map(|(pc, _)| pc)
                 .collect();
-            // Tests here use reachable declarations. One static reset site is
-            // revisited on reentry, with the same fixed BindingId.
+            // A fresh plain activation supplies empty value roots. Other
+            // scopes retain a static reset site, revisited on reentry with the
+            // same BindingId; cell creation always remains explicit.
+            if resets.is_empty() && matches!(b.storage, bc::BindingStorage::Value(_)) {
+                assert_eq!(f.kind, bc::FunctionKind::Plain);
+                preparations[identity.binding.index()] = Some(None);
+                continue;
+            }
             assert_eq!(
                 resets.len(),
                 1,
@@ -213,7 +219,7 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
                 m.hir().name(s.name)
             );
             let pc = resets[0];
-            preparations[identity.binding.index()] = Some(pc);
+            preparations[identity.binding.index()] = Some(Some(pc));
             let mapped = aside_compiler::TextRange::new(
                 source_span(f, pc).start.into(),
                 source_span(f, pc).end.into(),
@@ -279,12 +285,23 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
                 }
             }
             for b in uses {
-                if let Some(reset) = preparations[b.index()] {
-                    assert!(
-                        reset < pc && dom[pc][reset],
-                        "binding {} not prepared on all CFG paths to PC {pc}",
-                        b.0
-                    );
+                if let Some(preparation) = preparations[b.index()] {
+                    if let Some(reset) = preparation {
+                        assert!(
+                            reset < pc && dom[pc][reset],
+                            "binding {} not prepared on all CFG paths to PC {pc}",
+                            b.0
+                        );
+                    } else {
+                        assert!(matches!(
+                            f.bindings[b.index()].storage,
+                            bc::BindingStorage::Value(_)
+                        ));
+                        assert_eq!(
+                            f.bindings[b.index()].initialization,
+                            bc::BindingInitialization::Explicit
+                        );
+                    }
                 } else {
                     assert!(matches!(
                         f.bindings[b.index()].initialization,
@@ -348,12 +365,19 @@ fn root_exports_shadowing_forward_recursion_and_shared_capture_sources() {
             .find(|(_, i)| {
                 (i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == b.0) || clears(i, b.0)
             })
-            .map(|(pc, _)| pc)
-            .unwrap();
-        assert!(
-            reset < closure,
-            "every slot must be prepared before the first named closure"
-        );
+            .map(|(pc, _)| pc);
+        if let Some(reset) = reset {
+            assert!(
+                reset < closure,
+                "every slot must be prepared before the first named closure"
+            );
+        } else {
+            assert_eq!(f.kind, bc::FunctionKind::Plain);
+            assert!(matches!(
+                f.bindings[b.index()].storage,
+                bc::BindingStorage::Value(_)
+            ));
+        }
     }
     assert!(function(p, "root").captures.is_empty());
     for name in ["a", "b", "first"] {

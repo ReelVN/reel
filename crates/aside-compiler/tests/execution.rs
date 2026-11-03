@@ -1167,6 +1167,8 @@ mod sorting {
             });
             functions.push(function);
             support.natives.push(bc::NativeSupport {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol: symbol.into(),
                 abi_version: 1,
                 signature: contract,

@@ -22,6 +22,32 @@ impl FunctionBuilder<'_, '_> {
         n: h::NodeId,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
+        self.expr_use(n, depth, Demand::Value)
+    }
+    pub(super) fn expr_use(
+        &mut self,
+        n: h::NodeId,
+        depth: usize,
+        demand: Demand,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let value = self.expression(n, depth, demand)?;
+        if demand == Demand::Discard {
+            if let Some(value) = value {
+                self.release(value)?;
+            }
+            Ok(None)
+        } else {
+            Ok(value)
+        }
+    }
+    pub(super) fn discard(&mut self, n: h::NodeId, depth: usize) -> Result<(), Box<Error>> {
+        self.expr_use(n, depth, Demand::Discard).map(|_| ())
+    }
+    pub(super) fn expression_depth(
+        &mut self,
+        n: h::NodeId,
+        depth: usize,
+    ) -> Result<usize, Box<Error>> {
         self.l.b.span = self.span(n);
         self.l.b.work(1)?;
         if depth >= self.l.b.limits.max_depth {
@@ -30,9 +56,17 @@ impl FunctionBuilder<'_, '_> {
                 .b
                 .error(ErrorKind::Limit, "source lowering depth exceeded"));
         }
+        Ok(depth + 1)
+    }
+    fn expression(
+        &mut self,
+        n: h::NodeId,
+        depth: usize,
+        demand: Demand,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let depth = self.expression_depth(n, depth)?;
         let kind = self.l.m.hir().node(n).kind;
         let form = self.l.m.hir().node(n).form;
-        let depth = depth + 1;
         if matches!(kind, H::Name | H::Member)
             && let Some(value) = self.l.external_constant(n)?
         {
@@ -55,21 +89,21 @@ impl FunctionBuilder<'_, '_> {
                 | Form::Index { chain: true, .. }
                 | Form::Call { chain: true, .. },
             ) => self.optional_chain(n, depth - 1),
-            (H::Module | H::Block, _) => self.block_value(n, kind, form, depth),
+            (H::Module | H::Block, _) => self.block_value(n, kind, form, depth, demand),
             (
                 H::ExpressionStatement,
                 Form::Statement {
                     expression,
                     terminated,
                 },
-            ) => self.statement_value(expression, terminated, depth),
+            ) => self.statement_value(expression, terminated, depth, demand),
             (H::Group, Form::Single { child })
             | (
                 H::ModifiedDeclaration,
                 Form::Modified {
                     declaration: child, ..
                 },
-            ) => self.expr(child, depth),
+            ) => self.expr_use(child, depth, demand),
             (
                 H::Let,
                 Form::Binding {
@@ -103,6 +137,23 @@ impl FunctionBuilder<'_, '_> {
             (H::Index | H::Member, _) => self.flat_chain(n, depth),
             (H::Prefix, Form::Unary { operator, value }) => {
                 self.prefix_value(n, operator, value, depth)
+            }
+            (
+                H::Binary,
+                Form::Binary {
+                    left,
+                    operator,
+                    right,
+                },
+            ) if demand == Demand::Discard
+                && matches!(operator.kind, K::AndAnd | K::OrOr | K::QuestionQuestion) =>
+            {
+                if operator.kind == K::QuestionQuestion {
+                    self.discard_coalesce(n, left, right, depth)?;
+                } else {
+                    self.discard_logical(n, depth)?;
+                }
+                Ok(None)
             }
             (H::Binary, _) => self.flat_chain(n, depth),
             (
@@ -148,7 +199,7 @@ impl FunctionBuilder<'_, '_> {
                     body,
                     otherwise,
                 },
-            ) => self.condition(n, condition, body, otherwise, depth),
+            ) => self.condition(n, condition, body, otherwise, depth, demand),
             (H::Match, Form::Match { value }) => self.match_value(n, value, depth),
             (H::Call, Form::Call { chain: false, .. }) => self.flat_chain(n, depth),
             (H::Return, Form::Transfer { value, .. }) => self.return_value(n, value, depth),
@@ -206,7 +257,7 @@ impl FunctionBuilder<'_, '_> {
                 self.for_node(n, pattern, source, body, depth)?;
                 Ok(None)
             }
-            (H::Label, Form::Label { body, .. }) => self.expr(body, depth),
+            (H::Label, Form::Label { body, .. }) => self.expr_use(body, depth, demand),
             (H::Break | H::Continue, _) => self.loop_transfer(n, kind),
             _ => Err(self.l.b.error(
                 ErrorKind::Unsupported,
@@ -220,6 +271,7 @@ impl FunctionBuilder<'_, '_> {
         kind: H,
         form: Form,
         depth: usize,
+        demand: Demand,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
         self.enter_scope(n)?;
         let tail = match form {
@@ -249,14 +301,23 @@ impl FunctionBuilder<'_, '_> {
             if let Some(old) = result.take() {
                 self.release(old)?;
             }
-            let value = self.expr(child, depth)?;
+            let value = self.expr_use(
+                child,
+                depth,
+                if tail == Some(child) {
+                    demand
+                } else {
+                    Demand::Discard
+                },
+            )?;
             if tail == Some(child) {
                 result = value;
             } else if let Some(value) = value {
                 self.release(value)?;
             }
         }
-        if self.current.is_some() && result.is_none() && kind == H::Block {
+        if demand == Demand::Value && self.current.is_some() && result.is_none() && kind == H::Block
+        {
             result = Some(self.constant(bc::Const::Null, n)?);
         }
         Ok(result)
@@ -266,10 +327,20 @@ impl FunctionBuilder<'_, '_> {
         expression: h::NodeId,
         terminated: bool,
         depth: usize,
+        demand: Demand,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
-        let value = self.expr(expression, depth)?;
+        let collects = self.collector.is_some() && self.collects(expression);
+        let value = self.expr_use(
+            expression,
+            depth,
+            if collects || (!terminated && demand == Demand::Value) {
+                Demand::Value
+            } else {
+                Demand::Discard
+            },
+        )?;
         if let (Some(collector), Some(value)) = (self.collector, value)
-            && self.collects(expression)
+            && collects
         {
             self.op(
                 bc::Opcode::ChildrenPush,
@@ -279,7 +350,7 @@ impl FunctionBuilder<'_, '_> {
                 expression,
             )?;
         }
-        if terminated {
+        if terminated || demand == Demand::Discard {
             if let Some(value) = value {
                 self.release(value)?;
             }
@@ -539,52 +610,53 @@ impl FunctionBuilder<'_, '_> {
         yes: h::NodeId,
         no: Option<h::NodeId>,
         depth: usize,
+        demand: Demand,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
         if let Some(selected) = self.l.constant_condition(condition)? {
             return match if selected { Some(yes) } else { no } {
-                Some(branch) => self.expr(branch, depth),
-                None => self.constant(bc::Const::Null, n).map(Some),
+                Some(branch) => self.expr_use(branch, depth, demand),
+                None if demand == Demand::Value => self.constant(bc::Const::Null, n).map(Some),
+                None => Ok(None),
             };
         }
-        let Some(condition) = self.value(condition, depth)? else {
-            return Ok(None);
-        };
-        let out = self.temp()?;
         let yes_block = self.block()?;
         let no_block = self.block()?;
         let join = self.block()?;
-        self.terminate(
-            Terminator::BranchBool {
-                value: condition,
-                yes: yes_block,
-                no: no_block,
-            },
-            n,
-        )?;
-        self.release(condition)?;
+        if !self.branch_to(condition, n, yes_block, no_block, depth)? {
+            return Ok(None);
+        }
+        let out = if demand == Demand::Value {
+            Some(self.temp()?)
+        } else {
+            None
+        };
         let mut falls = false;
         for (block, branch) in [(yes_block, Some(yes)), (no_block, no)] {
             self.start(block)?;
             let value = match branch {
-                Some(branch) => self.expr(branch, depth)?,
+                Some(branch) => self.expr_use(branch, depth, demand)?,
                 None => None,
             };
             if self.current.is_some() {
-                let value = match value {
-                    Some(value) => value,
-                    None => self.constant(bc::Const::Null, n)?,
-                };
-                self.op(bc::Opcode::Move, out.0, value.0, 0, n)?;
-                self.release(value)?;
+                if let Some(out) = out {
+                    let value = match value {
+                        Some(value) => value,
+                        None => self.constant(bc::Const::Null, n)?,
+                    };
+                    self.op(bc::Opcode::Move, out.0, value.0, 0, n)?;
+                    self.release(value)?;
+                }
                 self.terminate(Terminator::Jump(join), n)?;
                 falls = true;
             }
         }
         if falls {
             self.start(join)?;
-            Ok(Some(out))
+            Ok(out)
         } else {
-            self.release(out)?;
+            if let Some(out) = out {
+                self.release(out)?;
+            }
             Ok(None)
         }
     }
@@ -612,29 +684,18 @@ impl FunctionBuilder<'_, '_> {
             },
         )?;
         if let Some(condition) = condition {
-            let Some(value) = self.value(condition, depth)? else {
+            if !self.branch_to(condition, n, body_block, end, depth)? {
                 let target = self.loops.pop().expect("installed loop target");
                 if target.has_break {
                     self.start(end)?;
                 }
                 return Ok(());
-            };
-            self.terminate(
-                Terminator::BranchBool {
-                    value,
-                    yes: body_block,
-                    no: end,
-                },
-                n,
-            )?;
-            self.release(value)?;
+            }
         } else {
             self.terminate(Terminator::Jump(body_block), n)?;
         }
         self.start(body_block)?;
-        if let Some(value) = self.expr(body, depth)? {
-            self.release(value)?;
-        }
+        self.discard(body, depth)?;
         if self.current.is_some() {
             self.terminate(Terminator::Jump(head), n)?;
         }
@@ -668,9 +729,7 @@ impl FunctionBuilder<'_, '_> {
         self.start(body_block)?;
         self.protected_depth += 1;
         let mut falls = false;
-        if let Some(value) = self.expr(body, depth)? {
-            self.release(value)?;
-        }
+        self.discard(body, depth)?;
         if self.current.is_some() {
             self.terminate(Terminator::Leave(after), n)?;
             falls = true;
@@ -709,9 +768,7 @@ impl FunctionBuilder<'_, '_> {
             self.write(sym, exception, true, catch)?;
             self.release(exception)?;
             self.protected_depth += 1;
-            if let Some(value) = self.expr(body, depth)? {
-                self.release(value)?;
-            }
+            self.discard(body, depth)?;
             if self.current.is_some() {
                 self.terminate(Terminator::Leave(after), catch)?;
                 falls = true;
@@ -727,9 +784,7 @@ impl FunctionBuilder<'_, '_> {
             let block = self.block()?;
             let begin = self.ir.layout.len() as u32;
             self.start(block)?;
-            if let Some(value) = self.expr(child, depth)? {
-                self.release(value)?;
-            }
+            self.discard(child, depth)?;
             if self.current.is_none() {
                 let end = self.block()?;
                 self.start(end)?;

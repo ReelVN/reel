@@ -1,6 +1,8 @@
 //! Bounded, non-owning positions for named member lookups. A hint never owns a
 //! value. A full object generation and structural version can reuse a proven
-//! key position; other receivers validate its current key. Snapshots restore cold.
+//! key position or an absent member at the table's length. Absence requires the
+//! same receiver and structure; other receivers validate existing key positions.
+//! Snapshots restore cold.
 //! Tables and classes use separate fixed stores: class reads cannot evict table
 //! positions whose hit/miss paths have different budgeted work. Classes guard
 //! the member array's content version and recheck symbol/static keys.
@@ -90,7 +92,7 @@ impl Vm {
         symbol: SymbolId,
     ) -> Result<bool, VmError> {
         let name = self.program.package().symbols[symbol.index()].as_bytes();
-        let (key, _) = self.heap.table_entry(table, entry)?;
+        let key = self.heap.table_key(table, entry)?;
         if key.tag() != ValueTag::Object {
             return Ok(false);
         }

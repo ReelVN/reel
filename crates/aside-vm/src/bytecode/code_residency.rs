@@ -378,6 +378,18 @@ pub(crate) struct CodeWindow {
     page: Option<Arc<CodePage>>,
 }
 impl CodeWindow {
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub(crate) fn contains(&self, store: &Arc<CodeStore>, start: usize, end: usize) -> bool {
+        self.page.as_ref().is_some_and(|page| {
+            start < end
+                && page.index as usize == start / PAGE_WORDS
+                && (end - 1) / PAGE_WORDS == start / PAGE_WORDS
+                && self
+                    .store
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, store))
+        })
+    }
     /// One identity/page check admits the maximum four-word instruction window.
     /// The final three words of a page use the fallible cross-page path.
     #[inline]

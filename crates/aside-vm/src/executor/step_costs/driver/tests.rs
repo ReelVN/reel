@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::step_costs::Part;
 use crate::executor::*;
 
 fn vm() -> Vm {
@@ -16,7 +17,31 @@ fn closed(row: DriverCost) {
         row.run_ns,
         row.scalar_ns + row.script_ns + row.native_ns + row.loop_ns
     );
-    assert!(row.budget_clock_ns <= row.loop_ns);
+    assert!(row.budget_clock_ns <= row.run_ns);
+    let parts = row.lifecycle;
+    assert_eq!(parts.errors, 0);
+    assert_eq!(parts.run_ns, row.run_ns);
+    assert_eq!(
+        parts.unattributed_by_outer_ns.iter().sum::<u64>(),
+        parts.unattributed_ns
+    );
+    for (other, outer) in parts.unattributed_by_outer_ns.into_iter().zip([
+        row.scalar_ns,
+        row.script_ns,
+        row.native_ns,
+        row.loop_ns,
+    ]) {
+        assert!(
+            other <= outer,
+            "unattributed time exceeds its outer dispatch"
+        );
+    }
+    assert_eq!(
+        parts.parts.iter().map(|part| part.wall_ns).sum::<u64>()
+            + parts.unattributed_ns
+            + parts.observer_ns,
+        row.run_ns
+    );
     assert_eq!(row.calibration_pairs, row.samples);
     assert!(row.calibration_ns <= row.entry_ns);
     assert_eq!(row.loop_gap_errors, 0);
@@ -62,7 +87,10 @@ fn selected_slices_close_independently_of_stage_eligibility_denominators() {
     assert_eq!(costs.samples, 2);
     assert_eq!(costs.budget_clock_queries, 2);
     assert_eq!(costs.sampled_instructions, 0);
-    assert_eq!(costs.observer_clock_queries, 16);
+    assert_eq!(
+        costs.observer_clock_queries,
+        16 + costs.lifecycle.observer_clock_queries
+    );
     assert_eq!(costs.loop_iterations, 2);
     assert_eq!(costs.first_dispatch_gaps, 0);
     let steps = vm.step_costs();
@@ -94,6 +122,11 @@ fn dispatch_and_error_results_keep_a_closed_observation() {
     closed(costs);
     assert_eq!(costs.samples, 1);
     assert_eq!(costs.sampled_instructions, 3);
+    // This real main -> helper -> native path enters fallback dispatch and
+    // opens nested named operations after its outer phase has been selected.
+    for part in [Part::CallPushScript, Part::RootOpen, Part::NativePrepare] {
+        assert!(costs.lifecycle.parts[part as usize].calls > 0);
+    }
     assert_eq!(costs.budget_clock_queries, 0);
     assert!(costs.observer_clock_queries >= 6);
     vm.respond(ticket, HostResponse::Ready(Value::int(42)))
@@ -211,12 +244,146 @@ fn gap_edges_reuse_driver_queries_and_unobserved_control_marks_are_erased() {
     closed(row);
     // Existing reads: three entry/calibration, run begin/end, three span pairs,
     // and the final slice end. Gaps/control marks add no clock query.
-    assert_eq!(row.observer_clock_queries, 12);
+    assert_eq!(
+        row.observer_clock_queries,
+        12 + row.lifecycle.observer_clock_queries
+    );
     assert_eq!(row.loop_iterations, 3);
     assert_eq!(row.loop_cancelling, 0);
     assert_eq!(row.first_dispatch_gaps, 1);
     assert_eq!(row.classified_dispatch_gaps, 2);
     assert_eq!(row.final_dispatch_gaps, 1);
+}
+
+#[test]
+fn operation_sampling_preserves_supplied_clocks_meter_and_native_results() {
+    let trace = |sampling| {
+        let mut vm = vm();
+        vm.step_costs.set_driver_sampling(Some(sampling));
+        let task = vm
+            .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+            .unwrap();
+        let mut budget = SliceBudget {
+            instructions: 1,
+            work: 1,
+            allocation_bytes: 0,
+            deadline_ns: Some(u64::MAX),
+        };
+        let mut trace = Vec::new();
+        for _ in 0..1000 {
+            let mut clocks = 0;
+            let outcome = vm
+                .run_slice(task, budget, || {
+                    clocks += 1;
+                    0
+                })
+                .unwrap();
+            let kind = match outcome {
+                RunOutcome::BudgetYield(_) => 0,
+                RunOutcome::HostCall(_) => 1,
+                RunOutcome::Returned(_) => 2,
+                _ => panic!("unexpected native fixture result"),
+            };
+            trace.push((vm.last_usage, clocks, kind));
+            match outcome {
+                RunOutcome::BudgetYield(usage) => {
+                    budget.work = budget.work.max(usage.required_work);
+                    budget.allocation_bytes = usage.required_allocation;
+                }
+                RunOutcome::HostCall(ticket) => {
+                    assert_eq!(vm.host_arguments(ticket).unwrap()[0].as_int(), Some(41));
+                    vm.respond(ticket, HostResponse::Ready(Value::int(42)))
+                        .unwrap();
+                }
+                RunOutcome::Returned(delivery) => {
+                    assert_eq!(vm.delivery_value(delivery).unwrap().as_int(), Some(42));
+                    closed(vm.driver_costs());
+                    return trace;
+                }
+                _ => unreachable!(),
+            }
+        }
+        panic!("native fixture did not progress")
+    };
+    assert_eq!(trace(false), trace(true));
+}
+
+struct RestoreTiming(bool);
+impl Drop for RestoreTiming {
+    fn drop(&mut self) {
+        set_profiling_enabled(self.0);
+    }
+}
+
+#[test]
+fn thread_timing_gate_is_latched_at_slice_entry_and_off_does_not_observe() {
+    let _restore = RestoreTiming(set_profiling_enabled(false));
+    let mut vm = vm();
+    vm.step_costs.set_driver_sampling(Some(true));
+    let task = vm
+        .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+        .unwrap();
+    let budget = SliceBudget {
+        deadline_ns: Some(0),
+        ..Default::default()
+    };
+    let before = vm.driver_costs();
+    let mut clocks = 0;
+    assert!(matches!(
+        vm.run_slice(task, budget, || {
+            clocks += 1;
+            set_profiling_enabled(true);
+            0
+        })
+        .unwrap(),
+        RunOutcome::BudgetYield(_)
+    ));
+    assert_eq!(vm.driver_costs(), before);
+    assert_eq!(vm.step_costs(), [StepCost::default(); STEP_NAMES.len()]);
+    assert!(matches!(
+        vm.run_slice(task, budget, || {
+            clocks += 1;
+            set_profiling_enabled(false);
+            0
+        })
+        .unwrap(),
+        RunOutcome::BudgetYield(_)
+    ));
+    let observed = vm.driver_costs();
+    assert_eq!(
+        (
+            observed.calls,
+            observed.samples,
+            observed.budget_clock_queries
+        ),
+        (1, 1, 1)
+    );
+    closed(observed);
+    assert!(matches!(
+        vm.run_slice(task, budget, || {
+            clocks += 1;
+            0
+        })
+        .unwrap(),
+        RunOutcome::BudgetYield(_)
+    ));
+    assert_eq!(vm.driver_costs(), observed);
+    assert_eq!(clocks, 3);
+}
+
+#[test]
+fn timing_gate_is_local_to_the_vm_execution_thread() {
+    let _restore = RestoreTiming(set_profiling_enabled(false));
+    assert!(
+        std::thread::spawn(|| {
+            let prior = set_profiling_enabled(false);
+            set_profiling_enabled(prior);
+            prior
+        })
+        .join()
+        .unwrap()
+    );
+    assert!(!set_profiling_enabled(false));
 }
 
 #[test]

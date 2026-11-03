@@ -1,4 +1,5 @@
 //! Moving tickets, including returned output, keeps resident bytes charged once.
+pub mod collections;
 use crate::result::{RejectCode, RejectReason, Rejected};
 use std::sync::{Arc, Mutex};
 

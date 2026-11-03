@@ -2,7 +2,85 @@
 use super::*;
 
 impl Vm {
+    pub(super) fn commit_work(&self, ret: ReturnTo) -> u64 {
+        match ret {
+            ReturnTo::Native { frame } => {
+                match self.index(frame).ok().map(|i| self.active.frames.data[i]) {
+                    Some(Frame::Native(n)) => {
+                        2 * (n.fault_count as u64 + n.continuation_len as u64) + 8
+                    }
+                    _ => 8,
+                }
+            }
+            _ => 2,
+        }
+    }
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
+    pub(super) fn release_frame(&mut self, f: Frame) -> Result<(), VmError> {
+        part_cost!(self.step_costs, RootRelease, self.release_frame_inner(f))
+    }
+    fn release_frame_inner(&mut self, f: Frame) -> Result<(), VmError> {
+        match f {
+            Frame::Script(s) => {
+                if s.generator {
+                    self.generator_abandon(s)?;
+                }
+                if s.derived_bridge.is_some() {
+                    self.heap.end_derived(self.value(s.env, 4)?)?;
+                }
+                if s.derived_bridge.is_none() || matches!(s.phase, ScriptPhase::Class(_)) {
+                    self.abort_class(&s)?;
+                }
+                for r in [s.regs, s.env, s.args, s.bound] {
+                    self.slots.release(&mut self.heap, r)?;
+                }
+            }
+            Frame::Native(n) => {
+                if let Some(output) = n.derived_output {
+                    self.heap.end_derived(output)?;
+                }
+                if self
+                    .active
+                    .model_copy
+                    .as_ref()
+                    .is_some_and(|copy| copy.frame == n.id)
+                {
+                    self.active.model_copy = None;
+                }
+                if let Some(r) = n.bindings {
+                    self.slots.release(&mut self.heap, r)?;
+                }
+                for r in [n.args, n.bound, n.roots] {
+                    self.slots.release(&mut self.heap, r)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub(super) fn equality_phase_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        meter: &mut Meter,
+    ) -> Result<bool, VmError> {
+        #[cfg(feature = "profiling")]
+        let span = self.step_costs.start_part(
+            if s.table_work
+                .as_ref()
+                .is_some_and(|work| work.named_read(s.member_symbol))
+            {
+                step_costs::Part::NamedEq
+            } else {
+                step_costs::Part::StructuralEq
+            },
+        );
+        let result = self.equality_phase_inner(s, meter);
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_part(span, None);
+        result
+    }
+    fn equality_phase_inner(
         &mut self,
         s: &mut ScriptFrame,
         meter: &mut Meter,
@@ -53,7 +131,7 @@ impl Vm {
                                         awaited: None,
 
                                         kind,
-                                        location: self.loc(*s, s.pc),
+                                        location: self.loc(s.code, s.pc),
                                     }),
                                     skip: None,
                                 };
@@ -209,7 +287,7 @@ impl Vm {
     }
     pub(super) fn select_exit_handler(
         &self,
-        s: ScriptFrame,
+        s: &ScriptFrame,
         origin: Pc,
         reason: ExitReason,
         skip: Option<RegionId>,
@@ -236,7 +314,7 @@ impl Vm {
     }
     pub(super) fn superseded_unwind(
         &self,
-        s: ScriptFrame,
+        s: &ScriptFrame,
         origin: Pc,
         reason: ExitReason,
         handler: Option<HandlerTarget>,
@@ -324,7 +402,7 @@ impl Vm {
                     CauseInfo {
                         event,
                         kind,
-                        location: self.loc(*s, origin),
+                        location: self.loc(s.code, origin),
                         fault: old_fault,
                         value: old_value,
                     },
@@ -582,7 +660,25 @@ impl Vm {
         }
         Ok(true)
     }
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub(super) fn native_step(
+        &mut self,
+        n: NativeFrame,
+        m: &mut Meter,
+    ) -> Result<Option<RunOutcome>, VmError> {
+        #[cfg(feature = "profiling")]
+        let span = self.step_costs.start_part(match n.phase {
+            NativePhase::Resume(_) | NativePhase::Issue(_) => step_costs::Part::NativeResume,
+            NativePhase::Commit(_) => step_costs::Part::NativeCommit,
+            NativePhase::Release(_) => step_costs::Part::NativeRelease,
+            _ => step_costs::Part::NativePrepare,
+        });
+        let result = self.native_step_inner(n, m);
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_part(span, None);
+        result
+    }
+    fn native_step_inner(
         &mut self,
         mut n: NativeFrame,
         m: &mut Meter,
@@ -767,13 +863,54 @@ impl Vm {
                 }
             }
             NativePhase::Resume(input) | NativePhase::Issue(input) => {
-                if !m.take(0, 1, 0) {
+                let projecting = matches!(n.phase, NativePhase::Resume(_)) && n.bindings.is_some();
+                let derived_commit = input == NativeInput::CallbackReturned
+                    && n.inline_argument
+                    && n.derived_output.is_some()
+                    && self.native_parameters.data[n.native.index()].standard_derived_commit;
+                let leaf = if input == NativeInput::Entry && !projecting {
+                    self.native_parameters.data[n.native.index()].read_only_leaf
+                } else {
+                    None
+                };
+                let work = if derived_commit {
+                    2
+                } else {
+                    leaf.map_or(1, |leaf| u64::from(leaf.work))
+                };
+                if !m.take(0, work, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
-                if matches!(n.phase, NativePhase::Resume(_)) && n.bindings.is_some() {
+                if projecting {
                     n.phase = NativePhase::Project { index: 0, input };
                     self.active.frames.data[top] = Frame::Native(n);
                     return Ok(None);
+                }
+                if derived_commit {
+                    self.commit_standard_derived(&mut n)?;
+                    self.active.frames.data[top] = Frame::Native(n);
+                    m.clock_steps = 0;
+                    return Ok(None);
+                }
+                if let Some(leaf) = leaf {
+                    let arguments = if n.inline_argument {
+                        self.slots.borrow_initialized_window(n.roots, 1, 1)?
+                    } else {
+                        self.slots.borrow_initialized(n.bound)?
+                    };
+                    if let Some(value) = part_cost!(
+                        self.step_costs,
+                        NativeLeafInvoke,
+                        (leaf.invoke)(&self.heap, arguments)
+                    ) {
+                        self.put(n.roots, 0, value)?;
+                        n.pending_fault = None;
+                        n.phase = NativePhase::Commit(false);
+                        self.active.frames.data[top] = Frame::Native(n);
+                        // Preserve the supplied-clock boundary after native work.
+                        m.clock_steps = 0;
+                        return Ok(None);
+                    }
                 }
                 let serial = self.serial()?;
                 let ticket = self.make_ticket(&n, self.active.task_id.unwrap(), serial, input);

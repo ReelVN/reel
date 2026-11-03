@@ -28,9 +28,7 @@ impl FunctionBuilder<'_, '_> {
         let previous = self.collector.replace(children);
         let no_wait = std::mem::replace(&mut self.no_wait, true);
         for body in self.l.m.hir().children(node) {
-            if let Some(value) = self.expr(body, depth)? {
-                self.release(value)?;
-            }
+            self.discard(body, depth)?;
             if self.current.is_none() {
                 break;
             }
@@ -102,9 +100,7 @@ impl FunctionBuilder<'_, '_> {
                 has_break: false,
             },
         )?;
-        if let Some(value) = self.expr(body, depth)? {
-            self.release(value)?;
-        }
+        self.discard(body, depth)?;
         if self.current.is_some() {
             self.terminate(Terminator::Jump(head), node)?;
         }

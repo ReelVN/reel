@@ -67,7 +67,7 @@ impl Vm {
             module: s.module,
             context: s.context,
             effects: s.effects,
-            location: self.loc(*s, call),
+            location: self.loc(s.code, call),
             ret: ReturnTo::Register {
                 frame: s.id,
                 reg: dest,
@@ -76,7 +76,7 @@ impl Vm {
         };
         let index = self.index(s.id).map_err(vm_fault)?;
         s.pc = s.instruction_end;
-        self.publish_script_frame(index, s);
+        self.publish_script_cursor(index, s);
         if let Err(error) =
             self.push_native(native, ArgSource::Await { frame: s.id, value }, 1, site)
         {

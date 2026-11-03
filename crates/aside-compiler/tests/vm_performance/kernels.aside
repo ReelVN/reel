@@ -170,6 +170,32 @@ fn reactive_fields(n: int) -> int {
     result
 }
 
+class WideFields {
+    let a: int = 1;
+    let b: int = 2;
+    let c: int = 3;
+    let d: int = 4;
+    let e: int = 5;
+    let f: int = 6;
+    let g: int = 7;
+    let h: int = 8;
+}
+
+// Eight class members make each read cost 21 work, doubled in a derived read.
+fn reactive_wide_fields(n: int) -> int {
+    let fields = WideFields();
+    let state = bench_model({value: 0});
+    let value = bench_derive(|| state.value + fields.a + fields.b + fields.c + fields.d
+        + fields.e + fields.f + fields.g + fields.h);
+    let mut result = 0;
+    for i in 0..n {
+        state.value = i;
+        bench_flush();
+        result += value.value;
+    }
+    result
+}
+
 fn text_compare(n: int) -> int {
     let left = "The clock advances while the whole scene keeps moving, including its text and menus.";
     let right = "The clock advances while the whole scene keeps moving, including its text and " + "menus.";

@@ -484,18 +484,24 @@ impl Heap {
         if !object.model && object.observable_fields == 0 {
             return Ok(());
         }
-        if let Some(output) = self.reactive_capture
-            && let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?
-            && !dependencies.same_bits(Value::NULL)
-        {
-            let source_value = Value::object(self.id, source.data().as_ffi());
-            let Payload::Dependencies(capture) = &self.object(self.key(dependencies)?)?.payload
-            else {
-                unreachable!()
-            };
-            if capture.overlaps(source_value, field) {
-                self.enqueue_derived(self.key(output)?);
+        // A nested refresh completes before its parent's pending read. Active
+        // observers subscribe through reads already captured in this evaluation;
+        // their previous committed edges describe the previous evaluation.
+        let mut active = self.reactive_capture;
+        while let Some(output) = active {
+            let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
+            if !dependencies.same_bits(Value::NULL) {
+                let source_value = Value::object(self.id, source.data().as_ffi());
+                let Payload::Dependencies(capture) = &self.object(self.key(dependencies)?)?.payload
+                else {
+                    unreachable!()
+                };
+                if capture.overlaps(source_value, field) {
+                    self.enqueue_derived(self.key(output)?);
+                }
             }
+            let parent = self.host_payload(output, DerivedSlot::Parent as u32)?;
+            active = (!parent.same_bits(Value::NULL)).then_some(parent);
         }
         let subscribers = self.object(source)?.reactive_subscribers;
         if subscribers.same_bits(Value::NULL) {
@@ -514,6 +520,16 @@ impl Heap {
             i += 2;
             if selector.as_int() != Some(-1)
                 && field.is_some_and(|f| selector.as_int() != Some(i64::from(f)))
+            {
+                continue;
+            }
+            if self
+                .host_payload(output, DerivedSlot::Evaluation as u32)?
+                .as_int()
+                != Some(0)
+                && !self
+                    .host_payload(output, DerivedSlot::Candidate as u32)?
+                    .same_bits(Value::NULL)
             {
                 continue;
             }

@@ -22,6 +22,8 @@ pub use aside_syntax::{GreenNode, TextRange, TextSize};
 pub use diagnostic::*;
 pub use format::{FormatError, format, format_parsed};
 pub use lexer::{Lexed, Token, lex, lex_with_limits};
+/// Shared source indexing for diagnostics and editor protocol adapters.
+pub use line_index::{LineCol, LineIndex, WideEncoding, WideLineCol};
 pub use parser::{EntryPoint, Parse, ParseOptions, parse, parse_with_options};
 pub use syntax::*;
 /// Pinned Unicode XID table version used by this package.

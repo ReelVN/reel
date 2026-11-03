@@ -81,6 +81,8 @@ fn fixture() -> Vm {
         bc::RuntimeSupport {
             host_types: Vec::new(),
             natives: vec![bc::NativeSupport {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol: "host::await_request".into(),
                 abi_version: 1,
                 signature: sig,
@@ -484,6 +486,8 @@ fn snapshot_restores_shared_graph_cells_classes_faults_waits_and_rejects_stale_c
     let support = bc::RuntimeSupport {
         host_types: Vec::new(),
         natives: vec![bc::NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::await_request".into(),
             abi_version: 1,
             signature: p.signatures[p.natives[0].signature.index()].clone(),

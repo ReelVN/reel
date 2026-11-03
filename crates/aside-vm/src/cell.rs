@@ -52,7 +52,7 @@ impl Heap {
             Float => tag == ValueTag::Float,
             _ if tag != ValueTag::Object => false,
             _ => {
-                let kind = self.info(value)?.kind;
+                let kind = self.read_object(value)?.kind();
                 matches!(
                     (ty, kind),
                     (String, ObjectKind::String)
@@ -77,7 +77,7 @@ impl Heap {
     }
     fn root_value_check(&self, value: Value) -> Result<(), HeapError> {
         if value.tag() == ValueTag::Object {
-            self.info(value)?;
+            self.read_object(value)?;
         }
         Ok(())
     }

@@ -68,6 +68,8 @@ fn parameter_layout_bytes(program: &VerifiedProgram) -> usize {
         - opcode_capacity
         - program.native_call_capacity_bytes()
         - program.compact_derived_capacity_bytes()
+        - program.scalar_suffix_capacity_bytes()
+        - program.scalar_entry_capacity_bytes()
 }
 
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
@@ -487,6 +489,8 @@ fn runtime_must_explicitly_support_all_opcodes_natives_and_capabilities() {
         opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             signature: Signature {
@@ -988,6 +992,8 @@ fn native_requirements_cannot_be_erased_from_untrusted_package_metadata() {
         opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
         capabilities: vec![],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             required_capabilities: vec!["host.echo".into()],
@@ -1096,6 +1102,8 @@ fn runtime_admission_uses_the_saved_work_limit_for_registry_scans() {
         opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             signature: program.package().signatures[0].clone(),

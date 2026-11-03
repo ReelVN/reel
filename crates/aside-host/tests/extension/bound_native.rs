@@ -78,6 +78,8 @@ fn exercise_callable(callable: bool) {
         decorate.contract.clone(),
         bind.contract.clone(),
         NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: "sample::relay".into(),
             abi_version: 1,

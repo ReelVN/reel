@@ -2,8 +2,10 @@
 use super::*;
 mod clears;
 mod equality;
+mod key_comparison;
 mod operand_cost;
 mod search_tests;
+mod table_index;
 
 fn op(opcode: Opcode, a: u32, b: u32, c: u32) -> Instruction {
     Instruction::new(opcode, a, b, c)

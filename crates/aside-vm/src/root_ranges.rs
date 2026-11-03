@@ -73,13 +73,26 @@ pub(crate) struct RangeDescriptor {
     pub len: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum RootProviderState {
+    Detached,
+    Attached,
+    Executing,
+}
+impl RootProviderState {
+    pub(crate) fn is_alive(self) -> bool {
+        self != Self::Detached
+    }
+}
+
 pub(crate) struct ByteBook {
     limit: u64,
     used: Cell<u64>,
     peak: Cell<u64>,
     pub heap_alive: Cell<bool>,
     pub attachment: Cell<Option<u64>>,
-    pub provider_alive: Cell<bool>,
+    pub(crate) provider_state: Cell<RootProviderState>,
     shared_refunds: OnceCell<Arc<AtomicUsize>>,
     shared_bytes: Cell<usize>,
 }
@@ -98,7 +111,7 @@ impl HeapBudgetUsage {
             peak: Cell::new(BOOK_BYTES),
             heap_alive: Cell::new(true),
             attachment: Cell::new(None),
-            provider_alive: Cell::new(false),
+            provider_state: Cell::new(RootProviderState::Detached),
             shared_refunds: OnceCell::new(),
             shared_bytes: Cell::new(0),
         }))
@@ -169,6 +182,33 @@ impl HeapBudgetUsage {
                 .checked_sub(bytes)
                 .expect("owned byte reservation"),
         );
+    }
+}
+
+// A VM exclusively owns Heap/FrameSlots during run. The guard owns an existing
+// accounting Rc; Drop ends the proof on every return and unwind. Public
+// FrameSlots operations retain their complete validation.
+pub(crate) struct VmAccessGuard {
+    usage: HeapBudgetUsage,
+    attachment: u64,
+}
+impl VmAccessGuard {
+    pub(crate) fn enter(usage: &HeapBudgetUsage, attachment: u64) -> Self {
+        debug_assert!(usage.0.provider_state.get() == RootProviderState::Attached);
+        usage.0.provider_state.set(RootProviderState::Executing);
+        Self {
+            usage: usage.clone(),
+            attachment,
+        }
+    }
+}
+impl Drop for VmAccessGuard {
+    fn drop(&mut self) {
+        if self.usage.0.attachment.get() == Some(self.attachment)
+            && self.usage.0.provider_state.get() == RootProviderState::Executing
+        {
+            self.usage.0.provider_state.set(RootProviderState::Attached);
+        }
     }
 }
 

@@ -8,6 +8,8 @@ fn support(_p: &BytecodePackage) -> RuntimeSupport {
         opcodes: vec![],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             signature: Signature {
@@ -1026,6 +1028,8 @@ fn native_default_registry(closures: bool) -> RuntimeSupport {
         opcodes: vec![],
         capabilities: vec!["host.parameter_defaults".into()],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::parameter_defaults".into(),
             abi_version: 1,
             signature: Signature {

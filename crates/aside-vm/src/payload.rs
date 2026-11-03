@@ -1,5 +1,7 @@
 use crate::Value;
 use std::collections::BTreeMap;
+pub(crate) mod table;
+pub(crate) use table::Table;
 
 pub const VALUE_CHUNK_LEN: usize = 64;
 pub const BYTE_CHUNK_LEN: usize = 1024;
@@ -478,7 +480,7 @@ pub(crate) enum Payload {
     Cell(crate::cell::CellState),
     Fault(crate::fault::FaultPayload),
     Values(Values),
-    Table(Values),
+    Table(Table),
     Dependencies(Box<crate::dependencies::Dependencies>),
     Bytes(Bytes),
     Empty,
@@ -487,7 +489,7 @@ impl Payload {
     pub fn edge(&self, cursor: u32) -> Option<Value> {
         match self {
             Self::Cell(v) if cursor == 0 => v.value,
-            Self::Values(v) | Self::Table(v) => v.get(cursor),
+            Self::Values(v) | Self::Table(Table { values: v, .. }) => v.get(cursor),
             Self::Dependencies(d) => d.values.get(cursor),
             Self::Fault(p) => p.edges.get(cursor as usize).copied(),
             _ => None,
@@ -496,7 +498,7 @@ impl Payload {
     pub fn len(&self) -> u32 {
         match self {
             Self::Cell(v) => u32::from(v.value.is_some()),
-            Self::Values(v) | Self::Table(v) => v.len,
+            Self::Values(v) | Self::Table(Table { values: v, .. }) => v.len,
             Self::Dependencies(d) => d.values.len,
             Self::Fault(_) => 3,
             Self::Bytes(b) => b.len,

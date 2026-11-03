@@ -7,7 +7,6 @@ impl Vm {
         s: &mut ScriptFrame,
         m: &mut Meter,
     ) -> Result<bool, VmError> {
-        let top = self.active.frames.data.len() - 1;
         if !m.admits(0, 1, 0) {
             return Ok(false);
         }
@@ -33,11 +32,59 @@ impl Vm {
                 s.instruction_pc = s.pc;
                 decoded
             };
-        s.instruction_end = Pc(next_pc as u32);
-        s.member_symbol = matches!(instruction.opcode, value if value == Opcode::MemberGet as u16 || value == Opcode::MemberSet as u16).then_some(SymbolId(instruction.operands[2]));
-        let mut op = instruction_spec(instruction.opcode)
+        let opcode = instruction_spec(instruction.opcode)
             .expect("verified spec")
             .opcode;
+        self.script_body_instruction(
+            s,
+            m,
+            scalars::BodyInstruction {
+                instruction,
+                opcode,
+                next: Pc(next_pc as u32),
+            },
+        )
+    }
+
+    pub(super) fn script_body_decoded_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        m: &mut Meter,
+        opcode: Opcode,
+    ) -> Result<bool, VmError> {
+        debug_assert!(matches!(s.phase, ScriptPhase::Body));
+        debug_assert_eq!(s.instruction_pc, s.pc);
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.step(&s.phase);
+        self.script_body_instruction(
+            s,
+            m,
+            scalars::BodyInstruction {
+                instruction: s
+                    .instruction
+                    .expect("Body handoff retains its fetched instruction"),
+                opcode,
+                next: s.instruction_end,
+            },
+        )
+    }
+
+    fn script_body_instruction(
+        &mut self,
+        s: &mut ScriptFrame,
+        m: &mut Meter,
+        decoded: scalars::BodyInstruction,
+    ) -> Result<bool, VmError> {
+        let top = self.active.frames.data.len() - 1;
+        let scalars::BodyInstruction {
+            instruction,
+            opcode: mut op,
+            next,
+        } = decoded;
+        let next_pc = next.index();
+        s.instruction_end = next;
+        s.member_symbol = matches!(op, Opcode::MemberGet | Opcode::MemberSet)
+            .then_some(SymbolId(instruction.operands[2]));
         #[cfg(feature = "execution-counts")]
         let admitted_opcode = op;
         let [a, mut b, mut c] = instruction.operands;
@@ -45,18 +92,18 @@ impl Vm {
         if matches!(op, Opcode::IndexGet | Opcode::IndexSet) {
             let object = self
                 .slots
-                .read(at(s.regs, if op == Opcode::IndexGet { b } else { a }))?;
+                .read_vm(at(s.regs, if op == Opcode::IndexGet { b } else { a }))?;
             if object.tag() == ValueTag::Object
                 && matches!(
-                    self.heap.info(object)?.kind,
+                    self.heap.read_object(object)?.kind(),
                     ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
                 )
             {
                 let key = self
                     .slots
-                    .read(at(s.regs, if op == Opcode::IndexGet { c } else { b }))?;
+                    .read_vm(at(s.regs, if op == Opcode::IndexGet { c } else { b }))?;
                 let bytes = if key.tag() == ValueTag::Object {
-                    self.heap.info(key)?.len
+                    self.heap.read_object(key)?.len()
                 } else {
                     0
                 };
@@ -65,7 +112,7 @@ impl Vm {
                 // Check its work before comparing text; register reads do
                 // not re-evaluate the author's object or key expressions.
                 if !m.admits(1, index_work + 1, 0) {
-                    self.publish_script_frame(top, s);
+                    self.publish_body_frame(top, s);
                     return Ok(false);
                 }
                 let name = self
@@ -79,7 +126,7 @@ impl Vm {
                         assert!(m.take(1, index_work + 1, 0));
                         instruction_admitted!(self, admitted_opcode);
                         self.collection_fault(s, kind)?;
-                        self.publish_script_frame(top, s);
+                        self.publish_body_frame(top, s);
                         return Ok(true);
                     }
                 };
@@ -100,7 +147,7 @@ impl Vm {
                 Ok((work, allocation)) => (work + index_work, allocation),
                 Err(error) => {
                     if !m.take(1, 1 + index_work, 0) {
-                        self.publish_script_frame(top, s);
+                        self.publish_body_frame(top, s);
                         return Ok(false);
                     }
                     instruction_admitted!(self, admitted_opcode);
@@ -115,15 +162,27 @@ impl Vm {
                             awaited: None,
 
                             kind: vm_fault(error),
-                            location: self.loc(*s, s.pc),
+                            location: self.loc(s.code, s.pc),
                         }),
                         skip: None,
                     };
-                    self.publish_script_frame(top, s);
+                    self.publish_body_frame(top, s);
                     return Ok(true);
                 }
             };
         let mut cost = (work, allocation);
+        if matches!(op, Opcode::Call | Opcode::CallNoWait)
+            && step_cost!(
+                self,
+                Execute,
+                self.direct_native_leaf(s, Reg(a), DescriptorId(b), next, &plan, cost, m)
+            )?
+        {
+            instruction_admitted!(self, admitted_opcode);
+            execution_count!(self, BytecodeExecutions, 1);
+            self.publish_body_frame(top, s);
+            return Ok(true);
+        }
         let refresh = if op == Opcode::MemberGet {
             let property = if matches!(plan, InstructionPlan::NamedRead(_)) {
                 None
@@ -135,7 +194,7 @@ impl Vm {
                     None
                 }
             } else {
-                let object = self.slots.read(at(s.regs, b))?;
+                let object = self.slots.read_vm(at(s.regs, b))?;
                 if self.heap.is_property_ref(object)
                     && self.program.package().symbols[c as usize] == "value"
                 {
@@ -143,7 +202,7 @@ impl Vm {
                     Some(property)
                 } else if self.heap.reactive_evaluating()
                     && matches!(
-                        self.heap.info(object)?.kind,
+                        self.heap.read_object(object)?.kind(),
                         ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
                     )
                 {
@@ -159,7 +218,7 @@ impl Vm {
                         }
                         Err(kind) => {
                             self.collection_fault(s, kind)?;
-                            self.publish_script_frame(top, s);
+                            self.publish_body_frame(top, s);
                             return Ok(true);
                         }
                     }
@@ -172,7 +231,7 @@ impl Vm {
                     Ok(read) => read,
                     Err(error) => {
                         self.collection_fault(s, vm_fault(error))?;
-                        self.publish_script_frame(top, s);
+                        self.publish_body_frame(top, s);
                         return Ok(true);
                     }
                 }
@@ -186,22 +245,32 @@ impl Vm {
             // Dynamic class indexing resolved its symbol before the
             // final member operation's allocation admission.
             m.usage.work += index_work;
-            self.publish_script_frame(top, s);
+            self.publish_body_frame(top, s);
             return Ok(false);
         }
         if let Some(read) = refresh {
             instruction_admitted!(self, admitted_opcode);
             execution_count!(self, ReactiveSuspensions, 1);
-            self.publish_script_frame(top, s);
+            self.publish_body_frame(top, s);
             if let Err(error) = self.push_reactive_read(s, read) {
                 self.collection_fault(s, vm_fault(error))?;
-                self.publish_script_frame(top, s);
+                self.publish_body_frame(top, s);
             }
             return Ok(true);
         }
         s.instruction = None;
         instruction_admitted!(self, admitted_opcode);
         execution_count!(self, BytecodeExecutions, 1);
+        if let InstructionPlan::NamedRead(read) = &plan
+            && step_cost!(
+                self,
+                Execute,
+                self.direct_named_read(s, read, Reg(a), Reg(b), SymbolId(c), m)
+            )?
+        {
+            self.publish_body_frame(top, s);
+            return Ok(true);
+        }
         let step = step_cost!(
             self,
             Execute,
@@ -217,7 +286,13 @@ impl Vm {
         );
         match step {
             Ok(true) => {
-                self.publish_script_frame(top, s);
+                // Call/await committed this cursor before pushing the successor.
+                if matches!(op, Opcode::Call | Opcode::CallNoWait | Opcode::Await)
+                    && self.active.frames.data.len() != top + 1
+                {
+                    return Ok(true);
+                }
+                self.publish_body_frame(top, s);
                 return Ok(true);
             }
             Ok(false) => {}
@@ -234,13 +309,13 @@ impl Vm {
                         awaited: None,
 
                         kind,
-                        location: self.loc(*s, s.pc),
+                        location: self.loc(s.code, s.pc),
                     }),
                     skip: None,
                 };
             }
         }
-        self.publish_script_frame(top, s);
+        self.publish_body_frame(top, s);
         Ok(true)
     }
 }
