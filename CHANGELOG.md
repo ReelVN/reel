@@ -19,11 +19,15 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Preserve the presentation surface and accepted input geometry on repeated window-size notifications.
 - Prepare the stopped desktop audio stream during output configuration so the first sound reuses it.
 - Size glyph atlas entries for the physical display scale using half-octave cache tiers, including scaled-down canvases.
+- Consume submitted WGPU transition snapshots through queue ordering while retaining producer resources until GPU completion.
+- Skip glyph recording for paragraphs outside the viewport's inline range, retaining font overhangs, decorations and ruby bounds.
+- Omit image draws outside their paint viewport so hidden pages do not request GPU image uploads.
 
 ### Added
 
 - Shader creation, image upload preparation and surface acquisition timing in performance captures.
 - Audio device checks, format queries and native stream control timing in performance captures.
+- Separate font outline, stroke expansion and alpha coverage timing in performance captures.
 
 ## 0.3.0 — 2026-11-03
 

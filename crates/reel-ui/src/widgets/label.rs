@@ -1647,6 +1647,13 @@ mod reveal_tests {
                 ),
                 "horizontal motion with the same visible lines must preserve cached paint"
             );
+            assert!(label.widget.set_paint_viewport(
+                viewport + crate::kurbo::Vec2::new(100_000., 0.),
+                Affine::IDENTITY,
+            ));
+            assert!(label.widget.paint_line_range.is_empty());
+            assert!(label.widget.set_paint_viewport(viewport, Affine::IDENTITY));
+            assert!(!label.widget.paint_line_range.is_empty());
         });
     }
 

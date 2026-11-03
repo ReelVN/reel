@@ -55,6 +55,8 @@ pub struct Image {
     tile_scale: f64,
     corner_colors: Option<[Color; 4]>,
     adjustment: crate::frame::ImageColorAdjustment,
+    content_size: Size,
+    paint_visible: bool,
 }
 
 /// One resident tile, including its sampling gutter. `clip` is its interior in
@@ -106,6 +108,8 @@ impl Image {
             tile_scale: 1.,
             corner_colors: None,
             adjustment: Default::default(),
+            content_size: Size::ZERO,
+            paint_visible: true,
         }
     }
 
@@ -129,6 +133,8 @@ impl Image {
             tile_scale: 1.,
             corner_colors: None,
             adjustment: Default::default(),
+            content_size: Size::ZERO,
+            paint_visible: true,
         }
     }
 
@@ -611,7 +617,22 @@ impl Widget for Image {
         object_fit.measure(axis, len_req, cross_length, preferred_size)
     }
 
-    fn layout(&mut self, _ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, _size: Size) {}
+    fn layout(&mut self, _ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
+        self.content_size = size;
+    }
+
+    fn set_paint_viewport(&mut self, viewport: Rect, content_to_window: Affine) -> bool {
+        // Every image mode clips its own content to this box. Keep a pixel of
+        // edge coverage and leave singular transforms on the complete path.
+        let visible = content_to_window.determinant() == 0.
+            || content_to_window
+                .transform_rect_bbox(self.content_size.to_rect())
+                .inflate(1., 1.)
+                .overlaps(viewport);
+        let changed = visible != self.paint_visible;
+        self.paint_visible = visible;
+        changed
+    }
 
     fn paint(
         &mut self,
@@ -619,6 +640,9 @@ impl Widget for Image {
         props: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
+        if !self.paint_visible {
+            return;
+        }
         ctx.set_image_color(self.color);
         let source_rect = self.color_rect();
         ctx.set_image_sampling_transform(self.slice.is_some() || source_rect.is_some());
@@ -784,5 +808,76 @@ impl Widget for Image {
     }
 }
 
-// FIXME - remove cfg?
-// --- MARK: TESTS
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app::{RenderRoot, RenderRootOptions, VisualLayerKind, VisualLayerPlan, WindowSizePolicy},
+        core::{DefaultProperties, NewWidget},
+        dpi::PhysicalSize,
+        imaging::record::{Command, Draw},
+        peniko::{Blob, Brush, ImageAlphaType, ImageData, ImageFormat},
+    };
+    use std::sync::Arc;
+
+    fn image_draws(plan: &VisualLayerPlan) -> usize {
+        plan.layers.iter().map(|layer| {
+            let VisualLayerKind::Scene(scene) = &layer.kind else { return 0 };
+            scene.commands().iter().filter(|command| {
+                matches!(command, Command::Draw(id) if matches!(scene.draw_op(*id), Draw::Fill { brush: Brush::Image(_), .. }))
+            }).count()
+        }).sum()
+    }
+
+    #[test]
+    fn images_leave_and_reenter_the_paint_viewport_without_replacing_pixels() {
+        let image = ImageData {
+            data: Blob::from(vec![255; 16]),
+            width: 2,
+            height: 2,
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+        };
+        for (slice, repeat) in [
+            (None, [false; 2]),
+            (Some(Insets::uniform(0.5)), [false; 2]),
+            (None, [true; 2]),
+        ] {
+            let widget = NewWidget::new(
+                Image::new(image.clone())
+                    .with_slice(slice, 1., true)
+                    .with_pattern(repeat, 1., None),
+            );
+            let id = widget.id();
+            let mut root = RenderRoot::new(
+                widget,
+                |_| {},
+                RenderRootOptions {
+                    default_properties: Arc::new(DefaultProperties::new()),
+                    use_system_fonts: false,
+                    size_policy: WindowSizePolicy::User,
+                    size: PhysicalSize::new(200, 100),
+                    scale_factor: 1.,
+                    default_font: None,
+                },
+            );
+            let before = image_draws(&root.redraw().0);
+            assert!(before > 0);
+            root.edit_widget(id, |mut widget| {
+                widget.set_transform(Affine::translate((1000., 0.)))
+            });
+            assert_eq!(image_draws(&root.redraw().0), 0);
+            root.edit_widget(id, |mut widget| {
+                widget.set_transform(Affine::translate((0., -1000.)))
+            });
+            assert_eq!(image_draws(&root.redraw().0), 0);
+            root.edit_widget(id, |mut widget| widget.set_transform(Affine::IDENTITY));
+            assert_eq!(image_draws(&root.redraw().0), before);
+            let widget = root.get_widget(id).unwrap().downcast::<Image>().unwrap();
+            assert_eq!(
+                widget.image_data.as_ref().unwrap().image.data.id(),
+                image.data.id()
+            );
+        }
+    }
+}

@@ -181,7 +181,7 @@ use crate::imaging::{PaintSink, Painter, record::Glyph};
 
 // Paragraph coordinates stay inline/block. Compensate glyph outlines for the
 // physical axis map, while retaining font synthesis and the shared paint path.
-fn run_glyph_transform(run: &reel_text::Run<'_, BrushIndex>) -> Option<Affine> {
+pub(crate) fn run_glyph_transform(run: &reel_text::Run<'_, BrushIndex>) -> Option<Affine> {
     let synthesis = run
         .synthesis()
         .skew()

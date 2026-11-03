@@ -30,6 +30,9 @@ pub(super) struct Paragraph {
     // Prefix maximum bottoms and suffix minimum tops give a conservative
     // searchable range even when large glyphs or ruby overlap adjacent lines.
     paint_lines: Vec<(f32, f32)>,
+    // Conservative inline ink, including font overhangs and ruby. Horizontal
+    // paging must not rasterize paragraphs which only overlap the block axis.
+    paint_inline: (f64, f64),
 }
 #[derive(Clone)]
 struct Mapping {
@@ -306,6 +309,7 @@ impl Paragraph {
     fn index_paint_lines(&mut self) {
         let mut last_font = None;
         let mut font_bounds = None;
+        self.paint_inline = (0., f64::from(self.layout.width()));
         for line in self.layout.lines() {
             let metrics = line.metrics();
             let mut top = metrics.min_coord;
@@ -326,7 +330,28 @@ impl Paragraph {
                                 });
                         }
                         if let Some(bounds) = font_bounds {
+                            let embolden = if run.synthesis().embolden() {
+                                f64::from(run.font_size()) / 24.
+                            } else {
+                                0.
+                            };
+                            let bounds_inline = crate::core::run_glyph_transform(&run)
+                                .unwrap_or(Affine::IDENTITY)
+                                .transform_rect_bbox(
+                                    Rect::new(
+                                        f64::from(bounds.x_min),
+                                        f64::from(bounds.y_min),
+                                        f64::from(bounds.x_max),
+                                        f64::from(bounds.y_max),
+                                    )
+                                    .inflate(embolden, embolden),
+                                );
+                            let mut advance = glyphs.offset();
                             for glyph in glyphs.glyphs() {
+                                let x = f64::from(advance + glyph.x);
+                                advance += glyph.advance;
+                                self.paint_inline.0 = self.paint_inline.0.min(x + bounds_inline.x0);
+                                self.paint_inline.1 = self.paint_inline.1.max(x + bounds_inline.x1);
                                 let y = glyphs.baseline() + glyph.y;
                                 let (minimum, maximum) = if run.is_upright() {
                                     match self.layout.writing_mode() {
@@ -346,6 +371,7 @@ impl Paragraph {
                                 bottom = bottom.max(y + maximum);
                             }
                         } else {
+                            self.paint_inline = (f64::NEG_INFINITY, f64::INFINITY);
                             top = f32::NEG_INFINITY;
                             bottom = f32::INFINITY;
                         }
@@ -354,6 +380,19 @@ impl Paragraph {
                                 glyphs.baseline() - run.metrics().ascent - run.font_size() * 0.185,
                             );
                         }
+                        // Underlines span the run advance; emphasis dots may
+                        // extend beyond a short cluster's nominal advance.
+                        let margin = if self.emphasis {
+                            f64::from(run.font_size()) * 0.045
+                        } else {
+                            0.
+                        };
+                        self.paint_inline.0 =
+                            self.paint_inline.0.min(f64::from(glyphs.offset()) - margin);
+                        self.paint_inline.1 = self
+                            .paint_inline
+                            .1
+                            .max(f64::from(glyphs.offset() + glyphs.advance()) + margin);
                         let style = glyphs.style();
                         for (decoration, offset, width) in [
                             (
@@ -387,6 +426,12 @@ impl Paragraph {
                                 position.y + annotation.base_offset(self.layout.writing_mode()),
                             ),
                         ] {
+                            let x =
+                                f64::from(position.x + (annotation.width - paragraph.width()) / 2.);
+                            self.paint_inline.0 =
+                                self.paint_inline.0.min(x + paragraph.paint_inline.0);
+                            self.paint_inline.1 =
+                                self.paint_inline.1.max(x + paragraph.paint_inline.1);
                             if let Some(&(first, _)) = paragraph.paint_lines.first() {
                                 top = top.min(y + first);
                             }
@@ -427,6 +472,11 @@ impl Paragraph {
         }
         let viewport = inverse.transform_rect_bbox(viewport);
         let padding = outline.map_or(0., |outline| outline.width) + 1.;
+        if self.paint_inline.1 < viewport.x0 - padding
+            || self.paint_inline.0 > viewport.x1 + padding
+        {
+            return 0..0;
+        }
         let start = self
             .paint_lines
             .partition_point(|&(_, bottom)| f64::from(bottom) < viewport.y0 - padding);
@@ -991,6 +1041,52 @@ mod viewport_tests {
                 _ => 0,
             })
             .sum()
+    }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT; CPU paragraph viewport coverage"]
+    fn horizontally_hidden_paragraphs_skip_glyphs_and_preserve_overhanging_ink() {
+        let source = Text::parse("[i]Italic[/i] [b]Bold[/b] [u]Underline[/u] [s]Strike[/s] [em]Marked[/em] [ruby=a much longer annotation]字[/ruby]").unwrap();
+        let mut paragraph = paragraph(&source);
+        let full = scene(&mut paragraph, None, Affine::IDENTITY, 0..source.len());
+        assert!(glyph_count(&full) > 0);
+        let (left, right) = paragraph.paint_inline;
+        assert!(left.is_finite() && right.is_finite());
+        for viewport in [
+            Rect::new(right + 20., -1000., right + 100., 1000.),
+            Rect::new(left - 100., -1000., left - 20., 1000.),
+        ] {
+            for transform in [
+                Affine::IDENTITY,
+                Affine::translate((40., 20.)) * Affine::scale(0.5),
+                Affine::new([0., 1., -1., 0., 0., 0.]),
+            ] {
+                let hidden = scene(
+                    &mut paragraph,
+                    Some(transform.transform_rect_bbox(viewport)),
+                    transform,
+                    0..source.len(),
+                );
+                assert_eq!(glyph_count(&hidden), 0);
+            }
+        }
+        for viewport in [
+            Rect::new(left - 2., -1000., left + 2., 1000.),
+            Rect::new(right - 2., -1000., right + 2., 1000.),
+        ] {
+            let edge = scene(
+                &mut paragraph,
+                Some(viewport),
+                Affine::IDENTITY,
+                0..source.len(),
+            );
+            assert_eq!(edge, full, "overhanging ink keeps its original paint");
+        }
+        assert_eq!(
+            scene(&mut paragraph, None, Affine::IDENTITY, 0..source.len()),
+            full,
+            "returning to view reuses unchanged layout and paint positions"
+        );
     }
 
     #[test]
