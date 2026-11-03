@@ -296,8 +296,6 @@ impl Renderer {
         self.images.retire(&[]);
         self.glyphs.retire(&[]);
         self.pipelines.prune_masks();
-        self.targets.prune_cold();
-        self.coverage_targets.prune_cold();
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
@@ -946,12 +944,12 @@ impl Renderer {
                 self.retained.inputs.stage(
                     token,
                     super::retained::Output {
-                        allocation,
+                        allocation: allocation.clone(),
                         target: output.clone(),
                     },
                     super::targets::target_bytes(storage, quality)?,
                 );
-                Some(token)
+                Some((token, allocation))
             } else {
                 None
             };
@@ -978,12 +976,12 @@ impl Renderer {
                 generation: self.gpu.generation,
                 owner: self.owner.clone(),
             };
-            if let Some(token) = retained {
+            if let Some((token, retained_output)) = retained {
                 let done = Arc::new(AtomicBool::new(false));
                 for slot in &mut prepared.effect_uniform_slots {
                     slot.upload(&self.gpu);
                 }
-                self.gpu.queue.submit([prepared.encoder.finish()]);
+                self.gpu.submit(prepared.encoder);
                 self.effect_results.submitted();
                 self.effect_uniforms.submitted();
                 self.glyphs.publish(&prepared.glyphs);
@@ -995,8 +993,30 @@ impl Renderer {
                 self.gpu
                     .queue
                     .on_submitted_work_done(move || signal.store(true, Ordering::Release));
-                self.targets.clear();
-                self.coverage_targets.clear();
+                self.targets.reserve_metadata(
+                    size,
+                    quality,
+                    &prepared.targets,
+                    &self.budgets.transient,
+                    self.gpu.limits.transient_bytes,
+                );
+                self.targets
+                    .publish(size, quality, &prepared.targets, Some(&retained_output));
+                if let Some(coverage) = self.gpu.coverage_quality(quality) {
+                    self.coverage_targets.reserve_metadata(
+                        size,
+                        coverage,
+                        &prepared.targets,
+                        &self.budgets.transient,
+                        self.gpu.limits.transient_bytes,
+                    );
+                    self.coverage_targets.publish(
+                        size,
+                        coverage,
+                        &prepared.targets,
+                        Some(&retained_output),
+                    );
+                }
                 self.retained
                     .pending
                     .lock()
@@ -1065,7 +1085,7 @@ impl Renderer {
         for slot in &mut prepared.effect_uniform_slots {
             slot.upload(&self.gpu);
         }
-        self.gpu.queue.submit([prepared.encoder.finish()]);
+        self.gpu.submit(prepared.encoder);
         self.effect_results.submitted();
         self.effect_uniforms.submitted();
         for pending in prepared.effect_pending {
@@ -1099,12 +1119,14 @@ impl Renderer {
             prepared.size,
             prepared.quality,
             &self.inflight.last().unwrap()._targets,
+            None,
         );
         if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
             self.coverage_targets.publish(
                 prepared.size,
                 coverage_quality,
                 &self.inflight.last().unwrap()._targets,
+                None,
             );
         }
         Ok(id)

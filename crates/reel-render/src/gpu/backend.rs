@@ -128,6 +128,7 @@ impl RenderBackend for WgpuBackend {
         }
     }
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SurfaceConfigure);
         self.renderer.cancel_preparations();
         self.info = None;
         self.output = None;

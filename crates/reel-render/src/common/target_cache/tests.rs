@@ -31,7 +31,7 @@ fn unique(value: &Arc<Owner>) -> bool {
 }
 
 #[test]
-fn alternating_sizes_stay_warm_then_simple_frames_retire_cold_storage() {
+fn alternating_sizes_survive_simple_frames_and_yield_to_allocation_pressure() {
     let data = pool(96);
     let mut cache = Cache::default();
     put(&mut cache, [2, 2], 16, &data);
@@ -41,24 +41,34 @@ fn alternating_sizes_stay_warm_then_simple_frames_retire_cold_storage() {
         let used = cache.get(size, 0).unwrap().clone();
         cache.submitted();
         cache.mark_used(size, |owner| Arc::ptr_eq(owner, &used));
-        assert!(!cache.prune_cold(unique));
         assert_eq!(data.usage().bytes, 48);
     }
     for _ in 0..32 {
         let used = cache.get([2, 2], 0).unwrap().clone();
         cache.submitted();
         cache.mark_used([2, 2], |owner| Arc::ptr_eq(owner, &used));
-        cache.prune_cold(unique);
     }
-    assert_eq!(data.usage().bytes, 16);
+    assert_eq!(data.usage().bytes, 48);
     let metadata = cache.storage.as_ref().unwrap().bytes();
     for _ in 0..32 {
         let used = cache.get([2, 2], 0).unwrap().clone();
         cache.submitted();
         cache.mark_used([2, 2], |owner| Arc::ptr_eq(owner, &used));
-        assert!(!cache.prune_cold(unique));
         assert_eq!(cache.storage.as_ref().unwrap().bytes(), metadata);
     }
+    let cached = cache.get([4, 2], 0).unwrap().clone();
+    for _ in 0..300 {
+        cache.submitted();
+    }
+    assert!(Arc::ptr_eq(cache.get([4, 2], 0).unwrap(), &cached));
+    drop(cached);
+    assert!(data.reserve(64).is_err());
+    assert!(cache.reclaim(&requirements(&[([2, 2], 1)]), true, unique));
+    assert!(cache.get([4, 2], 0).is_none());
+    assert!(cache.get([2, 2], 0).is_some());
+    let next = data.reserve(64).unwrap();
+    assert_eq!(data.usage().bytes, 80);
+    drop(next);
 }
 
 #[test]
@@ -70,13 +80,13 @@ fn prepared_and_flight_owners_keep_storage_until_their_final_reference() {
     let flight = prepared.clone();
     cache.submitted();
     cache.submitted();
-    assert!(!cache.prune_cold(unique));
+    cache.release_idle(unique);
     assert!(!cache.reclaim(&Requirements::default(), true, unique));
     drop(prepared);
-    assert!(!cache.prune_cold(unique));
+    cache.release_idle(unique);
     assert_eq!(data.usage().bytes, 64);
     drop(flight);
-    assert!(cache.prune_cold(unique));
+    cache.release_idle(unique);
     assert_eq!(data.usage().bytes, 0);
 }
 
@@ -117,7 +127,7 @@ fn shared_pressure_reclaims_optional_storage_and_pins_exact_multiplicity() {
 }
 
 #[test]
-fn metadata_growth_admits_overlap_and_keeps_capacity_after_retirement() {
+fn metadata_growth_admits_overlap_and_keeps_capacity_after_exclusion() {
     let metadata = pool(3 * size_of::<Slot<()>>() as u64);
     let mut cache = Cache::default();
     cache.reserve(1, &metadata, u64::MAX).unwrap();
@@ -134,7 +144,7 @@ fn metadata_growth_admits_overlap_and_keeps_capacity_after_retirement() {
     assert_eq!(metadata.usage().bytes, resident);
     cache.submitted();
     cache.submitted();
-    assert!(cache.prune_cold(|_| true));
+    cache.exclude(|_| true);
     assert_eq!(metadata.usage().bytes, resident);
     cache.reserve(2, &metadata, u64::MAX).unwrap();
     assert_eq!(metadata.usage().bytes, resident);

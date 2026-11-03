@@ -109,7 +109,7 @@ pub enum Phase {
     SessionSaves,
     /// Poll localization and script asset reads, nested in SessionMaintenance.
     SessionAssets,
-    /// End the final scene and publish its completion fence; may wait for driver capacity.
+    /// Finish native GPU encoding and submit work; may wait for driver capacity.
     RenderFence,
     /// Native draw call wall time, including driver backpressure.
     DriverDraw,
@@ -172,8 +172,18 @@ pub enum Phase {
     AudioDeviceFormats,
     /// Create, start, suspend or close the native audio stream.
     AudioStreamControl,
+    /// Finish recording a native GPU command buffer before queue submission.
+    CommandFinish,
+    /// Player frame preparation and acceptance, including nested backend work.
+    PlayerRender,
+    /// Publish accepted geometry and presentation completion to the session.
+    FrameAccept,
+    /// Native window callbacks and event-loop maintenance outside nested phases.
+    HostEvent,
+    /// Configure native presentation images after geometry or surface changes.
+    SurfaceConfigure,
 }
-pub const NAMES: [&str; 98] = [
+pub const NAMES: [&str; 103] = [
     "input",
     "tick",
     "session",
@@ -272,6 +282,11 @@ pub const NAMES: [&str; 98] = [
     "audio_device_check",
     "audio_device_formats",
     "audio_stream_control",
+    "command_finish",
+    "player_render",
+    "frame_accept",
+    "host_event",
+    "surface_configure",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

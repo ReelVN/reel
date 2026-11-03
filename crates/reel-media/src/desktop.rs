@@ -150,6 +150,9 @@ impl CpalDriver {
 }
 impl Driver for CpalDriver {
     type Stream = cpal::Stream;
+    fn prepare_on_configure(&self) -> bool {
+        true
+    }
     fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioStreamControl);
         drop(stream);

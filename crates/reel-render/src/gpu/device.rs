@@ -27,6 +27,14 @@ pub struct Gpu {
     pub(super) upload_creations: super::resources::UploadCreations,
 }
 impl Gpu {
+    pub(super) fn submit(&self, encoder: wgpu::CommandEncoder) {
+        let _submit = reel_core::profile::Scope::new(reel_core::profile::Phase::RenderFence);
+        let command = {
+            let _finish = reel_core::profile::Scope::new(reel_core::profile::Phase::CommandFinish);
+            encoder.finish()
+        };
+        self.queue.submit([command]);
+    }
     pub fn generation(&self) -> DeviceGeneration {
         self.generation
     }
@@ -60,7 +68,7 @@ impl Gpu {
                 required_features: adapter.features()
                     & (wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::SHADER_F16),
                 required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
                 ..Default::default()
             })

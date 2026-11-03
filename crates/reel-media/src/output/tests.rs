@@ -42,6 +42,9 @@ fn device() -> AudioDeviceConfig {
 }
 struct SyncDriver {
     offline: OfflineDriver,
+    prebuild: bool,
+    builds: usize,
+    closes: Arc<AtomicUsize>,
     build_fail: bool,
     play_fail: bool,
     pause_fail: bool,
@@ -55,6 +58,9 @@ impl SyncDriver {
     fn new() -> Self {
         Self {
             offline: OfflineDriver { device: device() },
+            prebuild: false,
+            builds: 0,
+            closes: Arc::new(AtomicUsize::new(0)),
             build_fail: false,
             play_fail: false,
             pause_fail: false,
@@ -68,7 +74,11 @@ impl SyncDriver {
 }
 impl Driver for SyncDriver {
     type Stream = RefCell<Callback>;
+    fn prepare_on_configure(&self) -> bool {
+        self.prebuild
+    }
     fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+        self.closes.fetch_add(1, Ordering::Relaxed);
         drop(stream);
         if self.close_fail {
             Err(AudioError::new(
@@ -88,6 +98,7 @@ impl Driver for SyncDriver {
         self.offline.configure(r)
     }
     fn build(&mut self, _: &AudioFormat, mut cb: Callback) -> Result<Self::Stream, AudioError> {
+        self.builds += 1;
         // Deliberately hostile native API: callback during build, including error return.
         let mut data = [42.0f32; 6];
         cb.render(&mut data, timing());
@@ -153,6 +164,94 @@ fn counted_fill(calls: Arc<AtomicUsize>, drops: Arc<AtomicUsize>) -> PcmFill {
         calls.fetch_add(1, Ordering::Relaxed);
         pcm.fill(0.25);
     })
+}
+
+#[test]
+fn prepared_native_stream_stays_silent_and_first_start_reuses_it() {
+    let mut driver = SyncDriver::new();
+    driver.prebuild = true;
+    let closes = driver.closes.clone();
+    let mut output = DrivenOutput::new(driver, WakeSignal::new(|| {})).unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    assert_eq!(output.driver.builds, 1);
+    assert_eq!(output.status().state, AudioState::Stopped);
+    assert_eq!(output.clock_observation().generated_frames, 0);
+    let mut data = [42.0f32; 6];
+    output
+        .prepared
+        .as_ref()
+        .unwrap()
+        .stream
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert_eq!(data, [0.0; 6]);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    assert!(
+        output
+            .start(counted_fill(calls.clone(), drops.clone()))
+            .is_ok()
+    );
+    assert_eq!(output.driver.builds, 1);
+    assert!(output.prepared.is_none());
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert_eq!(data, [0.25; 6]);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    output.stop().unwrap();
+    assert!(output.close_complete());
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(closes.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn unused_prepared_stream_retires_on_reconfigure_stop_and_drop() {
+    let mut driver = SyncDriver::new();
+    driver.prebuild = true;
+    let closes = driver.closes.clone();
+    let mut output = DrivenOutput::new(driver, WakeSignal::new(|| {})).unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    let old = output.driver.retired.clone().unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    assert_eq!(closes.load(Ordering::Relaxed), 1);
+    old.fail(AudioErrorKind::DeviceFailure);
+    assert!(output.start(Box::new(|pcm| pcm.fill(0.0))).is_ok());
+    assert_eq!(output.status().state, AudioState::Running);
+    output.stop().unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    output.stop().unwrap();
+    assert!(output.close_complete());
+    assert_eq!(closes.load(Ordering::Relaxed), 3);
+    output.configure(AudioRequest::default()).unwrap();
+    drop(output);
+    assert_eq!(closes.load(Ordering::Relaxed), 4);
+}
+
+#[test]
+fn prepared_stream_play_rejection_returns_the_uncalled_fill() {
+    let mut driver = SyncDriver::new();
+    driver.prebuild = true;
+    let mut output = DrivenOutput::new(driver, WakeSignal::new(|| {})).unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    output.driver.play_fail = true;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let fill = counted_fill(calls.clone(), drops.clone());
+    let address = (&*fill as *const dyn FnMut(&mut [f32])) as *const ();
+    let rejected = output.start(fill).unwrap_err();
+    assert_eq!(
+        address,
+        (&*rejected.request as *const dyn FnMut(&mut [f32])) as *const ()
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    assert!(output.close_complete());
+    drop(rejected);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 #[test]
 fn native_build_and_play_rejection_return_identical_uncalled_fill() {

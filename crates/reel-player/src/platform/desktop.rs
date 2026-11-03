@@ -255,6 +255,7 @@ impl ApplicationHandler for App {
         self.record_performance();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::HostEvent);
         #[cfg(feature = "performance")]
         self.start_performance();
         if self.closing {
@@ -381,6 +382,7 @@ impl ApplicationHandler for App {
         self.record_performance();
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::HostEvent);
         #[cfg(feature = "performance")]
         self.start_performance();
         if let Some(state) = &mut self.state {

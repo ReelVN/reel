@@ -16,6 +16,66 @@ mod tests {
     use crate::common::renderer::Budgets;
 
     #[test]
+    #[ignore = "requires actual graphics adapter; validates allocation ownership"]
+    fn retained_output_excludes_only_its_own_storage_from_scratch_reuse() {
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            Default::default(),
+        ))
+        .unwrap();
+        let quality = Quality {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            samples: 1,
+            degraded: false,
+        };
+        let budgets = Budgets::new(gpu.limits);
+        let cache = TargetCache::default();
+        cache.configure([64, 64], quality);
+        let get = |size| {
+            cache
+                .get(
+                    &gpu,
+                    size,
+                    quality,
+                    &[],
+                    &budgets.targets,
+                    super::super::targets::target_bytes(size, quality).unwrap(),
+                    &crate::common::target_plan::Requirements::default(),
+                )
+                .unwrap()
+        };
+        let output = get([32, 32]);
+        let scratch = get([16, 16]);
+        let submitted = [output.clone(), scratch.clone()];
+        cache.reserve_metadata(
+            [64, 64],
+            quality,
+            &submitted,
+            &budgets.transient,
+            gpu.limits.transient_bytes,
+        );
+        cache.publish([64, 64], quality, std::slice::from_ref(&output), None);
+        cache.publish([64, 64], quality, &submitted, Some(&output));
+        let next_output = get([32, 32]);
+        let reused = get([16, 16]);
+        assert!(
+            !Arc::ptr_eq(&output, &next_output),
+            "retained pixels must stay immutable"
+        );
+        assert!(
+            Arc::ptr_eq(&scratch, &reused),
+            "the other scratch allocation remains reusable"
+        );
+        assert_eq!(budgets.targets.usage().bytes, (2 * 32 * 32 + 16 * 16) * 4);
+        cache.clear();
+        drop((output, scratch, submitted, next_output, reused));
+        assert_eq!(budgets.targets.usage().bytes, 0);
+        assert_eq!(budgets.transient.usage().bytes, 0);
+    }
+
+    #[test]
     #[ignore = "requires actual graphics adapter; no drawing or readback"]
     fn animated_bucket_crossings_reuse_storage_and_keep_actual_reservations() {
         let limits = super::super::GpuLimits::default();
@@ -66,7 +126,7 @@ mod tests {
                 &budgets.transient,
                 limits.transient_bytes,
             );
-            cache.publish([960, 544], quality, &used);
+            cache.publish([960, 544], quality, &used, None);
             let expected = if frame == 0 {
                 32 * 32 * 4
             } else {
@@ -77,8 +137,15 @@ mod tests {
         }
         drop(first[1].take());
         for _ in 0..32 {
-            cache.publish([960, 544], quality, &[first[0].as_ref().unwrap().clone()]);
+            cache.publish(
+                [960, 544],
+                quality,
+                &[first[0].as_ref().unwrap().clone()],
+                None,
+            );
         }
+        assert_eq!(budgets.targets.usage().bytes, (32 * 32 + 64 * 32) * 4);
+        cache.release_idle();
         assert_eq!(budgets.targets.usage().bytes, 32 * 32 * 4);
         let same = cache
             .get(
@@ -144,7 +211,7 @@ mod tests {
             &budgets.transient,
             limits.transient_bytes,
         );
-        cache.publish([64, 64], quality, std::slice::from_ref(&first));
+        cache.publish([64, 64], quality, std::slice::from_ref(&first), None);
         let token = crate::common::effect_result::Token(1, 1);
         let mut content = first.target.clone().with_effect_content(token);
         assert_eq!(content.effect_token(), Some(token));
@@ -274,7 +341,7 @@ mod tests {
                     &budgets.transient,
                     limits.transient_bytes,
                 );
-                cache.publish(root, quality, &used);
+                cache.publish(root, quality, &used, None);
             }
             let began = std::time::Instant::now();
             for frame in 0..256 {
@@ -318,7 +385,7 @@ mod tests {
                     &budgets.transient,
                     limits.transient_bytes,
                 );
-                cache.publish(root, quality, &used);
+                cache.publish(root, quality, &used, None);
             }
             println!(
                 "target_capacity mode={mode} frames=256 allocations={allocations} elapsed_us={} peak_bytes={}",
@@ -491,17 +558,31 @@ impl TargetCache {
         }
     }
 
-    pub(super) fn publish(&self, size: [u32; 2], quality: Quality, slots: &[Arc<Allocation>]) {
+    pub(super) fn publish(
+        &self,
+        size: [u32; 2],
+        quality: Quality,
+        slots: &[Arc<Allocation>],
+        retained: Option<&Arc<Allocation>>,
+    ) {
         let mut cache = self.0.lock().unwrap();
         if let Some(entries) = cache.as_mut()
             && entries.size == size
             && entries.quality == quality
         {
+            if let Some(retained) = retained {
+                // Only the retained output stays readable after this submission.
+                // Other scratch uses are ordered before the next queue submission.
+                entries
+                    .slots
+                    .exclude(|cached| Arc::ptr_eq(cached, retained));
+            }
+            let reusable = |allocation: &&Arc<Allocation>| {
+                allocation.target.texture.format() == quality.format
+                    && !retained.is_some_and(|retained| Arc::ptr_eq(allocation, retained))
+            };
             entries.slots.submitted();
-            for allocation in slots
-                .iter()
-                .filter(|allocation| allocation.target.texture.format() == quality.format)
-            {
+            for allocation in slots.iter().filter(reusable) {
                 let size = allocation.target.storage_size();
                 if !entries
                     .slots
@@ -510,27 +591,13 @@ impl TargetCache {
                     entries.slots.insert(size, allocation.clone());
                 }
             }
-            for allocation in slots
-                .iter()
-                .filter(|allocation| allocation.target.texture.format() == quality.format)
-            {
+            for allocation in slots.iter().filter(reusable) {
                 entries
                     .slots
                     .mark_used(allocation.target.storage_size(), |cached| {
                         Arc::ptr_eq(cached, allocation)
                     });
             }
-            entries
-                .slots
-                .prune_cold(|owner| Arc::strong_count(owner) == 1);
-        }
-    }
-
-    pub(super) fn prune_cold(&self) {
-        if let Some(entries) = self.0.lock().unwrap().as_mut() {
-            entries
-                .slots
-                .prune_cold(|owner| Arc::strong_count(owner) == 1);
         }
     }
 

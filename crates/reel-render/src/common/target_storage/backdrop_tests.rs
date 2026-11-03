@@ -251,7 +251,6 @@ impl Residency {
                 .mark_used(*size, |cached| Arc::ptr_eq(cached, owner));
         }
         // Two preparations overlap until the previous frame is retired.
-        self.cache.prune_cold(|owner| Arc::strong_count(owner) == 1);
         self.previous = flight;
     }
 

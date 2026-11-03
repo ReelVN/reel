@@ -280,13 +280,19 @@ where
 
     /// Apply the geometry carried by a display event. Suspended displays retain
     /// the new geometry and wait for resume before configuring their device.
+    /// Repeated geometry preserves the surface and its accepted input view.
     pub fn resize(&mut self, host: &mut impl Host, metrics: DisplayMetrics) -> Result<(), Error> {
-        let suspended = self.presentation.is_suspended();
-        self.invalidate_surface(metrics)?;
-        if suspended {
-            self.presentation.suspend();
-        } else {
-            self.backend.configure(self.presentation.surface_info())?;
+        let current = self.presentation.surface_info();
+        if current.physical_size != metrics.physical_size
+            || current.scale_factor != metrics.scale_factor
+        {
+            let suspended = self.presentation.is_suspended();
+            self.invalidate_surface(metrics)?;
+            if suspended {
+                self.presentation.suspend();
+            } else {
+                self.backend.configure(self.presentation.surface_info())?;
+            }
         }
         let complete = host.window_resized();
         self.publish_window_info(host)?;
@@ -698,6 +704,7 @@ where
 
     /// Prepare and present ready content. Only acceptance publishes input geometry.
     pub fn render(&mut self, host: &mut impl Host) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::PlayerRender);
         if !self.frame_inputs_ready() {
             return Ok(());
         }

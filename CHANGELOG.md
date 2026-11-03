@@ -12,6 +12,13 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Divide large desktop image conversions into disjoint rows on Rayon workers, preserving pixel values and upload memory limits.
 - Reuse the desktop audio device's query client when resuming an existing stream, avoiding repeated capability enumeration on UI sounds.
 - Prepare WGPU coverage pipelines during startup so the first clipped page reuses an existing pipeline.
+- Expand glyph stroke outlines once for both bounds and rasterization in the shared desktop/Vita text path.
+- Preserve reusable intermediate targets when preparing a retained transition, excluding the frozen output from scratch reuse.
+- Keep scratch render targets within their existing memory budget until allocation pressure or lifecycle cleanup reclaims them, avoiding repeated allocation after brief gaps in use.
+- Use WGPU's performance allocation policy for desktop GPU buffers and textures.
+- Preserve the presentation surface and accepted input geometry on repeated window-size notifications.
+- Prepare the stopped desktop audio stream during output configuration so the first sound reuses it.
+- Size glyph atlas entries for the physical display scale using half-octave cache tiers, including scaled-down canvases.
 
 ### Added
 

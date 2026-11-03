@@ -519,7 +519,7 @@ impl ImageCache {
         }
         if !uploaded.is_empty() {
             let done = Arc::new(AtomicBool::new(false));
-            gpu.queue.submit([encoder.finish()]);
+            gpu.submit(encoder);
             // Advance source cursors only after submission. Failed encoding
             // retries the same rows; no half-uploaded image enters the cache.
             for copy in &uploaded {

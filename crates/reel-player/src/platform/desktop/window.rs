@@ -486,6 +486,7 @@ impl State {
         }
     }
     pub(crate) fn tick_gamepads(&mut self) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ControlPoll);
         let now = self.input_origin.elapsed();
         self.input_pending = false;
         // A bounded drain prevents a noisy device from monopolizing a frame.
@@ -1752,7 +1753,13 @@ impl State {
                         .backend
                         .resume(self.instance.create_surface(self.window.clone())?);
                 }
-                self.resize(self.window.inner_size())
+                // A lost or outdated surface must be replaced even at equal geometry.
+                let size = self.window.inner_size();
+                self.invalidate_surface(size)?;
+                self.player
+                    .backend
+                    .configure(self.player.presentation.surface_info())?;
+                self.resize(size)
             }
             result => result,
         }

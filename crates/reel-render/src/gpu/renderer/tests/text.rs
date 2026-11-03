@@ -233,7 +233,7 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
     let mut raster = crate::gpu::glyph::Rasterizer::default();
     let density = crate::gpu::glyph::raster_density;
     assert_eq!(density(Affine::translate((123., 42.))), 1.);
-    assert_eq!(density(Affine::scale(1.25)), 2.);
+    assert_eq!(density(Affine::scale(1.25)), std::f64::consts::SQRT_2);
     assert_eq!(density(Affine::scale(1.75)), 2.);
     assert_eq!(density(Affine::scale_non_uniform(3., 1.)), 4.);
     let mut fills = 0;
@@ -258,33 +258,35 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
         )
         .unwrap()
         .unwrap();
-        let enlarged = crate::gpu::glyph::rasterize(
-            &mut raster,
-            frame.drawing(),
-            run,
-            2.,
-            0,
-            command.origin.at,
-            crate::gpu::glyph::RasterLimits {
-                available: u64::MAX,
-                max_dimension: 8192,
-                budget: pool.clone(),
-            },
-        )
-        .unwrap()
-        .unwrap();
-        for axis in 0..2 {
-            assert!(enlarged.size[axis] > normal.size[axis]);
+        for density in [0.25, 0.5, std::f64::consts::SQRT_2, 2.] {
+            let scaled = crate::gpu::glyph::rasterize(
+                &mut raster,
+                frame.drawing(),
+                run,
+                density,
+                0,
+                command.origin.at,
+                crate::gpu::glyph::RasterLimits {
+                    available: u64::MAX,
+                    max_dimension: 8192,
+                    budget: pool.clone(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            for axis in 0..2 {
+                assert!(
+                    (f64::from(scaled.size[axis]) / density - f64::from(normal.size[axis])).abs()
+                        <= (2. / density).max(2.)
+                );
+            }
+            assert!((scaled.x / density - normal.x).abs() <= (1. / density).max(1.));
+            assert!((scaled.y / density - normal.y).abs() <= (1. / density).max(1.));
             assert!(
-                (f64::from(enlarged.size[axis]) / 2. - f64::from(normal.size[axis])).abs() <= 2.
+                crate::gpu::glyph_cache::RunKey::new(run, 1.)
+                    != crate::gpu::glyph_cache::RunKey::new(run, density)
             );
         }
-        assert!((enlarged.x / 2. - normal.x).abs() <= 1.);
-        assert!((enlarged.y / 2. - normal.y).abs() <= 1.);
-        assert!(
-            crate::gpu::glyph_cache::RunKey::new(run, 1.)
-                != crate::gpu::glyph_cache::RunKey::new(run, 2.)
-        );
         match run.style {
             reel_ui::peniko::Style::Fill(_) => fills += 1,
             _ => strokes += 1,

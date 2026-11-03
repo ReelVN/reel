@@ -222,6 +222,7 @@ impl PlayerSession {
         drawing: &reel_ui::frame::RenderFrame,
         accepted_host_ns: u64,
     ) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::FrameAccept);
         match self {
             #[cfg(any(feature = "vita", test))]
             Self::Launcher(launcher) => {

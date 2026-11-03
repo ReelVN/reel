@@ -279,6 +279,8 @@ pub struct CallbackTiming {
 
 pub trait AudioOutput {
     fn capabilities(&self) -> AudioCaps;
+    /// Negotiate a stopped output. Backends may prepare native stream resources;
+    /// PCM supply begins only after start accepts the fill.
     fn configure(&mut self, request: AudioRequest) -> Result<AudioFormat, AudioError>;
     /// Rejects with the identical, uncalled fill. After acceptance only status reports faults.
     fn start(&mut self, fill: PcmFill) -> Result<(), Rejected<PcmFill>>;

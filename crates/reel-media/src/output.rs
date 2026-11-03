@@ -354,6 +354,10 @@ pub(crate) mod port;
 
 pub(crate) trait Driver {
     type Stream;
+    /// Prepare a stopped native stream while the host configures its output.
+    fn prepare_on_configure(&self) -> bool {
+        false
+    }
     fn capabilities(&self) -> AudioCaps;
     fn configure(&mut self, request: &AudioRequest) -> Result<AudioFormat, AudioError>;
     fn build(
@@ -376,9 +380,18 @@ pub(crate) trait Driver {
     fn verify(&self, format: &AudioFormat) -> Result<(), AudioError>;
 }
 
+struct PreparedStream<S> {
+    stream: S,
+    shared: Arc<Shared>,
+    fill_slot: Arc<FillSlot>,
+    clock: SnapshotOutput<AudioClockObservation>,
+    epoch: OutputEpoch,
+}
+
 pub(crate) struct DrivenOutput<D: Driver> {
     pub driver: D,
     pub stream: Option<D::Stream>,
+    prepared: Option<PreparedStream<D::Stream>>,
     pub shared: Arc<Shared>,
     fill_slot: Option<Arc<FillSlot>>,
     format: Option<AudioFormat>,
@@ -397,6 +410,7 @@ impl<D: Driver> DrivenOutput<D> {
         Ok(Self {
             driver,
             stream: None,
+            prepared: None,
             shared,
             fill_slot: None,
             format: None,
@@ -416,6 +430,40 @@ impl<D: Driver> DrivenOutput<D> {
                         || self.shared.metrics.notify_failed.load(Ordering::Acquire),
                 ),
         )
+    }
+    fn prepare_stream(
+        &mut self,
+        format: &AudioFormat,
+    ) -> Result<PreparedStream<D::Stream>, AudioError> {
+        let epoch = OutputEpoch(self.epoch.0.checked_add(2).ok_or_else(|| {
+            AudioError::new(AudioErrorKind::Unavailable, "output epoch exhausted")
+        })?);
+        // Each stream owns its callback gate, clock and empty fill slot. Preparing
+        // the native stream neither accepts a renderer nor advances its clock.
+        let shared = Arc::new(Shared::new(self.shared.metrics.clone()));
+        let fill_slot = Arc::new(FillSlot::new());
+        let (clock_in, clock) = TripleBuffer::new(&AudioClockObservation::unavailable(
+            epoch,
+            format.sample_rate_hz,
+        ))
+        .split();
+        let callback = Callback::new(
+            format.clone(),
+            fill_slot.clone(),
+            shared.clone(),
+            epoch,
+            clock_in,
+            self.driver.capabilities().clock,
+        );
+        self._notifier.arm()?;
+        let stream = self.driver.build(format, callback)?;
+        Ok(PreparedStream {
+            stream,
+            shared,
+            fill_slot,
+            clock,
+            epoch,
+        })
     }
     fn reject(fill: PcmFill, error: AudioError) -> Rejected<PcmFill> {
         let code = match error.kind {
@@ -454,6 +502,9 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         }
         // A failed negotiation leaves no accidentally reusable prior format.
         self.format = None;
+        if let Some(prepared) = self.prepared.take() {
+            self.driver.close(prepared.stream)?;
+        }
         let format = self.driver.configure(&request)?;
         format.validate()?;
         self.epoch = OutputEpoch(self.epoch.0.checked_add(2).ok_or_else(|| {
@@ -463,6 +514,9 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         self.shared = Arc::new(Shared::new(self.shared.metrics.clone()));
         *self.clock.get_mut().expect("control clock poisoned") = None;
         self.control_error = None;
+        if self.driver.prepare_on_configure() {
+            self.prepared = Some(self.prepare_stream(&format)?);
+        }
         self.format = Some(format.clone());
         Ok(format)
     }
@@ -488,37 +542,18 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         if let Err(error) = self.driver.verify(&format) {
             return Err(Self::reject(fill, error));
         }
-        let Some(next_epoch) = self.epoch.0.checked_add(2) else {
-            return Err(Self::reject(
-                fill,
-                AudioError::new(AudioErrorKind::Unavailable, "output epoch exhausted"),
-            ));
-        };
-        let epoch = OutputEpoch(next_epoch);
-        // Each native stream has its own gate/fault latch. Late old errors cannot
-        // stop a rebuilt stream or mutate its epoch. Metrics remain output-owned.
-        let prepared = Arc::new(Shared::new(self.shared.metrics.clone()));
-        let fill_slot = Arc::new(FillSlot::new());
-        let (clock_in, clock_out) = TripleBuffer::new(&AudioClockObservation::unavailable(
+        let PreparedStream {
+            stream,
+            shared,
+            fill_slot,
+            clock,
             epoch,
-            format.sample_rate_hz,
-        ))
-        .split();
-        let callback = Callback::new(
-            format.clone(),
-            fill_slot.clone(),
-            prepared.clone(),
-            epoch,
-            clock_in,
-            self.driver.capabilities().clock,
-        );
-        if let Err(error) = self._notifier.arm() {
-            return Err(Self::reject(fill, error));
-        }
-        // fill has NOT been moved into the slot. Early native callbacks are silent.
-        let stream = match self.driver.build(&format, callback) {
-            Ok(s) => s,
-            Err(e) => return Err(Self::reject(fill, e)),
+        } = match self.prepared.take() {
+            Some(prepared) => prepared,
+            None => match self.prepare_stream(&format) {
+                Ok(prepared) => prepared,
+                Err(error) => return Err(Self::reject(fill, error)),
+            },
         };
         if let Err(e) = self.driver.play(&stream) {
             let _ = self.driver.close(stream);
@@ -528,9 +563,9 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         // Entry is still closed; the callback cannot borrow while we insert fill.
         *fill_slot.0.borrow_mut().get_mut() = Some(fill);
         self.fill_slot = Some(fill_slot);
-        self.shared = prepared;
+        self.shared = shared;
         self.epoch = epoch;
-        *self.clock.get_mut().expect("control clock poisoned") = Some(clock_out);
+        *self.clock.get_mut().expect("control clock poisoned") = Some(clock);
         self.stream = Some(stream);
         self.state = AudioState::Running;
         self.control_error = None;
@@ -619,7 +654,7 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         }
     }
     fn close_complete(&self) -> bool {
-        self.stream.is_none() && self.driver.close_complete()
+        self.stream.is_none() && self.prepared.is_none() && self.driver.close_complete()
     }
     fn stop(&mut self) -> Result<(), AudioError> {
         if self.stream.is_none() {
@@ -644,9 +679,17 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
             .stream
             .take()
             .and_then(|stream| self.driver.close(stream).err());
+        let prepared_error = self
+            .prepared
+            .take()
+            .and_then(|prepared| self.driver.close(prepared.stream).err());
         self.state = AudioState::Stopped;
         self.wake.wake();
-        if let Some(e) = prior_error.or(pause_error).or(close_error) {
+        if let Some(e) = prior_error
+            .or(pause_error)
+            .or(close_error)
+            .or(prepared_error)
+        {
             self.control_error = Some(e.clone());
             Err(e)
         } else {
@@ -662,6 +705,9 @@ impl<D: Driver> Drop for DrivenOutput<D> {
         }
         if let Some(stream) = self.stream.take() {
             let _ = self.driver.close(stream);
+        }
+        if let Some(prepared) = self.prepared.take() {
+            let _ = self.driver.close(prepared.stream);
         }
     }
 }
