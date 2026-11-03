@@ -114,7 +114,8 @@ pub struct SessionSnapshot {
     text_intents: Vec<stage::text_input::SavedTextInputIntent>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 2;
+    /// Session wire format, including embedded retained-scene resource descriptors.
+    pub const FORMAT_VERSION: u32 = 3;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -188,7 +189,7 @@ pub struct SessionCapture<'a> {
     complete: bool,
 }
 impl SessionVm {
-    fn snapshot_records(&self) -> RecordStream<'_> {
+    fn snapshot_records(&self) -> Result<RecordStream<'_>, AdapterError> {
         use std::iter::once_with;
         let streams: [RecordStream<'_>; 14] = [
             Box::new(
@@ -247,7 +248,7 @@ impl SessionVm {
             self.results.snapshot_records(),
             self.saves.snapshot_records(),
             self.asset_reads.snapshot_records(),
-            self.media.snapshot_records(),
+            self.media.snapshot_records()?,
             self.translations.snapshot_records(),
             Box::new(once_with(|| {
                 Record::new(Part::StageRoot, &self.stage.snapshot_root())
@@ -261,9 +262,10 @@ impl SessionVm {
             stage::text_input::snapshot_records(&self.stage, self.vm.heap()),
             self.transition_snapshot_records(),
         ];
-        Box::new(streams.into_iter().flatten())
+        Ok(Box::new(streams.into_iter().flatten()))
     }
-    /// The host freezes the logical clock and media transport while this borrow lives.
+    /// The host freezes the logical clock while this borrow lives. Media state is
+    /// sampled here; native playback may continue during incremental capture.
     /// Drop the capture to cancel it; no state in the live session has changed.
     pub fn snapshot_begin<'a>(
         &'a self,
@@ -294,7 +296,7 @@ impl SessionVm {
             session: Some(session.snapshot_begin()),
             saved_session: None,
             records: Vec::new(),
-            adapters: self.snapshot_records(),
+            adapters: self.snapshot_records()?,
             pictures: self.transition_pictures(),
             picture_sizes: Some(Box::new(self.transition_picture_sizes())),
             text_intents: Vec::new(),

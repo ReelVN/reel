@@ -866,7 +866,14 @@ impl Widget for SceneWidget {
                 .effect
                 .as_ref()
                 .zip(self.effect.as_ref())
-                .map(|(instance, resolved)| resolved.paint(instance, self.size.to_rect(), false)),
+                .map(|(instance, resolved)| {
+                    resolved.paint(
+                        instance,
+                        self.size.to_rect(),
+                        false,
+                        self.node.props.effect_resolution_scale,
+                    )
+                }),
         );
         ctx.set_subtree_mask_effect(
             self.node
@@ -875,7 +882,12 @@ impl Widget for SceneWidget {
                 .as_ref()
                 .zip(self.mask_effect.as_ref())
                 .map(|(instance, resolved)| {
-                    resolved.paint(instance, self.size.to_rect(), self.node.props.mask_invert)
+                    resolved.paint(
+                        instance,
+                        self.size.to_rect(),
+                        self.node.props.mask_invert,
+                        1.,
+                    )
                 }),
         );
         let mask = self

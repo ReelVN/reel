@@ -332,6 +332,8 @@ pub(super) fn contracts() -> Vec<aside_host::NativeContract> {
             _ => vec![("a", None), ("b", None)],
         };
         result.push(aside_host::NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: format!("reel::mask::{name}"),
             abi_version: 1,
             parameters: fields

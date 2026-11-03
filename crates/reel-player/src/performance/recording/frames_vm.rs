@@ -4,11 +4,14 @@
 use aside_vm::executor::ExecutionCounts;
 use aside_vm::executor::Vm;
 #[cfg(feature = "vm-profiling")]
-use aside_vm::executor::{DriverCost, STEP_NAMES, StepCost};
+use aside_vm::executor::{
+    DriverCost, LIFECYCLE_NAMES, LIFECYCLE_OUTER_NAMES, STEP_NAMES, StepCost,
+};
 use std::io::{self, Write};
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct Observation {
+    pub(super) gc: GcCounts,
     #[cfg(feature = "vm-execution-counts")]
     pub(super) counts: ExecutionCounts,
     #[cfg(feature = "vm-profiling")]
@@ -17,9 +20,35 @@ pub(super) struct Observation {
     pub(super) steps: [StepCost; STEP_NAMES.len()],
 }
 
+/// Existing heap counters, read at the same presentation boundary as VM counts.
+#[derive(Clone, Copy, Default)]
+pub(super) struct GcCounts {
+    pub(super) collections: u64,
+    pub(super) units: u64,
+    pub(super) chunk_allocations: u64,
+}
+
+impl GcCounts {
+    fn checked_delta(self, before: Self) -> Option<Self> {
+        Some(Self {
+            collections: self.collections.checked_sub(before.collections)?,
+            units: self.units.checked_sub(before.units)?,
+            chunk_allocations: self
+                .chunk_allocations
+                .checked_sub(before.chunk_allocations)?,
+        })
+    }
+}
+
 impl Observation {
     pub(super) fn capture(vm: &Vm) -> Self {
+        let heap = vm.heap().stats();
         Self {
+            gc: GcCounts {
+                collections: heap.collections,
+                units: heap.gc_units,
+                chunk_allocations: heap.chunk_allocations,
+            },
             #[cfg(feature = "vm-execution-counts")]
             counts: vm.execution_counts(),
             #[cfg(feature = "vm-profiling")]
@@ -27,6 +56,20 @@ impl Observation {
             #[cfg(feature = "vm-profiling")]
             steps: vm.step_costs(),
         }
+    }
+
+    pub(super) fn same_identity(&self, before: &Self) -> bool {
+        #[cfg(feature = "vm-execution-counts")]
+        if (self.counts.heap_id, self.counts.epoch) != (before.counts.heap_id, before.counts.epoch)
+        {
+            return false;
+        }
+        #[cfg(feature = "vm-profiling")]
+        if (self.driver.heap_id, self.driver.epoch) != (before.driver.heap_id, before.driver.epoch)
+        {
+            return false;
+        }
+        true
     }
 
     pub(super) fn checked_delta(&self, before: &Self) -> Option<Self> {
@@ -39,6 +82,7 @@ impl Observation {
             delta
         };
         Some(Self {
+            gc: self.gc.checked_delta(before.gc)?,
             #[cfg(feature = "vm-execution-counts")]
             counts: self.counts.checked_delta(&before.counts)?,
             #[cfg(feature = "vm-profiling")]
@@ -97,6 +141,26 @@ fn visit_profile(
         budget_clock_ns,
         calibration_ns
     );
+    let parts = &sample.driver.lifecycle;
+    for (name, row) in LIFECYCLE_NAMES.iter().zip(parts.parts) {
+        emit(&format!("vm_driver_part_{name}_ns"), row.wall_ns)?;
+        emit(&format!("vm_driver_part_{name}_calls_count"), row.calls)?;
+    }
+    for (name, value) in LIFECYCLE_OUTER_NAMES
+        .iter()
+        .zip(parts.unattributed_by_outer_ns)
+    {
+        emit(&format!("vm_driver_parts_unattributed_{name}_ns"), value)?;
+    }
+    for (name, value) in [
+        ("run_ns", parts.run_ns),
+        ("unattributed_ns", parts.unattributed_ns),
+        ("observer_ns", parts.observer_ns),
+        ("observer_clock_queries_count", parts.observer_clock_queries),
+        ("errors_count", parts.errors),
+    ] {
+        emit(&format!("vm_driver_parts_{name}"), value)?;
+    }
     for (name, row) in STEP_NAMES.iter().zip(sample.steps) {
         for (metric, value) in StepCost::METRIC_NAMES.into_iter().zip(row.metrics()) {
             let suffix = if metric.ends_with("_ns") {
@@ -123,7 +187,7 @@ pub(super) fn columns(out: &mut impl Write) -> io::Result<()> {
 
 pub(super) fn values(out: &mut impl Write, sample: Option<&Observation>) -> io::Result<()> {
     #[cfg(feature = "vm-execution-counts")]
-    super::counts::values(out, sample.map(|sample| &sample.counts))?;
+    super::counts::values(out, sample.map(|sample| (&sample.counts, &sample.gc)))?;
     #[cfg(feature = "vm-profiling")]
     {
         write!(out, "\t{}", u8::from(sample.is_some()))?;
@@ -156,6 +220,11 @@ mod tests {
         after.driver.first_dispatch_gap_ns = 3;
         after.driver.first_dispatch_gaps = 1;
         after.driver.loop_iterations = 7;
+        after.driver.lifecycle.parts[0].calls = 2;
+        after.driver.lifecycle.parts[0].wall_ns = 9;
+        after.driver.lifecycle.unattributed_ns = 4;
+        after.driver.lifecycle.unattributed_by_outer_ns = [1, 2, 0, 1];
+        after.driver.lifecycle.observer_ns = 3;
         let delta = after.checked_delta(&before).unwrap();
         assert_eq!(delta.steps[0].eligible_calls, 6);
         assert_eq!(delta.steps[0].clock_queries, 2);
@@ -177,6 +246,14 @@ mod tests {
             ("vm_driver_first_dispatch_gap_ns", "3"),
             ("vm_driver_first_dispatch_gaps_count", "1"),
             ("vm_driver_loop_iterations_count", "7"),
+            ("vm_driver_part_class_spec_field_calls_count", "2"),
+            ("vm_driver_part_class_spec_field_ns", "9"),
+            ("vm_driver_parts_unattributed_ns", "4"),
+            ("vm_driver_parts_unattributed_scalar_ns", "1"),
+            ("vm_driver_parts_unattributed_script_ns", "2"),
+            ("vm_driver_parts_unattributed_native_ns", "0"),
+            ("vm_driver_parts_unattributed_loop_ns", "1"),
+            ("vm_driver_parts_observer_ns", "3"),
         ] {
             let index = columns.iter().position(|column| *column == name).unwrap();
             assert_eq!(fields[index], expected);

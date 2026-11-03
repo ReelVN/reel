@@ -9,11 +9,13 @@
 mod demand;
 pub mod distribution;
 pub mod hal;
+#[cfg(feature = "profiling")]
+pub mod performance;
 pub mod platform;
 pub mod player;
 pub mod presentation;
-#[cfg(all(feature = "profiling", any(target_os = "vita", test)))]
-mod probe;
+#[cfg(feature = "profiling")]
+pub use performance::set_vm_profiling_enabled;
 pub mod story_runtime;
 #[cfg(test)]
 mod test_cost;

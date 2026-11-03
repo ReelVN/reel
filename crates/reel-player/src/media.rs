@@ -16,6 +16,19 @@ use std::{
     time::Duration,
 };
 
+// Keep only the latest periodic state. The diagnostic thread owns transport IO;
+// a slow reader cannot queue reports or make media maintenance wait for it.
+#[cfg(feature = "profiling")]
+static MEDIA_REPORT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(all(
+    feature = "performance",
+    any(feature = "window", target_os = "vita", test)
+))]
+pub(crate) fn take_profile_report() -> Option<String> {
+    MEDIA_REPORT.try_lock().ok()?.take()
+}
+
 #[cfg(all(
     feature = "audio-output",
     any(target_os = "windows", target_os = "linux", target_os = "macos")
@@ -582,19 +595,24 @@ impl MediaPlayer {
         self.pcm.usage()
     }
     #[cfg(feature = "profiling")]
-    fn profile(&self, phase: &str) {
+    fn profile(&self, phase: &str) -> String {
         let output = self
             .output
             .as_ref()
             .map(|output| (output.status(), output.clock_observation().generated_frames));
-        eprintln!(
-            "[reel-media] {phase} output={output:?} pcm={:?} audio={} reclaim={:?}",
+        let report = format!(
+            "[reel-media] {phase} output={output:?} pcm={:?} audio={} reclaim={:?}\n",
             self.pcm.usage(),
             self.entries.len(),
             self.reclaim.as_ref().map(|reclaim| reclaim.status())
         );
         #[cfg(feature = "video")]
-        self.movies.profile(phase);
+        let report = {
+            let mut report = report;
+            self.movies.profile(phase, &mut report);
+            report
+        };
+        report
     }
 }
 fn db(volume: f64) -> f32 {
@@ -919,7 +937,11 @@ impl MediaBackend for MediaPlayer {
         #[cfg(feature = "profiling")]
         if self.profile_at.elapsed() >= Duration::from_secs(1) {
             self.profile_at = std::time::Instant::now();
-            self.profile("playing");
+            let _observer = reel_core::profile::Scope::new(reel_core::profile::Phase::Observer);
+            let report = self.profile("playing");
+            if let Ok(mut pending) = MEDIA_REPORT.try_lock() {
+                *pending = Some(report);
+            }
         }
         self.wake.acknowledge();
         self.assets.maintain();
@@ -1236,7 +1258,13 @@ impl MediaBackend for MediaPlayer {
             let _ = output.stop();
         }
         #[cfg(feature = "profiling")]
-        self.profile("stopped");
+        {
+            if let Ok(mut pending) = MEDIA_REPORT.try_lock() {
+                *pending = None;
+            }
+            let report = self.profile("stopped");
+            let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), report.as_bytes());
+        }
         drop(self.pending_fill.take());
         if self
             .output

@@ -526,6 +526,12 @@ fn closed_auto_condition_allows_manual_reveal_advance_and_skip() {
         if skip {
             ui.session.set_skip_reading(true, true, false);
             ui.advance_dialogue(0, 30.).unwrap();
+            ui.sync(&mut bridge, root).unwrap();
+            assert_eq!(visible(&ui), "Gate closed".len());
+            assert!(!ui.dialogue_needs_time());
+            assert!(ui.session.view().interaction.is_some());
+            accept(&mut ui, &mut bridge, root, 2);
+            ui.advance_dialogue(0, 30.).unwrap();
         } else {
             click(&mut ui, &mut bridge, (100., 300.));
             ui.sync(&mut bridge, root).unwrap();

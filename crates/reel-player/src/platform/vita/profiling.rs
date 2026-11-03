@@ -1,5 +1,5 @@
 //! Sample native state in memory; the session writes it after closing playback.
-use crate::probe::Recording;
+use crate::performance::recording::Recording;
 use reel_render::gxm::GxmBackend;
 use std::time::Duration;
 use vita_native::app::wake::WaitResult;
@@ -113,6 +113,25 @@ pub(super) fn record_device(
     let memory = backend.native_memory_state();
     let main = memory.main;
     let contiguous = contiguous.usage();
+    // Preserve cumulative observations even when the startup check rejects
+    // short scopes. Long intervals can be compared after checking thread ID
+    // and monotonicity; these values do not identify individual phase CPU time.
+    #[cfg(feature = "thread-profiling")]
+    let runtime = match vita_native::app::time::thread_runtime() {
+        Ok(value) => [
+            1,
+            value.thread_id as u32 as u64,
+            value.run_micros,
+            vita_native::app::time::monotonic_micros(),
+            value.priority as u32 as u64,
+            value.affinity as u32 as u64,
+            value.cpu as u32 as u64,
+            u64::MAX,
+        ],
+        Err(error) => [0, 0, 0, 0, 0, 0, 0, error.code as u32 as u64],
+    };
+    #[cfg(not(feature = "thread-profiling"))]
+    let runtime = [0, 0, 0, 0, 0, 0, 0, u64::MAX];
     recording.record_device([
         renderer.resources,
         renderer.targets,
@@ -229,6 +248,14 @@ pub(super) fn record_device(
         u64::from(slow.after.same_target),
         slow.after.oldest_age_us,
         u64::from(slow.result as u32),
+        runtime[0],
+        runtime[1],
+        runtime[2],
+        runtime[3],
+        runtime[4],
+        runtime[5],
+        runtime[6],
+        runtime[7],
     ]);
 }
 

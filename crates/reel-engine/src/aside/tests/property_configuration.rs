@@ -317,6 +317,7 @@ fn real_with_updates_report_vm_native_and_storage_cost_against_assignments() {
                 match outcome {
                     SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                         let configuration = native_symbol(&vm, ticket).ends_with("::with");
+                        let before = vm.vm.heap().stats();
                         let result = vm
                             .dispatch(&mut session, ticket, "en", NativeBudget::RetryMinimum(4096))
                             .unwrap();
@@ -329,7 +330,14 @@ fn real_with_updates_report_vm_native_and_storage_cost_against_assignments() {
                             });
                             if matches!(result, NativeDispatch::Ready { .. }) {
                                 let stats = vm.vm.heap().stats();
-                                first_configuration.get_or_insert(stats);
+                                if followers == 0 && configure_dispatches > 1 {
+                                    assert_eq!(stats.payload_bytes, before.payload_bytes);
+                                    assert_eq!(stats.external_bytes, before.external_bytes);
+                                }
+                                // The first two method lookups finish the lazily built field index.
+                                if configure_dispatches >= 2 {
+                                    first_configuration.get_or_insert(stats);
+                                }
                                 last_configuration = Some(stats);
                             }
                         }

@@ -353,6 +353,11 @@ pub(super) enum NodeProperty {
     /// values without writing bindings or replacing this node. Scope overrides win.
     #[aside(name = "appearance", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::Appearance")), default = null, validate = interaction_appearance::validate)]
     Appearance,
+    /// Linear resolution multiplier for this node's effect output, in (0, 1].
+    /// The reduced output is bilinearly enlarged; Fragment coordinates, the
+    /// input subtree and independent mask keep their original resolution.
+    #[aside(name = "effect_resolution_scale", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_effect_resolution_scale)]
+    EffectResolutionScale,
 }
 
 pub(super) struct StageBinding {
@@ -1320,10 +1325,10 @@ pub(super) use property_values::{
     number, positive, read_alpha_layout, read_corner_colors, read_fit, read_image_adjustment,
     read_image_repeat, read_sampling, read_slice, read_source, read_source_rect, read_text,
     validate_background, validate_blend, validate_button_property, validate_byte_index,
-    validate_callback, validate_color, validate_dimension, validate_font_weight,
-    validate_image_property, validate_invert, validate_layout_property, validate_mask,
-    validate_mask_offset, validate_mask_progress, validate_nonnegative, validate_number,
-    validate_opacity, validate_optional_number, validate_reveal, validate_stretch,
+    validate_callback, validate_color, validate_dimension, validate_effect_resolution_scale,
+    validate_font_weight, validate_image_property, validate_invert, validate_layout_property,
+    validate_mask, validate_mask_offset, validate_mask_progress, validate_nonnegative,
+    validate_number, validate_opacity, validate_optional_number, validate_reveal, validate_stretch,
     validate_text_align, validate_text_fit, validate_text_property, validate_text_props,
     validate_text_spacing, validate_writing_mode, validation, writing_mode,
 };

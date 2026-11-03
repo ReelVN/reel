@@ -18,7 +18,40 @@ impl Activities {
     }
     pub fn poll_after(&self, sampling: std::time::Duration) -> Option<std::time::Duration> {
         let (&key, _) = self.events.first_key_value()?;
-        let seconds = (f64::from_bits(key.0) - self.time).max(0.);
+        let deadline = self.deadline_after(f64::from_bits(key.0));
+        Some(if self.sampling == 0 {
+            deadline
+        } else {
+            deadline.min(sampling)
+        })
+    }
+
+    /// Finite endpoints and clocks with a pending next() consumer keep their
+    /// deadlines when a drawing already occupies the next production slot.
+    pub fn deadline_poll_after(&self, vm: &Vm) -> Option<std::time::Duration> {
+        let revision = vm.wait_revision();
+        if let Some((checked, deadline)) = self.deadline_cache.get()
+            && checked == revision
+        {
+            return deadline.map(|deadline| self.deadline_after(deadline));
+        }
+        let heap = vm.heap();
+        let deadline = self.events.iter().find_map(|(key, &leaf)| {
+            let clock = kind(heap, leaf).expect("indexed activity leaf") == Kind::Clock;
+            let required = !clock || {
+                let activity = get(heap, leaf, Slot::Activity).expect("indexed activity owner");
+                self.waits.iter().any(|&(wait, owner, tick)| {
+                    tick.is_some() && owner.same_bits(activity) && vm.wait_is_pending(wait)
+                })
+            };
+            required.then(|| f64::from_bits(key.0))
+        });
+        self.deadline_cache.set(Some((revision, deadline)));
+        deadline.map(|deadline| self.deadline_after(deadline))
+    }
+
+    fn deadline_after(&self, deadline: f64) -> std::time::Duration {
+        let seconds = (deadline - self.time).max(0.);
         let mut deadline =
             std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX);
         // Host clocks use whole nanoseconds. Preserve a future activity deadline
@@ -26,11 +59,7 @@ impl Activities {
         if deadline.as_secs_f64() < seconds {
             deadline = deadline.saturating_add(std::time::Duration::from_nanos(1));
         }
-        Some(if self.sampling == 0 {
-            deadline
-        } else {
-            deadline.min(sampling)
-        })
+        deadline
     }
     pub fn pending(&self) -> bool {
         self.round.is_some()
@@ -120,6 +149,7 @@ impl Activities {
 
     fn remove_event(&mut self, heap: &mut Heap, leaf: Value) -> Result<(), AdapterError> {
         if let Some(deadline) = get(heap, leaf, Slot::Event)?.as_float() {
+            self.deadline_cache.set(None);
             self.events.remove(&Self::event_key(heap, leaf, deadline)?);
             if Self::needs_sampling(heap, leaf)? {
                 self.sampling -= 1;
@@ -156,6 +186,7 @@ impl Activities {
             start
         };
         let deadline = (start + duration).max(minimum.next_up());
+        self.deadline_cache.set(None);
         self.events
             .insert(Self::event_key(heap, leaf, deadline)?, leaf);
         if Self::needs_sampling(heap, leaf)? {

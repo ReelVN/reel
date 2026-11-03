@@ -124,6 +124,14 @@ pub(super) const NAMES: &[&str] = &[
     "slow_scene_after_same_target",
     "slow_scene_after_oldest_us",
     "slow_scene_result",
+    "thread_runtime_observed",
+    "thread_runtime_id",
+    "thread_runtime_run_us",
+    "thread_runtime_observed_at_us",
+    "thread_runtime_priority",
+    "thread_runtime_affinity",
+    "thread_runtime_cpu",
+    "thread_runtime_error",
 ];
 
 pub(crate) type DeviceSample = [u64; NAMES.len()];

@@ -69,6 +69,8 @@ pub(in crate::aside) fn describe(api: &mut aside_host::source::Api) {
 pub(in crate::aside) fn contracts() -> Vec<aside_host::NativeContract> {
     use aside_vm::bytecode::{BuiltinType, Const, Effects};
     vec![aside_host::NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         symbol: "reel::appearance".into(),
         abi_version: 1,
         parameters: STATES

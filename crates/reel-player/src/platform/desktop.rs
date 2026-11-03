@@ -1,6 +1,8 @@
 use crate::aside_session::AsideSessionUi;
 use crate::hal::PlatformHost;
 mod diagnostic;
+#[cfg(feature = "performance")]
+mod performance;
 mod window;
 use crate::player::{PlayerOptions, PointerKind};
 use reel_engine::{
@@ -30,14 +32,37 @@ pub fn run_session_host() -> Result<(), Error> {
 /// Run a prepared story using the production window and presented-input path.
 /// On close, VM task and root retirement finishes before the native window exits.
 pub fn run_story(story: CompiledStory, mut options: PlayerOptions) -> Result<(), Error> {
-    let session = Session::new(SessionId(1), Epoch(1))?;
-    let assets = options
-        .open_assets()
-        .map_err(|error| format!("cannot open story resources: {error:?}"))?;
-    let driver =
-        AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?
-            .with_asset_context(assets, options.catalogs.clone());
-    run_mode(Mode::Story(Box::new((driver, options))))
+    #[cfg(feature = "performance")]
+    let mut capture = performance::Capture::from_environment(&mut options)?;
+    #[cfg(not(feature = "performance"))]
+    if std::env::var_os("REEL_PERFORMANCE_CONFIG").is_some() {
+        return Err("REEL_PERFORMANCE_CONFIG requires reel-player/performance".into());
+    }
+    let prepared = (|| {
+        let session = Session::new(SessionId(1), Epoch(1))?;
+        let assets = options
+            .open_assets()
+            .map_err(|error| format!("cannot open story resources: {error:?}"))?;
+        let driver =
+            AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?
+                .with_asset_context(assets, options.catalogs.clone());
+        Ok::<_, Error>(Mode::Story(Box::new((driver, options))))
+    })();
+    let mode = match prepared {
+        Ok(mode) => mode,
+        Err(error) => {
+            #[cfg(feature = "performance")]
+            if let Some(capture) = &mut capture {
+                capture.finish(&error.to_string())?;
+            }
+            return Err(error);
+        }
+    };
+    run_mode_recorded(
+        mode,
+        #[cfg(feature = "performance")]
+        capture,
+    )
 }
 
 enum Mode {
@@ -47,34 +72,80 @@ enum Mode {
 }
 
 fn run_mode(mode: Mode) -> Result<(), Error> {
-    let event_loop = EventLoop::new()?;
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    let mode = match mode {
-        Mode::Story(story) => {
-            let (driver, options) = *story;
-            let proxy = event_loop.create_proxy();
-            let wake = reel_core::wake::WakeSignal::new(move || {
-                let _ = proxy.send_event(());
-            });
-            let assets = driver.ui().assets();
-            let driver = driver.with_media(Box::new(crate::media::native(
-                assets,
-                options.media.clone(),
-                wake,
-            )))?;
-            Mode::Story(Box::new((driver, options)))
-        }
-        mode => mode,
-    };
+    run_mode_recorded(
+        mode,
+        #[cfg(feature = "performance")]
+        None,
+    )
+}
 
+fn run_mode_recorded(
+    mode: Mode,
+    #[cfg(feature = "performance")] mut capture: Option<performance::Capture>,
+) -> Result<(), Error> {
+    let prepared = (|| {
+        let event_loop = EventLoop::new()?;
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        let mode = match mode {
+            Mode::Story(story) => {
+                let (driver, options) = *story;
+                let proxy = event_loop.create_proxy();
+                let wake = reel_core::wake::WakeSignal::new(move || {
+                    let _ = proxy.send_event(());
+                });
+                let assets = driver.ui().assets();
+                let driver = driver.with_media(Box::new(crate::media::native(
+                    assets,
+                    options.media.clone(),
+                    wake,
+                )))?;
+                Mode::Story(Box::new((driver, options)))
+            }
+            mode => mode,
+        };
+
+        Ok::<_, Error>((event_loop, mode))
+    })();
+    let (event_loop, mode) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            #[cfg(feature = "performance")]
+            if let Some(capture) = &mut capture {
+                capture.finish(&error.to_string())?;
+            }
+            return Err(error);
+        }
+    };
     let mut app = App {
         state: None,
         error: None,
         next_generation: 1,
         mode: Some(mode),
         closing: false,
+        #[cfg(feature = "performance")]
+        capture,
+        #[cfg(feature = "performance")]
+        capture_started: None,
     };
-    event_loop.run_app(&mut app)?;
+    let run = event_loop.run_app(&mut app);
+    #[cfg(feature = "performance")]
+    if let Some(capture) = &mut app.capture {
+        let outcome = app
+            .error
+            .as_deref()
+            .map(str::to_owned)
+            .or_else(|| run.as_ref().err().map(ToString::to_string))
+            .unwrap_or_else(|| {
+                if app.closing && app.state.is_none() {
+                    "closed"
+                } else {
+                    "event loop exited before close completed"
+                }
+                .into()
+            });
+        capture.finish(&outcome)?;
+    }
+    run?;
     if let Some(error) = app.error {
         return Err(error.into());
     }
@@ -86,8 +157,22 @@ struct App {
     next_generation: u64,
     mode: Option<Mode>,
     closing: bool,
+    #[cfg(feature = "performance")]
+    capture: Option<performance::Capture>,
+    #[cfg(feature = "performance")]
+    capture_started: Option<Instant>,
 }
 impl App {
+    #[cfg(feature = "performance")]
+    fn start_performance(&mut self) {
+        self.capture_started = self.capture.as_ref().map(|_| Instant::now());
+    }
+    #[cfg(feature = "performance")]
+    fn record_performance(&mut self) {
+        if let Some(state) = &self.state {
+            performance::record(&mut self.capture, state, &mut self.capture_started);
+        }
+    }
     fn recover_or_fail(&mut self, event_loop: &ActiveEventLoop, error: Error) {
         if matches!(
             error.downcast_ref::<GpuError>(),
@@ -112,7 +197,10 @@ impl App {
             Instant::now() + Duration::from_millis(1),
         ));
         if let Some(state) = &mut self.state {
-            if let Err(error) = state.close() {
+            let closed = state.close();
+            #[cfg(feature = "performance")]
+            performance::record(&mut self.capture, state, &mut self.capture_started);
+            if let Err(error) = closed {
                 self.error.get_or_insert_with(|| error.to_string());
                 self.state = None;
                 event_loop.exit();
@@ -124,10 +212,14 @@ impl App {
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "performance")]
+        self.start_performance();
         if let Some(state) = &mut self.state {
             if let Err(e) = state.resume() {
                 self.fail(event_loop, e);
             }
+            #[cfg(feature = "performance")]
+            self.record_performance();
             return;
         }
         let Some(mode) = self.mode.take() else {
@@ -148,15 +240,23 @@ impl ApplicationHandler for App {
             }
             Err(e) => self.fail(event_loop, e),
         }
+        #[cfg(feature = "performance")]
+        self.record_performance();
     }
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "performance")]
+        self.start_performance();
         if let Some(state) = self.state.as_mut()
             && let Err(error) = state.suspend()
         {
             self.fail(event_loop, error);
         }
+        #[cfg(feature = "performance")]
+        self.record_performance();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        #[cfg(feature = "performance")]
+        self.start_performance();
         if self.closing {
             return;
         }
@@ -277,15 +377,22 @@ impl ApplicationHandler for App {
         if let Err(e) = result {
             self.recover_or_fail(event_loop, e);
         }
+        #[cfg(feature = "performance")]
+        self.record_performance();
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "performance")]
+        self.start_performance();
         if let Some(state) = &mut self.state {
             if self.closing {
                 if let Err(error) = state.tick_gamepads() {
                     self.fail(event_loop, error);
                     return;
                 }
-                if let Err(error) = state.tick_story() {
+                let ticked = state.tick_story();
+                #[cfg(feature = "performance")]
+                performance::record(&mut self.capture, state, &mut self.capture_started);
+                if let Err(error) = ticked {
                     self.error.get_or_insert_with(|| error.to_string());
                     self.state = None;
                     event_loop.exit();
@@ -322,6 +429,10 @@ impl ApplicationHandler for App {
                 self.recover_or_fail(event_loop, error);
                 return;
             }
+            // This call can present the hidden startup window. Close its
+            // measurement interval before polling or another event can present.
+            #[cfg(feature = "performance")]
+            performance::record(&mut self.capture, state, &mut self.capture_started);
             if let Err(e) = state.poll_completions() {
                 self.recover_or_fail(event_loop, Box::new(e));
                 return;
@@ -350,6 +461,8 @@ impl ApplicationHandler for App {
             };
             state.host.wait_until(deadline);
             state.host.apply(event_loop);
+            #[cfg(feature = "performance")]
+            performance::record(&mut self.capture, state, &mut self.capture_started);
         }
     }
 }

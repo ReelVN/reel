@@ -3,6 +3,39 @@ use reel_render::profiling::{CACHE_MISS_LABELS, EffectSample, drain_effects};
 use std::fmt::Write as _;
 
 pub(super) fn print(rows: &mut Vec<EffectSample>, line: &mut String, elapsed_ms: u128) {
+    let inputs = reel_render::profiling::drain_effect_input_plans();
+    if [
+        inputs.preparations,
+        inputs.candidates,
+        inputs.selected_inputs,
+        inputs.pinned_bytes,
+        inputs.rejected_owners,
+    ]
+    .into_iter()
+    .any(|value| value != 0)
+    {
+        eprintln!(
+            "[reel-effect-inputs] t_ms={elapsed_ms} preparations={} candidates={} selected_inputs={} pinned_bytes={} rejected_owners={}",
+            inputs.preparations,
+            inputs.candidates,
+            inputs.selected_inputs,
+            inputs.pinned_bytes,
+            inputs.rejected_owners,
+        );
+    }
+    if let Some((paint, dropped)) = reel_render::profiling::drain_paint_regions()
+        && (paint.batches != 0 || paint.transparent_replacements != 0 || dropped != 0)
+    {
+        eprintln!(
+            "[reel-paint-regions] t_ms={elapsed_ms} batches={} extra_draws={} original_scissor_pixels={} direct_scissor_pixels={} transparent_replacements={} transparent_scissor_pixels={} dropped={dropped}",
+            paint.batches,
+            paint.extra_draws,
+            paint.original_pixels,
+            paint.direct_pixels,
+            paint.transparent_replacements,
+            paint.transparent_pixels,
+        );
+    }
     if let Some((frame, dropped)) = reel_render::profiling::drain_frame_completion() {
         if frame.completed + frame.timeouts + frame.errors != 0 || dropped != 0 {
             eprintln!(
@@ -52,13 +85,15 @@ pub(super) fn print(rows: &mut Vec<EffectSample>, line: &mut String, elapsed_ms:
         }
         let _ = write!(
             line,
-            " variant={} draws={} hits={} early_hits={} source_pixels={} source_storage_pixels={} output_pixels={} output_storage_pixels={} scissor_pixels={} sampler_bindings={} submit_wall_us={} max_source={}x{} max_output={}x{} largest_owner={}",
+            " variant={} draws={} hits={} early_hits={} source_pixels={} source_storage_pixels={} crop_source_draws={} crop_source_original_storage_pixels={} output_pixels={} output_storage_pixels={} scissor_pixels={} sampler_bindings={} submit_wall_us={} max_source={}x{} max_output={}x{} largest_owner={}",
             row.variant,
             row.draws,
             row.hits,
             row.early_hits,
             row.source_pixels,
             row.source_storage_pixels,
+            row.crop_source_draws,
+            row.crop_source_original_storage_pixels,
             row.output_pixels,
             row.output_storage_pixels,
             row.scissor_pixels,

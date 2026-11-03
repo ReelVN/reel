@@ -2,7 +2,6 @@
 use super::{Row, StoryRuntime};
 use reel_core::profile::Phase;
 use std::collections::VecDeque;
-#[cfg(any(target_os = "vita", test))]
 use std::io::{self, Write};
 
 const PER_SEGMENT: usize = 32;
@@ -75,7 +74,6 @@ impl Timeline {
         self.loops.capacity() * size_of::<Loop>() + self.title.capacity()
     }
 
-    #[cfg(any(target_os = "vita", test))]
     pub(super) fn report(&self, out: &mut impl Write) -> io::Result<()> {
         write!(out, "loop_columns\telapsed_us\tactive_us")?;
         for phase in PHASES {

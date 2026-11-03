@@ -24,14 +24,14 @@ struct ClockProfile {
 /// Backend-independent VM, activity and GC scheduler. Hosts supply monotonic
 /// time and call `wake_input` after submitting input to the session driver.
 pub struct StoryRuntime {
-    driver: Option<AsideSessionUi>,
+    driver: Option<Box<AsideSessionUi>>,
     saves: Option<Box<crate::saves::RuntimeSaves>>,
     capture: Option<crate::saves::Capture>,
     capture_started: Option<u64>,
     frame_capture_enabled: bool,
     window_control_enabled: bool,
     media_factory: Option<Box<dyn Fn() -> Box<dyn reel_engine::media::MediaBackend>>>,
-    retiring: Option<AsideSessionUi>,
+    retiring: Option<Box<AsideSessionUi>>,
     starting: Option<reel_engine::aside::source::StoryFunction>,
     runnable: bool,
     collecting: bool,
@@ -42,6 +42,10 @@ pub struct StoryRuntime {
     logical_ns: u64,
     clock_turn_pending: bool,
     clock_sample_requested: bool,
+    #[cfg(feature = "profiling")]
+    deferred_frame_samples: [u64; 2],
+    #[cfg(feature = "profiling")]
+    frame_sample_deferred: bool,
     #[cfg(feature = "profiling")]
     clock_profile: Option<ClockProfile>,
     #[cfg(feature = "profiling")]
@@ -57,10 +61,18 @@ pub struct StoryRuntime {
     suspended_ns: u64,
 }
 
+/// Availability of the next drawing, independent of VM and service work.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameProduction {
+    Ready,
+    ProjectionQueued,
+    CandidateRetained,
+}
+
 impl StoryRuntime {
     pub fn new(driver: AsideSessionUi) -> Self {
         Self {
-            driver: Some(driver),
+            driver: Some(Box::new(driver)),
             saves: None,
             capture: None,
             capture_started: None,
@@ -79,6 +91,10 @@ impl StoryRuntime {
             clock_turn_pending: false,
             clock_sample_requested: true,
             #[cfg(feature = "profiling")]
+            deferred_frame_samples: [0; 2],
+            #[cfg(feature = "profiling")]
+            frame_sample_deferred: false,
+            #[cfg(feature = "profiling")]
             clock_profile: None,
             #[cfg(feature = "profiling")]
             progress_profile: None,
@@ -96,7 +112,7 @@ impl StoryRuntime {
 
     pub fn driver(&self) -> &AsideSessionUi {
         self.driver
-            .as_ref()
+            .as_deref()
             .unwrap_or_else(|| self.capture.as_ref().unwrap().owner())
     }
     pub fn capturing(&self) -> bool {
@@ -201,7 +217,13 @@ impl StoryRuntime {
             .ui_mut()
             .session_mut()
             .set_skip_reading(false, false, false);
-        self.driver.as_mut().unwrap().ui_mut().pause_dialogue();
+        let logical_ns = self.logical_time_at(now_ns);
+        let speed = self.driver().adapter().game_settings().text_speed;
+        self.driver
+            .as_mut()
+            .unwrap()
+            .ui_mut()
+            .suspend_dialogue(logical_ns, speed)?;
         self.driver.as_mut().unwrap().suspend_media();
         Ok(())
     }
@@ -267,6 +289,22 @@ impl StoryRuntime {
         }
     }
 
+    fn frame_time_interval(&self, production: FrameProduction) -> Option<std::time::Duration> {
+        if production == FrameProduction::Ready {
+            return Some(self.time_interval());
+        }
+        let endpoint = self.driver().activities_deadline_after();
+        if self.driver().ui().dialogue_needs_time() {
+            let reveal = self
+                .driver()
+                .ui()
+                .dialogue_interval(self.driver().adapter().game_settings().text_speed);
+            Some(endpoint.map_or(reveal, |endpoint| endpoint.min(reveal)))
+        } else {
+            endpoint
+        }
+    }
+
     /// Remaining delay at the latest story-time sample. Hosts should schedule
     /// [`Self::wake_deadline`] so execution and recording time do not rearm timers.
     pub fn tick_interval(&self) -> std::time::Duration {
@@ -285,6 +323,14 @@ impl StoryRuntime {
     pub fn wake_deadline(
         &self,
         now: reel_core::clock::MonoTime,
+    ) -> Option<reel_core::clock::MonoTime> {
+        self.frame_wake_deadline(now, FrameProduction::Ready)
+    }
+
+    pub(crate) fn frame_wake_deadline(
+        &self,
+        now: reel_core::clock::MonoTime,
+        production: FrameProduction,
     ) -> Option<reel_core::clock::MonoTime> {
         use reel_core::clock::MonoTime;
         let after = |base: u64, interval: std::time::Duration| {
@@ -309,10 +355,13 @@ impl StoryRuntime {
             .logical_ns
             .saturating_add(self.suspended_ns)
             .saturating_sub(self.time_offset_ns);
-        let story = after(sample, self.time_interval());
-        let deadline = self
-            .media_interval()
-            .map_or(story, |interval| story.min(after(now.0, interval)));
+        let story = self
+            .frame_time_interval(production)
+            .map(|interval| after(sample, interval));
+        let deadline = story
+            .into_iter()
+            .chain(self.media_interval().map(|interval| after(now.0, interval)))
+            .min()?;
         Some(MonoTime(deadline.max(now.0)))
     }
 
@@ -355,6 +404,15 @@ impl StoryRuntime {
     /// continuations share that deadline, so they do not each cost a window frame.
     /// Without a deadline, run exactly one slice for manually scheduled hosts.
     pub fn tick(&mut self, budget: SliceBudget, mut now: impl FnMut() -> u64) -> Result<(), Error> {
+        self.tick_for_frame(budget, FrameProduction::Ready, &mut now)
+    }
+
+    pub(crate) fn tick_for_frame(
+        &mut self,
+        budget: SliceBudget,
+        production: FrameProduction,
+        mut now: impl FnMut() -> u64,
+    ) -> Result<(), Error> {
         if !self.needs_tick() {
             return Ok(());
         }
@@ -448,13 +506,32 @@ impl StoryRuntime {
             let timed =
                 self.driver().continuous_time_pending() || self.driver().ui().dialogue_needs_time();
             let due = self
-                .logical_ns
-                .saturating_add(u64::try_from(self.time_interval().as_nanos()).unwrap_or(u64::MAX));
+                .frame_time_interval(production)
+                .is_some_and(|interval| {
+                    self.logical_time_at(sample)
+                        >= self
+                            .logical_ns
+                            .saturating_add(u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX))
+                });
             // VM/GC continuations preserve the current producer sample until
             // its existing deadline. External wakes and idle starts sample
             // immediately, including when no producer previously had a deadline.
-            if self.clock_sample_requested || !timed || self.logical_time_at(sample) >= due {
+            if self.clock_sample_requested || !timed || due {
                 self.advance_clock(sample)?;
+            } else {
+                #[cfg(feature = "profiling")]
+                if production != FrameProduction::Ready && !self.frame_sample_deferred {
+                    let interval = self.time_interval();
+                    if self.logical_time_at(sample)
+                        >= self
+                            .logical_ns
+                            .saturating_add(u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX))
+                    {
+                        let index = usize::from(production == FrameProduction::CandidateRetained);
+                        self.deferred_frame_samples[index] += 1;
+                        self.frame_sample_deferred = true;
+                    }
+                }
             }
         }
         loop {
@@ -505,6 +582,10 @@ impl StoryRuntime {
         // and a script instruction completes. Then sample current time again.
         self.clock_turn_pending = true;
         self.clock_sample_requested = false;
+        #[cfg(feature = "profiling")]
+        {
+            self.frame_sample_deferred = false;
+        }
         #[cfg(feature = "profiling")]
         {
             self.clock_profile = Some(ClockProfile {
@@ -700,7 +781,7 @@ impl StoryRuntime {
                 })
                 .map(|location| self.location_text(location));
             profile_output::log(format_args!(
-                "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} binding_hits={} binding_misses={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} stage_batches={} max_stage_batch_ms={:.3} location={location:?}",
+                "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} binding_hits={} binding_misses={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} stage_batches={} max_stage_batch_ms={:.3} frame_deferred_projection={} frame_deferred_candidate={} location={location:?}",
                 self.logical_ns,
                 self.driver().adapter().stage_ready(),
                 self.driver().adapter().vm().heap().derived_pending(),
@@ -717,11 +798,14 @@ impl StoryRuntime {
                 stats.heap.pending_objects,
                 stats.heap.charged_bytes,
                 self.stage_batches,
-                self.stage_batch_max_ns as f64 / 1_000_000.
+                self.stage_batch_max_ns as f64 / 1_000_000.,
+                self.deferred_frame_samples[0],
+                self.deferred_frame_samples[1]
             ));
         }
         self.stage_batches = 0;
         self.stage_batch_max_ns = 0;
+        self.deferred_frame_samples = [0; 2];
         self.progress_profile = Some(ClockProfile {
             started: now,
             identity,
@@ -821,6 +905,82 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn skip_presents_complete_lines_once_and_honors_protected_reveal_and_barriers() {
+        use reel_core::identity::FrameId;
+        use reel_ui::bridge::{NoticeResult, PresentationNotice, PresentationOutcome};
+        for (protected, barrier) in [(false, false), (true, false), (false, true)] {
+            let source = r#"fn main() {
+                game.configure(text_speed: 100);
+                let dialogue = game.dialogue();
+                let label = text(value: derive(|| dialogue.text), reveal: derive(|| dialogue.reveal));
+                stage.replace(label);
+                game.reading().set_skip(true, unread: true);
+                for i in 0..3 {
+                    narrator(f"Line {i}", reveal_skippable: !PROTECTED);
+                    if BARRIER {
+                        label.x = i + 1;
+                        await stage.presented(owner: label);
+                    }
+                }
+            }"#.replace("PROTECTED", &protected.to_string()).replace("BARRIER", &barrier.to_string());
+            let mut story = runtime(&source);
+            let (mut bridge, root) = crate::session::tests::mount(story.driver().ui());
+            let mut accepted = None;
+            let mut lines = Vec::new();
+            let mut between_lines = 0;
+            let mut incomplete = 0;
+            for turn in 0..10_000 {
+                story
+                    .tick(SliceBudget::default(), || turn * 1_000_000)
+                    .unwrap();
+                let driver = story.driver_mut().unwrap();
+                driver.sync(&mut bridge, root).unwrap();
+                let stamp = driver.projection_stamp();
+                if accepted != Some(stamp)
+                    && let Some((source, receipt)) =
+                        driver.record(&mut bridge, root, FrameId(turn)).unwrap()
+                {
+                    match driver.ui().session().view().interaction {
+                        Some(InteractionView::Dialogue(dialogue)) => {
+                            if dialogue.lines()[0].playback_complete() {
+                                assert_eq!(dialogue.lines()[0].reveal().visible_bytes, 0..6);
+                                lines.push(dialogue.id());
+                            } else {
+                                incomplete += 1;
+                            }
+                        }
+                        None if !lines.is_empty() && driver.state() == StoryState::Running => {
+                            between_lines += 1;
+                        }
+                        _ => {}
+                    }
+                    let key = source.key();
+                    assert_eq!(
+                        bridge.resolve(PresentationNotice::new(
+                            key.clone(),
+                            key.surface_epoch(),
+                            PresentationOutcome::Accepted(FrameId(turn))
+                        )),
+                        NoticeResult::Accepted
+                    );
+                    driver.presented(&bridge, &receipt).unwrap();
+                    accepted = Some(stamp);
+                }
+                story.wake_input();
+                if story.driver().state() == StoryState::Finished && !story.needs_tick() {
+                    break;
+                }
+            }
+            assert_eq!(story.driver().state(), StoryState::Finished);
+            assert_eq!(story.driver().ui().session().view().history.len(), 3);
+            assert_eq!(lines.len(), 3, "protected={protected} barrier={barrier}");
+            assert!(lines.windows(2).all(|pair| pair[0] != pair[1]));
+            assert_eq!(incomplete > 0, protected);
+            assert_eq!(between_lines, if barrier { 3 } else { 0 });
+        }
     }
 
     #[test]
@@ -948,7 +1108,18 @@ mod tests {
         ready.set(true);
         story.wake_input();
         assert!(story.needs_tick());
-        drain(&mut story);
+        for _ in 0..1000 {
+            story
+                .tick_for_frame(
+                    SliceBudget::default(),
+                    FrameProduction::CandidateRetained,
+                    || 0,
+                )
+                .unwrap();
+            if story.driver().state() == StoryState::Finished {
+                break;
+            }
+        }
         assert_eq!(story.driver().state(), StoryState::Finished);
     }
 

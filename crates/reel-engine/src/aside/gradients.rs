@@ -43,6 +43,8 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
 pub(super) fn contracts() -> Vec<aside_host::NativeContract> {
     use aside_vm::bytecode::{BuiltinType, Const, Effects};
     vec![aside_host::NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         symbol: "reel::linear_gradient".into(),
         abi_version: 1,
         parameters: [

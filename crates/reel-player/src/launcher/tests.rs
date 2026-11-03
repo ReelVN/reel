@@ -378,8 +378,10 @@ fn dropdowns_persist_readable_preferences_and_restore_library_selection() {
         view.launcher().take_outcome(),
         Some(Outcome::Launch(package))
     );
-    let saved = std::fs::read_to_string(library.0.join("launcher.tsv")).unwrap();
-    assert!(saved.contains("theme\tlight\n") && saved.contains("language\ten\n"));
+    let saved: Preferences =
+        serde_json::from_slice(&std::fs::read(library.0.join("launcher.json")).unwrap()).unwrap();
+    assert!(saved.light);
+    assert_eq!(saved.language, Language::English);
     assert!(!library.0.join(".reel-store-launcher.preferences").exists());
     let mut restored = View::new(&library, None);
     restored.present();
@@ -413,6 +415,26 @@ fn page_switches_reuse_nodes_and_popup_dismissal_keeps_settings() {
     view.touch([100., 110.]);
     assert_eq!(view.launcher().picker, None);
     assert_eq!(view.launcher().screen, Screen::Settings);
+}
+
+#[test]
+fn preferences_roundtrip_paths_and_default_missing_fields() {
+    let library = Library::new();
+    let preferences = Preferences {
+        light: true,
+        language: Language::Japanese,
+        selected: Some("D:\\作品\\tab\tline\nreturn\r\"游戏\"/game.asb".into()),
+    };
+    catalog::save_preferences(&library.0, &preferences).unwrap();
+    assert_eq!(catalog::read_preferences(&library.0).unwrap(), preferences);
+    std::fs::write(library.0.join("launcher.json"), b"{\"language\":\"en\"}").unwrap();
+    assert_eq!(
+        catalog::read_preferences(&library.0).unwrap(),
+        Preferences {
+            language: Language::English,
+            ..Preferences::default()
+        }
+    );
 }
 
 #[test]

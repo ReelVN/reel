@@ -90,6 +90,8 @@ pub(in crate::aside) fn contracts() -> Vec<NativeContract> {
             }))
             .collect();
             NativeContract {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol: schema.symbol.clone(),
                 abi_version: 1,
                 parameters,

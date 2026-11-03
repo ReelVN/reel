@@ -229,3 +229,223 @@ fn accepted_animation_frames_keep_the_sampling_deadline_while_script_waits() {
     player.tick(&mut host).unwrap();
     assert!(x(&mut player) > sampled);
 }
+
+fn accept_frame(player: &mut Player<Backend>, host: &mut Host) {
+    player.render(host).unwrap();
+    player
+        .backend
+        .inner
+        .complete_render(player.backend.inner.last_submission().unwrap());
+    player.poll_completions().unwrap();
+}
+
+fn settle_player(player: &mut Player<Backend>, host: &mut Host) {
+    for _ in 0..1000 {
+        player.tick(host).unwrap();
+        let story = player.story_mut().unwrap();
+        if !story.driver().has_runnable_tasks()
+            && !story.driver().activities_pending()
+            && story.driver().adapter().stage_ready()
+            && player
+                .story_deadline(host.now)
+                .is_none_or(|deadline| deadline > host.now)
+        {
+            return;
+        }
+    }
+    panic!("player work did not settle");
+}
+
+fn animated_x(player: &mut Player<Backend>) -> f64 {
+    player
+        .story_mut()
+        .unwrap()
+        .driver()
+        .adapter()
+        .stage()
+        .nodes()
+        .find(|node| node.props.width == Some(64.) && node.props.height == Some(64.))
+        .unwrap()
+        .props
+        .x
+}
+
+#[test]
+fn queued_clock_projection_coalesces_until_the_next_candidate_slot() {
+    let (mut player, mut host) = ready_player(
+        r##"fn main() {
+            game.configure(fonts:["400.ttf"]);
+            let timer=clock(interval:1.0/60,paused:true);
+            stage.replace(stack(width:64,height:64,background:"#ff0000",
+                x:derive(||timer.elapsed*1000)));
+            await stage.presented(); timer.resume();
+            await delay(5).run(); timer.stop();
+        }"##,
+    );
+    accept_frame(&mut player, &mut host);
+    settle_player(&mut player, &mut host);
+    host.now = MonoTime(20_000_000);
+    settle_player(&mut player, &mut host);
+    let sampled = animated_x(&mut player);
+    let slices = player
+        .story_mut()
+        .unwrap()
+        .driver()
+        .adapter()
+        .vm()
+        .stats()
+        .slices;
+    assert!(sampled > 0.);
+    for ms in [40, 100, 500] {
+        host.now = MonoTime(ms * 1_000_000);
+        settle_player(&mut player, &mut host);
+        assert_eq!(animated_x(&mut player), sampled);
+        assert_eq!(
+            player
+                .story_mut()
+                .unwrap()
+                .driver()
+                .adapter()
+                .vm()
+                .stats()
+                .slices,
+            slices
+        );
+    }
+    assert!(player.story_deadline(host.now).unwrap() > host.now);
+    accept_frame(&mut player, &mut host);
+    settle_player(&mut player, &mut host);
+    assert!(
+        (animated_x(&mut player) - 500.).abs() < 0.001,
+        "missed clock intervals combine into the current sample"
+    );
+}
+
+#[test]
+fn retained_candidate_keeps_finite_activity_deadlines_running() {
+    let (mut player, mut host) = ready_player(
+        r##"fn main() {
+            game.configure(fonts:["400.ttf"]);
+            let timer=clock(interval:1.0/60,paused:true);
+            let node=stack(width:64,height:64,background:"#ff0000",
+                x:derive(||timer.elapsed*1000));
+            stage.replace(node); await stage.presented(); timer.resume();
+            await delay(0.15).run(); timer.stop(); node.opacity=0.25;
+            await stage.presented();
+        }"##,
+    );
+    accept_frame(&mut player, &mut host);
+    settle_player(&mut player, &mut host);
+    host.now = MonoTime(20_000_000);
+    settle_player(&mut player, &mut host);
+    let sampled = animated_x(&mut player);
+    player.backend.preparing = true;
+    player.render(&mut host).unwrap();
+    assert!(player.presentation.is_preparing());
+    host.now = MonoTime(100_000_000);
+    settle_player(&mut player, &mut host);
+    assert_eq!(animated_x(&mut player), sampled);
+    assert_eq!(player.story_deadline(host.now), Some(MonoTime(150_000_000)));
+    host.now = MonoTime(150_000_001);
+    settle_player(&mut player, &mut host);
+    let story = player.story_mut().unwrap();
+    assert_eq!(
+        story
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .next()
+            .unwrap()
+            .props
+            .opacity,
+        0.25
+    );
+    assert!(
+        player.presentation.is_preparing(),
+        "the recorded candidate retains its own lifetime"
+    );
+}
+
+#[test]
+fn queued_projection_preserves_clock_next_and_input_wakes() {
+    let (mut player, mut host) = ready_player(
+        r##"fn main() {
+            game.configure(fonts:["400.ttf"]);
+            let state=model({clicked:0.0});
+            let timer=clock(interval:1.0/60,paused:true);
+            let view=button(width:64,height:64,
+                x:derive(||state.clicked*1000),
+                on_click:|_|{state.clicked=timer.elapsed;});
+            stage.replace(view); await stage.presented(); timer.resume();
+            view.opacity=0.75;
+            timer.next(); view.opacity=0.5;
+            await delay(5).run(); timer.stop();
+        }"##,
+    );
+    accept_frame(&mut player, &mut host);
+    settle_player(&mut player, &mut host);
+    assert_eq!(
+        player.presentation.demand.model,
+        crate::demand::Model::Pending
+    );
+    host.now = MonoTime(20_000_000);
+    settle_player(&mut player, &mut host);
+    assert_eq!(
+        player
+            .story_mut()
+            .unwrap()
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .next()
+            .unwrap()
+            .props
+            .opacity,
+        0.5
+    );
+    host.now = MonoTime(100_000_000);
+    for kind in ["down", "up"] {
+        player.dispatch_pointer(mouse(kind, (30., 30.))).unwrap();
+    }
+    settle_player(&mut player, &mut host);
+    assert!(
+        (animated_x(&mut player) - 100.).abs() < 0.001,
+        "the callback reads a fresh settled clock despite the queued drawing"
+    );
+}
+
+#[test]
+fn unchanged_projection_leaves_the_next_sampling_slot_available() {
+    let (mut player, mut host) = ready_player(
+        r##"fn main() {
+            game.configure(fonts:["400.ttf"]);
+            let timer=clock(interval:1.0/60,paused:true);
+            stage.replace(stack(width:64,height:64,background:"#ff0000",
+                x:derive(||if timer.elapsed<1 {5.0}else{10.0})));
+            await stage.presented(); timer.resume();
+            await delay(5).run(); timer.stop();
+        }"##,
+    );
+    accept_frame(&mut player, &mut host);
+    settle_player(&mut player, &mut host);
+    let revision = player
+        .story_mut()
+        .unwrap()
+        .driver()
+        .adapter()
+        .stage()
+        .revision();
+    for ms in [20, 200] {
+        host.now = MonoTime(ms * 1_000_000);
+        settle_player(&mut player, &mut host);
+        let story = player.story_mut().unwrap();
+        assert_eq!(story.driver().adapter().stage().revision(), revision);
+        assert_eq!(player.presentation.demand.model, crate::demand::Model::Idle);
+        assert!(
+            player.story_deadline(host.now).unwrap() > host.now,
+            "an unchanged drawing still advances the clock to its next interval"
+        );
+    }
+}

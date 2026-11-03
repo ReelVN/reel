@@ -649,6 +649,15 @@ impl SessionVm {
         }
     }
 
+    /// Next finite activity endpoint or periodic clock awaited by business code.
+    /// Unobserved clock intervals and intermediate animation samples may be
+    /// combined while a previous drawing occupies the frame production slot.
+    pub fn activities_deadline_after(&self) -> Option<std::time::Duration> {
+        (!self.revoked)
+            .then(|| self.activities.deadline_poll_after(&self.vm))
+            .flatten()
+    }
+
     pub fn start(&mut self, session: &Session, entry: FunctionId) -> Result<TaskId, AdapterError> {
         self.live(session)?;
         if self.task.is_some() || self.pending.is_some() || self.delivery.is_some() {

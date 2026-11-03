@@ -28,13 +28,16 @@ pub(super) struct Movies {
 }
 impl Movies {
     #[cfg(feature = "profiling")]
-    pub(super) fn profile(&self, phase: &str) {
-        eprintln!(
+    pub(super) fn profile(&self, phase: &str, report: &mut String) {
+        use std::fmt::Write;
+        writeln!(
+            report,
             "[reel-media] {phase} video={} retiring={} decoded={:?}",
             self.entries.len(),
             self.retiring.len(),
             self.budget.usage()
-        );
+        )
+        .expect("formatting media diagnostics");
     }
     pub fn new(limits: &VideoLimits) -> Self {
         Self {

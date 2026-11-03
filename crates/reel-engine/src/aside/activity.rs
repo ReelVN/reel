@@ -382,6 +382,8 @@ pub(super) struct Activities {
     #[serde(skip)]
     clock_events: usize,
     #[serde(skip)]
+    deadline_cache: std::cell::Cell<Option<(u64, Option<f64>)>>,
+    #[serde(skip)]
     native: Option<NativeWork>,
     #[serde(skip)]
     cleanup: Option<Cleanup>,
@@ -438,6 +440,7 @@ impl Activities {
                 self.restore(map)?;
             }
             Part::ActivityEvent => {
+                self.deadline_cache.set(None);
                 let (key, value): (EventKey, Value) = record.read()?;
                 let value = map.value(value)?;
                 self.clock_events += usize::from(graph::kind(heap, value)? == action::Kind::Clock);
@@ -447,6 +450,7 @@ impl Activities {
                 }
             }
             Part::ActivityWait => {
+                self.deadline_cache.set(None);
                 let (wait, value, tick): (WaitId, Value, Option<i64>) = record.read()?;
                 self.waits.push((map.wait(wait)?, map.value(value)?, tick));
                 self.waits_dirty = true;

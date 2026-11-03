@@ -1,11 +1,13 @@
 //! Count-only snapshots use the same interval as frame wall times. Counts cover
 //! VM operations and host accesses to frame slots; they are not exclusive costs
 //! of VmSlice. Missing/cross-identity deltas remain explicitly invalid.
+use super::vm::GcCounts;
 use aside_vm::executor::{ExecutionCounts, NATIVE_STEP_NAMES, SCRIPT_STEP_NAMES};
 use std::io::{self, Write};
 
 fn visit(
     counts: &ExecutionCounts,
+    gc: &GcCounts,
     mut emit: impl FnMut(&str, u64) -> io::Result<()>,
 ) -> io::Result<()> {
     macro_rules! fields {
@@ -54,6 +56,9 @@ fn visit(
         named_table_equality_steps,
         named_host_methods,
     );
+    emit("vm_gc_collections_count", gc.collections)?;
+    emit("vm_gc_units_count", gc.units)?;
+    emit("vm_heap_chunk_allocations_count", gc.chunk_allocations)?;
     macro_rules! slots {
         ($($field:ident),* $(,)?) => {$(
             emit(concat!("vm_slots_", stringify!($field), "_count"), counts.slots.$field)?;
@@ -89,14 +94,20 @@ fn visit(
 
 pub(super) fn columns(out: &mut impl Write) -> io::Result<()> {
     write!(out, "\tvm_counts_valid")?;
-    visit(&ExecutionCounts::default(), |name, _| {
-        write!(out, "\t{name}")
-    })
+    visit(
+        &ExecutionCounts::default(),
+        &GcCounts::default(),
+        |name, _| write!(out, "\t{name}"),
+    )
 }
 
-pub(super) fn values(out: &mut impl Write, counts: Option<&ExecutionCounts>) -> io::Result<()> {
-    write!(out, "\t{}", u8::from(counts.is_some()))?;
-    visit(counts.unwrap_or(&ExecutionCounts::default()), |_, value| {
-        write!(out, "\t{value}")
-    })
+pub(super) fn values(
+    out: &mut impl Write,
+    sample: Option<(&ExecutionCounts, &GcCounts)>,
+) -> io::Result<()> {
+    write!(out, "\t{}", u8::from(sample.is_some()))?;
+    let empty_counts = ExecutionCounts::default();
+    let empty_gc = GcCounts::default();
+    let (counts, gc) = sample.unwrap_or((&empty_counts, &empty_gc));
+    visit(counts, gc, |_, value| write!(out, "\t{value}"))
 }

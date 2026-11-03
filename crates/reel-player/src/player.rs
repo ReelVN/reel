@@ -346,7 +346,23 @@ where
         if self.captures.busy() {
             return Some(MonoTime(now.0.saturating_add(8_000_000)));
         }
-        self.session.as_ref()?.wake_deadline(now)
+        self.session
+            .as_ref()?
+            .wake_deadline(now, self.frame_production())
+    }
+
+    fn frame_production(&self) -> crate::story_runtime::FrameProduction {
+        use crate::{demand::Model, story_runtime::FrameProduction};
+        if self.presentation.is_preparing() {
+            FrameProduction::CandidateRetained
+        } else if matches!(
+            self.presentation.demand.model,
+            Model::Pending | Model::Preparing | Model::Waiting
+        ) {
+            FrameProduction::ProjectionQueued
+        } else {
+            FrameProduction::Ready
+        }
     }
 
     /// Advance ready work within one scheduling slice and apply game settings.
@@ -356,6 +372,7 @@ where
         self.maintain_window_requests(host)?;
         self.maintain_captures()?;
         self.maintain_pixel_recovery()?;
+        let production = self.frame_production();
         let Some(session) = &mut self.session else {
             return Ok(());
         };
@@ -372,7 +389,7 @@ where
         let frame_was_ready = session.frame_ready();
         {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Session);
-            session.tick(budget, now)?;
+            session.tick(budget, production, now)?;
         }
         if identity != session.ui().session().identity() {
             self.pixel_recovery.cancel(&session.ui().assets());

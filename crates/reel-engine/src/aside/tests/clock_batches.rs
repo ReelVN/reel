@@ -77,7 +77,11 @@ fn continuous_clock_settles_sliced_derivations_and_restores_a_pending_batch() {
             assert!(progress.work <= 1);
             assert_eq!(vm.vm.heap().stats().chunk_allocations, chunks);
             one_step(&mut vm, &mut session);
-            let current = position(&vm);
+            let current = if vm.stage_ready() {
+                position(&vm)
+            } else {
+                last
+            };
             if current != last {
                 assert!(current > last);
                 publications += 1;

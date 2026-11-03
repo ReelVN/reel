@@ -43,19 +43,33 @@ fn skip_can_advance(session: &Session) -> bool {
 }
 
 impl SessionUi {
+    /// Skippable text is completed before its first fast-forward presentation.
+    pub(crate) fn skip_reveal_pending(&self) -> bool {
+        self.session.reading().skipping()
+            && !self.session.reading().paused()
+            && self.reading_focused
+            && !self.reading_modal
+            && !self.gesture_active()
+            && matches!(self.session.view().interaction, Some(InteractionView::Dialogue(d))
+                if d.reveal_skippable() && d.lines().iter().any(|line| !line.playback_complete()))
+    }
+
     /// A pending presentation, menu, pause or paired gesture freezes reading.
     pub fn dialogue_needs_time(&self) -> bool {
         let Some(InteractionView::Dialogue(dialogue)) = self.session.view().interaction else {
             return false;
         };
         let accepted = self.binding.borrow().accepted;
-        accepted.is_some_and(|stamp| stamp.interaction == Some(dialogue.id()))
+        (accepted.is_some_and(|stamp| stamp.interaction == Some(dialogue.id()))
+            || self.skip_reveal_pending())
             && !self.images_pending()
             && !self.gesture_active()
             && self.reading_focused
             && !self.reading_modal
             && !self.session.reading().paused()
-            && (skip_can_advance(&self.session)
+            && ((skip_can_advance(&self.session)
+                && (!dialogue_complete(&self.session)
+                    || accepted.is_some_and(|stamp| stamp.dialogue_complete)))
                 || !dialogue_complete(&self.session)
                 || (awaiting_advance(&self.session)
                     && ((self.session.reading().automatic()
@@ -68,6 +82,15 @@ impl SessionUi {
         self.playback.last_ns = None;
         self.playback.auto_last = None;
         self.playback.remaining = self.session.reading().delay();
+    }
+
+    /// Preserve elapsed reveal time and restart automatic advance after suspension.
+    pub(crate) fn suspend_dialogue(&mut self, now_ns: u64, speed: f64) -> Result<(), Error> {
+        if !dialogue_complete(&self.session) {
+            self.advance_dialogue(now_ns, speed)?;
+        }
+        self.pause_dialogue();
+        Ok(())
     }
 
     pub(super) fn wait_for_image_presentation(&mut self) {
@@ -107,29 +130,27 @@ impl SessionUi {
             self.playback.interaction = Some(id);
             self.playback.dialogue_revision = revision;
         }
+        if self.skip_reveal_pending() {
+            // Publishing the complete text still owes an accepted frame before
+            // advancing the story. Protected reveal follows its ordinary clock.
+            let changed =
+                self.session
+                    .advance_reveal(self.session.root_owner(), id, Duration::ZERO, 0.)?;
+            self.pause_dialogue();
+            return Ok(changed);
+        }
         if skip_can_advance(&self.session) {
-            // A protected reveal must reach an accepted complete frame first.
-            let Some(InteractionView::Dialogue(dialogue)) = self.session.view().interaction else {
-                unreachable!()
-            };
-            if !dialogue.reveal_skippable()
-                && !self
-                    .binding
-                    .borrow()
-                    .accepted
-                    .is_some_and(|stamp| stamp.dialogue_complete)
+            if !self
+                .binding
+                .borrow()
+                .accepted
+                .is_some_and(|stamp| stamp.dialogue_complete)
             {
                 return Ok(false);
             }
             let owner = self.session.root_owner();
-            if self
-                .session
-                .handle_playback_input(owner, InputAction::Advance(id))?
-                == reel_engine::InputOutcome::Revealed
-            {
-                self.session
-                    .handle_playback_input(owner, InputAction::Advance(id))?;
-            }
+            self.session
+                .handle_playback_input(owner, InputAction::Advance(id))?;
             self.pause_dialogue();
             return Ok(true);
         }

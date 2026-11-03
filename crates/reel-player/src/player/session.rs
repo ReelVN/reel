@@ -271,11 +271,12 @@ impl PlayerSession {
     pub(crate) fn wake_deadline(
         &self,
         now: reel_core::clock::MonoTime,
+        production: crate::story_runtime::FrameProduction,
     ) -> Option<reel_core::clock::MonoTime> {
         match self {
             #[cfg(any(feature = "vita", test))]
             Self::Launcher(_) => None,
-            Self::Aside { story, .. } => story.wake_deadline(now),
+            Self::Aside { story, .. } => story.frame_wake_deadline(now, production),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => self.needs_tick().then(|| {
                 reel_core::clock::MonoTime(now.0.saturating_add(
@@ -288,12 +289,13 @@ impl PlayerSession {
     pub(crate) fn tick(
         &mut self,
         budget: SliceBudget,
+        production: crate::story_runtime::FrameProduction,
         now: impl FnMut() -> u64,
     ) -> Result<(), Error> {
         match self {
             #[cfg(any(feature = "vita", test))]
             Self::Launcher(launcher) => launcher.poll()?,
-            Self::Aside { story, .. } => story.tick(budget, now)?,
+            Self::Aside { story, .. } => story.tick_for_frame(budget, production, now)?,
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
                 let mut now = now;
@@ -389,12 +391,19 @@ mod tests {
                 mut bridge,
                 root,
             } = Candidate::new(driver).unwrap();
-            let mut session = PlayerSession::aside(driver);
+            let mut session = PlayerSession::aside(*driver);
             let settle = |session: &mut PlayerSession, bridge: &mut PresentationBridge, now| {
                 for _ in 0..1000 {
-                    session.tick(SliceBudget::default(), || now).unwrap();
+                    session
+                        .tick(
+                            SliceBudget::default(),
+                            crate::story_runtime::FrameProduction::Ready,
+                            || now,
+                        )
+                        .unwrap();
                     session.sync(bridge, root).unwrap();
-                    let deadline = session.wake_deadline(MonoTime(now));
+                    let deadline = session
+                        .wake_deadline(MonoTime(now), crate::story_runtime::FrameProduction::Ready);
                     if deadline.is_none_or(|deadline| deadline.0 > now + 1_000_000) {
                         return;
                     }
@@ -403,16 +412,29 @@ mod tests {
             };
             settle(&mut session, &mut bridge, 0);
             let expected = timed.then_some(MonoTime(2_000_000_000));
-            assert_eq!(session.wake_deadline(MonoTime(0)), expected);
+            assert_eq!(
+                session.wake_deadline(MonoTime(0), crate::story_runtime::FrameProduction::Ready),
+                expected
+            );
             let initial = session.ui().projection_stamp();
             for _ in 0..100 {
                 session.sync(&mut bridge, root).unwrap();
-                assert_eq!(session.wake_deadline(MonoTime(0)), expected);
+                assert_eq!(
+                    session
+                        .wake_deadline(MonoTime(0), crate::story_runtime::FrameProduction::Ready),
+                    expected
+                );
                 assert_eq!(session.ui().projection_stamp(), initial);
             }
             if timed {
                 settle(&mut session, &mut bridge, 2_000_000_000);
-                assert_eq!(session.wake_deadline(MonoTime(2_000_000_000)), None);
+                assert_eq!(
+                    session.wake_deadline(
+                        MonoTime(2_000_000_000),
+                        crate::story_runtime::FrameProduction::Ready
+                    ),
+                    None
+                );
                 assert_ne!(session.ui().projection_stamp(), initial);
             }
             session.close().unwrap();
@@ -455,7 +477,7 @@ mod tests {
             },
             wake.clone(),
         );
-        let runtime = StoryRuntime::new(driver)
+        let runtime = StoryRuntime::new(*driver)
             .with_saves(RuntimeSaves::new(service, 16 << 20))
             .with_media_factory(move || {
                 Box::new(crate::media::MediaPlayer::new(
@@ -473,7 +495,13 @@ mod tests {
         let mut captured = false;
         while window.needs_tick() {
             assert!(std::time::Instant::now() < deadline, "save did not settle");
-            window.tick(SliceBudget::default(), || 0).unwrap();
+            window
+                .tick(
+                    SliceBudget::default(),
+                    crate::story_runtime::FrameProduction::Ready,
+                    || 0,
+                )
+                .unwrap();
             if matches!(&window, PlayerSession::Aside { story, .. } if story.capturing()) {
                 captured = true;
                 for x in [10., 20., 30.] {
@@ -545,7 +573,13 @@ mod tests {
                 if !session.needs_tick() {
                     break;
                 }
-                session.tick(SliceBudget::default(), || 0).unwrap();
+                session
+                    .tick(
+                        SliceBudget::default(),
+                        crate::story_runtime::FrameProduction::Ready,
+                        || 0,
+                    )
+                    .unwrap();
                 if supplied {
                     session.check_fonts().unwrap();
                 }

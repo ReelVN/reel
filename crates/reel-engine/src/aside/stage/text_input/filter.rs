@@ -55,6 +55,8 @@ pub(super) fn describe(api: &mut Api) {
 }
 pub(super) fn contract() -> NativeContract {
     NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         symbol: SYMBOL.into(),
         abi_version: 1,
         parameters: ["receiver", "edit", "filter"]

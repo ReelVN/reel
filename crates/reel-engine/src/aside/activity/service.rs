@@ -470,6 +470,7 @@ impl Activities {
         }
         self.job_tail = None;
         self.events.clear();
+        self.deadline_cache.set(None);
         self.sampling = 0;
         self.clock_events = 0;
         self.cleanup = None;

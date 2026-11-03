@@ -33,8 +33,10 @@ use vita_native::app::{
     power::{PowerEvents, PowerKind},
     wake::Wake,
 };
+#[cfg(feature = "performance")]
+mod frame_probe;
 mod input;
-#[cfg(feature = "profiling")]
+#[cfg(feature = "performance")]
 mod profiling;
 type Error = Box<dyn std::error::Error>;
 
@@ -50,8 +52,6 @@ pub struct VitaHost {
 }
 impl VitaHost {
     fn new(size: [u32; 2], wake: Arc<Wake>) -> Self {
-        #[cfg(feature = "thread-profiling")]
-        profiling::install_thread_clock();
         Self {
             size,
             wake,
@@ -131,8 +131,10 @@ impl Host for VitaHost {
         }
     }
     fn set_title(&mut self, title: &str) {
-        #[cfg(feature = "profiling")]
-        eprintln!("[reel-probe] title={title}");
+        #[cfg(feature = "performance")]
+        if reel_core::profile::WallSnapshot::is_active() {
+            eprintln!("[reel-probe] title={title}");
+        }
         *self.signals.title.borrow_mut() = title.into();
     }
     fn set_visible(&mut self, visible: bool) {
@@ -168,17 +170,43 @@ impl Runtime {
     /// Shutdown errors retain the application's original error when both fail.
     pub fn run<T>(application: impl FnOnce(&mut Self) -> Result<T, Error>) -> Result<T, Error> {
         let (native, backend) = NativeLoop::new()?;
-        #[cfg(feature = "profiling")]
-        let _live_probe = crate::probe::Live::start()?;
+        #[cfg(feature = "vm-profiling")]
+        crate::set_vm_profiling_enabled(false)?;
         let mut runtime = Self { native, backend };
         let result = application(&mut runtime);
-        close_backend(result, runtime.backend)
+        let Self {
+            mut native,
+            backend,
+        } = runtime;
+        let result = close_backend(result, backend);
+        #[cfg(feature = "performance")]
+        if let Err(error) = native.finish_performance(&result) {
+            return result.and(Err(error));
+        }
+        #[cfg(not(feature = "performance"))]
+        let _ = &mut native;
+        result
     }
 
     /// Borrow the application's renderer for native drawing. A subsequent
     /// player session drains submitted work and retires these session resources.
     pub fn renderer(&mut self) -> &mut GxmBackend {
         &mut self.backend
+    }
+
+    /// Measure the next ordinary package session using a validated developer
+    /// request. Its optional accepted-frame capture closes after replay.
+    #[cfg(feature = "performance")]
+    pub fn set_performance(&mut self, request: crate::performance::Request) -> Result<(), Error> {
+        request.validate()?;
+        if self.native.performance.is_some()
+            || self.native.recording.is_some()
+            || self.native.completed_performance.is_some()
+        {
+            return Err("this runtime already owns a performance request".into());
+        }
+        self.native.performance = Some(request);
+        Ok(())
     }
 
     /// Show child directories containing `game.asb`. Each work owns its `saves/`
@@ -195,8 +223,12 @@ impl Runtime {
     pub fn run_package(&mut self, package: &Path, save_directory: &Path) -> Result<(), Error> {
         self.backend.reset_session()?;
         self.native.begin_session(&self.backend);
+        #[cfg(feature = "performance")]
+        self.native.start_performance()?;
         let result = run_package_on(package, save_directory, &mut self.native, &mut self.backend);
-        reset_after_session(&mut self.backend, &result)?;
+        let result = reset_after_session(&mut self.backend, &result).and(result);
+        #[cfg(feature = "performance")]
+        self.native.complete_performance(&result);
         result
     }
 
@@ -236,6 +268,10 @@ fn run_launcher_on(
                 let result = run_package_on(&package, &saves, native, backend);
                 reset_after_session(backend, &result)?;
                 if let Err(failure) = result {
+                    eprintln!(
+                        "[reel-vita] package {} failed: {failure}",
+                        package.display()
+                    );
                     error = Some(format!("{}\n{failure}", package.display()));
                 }
             }
@@ -362,8 +398,9 @@ fn run_story_on(
             )) as Box<dyn reel_engine::media::MediaBackend>
         }
     };
-    // The VM ledger includes immutable code, text and the code-page allowance.
-    // Reserve their measured capacity separately from the mutable working set.
+    // Code must leave at least 24 MiB for mutable state. The ledger admits
+    // actual allocations up to the shared 80 MiB VM allowance; it does not
+    // preallocate the allowance or cap a larger live UI at that minimum.
     let bytes = story.program.execution_capacity_bytes() as u64 + (24 << 20);
     if bytes > 80 << 20 {
         return Err(format!(
@@ -373,7 +410,7 @@ fn run_story_on(
         .into());
     }
     let mut limits = VmLimits::default();
-    limits.heap.max_bytes = bytes;
+    limits.heap.max_bytes = 80 << 20;
     limits.slots.initial_capacity = 4096;
     limits.slots.max_capacity = 65_536;
     limits.max_tasks = 256;
@@ -436,11 +473,60 @@ struct NativeLoop {
     wake: Arc<Wake>,
     power: PowerEvents,
     controls: native::input::Input,
+    #[cfg(feature = "performance")]
+    frame_probe: Option<frame_probe::FrameProbe>,
+    #[cfg(feature = "performance")]
+    performance: Option<crate::performance::Request>,
+    #[cfg(feature = "performance")]
+    recording: Option<crate::performance::recording::Recording>,
+    #[cfg(feature = "performance")]
+    completed_performance: Option<(crate::performance::recording::Recording, String, String)>,
 }
 
 impl NativeLoop {
+    #[cfg(feature = "performance")]
+    fn start_performance(&mut self) -> Result<(), Error> {
+        let Some(request) = self.performance.take() else {
+            return Ok(());
+        };
+        #[cfg(feature = "thread-profiling")]
+        profiling::install_thread_clock();
+        self.frame_probe = request
+            .frame
+            .clone()
+            .map(|frame| frame_probe::FrameProbe::new(frame, request.output.join("frozen.tsv")));
+        self.recording = Some(crate::performance::recording::Recording::start(request)?);
+        Ok(())
+    }
+
+    #[cfg(feature = "performance")]
+    fn complete_performance(&mut self, result: &Result<(), Error>) {
+        if let Some(mut recording) = self.recording.take() {
+            recording.stop();
+            let outcome = result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "closed".into());
+            self.completed_performance =
+                Some((recording, self.host.signals.title.borrow().clone(), outcome));
+        }
+    }
+
+    #[cfg(feature = "performance")]
+    fn finish_performance<T>(&mut self, result: &Result<T, Error>) -> Result<(), Error> {
+        if let Some((mut recording, title, outcome)) = self.completed_performance.take() {
+            let outcome = result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or(outcome);
+            recording.finish(&title, &outcome)?;
+        }
+        Ok(())
+    }
     fn begin_session(&mut self, backend: &GxmBackend) {
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "performance")]
         let _ = reel_core::profile::Sample::take();
         // Signals and deadlines belong to the departed player, unlike native input,
         // power callbacks and the wake object retained by the application.
@@ -478,6 +564,14 @@ impl NativeLoop {
                 wake,
                 power,
                 controls,
+                #[cfg(feature = "performance")]
+                frame_probe: None,
+                #[cfg(feature = "performance")]
+                performance: None,
+                #[cfg(feature = "performance")]
+                recording: None,
+                #[cfg(feature = "performance")]
+                completed_performance: None,
             },
             backend,
         ))
@@ -494,8 +588,18 @@ impl NativeLoop {
             power,
             controls,
             video_contiguous,
+            #[cfg(feature = "performance")]
+            frame_probe,
+            #[cfg(feature = "performance")]
+            recording,
+            #[cfg(feature = "performance")]
+                performance: _,
+            #[cfg(feature = "performance")]
+                completed_performance: _,
         } = self;
-        #[cfg(not(feature = "profiling"))]
+        #[cfg(feature = "performance")]
+        let mut frame_probe = frame_probe.take();
+        #[cfg(not(feature = "performance"))]
         let _ = video_contiguous;
         // Carry held input through the boundary until release. A launch-confirm press
         // must not become a second confirmation in the newly mounted game.
@@ -503,11 +607,9 @@ impl NativeLoop {
         let mut text = super::vita_text::TextInput::<native::ime::Keyboard>::default();
         let mut suspended = false;
         let mut closing = false;
-        #[cfg(feature = "profiling")]
-        let mut recording = crate::probe::Recording::new();
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "performance")]
         let mut next_memory_sample = MonoTime(0);
-        #[cfg(feature = "profiling")]
+        #[cfg(feature = "performance")]
         let mut waits = profiling::Waits::default();
         let result = (|| -> Result<(), Error> {
             input = input::Input::new(controls.sample()?);
@@ -551,8 +653,8 @@ impl NativeLoop {
                     continue;
                 }
                 let now = host.monotonic_now();
-                #[cfg(feature = "profiling")]
-                let probe_started = std::time::Instant::now();
+                #[cfg(feature = "performance")]
+                let probe_started = recording.as_ref().map(|_| std::time::Instant::now());
                 let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
                 let sample = {
                     let _timing =
@@ -587,7 +689,9 @@ impl NativeLoop {
                 if host.signals.take_redraw() || player.needs_redraw() {
                     player.render(host)?;
                 }
-                #[cfg(feature = "profiling")]
+                #[cfg(feature = "performance")]
+                let probe_presented = if let (Some(recording), Some(probe_started)) =
+                    (recording.as_mut(), probe_started)
                 {
                     let usage = player.backend.usage();
                     let presented = recording.record(
@@ -597,21 +701,42 @@ impl NativeLoop {
                         &host.signals.title.borrow(),
                     );
                     if presented && reel_core::profile::WallSnapshot::is_active() {
-                        profiling::record_submission(&mut recording, player.backend);
+                        profiling::record_submission(recording, player.backend);
                     }
                     if now >= next_memory_sample {
                         next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
                         profiling::record_device(
-                            &mut recording,
+                            recording,
                             player.backend,
                             video_contiguous,
                             &waits,
                         );
                     }
-                }
+                    presented
+                } else {
+                    false
+                };
                 // Accepting a retained frame can expose a newer model after its
                 // UI signal was consumed. Service eligible work before sleeping;
                 // preparation under GPU pressure remains blocked until completion.
+                #[cfg(feature = "performance")]
+                if probe_presented && let Some(probe) = frame_probe.as_mut() {
+                    let title = host.signals.title.borrow().clone();
+                    if let Some(frame) = player.presentation.accepted_frame.as_ref()
+                        && probe.should_capture(&title, frame.frame_id().0)
+                    {
+                        let frame = frame.clone();
+                        let assets = player
+                            .session
+                            .as_ref()
+                            .expect("active performance session")
+                            .ui()
+                            .assets();
+                        probe.run(player.backend, &frame, &assets)?;
+                        host.signals.exit.set(true);
+                        continue;
+                    }
+                }
                 if host.signals.has_redraw() || player.needs_redraw() {
                     continue;
                 }
@@ -631,17 +756,26 @@ impl NativeLoop {
                 {
                     let _timing =
                         reel_core::profile::Scope::new(reel_core::profile::Phase::HostWait);
-                    #[cfg(feature = "profiling")]
-                    let started = std::time::Instant::now();
+                    #[cfg(feature = "performance")]
+                    let started = recording.as_ref().map(|_| std::time::Instant::now());
                     let _result = wake.wait(Some(timeout))?;
-                    #[cfg(feature = "profiling")]
-                    waits.record(timeout, started.elapsed(), _result);
+                    #[cfg(feature = "performance")]
+                    if let Some(started) = started {
+                        waits.record(timeout, started.elapsed(), _result);
+                    }
                 }
             }
             Ok(())
         })();
-        #[cfg(feature = "profiling")]
-        profiling::record_device(&mut recording, player.backend, video_contiguous, &waits);
+        #[cfg(feature = "performance")]
+        let result = result.and_then(|()| match frame_probe.as_ref() {
+            Some(probe) => probe.finish(),
+            None => Ok(()),
+        });
+        #[cfg(feature = "performance")]
+        if let Some(recording) = recording.as_mut() {
+            profiling::record_device(recording, player.backend, video_contiguous, &waits);
+        }
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;
@@ -659,19 +793,6 @@ impl NativeLoop {
         })();
         // Preserve the event/render failure when closing also reports an error.
         let result = result.and(keyboard_cleanup).and(cleanup);
-        #[cfg(feature = "profiling")]
-        {
-            let outcome = result
-                .as_ref()
-                .err()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "closed".into());
-            let title = host.signals.title.borrow();
-            let logged = recording.print(&title, &outcome);
-            if let Err(error) = logged {
-                return result.and(Err(format!("Probe log: {error}").into()));
-            }
-        }
         result
     }
 }

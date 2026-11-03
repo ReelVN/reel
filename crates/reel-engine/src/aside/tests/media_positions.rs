@@ -102,6 +102,43 @@ impl MediaBackend for Host {
 }
 
 #[test]
+fn unawaited_sound_completion_requests_sampling_until_the_bounded_batch_is_drained() {
+    for count in [1, 65] {
+        let source = format!(
+            r#"fn opening() {{
+                for i in 0..{count} {{ audio.play("click"); }}
+                await run(delay(2));
+            }}"#
+        );
+        let (mut session, mut vm) = models::prepared(&source, false);
+        let host = Host::default();
+        vm.set_media(Box::new(host.clone())).unwrap();
+        flush(&mut vm, &mut session, 0.);
+        assert!(!vm.maintain_media().unwrap());
+        for index in 0..count {
+            host.set(index, 0.1, Some(MediaResult::Completed));
+        }
+        let batches = count.div_ceil(64);
+        for _ in 0..batches {
+            assert!(
+                vm.maintain_media().unwrap(),
+                "completion must request a clock turn"
+            );
+            assert_eq!(vm.media_poll_after(), Some(Duration::ZERO));
+            vm.advance_time(&session, 0.1, 1024).unwrap();
+            models::drive(&mut vm, &mut session, false);
+        }
+        assert!(!vm.media.active());
+        assert!(!vm.maintain_media().unwrap());
+        assert_eq!(vm.media_poll_after(), None);
+        assert!(
+            vm.activities_need_time(),
+            "the independent story delay remains pending"
+        );
+    }
+}
+
+#[test]
 fn source_types_playback_and_position_cues_use_real_audio_and_video_handles() {
     for encoded in [false, true] {
         for video in [false, true] {
@@ -203,6 +240,53 @@ fn initially_paused_media_seeks_restores_and_resumes_shared_activity() {
         }
     }
 }
+#[test]
+fn capture_keeps_its_initial_media_position_while_live_playback_advances() {
+    for video in [false, true] {
+        let start = if video {
+            r#"let movie=video("track");root.add(movie);let media=movie.play(start:3);"#
+        } else {
+            r#"let media=audio.play("track",start:3);"#
+        };
+        let source = format!(
+            r#"fn opening() {{let root=stack();stage.replace(root);{start}narrator("playing");}}"#
+        );
+        let (mut session, mut vm) = models::prepared(&source, true);
+        let live = Host::default();
+        vm.set_media(Box::new(live.clone())).unwrap();
+        flush(&mut vm, &mut session, 0.);
+        dialogue(&session, "playing");
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        live.set(0, 9., None);
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let mut image = capture.finish().unwrap();
+        let restored = Host::default();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(45),
+                epoch: Epoch(24),
+            },
+            crate::ReadProgress::default(),
+            Some(Box::new(restored.clone())),
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let _restored_session = restore.finish().unwrap();
+        assert_eq!(live.position(MediaId(1)), Some(Duration::from_secs(9)));
+        assert_eq!(restored.position(MediaId(1)), Some(Duration::from_secs(3)));
+        let paused = match &restored.0.borrow()[0] {
+            MediaPlayback::Audio(value) => value.paused,
+            MediaPlayback::Video(value) => value.paused,
+        };
+        assert!(!paused);
+    }
+}
+
 fn flush(vm: &mut SessionVm, session: &mut Session, seconds: f64) {
     for _ in 0..10 {
         vm.maintain_media().unwrap();
@@ -388,6 +472,7 @@ fn owner_retirement_and_waiter_cancellation_preserve_shared_sound() {
         assert!(
             !vm.media
                 .snapshot_records()
+                .unwrap()
                 .any(|record| matches!(record.unwrap().part, snapshot::Part::MediaCue))
         );
     }
@@ -442,6 +527,7 @@ fn pending_cue_snapshot_preserves_shared_media_and_completed_result() {
         assert!(
             !vm.media
                 .snapshot_records()
+                .unwrap()
                 .any(|record| matches!(record.unwrap().part, snapshot::Part::MediaCue))
         );
     }
@@ -519,6 +605,7 @@ fn shared_cue_delivers_more_than_one_wait_slice_after_backend_stops_polling() {
         assert!(
             !vm.media
                 .snapshot_records()
+                .unwrap()
                 .any(|record| matches!(record.unwrap().part, snapshot::Part::MediaWait))
         );
     }

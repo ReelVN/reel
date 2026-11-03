@@ -56,6 +56,8 @@ pub(in crate::aside) fn contracts() -> Vec<NativeContract> {
                 });
             }
             NativeContract {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol: format!("reel::text_input::{name}"),
                 abi_version: 1,
                 parameters,

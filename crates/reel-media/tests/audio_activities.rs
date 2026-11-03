@@ -436,7 +436,7 @@ fn queue_releases_consumed_pcm_before_activity_end_and_owner_waits_for_all_segme
     assert_eq!(rig.pool.usage().tickets, 3);
     rig.service().start(id);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while rig.pool.usage().tickets != 1 {
+    while rig.pool.usage().tickets != 1 || rig.service().snapshot(id).unwrap().item != 2 {
         rig.render();
         rig.service().maintain(4, 4);
         assert!(std::time::Instant::now() < deadline);

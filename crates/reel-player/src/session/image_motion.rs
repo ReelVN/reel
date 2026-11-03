@@ -21,6 +21,17 @@ fn layered_motion_reuses_resolved_viewport_images() {
     let _ = frame(&mut driver, &mut bridge, root, 1);
     let loaded = driver.ui().images.loads;
     let resources = driver.ui().stage.as_ref().unwrap().resources.clone();
+    let mut layout = driver.ui().stage.as_ref().unwrap().clone();
+    let metadata_allocations = allocation_counter::measure(|| {
+        for _ in 0..240 {
+            layout.resolve_layout_images(&driver.ui().images).unwrap();
+        }
+    });
+    assert_eq!(metadata_allocations.count_total, 0);
+    assert!(
+        Arc::ptr_eq(&resources, &layout.resources),
+        "settled layout must retain its resolved image leases"
+    );
     let mut reused = 0;
     let start = std::time::Instant::now();
     let allocations = allocation_counter::measure(|| {

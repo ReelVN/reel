@@ -2,7 +2,7 @@
 //! VM slice is not a frame: retained samples include all intervening loop work.
 //! These are submission intervals and wall times, not display/GPU timestamps.
 use super::Row;
-#[cfg(all(feature = "vm-execution-counts", any(target_os = "vita", test)))]
+#[cfg(feature = "vm-execution-counts")]
 #[path = "frames_counts.rs"]
 mod counts;
 #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
@@ -18,12 +18,13 @@ mod wall;
 #[cfg(target_os = "vita")]
 pub(super) const NATIVE_FIELDS: usize = native::FIELDS;
 use std::collections::VecDeque;
-#[cfg(any(target_os = "vita", test))]
 use std::io::{self, Write};
 
 const CAPACITY: usize = 512;
+const SLOW_CAPACITY: usize = 64;
 const LABELS: usize = super::SEGMENTS;
-const PHASES: [Phase; 32] = [
+const CALL_PHASES: [Phase; 3] = [Phase::VmSlice, Phase::HostCall, Phase::SessionGc];
+const PHASES: [Phase; 42] = [
     Phase::VmSlice,
     Phase::HostCall,
     Phase::SessionGc,
@@ -56,15 +57,39 @@ const PHASES: [Phase; 32] = [
     Phase::SessionSaves,
     Phase::SessionAssets,
     Phase::RenderFence,
+    Phase::UiRewrite,
+    Phase::UiLayout,
+    Phase::UiCompose,
+    Phase::UiPaint,
+    Phase::UiGeometry,
+    Phase::UiImageResolve,
+    Phase::GeometryUpload,
+    Phase::GeometryPack,
+    Phase::DrawPrepare,
+    Phase::UiPaintRecord,
 ];
 
-#[derive(Default)]
 struct Pending {
     active: u64,
     loops: u64,
     max_loop: u64,
     micros: [u64; PHASES.len()],
     upload_bytes: u64,
+    projection_updates: u64,
+    calls: [u64; CALL_PHASES.len()],
+}
+impl Default for Pending {
+    fn default() -> Self {
+        Self {
+            active: 0,
+            loops: 0,
+            max_loop: 0,
+            micros: [0; PHASES.len()],
+            upload_bytes: 0,
+            projection_updates: 0,
+            calls: [0; CALL_PHASES.len()],
+        }
+    }
 }
 struct Frame {
     segment: u64,
@@ -73,21 +98,32 @@ struct Frame {
     span: u64,
     partial: bool,
     presented: u64,
+    loop_begin: u64,
+    loop_end: u64,
+    update_begin: u64,
+    update_end: u64,
     work: Pending,
     thread: Option<reel_core::profile::ThreadSnapshot>,
     wall: Option<reel_core::profile::WallSnapshot>,
     native: Option<[u64; native::FIELDS]>,
     #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
     vm: Option<vm::Observation>,
+    #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
+    vm_invalid_reason: u8,
 }
 
 #[derive(Default)]
 pub(super) struct Frames {
     labels: VecDeque<(u64, String)>,
     rows: VecDeque<Frame>,
+    slow: Vec<Frame>,
     segment: u64,
     index: u64,
     last_present: Option<u64>,
+    loop_sequence: u64,
+    update_sequence: u64,
+    last_present_loop: Option<u64>,
+    last_present_update: Option<u64>,
     pending: Pending,
     dropped: u64,
     discarded_loops: u64,
@@ -126,6 +162,8 @@ impl Frames {
             self.segment += 1;
             self.index = 0;
             self.last_present = None;
+            self.last_present_loop = None;
+            self.last_present_update = None;
             self.previous_thread = None;
             self.previous_wall = None;
             self.previous_native = None;
@@ -146,6 +184,9 @@ impl Frames {
                     self.rows.pop_front();
                     self.dropped += 1;
                 }
+                let before = self.slow.len();
+                self.slow.retain(|frame| frame.segment > expired);
+                self.dropped += (before - self.slow.len()) as u64;
             }
             self.labels.push_back((self.segment, title.into()));
         }
@@ -153,6 +194,13 @@ impl Frames {
         self.pending.loops += row.loops;
         self.pending.max_loop = self.pending.max_loop.max(row.max_loop);
         self.pending.upload_bytes += row.geometry.bytes;
+        self.loop_sequence += row.loops;
+        let updates = row.phases.calls[Phase::ProjectionPublished as usize];
+        self.update_sequence += updates;
+        self.pending.projection_updates += updates;
+        for (count, phase) in self.pending.calls.iter_mut().zip(CALL_PHASES) {
+            *count += row.phases.calls[phase as usize];
+        }
         for (slot, phase) in self.pending.micros.iter_mut().zip(PHASES) {
             *slot += row.phases.micros[phase as usize];
         }
@@ -164,10 +212,18 @@ impl Frames {
             self.rows.reserve_exact(CAPACITY);
         }
         if self.rows.len() == CAPACITY {
-            self.rows.pop_front();
-            self.dropped += 1;
+            let expired = self.rows.pop_front().unwrap();
+            self.retain_slow(expired);
         }
         let previous = self.last_present.replace(row.elapsed);
+        let loop_begin = self
+            .last_present_loop
+            .replace(self.loop_sequence)
+            .unwrap_or(self.loop_sequence - self.pending.loops);
+        let update_begin = self
+            .last_present_update
+            .replace(self.update_sequence)
+            .unwrap_or(self.update_sequence - self.pending.projection_updates);
         let after = reel_core::profile::ThreadSnapshot::capture();
         let thread = self
             .previous_thread
@@ -182,15 +238,19 @@ impl Frames {
         });
         self.previous_wall = after;
         #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
-        let vm = {
+        let (vm, vm_invalid_reason) = {
             let observed = self.observed_vm.take();
-            let delta = observed.and_then(|after| {
-                self.previous_vm
-                    .as_ref()
-                    .and_then(|before| after.checked_delta(before))
-            });
+            let (delta, reason) = match (observed.as_ref(), self.previous_vm.as_ref()) {
+                (None, _) => (None, 2),
+                (Some(_), None) => (None, 1),
+                (Some(after), Some(before)) if !after.same_identity(before) => (None, 3),
+                (Some(after), Some(before)) => match after.checked_delta(before) {
+                    Some(delta) => (Some(delta), 0),
+                    None => (None, 4),
+                },
+            };
             self.previous_vm = observed;
-            delta
+            (delta, reason)
         };
         self.rows.push_back(Frame {
             segment: self.segment,
@@ -199,18 +259,45 @@ impl Frames {
             span: previous.map_or(0, |at| row.elapsed.saturating_sub(at)),
             partial: previous.is_none(),
             presented,
+            loop_begin,
+            loop_end: self.loop_sequence,
+            update_begin,
+            update_end: self.update_sequence,
             work: std::mem::take(&mut self.pending),
             thread,
             wall,
             native: None,
             #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
             vm,
+            #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
+            vm_invalid_reason,
         });
         self.index += presented;
     }
 
+    fn retain_slow(&mut self, frame: Frame) {
+        if self.slow.len() < SLOW_CAPACITY {
+            if self.slow.capacity() == 0 {
+                self.slow.reserve_exact(SLOW_CAPACITY);
+            }
+            self.slow.push(frame);
+            return;
+        }
+        let (index, lightest) = self
+            .slow
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, frame)| frame.work.active)
+            .unwrap();
+        if frame.work.active > lightest.work.active {
+            self.slow[index] = frame;
+        }
+        self.dropped += 1;
+    }
+
     pub(super) fn bytes(&self) -> usize {
         self.rows.capacity() * size_of::<Frame>()
+            + self.slow.capacity() * size_of::<Frame>()
             + self.labels.capacity() * size_of::<(u64, String)>()
             + self
                 .labels
@@ -219,12 +306,12 @@ impl Frames {
                 .sum::<usize>()
     }
 
-    #[cfg(any(target_os = "vita", test))]
     pub(super) fn report(&self, out: &mut impl Write) -> io::Result<()> {
         writeln!(out, "[reel-frame-report] begin")?;
         writeln!(
             out,
-            "frame_metadata\tversion=1\tcapacity={CAPACITY}\tdropped={}\tdiscarded_segment_loops={}\tpending_loops={}\ttiming=submission_intervals_and_nested_wall_time\tvm_execution_counts={}\tvm_profiling={}\tthread_profiling={}\tthread_vm_stride=127",
+            "frame_metadata\tversion=1\tcapacity={}\trecent_capacity={CAPACITY}\tslow_capacity={SLOW_CAPACITY}\tslow_selection=active_us\tdropped={}\tdiscarded_segment_loops={}\tpending_loops={}\ttiming=submission_intervals_and_nested_wall_time\tvm_execution_counts={}\tvm_profiling={}\tthread_profiling={}\tthread_vm_stride=127\tvm_counter_interval=presentation_submission\tvm_invalid_reasons=0:valid,1:first_or_segment,2:no_vm,3:identity_changed,4:counter_reset\tupdate_kind=projection_published\tclock_update_counts=false",
+            CAPACITY + SLOW_CAPACITY,
             self.dropped,
             self.discarded_loops,
             self.pending.loops,
@@ -241,21 +328,28 @@ impl Frames {
         }
         write!(
             out,
-            "frame_columns\tsegment\tindex\tpartial\telapsed_us\tspan_us\tactive_us\tloops\tmax_loop_us\tpresent_calls\tgeometry_upload_bytes"
+            "frame_columns\tsegment\tindex\tpartial\telapsed_us\tspan_us\tactive_us\tloops\tmax_loop_us\tpresent_calls\tgeometry_upload_bytes\tloop_begin\tloop_end\tprojection_update_begin\tprojection_update_end\tprojection_updates_count\tretained_slow"
         )?;
         for phase in PHASES {
             write!(out, "\t{}_us", reel_core::profile::NAMES[phase as usize])?;
         }
+        for phase in CALL_PHASES {
+            write!(out, "\t{}_calls", reel_core::profile::NAMES[phase as usize])?;
+        }
+        #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
+        write!(out, "\tvm_counter_invalid_reason")?;
         wall::columns(out)?;
         native::columns(out)?;
         thread::columns(out)?;
         #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
         vm::columns(out)?;
         writeln!(out)?;
-        for frame in &self.rows {
+        let mut rows: Vec<_> = self.slow.iter().chain(&self.rows).collect();
+        rows.sort_unstable_by_key(|frame| frame.index);
+        for frame in rows {
             write!(
                 out,
-                "frame_sample\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "frame_sample\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 frame.segment,
                 frame.index,
                 u8::from(frame.partial),
@@ -265,11 +359,26 @@ impl Frames {
                 frame.work.loops,
                 frame.work.max_loop,
                 frame.presented,
-                frame.work.upload_bytes
+                frame.work.upload_bytes,
+                frame.loop_begin,
+                frame.loop_end,
+                frame.update_begin,
+                frame.update_end,
+                frame.work.projection_updates,
+                u8::from(
+                    self.rows
+                        .front()
+                        .is_none_or(|first| frame.index < first.index)
+                )
             )?;
             for value in frame.work.micros {
                 write!(out, "\t{value}")?;
             }
+            for value in frame.work.calls {
+                write!(out, "\t{value}")?;
+            }
+            #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
+            write!(out, "\t{}", frame.vm_invalid_reason)?;
             wall::values(out, frame.wall.as_ref())?;
             native::values(out, frame.native.as_ref())?;
             thread::values(out, frame.thread.as_ref())?;
@@ -289,6 +398,7 @@ mod tests {
     #[cfg(feature = "vm-execution-counts")]
     fn observation(counts: ExecutionCounts) -> vm::Observation {
         vm::Observation {
+            gc: Default::default(),
             counts,
             #[cfg(feature = "vm-profiling")]
             driver: Default::default(),
@@ -396,13 +506,121 @@ mod tests {
         }
         assert_eq!(frames.rows.len(), CAPACITY);
         assert_eq!(frames.labels.len(), LABELS);
-        assert_eq!(frames.dropped, 2000 - CAPACITY as u64);
+        assert_eq!(
+            frames.dropped,
+            2000 - (frames.rows.len() + frames.slow.len()) as u64
+        );
         assert!(
             frames
                 .rows
                 .iter()
+                .chain(&frames.slow)
                 .all(|row| frames.labels.iter().any(|(id, _)| *id == row.segment))
         );
+    }
+
+    #[test]
+    fn slow_frames_survive_the_recent_ring_without_retaining_idle_gaps() {
+        let mut frames = Frames::default();
+        for index in 0..2000 {
+            let mut sample = row(index * 1_000_000, 0, true);
+            sample.active = if index == 1 { 200_000 } else { 1000 + index };
+            frames.record("story", &sample);
+        }
+        assert_eq!(frames.slow.len(), SLOW_CAPACITY);
+        assert!(
+            frames
+                .slow
+                .iter()
+                .any(|frame| frame.index == 1 && frame.work.active == 200_000)
+        );
+        assert!(
+            frames
+                .slow
+                .iter()
+                .all(|frame| frame.index == 1 || frame.index >= 1425)
+        );
+        assert_eq!(frames.dropped, 2000 - (CAPACITY + SLOW_CAPACITY) as u64);
+        let mut output = Vec::new();
+        frames.report(&mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let indices: Vec<u64> = output
+            .lines()
+            .filter(|line| line.starts_with("frame_sample\t"))
+            .map(|line| line.split('\t').nth(2).unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(indices.len(), CAPACITY + SLOW_CAPACITY);
+        assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn loop_and_projection_sequences_cover_all_maintenance_work() {
+        let mut frames = Frames::default();
+        let mut first = row(1000, 10, true);
+        first.phases.calls[Phase::ProjectionPublished as usize] = 2;
+        frames.record("a", &first);
+        let mut maintenance = row(2000, 20, false);
+        maintenance.phases.calls[Phase::ProjectionPublished as usize] = 3;
+        maintenance.phases.calls[Phase::VmSlice as usize] = 4;
+        frames.record("a", &maintenance);
+        let mut presented = row(3000, 30, true);
+        presented.phases.calls[Phase::ProjectionPublished as usize] = 1;
+        presented.phases.calls[Phase::VmSlice as usize] = 5;
+        frames.record("a", &presented);
+        let frame = &frames.rows[1];
+        assert_eq!(
+            (frame.loop_begin, frame.loop_end, frame.work.loops),
+            (1, 3, 2)
+        );
+        assert_eq!(
+            (
+                frame.update_begin,
+                frame.update_end,
+                frame.work.projection_updates
+            ),
+            (2, 6, 4)
+        );
+        assert_eq!(frame.work.calls[0], 9);
+        frames.record("b", &row(4000, 0, true));
+        let frame = &frames.rows[2];
+        assert!(frame.partial);
+        assert_eq!((frame.loop_begin, frame.loop_end), (3, 4));
+        assert_eq!((frame.update_begin, frame.update_end), (6, 6));
+    }
+
+    #[cfg(feature = "vm-execution-counts")]
+    #[test]
+    fn vm_reason_codes_and_gc_counts_share_the_presentation_interval() {
+        let mut frames = Frames::default();
+        let mut counts = ExecutionCounts::default();
+        counts.heap_id = 1;
+        counts.epoch = 2;
+        let mut sample = observation(counts);
+        sample.gc.collections = 2;
+        sample.gc.units = 100;
+        frames.observed_vm = Some(sample);
+        frames.record("a", &row(1000, 0, true));
+        assert_eq!(frames.rows[0].vm_invalid_reason, 1);
+        sample.gc.collections = 3;
+        sample.gc.units = 145;
+        frames.observed_vm = Some(sample);
+        frames.record("a", &row(2000, 20, true));
+        assert_eq!(frames.rows[1].vm_invalid_reason, 0);
+        let gc = frames.rows[1].vm.unwrap().gc;
+        assert_eq!((gc.collections, gc.units), (1, 45));
+        sample.counts.epoch = 3;
+        frames.observed_vm = Some(sample);
+        frames.record("a", &row(3000, 0, true));
+        assert_eq!(frames.rows[2].vm_invalid_reason, 3);
+        sample.gc.units = 140;
+        frames.observed_vm = Some(sample);
+        frames.record("a", &row(4000, 0, true));
+        assert_eq!(frames.rows[3].vm_invalid_reason, 4);
+        frames.record("a", &row(5000, 0, true));
+        assert_eq!(frames.rows[4].vm_invalid_reason, 2);
+        frames.observed_vm = Some(sample);
+        frames.record("a", &row(6000, 0, true));
+        assert_eq!(frames.rows[5].vm_invalid_reason, 1);
     }
 
     #[cfg(feature = "vm-execution-counts")]

@@ -1,5 +1,7 @@
 use super::*;
 
+#[cfg(feature = "performance")]
+mod lifecycle;
 mod symbols;
 
 #[test]

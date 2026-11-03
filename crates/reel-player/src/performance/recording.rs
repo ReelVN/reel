@@ -11,6 +11,9 @@ use std::{
 const WINDOWS: usize = 512;
 const SLOW: usize = 64;
 const SEGMENTS: usize = 64;
+
+#[cfg(feature = "performance")]
+mod active;
 mod device;
 mod effects;
 mod frames;
@@ -65,13 +68,14 @@ static VM_COSTS: [AtomicU64; VM_COST_FIELDS] = [const { AtomicU64::new(0) }; VM_
 
 /// The live thread requests one snapshot per second. The event loop otherwise
 /// reads only the memory ledger and this flag, without walking VM task frames.
-fn publish_vm(story: Option<&StoryRuntime>) {
+fn publish_vm(story: Option<&StoryRuntime>, timing: bool) {
     if !VM_REQUESTED.swap(false, Ordering::Relaxed) {
         return;
     }
     let sample = vm_sample(story);
     #[cfg(feature = "vm-profiling")]
     let costs = story
+        .filter(|_| timing)
         .map(|story| story.driver().adapter().vm().step_costs())
         .unwrap_or_default();
     VM_SEQUENCE.fetch_add(1, Ordering::AcqRel);
@@ -88,7 +92,7 @@ fn publish_vm(story: Option<&StoryRuntime>) {
     VM_AT_MS.store(at_ms, Ordering::Relaxed);
     VM_SEQUENCE.fetch_add(1, Ordering::Release);
     #[cfg(feature = "vm-profiling")]
-    if let Some(story) = story {
+    if timing && let Some(story) = story {
         vm_hotspots::publish(
             story.driver().adapter().vm(),
             VM_SESSION.load(Ordering::Relaxed),
@@ -164,7 +168,7 @@ fn append_vm(line: &mut String) {
     }
     let _ = write!(
         line,
-        " vm_sample={} vm_session={} vm_age_ms={} vm_state=",
+        " vm_sample={} vm_session={} vm_at_ms={at_ms} vm_age_ms={} vm_counter_window=main_thread_snapshot phase_window=live_thread_period vm_state=",
         sequence / 2,
         VM_SESSION.load(Ordering::Relaxed),
         (VM_EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64).saturating_sub(at_ms)
@@ -210,6 +214,7 @@ pub(crate) struct Live {
 }
 impl Live {
     pub(crate) fn start() -> io::Result<Self> {
+        drop(crate::media::take_profile_report());
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = stop.clone();
         // Unoptimized snapshot/formatting calls retain larger temporary frames.
@@ -230,7 +235,7 @@ impl Live {
                 let interval = std::time::Duration::from_millis(if cfg!(feature = "vm-profiling") { 100 } else { 1000 });
                 #[cfg(feature = "vm-profiling")]
                 let mut vm_rows = Vec::with_capacity(aside_vm::executor::STEP_HOTSPOT_CAPACITY);
-                eprintln!("[reel-probe] live sampling started; elapsed us and completed calls; nested phases overlap; VM counters cumulative, last_* latest slice; gc_phase idle=0 mark=1 weak=2 sweep=3; fn/pc identify the last selected task; vm_sample advances on main-thread snapshots");
+                eprintln!("[reel-probe] live sampling started; elapsed us and completed calls; nested phases overlap; VM counters cumulative, last_* latest slice; gc_phase idle=0 mark=1 weak=2 sweep=3; fn/pc identify the last selected task; vm_sample advances on main-thread snapshots; frame report pairs VM counters with submission timing");
                 while !stopped.load(Ordering::Relaxed) {
                     let deadline = Instant::now() + interval;
                     while !stopped.load(Ordering::Relaxed) {
@@ -239,6 +244,9 @@ impl Live {
                         std::thread::sleep(remaining);
                     }
                     if stopped.load(Ordering::Relaxed) { break; }
+                    if let Some(report) = crate::media::take_profile_report() {
+                        let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), report.as_bytes());
+                    }
                     if Instant::now() >= next_live {
                     next_live = Instant::now() + std::time::Duration::from_secs(1);
                     let current = Sample::snapshot();
@@ -324,6 +332,8 @@ impl Row {
 }
 
 pub(crate) struct Recording {
+    #[cfg(feature = "performance")]
+    active: Option<active::Active>,
     started: Instant,
     startup: Row,
     total: Row,
@@ -348,6 +358,8 @@ impl Recording {
             ..Default::default()
         };
         Self {
+            #[cfg(feature = "performance")]
+            active: None,
             started: Instant::now(),
             startup,
             total: startup,
@@ -363,6 +375,56 @@ impl Recording {
             timeline: timeline::Timeline::default(),
             frames: frames::Frames::default(),
         }
+    }
+
+    /// Start one requested measurement through the ordinary session path.
+    #[cfg(feature = "performance")]
+    pub(crate) fn start(request: super::Request) -> io::Result<Self> {
+        let active = active::Active::start(request)?;
+        let mut recording = Self::new();
+        recording.active = Some(active);
+        Ok(recording)
+    }
+
+    /// End collection while retaining its request and rows for final publication
+    /// after the native graphics device has shut down.
+    #[cfg(all(feature = "performance", any(target_os = "vita", test)))]
+    pub(crate) fn stop(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.stop();
+        }
+    }
+
+    /// Export already recorded ordinary intervals after session cleanup. Repeated
+    /// calls are inert. `closed` denotes success; other outcomes retain the error.
+    #[cfg(feature = "performance")]
+    pub(crate) fn finish(&mut self, title: &str, outcome: &str) -> io::Result<()> {
+        let Some(active) = self.active.as_mut() else {
+            return Ok(());
+        };
+        active.stop();
+        let request = active.request.clone();
+        let result = (|| {
+            let file = std::fs::File::create(request.output.join("frames.tsv"))?;
+            let mut output = io::BufWriter::with_capacity(64 << 10, file);
+            self.write_report(&mut output, title, outcome)?;
+            output.flush()
+        })();
+        let error = result
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .or_else(|| (outcome != "closed").then(|| outcome.to_owned()));
+        let status = request.write_status(
+            if error.is_some() {
+                super::StatusState::Error
+            } else {
+                super::StatusState::Complete
+            },
+            error.as_deref(),
+        );
+        drop(self.active.take());
+        result.and(status)
     }
 
     #[cfg(any(target_os = "vita", test))]
@@ -390,7 +452,14 @@ impl Recording {
         });
         VM_BYTES.store(vm, Ordering::Relaxed);
         GPU_BYTES.store(gpu, Ordering::Relaxed);
-        publish_vm(story);
+        #[cfg(feature = "performance")]
+        let timing = self
+            .active
+            .as_ref()
+            .is_none_or(|active| active.request.vm_timing);
+        #[cfg(not(feature = "performance"))]
+        let timing = true;
+        publish_vm(story, timing);
         let elapsed = self.started.elapsed().as_micros() as u64;
         let active = started.elapsed().as_micros() as u64;
         let phases = Sample::take();
@@ -532,11 +601,24 @@ impl Recording {
         out.flush()
     }
 
-    #[cfg(target_os = "vita")]
-    pub(crate) fn print(&self, title: &str, outcome: &str) -> io::Result<()> {
-        // Field-by-field terminal writes can overflow the transport's log queue.
-        // Buffer complete rows only during export, after frame capture has ended.
-        let mut out = io::LineWriter::with_capacity(64 << 10, io::stderr().lock());
+    fn write_report(&self, mut out: &mut impl Write, title: &str, outcome: &str) -> io::Result<()> {
+        #[cfg(feature = "performance")]
+        if let Some(active) = &self.active {
+            writeln!(
+                out,
+                "performance_request\t{}",
+                serde_json::to_string(&active.request).map_err(io::Error::other)?
+            )?;
+            writeln!(
+                out,
+                "performance_scope\t{}",
+                if active.request.frame.is_some() {
+                    "fixed_frame_setup"
+                } else {
+                    "ordinary_session"
+                }
+            )?;
+        }
         writeln!(out, "[reel-probe-report] begin")?;
         self.report(&mut out, title, outcome)?;
         writeln!(out, "[reel-probe-report] end")?;
@@ -547,5 +629,17 @@ impl Recording {
             writeln!(out, "{native}")?;
         }
         out.flush()
+    }
+}
+
+#[cfg(feature = "performance")]
+impl Drop for Recording {
+    fn drop(&mut self) {
+        if let Some(active) = self.active.take() {
+            let _ = active.request.write_status(
+                super::StatusState::Error,
+                Some("performance recording ended without a terminal result"),
+            );
+        }
     }
 }

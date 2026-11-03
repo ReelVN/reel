@@ -8,7 +8,8 @@ use reel_core::{
 use reel_package::resource_target::ResourceTarget;
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
 };
 
@@ -16,14 +17,11 @@ pub(super) struct OpenFile {
     pub file: File,
     pub length: u64,
     pub version: ContentVersion,
-    used: u64,
 }
 
 pub(super) struct Files {
     source: Source,
-    capacity: usize,
-    sequence: u64,
-    open: HashMap<String, OpenFile>,
+    open: lru::LruCache<String, OpenFile>,
 }
 enum Source {
     Directory {
@@ -73,42 +71,27 @@ impl Files {
     fn from_source(source: Source, capacity: usize) -> Self {
         Self {
             source,
-            capacity,
-            sequence: 0,
-            open: HashMap::new(),
+            open: lru::LruCache::new(NonZeroUsize::new(capacity.max(1)).unwrap()),
         }
     }
     pub(super) fn open(&mut self, source: &AssetSource) -> Result<&mut OpenFile, IoError> {
-        self.sequence += 1;
-        if !self.open.contains_key(&source.key.0) {
-            let path = self.source.resolve(&source.key.0)?;
-            let file = File::open(&path).map_err(io_error)?;
-            let metadata = file.metadata().map_err(io_error)?;
-            let length = metadata.len();
-            // Only the path is hashed. Opening a stream reads no payload bytes.
-            let mut hash = blake3::Hasher::new();
-            hash.update(b"reel/fixed-file/v1\0");
-            hash.update(path.as_os_str().as_encoded_bytes());
-            let file = OpenFile {
-                file,
-                length,
-                version: ContentVersion(*hash.finalize().as_bytes()),
-                used: self.sequence,
-            };
-            if self.open.len() >= self.capacity
-                && let Some(oldest) = self
-                    .open
-                    .iter()
-                    .min_by_key(|(_, v)| v.used)
-                    .map(|(k, _)| k.clone())
-            {
-                self.open.remove(&oldest);
-            }
-            self.open.insert(source.key.0.clone(), file);
-        }
-        let file = self.open.get_mut(&source.key.0).unwrap();
-        file.used = self.sequence;
-        Ok(file)
+        self.open
+            .try_get_or_insert_mut_ref(source.key.0.as_str(), || {
+                let path = self.source.resolve(&source.key.0)?;
+                let file = File::open(&path).map_err(io_error)?;
+                let metadata = file.metadata().map_err(io_error)?;
+                let length = metadata.len();
+                // Only the path is hashed. Opening a stream reads no payload bytes.
+                let mut hash = blake3::Hasher::new();
+                hash.update(b"reel/fixed-file/v1\0");
+                hash.update(path.as_os_str().as_encoded_bytes());
+                let file = OpenFile {
+                    file,
+                    length,
+                    version: ContentVersion(*hash.finalize().as_bytes()),
+                };
+                Ok(file)
+            })
     }
 }
 pub(super) fn changed() -> IoError {
