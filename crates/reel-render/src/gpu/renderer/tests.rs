@@ -505,12 +505,16 @@ fn image_restore_fixture(
             .unwrap();
         let lease = registry.acquire(handle).unwrap();
         let image = crate::test_support::image_data(&lease);
+        // Keep all three resources visible so occlusion culling cannot remove
+        // the uploads and retirement work exercised by this fixture.
+        let left = index as f64 * 125.;
+        let right = if index == 2 { 400. } else { left + 125. };
         scene.draw(Draw::Fill {
             transform: Affine::IDENTITY,
             fill_rule: Default::default(),
             brush: Brush::Image(ImageBrush::new(image.clone())),
             brush_transform: None,
-            shape: Geometry::Rect(Rect::new(0., 0., 400., 300.)),
+            shape: Geometry::Rect(Rect::new(left, 0., right, 300.)),
             composite: Composite::default(),
         });
         handles.push(handle);
@@ -994,19 +998,41 @@ fn retained_transition_reuploads_retired_images_and_releases_them_after_completi
     while !build.step(step_budget()).unwrap().complete {}
     let frame = build.finish().unwrap();
     let mut renderer = renderer(Default::default());
+    assert!(matches!(renderer.prepare(&frame), Err(GpuError::Preparing)));
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
     let pixels = renderer
         .readback(renderer.prepare(&frame).unwrap())
         .unwrap();
-    assert!(pixels.iter().all(|pixel| {
+    assert!(pixels.iter().enumerate().all(|(index, pixel)| {
+        let mut expected = [128. / 255. * 0.5, 0., 0., (128. / 255. + 1.) * 0.5];
+        expected[((index % 64) / 20).min(2)] += 0.5;
         pixel
             .iter()
-            .zip([128. / 255. * 0.5, 0., 0.5, (128. / 255. + 1.) * 0.5])
+            .zip(expected)
             .all(|(a, b)| (*a - b).abs() < 0.006)
     }));
     counts(&renderer, 4); // Three retained images and the shared solid-color white texture.
+    renderer.cancel_preparations();
     drop(frame);
     renderer.poll().unwrap();
-    empty(&renderer);
+    renderer.images.clear_idle();
+    assert_eq!(renderer.usage().resources, 0);
+    // Retained preparation keeps reusable targets and queue capacity until teardown.
+    let budgets = [
+        renderer.budgets.targets.clone(),
+        renderer.budgets.resources.clone(),
+        renderer.budgets.transient.clone(),
+    ];
+    drop(renderer);
+    for budget in budgets {
+        assert_eq!(budget.usage().bytes, 0);
+        assert_eq!(budget.usage().tickets, 0);
+    }
 }
 
 mod geometry;

@@ -2,6 +2,90 @@
 use super::*;
 
 #[test]
+#[ignore = "requires actual graphics adapter and REEL_R01_TEST_FONT"]
+fn retained_text_preparation_publishes_glyphs_for_the_following_draw() {
+    use reel_ui::frame::{FrameTransition, RetainBuild};
+    let (pool, registry, handle, frame, mut bridge) = long_text_fixture();
+    let mut retain = RetainBuild::new(&frame, None, limits(), &pool).unwrap();
+    let mut budget = step_budget();
+    loop {
+        let progress = retain.step(budget).unwrap();
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(2)).unwrap(),
+        registry.freeze(&[handle], &pool).unwrap(),
+        frame.info(),
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    build
+        .set_transitions(vec![FrameTransition {
+            root: None,
+            previous: retain.finish().unwrap(),
+            progress: 0.5,
+            mask: None,
+        }])
+        .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    let transitioning = build.finish().unwrap();
+    let mut subject = renderer(Default::default());
+    assert!(matches!(
+        subject.prepare(&transitioning),
+        Err(GpuError::Preparing)
+    ));
+    let glyphs: Vec<_> = subject
+        .retained
+        .pending
+        .lock()
+        .unwrap()
+        .entries
+        .iter()
+        .flat_map(|pending| {
+            pending
+                .flight
+                ._glyphs
+                .entries
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+        })
+        .collect();
+    assert!(!glyphs.is_empty());
+    subject
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    subject.poll().unwrap();
+    let prepared = subject.prepare(&transitioning).unwrap();
+    for (key, glyph) in &glyphs {
+        assert!(
+            Arc::ptr_eq(prepared.glyphs.entries.get(key).unwrap(), glyph),
+            "the final drawing must reuse glyphs uploaded with the retained input"
+        );
+    }
+    let actual = subject.readback(prepared).unwrap();
+    let mut control = renderer(Default::default());
+    let expected = control.readback(control.prepare(&frame).unwrap()).unwrap();
+    assert_eq!(actual.len(), expected.len());
+    let error = actual
+        .iter()
+        .zip(expected)
+        .flat_map(|(a, b)| a.iter().copied().zip(b))
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        error < 0.002,
+        "unchanged text crossfade changed pixels: {error}"
+    );
+}
+
+#[test]
 #[ignore = "requires REEL_R01_TEST_FONT; alternating font raster cost and pixel equivalence"]
 fn alternating_font_raster_cost() {
     use reel_ui::{

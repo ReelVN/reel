@@ -4,6 +4,16 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+### Fixed
+
+- Wait for image and font readiness before requesting another redraw, avoiding repeated UI work while resources load.
+- Reuse glyphs uploaded during retained-scene preparation in the following WGPU draw.
+- Convert desktop RGBA8 uploads with exact channel/alpha lookup tables and copy pixels to mapped GPU buffers in batches.
+
+### Added
+
+- Shader creation, image upload preparation and surface acquisition timing in performance captures.
+
 ## 0.3.0 — 2026-11-03
 
 This release establishes the current development baseline for the engine, Aside tooling and players.

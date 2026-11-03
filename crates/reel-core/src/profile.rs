@@ -162,8 +162,12 @@ pub enum Phase {
     DrawPrepare,
     /// Record invalidated widget paint; excludes traversal of cached widgets.
     UiPaintRecord,
+    /// Construct and validate a native shader or render pipeline on a cache miss.
+    PipelineCreate,
+    /// Acquire a native presentation image, including display or driver waits.
+    SurfaceAcquire,
 }
-pub const NAMES: [&str; 93] = [
+pub const NAMES: [&str; 95] = [
     "input",
     "tick",
     "session",
@@ -257,6 +261,8 @@ pub const NAMES: [&str; 93] = [
     "geometry_pack",
     "draw_prepare",
     "ui_paint_record",
+    "pipeline_create",
+    "surface_acquire",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.
