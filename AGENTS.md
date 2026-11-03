@@ -34,6 +34,8 @@ Use pinned ordinary dependencies by default. Maintain required borrowed implemen
 
 ## Documentation
 
+Maintain the English `CHANGELOG.md` for user-visible changes under `Unreleased`. When preparing a version baseline or release, move those entries into its dated version section.
+
 Public interfaces carry English source documentation beside their declarations. Native macros and property schemas expose the same documentation to editor tooling; executable Aside examples in these comments are checked against the registered interfaces. Update these declarations with API, default and behavior changes.
 
 The project lead maintains architecture and language contracts and the bilingual creator tutorials. Tutorials explain workflows and refer to the source API documentation. Keep matching tutorial snippets identical in both editions, and preserve useful behavior assertions when moving examples out of Markdown. Verification logs and maintenance reports belong under ignored artifacts; completed work is described in its PR.
