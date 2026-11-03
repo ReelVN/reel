@@ -22,6 +22,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Consume submitted WGPU transition snapshots through queue ordering while retaining producer resources until GPU completion.
 - Skip glyph recording for paragraphs outside the viewport's inline range, retaining font overhangs, decorations and ruby bounds.
 - Omit image draws outside their paint viewport so hidden pages do not request GPU image uploads.
+- Preserve rendering caches when a WGPU image upload yields at its preparation quota; reclaim them only for allocation pressure.
+- Use smaller parallel conversion batches to distribute desktop image uploads across available workers.
+- Allow 16 MiB per desktop image preparation to reduce completion-wake round trips when opening image-heavy pages, within the existing GPU resource budget.
 
 ### Added
 

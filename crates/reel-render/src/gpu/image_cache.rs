@@ -226,11 +226,7 @@ impl ImageCache {
             };
             let staging_limit = if let Some(row) = row {
                 if converted && work_remaining < row {
-                    deferred = Some(GpuError::Pressure {
-                        domain: "image upload slice",
-                        requested: row,
-                        available: work_remaining,
-                    });
+                    deferred = Some(GpuError::Preparing);
                     break;
                 }
                 work_remaining.max(row)
@@ -379,11 +375,7 @@ impl ImageCache {
                 if next_row == source.height {
                     images.insert(handle, pending.image.clone());
                 } else {
-                    deferred = Some(GpuError::Pressure {
-                        domain: "image upload",
-                        requested: item.minimum_staging,
-                        available: limit.saturating_sub(pool.usage().bytes),
-                    });
+                    deferred = Some(GpuError::Preparing);
                     break;
                 }
             } else if let Some(descriptor) = item.source.texture_descriptor() {
@@ -487,11 +479,7 @@ impl ImageCache {
                 if next_row == pending.total_rows {
                     images.insert(handle, pending.image.clone());
                 } else {
-                    deferred = Some(GpuError::Pressure {
-                        domain: "texture upload slice",
-                        requested: row_bytes,
-                        available: limit.saturating_sub(pool.usage().bytes),
-                    });
+                    deferred = Some(GpuError::Preparing);
                     break;
                 }
             } else if let ResourceView::Yuv420(source) = item.source.view() {
@@ -548,7 +536,9 @@ impl ImageCache {
         }
         match deferred {
             Some(error) => {
-                self.staging.lock().unwrap().clear();
+                if matches!(error, GpuError::Pressure { .. }) {
+                    self.staging.lock().unwrap().clear();
+                }
                 Err(error)
             }
             None => Ok(images),

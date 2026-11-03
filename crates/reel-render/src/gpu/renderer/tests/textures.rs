@@ -53,10 +53,12 @@ fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
                 parameters: [0.5, 0., 0., 0., 0.],
             });
         } else {
-            for alpha in [1., 0.5, 1.] {
+            // Keep every alpha visible; fully overlapping opaque quads can
+            // discard earlier draws before the batch's opacity classification.
+            for (index, alpha) in [1., 0.5, 1.].into_iter().enumerate() {
                 widget.resource_draws.push((
                     lease.clone(),
-                    Rect::new(0., 0., 64., 48.),
+                    Rect::new(index as f64 * 20., 0., (index + 1) as f64 * 20., 48.),
                     Affine::IDENTITY,
                     reel_ui::peniko::ImageSampler {
                         alpha,
@@ -154,6 +156,8 @@ fn direct_paint_submits_whole_and_regional_alpha_policies() {
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
     );
     let mut renderer = Renderer::new(gpu);
+    // Exercise direct pipelines; instanced draws have their own pixel comparison.
+    renderer.sprite_instances_enabled = false;
     let mut expected = [0; 8];
     let mut opaque = [0; 3];
     for (index, format) in [
@@ -180,7 +184,9 @@ fn direct_paint_submits_whole_and_regional_alpha_policies() {
                 },
                 TexturePayload::new(
                     descriptor,
-                    OwnedBytes::new(vec![0; bytes as usize], pool.reserve(bytes).unwrap()).unwrap(),
+                    // Opaque blocks reach the paint path rather than alpha-coverage culling.
+                    OwnedBytes::new(vec![255; bytes as usize], pool.reserve(bytes).unwrap())
+                        .unwrap(),
                 )
                 .unwrap(),
             )
@@ -230,8 +236,14 @@ fn direct_paint_submits_whole_and_regional_alpha_policies() {
     }
     assert_eq!(expected, [2, 3, 2, 2, 2, 2, 0, 0]);
     assert_eq!(opaque, [1, 1, 0]);
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 18, 18, 18, 8]);
-    assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 21, 21, 21, 8]);
+    renderer.images.clear_idle();
+    assert_eq!(
+        renderer.usage().transient,
+        renderer.usage().cached_geometry
+            + renderer.targets.metadata_bytes()
+            + renderer.coverage_targets.metadata_bytes()
+    );
 }
 
 #[test]

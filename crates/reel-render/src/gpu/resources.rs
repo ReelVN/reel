@@ -431,40 +431,7 @@ fn upload_rows_with(
         &owned
     };
     gpu.check()?;
-    {
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageConvert);
-        let batch_rows = (128 * 1024 / size[0]).max(1);
-        let convert = |batch: u32| {
-            let first = batch * batch_rows;
-            let end = (first + batch_rows).min(height);
-            // WGPU grants each worker its disjoint mapping. WriteOnly slices
-            // stay on the thread which obtained the view.
-            let mut mapped = staging
-                .slice(u64::from(first) * u64::from(row)..u64::from(end) * u64::from(row))
-                .get_mapped_range_mut()
-                .map_err(|error| {
-                    gpu.check()
-                        .err()
-                        .unwrap_or_else(|| GpuError::Device(error.to_string()))
-                })?;
-            write_rows(
-                mapped.slice(..),
-                size[0] as usize,
-                row as usize,
-                (rows.start + first) as usize,
-                &pixel,
-            );
-            Ok::<_, GpuError>(())
-        };
-        if height <= batch_rows {
-            convert(0)?;
-        } else {
-            use rayon::prelude::*;
-            (0..height.div_ceil(batch_rows))
-                .into_par_iter()
-                .try_for_each(convert)?;
-        }
-    }
+    convert_rows(gpu, staging, size[0], rows.clone(), 32 * 1024, &pixel)?;
     staging.unmap();
     #[cfg(test)]
     gpu.upload_creations
@@ -501,6 +468,52 @@ fn upload_rows_with(
     Ok(())
 }
 
+fn convert_rows(
+    gpu: &Gpu,
+    staging: &wgpu::Buffer,
+    width: u32,
+    rows: std::ops::Range<u32>,
+    batch_pixels: u32,
+    pixel: &(impl Fn(usize) -> [u16; 4] + Sync),
+) -> Result<(), GpuError> {
+    let row = row_bytes(width) as u32;
+    let height = rows.end - rows.start;
+
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageConvert);
+    let batch_rows = (batch_pixels / width).max(1);
+    let convert = |batch: u32| {
+        let first = batch * batch_rows;
+        let end = (first + batch_rows).min(height);
+        // WGPU grants each worker its disjoint mapping. WriteOnly slices
+        // stay on the thread which obtained the view.
+        let mut mapped = staging
+            .slice(u64::from(first) * u64::from(row)..u64::from(end) * u64::from(row))
+            .get_mapped_range_mut()
+            .map_err(|error| {
+                gpu.check()
+                    .err()
+                    .unwrap_or_else(|| GpuError::Device(error.to_string()))
+            })?;
+        write_rows(
+            mapped.slice(..),
+            width as usize,
+            row as usize,
+            (rows.start + first) as usize,
+            pixel,
+        );
+        Ok::<_, GpuError>(())
+    };
+    if height <= batch_rows {
+        convert(0)?;
+    } else {
+        use rayon::prelude::*;
+        (0..height.div_ceil(batch_rows))
+            .into_par_iter()
+            .try_for_each(convert)?;
+    }
+    Ok(())
+}
+
 /// Convert in cacheable stack memory before copying into a write-only mapping.
 fn write_rows(
     mut mapped: wgpu::WriteOnly<'_, [u8]>,
@@ -529,6 +542,54 @@ fn write_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "native mapped-upload CPU benchmark; run without a game or build in parallel"]
+    fn mapped_upload_partition_cost() {
+        use std::time::Instant;
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            Default::default(),
+        ))
+        .unwrap();
+        rayon::current_num_threads();
+        let conversion = Rgba8LinearF16::new(ColorEncoding::Srgb, ImageAlphaType::Alpha);
+        for size in [[1920, 272], [5760, 90], [1280, 128]] {
+            let pixels: Vec<_> = (0..size[0] * size[1])
+                .flat_map(|i| [i as u8, (i >> 5) as u8, (i >> 8) as u8, 255])
+                .collect();
+            let pixel = |index| conversion.convert(&pixels[index * 4..index * 4 + 4]);
+            let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("upload partition measurement"),
+                size: row_bytes(size[0]) * u64::from(size[1]),
+                usage: wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            });
+            let batches = [16 * 1024, 32 * 1024, 64 * 1024, 128 * 1024, u32::MAX];
+            let mut samples: [Vec<u128>; 5] = Default::default();
+            for repetition in 0..35 {
+                for offset in 0..batches.len() {
+                    let mode = (repetition + offset) % batches.len();
+                    let began = Instant::now();
+                    convert_rows(&gpu, &staging, size[0], 0..size[1], batches[mode], &pixel)
+                        .unwrap();
+                    if repetition >= 5 {
+                        samples[mode].push(began.elapsed().as_micros());
+                    }
+                }
+            }
+            for (batch, times) in batches.into_iter().zip(&mut samples) {
+                times.sort_unstable();
+                eprintln!(
+                    "mapped upload size={size:?} batch_pixels={batch} p50_us={} p95_us={}",
+                    times[times.len() / 2],
+                    times[times.len() * 95 / 100]
+                );
+            }
+        }
+    }
 
     #[test]
     fn upload_preserves_partial_rows_color_bits_and_padding() {

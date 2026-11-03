@@ -35,8 +35,9 @@ type Error = Box<dyn std::error::Error>;
 #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod scroll_cost;
 
-/// Desktop windows allow 512 MiB of GPU resources. Other quotas and non-desktop
-/// hosts retain the renderer's defaults; explicit limits bypass this selection.
+/// Desktop windows allow 512 MiB of GPU resources and 16 MiB per image upload
+/// preparation. Other quotas retain the renderer's defaults; explicit limits
+/// bypass this selection.
 fn default_gpu_limits() -> GpuLimits {
     let mut limits = GpuLimits::default();
     if cfg!(any(
@@ -45,6 +46,7 @@ fn default_gpu_limits() -> GpuLimits {
         target_os = "macos"
     )) {
         limits.resource_bytes = 512 << 20;
+        limits.image_upload_bytes_per_prepare = 16 << 20;
     }
     limits
 }

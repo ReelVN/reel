@@ -99,7 +99,7 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
     let mut renderer = renderer(crate::gpu::GpuLimits {
         resource_bytes: 64 << 20,
         // Exercise residency pressure independently of the per-prepare work quota.
-        image_upload_bytes_per_prepare: 2 * resident,
+        image_upload_bytes_per_prepare: 3 * resident,
         ..Default::default()
     });
     assert!(matches!(
@@ -233,7 +233,10 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
                 drop(prepared);
                 break;
             }
-            Err(error) => assert!(error.is_retryable(), "{error:?}"),
+            Err(error) => assert!(
+                matches!(error, GpuError::Preparing | GpuError::Busy),
+                "work slicing must not reclaim caches: {error:?}"
+            ),
         }
         assert!(renderer.has_pending());
         assert!(renderer.has_pending_image_uploads());
@@ -248,6 +251,15 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
     }
     assert_eq!(attempts, 97); // 96 slices followed by the admitted ready frame.
     assert_eq!(renderer.gpu.upload_creations.snapshot(), [3, 1, 96]);
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .geometry_retries
+            .load(Ordering::Relaxed),
+        0,
+        "normal upload progress must not rebuild plans or clear rendering caches"
+    );
     for handle in handles {
         assert!(registry.retire(handle));
     }
@@ -260,7 +272,7 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
     let (candidate, _, _) = image_restore_fixture([64, 64], true);
     assert!(matches!(
         renderer.prepare(&candidate),
-        Err(GpuError::Pressure { .. })
+        Err(GpuError::Preparing)
     ));
     assert!(renderer.usage().resources > 0);
     // Replacing the candidate drops its Partial; submitted staging lives only to completion.
@@ -345,7 +357,7 @@ fn submitted_cached_images_release_and_restore_before_reupload() {
         loop {
             match renderer.prepare(frame) {
                 Ok(prepared) => return prepared,
-                Err(GpuError::Pressure { .. }) => {
+                Err(GpuError::Preparing | GpuError::Pressure { .. }) => {
                     renderer
                         .gpu
                         .device
