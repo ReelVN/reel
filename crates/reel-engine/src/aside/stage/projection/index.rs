@@ -44,6 +44,13 @@ impl Index {
         // effect or override. Visit each dependency range only once per batch.
         self.changed.clear();
         for handle in changes {
+            if self
+                .dependencies
+                .binary_search_by_key(&handle.key, |(key, _)| *key)
+                .is_err()
+            {
+                continue;
+            }
             reserve(heap, &mut self.changed, &mut self.changed_charge)?;
             self.changed.push(handle.key);
         }
@@ -141,6 +148,11 @@ impl Index {
         }
         self.dependencies.sort_unstable();
         self.dependencies.dedup();
+        self.changed.clear();
+        if !self.dependencies.is_empty() {
+            // Admit the first change batch with the mounted projection, before input.
+            reserve(heap, &mut self.changed, &mut self.changed_charge)?;
+        }
         self.pending.clear();
         self.topology = scene.topology_revision();
         self.accept(heap);

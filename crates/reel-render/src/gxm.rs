@@ -17,6 +17,14 @@ fn destination_access() -> crate::common::blend::DestinationAccess {
     }
 }
 
+fn target_storage() -> native::TargetStorage {
+    if cfg!(feature = "gxm-tiled-targets") {
+        native::TargetStorage::Tiled
+    } else {
+        native::TargetStorage::Linear
+    }
+}
+
 /// Native presentation and work concurrency.
 #[derive(Clone, Debug)]
 pub struct GxmOptions {
@@ -44,14 +52,25 @@ mod renderer;
 /// Create a native device with Reel's offline clear programs. Hosts that issue
 /// native commands directly use the same initialization as the frame executor.
 /// Native physical admission accounts rounded blocks through physical release.
+/// Shared scheduling targets are provisioned for eight scenes per frame; driver
+/// storage is included in each target footprint before allocation.
 /// Screen draws use `native::FragmentOutput::Srgb` with linear input colors;
-/// offscreen targets retain their explicit encoding, defaulting to linear RGBA8.
+/// offscreen targets retain linear color encoding and storage by default.
+/// `gxm-tiled-targets` selects 32x32 tiled RGBA8 for frames without sampled
+/// backdrop copies; both dimensions must be at least 32. Planning accounts
+/// complete tiles, and cache reuse requires matching actual layouts.
 pub fn create_context(
     options: &GxmOptions,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<native::Context, native::Error> {
     let config = native::Config {
         display_encoding: native::SurfaceEncoding::Srgb,
+        // Several independent color surfaces share one scheduling target. GXM
+        // blocks the CPU when that target's scene records are exhausted (libgxm
+        // Overview, Render Targets); use the supported queue depth for effect
+        // chains rather than the native adapter's general-purpose default.
+        scenes_per_frame: 8,
+        target_storage: target_storage(),
         ..native::Config::default()
     };
     native::Context::with_config(
@@ -62,7 +81,7 @@ pub fn create_context(
             fragment: shader_code!("clear"),
             position_attribute: "a_position",
             color_uniform: "u_clear_color",
-            clip_uniform: "reel_clip_rect",
+            clip_uniform: None,
         },
         wake,
         None,
@@ -93,14 +112,6 @@ fn create_program(
         clip_uniform: clipped.then_some("reel_clip_rect"),
         output,
     })
-}
-
-fn create_target_texture(
-    context: &native::Context,
-    size: [u32; 2],
-    format: native::TargetFormat,
-) -> Result<native::Texture, native::Error> {
-    context.create_target_texture(size, format)
 }
 
 fn texture_bytes(size: [u32; 2], format: native::TextureFormat) -> Result<u64, GxmError> {
@@ -138,7 +149,7 @@ fn native_error(error: native::Error) -> GxmError {
             pending: false,
         },
         native::Error::Budget {
-            domain: domain @ ("physical MAIN" | "physical CDRAM"),
+            domain: domain @ ("physical MAIN" | "physical CDRAM" | "GXM render targets"),
             requested,
             limit,
         } => GxmError::Pressure {

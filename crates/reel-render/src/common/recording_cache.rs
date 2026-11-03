@@ -144,6 +144,7 @@ pub(crate) struct Cache<D, T> {
     entries: [Option<Arc<Entry<D, T>>>; 128],
     next: usize,
     lookup: usize,
+    located: Option<usize>,
     high_water: usize,
 }
 impl<D, T> Default for Cache<D, T> {
@@ -152,11 +153,34 @@ impl<D, T> Default for Cache<D, T> {
             entries: std::array::from_fn(|_| None),
             next: 0,
             lookup: 0,
+            located: None,
             high_water: 0,
         }
     }
 }
 impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
+    // Replay visits recordings in order even when their transforms change.
+    // Share identity lookup between get/observe/insert; dependency misses still
+    // advance the cursor, and no hint owns a recording or its geometry.
+    fn locate(&mut self, source: &RecordingSource, local: LocalId) -> Option<usize> {
+        let matches = |index: usize| {
+            self.entries[index]
+                .as_ref()
+                .is_some_and(|entry| entry.source == *source && entry.local == local)
+        };
+        let index = if matches(self.lookup) {
+            Some(self.lookup)
+        } else {
+            self.located
+                .filter(|&index| matches(index))
+                .or_else(|| (0..self.high_water).find(|&index| matches(index)))
+        };
+        self.located = index;
+        if let Some(index) = index {
+            self.lookup = (index + 1) % self.entries.len();
+        }
+        index
+    }
     /// Repeatedly changing projections retain one small candidate, not a fresh
     /// geometry copy every frame. Only a repeated dependency admits the payload.
     pub fn observe(
@@ -170,9 +194,10 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
         let Some((source, local)) = frame.recording(origin) else {
             return false;
         };
-        if self.entries.iter().flatten().any(|entry| {
-            entry.source == *source && entry.local == local && entry.dependency == *dependency
-        }) {
+        if self
+            .locate(source, local)
+            .is_some_and(|index| self.entries[index].as_ref().unwrap().dependency == *dependency)
+        {
             return true;
         }
         self.store(frame, origin, dependency.clone(), None, budgets, limit);
@@ -188,21 +213,9 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
             self.begin_replay();
             return None;
         };
-        let matches = |entry: &Arc<Entry<D, T>>| {
-            entry.source == *source
-                && entry.local == local
-                && entry.dependency == *dependency
-                && entry.value.is_some()
-        };
-        let index = if self.entries[self.lookup].as_ref().is_some_and(&matches) {
-            self.lookup
-        } else {
-            self.entries[..self.high_water]
-                .iter()
-                .position(|entry| entry.as_ref().is_some_and(&matches))?
-        };
-        self.lookup = (index + 1) % self.entries.len();
-        self.entries[index].clone()
+        let index = self.locate(source, local)?;
+        let entry = self.entries[index].as_ref().unwrap();
+        (entry.dependency == *dependency && entry.value.is_some()).then(|| entry.clone())
     }
     /// Retire expired recordings once before replay, including entries outside
     /// the next draw's search prefix. Frame/flight references keep their payloads.
@@ -216,6 +229,7 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
             self.high_water -= 1;
         }
         self.lookup = 0;
+        self.located = None;
     }
 
     /// Optional admission cannot turn an otherwise admissible draw into failure.
@@ -243,11 +257,9 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
         let Some((source, local)) = frame.recording(origin) else {
             return;
         };
-        if let Some(entry) = self
-            .entries
-            .iter_mut()
-            .flatten()
-            .find(|entry| entry.source == *source && entry.local == local)
+        let existing = self.locate(source, local);
+        if let Some(index) = existing
+            && let Some(entry) = self.entries[index].as_mut()
             && let Some(entry) = Arc::get_mut(entry)
         {
             entry.dependency = dependency;
@@ -260,15 +272,7 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
         let Some(ticket) = admit(budgets, limit, bytes) else {
             return;
         };
-        let index = self
-            .entries
-            .iter()
-            .position(|entry| {
-                entry
-                    .as_ref()
-                    .is_some_and(|entry| entry.source == *source && entry.local == local)
-            })
-            .unwrap_or(self.next);
+        let index = existing.unwrap_or(self.next);
         self.high_water = self.high_water.max(index + 1);
         self.entries[index] = Some(Arc::new(Entry {
             source: source.clone(),
@@ -277,6 +281,8 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
             value,
             _ticket: ticket,
         }));
+        self.located = Some(index);
+        self.lookup = (index + 1) % self.entries.len();
         if index == self.next {
             self.next = (self.next + 1) % self.entries.len();
         }
@@ -285,6 +291,7 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
         self.entries.fill_with(|| None);
         self.next = 0;
         self.lookup = 0;
+        self.located = None;
         self.high_water = 0;
     }
     pub fn bytes(&self) -> u64 {
@@ -378,6 +385,7 @@ impl Cache<ShapeDependency, Arc<Mesh>> {
         allocation: mesh::Allocation,
         scope: Scope<'_>,
     ) -> Result<Reference, GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GeometryPrepare);
         if let Some(cached) = self.get(frame, origin, &dependency)
             && let Ok(mesh) = cached.value().borrow(allocation.fresh())
         {

@@ -13,6 +13,7 @@ impl Cache {
         policy: &UploadPolicy,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<(Storage, BudgetTicket), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GeometryUpload);
         let requested = Capacity {
             vertices: (size_of::<Template>() + size_of_val(batch.instances.as_slice())) as u64,
             indices: size_of_val(&INDICES) as u64,

@@ -71,6 +71,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     ]
     .into_iter()
     .map(|(name, parameter, input, result)| NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: format!("reel::{name}"),
         abi_version: 1,
@@ -112,6 +114,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::window::{name}"),
             abi_version: 1,
@@ -143,6 +147,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("focus", &["target", "owner", "visibility"][..]),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::stage::{name}"),
             abi_version: 1,
@@ -238,6 +244,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::{symbol}"),
             abi_version: 1,
@@ -369,6 +377,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             });
         }
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: 1,
@@ -406,6 +416,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: symbol.into(),
             abi_version: 1,
@@ -423,6 +435,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::game::record".into(),
         abi_version: 1,
@@ -465,6 +479,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         parameter.ty = BuiltinType::Any;
     }
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::list".into(),
         abi_version: 1,
@@ -478,6 +494,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         parameter.ty = BuiltinType::Any;
     }
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::view".into(),
         abi_version: 1,
@@ -488,6 +506,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     });
     view_parameters[0].name = "layers".into();
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::when".into(),
         abi_version: 1,
@@ -508,6 +528,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec!["reel.stage".into()],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::when::evaluate".into(),
         abi_version: 1,
@@ -521,6 +543,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec!["reel.stage".into()],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::layered_image".into(),
         abi_version: 1,
@@ -530,6 +554,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec!["reel.stage".into()],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: true,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::derive".into(),
         abi_version: 1,
@@ -543,6 +569,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec![],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::model".into(),
         abi_version: 1,
@@ -556,6 +584,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec![],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::unbind".into(),
         abi_version: 1,
@@ -569,6 +599,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec![],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::stage::replace".into(),
         abi_version: 1,
@@ -582,6 +614,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec!["reel.stage".into()],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::game::configure".into(),
         abi_version: 2,
@@ -610,6 +644,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         default,
     };
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::stage::capture".into(),
         abi_version: 1,
@@ -623,6 +659,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec!["reel.stage".into()],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::assets::read".into(),
         abi_version: 1,
@@ -653,6 +691,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("list", vec![]),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::saves::{name}"),
             abi_version: 1,
@@ -677,6 +717,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("delete", vec![parameter("key", None)]),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::persistent::{name}"),
             abi_version: 1,
@@ -777,6 +819,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("await", vec![parameter("activity", None)], true),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::audio::{name}"),
             abi_version: 1,
@@ -824,6 +868,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("position", vec![parameter("activity", None)]),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::video::{name}"),
             abi_version: 1,
@@ -851,6 +897,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: symbol.into(),
             abi_version: 1,
@@ -865,6 +913,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::reading::set_auto".into(),
         abi_version: 1,
@@ -879,6 +929,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec![],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::reading::set_skip".into(),
         abi_version: 1,
@@ -1093,6 +1145,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("finish", vec![parameter("activity", None)], false),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: 1,
@@ -1109,6 +1163,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for name in ["sequence", "parallel"] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: Some("actions".into()),
             symbol: format!("reel::{name}"),
             abi_version: 1,
@@ -1120,6 +1176,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for name in ["then", "together"] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: format!("reel::action::{name}"),
             abi_version: 1,
@@ -1133,6 +1191,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.extend(super::stage::configure::contracts());
     contracts.extend(super::stage::text_input::contracts());
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::rich".into(),
         abi_version: 1,
@@ -1142,6 +1202,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec![],
     });
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::rich_escape".into(),
         abi_version: 1,
@@ -1185,6 +1247,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
     ] {
         contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             rest: None,
             symbol: symbol.into(),
             abi_version: 1,
@@ -1195,6 +1259,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
         rest: None,
         symbol: "reel::emit".into(),
         abi_version: 1,

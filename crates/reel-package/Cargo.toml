@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 description = "Bounded ASB code-container codec and static metadata validation"
 
 [dependencies]
+walkdir = "=2.5.0"
 aside-vm = { path = "../aside-vm" }
 blake3 = "=1.8.7"
 lz4_flex = { version = "=0.12.2", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }

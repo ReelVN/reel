@@ -231,14 +231,14 @@ pub(super) struct CompositeInputs<'a> {
     pub backdrop: &'a wgpu::TextureView,
 }
 pub struct Pipelines {
-    instances: Mutex<[Option<Arc<wgpu::RenderPipeline>>; 18]>,
+    instances: Mutex<[Option<Arc<wgpu::RenderPipeline>>; 22]>,
     pub paint: wgpu::RenderPipeline,
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
     pub coverage_draws: std::sync::atomic::AtomicUsize,
     pub direct: [wgpu::RenderPipeline; 8],
-    pub bounded: Option<[wgpu::RenderPipeline; 4]>,
-    pub bounded_opaque: Option<[wgpu::RenderPipeline; 2]>,
+    pub bounded: Option<[wgpu::RenderPipeline; 7]>,
+    pub bounded_opaque: Option<[wgpu::RenderPipeline; 3]>,
     #[cfg(test)]
     pub direct_draws: [std::sync::atomic::AtomicUsize; 8],
     pub opaque: [wgpu::RenderPipeline; 3],
@@ -248,6 +248,7 @@ pub struct Pipelines {
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
     pub source_over: wgpu::RenderPipeline,
+    pub effect_resample: [wgpu::RenderPipeline; 2],
     pub alpha_mask: wgpu::RenderPipeline,
     pub composite_blend: wgpu::RenderPipeline,
     pub extended_blend: wgpu::RenderPipeline,
@@ -393,13 +394,21 @@ impl Pipelines {
                 "fragment_direct_bc1",
                 "fragment_direct_bc3",
                 "fragment_solid",
+                "fragment_regional",
+                "fragment_regional_bc1",
+                "fragment_regional_bc3",
             ]
             .map(|entry| {
                 bounded_pipeline(entry, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING))
             })
         });
         let bounded_opaque = bounded_supported.then(|| {
-            ["fragment_direct_bc1", "fragment_solid"].map(|entry| bounded_pipeline(entry, None))
+            [
+                "fragment_direct_bc1",
+                "fragment_solid",
+                "fragment_regional_bc1",
+            ]
+            .map(|entry| bounded_pipeline(entry, None))
         });
         let opaque = [
             "fragment_direct_bc1",
@@ -496,6 +505,21 @@ impl Pipelines {
             quality.format == wgpu::TextureFormat::Rgba8Unorm,
             device.features().contains(wgpu::Features::SHADER_F16),
         );
+        let effect_resample = [false, true].map(|over| {
+            pipeline_entry(
+                device,
+                quality,
+                &composite_layout,
+                &bounded_composite,
+                false,
+                FragmentOutput {
+                    entry: "effect_resample",
+                    blend: over.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                },
+                #[cfg(test)]
+                Some(counts),
+            )
+        });
         let source_over = pipeline_entry(
             device,
             quality,
@@ -585,6 +609,7 @@ impl Pipelines {
             yuv_layout,
             composite,
             source_over,
+            effect_resample,
             alpha_mask,
             composite_blend,
             extended_blend,
@@ -611,9 +636,30 @@ impl Pipelines {
             backdrop,
         } = inputs;
         let words = params.uniform_words(target, source, mask, backdrop);
+        self.composite_group_words(
+            device,
+            CompositeInputs {
+                source,
+                mask,
+                backdrop,
+            },
+            &words,
+        )
+    }
+    pub(super) fn composite_group_words(
+        &self,
+        device: &wgpu::Device,
+        inputs: CompositeInputs<'_>,
+        words: &[u32; COMPOSITE_WORDS],
+    ) -> wgpu::BindGroup {
+        let CompositeInputs {
+            source,
+            mask,
+            backdrop,
+        } = inputs;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),
-            contents: bytemuck::cast_slice(&words),
+            contents: bytemuck::cast_slice(words),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         device.create_bind_group(&wgpu::BindGroupDescriptor {

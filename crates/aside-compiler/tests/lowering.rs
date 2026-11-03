@@ -20,6 +20,8 @@ fn clears(instruction: &bc::Instruction, register: u32) -> bool {
 mod call_arguments;
 #[path = "lowering/collections_locations.rs"]
 mod collections_locations;
+#[path = "lowering/discard.rs"]
+mod discard;
 #[path = "lowering/host_constants.rs"]
 mod host_constants;
 #[path = "lowering/initializer_locals.rs"]
@@ -164,8 +166,8 @@ fn source_runs_preserve_computation_and_control_flow_locations() {
                                     | bc::Opcode::Clear3
                             )
                         })
-                        .map(|operation| operation.span)
-                        .chain(block.terminator.as_ref().map(|(_, span)| *span))
+                        .map(|operation| (Some(operation.instruction.opcode), operation.span))
+                        .chain(block.terminator.as_ref().map(|(_, span)| (None, *span)))
                 })
                 .collect();
             (function.output, spans)
@@ -192,17 +194,32 @@ fn source_runs_preserve_computation_and_control_flow_locations() {
                 )
             })
             .collect();
-        assert_eq!(computation.len(), spans.len());
-        for ((pc, _), expected) in computation.into_iter().zip(spans) {
+        let mut spans = spans.into_iter().peekable();
+        for (pc, instruction) in computation {
             let actual = compiled
                 .program
                 .source_at(function, bc::Pc(pc as u32))
                 .unwrap();
+            // Initialized frame-local reads may be borrowed by their consumer.
+            // Every retained read and all other computations keep their span.
+            while spans.peek().is_some_and(|(opcode, span)| {
+                *opcode == Some(bc::Opcode::BindRead as u16)
+                    && (instruction.opcode != bc::Opcode::BindRead as u16
+                        || (u32::from(span.start()), u32::from(span.end()))
+                            != (actual.start, actual.end))
+            }) {
+                spans.next();
+            }
+            let (opcode, expected) = spans.next().expect("retained computation");
+            if let Some(opcode) = opcode {
+                assert_eq!(instruction.opcode, opcode);
+            }
             assert_eq!(
                 (actual.start, actual.end),
                 (u32::from(expected.start()), u32::from(expected.end()))
             );
         }
+        assert!(spans.all(|(opcode, _)| opcode == Some(bc::Opcode::BindRead as u16)));
     }
     assert_eq!(
         compiled
@@ -478,13 +495,17 @@ fn forward_readonly_cells_and_mutual_recursion_keep_binding_identity() {
             .map(|(pc, _)| pc)
             .unwrap();
         assert_eq!(init_pc < first_read_pc, initialized);
-        assert!(f.code.iter().map(Result::unwrap).any(|i| {
-            if cell {
+        if cell {
+            assert!(f.code.iter().map(Result::unwrap).any(|i| {
                 i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == binding as u32
-            } else {
-                clears(&i, binding as u32)
-            }
-        }));
+            }));
+        } else {
+            assert_eq!(f.kind, bc::FunctionKind::Plain);
+            assert_eq!(
+                f.bindings[binding].initialization,
+                bc::BindingInitialization::Explicit
+            );
+        }
     }
     let later = outer
         .bindings

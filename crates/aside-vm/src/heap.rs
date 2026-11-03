@@ -4,13 +4,15 @@ mod model;
 pub use changes::ChangeCursor;
 mod properties;
 mod reactive;
+mod read;
+pub(crate) use read::ObjectRead;
 pub(crate) mod snapshot;
 mod storage;
 pub(crate) use reactive::DerivedSlot;
 mod table;
 use crate::HeapBudgetUsage;
 use crate::gc::Collector;
-use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, Values};
+use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, Table, Values};
 use crate::root_ranges::{BOOK_BYTES, RangeDescriptor};
 use crate::slots::{HeapKey, RangeKey, RootKey, Slots, heap_key, index};
 use crate::{GcPhase, HeapHandle, HeapId, SessionEpoch, Value, WeakHandle};
@@ -323,6 +325,19 @@ pub(crate) struct Object {
     pub watched: bool,
     pub charged: u64,
 }
+impl Object {
+    fn mark_for_scan(&mut self, cycle: u64) -> bool {
+        if self.mark == cycle {
+            return false;
+        }
+        self.mark = cycle;
+        self.scan = 0;
+        self.metadata_scanned = false;
+        self.reactive_scanned = false;
+        self.queued = true;
+        true
+    }
+}
 pub(crate) struct Root {
     pub value: Value,
     pub owner: RootOwner,
@@ -351,7 +366,7 @@ pub struct Heap {
     pub(crate) gc: Collector,
     property_work: Vec<PropertyId>,
     property_batch: Vec<properties::PreparedProperty>,
-    property_batch_index: Vec<usize>,
+    property_batch_index: hashbrown::HashMap<(u64, u32), usize>,
     property_index_work: std::cell::Cell<u64>,
     property_traversal_work: std::cell::Cell<u64>,
     property_work_used: std::cell::Cell<u64>,
@@ -453,7 +468,7 @@ impl Heap {
             gc: Collector::default(),
             property_work: Vec::new(),
             property_batch: Vec::new(),
-            property_batch_index: Vec::new(),
+            property_batch_index: hashbrown::HashMap::default(),
             property_index_work: std::cell::Cell::new(0),
             property_traversal_work: std::cell::Cell::new(0),
             property_work_used: std::cell::Cell::new(0),
@@ -589,24 +604,39 @@ impl Heap {
         let key = heap_key(raw).expect("validated full key");
         if let Some(obj) = self.objects.get_mut(key)
             && !obj.dying
-            && obj.mark != self.gc.cycle
+            && obj.mark_for_scan(self.gc.cycle)
         {
-            obj.mark = self.gc.cycle;
-            obj.scan = 0;
-            obj.metadata_scanned = false;
-            obj.reactive_scanned = false;
-            obj.queued = true;
             assert!(self.gray.len() < self.limits.max_objects as usize);
             self.gray.push_back(key);
         }
     }
     fn barrier(&mut self, value: Value) -> Result<(), HeapError> {
-        self.validate_value(value)?;
-        self.shade(value);
-        Ok(())
+        self.root_insertion_barrier(value)
     }
+    #[inline]
     pub(crate) fn root_insertion_barrier(&mut self, value: Value) -> Result<(), HeapError> {
-        self.barrier(value)
+        if value.tag() != crate::ValueTag::Object {
+            return Ok(());
+        }
+        self.object_insertion_barrier(value)
+    }
+    fn object_insertion_barrier(&mut self, value: Value) -> Result<(), HeapError> {
+        let key = self.key(value)?;
+        let obj = self
+            .objects
+            .get_mut(key)
+            .filter(|o| !o.dying)
+            .ok_or(HeapError::InvalidHandle)?;
+        if self.gc.cutoff() && obj.mark != self.gc.cycle {
+            return Err(HeapError::UnconfirmedLive);
+        }
+        // The validated mutable borrow also performs insertion marking; no
+        // collection or slot reuse can intervene between these two operations.
+        if self.gc.phase == GcPhase::Mark && obj.mark_for_scan(self.gc.cycle) {
+            assert!(self.gray.len() < self.limits.max_objects as usize);
+            self.gray.push_back(key);
+        }
+        Ok(())
     }
     fn input_values(&self, values: &[Value]) -> Result<(), HeapError> {
         if values.len() as u64 > self.limits.max_mutation_values as u64 {
@@ -638,7 +668,7 @@ impl Heap {
     ) -> Value {
         // All capacity/budget/type validation and initial-edge barriers preceded this.
         let chunks = match &payload {
-            Payload::Values(v) | Payload::Table(v) => v.owned_chunks(),
+            Payload::Values(v) | Payload::Table(Table { values: v, .. }) => v.owned_chunks(),
             Payload::Bytes(b) => b.owned_chunks(),
             _ => 0,
         };
@@ -805,14 +835,7 @@ impl Heap {
         Ok(host)
     }
     pub fn host_fields(&self, host: Value) -> Result<Value, HeapError> {
-        if self.info(host)?.kind != ObjectKind::Host {
-            return Err(HeapError::WrongKind);
-        }
-        let fields = self.get_field(host, 0)?;
-        if fields.same_bits(Value::NULL) {
-            return Err(HeapError::RetiredHost);
-        }
-        Ok(fields)
+        self.read_object(host)?.host_fields()
     }
     pub(crate) fn host_await(&self, host: Value) -> Result<crate::bytecode::NativeId, HeapError> {
         self.host_fields(host)?;
@@ -821,10 +844,7 @@ impl Heap {
             .ok_or(HeapError::WrongKind)
     }
     pub(crate) fn host_call(&self, host: Value) -> Result<crate::bytecode::FunctionId, HeapError> {
-        self.host_fields(host)?;
-        self.object(self.key(host)?)?
-            .host_call
-            .ok_or(HeapError::WrongKind)
+        self.read_object(host)?.host_call()
     }
     pub(crate) fn set_host_call(
         &mut self,
@@ -847,17 +867,14 @@ impl Heap {
         Ok(())
     }
     pub fn host_payload_len(&self, host: Value) -> Result<u32, HeapError> {
-        let info = self.info(host)?;
-        if info.kind != ObjectKind::Host {
-            return Err(HeapError::WrongKind);
-        }
-        info.len.checked_sub(4).ok_or(HeapError::WrongKind)
+        self.read_object(host)?.host_payload_len()
     }
     pub fn host_payload(&self, host: Value, index: u32) -> Result<Value, HeapError> {
-        if index >= self.host_payload_len(host)? {
+        let host = self.read_object(host)?;
+        if index >= host.host_payload_len()? {
             return Err(HeapError::OutOfBounds);
         }
-        self.get_field(host, index + 4)
+        host.field(index + 4)
     }
     pub fn set_host_payload(
         &mut self,
@@ -912,15 +929,15 @@ impl Heap {
         Ok(())
     }
     pub fn is_composable_host(&self, host: Value) -> Result<bool, HeapError> {
-        if host.tag() != crate::value::ValueTag::Object || self.info(host)?.kind != ObjectKind::Host
-        {
+        if host.tag() != crate::value::ValueTag::Object {
             return Ok(false);
         }
-        self.host_fields(host)?;
-        Ok(self
-            .get_field(host, 1)?
-            .as_int()
-            .is_some_and(|flags| flags & 1 != 0))
+        let host = self.read_object(host)?;
+        if host.kind() != ObjectKind::Host {
+            return Ok(false);
+        }
+        host.host_fields()?;
+        Ok(host.field(1)?.as_int().is_some_and(|flags| flags & 1 != 0))
     }
     pub fn retire_host(&mut self, host: Value) -> Result<(), HeapError> {
         self.disconnect_reactive_source(host)?;
@@ -1034,29 +1051,10 @@ impl Heap {
         Ok(())
     }
     pub fn info(&self, value: Value) -> Result<ObjectInfo, HeapError> {
-        let obj = self.object(self.key(value)?)?;
-        Ok(ObjectInfo {
-            kind: obj.kind,
-            len: match &obj.payload {
-                Payload::Table(values) => values.len / 2,
-                _ => obj.payload.len(),
-            },
-            content_version: obj.content_version,
-            structure_version: obj.structure_version,
-        })
+        Ok(self.read_object(value)?.info())
     }
     pub fn get_field(&self, value: Value, position: u32) -> Result<Value, HeapError> {
-        let obj = self.object(self.key(value)?)?;
-        if !obj.kind.values() || matches!(obj.payload, Payload::Table(_)) {
-            return Err(HeapError::WrongKind);
-        }
-        if let Payload::Cell(cell) = &obj.payload {
-            if position != 0 {
-                return Err(HeapError::OutOfBounds);
-            }
-            return cell.value.ok_or(HeapError::UninitializedCell);
-        }
-        obj.payload.edge(position).ok_or(HeapError::OutOfBounds)
+        self.read_object(value)?.field(position)
     }
     fn editable_values(&self, key: HeapKey) -> Result<&Object, HeapError> {
         let obj = self.object(key)?;
@@ -1474,6 +1472,10 @@ impl Heap {
 
 impl Drop for Heap {
     fn drop(&mut self) {
+        self.usage
+            .0
+            .provider_state
+            .set(crate::root_ranges::RootProviderState::Detached);
         self.usage.0.heap_alive.set(false);
         self.objects.drop_storage();
         self.roots.drop_storage();

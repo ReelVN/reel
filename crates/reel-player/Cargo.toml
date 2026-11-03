@@ -7,7 +7,13 @@ publish = false
 
 [features]
 default = []
+performance = ["profiling", "vm-execution-counts", "vm-profiling", "thread-profiling"]
 profiling = ["reel-core/profiling", "reel-render/profiling", "reel-media/profiling"]
+vm-profiling = ["profiling", "aside-vm/profiling"]
+# Paired calling-thread execution/wall observations through the platform adapter.
+thread-profiling = ["profiling"]
+# Integer VM work deltas at presentation boundaries; independent of VM clocks.
+vm-execution-counts = ["profiling", "aside-vm/execution-counts"]
 winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 video = ["reel-media/video"]
@@ -18,10 +24,13 @@ window = ["video-software", "audio-output", "gamepad", "winit", "dep:wgpu", "dep
 
 [dependencies]
 smallvec.workspace = true
+hashbrown.workspace = true
+lru = "=0.19.0"
 aside-vm = { path = "../aside-vm" }
 reel-package = { path = "../reel-package" }
 reel-storage = { path = "../reel-storage" }
 serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }
 flate2 = "=1.1.10"
 bc-crunch = "=0.1.2"
@@ -51,6 +60,9 @@ vita-native = { workspace = true, features = ["app", "process-allocator"] }
 [dev-dependencies]
 allocation-counter = "=0.8.1"
 reel-core = { path = "../reel-core", features = ["test-support"] }
+reel-render = { path = "../reel-render", features = ["wgpu"] }
+wgpu = "=30.0.1"
+pollster = "=1.0.1"
 
 [build-dependencies]
 cc = "=1.8.0"

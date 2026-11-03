@@ -91,6 +91,7 @@ impl Cache {
         policy: &UploadPolicy,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<(Storage, BudgetTicket, Option<BudgetTicket>), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GeometryUpload);
         let mut reused = self.take(batch, local, policy.reuse);
         #[cfg(test)]
         self.uploaded_bytes.fetch_add(

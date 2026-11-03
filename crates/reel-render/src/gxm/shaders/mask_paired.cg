@@ -2,8 +2,12 @@
 // Top-left render targets use direct UVs; continuous varyings use TEXCOORD.
 varying float4 fragment_position : WPOS;
 varying out float4 reel_output : COLOR;
+#ifndef REEL_UNCLIPPED
 uniform float4 reel_clip_rect;
 void reel_clip(){if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;}
+#else
+void reel_clip(){}
+#endif
 float reel_mod(float x,float y){return x-y*floor(x/y);}
 uniform sampler2D u_image0 : TEXUNIT0;
 uniform sampler2D u_image1 : TEXUNIT1;

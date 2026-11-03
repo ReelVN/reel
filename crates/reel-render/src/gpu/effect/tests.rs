@@ -84,6 +84,7 @@ fn terminal_effect_submission_preserves_visible_sources_and_culls_invisible_outp
             images: vec![],
             bounds,
             coverage_invert: false,
+            resolution_scale: 1.,
         });
         let mut bridge = r01_fixture::widget_bridge(widget, transform);
         let mut build = FrameBuild::new(
@@ -261,6 +262,7 @@ fn coverage_frame_variant(
             Rect::new(0., 0., 64., 48.)
         },
         coverage_invert: false,
+        resolution_scale: 1.,
     });
     let mut bridge = r01_fixture::widget_bridge(
         widget,
@@ -519,6 +521,7 @@ fn static_image_effect_chain_reuses_materialized_passes() {
     let pixels = crate::test_support::image_data(&image_lease);
     let bounds = Rect::new(0., 0., 160., 120.);
     let mut scene = Scene::new();
+    scene.push_group(Default::default());
     scene.draw(Draw::Fill {
         transform: Affine::IDENTITY,
         fill_rule: Default::default(),
@@ -527,6 +530,7 @@ fn static_image_effect_chain_reuses_materialized_passes() {
         shape: Geometry::Rect(bounds),
         composite: Composite::default(),
     });
+    scene.pop_group();
     let paint = PaintEffect {
         instance: EffectInstance::with_textures(
             [4; 32],
@@ -539,6 +543,7 @@ fn static_image_effect_chain_reuses_materialized_passes() {
         images: vec![image_lease.clone()],
         bounds,
         coverage_invert: false,
+        resolution_scale: 1.,
     };
     let mut widget = r01_fixture::RecordWidget::new(scene);
     widget.clip = false;
@@ -623,21 +628,25 @@ fn static_image_effect_chain_reuses_materialized_passes() {
     ))
     .unwrap();
     let mut renderer = Renderer::new(gpu);
+    let mut chain_passes = Vec::new();
     for _ in 0..2 {
-        let prepared = loop {
-            match renderer.prepare(&frame) {
-                Ok(prepared) => break prepared,
-                Err(crate::gpu::GpuError::Preparing) => {
-                    renderer
-                        .gpu()
-                        .device
-                        .poll(wgpu::PollType::wait_indefinitely())
-                        .unwrap();
-                    renderer.poll().unwrap();
+        let (prepared, passes, _) = super::super::targets::pass_trace::collect_counts(|| {
+            loop {
+                match renderer.prepare(&frame) {
+                    Ok(prepared) => break prepared,
+                    Err(crate::gpu::GpuError::Preparing) => {
+                        renderer
+                            .gpu()
+                            .device
+                            .poll(wgpu::PollType::wait_indefinitely())
+                            .unwrap();
+                        renderer.poll().unwrap();
+                    }
+                    Err(error) => panic!("effect preparation: {error:?}"),
                 }
-                Err(error) => panic!("effect preparation: {error:?}"),
             }
-        };
+        });
+        chain_passes.push(passes);
         renderer.submit(prepared).unwrap();
         renderer
             .gpu()
@@ -646,16 +655,62 @@ fn static_image_effect_chain_reuses_materialized_passes() {
             .unwrap();
         renderer.poll().unwrap();
     }
-    let (entries, hits) = renderer.effect_results.test_stats();
+    let (outputs, hits) = renderer.effect_results.test_stats();
     eprintln!(
-        "effect chain entries={entries} image_hits={} intermediate_hits={} target_bytes={}",
+        "effect chain outputs={outputs} image_hits={} intermediate_hits={} target_bytes={}",
         hits[0],
         hits[1],
         renderer.usage().targets
     );
-    assert!(entries >= 2, "two materialized passes must be retained");
-    assert!(hits[0] >= 1, "the immutable image pass must hit");
-    assert!(hits[1] >= 1, "the intermediate effect output must hit");
+    assert!(outputs > 0, "the submitted consumer must retain pixels");
+    assert!(
+        hits.iter().sum::<usize>() >= 1,
+        "stable effect content must hit"
+    );
+    assert!(
+        chain_passes[1] < chain_passes[0],
+        "cache reuse skips source passes: {chain_passes:?}"
+    );
+    assert_eq!(
+        chain_passes[1], 1,
+        "metadata-only prefixes must resolve the retained tail"
+    );
+    // A late-only materialized consumer must keep its early-reusable input.
+    // Releasing every optional pixel owner keeps identities while requiring the
+    // producer passes to execute again, independent of eviction order.
+    assert!(renderer.effect_results.reclaim_output());
+    while renderer.effect_results.reclaim_output() {}
+    let (prepared, passes, _) =
+        super::super::targets::pass_trace::collect_counts(|| renderer.prepare(&frame).unwrap());
+    eprintln!(
+        "effect_chain cold_passes={} warm_passes={} reclaimed_tail_passes={passes}",
+        chain_passes[0], chain_passes[1]
+    );
+    assert_eq!(
+        passes, chain_passes[0],
+        "metadata alone cannot replace the reclaimed consumer pixels"
+    );
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+
+    let (prepared, restored, _) =
+        super::super::targets::pass_trace::collect_counts(|| renderer.prepare(&frame).unwrap());
+    assert_eq!(
+        restored, chain_passes[1],
+        "the rebuilt consumer restores the whole-chain hit"
+    );
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
 
     // Move the entire chain while retaining each image's paint recording. The
     // local source grid stays fixed; cached and fresh rendering must agree.
@@ -683,8 +738,8 @@ fn static_image_effect_chain_reuses_materialized_passes() {
     let cached = renderer.readback(prepared).unwrap();
     let (_, after_translation) = renderer.effect_results.test_stats();
     assert!(
-        after_translation[0] > hits[0],
-        "translated image source must reuse its local pixels"
+        after_translation.iter().sum::<usize>() > hits.iter().sum::<usize>(),
+        "translated effect chain must reuse its local pixels"
     );
     renderer.effect_results.clear();
     let prepared = renderer.prepare(&translated).unwrap();

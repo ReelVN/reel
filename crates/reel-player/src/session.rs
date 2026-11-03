@@ -847,7 +847,7 @@ mod image_requests;
 mod input_dispatch;
 
 impl SessionUi {
-    /// Present only the stage explicitly supplied by the author or Rust host.
+    /// Present the authored stage over an opaque black background.
     pub fn new(session: Session) -> Result<Self, Error> {
         Self::create(session, false)
     }
@@ -879,7 +879,7 @@ impl SessionUi {
             binding: Rc::new(RefCell::new(InputBinding::default())),
             inputs: Rc::new(RefCell::new(None)),
             events: Rc::new(RefCell::new(Vec::new())),
-            background: Color::from_rgb8(35, 54, 74),
+            background: Color::BLACK,
             scroll: Rc::new(Cell::new(0.)),
             stage: None,
             stage_dirty: false,

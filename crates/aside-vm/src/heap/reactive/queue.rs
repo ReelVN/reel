@@ -9,6 +9,7 @@ impl Heap {
         if object.derived_dirty {
             return;
         }
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         object.derived_dirty = true;
         object.derived_previous = self.reactive_tail;
         object.derived_next = None;

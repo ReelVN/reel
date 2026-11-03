@@ -26,6 +26,39 @@ fn external(registry: &mut ResourceRegistry, p: &BudgetPool, i: usize) -> Resour
         .unwrap();
     registry.acquire(h).unwrap()
 }
+
+#[test]
+fn indexed_slots_preserve_versions_until_last_lease_and_recover_after_rejection() {
+    let p = pool();
+    let mut registry = ResourceRegistry::new(1, 1 << 20).unwrap();
+    let first = external(&mut registry, &p, 1);
+    let register = |registry: &mut ResourceRegistry, i| {
+        registry.register(
+            version(i),
+            ResourceData::External { token: i as u64 },
+            p.reserve(0).unwrap(),
+        )
+    };
+    assert_eq!(register(&mut registry, 1), Ok(first.handle()));
+    assert!(registry.release(first.handle()));
+    assert!(!registry.release(first.handle()));
+    assert_eq!(register(&mut registry, 1), Ok(first.handle()));
+    assert_eq!(register(&mut registry, 2), Err(ResourceError::Capacity));
+    let old = first.handle();
+    drop(first);
+    let second = external(&mut registry, &p, 2);
+    assert_eq!(second.handle().slot, old.slot);
+    assert_ne!(second.handle().generation, old.generation);
+    assert!(registry.acquire(old).is_err());
+    assert!(registry.retire(second.handle()));
+    assert_eq!(
+        register(&mut registry, 2),
+        Err(ResourceError::RetiredOrForeign)
+    );
+    assert_eq!(register(&mut registry, 3), Err(ResourceError::Capacity));
+    drop(second);
+    assert!(register(&mut registry, 3).is_ok());
+}
 fn capture(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot, ResourceError> {
     ResourceSnapshot::capture(values.iter().cloned().map(Ok), p)
 }

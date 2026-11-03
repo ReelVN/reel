@@ -54,7 +54,7 @@ impl StoryRuntime {
             self.suspended_at = Some(now_ns);
         }
         self.driver.as_mut().unwrap().cancel()?;
-        self.retiring = self.driver.replace(next);
+        self.retiring = self.driver.replace(Box::new(next));
         self.starting = None;
         self.logical_ns = 0;
         self.clock_sample_requested = true;

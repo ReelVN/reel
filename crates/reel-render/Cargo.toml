@@ -10,12 +10,15 @@ default = []
 profiling = ["reel-core/profiling", "vita-native?/profiling"]
 # Opt-in current-pixel blending for device validation on RGBA8 targets.
 gxm-tile-destination = ["gxm"]
+# Opt-in tiled offscreen storage for device validation; backdrop copies stay linear.
+gxm-tiled-targets = ["gxm"]
 wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:pollster", "dep:half", "dep:guillotiere"]
 gxm = ["dep:vita-native", "vita-native/graphics", "vita-native/video", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
 
 [dependencies]
 reel-ui.workspace = true
 smallvec.workspace = true
+hashbrown.workspace = true
 reel-core = { path = "../reel-core" }
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }
 serde = { version = "=1.0.229", features = ["derive"] }

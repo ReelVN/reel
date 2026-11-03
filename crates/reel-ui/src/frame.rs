@@ -220,6 +220,8 @@ pub struct FrameEffect {
     pub bounds: Rect,
     /// Invert clamped scalar coverage; preserved by retained scene archives.
     pub coverage_invert: bool,
+    /// Linear output resolution multiplier in (0, 1].
+    pub resolution_scale: f64,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameGroup {
@@ -1109,6 +1111,7 @@ fn make_op(
                             && (!coverage || descriptor.output == crate::stage::effect::EffectType::Float)));
                 if !valid
                     || !value.bounds.is_finite()
+                    || !(value.resolution_scale > 0. && value.resolution_scale <= 1.)
                     || value.images.len() != value.instance.textures().len()
                     || value.images.iter().any(|image| {
                         !resources.leases().iter().any(|lease| {
@@ -1127,6 +1130,7 @@ fn make_op(
                     images: value.images.iter().map(|image| image.handle()).collect(),
                     bounds: value.bounds,
                     coverage_invert: value.coverage_invert,
+                    resolution_scale: value.resolution_scale,
                 })
             };
             let prepared_effect = prepared_effect

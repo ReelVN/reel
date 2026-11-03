@@ -1,5 +1,6 @@
 //! Weak provenance and a budgeted lookup accelerator for immutable resources.
 use super::{AssetKind, Load, RetainedAssetKind};
+use hashbrown::HashTable;
 use reel_core::{
     budget::{BudgetPool, BudgetTicket},
     identity::{AssetKey, ContentVersion},
@@ -8,7 +9,6 @@ use reel_ui::resources::{ResourceHandle, ResourceLease, ResourceWeak};
 use std::{
     collections::{BTreeMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
-    mem::size_of,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -17,7 +17,7 @@ struct Entry {
     handle: ResourceHandle,
 }
 struct Index {
-    entries: Vec<Entry>,
+    entries: HashTable<Entry>,
     ticket: Option<BudgetTicket>,
 }
 pub(super) struct Origins {
@@ -49,32 +49,19 @@ impl Index {
     // Reserve both old and new vectors while growth reallocates. If metadata is
     // occupied, the caller discards this optional accelerator and scans instead.
     fn push(&mut self, item: Entry, metadata: &BudgetPool) -> bool {
-        if self.entries.len() == self.entries.capacity() {
-            let Some(capacity) = self.entries.len().max(4).checked_mul(2) else {
-                return false;
-            };
-            let Some(bytes) = capacity.checked_mul(size_of::<Entry>()) else {
-                return false;
-            };
-            let Ok(mut ticket) = metadata.reserve(bytes as u64) else {
-                return false;
-            };
-            let mut replacement = Vec::new();
-            if replacement.try_reserve_exact(capacity).is_err() {
-                return false;
-            }
-            let Some(actual) = replacement.capacity().checked_mul(size_of::<Entry>()) else {
-                return false;
-            };
-            if ticket.resize(actual as u64).is_err() {
-                return false;
-            }
-            replacement.extend_from_slice(&self.entries);
-            self.entries = replacement;
-            self.ticket = Some(ticket);
+        if reel_core::budget::collections::reserve_table(
+            &mut self.entries,
+            1,
+            &mut self.ticket,
+            metadata,
+            |entry| entry.hash,
+        )
+        .is_err()
+        {
+            return false;
         }
-        let position = self.entries.binary_search(&item).unwrap_or_else(|i| i);
-        self.entries.insert(position, item);
+        self.entries
+            .insert_unique(item.hash, item, |entry| entry.hash);
         true
     }
 }
@@ -83,7 +70,7 @@ impl Origins {
         Self {
             items: BTreeMap::new(),
             index: Some(Index {
-                entries: Vec::new(),
+                entries: HashTable::new(),
                 ticket: None,
             }),
             metadata,
@@ -116,10 +103,10 @@ impl Origins {
             && let Some(index) = &self.index
         {
             let hash = fingerprint(&load.source.key, version, kind);
-            let start = index.entries.partition_point(|entry| entry.hash < hash);
-            index.entries[start..]
-                .iter()
-                .take_while(|entry| entry.hash == hash)
+            index
+                .entries
+                .iter_hash(hash)
+                .filter(|entry| entry.hash == hash)
                 .find_map(|entry| self.items.get(&entry.handle).and_then(candidate))
         } else {
             self.items.values().find_map(candidate)
@@ -233,11 +220,15 @@ mod tests {
         );
         index
             .entries
-            .iter_mut()
-            .find(|entry| entry.handle == leases[0].handle())
-            .unwrap()
-            .hash = hash;
-        index.entries.sort_unstable();
+            .retain(|entry| entry.handle != leases[0].handle());
+        index.entries.insert_unique(
+            hash,
+            Entry {
+                hash,
+                handle: leases[0].handle(),
+            },
+            |entry| entry.hash,
+        );
         assert_eq!(
             origins.shared(&request).unwrap().handle(),
             expected.handle()

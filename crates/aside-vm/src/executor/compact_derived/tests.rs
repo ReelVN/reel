@@ -1,6 +1,13 @@
 use super::*;
 use crate::snapshot::{SnapshotBudget, SnapshotRegistry};
 
+#[path = "commit_tests.rs"]
+mod commit_tests;
+#[path = "direct_read_tests.rs"]
+mod direct_read_tests;
+#[path = "tuples.rs"]
+mod tuples;
+
 fn prepared(generic: bool) -> (Vm, Value, Value, RuntimeSupport) {
     prepared_expression(generic, false)
 }
@@ -19,6 +26,15 @@ fn prepared_storage(
     calls: bool,
     generic_parameters: bool,
     packed: bool,
+) -> (Vm, Value, Value, RuntimeSupport) {
+    prepared_body(generic, calls, generic_parameters, packed, None)
+}
+fn prepared_body(
+    generic: bool,
+    calls: bool,
+    generic_parameters: bool,
+    packed: bool,
+    tuple_len: Option<u32>,
 ) -> (Vm, Value, Value, RuntimeSupport) {
     let mut p = fixtures::helper_native();
     p.signatures[0].parameters[0].ty = TypeId(0);
@@ -118,6 +134,19 @@ fn prepared_storage(
             }),
             names: Vec::new(),
         })];
+    }
+    if let Some(len) = tuple_len {
+        let f = &mut p.functions[0];
+        f.code.pop();
+        for index in 0..len {
+            f.code.push(Instruction::new(Opcode::Move, 4 + index, 3, 0));
+        }
+        // Overwrite a source register only after every element is copied.
+        f.code.push(Instruction::new(Opcode::MakeTuple, 4, 0, 0));
+        f.code.push(Instruction::new(Opcode::Return, 4, 0, 0));
+        f.register_count = 5 + len;
+        f.descriptors = vec![Descriptor::Sequence(RegWindow { start: Reg(4), len })];
+        p.signatures[f.signature.index()].effects = Effects(Effects::ALLOCATE);
     }
     let program = verify(p, Limits::default()).unwrap();
     let program = if packed {
@@ -327,8 +356,9 @@ fn compact_fault_retains_the_logical_native_and_script_stack() {
 #[test]
 #[ignore = "release differential standard derived execution measurement"]
 fn compact_derived_cost() {
-    for generic in [true, false] {
+    for (generic, inline_commit) in [(true, false), (false, false), (false, true)] {
         let (mut vm, output, _, _) = prepared(generic);
+        vm.native_parameters.data[0].standard_derived_commit = inline_commit;
         let mut work = 0;
         let mut instructions = 0;
         let mut ranges = 0;
@@ -362,9 +392,9 @@ fn compact_derived_cost() {
         let entries = vm.native_entries - entries;
         let commits = vm.native_resumes - commits;
         assert_eq!(entries, if generic { 20000 } else { 0 });
-        assert_eq!(commits, 20000);
+        assert_eq!(commits, if inline_commit { 0 } else { 20000 });
         eprintln!(
-            "compact_derived generic={generic} evaluations=20000 elapsed_us={} work={work} instructions={instructions} peak_ranges={ranges} peak_frames={frames} peak_root_values={values} base_ranges={base_ranges} base_root_values={base_values} entries={entries} commits={commits}",
+            "compact_derived generic={generic} inline_commit={inline_commit} evaluations=20000 elapsed_us={} work={work} instructions={instructions} peak_ranges={ranges} peak_frames={frames} peak_root_values={values} base_ranges={base_ranges} base_root_values={base_values} entries={entries} commits={commits}",
             elapsed
         );
     }
@@ -412,12 +442,28 @@ fn lazy_compact_reads_refresh_upstream_without_reentering_the_native() {
         )
         .unwrap();
     let entries = vm.native_entries;
+    #[cfg(feature = "execution-counts")]
+    let before = vm.execution_counts();
     let task = vm.start_derived(downstream, RootOwner(1)).unwrap();
     assert!(matches!(
         drive(&mut vm, task, true).0,
         RunOutcome::Returned(_)
     ));
     assert_eq!(vm.native_entries, entries);
+    #[cfg(feature = "execution-counts")]
+    {
+        let counts = vm.execution_counts().checked_delta(&before).unwrap();
+        assert_eq!(counts.derived_starts, 2);
+        assert_eq!(counts.compact_derived_starts, 2);
+        assert_eq!(counts.script_entries, 2);
+        assert_eq!(counts.compact_commits, 2);
+        assert_eq!(counts.install_bindings_visited, 0);
+        assert_eq!(counts.parameters_prepared, 0);
+        assert_eq!(counts.bytecode_execute_steps, 10);
+        assert_eq!(counts.reactive_read_suspensions, 1);
+        assert_eq!(counts.instructions, 11);
+        assert_eq!(counts.opcode_admissions().map(|(_, n)| n).sum::<u64>(), 11);
+    }
     assert_eq!(
         vm.heap
             .host_property(crate::PropertyId {

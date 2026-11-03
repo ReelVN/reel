@@ -4,6 +4,8 @@ use crate::common::scissor::Scissor;
 use reel_ui::{frame::FrameGroup, resources::EffectSourceFootprint};
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod tiles;
 #[cfg(all(test, feature = "wgpu"))]
 pub(crate) mod testing {
     use super::*;
@@ -41,16 +43,87 @@ pub(crate) fn source_scissor(
     source_storage: [u32; 2],
 ) -> Scissor {
     let full = Scissor::full(source_size);
+    #[cfg(all(test, feature = "profiling"))]
+    if super::raster_scale::testing::orientation_stable() {
+        return full;
+    }
+    let Some((context, footprint)) = source_inputs(
+        drawing,
+        group,
+        to_output,
+        output_size,
+        source_size,
+        source_storage,
+    ) else {
+        return full;
+    };
+    let output = crate::common::effect_resolution::demand(
+        output,
+        output_size,
+        group.effect.as_ref().unwrap().resolution_scale,
+    );
+    required(&context, footprint, output, source_size).unwrap_or(full)
+}
+
+/// Separate logical drawing from all physical texels its sole consumer may read.
+/// The latter includes transparent padding and repeat-addressed filter neighbors.
+#[cfg(all(feature = "gxm", target_os = "vita"))]
+pub(crate) struct SourceDemand {
+    pub draw: Scissor,
+    pub initialize: Scissor,
+}
+
+#[cfg(all(feature = "gxm", target_os = "vita"))]
+pub(crate) fn source_demand(
+    drawing: &FrameDrawing,
+    group: &FrameGroup,
+    to_output: Affine,
+    output_size: [u32; 2],
+    output: Scissor,
+    source_size: [u32; 2],
+    source_storage: [u32; 2],
+) -> Option<SourceDemand> {
+    let (context, footprint) = source_inputs(
+        drawing,
+        group,
+        to_output,
+        output_size,
+        source_size,
+        source_storage,
+    )?;
+    let output = crate::common::effect_resolution::demand(
+        output,
+        output_size,
+        group.effect.as_ref().unwrap().resolution_scale,
+    );
+    let edges = required_edges(&context, footprint, output, source_size)?;
+    Some(SourceDemand {
+        draw: logical_rectangle(edges, source_size),
+        initialize: initialization(edges, source_storage).unwrap_or(Scissor::full(source_storage)),
+    })
+}
+
+fn source_inputs(
+    drawing: &FrameDrawing,
+    group: &FrameGroup,
+    to_output: Affine,
+    output_size: [u32; 2],
+    source_size: [u32; 2],
+    source_storage: [u32; 2],
+) -> Option<(
+    [[f32; 4]; crate::effect::CONTEXT_SLOTS],
+    EffectSourceFootprint,
+)> {
     if group.mask_effect.is_some()
         || group.clip.is_some()
         || group.mask.is_some()
         || group.image_mask.is_some()
         || !group.filters.is_empty()
     {
-        return full;
+        return None;
     }
     let Some(effect) = &group.effect else {
-        return full;
+        return None;
     };
     let footprint = drawing.resources().leases().iter().find_map(|lease| {
         if lease.handle() != effect.shader {
@@ -61,21 +134,17 @@ pub(crate) fn source_scissor(
             _ => None,
         }
     });
-    let Some(footprint) = footprint else {
-        return full;
-    };
-    let Some(mut context) = context(effect, to_output, output_size, source_size) else {
-        return full;
-    };
+    let footprint = footprint?;
+    let mut context = context(effect, to_output, output_size, source_size)?;
     map_storage(&mut context, source_size, source_storage);
-    required(&context, footprint, output, source_size).unwrap_or(full)
+    Some((context, footprint))
 }
 
 /// Work only with the actual uploaded f32 ABI rows. Whole output pixel cells
 /// enclose sample positions (including MSAA); the fullscreen TEXCOORD path keeps
 /// its original viewport and interpolation. Ill-conditioned arithmetic retains
 /// the full source instead of inferring coverage from an arbitrary epsilon.
-fn required(
+pub(crate) fn required(
     context: &[[f32; 4]; crate::effect::CONTEXT_SLOTS],
     footprint: EffectSourceFootprint,
     output: Scissor,
@@ -88,6 +157,59 @@ fn required(
             width: 0,
             height: 0,
         });
+    }
+    let edges = required_edges(context, footprint, output, size)?;
+    Some(logical_rectangle(edges, size))
+}
+
+/// Ordinary GXM targets use repeat addressing. A filter neighbor past either
+/// physical edge can therefore read the opposite edge; a rectangular write
+/// region must span that complete axis. Keep the untruncated error-bounded
+/// filter range, including logical padding, before rounding to native tiles.
+#[cfg(any(test, all(feature = "gxm", target_os = "vita")))]
+fn initialization(edges: [[f64; 2]; 2], storage: [u32; 2]) -> Option<Scissor> {
+    let mut physical = [[0; 2]; 2];
+    for axis in 0..2 {
+        let extent = storage[axis];
+        physical[axis] = if edges[axis][0] < 0. || edges[axis][1] > f64::from(extent) {
+            [0, extent]
+        } else {
+            [
+                edges[axis][0] as u32 / 32 * 32,
+                (edges[axis][1] as u32)
+                    .div_ceil(32)
+                    .saturating_mul(32)
+                    .min(extent),
+            ]
+        };
+    }
+    let region = rectangle(physical);
+    (!region.empty()).then_some(region)
+}
+
+fn logical_rectangle(edges: [[f64; 2]; 2], size: [u32; 2]) -> Scissor {
+    rectangle(std::array::from_fn(|axis| {
+        edges[axis].map(|edge| edge.clamp(0., f64::from(size[axis])) as u32)
+    }))
+}
+
+fn rectangle(edges: [[u32; 2]; 2]) -> Scissor {
+    Scissor {
+        x: edges[0][0],
+        y: edges[1][0],
+        width: edges[0][1].saturating_sub(edges[0][0]),
+        height: edges[1][1].saturating_sub(edges[1][0]),
+    }
+}
+
+fn required_edges(
+    context: &[[f32; 4]; crate::effect::CONTEXT_SLOTS],
+    footprint: EffectSourceFootprint,
+    output: Scissor,
+    size: [u32; 2],
+) -> Option<[[f64; 2]; 2]> {
+    if output.empty() {
+        return Some([[0.; 2]; 2]);
     }
     if context[5][..2]
         .iter()
@@ -109,12 +231,7 @@ fn required(
     for axis in 0..2 {
         uv[axis] = [uv[axis][0].max(0.), uv[axis][1].min(1.)];
         if uv[axis][0] > uv[axis][1] {
-            return Some(Scissor {
-                x: 0,
-                y: 0,
-                width: 0,
-                height: 0,
-            });
+            return Some([[0.; 2]; 2]);
         }
         let logical = f64::from(context[4][axis + 2]);
         if !(logical > 0. && logical.is_finite()) {
@@ -131,29 +248,24 @@ fn required(
         ];
     }
     let q = [dot(context[2], uv, size)?, dot(context[3], uv, size)?];
-    let mut edges = [[0; 2]; 2];
+    let mut edges = [[0.; 2]; 2];
     for axis in 0..2 {
         let storage = f64::from(context[5][axis + 2]);
         if !(storage >= f64::from(size[axis]) && storage.is_finite()) {
             return None;
         }
         // Source sampling is base-level linear filtering. Include both adjacent
-        // texels and their outer pixel cells, then intersect the original raster.
-        // Unwritten padding remains the same initialized transparent storage.
+        // texels and their outer pixel cells before any logical-size truncation.
+        // The extra cell also encloses the source wrapper's half-texel clamp.
         let lo = q[axis][0] * storage;
         let hi = q[axis][1] * storage;
         let error = gamma(1) * lo.abs().max(hi.abs());
         edges[axis] = [
-            ((lo - error - 0.5).floor() - 1.).clamp(0., f64::from(size[axis])) as u32,
-            ((hi + error + 0.5).ceil() + 1.).clamp(0., f64::from(size[axis])) as u32,
+            (lo - error - 0.5).floor() - 1.,
+            (hi + error + 0.5).ceil() + 1.,
         ];
     }
-    Some(Scissor {
-        x: edges[0][0],
-        y: edges[1][0],
-        width: edges[0][1].saturating_sub(edges[0][0]),
-        height: edges[1][1].saturating_sub(edges[1][0]),
-    })
+    Some(edges)
 }
 
 /// Standard floating-point forward-error bound for n rounded f32 operations.

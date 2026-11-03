@@ -26,6 +26,8 @@ name = "reel-lsp"
 path = "src/bin/reel-lsp.rs"
 
 [dependencies]
+guillotiere = "=0.7.0"
+walkdir = "=2.5.0"
 blake3 = "=1.8.7"
 serde = { version = "=1.0.229", features = ["derive"] }
 clap = { version = "=4.6.7", features = ["derive"] }
@@ -45,7 +47,7 @@ reel-render = { path = "../reel-render" }
 reel-ui = { path = "../reel-ui" }
 reel-core = { path = "../reel-core" }
 image = { workspace = true, features = ["png", "jpeg"] }
-rgbcx = "=0.1.2"
+rgbcx = { version = "=0.1.2", features = ["parallel"] }
 reel-player = { path = "../reel-player" }
 reel-storage = { path = "../reel-storage" }
 reel-media = { path = "../reel-media", default-features = false, features = ["encode"] }

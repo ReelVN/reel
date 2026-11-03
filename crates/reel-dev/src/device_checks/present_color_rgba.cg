@@ -1,0 +1,7 @@
+// Linear RGBA variant of reel-render/src/gxm/shaders/present.cg.
+// Keep the same sampling and bindings while retaining sampled alpha for readback.
+varying out float4 reel_output : COLOR;
+varying float2 v_uv : TEXCOORD0;
+uniform sampler2D u_image : TEXUNIT0;
+void main(){
+ float4 color=tex2D(u_image,v_uv);reel_output=color;}

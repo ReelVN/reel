@@ -18,6 +18,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[path = "effect/cg.rs"]
 mod cg;
+#[path = "effect/control_flow.rs"]
+mod control_flow;
+#[path = "effect/diagonal.rs"]
+mod diagonal;
 #[path = "effect/emit_reduction.rs"]
 mod emit_reduction;
 #[path = "effect/footprint.rs"]
@@ -124,7 +128,8 @@ pub fn compile_fragment(
 }
 /// Generate one fixed variant without changing the authored effect graph.
 /// If bounded loop blocks exceed the complete source limit, retry the original
-/// single-tap loop so an optimization cannot reject a previously admitted shader.
+/// four-tap and single-tap loops so an optimization cannot reject a previously
+/// admitted shader.
 pub fn compile_fragment_with_tail(
     program: &EffectProgram,
     language: Language,
@@ -144,7 +149,7 @@ pub fn compile_fragment_with_tail(
 /// `FullTarget` requires a full-attachment proof and accepts only the ordinary
 /// tail. UV-domain rejection returns transparent color. Source/image sampling,
 /// parameters and attachment quantization retain the local variant's behavior.
-/// Both variants retain single-tap source-limit fallback.
+/// Both variants retain four-tap and single-tap source-limit fallback.
 pub fn compile_fragment_variant(
     program: &EffectProgram,
     language: Language,
@@ -155,8 +160,8 @@ pub fn compile_fragment_variant(
     if coverage == FragmentCoverage::FullTarget && tail != OutputTail::Ordinary {
         return Err(GenerateError::UnsupportedTail);
     }
-    let compile = |blocks| -> Result<_, GenerateError> {
-        let generated = generate_inner(program, language, max_source_bytes, blocks)?;
+    let compile = |max_block_width| -> Result<_, GenerateError> {
+        let generated = generate_inner(program, language, max_source_bytes, max_block_width)?;
         if tail == OutputTail::AlphaCoverage
             && !OutputTail::supports_coverage(
                 generated.output_type,
@@ -171,10 +176,35 @@ pub fn compile_fragment_variant(
             Language::Cg => cg::compile(program, generated, tail, coverage, max_source_bytes),
         }
     };
-    match compile(true) {
-        Err(GenerateError::SourceLimit { .. }) => compile(false),
-        result => result,
-    }
+    source_fallback(compile)
+}
+
+/// Generate an optional ordinary color Cg fragment for a finite diagonal source
+/// mapping. The renderer must check the final uploaded mapping before selecting
+/// this code. A proved single-axis reduction maps and clamps its unchanged axis
+/// once before the loop; every authored tap, varying coordinate expression and
+/// ordered RGBA addition remains intact. Other programs return `None`.
+///
+/// This fragment retains uniform ABI 1 and local coverage. It does not replace
+/// the ordinary, alpha-coverage or full-target fallback fragments. Source-limit
+/// errors use the same complete-fragment byte limit as ordinary generation.
+pub fn compile_diagonal_fragment(
+    program: &EffectProgram,
+    max_source_bytes: usize,
+) -> Result<Option<EffectFragment>, GenerateError> {
+    let Some(proof) = diagonal::Proof::find(program) else {
+        return Ok(None);
+    };
+    source_fallback(|width| {
+        let generated = generate_inner_with_diagonal(
+            program,
+            Language::Cg,
+            max_source_bytes,
+            width,
+            Some(proof),
+        )?;
+        cg::compile_diagonal(program, generated, proof.axis, max_source_bytes).map(Some)
+    })
 }
 
 /// The shader language of a prepared pipeline.
@@ -302,17 +332,24 @@ impl std::error::Error for GenerateError {}
 /// Traversal uses an explicit CPU work stack so graph depth cannot overflow it.
 /// The byte limit covers the returned declarations and function, including helpers;
 /// backend-owned entry points and source hooks have their own admission budget.
-/// Simple long sampling reductions use four ordered taps per iteration, with a
-/// single-tap retry when the bounded expansion exceeds this byte limit.
+/// Simple long sampling reductions use four or five ordered taps per iteration.
+/// A source-limit retry caps blocks at four taps, then retains the single-tap loop.
 pub fn generate(
     program: &EffectProgram,
     language: Language,
     max_source_bytes: usize,
 ) -> Result<GeneratedEffect, GenerateError> {
-    match generate_inner(program, language, max_source_bytes, true) {
-        Err(GenerateError::SourceLimit { .. }) => {
-            generate_inner(program, language, max_source_bytes, false)
-        }
+    source_fallback(|width| generate_inner(program, language, max_source_bytes, width))
+}
+
+fn source_fallback<T>(
+    mut build: impl FnMut(usize) -> Result<T, GenerateError>,
+) -> Result<T, GenerateError> {
+    match build(5) {
+        Err(GenerateError::SourceLimit { .. }) => match build(4) {
+            Err(GenerateError::SourceLimit { .. }) => build(1),
+            result => result,
+        },
         result => result,
     }
 }
@@ -320,7 +357,17 @@ fn generate_inner(
     program: &EffectProgram,
     language: Language,
     max_source_bytes: usize,
-    block_reductions: bool,
+    max_block_width: usize,
+) -> Result<GeneratedEffect, GenerateError> {
+    generate_inner_with_diagonal(program, language, max_source_bytes, max_block_width, None)
+}
+
+fn generate_inner_with_diagonal(
+    program: &EffectProgram,
+    language: Language,
+    max_source_bytes: usize,
+    max_block_width: usize,
+    diagonal: Option<diagonal::Proof>,
 ) -> Result<GeneratedEffect, GenerateError> {
     // Every declared parameter needs at least one sixteen-byte slot and more
     // than sixteen source bytes. Reject oversized layouts before allocating them.
@@ -377,7 +424,9 @@ fn generate_inner(
         next_name: 0,
         samples_source: false,
         reductions: HashMap::new(),
-        block_reductions,
+        max_block_width,
+        diagonal,
+        varying: control_flow::varying(program),
     };
     emitter.run()?;
     let output_type = program.nodes()[program.output().0 as usize].ty;
@@ -483,7 +532,9 @@ struct Emitter<'a> {
     next_name: usize,
     samples_source: bool,
     reductions: HashMap<EffectNodeId, Option<reduction::Reduction>>,
-    block_reductions: bool,
+    max_block_width: usize,
+    diagonal: Option<diagonal::Proof>,
+    varying: Vec<bool>,
 }
 
 impl Emitter<'_> {
@@ -586,12 +637,15 @@ impl Emitter<'_> {
                     if let EffectOp::Select {
                         condition,
                         when_true,
-                        ..
+                        when_false,
                     } = node.op
                     {
                         let name = self.next_name;
                         self.next_name += 1;
                         self.line(scope, &self.language.mutable(node.ty, name))?;
+                        if self.flatten_selection(scope, condition, [when_true, when_false]) {
+                            self.line(scope, "#pragma branch (flatten: always)")?;
+                        }
                         self.line(scope, &format!("if ({}) {{", self.value(scope, condition)))?;
                         let child = self.child(scope);
                         tasks.push(Task::Otherwise {
@@ -603,7 +657,7 @@ impl Emitter<'_> {
                         tasks.push(Task::Scope(child, when_true));
                         continue;
                     }
-                    let expression = self.expression(scope, node.ty, &node.op)?;
+                    let expression = self.expression(scope, id, node.ty, &node.op)?;
                     let name = self.next_name;
                     self.next_name += 1;
                     self.line(
@@ -667,6 +721,7 @@ impl Emitter<'_> {
     fn expression(
         &mut self,
         scope: usize,
+        id: EffectNodeId,
         ty: EffectType,
         op: &EffectOp,
     ) -> Result<String, GenerateError> {
@@ -707,7 +762,11 @@ impl Emitter<'_> {
             EffectOp::SourceSample { uv } => {
                 let uv = value(uv);
                 self.samples_source = true;
-                format!("reel_source_sample({uv})")
+                if self.diagonal.is_some_and(|proof| proof.sample == id) {
+                    format!("reel_source_sample_diagonal({uv}, reel_source_fixed)")
+                } else {
+                    format!("reel_source_sample({uv})")
+                }
             }
             EffectOp::Vec2(ids) => construct(self.language, ty, ids.map(value).as_slice()),
             EffectOp::Vec3(ids) => construct(self.language, ty, ids.map(value).as_slice()),

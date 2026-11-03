@@ -518,6 +518,7 @@ impl SessionVm {
     }
 
     pub(super) fn sync_stage_properties(&mut self, feedback: bool) -> Result<(), AdapterError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::StageProperties);
         let before = self.stage.scene.revision();
         self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
         let revision = self.stage.scene.revision();
@@ -648,6 +649,15 @@ impl SessionVm {
         }
     }
 
+    /// Next finite activity endpoint or periodic clock awaited by business code.
+    /// Unobserved clock intervals and intermediate animation samples may be
+    /// combined while a previous drawing occupies the frame production slot.
+    pub fn activities_deadline_after(&self) -> Option<std::time::Duration> {
+        (!self.revoked)
+            .then(|| self.activities.deadline_poll_after(&self.vm))
+            .flatten()
+    }
+
     pub fn start(&mut self, session: &Session, entry: FunctionId) -> Result<TaskId, AdapterError> {
         self.live(session)?;
         if self.task.is_some() || self.pending.is_some() || self.delivery.is_some() {
@@ -674,6 +684,7 @@ impl SessionVm {
         budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionSchedule);
         self.ordinary_step_executed = false;
         if self.exit_requested || self.start_requested.is_some() {
             self.live(session)?;

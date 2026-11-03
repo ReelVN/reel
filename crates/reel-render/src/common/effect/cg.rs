@@ -4,6 +4,42 @@
 use super::*;
 use std::fmt::Write;
 
+#[path = "cg/normalized_output.rs"]
+mod normalized_output;
+
+const OUTPUT: &str = r#"
+float4 reel_output(float4 color, float coverage) {
+    float mode = reel_context[1].w;
+    if (mode == 0.0) return color;
+    float4 stored = color;
+    if (mode == 1.0) stored = floor(clamp(color, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+    return stored * coverage * reel_context[2].w;
+}
+"#;
+
+// Only a proved nonnegative, finite output can eagerly evaluate both legs:
+// multiplying an unselected NaN/infinity by zero would change the result.
+// Author arithmetic, including signed-zero provenance, stays unchanged. A final
+// zero sign from opacity may be lost by selection; GXM's UCHAR4 replacement or
+// fixed-function source-over writes both signs to the same UNORM zero byte.
+const NORMALIZED_OUTPUT: &str = r#"
+float4 reel_output(float4 color, float coverage) {
+    float mode = reel_context[1].w;
+    float quantize = float(mode == 1.0);
+    float terminal = float(mode != 0.0);
+    float4 quantized = floor(clamp(color, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+    float4 stored = color * (1.0 - quantize) + quantized * quantize;
+    float4 composed = stored * coverage * reel_context[2].w;
+    return color * (1.0 - terminal) + composed * terminal;
+}
+"#;
+
+pub(super) const PIXEL_DISCARD: &str = "if (any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)) discard;";
+pub(super) const UV_DISCARD: &str = "if (any(uv < float2(0.0)) || any(uv > float2(1.0))) discard;";
+pub(super) const PIXEL_KILL: &str = "clip(0.5 - float(any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)));";
+pub(super) const UV_KILL: &str =
+    "clip(0.5 - float(any(uv < float2(0.0)) || any(uv > float2(1.0))));";
+
 pub(super) fn compile(
     program: &EffectProgram,
     generated: GeneratedEffect,
@@ -11,10 +47,45 @@ pub(super) fn compile(
     coverage: FragmentCoverage,
     limit: usize,
 ) -> Result<EffectFragment, GenerateError> {
+    compile_inner(program, generated, tail, coverage, None, limit)
+}
+
+pub(super) fn compile_diagonal(
+    program: &EffectProgram,
+    generated: GeneratedEffect,
+    fixed_axis: u8,
+    limit: usize,
+) -> Result<EffectFragment, GenerateError> {
+    compile_inner(
+        program,
+        generated,
+        OutputTail::Ordinary,
+        FragmentCoverage::Local,
+        Some(fixed_axis),
+        limit,
+    )
+}
+
+fn compile_inner(
+    program: &EffectProgram,
+    generated: GeneratedEffect,
+    tail: OutputTail,
+    coverage: FragmentCoverage,
+    fixed_axis: Option<u8>,
+    limit: usize,
+) -> Result<EffectFragment, GenerateError> {
+    // Conditional discard forces otherwise ordinary texture/color programs into
+    // per-instance mode on USSE. A kill predicate preserves the same rejection
+    // while allowing the compiler to schedule four instances in parallel.
+    let parallel_clip = coverage == FragmentCoverage::Local;
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
     let mut source =
         String::from("uniform float4 reel_context[10];\nuniform float4 reel_clip_rect;\n");
     let masked = tail == OutputTail::AlphaCoverage;
+    // The ordinary GXM tail has finite coverage/opacity in [0, 1] and modes
+    // 0/1/2. Preserve its original quantization and multiplication order while
+    // letting the compiler keep a proved normalized program in parallel mode.
+    let normalized_output = tail == OutputTail::Ordinary && normalized_output::proven(program);
     source.push_str(&generated.declarations);
     if masked {
         writeln!(
@@ -38,17 +109,44 @@ float4 reel_source_sample(float2 uv) {
 }
 "#);
     }
-    source.push_str(
-        r#"
-float4 reel_output(float4 color, float coverage) {
-    float mode = reel_context[1].w;
-    if (mode == 0.0) return color;
-    float4 stored = color;
-    if (mode == 1.0) stored = floor(clamp(color, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
-    return stored * coverage * reel_context[2].w;
-}
-"#,
-    );
+    if let Some(axis) = fixed_axis {
+        let (fixed, fixed_row, fixed_extent, varying, varying_row, varying_extent, q) = if axis == 0
+        {
+            ("x", 2, "z", "y", 3, "w", "float2(fixed_axis, mapped)")
+        } else {
+            ("y", 3, "w", "x", 2, "z", "float2(mapped, fixed_axis)")
+        };
+        let fixed_point = if axis == 0 {
+            "float3(clamp(uv, 0.0, 1.0), 0.0, 1.0)"
+        } else {
+            "float3(0.0, clamp(uv, 0.0, 1.0), 1.0)"
+        };
+        let varying_point = if axis == 0 {
+            "float3(0.0, clamp(uv.y, 0.0, 1.0), 1.0)"
+        } else {
+            "float3(clamp(uv.x, 0.0, 1.0), 0.0, 1.0)"
+        };
+        // Keep dot3 rather than scalar multiply/add: Sony retains the original
+        // dot instruction and its rounding. The finite diagonal mapping makes
+        // the omitted coordinate multiply a signed zero. The positive texel
+        // center clamp removes its possible zero-sign difference.
+        writeln!(source, r#"
+float reel_source_fixed_axis(float uv) {{
+    float mapped = dot(reel_context[{fixed_row}].xyz, {fixed_point});
+    return clamp(mapped, reel_context[6].{fixed} + 0.5 / reel_context[5].{fixed_extent}, reel_context[6].{fixed} + reel_context[6].{fixed_extent} - 0.5 / reel_context[5].{fixed_extent});
+}}
+float4 reel_source_sample_diagonal(float2 uv, float fixed_axis) {{
+    float mapped = dot(reel_context[{varying_row}].xyz, {varying_point});
+    mapped = clamp(mapped, reel_context[6].{varying} + 0.5 / reel_context[5].{varying_extent}, reel_context[6].{varying} + reel_context[6].{varying_extent} - 0.5 / reel_context[5].{varying_extent});
+    return tex2Dlod(reel_source, float4({q}, 0.0, 0.0));
+}}
+"#).unwrap();
+    }
+    source.push_str(if normalized_output {
+        NORMALIZED_OUTPUT
+    } else {
+        OUTPUT
+    });
     if masked {
         source = source.replace("return stored * coverage * reel_context[2].w;", "if (reel_context[3].w != 0.0) { stored *= reel_context[2].w; stored = floor(clamp(stored, 0.0, 1.0) * 255.0 + 0.5) / 255.0; return stored * coverage; } return stored * coverage * reel_context[2].w;");
     }
@@ -68,7 +166,12 @@ float4 reel_output(float4 color, float coverage) {
         source.push_str("float reel_tail_coverage = 1.0;\n");
     }
     if coverage == FragmentCoverage::Local {
-        source.push_str("if (any(fragment_position.xy < reel_clip_rect.xy) || any(fragment_position.xy >= reel_clip_rect.zw)) discard;\n");
+        source.push_str(if parallel_clip {
+            PIXEL_KILL
+        } else {
+            PIXEL_DISCARD
+        });
+        source.push('\n');
     }
     if generated.output_type == EffectType::Float {
         source.push_str(
@@ -82,7 +185,9 @@ float4 reel_output(float4 color, float coverage) {
 "#,
     );
     if coverage == FragmentCoverage::Local {
-        source.push_str("    if (any(uv < float2(0.0)) || any(uv > float2(1.0))) discard;\n");
+        source.push_str("    ");
+        source.push_str(if parallel_clip { UV_KILL } else { UV_DISCARD });
+        source.push('\n');
     } else {
         source.push_str(
             "    if (any(uv < float2(0.0)) || any(uv > float2(1.0))) return float4(0.0);\n",
@@ -93,6 +198,10 @@ float4 reel_output(float4 color, float coverage) {
         source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { return reel_output(float4(coverage), reel_tail_coverage); } return reel_output(reel_implicit_source * coverage, reel_tail_coverage);\n}\n");
     } else {
         source.push_str("return reel_output(reel_effect(uv, position, reel_context[4].zw), reel_tail_coverage);\n}\n");
+    }
+    if source.len() > limit && normalized_output {
+        // Drop the optional output specialization when the source budget requires it.
+        source = source.replace(NORMALIZED_OUTPUT, OUTPUT);
     }
     if source.len() > limit {
         return Err(GenerateError::SourceLimit { limit });

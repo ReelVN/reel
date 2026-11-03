@@ -85,6 +85,7 @@ impl<'a> View<'a> {
         &self,
         reserve: impl FnOnce(u64) -> Result<R, crate::common::GpuError>,
     ) -> Result<Packed<'a, R>, crate::common::GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GeometryPack);
         let capacity = self.capacity();
         let single = self.segments.len() == 1;
         let reservation = reserve(capacity.indices + if single { 0 } else { capacity.vertices })?;

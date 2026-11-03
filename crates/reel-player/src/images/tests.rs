@@ -128,6 +128,36 @@ fn real_images_share_storage_replace_atomically_and_release_after_frame_leases()
 }
 
 #[test]
+fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
+    let (mut images, wake) = loader();
+    images.request(wanted(&["assets/panels.png"]));
+    ready(&mut images, &wake).unwrap();
+    let first = images.loaded["assets/panels.png"].handle();
+    let weak = images.loaded["assets/panels.png"].downgrade();
+    assert!(images.loaded["assets/panels.png"].discard_uploaded_pixels());
+    images.commit();
+
+    images.request(wanted(&["assets/sun.jpg"]));
+    ready(&mut images, &wake).unwrap();
+    images.commit();
+    assert!(!images.loaded.contains_key("assets/panels.png"));
+    assert!(!weak.is_released());
+    assert_eq!(images.loads, 2);
+
+    images.request(wanted(&["assets/panels.png"]));
+    assert!(images.poll().unwrap());
+    assert_eq!(images.loaded["assets/panels.png"].handle(), first);
+    assert!(!images.loaded["assets/panels.png"].pixels_resident());
+    assert_eq!(
+        images.loads, 2,
+        "a resident GPU identity needs no source reload"
+    );
+    images.close();
+    assert!(weak.is_released());
+    assert_eq!(images.pool.usage().bytes, 0);
+}
+
+#[test]
 fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resurrect() {
     for (source, resident, decode, expected) in [
         ("assets/missing.png", 1 << 20, 1 << 20, "image"),
@@ -386,4 +416,108 @@ fn settled_image_demand_skips_rescans_and_reopens_for_new_sources() {
         assert!(images.poll().unwrap());
     }
     assert_eq!(images.poll_scans, scans);
+}
+
+#[test]
+fn tiled_metadata_stays_ready_while_optional_pixels_wait_for_old_frame_leases() {
+    const PANEL_BYTES: u64 = 160 * 90 * 4;
+    let (mut images, wake) = configured(PANEL_BYTES, 1 << 20);
+    images.request(wanted(&["assets/panels.png"]));
+    assert!(!images.metadata_ready());
+    ready(&mut images, &wake).unwrap();
+    images.commit();
+    let old_frame = images.loaded["assets/panels.png"].clone();
+    let manifest =
+        PreparedImage::new(1024, 512, 128, reel_core::prepared_image::TileEncoding::Png).unwrap();
+    images
+        .encoded
+        .insert("background.reel-image".into(), Arc::from(manifest.encode()));
+    images.request(wanted(&["background.reel-image"]));
+    assert!(!images.metadata_ready());
+    assert!(!images.poll().unwrap());
+    // An encoded manifest completes synchronously in Assets::maintain; no
+    // decoder thread wake is needed before taking its metadata next poll.
+    assert!(images.poll().unwrap());
+    assert!(images.metadata_ready());
+    images.commit();
+    assert!(images.loaded.is_empty());
+    assert_eq!(images.pool.usage().bytes, PANEL_BYTES);
+    let optional = TileDemand {
+        owner: "background.reel-image".into(),
+        required: false,
+        dimensions: [96, 96],
+        transform: Affine::IDENTITY,
+        clip: Rect::new(0., 0., 96., 96.),
+    };
+    assert!(images.request_tiles(BTreeMap::from([("assets/sun.jpg".into(), optional)])));
+    let scans = images.metadata_scans;
+    for _ in 0..4096 {
+        assert!(images.metadata_ready());
+        assert!(images.poll().unwrap());
+        assert!(!images.settled, "optional pixels still need a retry");
+    }
+    assert!(images.pending.is_empty());
+    assert_eq!(
+        images.metadata_scans, scans,
+        "tile retries must not rescan wanted metadata"
+    );
+    assert!(!old_frame.is_retired());
+    drop(old_frame);
+    assert!(images.poll().unwrap());
+    assert_eq!(
+        images.pending.len(),
+        1,
+        "released resident capacity reopens optional IO"
+    );
+    while !images.loaded.contains_key("assets/sun.jpg") {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(images.poll().unwrap());
+    }
+    assert!(images.settled);
+    assert_eq!(images.metadata_scans, scans);
+    assert_eq!(
+        images.loads, 3,
+        "whole image, manifest and optional tile load once"
+    );
+    assert!(images.request_tiles(BTreeMap::new()));
+    assert!(images.metadata_ready());
+    assert!(images.poll().unwrap());
+    assert_eq!(images.metadata_scans, scans);
+    images.close();
+    assert!(images.metadata_ready(), "closed demand is empty");
+    assert!(!images.poll().unwrap());
+    assert_eq!(images.pool.usage().bytes, 0);
+}
+
+#[test]
+fn metadata_readiness_reopens_after_failure_and_cancelled_demand() {
+    let (mut images, wake) = loader();
+    images.request(wanted(&["assets/missing.png"]));
+    assert!(!images.metadata_ready());
+    assert!(
+        ready(&mut images, &wake)
+            .unwrap_err()
+            .contains("assets/missing.png")
+    );
+    assert!(!images.metadata_ready());
+    images.request(wanted(&["assets/panels.png"]));
+    ready(&mut images, &wake).unwrap();
+    assert!(images.metadata_ready());
+    let revision = images.content_revision;
+    images.request(wanted(&["assets/panels.png", "assets/sun.jpg"]));
+    assert!(!images.metadata_ready());
+    assert!(!images.poll().unwrap());
+    images.request(wanted(&["assets/panels.png"]));
+    assert!(
+        images.metadata_ready(),
+        "withdrawing missing demand restores readiness"
+    );
+    assert!(images.poll().unwrap());
+    assert_eq!(
+        images.content_revision, revision,
+        "cancelled source never became stage content"
+    );
+    images.request(BTreeMap::new());
+    assert!(images.metadata_ready());
+    assert!(images.poll().unwrap());
 }

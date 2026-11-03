@@ -80,6 +80,13 @@ float3 linear_srgb(float3 x){return lerp(pow((x+0.055)/1.055,float3(2.4)),x/12.9
 float3 encoded_srgb(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4))-0.055,12.92*x,step(x,float3(0.0031308)));}
 float2 flip_uv(float2 uv){if(u_image_flip>0.5)uv.y=1.0-uv.y;return uv;}
 float2 source_uv(){
+#if REEL_SIMPLE_SAMPLING == 1
+ return v_uv;
+#elif REEL_SIMPLE_SAMPLING == 2
+ float2 half_texel=0.5/u_dimensions,span=v_window.zw;
+ float2 inset=min(half_texel,span*0.5);
+ return clamp(clamp(v_uv,v_window.xy+inset,v_window.xy+span-inset),half_texel,float2(1.0)-half_texel);
+#else
  float2 low=v_window.xy,span=abs(v_window.zw),half_texel=0.5/u_dimensions;
  float4 bounds=u_appearance[9];bool has_view=all(abs(bounds.zw)>float2(0.0));
  float2 view_low=has_view?bounds.xy:float2(0.0);
@@ -100,6 +107,7 @@ float2 source_uv(){
   uv=clamp(clamp(uv,low+inset,low+span-inset),texture_low,high);
  }
  return uv;
+#endif
 }
 #if REEL_SOURCE_KIND == 0
 float4 repeat_color(float2 uv,float4 base){
@@ -161,8 +169,12 @@ float4 source(float2 uv){
 #elif REEL_SOURCE_KIND == 1
  float alpha=tex2D(u_image,uv).r;return float4(float3(alpha),alpha);
 #else
+#ifdef REEL_SIMPLE_SAMPLING
+ float4 color=tex2D(u_image,uv);
+#else
  float4 color=tex2D(u_image,flip_uv(uv));
-#if REEL_SOURCE_KIND == 0
+#endif
+#if REEL_SOURCE_KIND == 0 && !defined(REEL_SIMPLE_SAMPLING)
  color=repeat_color(uv,color);
 #endif
  if(u_appearance[8].z==1.0)color.a=1.0;
@@ -191,14 +203,43 @@ float4 gradient(float2 position){
 #endif
 void main(){
  reel_clip();
+#ifdef REEL_MONOCHROME_OPAQUE_WHITE
+ float4 color=float4(tex2D(u_image,source_uv()).rgb,1.0);
+#else
  float4 color=source(source_uv())*v_color;
+#endif
  float2 position=fragment_position.xy;
 #if REEL_STYLE == 2
  color*=gradient(position);
-#elif REEL_STYLE == 1
+#elif REEL_STYLE == 1 || REEL_STYLE == 3
+#ifndef REEL_PLAIN_ADJUST
  if(u_appearance[5].w!=0.0){float3 p=float3(position,1.0);float x=clamp(dot(u_appearance[4].xyz,p),0.0,1.0),y=clamp(dot(u_appearance[5].xyz,p),0.0,1.0);color*=lerp(lerp(u_appearance[0],u_appearance[1],x),lerp(u_appearance[3],u_appearance[2],x),y);}
- if(u_appearance[7].w!=0.0&&color.a>0.0){float3 rgb=encoded_srgb(max(color.rgb/color.a,float3(0.0)));float gray=dot(rgb,float3(0.2126,0.7152,0.0722));rgb=float3(gray)+u_appearance[6].w*(rgb-float3(gray));rgb=clamp(rgb*u_appearance[6].xyz+u_appearance[7].xyz,0.0,1.0);color.rgb=linear_srgb(rgb)*color.a;}
 #endif
+#if REEL_STYLE == 3
+ // Zero RGB gain discards the sampled/tinted RGB after saturation. The
+ // compiler places this uniform-only transfer decode in the secondary program.
+ if(color.a>0.0)color.rgb=linear_srgb(clamp(u_appearance[7].xyz,0.0,1.0))*color.a;
+#else
+#ifdef REEL_PLAIN_ADJUST
+ if(color.a>0.0){
+#else
+ if(u_appearance[7].w!=0.0&&color.a>0.0){
+#endif
+ float3 rgb=encoded_srgb(max(color.rgb/color.a,float3(0.0)));float gray=dot(rgb,float3(0.2126,0.7152,0.0722));
+#ifdef REEL_MONOCHROME
+ float adjusted=clamp(gray*u_appearance[6].x+u_appearance[7].x,0.0,1.0);
+ float value=lerp(pow((adjusted+0.055)/1.055,2.4),adjusted/12.92,step(adjusted,0.04045));
+ color.rgb=float3(value*color.a);
+#else
+ rgb=float3(gray)+u_appearance[6].w*(rgb-float3(gray));rgb=clamp(rgb*u_appearance[6].xyz+u_appearance[7].xyz,0.0,1.0);color.rgb=linear_srgb(rgb)*color.a;
+#endif
+ }
+#endif
+#endif
+#ifdef REEL_MONOCHROME_OPAQUE_WHITE
+ reel_output=color*v_color.a;
+#else
  reel_output=color;
+#endif
 }
 #endif

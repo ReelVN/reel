@@ -69,7 +69,10 @@ fn math_preserves_numeric_contracts_without_allocation_and_reports_source_errors
         .unwrap()
         .into_module()
         .unwrap();
-    for encoded in [false, true] {
+    for (encoded, leaves) in [false, true]
+        .into_iter()
+        .flat_map(|encoded| [false, true].map(|leaves| (encoded, leaves)))
+    {
         let compiled = aside_host::lower(
             &module,
             &contracts,
@@ -102,8 +105,13 @@ fn math_preserves_numeric_contracts_without_allocation_and_reports_source_errors
         let main = function("main");
         let invalid = function("invalid");
         let convert = function("convert");
-        let support =
+        let mut support =
             aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
+        if !leaves {
+            for native in &mut support.natives {
+                native.read_only_leaf = None;
+            }
+        }
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         assert_eq!(<f64 as FromValue>::TYPE, bc::BuiltinType::Float);

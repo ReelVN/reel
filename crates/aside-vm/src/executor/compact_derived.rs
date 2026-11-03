@@ -1,9 +1,24 @@
 //! Standard derives reuse ordinary script execution and tail-transfer its roots
-//! to the host commit continuation. Custom observers keep their native bridge.
+//! to the registered commit continuation. Custom observers keep their native bridge.
 use super::*;
 use crate::heap::DerivedSlot;
 
 impl Vm {
+    pub(super) fn commit_standard_derived(
+        &mut self,
+        frame: &mut NativeFrame,
+    ) -> Result<(), VmError> {
+        let output = frame.derived_output.expect("standard compact observer");
+        let value = self.value(frame.roots, 0)?;
+        if let Err(error) = self.heap.commit_derived(output, value) {
+            self.heap.end_derived(output)?;
+            self.native_fault(frame, heap_fault(error))?;
+        } else {
+            frame.pending_fault = None;
+            frame.phase = NativePhase::Commit(false);
+        }
+        self.put(frame.roots, 0, Value::NULL)
+    }
     pub(super) fn compact_output(&self, output: Value) -> Result<bool, VmError> {
         Ok(self
             .heap
@@ -77,7 +92,9 @@ impl Vm {
         script.context.derived = true;
         script.context.no_wait = true;
         script.phase = ScriptPhase::CompactBegin;
-        self.active.frames.data[top] = Frame::Script(script);
+        self.publish_script_frame(top, &script);
+        #[cfg(feature = "profiling")]
+        self.step_costs.script_entry(script.code.function, true);
         self.derived_starts += 1;
         self.compact_derived_starts += 1;
         Ok(())
@@ -104,7 +121,7 @@ impl Vm {
     }
     pub(super) fn compact_derived_commit(
         &mut self,
-        script: ScriptFrame,
+        script: &ScriptFrame,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
         // Root 1 already carries the callback closure in ordinary native frames.
@@ -156,7 +173,12 @@ impl Vm {
             await_activation: None,
         };
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(frame);
-        self.slots.release(&mut self.heap, script.regs)?;
+        part_cost!(
+            self.step_costs,
+            RootRelease,
+            self.slots.release(&mut self.heap, script.regs)
+        )?;
+        execution_count!(self, CompactCommits, 1);
         Ok(true)
     }
 }

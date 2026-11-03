@@ -36,6 +36,11 @@ pub struct NativeContract {
     pub result: BuiltinType,
     pub effects: Effects,
     pub required_capabilities: Vec<String>,
+    /// Trusted scalar computation executed within the VM's work budget.
+    pub read_only_leaf: Option<bc::ReadOnlyLeaf>,
+    /// Opt into the VM's standard scheduled derived-commit continuation.
+    /// Uses the atomic host-operation cost documented by `NativeSupport`.
+    pub standard_derived_commit: bool,
 }
 
 impl NativeContract {
@@ -339,6 +344,8 @@ pub fn runtime_support(
         natives.push(NativeSupport {
             symbol: contract.symbol.clone(),
             abi_version: contract.abi_version,
+            standard_derived_commit: contract.standard_derived_commit,
+            read_only_leaf: contract.read_only_leaf,
             signature: Signature {
                 parameters,
                 rest: contract
@@ -431,16 +438,23 @@ pub fn seed(
     capabilities: &[String],
     content_version: u64,
 ) -> Result<bc::VerifiedProgram, bc::Error> {
+    use std::collections::HashMap;
     let mut package = bc::BytecodePackage {
         content_version,
         ..Default::default()
     };
-    fn symbol(p: &mut bc::BytecodePackage, name: &str) -> bc::SymbolId {
-        let index = p.symbols.iter().position(|s| s == name).unwrap_or_else(|| {
+    let mut symbols = HashMap::new();
+    let mut defaults = HashMap::new();
+    fn symbol<'a>(
+        p: &mut bc::BytecodePackage,
+        index: &mut HashMap<&'a str, bc::SymbolId>,
+        name: &'a str,
+    ) -> bc::SymbolId {
+        *index.entry(name).or_insert_with(|| {
+            let id = bc::SymbolId(p.symbols.len() as u32);
             p.symbols.push(name.into());
-            p.symbols.len() - 1
-        });
-        bc::SymbolId(index as u32)
+            id
+        })
     }
     fn ty(p: &mut bc::BytecodePackage, builtin: &bc::BuiltinType) -> bc::TypeId {
         let ty = bc::TypeDef::Builtin(*builtin);
@@ -450,7 +464,7 @@ pub fn seed(
         });
         bc::TypeId(index as u32)
     }
-    let defaults_path = symbol(&mut package, "aside::host_defaults");
+    let defaults_path = symbol(&mut package, &mut symbols, "aside::host_defaults");
     package.modules.push(bc::ModuleDef {
         path: defaults_path,
         imports: vec![],
@@ -460,7 +474,7 @@ pub fn seed(
     });
     for declaration in types {
         for method in &declaration.methods {
-            symbol(&mut package, &method.name);
+            symbol(&mut package, &mut symbols, &method.name);
         }
         let (path, name) = declaration
             .name
@@ -473,7 +487,7 @@ pub fn seed(
                 source: None,
                 detail: "host type requires canonical module identity".into(),
             })?;
-        let path_symbol = symbol(&mut package, path);
+        let path_symbol = symbol(&mut package, &mut symbols, path);
         let module = package
             .modules
             .iter()
@@ -488,7 +502,7 @@ pub fn seed(
                 });
                 package.modules.len() - 1
             });
-        let name = symbol(&mut package, name);
+        let name = symbol(&mut package, &mut symbols, name);
         package.types.push(TypeDef::Named {
             module: bc::ModuleId(module as u32),
             name,
@@ -500,10 +514,14 @@ pub fn seed(
         for parameter in &contract.parameters {
             let parameter_type = ty(&mut package, &parameter.ty);
             let default = parameter.default.as_ref().map(|value| {
-                bc::ParameterDefault::Constant(crate::literal_defaults::intern(&mut package, value))
+                bc::ParameterDefault::Constant(crate::literal_defaults::intern(
+                    &mut package,
+                    &mut defaults,
+                    value,
+                ))
             });
             parameters.push(bc::Parameter {
-                name: symbol(&mut package, &parameter.name),
+                name: symbol(&mut package, &mut symbols, &parameter.name),
                 ty: parameter_type,
                 mutable: false,
                 default,
@@ -511,7 +529,7 @@ pub fn seed(
         }
         let result = ty(&mut package, &contract.result);
         let rest = contract.rest.as_ref().map(|name| bc::Parameter {
-            name: symbol(&mut package, name),
+            name: symbol(&mut package, &mut symbols, name),
             ty: ty(&mut package, &BuiltinType::Array),
             mutable: false,
             default: None,
@@ -524,11 +542,11 @@ pub fn seed(
             effects: contract.effects,
             property_bag_tail: None,
         });
-        let name = symbol(&mut package, &contract.symbol);
+        let name = symbol(&mut package, &mut symbols, &contract.symbol);
         let capabilities = contract
             .required_capabilities
             .iter()
-            .map(|name| symbol(&mut package, name))
+            .map(|name| symbol(&mut package, &mut symbols, name))
             .collect();
         // Host objects can bind methods even when source never reads the native
         // name. The compiler reuses these same callable definitions.
@@ -555,7 +573,7 @@ pub fn seed(
     }
     package.capabilities = capabilities
         .iter()
-        .map(|name| symbol(&mut package, name))
+        .map(|name| symbol(&mut package, &mut symbols, name))
         .collect();
     bc::verify(package, bc::Limits::default())
 }

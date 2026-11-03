@@ -9,8 +9,7 @@ use reel_engine::aside::{
 impl StoryRuntime {
     pub(super) fn interrupt_capture(&mut self) -> Result<(), Error> {
         if let Some(capture) = self.capture.take() {
-            let mut driver = capture.cancel();
-            driver.resume_media();
+            let driver = capture.cancel();
             let request = self.saves.as_mut().unwrap().pending.take().unwrap();
             self.driver = Some(driver);
             self.driver
@@ -236,8 +235,7 @@ impl StoryRuntime {
                 Ok(false) => return Ok(true),
                 Ok(true) => {
                     let retained_bytes = capture.bytes;
-                    let (mut driver, snapshot) = self.capture.take().unwrap().finish()?;
-                    driver.resume_media();
+                    let (driver, snapshot) = self.capture.take().unwrap().finish()?;
                     self.driver = Some(driver);
                     self.suspended_ns +=
                         now_ns.saturating_sub(self.capture_started.take().unwrap());
@@ -274,8 +272,7 @@ impl StoryRuntime {
                     return Ok(false);
                 }
                 Err(error) => {
-                    let mut driver = self.capture.take().unwrap().cancel();
-                    driver.resume_media();
+                    let driver = self.capture.take().unwrap().cancel();
                     let request = saves.pending.take().unwrap();
                     self.driver = Some(driver);
                     self.driver
@@ -310,16 +307,14 @@ impl StoryRuntime {
             {
                 return Ok(false);
             }
-            let mut driver = self.driver.take().unwrap();
-            driver.suspend_media();
+            let driver = self.driver.take().unwrap();
             match Capture::new(driver) {
                 Ok(capture) => {
                     self.capture = Some(capture);
                     self.capture_started = Some(now_ns);
                     return Ok(true);
                 }
-                Err((mut driver, error)) => {
-                    driver.resume_media();
+                Err((driver, error)) => {
                     self.driver = Some(driver);
                     if !matches!(error, AdapterError::Snapshot(SnapshotError::Busy(_))) {
                         self.driver
@@ -373,5 +368,135 @@ impl StoryRuntime {
             }
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reel_core::{budget::QueueLimits, wake::WakeSignal};
+    use reel_engine::{
+        Epoch, Session, SessionId,
+        aside::VmLimits,
+        audio::{AudioGroup, AudioPlayback, AudioRequest},
+        media::{MediaBackend, MediaCommand, MediaCompletion, MediaId, MediaPlayback},
+    };
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        sync::Arc,
+        time::Duration,
+    };
+
+    struct Media {
+        transport_changes: Rc<Cell<usize>>,
+        playback: RefCell<Option<AudioPlayback>>,
+    }
+    impl MediaBackend for Media {
+        fn play_audio(&mut self, request: AudioRequest, paused: bool) -> Result<MediaId, String> {
+            *self.playback.borrow_mut() = Some(AudioPlayback {
+                request,
+                queue: Vec::new(),
+                paused,
+                result: None,
+            });
+            Ok(MediaId(1))
+        }
+        fn commit_audio(&mut self, _: MediaId) {}
+        fn snapshot(&self, _: MediaId) -> Result<MediaPlayback, String> {
+            Ok(MediaPlayback::Audio(
+                self.playback.borrow().as_ref().unwrap().clone(),
+            ))
+        }
+        fn position(&self, _: MediaId) -> Option<Duration> {
+            Some(Duration::ZERO)
+        }
+        fn command(&mut self, _: MediaId, _: MediaCommand) -> Result<(), String> {
+            Ok(())
+        }
+        fn group_volume(
+            &mut self,
+            _: Option<AudioGroup>,
+            _: f64,
+            _: Duration,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn cancel(&mut self, _: MediaId) {}
+        fn maintain(&mut self, _: Duration) {}
+        fn take_result(&mut self, _: MediaId) -> Option<MediaCompletion> {
+            None
+        }
+        fn poll_after(&self) -> Option<Duration> {
+            None
+        }
+        fn suspend(&mut self) {
+            self.transport_changes.set(self.transport_changes.get() + 1);
+        }
+        fn resume(&mut self) {
+            self.transport_changes.set(self.transport_changes.get() + 1);
+        }
+        fn close(&mut self) {}
+        fn cleanup_pending(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn saving_and_cancelling_capture_leave_live_media_transport_running() {
+        for cancel in [false, true] {
+            let changes = Rc::new(Cell::new(0));
+            let driver = AsideSessionUi::from_source(
+                Session::new(SessionId(83), Epoch(1)).unwrap(),
+                r#"fn main() {
+                    let retained=[]; for i in 0..2000 { retained.append(i); }
+                    let music=audio.play("track");
+                    try { await saves.save("slot"); } catch error { }
+                    if retained.len()!=2000 { throw "retained data"; }
+                    narrator("saved");
+                }"#,
+                "save_media",
+                1,
+                "main",
+                "en",
+                VmLimits::default(),
+            )
+            .unwrap()
+            .with_media(Box::new(Media {
+                transport_changes: changes.clone(),
+                playback: RefCell::new(None),
+            }))
+            .unwrap();
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/reel-artifacts/save-media")
+                .join(format!("{}-{cancel}", std::process::id()));
+            let service = crate::saves::SaveService::new(
+                Arc::new(crate::saves::DirectorySaves::new(path, 8 << 20)),
+                QueueLimits {
+                    max_requests: 1,
+                    max_bytes: 8 << 20,
+                },
+                WakeSignal::new(|| {}),
+            );
+            let mut story =
+                StoryRuntime::new(driver).with_saves(RuntimeSaves::new(service, 8 << 20));
+            let mut captured = false;
+            for _ in 0..10_000 {
+                story.tick(SliceBudget::default(), || 0).unwrap();
+                assert_eq!(changes.get(), 0);
+                if story.capturing() {
+                    captured = true;
+                    if cancel {
+                        story.interrupt_capture().unwrap();
+                    }
+                }
+                if captured && !story.capturing() {
+                    break;
+                }
+            }
+            assert!(captured);
+            assert!(!story.capturing());
+            assert_eq!(changes.get(), 0);
+        }
     }
 }

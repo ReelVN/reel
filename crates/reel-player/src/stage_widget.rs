@@ -57,6 +57,7 @@ pub(crate) struct StageView {
     root: Option<Arc<SceneNode>>,
     popups: Option<Arc<[popup::PopupSource]>>,
     image_index: Arc<ResourceIndexCache>,
+    layout_images: Option<(u64, EffectShaderFormat)>,
     pub resources: Arc<[ResourceLease]>,
 }
 #[derive(Clone, PartialEq)]
@@ -113,6 +114,7 @@ impl ResolvedEffect {
         instance: &Arc<reel_ui::stage::effect::EffectInstance>,
         bounds: Rect,
         coverage_invert: bool,
+        resolution_scale: f64,
     ) -> PaintEffect {
         PaintEffect {
             instance: instance.clone(),
@@ -120,6 +122,7 @@ impl ResolvedEffect {
             images: self.images.to_vec(),
             bounds,
             coverage_invert,
+            resolution_scale,
         }
     }
 }
@@ -382,6 +385,9 @@ impl StageView {
                 || Arc::new(ResourceIndexCache::default()),
                 |old| old.image_index.clone(),
             );
+        let layout_images = previous
+            .filter(|old| Arc::ptr_eq(&old.image_index, &image_index))
+            .and_then(|old| old.layout_images);
         Self {
             revision: stage.revision(),
             identity: Some(stage.identity().clone()),
@@ -391,6 +397,7 @@ impl StageView {
             root,
             popups,
             image_index,
+            layout_images,
             resources: previous.map_or_else(|| Arc::from([]), |view| view.resources.clone()),
         }
     }
@@ -586,6 +593,14 @@ impl StageView {
         &mut self,
         images: &crate::images::Images,
     ) -> Result<(), String> {
+        // Geometry edits preserve resolved whole-image sizes and leases. Viewport
+        // demand is still recomputed below the layout pass; tiled images retain
+        // their per-node compatibility checks and visible-region resolution.
+        if images.manifests.is_empty()
+            && self.layout_images == Some((images.content_revision, images.shader_format))
+        {
+            return Ok(());
+        }
         self.resolve_metadata_for(images, false)
     }
     fn resolve_metadata_for(
@@ -593,6 +608,7 @@ impl StageView {
         images: &crate::images::Images,
         required_only: bool,
     ) -> Result<(), String> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiImageResolve);
         let mut leases = Vec::new();
         let mut resources = std::collections::BTreeSet::new();
         let mut failure = None;
@@ -711,6 +727,7 @@ impl StageView {
         }
         self.resources = leases.into();
         self.refresh_popups();
+        self.layout_images = Some((images.content_revision, images.shader_format));
         Ok(())
     }
     pub fn resolve_tiles(
@@ -1098,6 +1115,7 @@ fn composite_changed(old: &reel_ui::stage::NodeProps, new: &reel_ui::stage::Node
         || old.blend != new.blend
         || old.mask != new.mask
         || old.effect != new.effect
+        || old.effect_resolution_scale != new.effect_resolution_scale
         || old.mask_effect != new.mask_effect
         || old.mask_progress != new.mask_progress
         || old.mask_softness != new.mask_softness

@@ -108,7 +108,7 @@ impl GeneratorValidation {
                         && frame.code.function == self.function
                         && vm
                             .slots
-                            .read(at(frame.env, vm.generator_slot(*frame)))
+                            .read_vm(at(frame.env, vm.generator_slot(*frame)))
                             .is_ok_and(|value| value.same_bits(self.generator))
                     {
                         if self.owner.replace(*frame).is_some() {
@@ -143,12 +143,15 @@ impl GeneratorValidation {
                                     action,
                                     vm.heap.range_descriptor(parent.regs)?.len,
                                 )
-                                || !vm.slots.read(at(parent.env, 1))?.same_bits(self.generator)
+                                || !vm
+                                    .slots
+                                    .read_vm(at(parent.env, 1))?
+                                    .same_bits(self.generator)
                             {
                                 return Err(invalid());
                             }
                             if matches!(action, GeneratorAction::Pair(_)) {
-                                let pair = vm.slots.read(at(parent.env, 2))?;
+                                let pair = vm.slots.read_vm(at(parent.env, 2))?;
                                 if vm.heap.info(pair)?.kind != ObjectKind::Array
                                     || vm.heap.info(pair)?.len != 2
                                 {
@@ -349,7 +352,7 @@ pub(super) fn validate_generator_frame(
             {
                 return Err(invalid());
             }
-            if let Ok(pair) = vm.slots.read(at(frame.env, 2))
+            if let Ok(pair) = vm.slots.read_vm(at(frame.env, 2))
                 && (!matches!(action, GeneratorAction::Pair(_))
                     || vm.heap.info(pair)?.kind != ObjectKind::Array
                     || vm.heap.info(pair)?.len != 2)
@@ -497,7 +500,7 @@ impl Vm {
         self.clear(parent.env, 1)?;
         self.clear(parent.env, 2)?;
         parent.phase = ScriptPhase::Body;
-        self.active.frames.data[i] = Frame::Script(parent);
+        self.publish_script_frame(i, &parent);
         Ok(true)
     }
 
@@ -588,7 +591,7 @@ impl Vm {
                 if !meter.take(0, 4, extra) {
                     return Ok(false);
                 }
-                let input = self.slots.read(at(range, index));
+                let input = self.slots.read_vm(at(range, index));
                 let (initialized, value) = match input {
                     Ok(value) => (true, value),
                     Err(HeapError::UninitializedSlot) => (false, Value::NULL),
@@ -763,7 +766,7 @@ impl Vm {
             call,
             action,
         };
-        if matches!(action, GeneratorAction::Pair(_)) && self.slots.read(at(s.env, 2)).is_err() {
+        if matches!(action, GeneratorAction::Pair(_)) && self.slots.read_vm(at(s.env, 2)).is_err() {
             if !meter.take(0, 3, Values::allocation_bytes(2)) {
                 return Ok(false);
             }
@@ -909,8 +912,9 @@ impl Vm {
         self.heap.set_field(generator, RESULT, Value::NULL)?;
         s.phase = ScriptPhase::Body;
         let parent = self.index(s.id)?;
-        self.active.frames.data[parent] = Frame::Script(*s);
+        self.publish_script_frame(parent, s);
         self.active.frames.data.push(Frame::Script(frame));
+        execution_count!(self, GeneratorResumes, 1);
         Ok(true)
     }
 

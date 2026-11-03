@@ -15,4 +15,6 @@ pub struct PaintEffect {
     pub bounds: Rect,
     /// Invert clamped scalar output when this effect supplies subtree coverage.
     pub coverage_invert: bool,
+    /// Linear output resolution multiplier in (0, 1].
+    pub resolution_scale: f64,
 }

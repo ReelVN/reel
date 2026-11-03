@@ -53,7 +53,7 @@ impl Heap {
     /// Count data fields, including inherited fields, of a completed instance.
     pub fn instance_field_count(&self, instance: Value) -> Result<u32, HeapError> {
         let (_, fields) = self.instance_data(instance)?;
-        Ok(self.info(fields)?.len)
+        Ok(self.read_object(fields)?.len())
     }
 
     /// Read the fixed field layout without allocating or invoking script methods.
@@ -80,13 +80,11 @@ impl Heap {
     }
 
     pub(crate) fn instance_data(&self, instance: Value) -> Result<(Value, Value), HeapError> {
-        if self.info(instance)?.kind != ObjectKind::Instance {
+        let instance_read = self.read_object(instance)?;
+        if instance_read.kind() != ObjectKind::Instance {
             return Err(HeapError::WrongKind);
         }
-        match self
-            .get_field(instance, InstanceSlot::State as u32)?
-            .as_int()
-        {
+        match instance_read.field(InstanceSlot::State as u32)?.as_int() {
             Some(state) if state == State::Ready as i64 => {}
             Some(state) if state == State::Failed as i64 => {
                 return Err(HeapError::ConstructionFailed);
@@ -94,8 +92,8 @@ impl Heap {
             _ => return Err(HeapError::UninitializedCell),
         }
         Ok((
-            self.get_field(instance, InstanceSlot::Class as u32)?,
-            self.get_field(instance, InstanceSlot::Fields as u32)?,
+            instance_read.field(InstanceSlot::Class as u32)?,
+            instance_read.field(InstanceSlot::Fields as u32)?,
         ))
     }
 }
@@ -104,7 +102,7 @@ pub(crate) fn accepts_nominal(heap: &Heap, value: Value, ty: TypeId) -> Result<b
     if value.tag() != crate::ValueTag::Object {
         return Ok(false);
     }
-    match heap.info(value)?.kind {
+    match heap.read_object(value)?.kind() {
         ObjectKind::Host => return heap.accepts_host_nominal(value, ty),
         ObjectKind::Instance => {}
         _ => return Ok(false),

@@ -1,4 +1,4 @@
-//! Batch independent source-over siblings before their ordered parent composites.
+//! Batch independent sources before their ordered parent composites.
 //! Each source owns its internal task dependencies. External parent reads,
 //! retained transitions and captures delimit independent source windows.
 use super::{
@@ -11,9 +11,20 @@ use reel_ui::{
     frame::{FrameDraw, FrameDrawing, FrameOp, RenderFrame},
     kurbo::Affine,
 };
+pub(crate) mod reuse;
 #[path = "offscreen_schedule.rs"]
 mod schedule;
 pub(crate) use schedule::ParentStep;
+
+/// Compatible ordinary scratch owners for direct and sampled destination paths.
+#[derive(Clone, Copy)]
+pub(crate) struct ResidentTargets<'a> {
+    pub direct: &'a super::target_plan::Requirements,
+    pub sampled: &'a super::target_plan::Requirements,
+}
+#[cfg(test)]
+#[path = "offscreen_blend_tests.rs"]
+mod blend_tests;
 #[cfg(test)]
 #[path = "offscreen_test_support.rs"]
 pub(crate) mod test_support;
@@ -25,12 +36,20 @@ pub(crate) struct Entry {
     pub first: bool,
     pub last: bool,
     pub shared: bool,
+    /// Earlier producer whose complete source pixels are read again in this window.
+    pub canonical_push: Option<usize>,
+    parent_scissor: Scissor,
     source_size: [u32; 2],
-    pub view: SourceView,
+    /// Finite translated placement; `None` preserves the original source domain.
+    pub view: Option<SourceView>,
 }
 
 #[derive(Default)]
 pub(crate) struct Plan {
+    effect_inputs: super::effect_inputs::Plan,
+    output_crops: super::effect_output::Plan,
+    physical_crops: bool,
+    crop_disabled: bool,
     entries: Vec<Entry>,
     groups: Option<(usize, usize, std::sync::Arc<super::scopes::Cached>)>,
     storage: super::target_storage::Plan,
@@ -38,10 +57,37 @@ pub(crate) struct Plan {
     coverage_requirements: super::target_plan::Requirements,
     coverage_enabled: bool,
     stable_backdrop: bool,
+    sampled_backdrop: bool,
+    reused_sources: bool,
     destination: super::blend::DestinationAccess,
 }
 
 impl Plan {
+    pub(crate) fn output_crop(&self, push: usize) -> Option<super::source_crop::Crop> {
+        self.output_crops.crop(push)
+    }
+    pub(super) fn collect_output_crops(&self) -> bool {
+        self.output_crops.collecting
+    }
+    pub(crate) fn effect_inputs(&self) -> &super::effect_inputs::Plan {
+        &self.effect_inputs
+    }
+    pub(crate) fn set_effect_inputs(&mut self, inputs: super::effect_inputs::Plan) {
+        self.effect_inputs = inputs;
+    }
+    pub(crate) fn crop_backing(&self, logical: [u32; 2]) -> Option<[u32; 2]> {
+        self.physical_crops.then(|| self.storage_size(logical))
+    }
+    pub(crate) fn source_crops(&self) -> bool {
+        !self.crop_disabled
+    }
+    /// The selected traversal needs a sampled copy of an existing destination.
+    /// Native backends can preserve arbitrary integer copy rectangles by choosing
+    /// linear storage; current-pixel blends leave this false.
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn sampled_backdrop(&self) -> bool {
+        self.sampled_backdrop
+    }
     pub(crate) fn destination(&self) -> super::blend::DestinationAccess {
         self.destination
     }
@@ -61,7 +107,10 @@ impl Plan {
             .map(|(_, _, proof)| super::scopes::Proof::Shared(proof.clone()))
     }
     pub(crate) fn requirements(&self) -> &super::target_plan::Requirements {
-        if self.storage.bytes() != 0 {
+        if !self.effect_inputs.is_empty() {
+            return self.effect_inputs.requirements();
+        }
+        if self.storage.bytes() != 0 && !self.physical_crops && !self.reused_sources {
             self.storage.requirements()
         } else {
             &self.requirements
@@ -88,6 +137,7 @@ impl Plan {
     #[cfg(feature = "wgpu")]
     pub(crate) fn disable_batches(&mut self) {
         self.entries.clear();
+        self.output_crops = Default::default();
     }
 
     pub(crate) fn entry(&self, push: usize) -> Option<&Entry> {
@@ -122,7 +172,7 @@ impl Plan {
         selection: &super::retained::Plan,
         reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, u64, Vec<R>), GpuError> {
-        Self::choose_with_groups(
+        let (plan, bytes, retained, ()) = Self::choose_with_groups(
             frame,
             second,
             size,
@@ -137,15 +187,18 @@ impl Plan {
             super::blend::DestinationAccess::Sampled,
             selection,
             None,
+            None,
+            |_, bytes| Ok((bytes, ())),
             reserve,
-        )
+        )?;
+        Ok((plan, bytes, retained))
     }
 
     #[expect(
         clippy::too_many_arguments,
         reason = "one physical frame and its target admission policy"
     )]
-    pub(crate) fn choose_with_groups<R>(
+    pub(crate) fn choose_with_groups<R, T>(
         frame: &RenderFrame,
         second: Option<&RenderFrame>,
         size: [u32; 2],
@@ -160,8 +213,10 @@ impl Plan {
         destination: super::blend::DestinationAccess,
         selection: &super::retained::Plan,
         groups: Option<std::sync::Arc<super::scopes::Cached>>,
+        resident: Option<ResidentTargets<'_>>,
+        mut collect: impl FnMut(&Self, u64) -> Result<(u64, T), GpuError>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
-    ) -> Result<(Self, u64, Vec<R>), GpuError> {
+    ) -> Result<(Self, u64, Vec<R>, T), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::OffscreenPlan);
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],
@@ -178,10 +233,12 @@ impl Plan {
                 transform,
                 size,
                 samples,
+                destination.for_samples(samples),
                 max_dimension,
                 glyphs,
                 width,
                 capture,
+                &selection.sources,
                 groups.as_ref(),
                 &mut reserve,
             )?
@@ -189,12 +246,14 @@ impl Plan {
             (Self::default(), Vec::new())
         };
         let mut shared = true;
+        let mut crop_disabled = false;
         loop {
             if plan.is_empty() {
                 plan = Self::default();
                 retained.clear();
             }
             plan.coverage_enabled = coverage_cost.is_some();
+            plan.crop_disabled = crop_disabled;
             plan.destination = destination.for_samples(samples);
             plan.groups = groups.as_ref().map(|groups| {
                 (
@@ -223,6 +282,15 @@ impl Plan {
                 traversal.push(reserve(bytes)?);
                 Ok(())
             })?);
+            let sampled_backdrop = measured.as_ref().unwrap().sampled_backdrop;
+            let empty_resident = super::target_plan::Requirements::default();
+            let resident = resident.map_or(&empty_resident, |owners| {
+                if sampled_backdrop {
+                    owners.sampled
+                } else {
+                    owners.direct
+                }
+            });
             let coverage_bytes = measured.as_ref().unwrap().coverage_bytes;
             let mut coverage_tickets = Vec::new();
             let coverage_requirements =
@@ -231,6 +299,23 @@ impl Plan {
                     Ok(())
                 })?;
             let mut bytes = measured.as_ref().unwrap().bytes;
+            if bytes > byte_limit {
+                // A submitted immutable prefix can fit even when reproducing
+                // its complete cold scratch chain cannot. Resolve it on this
+                // unchanged map before storage folding or batch/raster fallback.
+                let (selected_bytes, inputs) = collect(&plan, bytes)?;
+                if selected_bytes <= byte_limit {
+                    plan.sampled_backdrop = sampled_backdrop;
+                    plan.coverage_requirements = coverage_requirements;
+                    plan.requirements = measured.as_ref().unwrap().requirements(|bytes| {
+                        retained.push(reserve(bytes)?);
+                        Ok(())
+                    })?;
+                    retained.extend(coverage_tickets);
+                    return Ok((plan, selected_bytes, retained, inputs));
+                }
+                drop(inputs);
+            }
             let share_backdrops = bytes <= byte_limit
                 && measured.as_ref().unwrap().reusable
                 && measured.as_ref().unwrap().local_backdrop;
@@ -239,6 +324,12 @@ impl Plan {
                 && measured.as_ref().unwrap().local_backdrop;
             let mut storage_tickets = Vec::new();
             if bytes > byte_limit && measured.as_ref().unwrap().reusable {
+                if measured.as_ref().unwrap().cropped && !crop_disabled {
+                    // Storage folding changes the exact dyadic texture extent.
+                    // Remeasure the ordinary path before admitting that fallback.
+                    crop_disabled = true;
+                    continue;
+                }
                 drop(measured.take());
                 traversal.clear();
                 let (storage, shared_bytes, tickets) = input.storage(&mut reserve)?;
@@ -247,6 +338,7 @@ impl Plan {
                 storage_tickets = tickets;
             }
             if bytes <= byte_limit || plan.is_empty() {
+                plan.sampled_backdrop = sampled_backdrop;
                 plan.coverage_requirements = coverage_requirements;
                 if plan.storage.bytes() == 0 {
                     plan.requirements = measured.as_ref().unwrap().requirements(|bytes| {
@@ -266,6 +358,7 @@ impl Plan {
                         max_dimension,
                         capacity_limit,
                         cost,
+                        resident,
                         &mut reserve,
                     )
                 } else {
@@ -274,6 +367,7 @@ impl Plan {
                         max_dimension,
                         capacity_limit,
                         cost,
+                        resident,
                         &mut reserve,
                     )
                 };
@@ -307,6 +401,7 @@ impl Plan {
                             max_dimension,
                             capacity_limit,
                             cost,
+                            resident,
                             &mut reserve,
                         ) {
                             storage = padded;
@@ -381,6 +476,7 @@ impl Plan {
                             max_dimension,
                             capacity_limit,
                             cost,
+                            resident,
                             &mut reserve,
                         );
                         if let Ok(Some((storage, padded_tickets))) = padded {
@@ -414,7 +510,95 @@ impl Plan {
                         groups,
                     )
                 });
-                return Ok((plan, bytes, retained));
+                // Freeze ordinary capacities first: their rounded denominators
+                // are part of the original source sampling phase. Only then
+                // replace proved raw writes with exact physical backing slices.
+                if !capture && samples == 1 && second.is_none() && !crop_disabled {
+                    drop(measured.take());
+                    traversal.clear();
+                    plan.physical_crops = true;
+                    plan.output_crops.begin();
+                    let mut temporary = Vec::new();
+                    let candidate = super::target_plan::Input {
+                        frame,
+                        second,
+                        size,
+                        capture,
+                        samples,
+                        max_dimension,
+                        glyphs,
+                        schedule: &plan,
+                        masks,
+                        selection,
+                        cost,
+                        coverage_cost,
+                    }
+                    .physical_measure(|bytes| {
+                        temporary.push(reserve(bytes)?);
+                        Ok(())
+                    });
+                    let mut selected = Vec::new();
+                    let candidate = candidate.and_then(|m| {
+                        if !m.cropped || m.bytes > bytes || m.bytes > byte_limit {
+                            return Ok(None);
+                        }
+                        let requirements = m.requirements(|bytes| {
+                            selected.push(reserve(bytes)?);
+                            Ok(())
+                        })?;
+                        let bytes = m.bytes;
+                        let mut crops = m.output_crops();
+                        if !crops.is_empty() {
+                            selected.push(reserve(
+                                (crops.capacity() * size_of::<super::effect_output::Entry>())
+                                    as u64,
+                            )?);
+                        }
+                        crops.sort_unstable_by_key(|entry| entry.push);
+                        Ok(Some((requirements, bytes, crops)))
+                    });
+                    if let Ok(Some((requirements, selected_bytes, crops))) = candidate {
+                        plan.requirements = requirements;
+                        bytes = selected_bytes;
+                        plan.output_crops.entries = crops;
+                        retained.extend(selected);
+                    } else {
+                        plan.physical_crops = false;
+                        plan.output_crops.entries.clear();
+                    }
+                    plan.output_crops.collecting = false;
+                }
+                if !capture && plan.reuse_sources(frame.drawing(), selection) {
+                    // Keep the frozen raster/storage map. Only production
+                    // lifetimes disappear; every original parent read remains.
+                    let mut temporary = Vec::new();
+                    let measured = super::target_plan::Input {
+                        frame,
+                        second,
+                        size,
+                        capture,
+                        samples,
+                        max_dimension,
+                        glyphs,
+                        schedule: &plan,
+                        masks,
+                        selection,
+                        cost,
+                        coverage_cost,
+                    }
+                    .physical_measure(|bytes| {
+                        temporary.push(reserve(bytes)?);
+                        Ok(())
+                    })?;
+                    plan.requirements = measured.requirements(|bytes| {
+                        retained.push(reserve(bytes)?);
+                        Ok(())
+                    })?;
+                    bytes = measured.bytes;
+                    plan.reused_sources = true;
+                }
+                let (bytes, inputs) = collect(&plan, bytes)?;
+                return Ok((plan, bytes, retained, inputs));
             }
             plan.storage = super::target_storage::Plan::default();
             if shared && plan.entries.iter().any(|entry| entry.shared) {
@@ -430,6 +614,12 @@ impl Plan {
     /// Pack independent sources into disjoint physical regions. A transparent
     /// texel surrounds each region; sampling preserves the original pixel grid.
     fn pack(&mut self, max_dimension: u32, shared: bool) {
+        #[cfg(test)]
+        let shared = shared && !test_support::atlas_disabled();
+        #[cfg(feature = "profiling")]
+        let shared = shared && crate::profiling::shared_source_atlas();
+        #[cfg(not(feature = "profiling"))]
+        let shared = shared && crate::SHARED_SOURCE_ATLAS_DEFAULT;
         let mut start = 0;
         for end in 0..self.entries.len() {
             if !self.entries[end].last {
@@ -439,12 +629,14 @@ impl Plan {
             for (index, entry) in entries.iter_mut().enumerate() {
                 entry.first = index == 0;
                 entry.shared = false;
-                entry.view = entry.view.placed(entry.source_size, [0; 2]);
+                entry.view = entry
+                    .view
+                    .map(|view| view.placed(entry.source_size, [0; 2]));
             }
             if shared && let Some((size, offsets)) = atlas(entries, max_dimension) {
                 for (entry, offset) in entries.iter_mut().zip(offsets) {
                     entry.shared = true;
-                    entry.view = entry.view.placed(size, offset);
+                    entry.view = entry.view.map(|view| view.placed(size, offset));
                 }
             }
             start = end + 1;
@@ -486,10 +678,12 @@ impl Plan {
         transform: Affine,
         size: [u32; 2],
         samples: u32,
+        destination: super::blend::DestinationAccess,
         max_dimension: u32,
         glyphs: &glyph_plan::Plan,
         width: usize,
         capture: bool,
+        sources: &super::source_plan::Plan,
         proof: Option<&std::sync::Arc<super::scopes::Cached>>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, Vec<R>), GpuError> {
@@ -523,6 +717,15 @@ impl Plan {
         let mut parent_draw = false;
         let mut next = 0;
         while let Some(command) = commands.get(next) {
+            if matches!(command.op, FrameOp::PushGroup(_))
+                && let Some(end) = sources.end(drawing, next)
+            {
+                // Replay emits this effect directly into the parent and skips
+                // its children. It cannot participate in a deferred source run.
+                finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                next = end;
+                continue;
+            }
             // The build entry guard already excluded active retained/capture boundaries.
             if let FrameOp::PushGroup(group) = &command.op
                 && let Some(consumed) = super::scopes::invisible_group(
@@ -545,7 +748,7 @@ impl Plan {
                     if parent_draw {
                         finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     }
-                    push_stack(&mut scissors, scissor, |bytes| {
+                    push_stack(&mut scissors, (scissor, false), |bytes| {
                         traversal.push(reserve(bytes)?);
                         Ok(())
                     })?;
@@ -554,10 +757,11 @@ impl Plan {
                     next += 1;
                 }
                 FrameOp::PopGroup => {
-                    if parent_draw {
+                    let (parent_scissor, isolated) = scissors.pop().expect("validated group");
+                    if parent_draw || isolated {
                         finish_run(&mut entries, &mut run_start, &mut parent_draw);
                     }
-                    scissor = scissors.pop().expect("validated inline group");
+                    scissor = parent_scissor;
                     next += 1;
                 }
                 FrameOp::PushGroup(group) => {
@@ -591,23 +795,45 @@ impl Plan {
                         }
                         end += 1;
                     }
-                    let view = (independent && group.composite.blend == Default::default())
-                        .then(|| {
-                            SourceView::group(
-                                group,
-                                glyphs.group_ink(group),
-                                transform,
-                                size,
-                                scissor,
-                                false,
-                                max_dimension,
-                            )
-                        })
+                    let current_pixel = destination.current_pixel(
+                        group.composite.blend,
+                        true,
+                        group.clip.is_some()
+                            || group.mask.is_some()
+                            || group.mask_effect.is_some()
+                            || group.image_mask.is_some(),
+                    ) && group.filters.is_empty();
+                    let source_view = SourceView::group(
+                        group,
+                        glyphs.group_ink(group),
+                        transform,
+                        size,
+                        scissor,
+                        false,
+                        max_dimension,
+                    );
+                    let view = (independent
+                        && (group.composite.blend == Default::default() || current_pixel))
+                        .then_some(source_view)
                         .flatten();
                     let folded =
                         inline_group_fill(group, &commands[next + 1..], transform, size, samples)
                             .is_some();
-                    if let Some(view) = view.filter(|_| !folded) {
+                    let terminal = independent
+                        && super::effect_plan::terminal_composite(group, samples, false);
+                    let source_size = if terminal {
+                        let source = super::effect_plan::source_layout(
+                            group.effect.as_ref().unwrap(),
+                            group.effect_to_target,
+                            transform,
+                            max_dimension,
+                            command.origin.at,
+                        )?;
+                        source.size
+                    } else {
+                        view.map_or(size, |view| view.storage_size)
+                    };
+                    if independent && !folded && (view.is_some() || current_pixel || terminal) {
                         push_stack(
                             &mut entries,
                             Entry {
@@ -616,7 +842,9 @@ impl Plan {
                                 first: false,
                                 last: false,
                                 shared: false,
-                                source_size: view.storage_size,
+                                canonical_push: None,
+                                parent_scissor: scissor,
+                                source_size,
                                 view,
                             },
                             |bytes| {
@@ -629,11 +857,42 @@ impl Plan {
                         }
                     } else {
                         finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                        // A full-size ordinary isolation boundary keeps the same
+                        // source grid. Schedule its children in that target's
+                        // own window; the parent itself has no pending source.
+                        if !folded
+                            && source_view.is_none()
+                            && group.composite.blend == Default::default()
+                            && group.effect.is_none()
+                            && group.clip.is_none()
+                            && group.mask.is_none()
+                            && group.mask_effect.is_none()
+                            && group.image_mask.is_none()
+                            && group.filters.is_empty()
+                        {
+                            push_stack(&mut scissors, (scissor, true), |bytes| {
+                                traversal.push(reserve(bytes)?);
+                                Ok(())
+                            })?;
+                            scissor = Scissor::group_bounds(group, transform, size, false)
+                                .map_or(scissor, |bounds| scissor.intersect(bounds));
+                            next += 1;
+                            continue;
+                        }
                     }
                     next = end + 1;
                 }
-                FrameOp::PushClip(_) => {
+                FrameOp::PushClip(clip) => {
                     finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                    if let Some(bounds) = Scissor::from_clip(clip, transform, size, samples) {
+                        push_stack(&mut scissors, (scissor, true), |bytes| {
+                            traversal.push(reserve(bytes)?);
+                            Ok(())
+                        })?;
+                        scissor = scissor.intersect(bounds);
+                        next += 1;
+                        continue;
+                    }
                     let mut depth = 1;
                     next += 1;
                     while let Some(command) = commands.get(next) {
@@ -650,6 +909,11 @@ impl Plan {
                         }
                         next += 1;
                     }
+                }
+                FrameOp::PopClip => {
+                    finish_run(&mut entries, &mut run_start, &mut parent_draw);
+                    scissor = scissors.pop().expect("validated scissor clip").0;
+                    next += 1;
                 }
                 FrameOp::Draw(draw) if ordinary_draw(draw) => {
                     parent_draw |= entries.len() > run_start;
@@ -688,8 +952,8 @@ fn ordinary_draw(draw: &FrameDraw) -> bool {
 fn atlas(entries: &[Entry], max_dimension: u32) -> Option<([u32; 2], [[u32; 2]; 8])> {
     let mut sizes = [[0u32; 2]; 8];
     for (size, entry) in sizes.iter_mut().zip(entries) {
-        *size =
-            [entry.view.parent_rect.width, entry.view.parent_rect.height].map(|value| value + 2);
+        let view = entry.view?;
+        *size = [view.parent_rect.width, view.parent_rect.height].map(|value| value + 2);
     }
     let sizes = &sizes[..entries.len()];
     let mut best = None;

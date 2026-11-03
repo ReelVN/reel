@@ -22,6 +22,40 @@ struct Pending {
     id: LoadId,
     optional: bool,
 }
+
+// Keep metadata for recently displayed uploads. Pixel storage is already gone;
+// renderer pressure can still evict the GPU copy and request exact-version IO.
+struct RecentImages {
+    slots: [Option<(String, ResourceLease)>; 64],
+    next: usize,
+}
+impl Default for RecentImages {
+    fn default() -> Self {
+        Self {
+            slots: [const { None }; 64],
+            next: 0,
+        }
+    }
+}
+impl RecentImages {
+    fn insert(&mut self, source: String, lease: ResourceLease) {
+        let backing = lease.image_backing();
+        if lease.is_retired() || backing.pixel_byte_len().is_none() || backing.pixels_resident() {
+            return;
+        }
+        self.slots[self.next] = Some((source, lease));
+        self.next = (self.next + 1) % self.slots.len();
+    }
+    fn take(&mut self, source: &str) -> Option<ResourceLease> {
+        self.slots
+            .iter_mut()
+            .find(|slot| slot.as_ref().is_some_and(|(key, _)| key == source))?
+            .take()
+            .map(|(_, lease)| lease)
+            .filter(|lease| !lease.is_retired())
+    }
+}
+
 pub(crate) struct Images {
     pub(crate) assets: Assets,
     #[cfg(test)]
@@ -29,6 +63,7 @@ pub(crate) struct Images {
     #[cfg(test)]
     pub(crate) work: BudgetPool,
     pub(crate) loaded: BTreeMap<String, ResourceLease>,
+    recent: RecentImages,
     pub(crate) manifests: BTreeMap<String, PreparedImage>,
     pub(crate) tiles: BTreeMap<String, TileDemand>,
     skipped: BTreeSet<String>,
@@ -45,8 +80,13 @@ pub(crate) struct Images {
     failure: Option<String>,
     closed: bool,
     settled: bool,
+    /// Wanted metadata survives tile demand, displayed-lease retirement and
+    /// commits. Only demand changes and completed source loads update readiness.
+    metadata_ready: bool,
     #[cfg(test)]
     poll_scans: usize,
+    #[cfg(test)]
+    metadata_scans: usize,
     #[cfg(test)]
     pub(crate) loads: u64,
     #[cfg(test)]
@@ -63,6 +103,7 @@ impl Images {
             work: assets.temporary_pool(),
             assets,
             loaded: BTreeMap::new(),
+            recent: RecentImages::default(),
             manifests: BTreeMap::new(),
             tiles: BTreeMap::new(),
             skipped: BTreeSet::new(),
@@ -82,8 +123,11 @@ impl Images {
             failure: None,
             closed: false,
             settled: false,
+            metadata_ready: true,
             #[cfg(test)]
             poll_scans: 0,
+            #[cfg(test)]
+            metadata_scans: 0,
             #[cfg(test)]
             loads: 0,
             #[cfg(test)]
@@ -210,15 +254,24 @@ impl Images {
         self.manifests
             .retain(|source, _| self.wanted.contains_key(source));
         self.failure = None;
-        let loading = self.wanted.keys().any(|source| {
-            !self.loaded.contains_key(source) && !self.manifests.contains_key(source)
-        });
-        self.loaded.retain(|source, _| {
-            self.wanted.contains_key(source)
+        for source in self.wanted.keys() {
+            if !self.loaded.contains_key(source)
+                && let Some(lease) = self.recent.take(source)
+            {
+                self.loaded.insert(source.clone(), lease);
+                self.content_revision = self.content_revision.wrapping_add(1);
+            }
+        }
+        self.update_metadata_ready();
+        let loading = !self.metadata_ready;
+        for (source, lease) in self.loaded.extract_if(.., |source, _| {
+            !(self.wanted.contains_key(source)
                 || self.displayed.contains(source)
                 || self.tiles.contains_key(source)
-                || (!loading && self.mounted.contains(source))
-        });
+                || (!loading && self.mounted.contains(source)))
+        }) {
+            self.recent.insert(source, lease);
+        }
     }
     pub fn poll(&mut self) -> Result<bool, String> {
         self.assets.maintain();
@@ -236,6 +289,7 @@ impl Images {
             self.poll_scans += 1;
         }
         let mut index = 0;
+        let mut metadata_completed = false;
         while index < self.pending.len() {
             let pending = &self.pending[index];
             let result = self.assets.take_image(pending.id).and_then(|result| {
@@ -266,7 +320,9 @@ impl Images {
             match result {
                 Ok(None) => index += 1,
                 Ok(Some(())) => {
-                    self.pending.remove(index);
+                    let pending = self.pending.remove(index);
+                    metadata_completed |=
+                        !self.metadata_ready && self.wanted.contains_key(&pending.source);
                     self.content_revision = self.content_revision.wrapping_add(1);
                 }
                 Err(error) => {
@@ -276,22 +332,35 @@ impl Images {
                     } else {
                         let error = self.diagnostic(&pending.source, &error);
                         self.failure = Some(error.clone());
+                        if metadata_completed {
+                            self.update_metadata_ready();
+                        }
                         return Err(error);
                     }
                 }
             }
         }
-        let sources = self
-            .wanted
-            .keys()
-            .filter(|source| {
-                !self.loaded.contains_key(*source)
-                    && !self.manifests.contains_key(*source)
-                    && !self.is_loading(source)
-            })
-            .take(self.free_slots())
-            .cloned()
-            .collect::<Vec<_>>();
+        if metadata_completed {
+            self.update_metadata_ready();
+        }
+        let sources = if self.metadata_ready {
+            Vec::new()
+        } else {
+            #[cfg(test)]
+            {
+                self.metadata_scans += 1;
+            }
+            self.wanted
+                .keys()
+                .filter(|source| {
+                    !self.loaded.contains_key(*source)
+                        && !self.manifests.contains_key(*source)
+                        && !self.is_loading(source)
+                })
+                .take(self.free_slots())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         for source in sources {
             let id = if let Some(bytes) = self.encoded.get(&source) {
                 let Some(id) = self
@@ -348,9 +417,17 @@ impl Images {
         }
     }
     pub(crate) fn metadata_ready(&self) -> bool {
-        self.wanted
+        self.metadata_ready
+    }
+    fn update_metadata_ready(&mut self) {
+        #[cfg(test)]
+        {
+            self.metadata_scans += 1;
+        }
+        self.metadata_ready = self
+            .wanted
             .keys()
-            .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source))
+            .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source));
     }
     pub(crate) fn restore_diagnostic(&self, lease: &ResourceLease, error: &str) -> String {
         if let Some((source, _)) = self
@@ -436,15 +513,13 @@ impl Images {
         changed
     }
     fn retain_loaded(&mut self) {
-        self.loaded.retain(|source, lease| {
-            let retain = self.wanted.contains_key(source)
+        for (source, lease) in self.loaded.extract_if(.., |source, _| {
+            !(self.wanted.contains_key(source)
                 || self.displayed.contains(source)
-                || self.tiles.contains_key(source);
-            if !retain {
-                lease.prohibit_new_leases();
-            }
-            retain
-        });
+                || self.tiles.contains_key(source))
+        }) {
+            self.recent.insert(source, lease);
+        }
     }
     fn poll_tiles(&mut self) -> bool {
         let required = self
@@ -516,8 +591,13 @@ impl Images {
                 .filter(|(_, tile)| tile.required)
                 .map(|(source, _)| source.clone()),
         );
-        self.loaded
-            .retain(|source, _| self.mounted.contains(source) || self.tiles.contains_key(source));
+        for (source, lease) in self.loaded.extract_if(.., |source, _| {
+            !self.mounted.contains(source) && !self.tiles.contains_key(source)
+        }) {
+            if !self.closed {
+                self.recent.insert(source, lease);
+            }
+        }
     }
     pub fn close(&mut self) {
         self.closed = true;
@@ -525,6 +605,7 @@ impl Images {
             self.assets.cancel(pending.id);
         }
         self.wanted.clear();
+        self.metadata_ready = true;
         self.mounted.clear();
         self.tiles.clear();
         self.manifests.clear();
@@ -533,6 +614,7 @@ impl Images {
         self.request_index = None;
         self.skipped.clear();
         self.failure = None;
+        self.recent = RecentImages::default();
         self.commit();
         // Assets belongs to the host. A replacement session and other consumers
         // keep using it after this stage has released its own requests and leases.

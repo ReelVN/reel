@@ -14,7 +14,9 @@ fn rebuild_code_with_frozen_resource_archives() {
     let output = path("REEL_FIXTURE_OUTPUT");
     let loaded =
         reel_cli::project::load(&project).unwrap_or_else(|error| panic!("{:?}", error.failure));
-    let checked = loaded.check().unwrap();
+    let target =
+        std::env::var("REEL_FIXTURE_TARGET").unwrap_or_else(|_| std::env::consts::OS.into());
+    let checked = loaded.check_with_progress(&target, &mut |_| {}).unwrap();
     let artifact = reel_cli::build_export(
         &checked,
         reel_cli::project::ENTRY,
@@ -46,6 +48,12 @@ fn rebuild_code_with_frozen_resource_archives() {
     manifest.text = Some("game.rtp".into());
     manifest.loose = None;
     fs::create_dir(&output).expect("fixture output must be fresh");
+    let mut disassembly = String::new();
+    aside_vm::bytecode::disassemble(&checked.compilation.program, &mut disassembly).unwrap();
+    fs::write(output.join("source-disassembly.txt"), &disassembly).unwrap();
+    disassembly.clear();
+    aside_vm::bytecode::disassemble(package.program(), &mut disassembly).unwrap();
+    fs::write(output.join("release-disassembly.txt"), &disassembly).unwrap();
     let mut writer = ArchiveWriter::new(
         fs::File::create(output.join("game.rtp")).unwrap(),
         ArchiveKind::Text,

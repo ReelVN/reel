@@ -59,7 +59,7 @@ reel export --release --resource-target vita --data-only
 
 将导出目录复制到 `ux0:/data/reel/作品名/`。启动器列出含 `game.asb` 的作品目录；进度保存在各作品的 `saves/` 目录。游戏中按 SELECT + START 返回作品列表。
 
-在启动器中按 SELECT 打开设置，选择界面语言和主题；设置保存在 `ux0:/data/reel/launcher.tsv`。复制新作品后按 START 刷新列表。
+在启动器中按 SELECT 打开设置，选择界面语言和主题；设置保存在 `ux0:/data/reel/launcher.json`。复制新作品后按 START 刷新列表。
 
 在项目根添加 `resources.toml`，可以自动生成目标平台的素材副本：
 
@@ -1145,6 +1145,8 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 图像的 `sampling: "nearest"` 保留像素边缘，默认 `"linear"` 平滑缩放。切换采样方式复用同一图片资源；图集裁切和分块图片沿用各自的源窗口。
 
 用 `effect` 将绘制函数应用到节点及其子树。`Fragment.sample()` 读取子树合成后的颜色；返回颜色替换结果，或返回浮点数控制覆盖率。参数绑定普通状态后，控件和动画都可以改变效果。
+
+节点的 `effect_resolution_scale` 控制该效果输出的计算分辨率，默认 `1.0`。例如 `effect_resolution_scale: if build.target == "vita" { 0.5 } else { 1.0 }` 在 Vita 上让两个轴各减半，再线性放大到原区域。子树保持原分辨率；缩小背景效果时，将文字和按钮放在独立节点上。
 
 ```aside
 use reel::types::Fragment;

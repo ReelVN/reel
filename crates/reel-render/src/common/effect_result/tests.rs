@@ -1,7 +1,7 @@
 use super::*;
 use reel_core::budget::{BudgetCategory, QueueLimits};
 
-fn pool() -> BudgetPool {
+pub(super) fn pool() -> BudgetPool {
     BudgetPool::new(
         BudgetCategory::Temporary,
         QueueLimits {
@@ -78,33 +78,34 @@ fn early_lookup_requires_a_complete_single_image_source() {
         let drawing = frame.drawing();
         let mut stack = Vec::new();
         let mut hits = 0;
-        let mut nested_rejections = 0;
+        let mut nested_sources = 0;
         for (index, command) in drawing.commands().iter().enumerate() {
             match command.op {
                 FrameOp::PushGroup(_) => stack.push(index),
                 FrameOp::PopGroup => {
                     let start = stack.pop().unwrap();
                     let range = start..index + 1;
-                    let probe = Probe::new(drawing, range.clone(), &effect, grid());
+                    let probe = Probe::new(drawing, range.clone(), &effect, grid(), true);
                     if probe.is_some() {
                         hits += 1;
-                        assert!(Probe::new(drawing, start..index, &effect, grid()).is_none());
+                        assert!(Probe::new(drawing, start..index, &effect, grid(), true).is_none());
                     }
                     if drawing.commands()[start + 1..index]
                         .iter()
                         .any(|c| matches!(c.op, FrameOp::PushGroup(_)))
                     {
-                        assert!(probe.is_none());
-                        // Early lookup stops at the first close; a nested prefix must fail too.
+                        assert_eq!(probe.is_some(), draws == 1);
+                        assert_eq!(source_end(drawing.commands(), start), Some(index + 1));
+                        // A prefix ending at a child's close is not the full source.
                         let first = drawing.commands()[start + 1..index]
                             .iter()
                             .position(|c| matches!(c.op, FrameOp::PopGroup))
                             .unwrap();
                         assert!(
-                            Probe::new(drawing, start..start + first + 2, &effect, grid())
+                            Probe::new(drawing, start..start + first + 2, &effect, grid(), true)
                                 .is_none()
                         );
-                        nested_rejections += 1;
+                        nested_sources += 1;
                     }
                 }
                 _ => {}
@@ -112,7 +113,7 @@ fn early_lookup_requires_a_complete_single_image_source() {
         }
         assert_eq!(hits > 0, draws == 1);
         if nested {
-            assert!(nested_rejections > 0);
+            assert!(nested_sources > 0);
         }
     }
 }
@@ -121,6 +122,8 @@ fn source(scene: Arc<Scene>) -> Source {
         owner: 1,
         scene,
         local: LocalId::None,
+        geometry: None,
+        bounds: super::super::scissor::Scissor::full([32, 32]),
         image: ImageProjection {
             resource: ResourceHandle {
                 registry: 1,
@@ -139,7 +142,7 @@ fn source(scene: Arc<Scene>) -> Source {
         },
     })
 }
-fn effect() -> FrameEffect {
+pub(super) fn effect() -> FrameEffect {
     FrameEffect {
         definition: [7; 32],
         shader: ResourceHandle {
@@ -155,12 +158,14 @@ fn effect() -> FrameEffect {
         }],
         bounds: Rect::new(0., 0., 32., 32.),
         coverage_invert: false,
+        resolution_scale: 1.,
     }
 }
-fn grid() -> Grid {
+pub(super) fn grid() -> Grid {
     Grid {
         source_transform: affine(Affine::IDENTITY),
         effect_transform: affine(Affine::IDENTITY),
+        effect_context: None,
         source_size: [32, 32],
         source_storage: [32, 32],
         source_scissor: [0, 0, 32, 32],
@@ -170,11 +175,12 @@ fn grid() -> Grid {
         quality: [0, 1],
     }
 }
-fn probe(effect: &FrameEffect, grid: Grid, scene: Arc<Scene>) -> Probe<'_> {
+pub(super) fn probe(effect: &FrameEffect, grid: Grid, scene: Arc<Scene>) -> Probe<'_> {
     Probe {
         source: source(scene),
         effect,
         grid,
+        required: None,
     }
 }
 #[test]
@@ -272,7 +278,10 @@ fn allocation_pressure_releases_optional_pixels_but_preserves_inflight_readers_a
     );
     let next = cache.prepare(probe(&effect, grid(), scene), &pool).unwrap();
     assert_eq!(next.token.1, token.1);
-    assert_ne!(next.token.0, token.0);
+    assert_eq!(
+        next.token, token,
+        "evicting pixels preserves their content identity"
+    );
     assert!(next.retain);
 }
 
@@ -286,6 +295,7 @@ fn key_preserves_recording_and_exact_dependency_bits() {
             source: source(scene.clone()),
             effect: &effect,
             grid: grid(),
+            required: None,
         },
         &pool,
     )
@@ -305,6 +315,9 @@ fn key_preserves_recording_and_exact_dependency_bits() {
     changed.bounds.x1 += 1.;
     assert!(!key.matches(&probe(&changed, grid(), scene.clone())));
     let mut changed_grid = grid();
+    changed = effect.clone();
+    changed.resolution_scale = 0.5;
+    assert!(!key.matches(&probe(&changed, grid(), scene.clone())));
     changed_grid.source_transform[4] = 1f64.to_bits();
     assert!(!key.matches(&probe(&effect, changed_grid, scene.clone())));
     changed_grid = grid();
@@ -327,7 +340,8 @@ fn key_preserves_recording_and_exact_dependency_bits() {
     assert!(!key.matches(&Probe {
         source: other_source,
         effect: &effect,
-        grid: grid()
+        grid: grid(),
+        required: None,
     }));
     assert!(pool.usage().bytes > 0);
     drop(key);
@@ -335,7 +349,7 @@ fn key_preserves_recording_and_exact_dependency_bits() {
 }
 
 #[test]
-fn candidate_is_private_until_publish_and_output_tokens_never_repeat() {
+fn candidates_stay_private_and_distinct_content_tokens_never_repeat() {
     let pool = pool();
     let effect = effect();
     let scene = Arc::new(Scene::new());
@@ -507,6 +521,16 @@ fn changing_parameters_keep_bounded_observations_until_dependencies_stabilize() 
         assert!(cache.publish(second, &pool));
         assert_eq!(cache.test_stats().0, if frame == 0 { 2 } else { 0 });
         assert_eq!(cache.0.lock().unwrap().entries.len(), 2);
+        assert_eq!(
+            cache.lookup_content(&probe(&first_effect, grid(), scene.clone())),
+            Some(first_token),
+        );
+        assert_eq!(
+            cache
+                .lookup(&probe(&first_effect, grid(), scene.clone()))
+                .is_some(),
+            frame == 0
+        );
         assert_eq!(
             cache
                 .lookup(&Probe::from_output(first_token, &second_effect, grid()))

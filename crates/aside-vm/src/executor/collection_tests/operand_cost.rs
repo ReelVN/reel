@@ -38,6 +38,9 @@ fn packed_arithmetic_operand_cost() {
         )
         .unwrap();
         vm.slots.paired_reads = paired;
+        // Isolate the original checked operand API; borrowed blocks validate
+        // their mapping once and intentionally bypass this test-only switch.
+        vm.work_probe.single_scalar_step = true;
         let task = vm
             .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
             .unwrap();

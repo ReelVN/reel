@@ -14,6 +14,18 @@ pub(crate) struct ParentCursor {
     source: usize,
 }
 impl Plan {
+    /// The first producer identifies an independent window in this drawing.
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn window(&self, command: usize) -> Option<(usize, usize)> {
+        let index = self
+            .entries
+            .binary_search_by_key(&command, |entry| entry.push)
+            .ok()?;
+        let first = self.entries[..=index]
+            .iter()
+            .rposition(|entry| entry.first)?;
+        Some((self.entries[first].push, index - first))
+    }
     /// Sources themselves retain their child draws. Only draws between sources
     /// in an admitted window are delayed to the ordered parent replay.
     pub(crate) fn defer_draw(&self, command: usize) -> bool {

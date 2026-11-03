@@ -3,7 +3,7 @@
 use crate::{NativeError, StandardLibrary};
 use aside_host::aside_vm::{
     Heap, HeapError, ObjectKind, Value,
-    bytecode::{BuiltinType, Effects},
+    bytecode::{BuiltinType, Effects, ReadOnlyLeaf},
     executor::{Continuation, FaultRetention, HostResponse, HostTicket, NativeInput, Vm},
 };
 use aside_host::{CallContext, NativeBinding, NativeContract, NativeParameter, native};
@@ -38,6 +38,8 @@ pub(super) fn binding() -> NativeBinding<StandardLibrary, NativeError> {
     NativeBinding {
         documentation: DOCUMENTATION,
         contract: NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "std::math::curve".into(),
             abi_version: 1,
             parameters: vec![NativeParameter {
@@ -285,14 +287,21 @@ pub(super) fn construct(
 
 /// Sample this curve at `time`. Endpoints clamp; inner segments use the left
 /// key's interpolation mode. Sampling performs a logarithmic lookup.
-#[native(symbol = "std::math::curve::sample", effects = Effects(0))]
+#[native(symbol = "std::math::curve::sample", effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |heap, args| {
+        sample_value(heap, args[0], args[1]).ok().map(Value::float)
+    } })]
 pub(super) fn sample(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
     #[aside(doc_type = aside_host::source::named(crate::source::CURVE))] receiver: Value,
     #[aside(doc_type = aside_host::source::number())] time: Value,
 ) -> Result<f64, NativeError> {
+    sample_value(context.vm.heap(), receiver, time)
+}
+
+fn sample_value(heap: &Heap, receiver: Value, time: Value) -> Result<f64, NativeError> {
     let time = finite(time)?;
-    Ok(sample_curve(context.vm.heap(), receiver, time)?)
+    Ok(sample_curve(heap, receiver, time)?)
 }
 
 /// Samples an immutable standard-library curve without allocating or invoking

@@ -6,27 +6,71 @@ use reel_ui::frame::{
     FrameCommand, FrameDrawing, FrameGroup, FrameOp, RenderFrame, SceneTransition,
 };
 use reel_ui::kurbo::Affine;
+mod inputs;
+#[cfg(any(feature = "gxm", test))]
+pub(crate) mod macrotile;
+mod outputs;
+mod resolution;
+mod source_free;
 
 /// Physical scratch multiplicities from the selected lifetime traversal.
 #[derive(Default)]
-pub(crate) struct Requirements(Vec<Requirement>);
+pub(crate) struct Requirements(Vec<Requirement>, Vec<[u32; 2]>);
 #[derive(Clone, Copy)]
 struct Requirement {
     size: [u32; 2],
     count: u64,
 }
 impl Requirements {
+    pub(crate) fn exact(&self) -> &[[u32; 2]] {
+        &self.1
+    }
+
+    pub(crate) fn with_exact(
+        mut self,
+        exact: &[[u32; 2]],
+        mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<Self, GpuError> {
+        for &size in exact {
+            if !self.1.contains(&size) {
+                super::scopes::push_stack(&mut self.1, size, &mut reserve)?;
+            }
+        }
+        Ok(self)
+    }
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = ([u32; 2], u64)> + '_ {
         self.0.iter().map(|entry| (entry.size, entry.count))
     }
     #[cfg(test)]
     pub(crate) fn capacity_bytes(&self) -> u64 {
-        (self.0.capacity() * size_of::<Requirement>()) as u64
+        (self.0.capacity() * size_of::<Requirement>() + self.1.capacity() * size_of::<[u32; 2]>())
+            as u64
     }
     pub(crate) fn count(&self, size: [u32; 2]) -> u64 {
         self.0
             .binary_search_by_key(&size, |bucket| bucket.size)
             .map_or(0, |index| self.0[index].count)
+    }
+
+    /// Relocate one input class within the preallocated class-count capacity.
+    pub(crate) fn relocate(&mut self, from: [u32; 2], to: [u32; 2], count: u64) {
+        let old = self
+            .0
+            .binary_search_by_key(&from, |entry| entry.size)
+            .unwrap();
+        self.0[old].count -= count;
+        if self.0[old].count == 0 {
+            self.0.remove(old);
+        }
+        match self.0.binary_search_by_key(&to, |entry| entry.size) {
+            Ok(index) => self.0[index].count += count,
+            Err(index) => {
+                // Each physical class has at least one of the original input
+                // classes. Relocation cannot exceed collect's input capacity.
+                assert!(self.0.len() < self.0.capacity());
+                self.0.insert(index, Requirement { size: to, count });
+            }
+        }
     }
 
     pub(crate) fn collect(
@@ -46,6 +90,9 @@ impl Requirements {
             let mut count = 0;
             for index in 0..result.len() {
                 let bucket = result[index];
+                if bucket.count == 0 {
+                    continue;
+                }
                 if count != 0 && result[count - 1].size == bucket.size {
                     result[count - 1].count = result[count - 1]
                         .count
@@ -58,7 +105,7 @@ impl Requirements {
             }
             result.truncate(count);
         }
-        Ok(Self(result))
+        Ok(Self(result, Vec::new()))
     }
 }
 
@@ -107,10 +154,17 @@ mod plan_tests;
 /// still retain separate GPU allocations until the submission completes.
 #[derive(Default)]
 struct Scratch {
+    cropped: bool,
+    output_crops: Vec<super::effect_output::Entry>,
+    exact: Vec<[u32; 2]>,
     buckets: Vec<Bucket>,
     coverage: Vec<Bucket>,
     local_backdrop: bool,
+    sampled_backdrop: bool,
     events: Option<Vec<super::target_storage::Event>>,
+    effect_inputs: Vec<super::effect_inputs::Candidate>,
+    #[cfg(any(feature = "gxm", test))]
+    macrotiles: Vec<macrotile::Candidate>,
 }
 struct Bucket {
     size: [u32; 2],
@@ -219,6 +273,7 @@ impl Scratch {
         single_mask: bool,
         reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<(), GpuError> {
+        self.sampled_backdrop |= needed;
         if mask_surface {
             if single_mask {
                 self.coverage(size, true, reserve)?;
@@ -249,6 +304,8 @@ impl Scratch {
     }
 }
 struct Scope<'a> {
+    push: Option<usize>,
+    macro_source: bool,
     clip_child: Option<&'a FrameGroup>,
     retained_source: Option<[u32; 2]>,
     defer: bool,
@@ -258,9 +315,12 @@ struct Scope<'a> {
     forward_source: bool,
     clip: bool,
     group: Option<&'a FrameGroup>,
+    source_effect_transform: Option<Affine>,
     restore: Option<(Affine, [u32; 2])>,
     parent_scissor: Scissor,
     source_view: bool,
+    source_owner: Option<inputs::Source>,
+    input_candidate: Option<usize>,
 }
 enum Pending<'a> {
     Old(&'a SceneTransition, Option<usize>),
@@ -276,9 +336,10 @@ enum Pending<'a> {
     },
 }
 struct Stream<'a> {
+    source_crop: Option<super::source_crop::Planned>,
     retained_context: usize,
     scheduled: bool,
-    deferred: Vec<[u32; 2]>,
+    deferred: Vec<DeferredSource>,
     drawing: &'a FrameDrawing,
     commands: &'a [FrameCommand],
     offset: Option<usize>,
@@ -291,6 +352,44 @@ struct Stream<'a> {
     transform: Affine,
     size: [u32; 2],
     scissor: Scissor,
+    #[cfg(any(feature = "gxm", test))]
+    macrotile: Option<macrotile::Open>,
+}
+struct DeferredSource {
+    size: [u32; 2],
+    input_candidate: Option<usize>,
+    #[cfg(any(feature = "gxm", test))]
+    macrotile: Option<macrotile::Candidate>,
+}
+impl DeferredSource {
+    fn ordinary(size: [u32; 2]) -> Self {
+        Self {
+            size,
+            input_candidate: None,
+            #[cfg(any(feature = "gxm", test))]
+            macrotile: None,
+        }
+    }
+}
+impl Scratch {
+    fn release_deferred(
+        &mut self,
+        sources: &mut Vec<DeferredSource>,
+        reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<(), GpuError> {
+        for source in sources.drain(..) {
+            if let Some(index) = source.input_candidate {
+                self.effect_inputs[index].release = self.events.as_ref().unwrap().len();
+            }
+            #[cfg(any(feature = "gxm", test))]
+            if let Some(mut candidate) = source.macrotile {
+                candidate.release = self.events.as_ref().unwrap().len();
+                super::scopes::push_stack(&mut self.macrotiles, candidate, &mut *reserve)?;
+            }
+            self.release(source.size, reserve)?;
+        }
+        Ok(())
+    }
 }
 #[expect(
     clippy::too_many_arguments,
@@ -330,6 +429,7 @@ fn stream<'a>(
     };
     scratch.acquire(size, reserve)?;
     Ok(Stream {
+        source_crop: None,
         retained_context: 0,
         scheduled: false,
         deferred: Vec::new(),
@@ -347,6 +447,8 @@ fn stream<'a>(
         transform,
         size,
         scissor,
+        #[cfg(any(feature = "gxm", test))]
+        macrotile: None,
     })
 }
 #[cfg(test)]
@@ -402,101 +504,20 @@ pub(crate) struct Input<'a> {
     pub coverage_cost: Option<&'a dyn Fn([u32; 2]) -> Result<u64, GpuError>>,
 }
 
-pub(crate) struct Measured {
-    pub bytes: u64,
-    pub reusable: bool,
-    pub local_backdrop: bool,
-    pub coverage_bytes: u64,
-    scratch: Scratch,
-}
-impl Measured {
-    pub(crate) fn coverage_requirements(
-        &self,
-        reserve: impl FnMut(u64) -> Result<(), GpuError>,
-    ) -> Result<Requirements, GpuError> {
-        Requirements::collect(
-            self.scratch
-                .coverage
-                .iter()
-                .map(|bucket| (bucket.size, bucket.peak)),
-            reserve,
-        )
-    }
-    pub(crate) fn requirements(
-        &self,
-        reserve: impl FnMut(u64) -> Result<(), GpuError>,
-    ) -> Result<Requirements, GpuError> {
-        Requirements::collect(
-            self.scratch
-                .buckets
-                .iter()
-                .map(|bucket| (bucket.size, bucket.peak)),
-            reserve,
-        )
-    }
-}
+mod measure;
 
 impl Input<'_> {
-    pub(crate) fn measure(
-        &self,
-        reserve: impl FnMut(u64) -> Result<(), GpuError>,
-    ) -> Result<Measured, GpuError> {
-        let scratch = self.walk(false, reserve)?;
-        let reusable = scratch
-            .buckets
-            .iter()
-            .filter(|bucket| bucket.size != self.size)
-            .take(2)
-            .count()
-            == 2;
-        let coverage_bytes = scratch.coverage_cost(self.coverage_cost)?;
-        let bytes = scratch
-            .cost(self.cost)?
-            .checked_add(coverage_bytes)
-            .and_then(|v| v.checked_add(self.selection.persistent_bytes()))
-            .ok_or(GpuError::InvalidSize)?;
-        Ok(Measured {
-            bytes,
-            reusable,
-            local_backdrop: scratch.local_backdrop,
-            coverage_bytes,
-            scratch,
-        })
-    }
-
-    /// Derive a physical storage map from the executor's exact target lifetimes.
-    /// Temporary planning tickets end here; mapping tickets remain charged through encoding.
-    pub(crate) fn storage<R>(
-        &self,
-        mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
-    ) -> Result<(super::target_storage::Plan, u64, Vec<R>), GpuError> {
-        let mut temporary = Vec::new();
-        let scratch = self.walk(true, |bytes| {
-            temporary.push(reserve(bytes)?);
-            Ok(())
-        })?;
-        let (plan, retained) = super::target_storage::Plan::from_lifetimes(
-            scratch
-                .events
-                .as_deref()
-                .expect("recorded target lifetimes"),
-            self.size,
-            self.cost,
-            reserve,
-        )?;
-        let bytes = plan
-            .bytes()
-            .checked_add(scratch.coverage_cost(self.coverage_cost)?)
-            .and_then(|v| v.checked_add(self.selection.persistent_bytes()))
-            .ok_or(GpuError::InvalidSize)?;
-        Ok((plan, bytes, retained))
-    }
-
     fn walk(
         &self,
         record: bool,
+        select_macrotiles: bool,
+        mut effect_inputs: Option<&mut inputs::Collector<'_>>,
         mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<Scratch, GpuError> {
+        if !self.schedule.effect_inputs().is_empty() {
+            return self.effect_input_scratch(record, select_macrotiles, &mut reserve);
+        }
+        let _ = select_macrotiles;
         let Self {
             frame,
             second,
@@ -713,6 +734,8 @@ impl Input<'_> {
                         super::scopes::push_stack(
                             &mut current.scopes,
                             Scope {
+                                push: None,
+                                macro_source: false,
                                 defer: false,
                                 shared_source: false,
                                 end_batch: false,
@@ -733,8 +756,11 @@ impl Input<'_> {
                                     .flatten(),
                                 retained_source: None,
                                 restore: None,
+                                source_effect_transform: None,
                                 parent_scissor,
                                 source_view: false,
+                                source_owner: None,
+                                input_candidate: None,
                             },
                             &mut reserve,
                         )?;
@@ -753,35 +779,7 @@ impl Input<'_> {
                             current.next += consumed;
                             continue;
                         }
-                        if let Some(offset) = current.offset
-                            && let Some(end) = selection
-                                .sources
-                                .end(current.drawing, offset + current.next - 1)
-                        {
-                            let parent = current.scopes.last();
-                            let source = super::source_plan::layout(
-                                group,
-                                parent.and_then(|scope| scope.group),
-                                current.transform,
-                                current.size,
-                                max_dimension,
-                                at,
-                            )?;
-                            let forward = current.groups.is_source_child(current.next - 1)
-                                && parent.is_some_and(|scope| scope.isolated)
-                                && super::effect_plan::forwards_source(
-                                    group,
-                                    &source,
-                                    current.transform,
-                                    current.size,
-                                );
-                            if forward
-                                || !super::effect_plan::terminal_composite(group, samples, false)
-                            {
-                                scratch.acquire(current.size, &mut reserve)?;
-                                scratch.release(current.size, &mut reserve)?;
-                            }
-                            current.next = end - offset;
+                        if self.source_free(current, group, &mut scratch, &mut reserve, at)? {
                             continue;
                         }
                         if let Some(fill) = crate::common::scopes::inline_group_fill(
@@ -807,7 +805,14 @@ impl Input<'_> {
                             .scheduled
                             .then(|| schedule.entry(current.next - 1))
                             .flatten();
-                        let view = batch.map(|entry| entry.view).or_else(|| {
+                        if let Some(entry) = batch.filter(|entry| entry.canonical_push.is_some()) {
+                            current.next = entry.end;
+                            if entry.last {
+                                scratch.release_deferred(&mut current.deferred, &mut reserve)?;
+                            }
+                            continue;
+                        }
+                        let view = batch.and_then(|entry| entry.view).or_else(|| {
                             isolated
                                 .then(|| {
                                     crate::common::source_view::SourceView::group(
@@ -824,6 +829,17 @@ impl Input<'_> {
                                 .flatten()
                         });
                         let mut forward_source = false;
+                        let mut crop_source = None;
+                        let mut defer_source = false;
+                        let mut source_effect_transform = None;
+                        let effect_transform = super::effect_plan::output_transform(
+                            group,
+                            current
+                                .scopes
+                                .last()
+                                .and_then(|scope| scope.group.zip(scope.source_effect_transform)),
+                            current.transform,
+                        );
                         let restore = if let Some(view) = view {
                             let restore = (current.transform, current.size);
                             current.transform = view.frame_to_source(current.transform);
@@ -838,6 +854,7 @@ impl Input<'_> {
                                 super::effect_plan::SourceLayout {
                                     size: current.size,
                                     frame_to_source: current.transform,
+                                    effect_to_source: effect_transform,
                                 }
                             } else {
                                 crate::common::effect_plan::source_layout(
@@ -859,7 +876,7 @@ impl Input<'_> {
                             let source_scissor = super::effect_plan::roi::source_scissor(
                                 current.drawing,
                                 group,
-                                current.transform * group.effect_to_target,
+                                effect_transform,
                                 current.size,
                                 output_scissor,
                                 source.size,
@@ -872,11 +889,70 @@ impl Input<'_> {
                                     &source,
                                     current.transform,
                                     current.size,
+                                    current
+                                        .scopes
+                                        .last()
+                                        .is_some_and(|scope| scope.shared_source),
                                 );
+                            if current.source_crop.is_none()
+                                && isolated
+                                && !forward_source
+                                && batch.is_none_or(|entry| entry.view.is_none())
+                                && schedule.source_crops()
+                                && (schedule.crop_backing(source.size).is_some()
+                                    || schedule.storage_size(source.size) == source.size)
+                            {
+                                current.source_crop = super::source_crop::plan(
+                                    current.drawing,
+                                    current.commands,
+                                    current.next - 1,
+                                    &current.groups,
+                                    &source,
+                                    schedule.crop_backing(source.size),
+                                    source_scissor,
+                                    capture || samples != 1,
+                                )
+                                .filter(|plan| {
+                                    schedule.storage_size(plan.crop.size) == plan.crop.size
+                                });
+                            }
+                            defer_source = current
+                                .source_crop
+                                .is_some_and(|plan| plan.leaf != current.next - 1);
+                            if current
+                                .source_crop
+                                .is_some_and(|plan| plan.leaf == current.next - 1)
+                            {
+                                crop_source = current.source_crop.take().map(|plan| plan.crop);
+                                scratch.cropped = true;
+                                if let Some(crop) = crop_source {
+                                    for size in [
+                                        crop.physical.map_or(crop.logical, |_| crop.size),
+                                        crop.size,
+                                    ] {
+                                        if !scratch.exact.contains(&size) {
+                                            super::scopes::push_stack(
+                                                &mut scratch.exact,
+                                                size,
+                                                &mut reserve,
+                                            )?;
+                                        }
+                                    }
+                                }
+                            }
                             let restore = (current.transform, current.size);
-                            current.transform = source.frame_to_source;
-                            current.size = source.size;
-                            current.scissor = source_scissor;
+                            current.transform = crop_source
+                                .map_or(source.frame_to_source, |crop| {
+                                    crop.transform(source.frame_to_source)
+                                });
+                            source_effect_transform =
+                                Some(crop_source.map_or(source.effect_to_source, |crop| {
+                                    crop.transform(source.effect_to_source)
+                                }));
+                            current.size =
+                                crop_source.map_or(source.size, |crop| crop.raster_size());
+                            current.scissor = crop_source
+                                .map_or(source_scissor, |crop| crop.scissor(source_scissor));
                             Some(restore)
                         } else {
                             current.scissor = Scissor::group_bounds(
@@ -889,43 +965,173 @@ impl Input<'_> {
                             .map_or(parent_scissor, |s| parent_scissor.intersect(s));
                             None
                         };
+                        #[cfg(any(feature = "gxm", test))]
+                        if select_macrotiles && current.macrotile.is_none() {
+                            current.macrotile = macrotile::open(
+                                current,
+                                group,
+                                isolated
+                                    && !forward_source
+                                    && view.is_none()
+                                    && batch.is_none_or(|entry| entry.view.is_none()),
+                                capture,
+                                samples,
+                                schedule,
+                                scratch.events.as_ref().map_or(0, Vec::len),
+                            )?;
+                        }
+                        let source_begin = scratch.events.as_ref().map_or(0, Vec::len);
+                        let macro_source = if forward_source {
+                            current
+                                .scopes
+                                .last()
+                                .is_some_and(|scope| scope.macro_source)
+                        } else {
+                            schedule.collect_output_crops()
+                                && current.offset == Some(0)
+                                && super::effect_output::macro_source(
+                                    current.drawing,
+                                    current.next - 1,
+                                    &current.groups,
+                                    schedule.storage_size(current.size),
+                                )
+                        };
+                        let original_source = crop_source
+                            .is_none_or(|crop| crop.original_coordinates())
+                            && current
+                                .source_crop
+                                .is_none_or(|plan| plan.crop.original_coordinates());
+                        let source_owner = (effect_inputs.is_some()
+                            && isolated
+                            && view.is_none()
+                            && original_source
+                            && inputs::ordinary(group))
+                        .then(|| {
+                            current.offset.map(|offset| {
+                                let key = super::effect_inputs::Key::new(
+                                    current.drawing,
+                                    offset + current.next - 1,
+                                    super::effect_inputs::Raster::new(
+                                        current.transform,
+                                        current.size,
+                                        schedule.storage_size(current.size),
+                                        current.scissor,
+                                    ),
+                                );
+                                let parent = current
+                                    .scopes
+                                    .last()
+                                    .filter(|scope| {
+                                        super::effect_plan::same_source_domain(group, scope.group)
+                                    })
+                                    .and_then(|scope| scope.source_owner)
+                                    .filter(|_| forward_source);
+                                (!forward_source || parent.is_some()).then_some(inputs::Source {
+                                    key,
+                                    root: parent.map_or(key, |source| source.root),
+                                    begin: parent.map_or(source_begin, |source| source.begin),
+                                })
+                            })
+                        })
+                        .flatten()
+                        .flatten();
+                        if let Some(collector) = effect_inputs.as_deref_mut()
+                            && forward_source
+                            && original_source
+                            && let Some(candidate) = collector.candidate(
+                                current,
+                                group,
+                                effect_transform,
+                                parent_scissor,
+                                schedule,
+                            )
+                        {
+                            let index = scratch.effect_inputs.len();
+                            super::scopes::push_stack(
+                                &mut scratch.effect_inputs,
+                                candidate,
+                                &mut reserve,
+                            )?;
+                            current
+                                .scopes
+                                .last_mut()
+                                .expect("source parent")
+                                .input_candidate = Some(index);
+                        }
                         if isolated
-                            && !forward_source
+                            && (!forward_source || crop_source.is_some())
+                            && !defer_source
                             && batch.is_none_or(|entry| !entry.shared || entry.first)
                         {
-                            scratch.acquire(current.size, &mut reserve)?;
+                            scratch.acquire(
+                                crop_source.map_or(current.size, |crop| crop.size),
+                                &mut reserve,
+                            )?;
                         }
                         super::scopes::push_stack(
                             &mut current.scopes,
                             Scope {
+                                push: current.offset.map(|offset| offset + current.next - 1),
+                                macro_source,
                                 defer: batch.is_some(),
                                 shared_source: batch.is_some_and(|entry| entry.shared),
                                 end_batch: batch.is_some_and(|entry| entry.last),
                                 isolated,
                                 clip: group.clip.is_some(),
                                 group: Some(group),
+                                source_effect_transform,
                                 clip_child: None,
-                                retained_source: None,
+                                retained_source: crop_source.map(|crop| crop.size),
                                 restore,
                                 parent_scissor,
                                 source_view: view.is_some(),
                                 forward_source,
+                                source_owner,
+                                input_candidate: None,
                             },
                             &mut reserve,
                         )?;
                     }
                     FrameOp::PopClip | FrameOp::PopGroup => {
                         let scope = current.scopes.pop().expect("validated scope");
+                        if let Some(index) = scope.input_candidate {
+                            let candidate = &mut scratch.effect_inputs[index];
+                            candidate.events.end = scratch.events.as_ref().unwrap().len();
+                            candidate.entry.resume = current.offset.unwrap() + current.next - 1;
+                        }
+                        #[cfg(any(feature = "gxm", test))]
+                        let macrotile = current
+                            .macrotile
+                            .take_if(|open| open.depth == current.scopes.len());
                         current.scissor = scope.parent_scissor;
                         if !scope.isolated {
                             continue;
                         }
                         if scope.forward_source {
+                            let source_size = current.size;
                             let (transform, size) = scope.restore.expect("forwarded source domain");
                             current.transform = transform;
                             current.size = size;
-                            scratch.acquire(size, &mut reserve)?;
-                            scratch.release(size, &mut reserve)?;
+                            let output = self
+                                .output_crop(current, &scope, &mut scratch, &mut reserve)?
+                                .map_or(size, |crop| crop.size);
+                            let reduced = scratch.begin_resolution(
+                                size,
+                                scope.group.and_then(|g| g.effect.as_ref()),
+                                &mut reserve,
+                            )?;
+                            scratch.acquire(output, &mut reserve)?;
+                            scratch.end_resolution(reduced, &mut reserve)?;
+                            scratch.release_input(
+                                &scope,
+                                scope.retained_source.unwrap_or(source_size),
+                                &mut reserve,
+                            )?;
+                            current
+                                .scopes
+                                .last_mut()
+                                .expect("forwarded parent")
+                                .retained_source = (output != size).then_some(output);
                             continue;
                         }
                         let mut source = scope.retained_source.unwrap_or(current.size);
@@ -934,8 +1140,14 @@ impl Input<'_> {
                             // Each effect replaces the complete local source. The
                             // scalar mask writes its covered source in one pass.
                             if group.effect.is_some() {
+                                let reduced = scratch.begin_resolution(
+                                    current.size,
+                                    group.effect.as_ref(),
+                                    &mut reserve,
+                                )?;
                                 scratch.acquire(source, &mut reserve)?;
-                                scratch.release(source, &mut reserve)?;
+                                scratch.end_resolution(reduced, &mut reserve)?;
+                                scratch.release_input(&scope, source, &mut reserve)?;
                             }
                             scratch.acquire(source, &mut reserve)?;
                             scratch.release(source, &mut reserve)?;
@@ -948,7 +1160,7 @@ impl Input<'_> {
                                     if !scope.shared_source || current.deferred.is_empty() {
                                         super::scopes::push_stack(
                                             &mut current.deferred,
-                                            source,
+                                            DeferredSource::ordinary(source),
                                             &mut reserve,
                                         )?;
                                     }
@@ -956,9 +1168,10 @@ impl Input<'_> {
                                         // All window sources precede parent replay.
                                         // Interleaved ordinary draws allocate no targets;
                                         // these same deferred lifetimes cover that phase.
-                                        for source in current.deferred.drain(..) {
-                                            scratch.release(source, &mut reserve)?;
-                                        }
+                                        scratch.release_deferred(
+                                            &mut current.deferred,
+                                            &mut reserve,
+                                        )?;
                                     }
                                 } else {
                                     let backdrop = scope.group.is_some_and(|group| {
@@ -987,7 +1200,7 @@ impl Input<'_> {
                                         && !current.drawing.transitions().is_empty(),
                                 )
                             }) {
-                                scratch.release(source, &mut reserve)?;
+                                scratch.release_input(&scope, source, &mut reserve)?;
                                 continue;
                             }
                             if scope.group.is_some_and(|definition| {
@@ -1006,6 +1219,14 @@ impl Input<'_> {
                                     .retained_source = Some(source);
                                 continue;
                             }
+                            let reduced = scratch.begin_resolution(
+                                parent_size,
+                                scope
+                                    .group
+                                    .filter(|g| g.mask_effect.is_none())
+                                    .and_then(|g| g.effect.as_ref()),
+                                &mut reserve,
+                            )?;
                             if scope.group.is_some_and(|group| {
                                 super::effect_plan::terminal_composite(
                                     group,
@@ -1013,7 +1234,39 @@ impl Input<'_> {
                                     capture || !current.drawing.transitions().is_empty(),
                                 )
                             }) {
-                                scratch.release(source, &mut reserve)?;
+                                scratch.end_resolution(reduced, &mut reserve)?;
+                                #[cfg(any(feature = "gxm", test))]
+                                let macrotile = macrotile.map(|open| {
+                                    open.finish(scratch.events.as_ref().map_or(0, Vec::len))
+                                });
+                                if scope.defer {
+                                    super::scopes::push_stack(
+                                        &mut current.deferred,
+                                        DeferredSource {
+                                            size: source,
+                                            input_candidate: scope.input_candidate,
+                                            #[cfg(any(feature = "gxm", test))]
+                                            macrotile,
+                                        },
+                                        &mut reserve,
+                                    )?;
+                                    if scope.end_batch {
+                                        scratch.release_deferred(
+                                            &mut current.deferred,
+                                            &mut reserve,
+                                        )?;
+                                    }
+                                } else {
+                                    scratch.release_input(&scope, source, &mut reserve)?;
+                                    #[cfg(any(feature = "gxm", test))]
+                                    if let Some(candidate) = macrotile {
+                                        super::scopes::push_stack(
+                                            &mut scratch.macrotiles,
+                                            candidate,
+                                            &mut reserve,
+                                        )?;
+                                    }
+                                }
                                 continue;
                             }
                             let coverage_tail = scope.group.is_some_and(|group| {
@@ -1028,9 +1281,10 @@ impl Input<'_> {
                                 || !super::effect_plan::coverage_retention(source, parent_size)
                             {
                                 scratch.acquire(parent_size, &mut reserve)?;
-                                scratch.release(source, &mut reserve)?;
+                                scratch.release_input(&scope, source, &mut reserve)?;
                                 source = parent_size;
                             }
+                            scratch.end_resolution(reduced, &mut reserve)?;
                         }
                         let mask = scope.group.and_then(|group| group.mask);
                         let backdrop = scope.group.is_some_and(|group| {
@@ -1099,6 +1353,15 @@ impl Input<'_> {
                                 &mut reserve,
                             )?;
                             super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+                        } else if scope.defer {
+                            super::scopes::push_stack(
+                                &mut current.deferred,
+                                DeferredSource::ordinary(source),
+                                &mut reserve,
+                            )?;
+                            if scope.end_batch {
+                                scratch.release_deferred(&mut current.deferred, &mut reserve)?;
+                            }
                         } else {
                             scratch.composite(
                                 current.size,
@@ -1121,6 +1384,36 @@ impl Input<'_> {
         }
         Ok(scratch)
     }
+}
+
+/// Shared mapped high-water recount for selected crops and macrotile spans.
+fn recount(
+    events: &[super::target_storage::Event],
+    selected: impl Iterator<Item = std::ops::Range<usize>>,
+    storage: impl Fn([u32; 2]) -> [u32; 2],
+    scratch: &mut Scratch,
+    reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
+) -> Result<(), GpuError> {
+    let mut selected = selected.peekable();
+    for bucket in &mut scratch.buckets {
+        bucket.live = 0;
+        bucket.peak = 0;
+    }
+    for (index, event) in events.iter().enumerate() {
+        while selected.peek().is_some_and(|r| r.end <= index) {
+            selected.next();
+        }
+        if selected.peek().is_some_and(|r| r.contains(&index)) {
+            continue;
+        }
+        let size = storage(event.size);
+        if event.acquired {
+            scratch.acquire(size, reserve)?;
+        } else {
+            scratch.release(size, reserve)?;
+        }
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {

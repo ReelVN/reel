@@ -7,10 +7,14 @@ pub struct Shader {
 }
 
 pub fn sources() -> Vec<Shader> {
+    sources_at(std::path::Path::new("."))
+}
+
+pub fn sources_at(root: &std::path::Path) -> Vec<Shader> {
     let mut shaders = Vec::new();
     let read = |name: &str| {
-        let path = format!("src/gxm/shaders/{name}.cg");
-        println!("cargo:rerun-if-changed={path}");
+        let path = root.join(format!("src/gxm/shaders/{name}.cg"));
+        println!("cargo:rerun-if-changed={}", path.display());
         std::fs::read_to_string(path).expect("read shader source")
     };
     let mut add = |name: &str, vertex, source: &str, defines: &str| {
@@ -30,6 +34,7 @@ pub fn sources() -> Vec<Shader> {
     ] {
         add(name, true, &read(name), "");
     }
+    add("effect_resample", false, &read("effect_resample"), "");
     let composite = read("composite");
     for (name, define) in [
         ("composite", ""),
@@ -131,7 +136,7 @@ pub fn sources() -> Vec<Shader> {
                 &format!(
                     "{defines}\n{}",
                     if composite {
-                        "#define REEL_MASK_COMPOSITE"
+                        "#define REEL_MASK_COMPOSITE\n#define REEL_UNCLIPPED"
                     } else {
                         ""
                     }
@@ -154,7 +159,7 @@ pub fn sources() -> Vec<Shader> {
                 &format!(
                     "{}\n{}",
                     if composite {
-                        "#define REEL_MASK_COMPOSITE"
+                        "#define REEL_MASK_COMPOSITE\n#define REEL_UNCLIPPED"
                     } else {
                         ""
                     },
@@ -198,7 +203,7 @@ pub fn sources() -> Vec<Shader> {
                 ""
             }
         );
-        if !regional && alpha != 3 {
+        if alpha != 3 {
             for clipped in [false, true] {
                 add(
                     &format!("{name}_bounded{}", if clipped { "" } else { "_unclipped" }),
@@ -232,6 +237,9 @@ pub fn sources() -> Vec<Shader> {
         ("paint_packed", 3, 1),
         ("paint_video", 2, 0),
         ("paint_video_appearance", 2, 1),
+        ("paint_appearance_constant", 0, 3),
+        ("paint_packed_constant", 3, 3),
+        ("paint_video_constant", 2, 3),
     ] {
         let defines = format!("#define REEL_SOURCE_KIND {kind}\n#define REEL_STYLE {style}");
         add(name, false, &paint, &defines);
@@ -243,6 +251,79 @@ pub fn sources() -> Vec<Shader> {
         );
     }
     for clipped in [false, true] {
+        for (name, define) in [
+            ("paint_alpha_solid", "#define REEL_OPAQUE_SOURCE"),
+            ("paint_alpha_direct", ""),
+            ("paint_alpha_region", "#define REEL_REGIONAL"),
+        ] {
+            add(
+                &format!("{name}{}", if clipped { "" } else { "_unclipped" }),
+                false,
+                &read("paint_alpha"),
+                &format!(
+                    "{define}\n{}",
+                    if clipped {
+                        ""
+                    } else {
+                        "#define REEL_UNCLIPPED"
+                    }
+                ),
+            );
+        }
+        for (name, sampling, style, plain_adjust) in [
+            ("paint_appearance_direct", 1, 1, false),
+            ("paint_appearance_region", 2, 1, false),
+            ("paint_constant_direct", 1, 3, false),
+            ("paint_constant_region", 2, 3, false),
+            ("paint_adjust_direct", 1, 1, true),
+            ("paint_adjust_region", 2, 1, true),
+            ("paint_constant_plain_direct", 1, 3, true),
+            ("paint_constant_plain_region", 2, 3, true),
+        ] {
+            add(
+                &format!("{name}{}", if clipped { "" } else { "_unclipped" }),
+                false,
+                &paint,
+                &format!(
+                    "#define REEL_SOURCE_KIND 0\n#define REEL_STYLE {style}\n#define REEL_SIMPLE_SAMPLING {sampling}\n{}\n{}",
+                    if plain_adjust {
+                        "#define REEL_PLAIN_ADJUST"
+                    } else {
+                        ""
+                    },
+                    if clipped {
+                        ""
+                    } else {
+                        "#define REEL_UNCLIPPED"
+                    }
+                ),
+            );
+        }
+        for (name, sampling, opaque_white) in [
+            ("paint_monochrome_direct", 1, false),
+            ("paint_monochrome_region", 2, false),
+            ("paint_monochrome_opaque_direct", 1, true),
+            ("paint_monochrome_opaque_region", 2, true),
+        ] {
+            add(
+                &format!("{name}{}", if clipped { "" } else { "_unclipped" }),
+                false,
+                &paint,
+                &format!(
+                    "#define REEL_SOURCE_KIND 0\n#define REEL_STYLE 1\n#define REEL_SIMPLE_SAMPLING {sampling}\n#define REEL_PLAIN_ADJUST\n#define REEL_MONOCHROME\n{}\n{}",
+                    if opaque_white {
+                        "#define REEL_MONOCHROME_OPAQUE_WHITE"
+                    } else {
+                        ""
+                    },
+                    if clipped {
+                        ""
+                    } else {
+                        "#define REEL_UNCLIPPED"
+                    }
+                ),
+            );
+        }
         add(
             &format!(
                 "paint_video_direct_nv12{}",

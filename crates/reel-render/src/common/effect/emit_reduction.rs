@@ -49,11 +49,25 @@ impl Emitter<'_> {
                 construct(self.language, EffectType::Vec4, &initial)
             ),
         )?;
+        if let Some(proof) = self
+            .diagonal
+            .filter(|proof| proof.sample == reduction.sample)
+        {
+            self.line(
+                scope,
+                &format!(
+                    "float reel_source_fixed = reel_source_fixed_axis({});",
+                    self.value(scope, proof.fixed)
+                ),
+            )?;
+        }
         if self.language == Language::Cg {
             self.line(scope, "#pragma loop (unroll: never)")?;
         }
-        let width = if self.block_reductions && id == self.program.output() {
-            reduction.block_width(self.program)
+        let width = if id == self.program.output() {
+            reduction
+                .block_width(self.program)
+                .min(self.max_block_width)
         } else {
             1
         };

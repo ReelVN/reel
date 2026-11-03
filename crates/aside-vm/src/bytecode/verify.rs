@@ -1,5 +1,6 @@
 use super::code_residency::{CodeStore, CodeStoreBuilder, PAGE_WORDS};
 use super::*;
+pub(crate) use scalar_entry::ValueEntry;
 use std::collections::{BinaryHeap, hash_map::RandomState};
 use std::fmt::Write;
 use std::hash::BuildHasher;
@@ -63,6 +64,9 @@ struct VerifiedData {
     member_symbols: Vec<SymbolId>,
     native_calls: native_calls::NativeCallPlans,
     compact_derived: Vec<u32>,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    scalar_suffixes: scalar_suffixes::ScalarSuffixes,
+    scalar_entries: scalar_entry::ScalarEntries,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +100,9 @@ struct DerivedLayouts {
     member_symbols: Vec<SymbolId>,
     native_calls: native_calls::NativeCallPlans,
     compact_derived: Vec<u32>,
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    scalar_suffixes: scalar_suffixes::ScalarSuffixes,
+    scalar_entries: scalar_entry::ScalarEntries,
 }
 impl VerifiedProgram {
     pub(crate) fn shared_header_bytes(&self) -> usize {
@@ -457,6 +464,13 @@ impl VerifiedProgram {
                     ),
                 ));
             };
+            if let Some(leaf) = registered.read_only_leaf {
+                check(
+                    leaf.work != 0 && registered.signature.effects.0 == 0,
+                    ErrorKind::Capability,
+                    "read-only leaf requires nonzero work and pure effects",
+                )?;
+            }
             b.work(registered.required_capabilities.len() as u64)?;
             for cap in &registered.required_capabilities {
                 check(
@@ -510,7 +524,14 @@ pub trait VerifiablePackage {
 impl VerifiablePackage for BytecodePackage {
     fn verified(self, limits: Limits) -> Result<VerifiedProgram, Error> {
         let (mut stats, mut layouts) = validate_program(&self, limits)?;
-        let package = compact_package(self, &mut stats, &mut layouts.opcode_uses, limits)?;
+        let package = compact_package(
+            self,
+            &mut stats,
+            &mut layouts.opcode_uses,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            &mut layouts.scalar_suffixes,
+            limits,
+        )?;
         let identity = super::codec::identity(&package, limits)?;
         Ok(publish(package, stats, layouts, limits, identity))
     }
@@ -543,6 +564,9 @@ fn publish(
             member_symbols: layouts.member_symbols,
             native_calls: layouts.native_calls,
             compact_derived: layouts.compact_derived,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            scalar_suffixes: layouts.scalar_suffixes,
+            scalar_entries: layouts.scalar_entries,
         }),
         None,
     )
@@ -569,6 +593,8 @@ fn compact_package(
     p: BytecodePackage,
     stats: &mut PackageStats,
     opcode_uses: &mut [OpcodeUse],
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    scalar_suffixes: &mut scalar_suffixes::ScalarSuffixes,
     limits: Limits,
 ) -> Result<RuntimePackage, Error> {
     let original_capacity = stats.owned_capacity_bytes;
@@ -605,9 +631,12 @@ fn compact_package(
     )?;
     let mut use_cursor = 0;
     for (fi, mut f) in p.functions.into_iter().enumerate() {
+        let compact_work = 6;
+        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        let compact_work = compact_work + 4;
         budget.work(
             (f.code.len() as u64)
-                .checked_mul(6)
+                .checked_mul(compact_work)
                 .ok_or_else(|| Error::new(ErrorKind::Limit, "compact work"))?,
         )?;
         let bytes = CompactCode::planned_bytes(&f.code)?;
@@ -639,6 +668,8 @@ fn compact_package(
             .peak
             .max(budget.scratch + bytes + map_bytes + source_bound);
         let (code, pcs) = CompactCode::from_ordinal(&f.code)?;
+        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        scalar_suffixes.rebase(fi, &pcs);
         super::compact::map_metadata_pcs(&mut f.regions, &mut f.source_map, |pc| {
             pcs.get(pc.index())
                 .copied()
@@ -1301,6 +1332,9 @@ impl ParameterLayouts {
 mod compact_derived;
 mod functions;
 mod native_calls;
+mod scalar_entry;
+#[cfg(any(test, feature = "vm-validation-oracle"))]
+mod scalar_suffixes;
 use functions::validate_function;
 
 mod control_flow;

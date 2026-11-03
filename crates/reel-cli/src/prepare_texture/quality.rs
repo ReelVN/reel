@@ -46,7 +46,7 @@ pub(crate) fn encode(
     };
     let candidate = |quality| {
         let pixels = quantized_pixels(linear, descriptor, Dither::None);
-        rgbcx::encode(width, height, pixels.as_raw(), format, quality)
+        rgbcx::encode_parallel(width, height, pixels.as_raw(), format, quality)
             .map_err(|error| error.to_string())
     };
     let assess = |blocks: &[u8]| {
@@ -294,6 +294,18 @@ mod tests {
             };
             let before = assess(&baseline);
             let after = assess(&selected);
+            let serial = if before.needs_refinement() {
+                let refined =
+                    rgbcx::encode(64, 32, pixels.as_raw(), codec, rgbcx::Quality::High).unwrap();
+                if assess(&refined).improves(&before) {
+                    refined
+                } else {
+                    baseline
+                }
+            } else {
+                baseline
+            };
+            assert_eq!(selected, serial);
             assert!(after.score() <= before.score());
             assert!(after.p99_abs_error_codes <= before.p99_abs_error_codes);
             assert!(after.translucent_rmse_codes <= before.translucent_rmse_codes);

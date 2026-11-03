@@ -544,6 +544,18 @@ impl SessionVm {
         Ok(task)
     }
 
+    /// Whether the main story task can resume without an outstanding wait.
+    /// Reactive work and callback tasks are reported by `has_runnable_tasks`.
+    pub fn main_task_runnable(&self) -> bool {
+        !self.revoked
+            && !self.exit_requested
+            && self.delivery.is_none()
+            && self.task.is_some()
+            && self
+                .main_wait
+                .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+    }
+
     pub fn has_runnable_tasks(&self) -> bool {
         if self.revoked || self.exit_requested || self.delivery.is_some() {
             return false;
@@ -567,10 +579,7 @@ impl SessionVm {
                             || stage != self.stage.retirement_revision
                     })
             || self.blocked_tasks_revision != Some(self.vm.wait_revision())
-                && (self.task.is_some()
-                    && self
-                        .main_wait
-                        .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+                && (self.main_task_runnable()
                     || self.tasks.iter().any(|callback| {
                         callback.cancelling
                             || callback

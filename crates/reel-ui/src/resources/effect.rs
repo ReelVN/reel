@@ -81,6 +81,11 @@ pub struct EffectShaderDescriptor {
     /// It has the ordinary output tail. This metadata never authorizes undefined
     /// attachment contents; registered shaders still run on initialized targets.
     pub full_target_offset: Option<u32>,
+    /// Byte offset of an optional final ordinary-color GXP segment with one
+    /// compiler-proved unchanged source-coordinate axis. The renderer selects
+    /// it only when the final uploaded source mapping is finite and diagonal.
+    /// Sampling order, local coverage and uniform ABI remain unchanged.
+    pub diagonal_offset: Option<u32>,
     /// Compiler-proved fixed source neighborhood. Absence keeps the full source
     /// domain. This proof changes neither shader coordinates nor logical Size.
     #[serde(default)]
@@ -119,6 +124,7 @@ impl EffectShaderDescriptor {
             output,
             coverage_offset: None,
             full_target_offset: None,
+            diagonal_offset: None,
             source_footprint: None,
         };
         if !descriptor.is_valid() || raw.is_empty() {
@@ -156,7 +162,8 @@ impl EffectShaderDescriptor {
     }
     /// Borrow the selected immutable code segment without allocating or compiling shaders.
     pub fn code<'a>(&self, raw: &'a [u8], coverage: bool) -> Option<&'a [u8]> {
-        let raw = raw.get(..self.full_target_offset.map_or(raw.len(), |v| v as usize))?;
+        let end = self.full_target_offset.or(self.diagonal_offset);
+        let raw = raw.get(..end.map_or(raw.len(), |v| v as usize))?;
         match (self.coverage_offset, coverage) {
             (Some(offset), false) => raw.get(..offset as usize),
             (Some(offset), true) => raw.get(offset as usize..),
@@ -179,7 +186,26 @@ impl EffectShaderDescriptor {
     }
     /// Borrow the full-target variant after the renderer proves complete coverage.
     pub fn full_target_code<'a>(&self, raw: &'a [u8]) -> Option<&'a [u8]> {
+        let raw = raw.get(..self.diagonal_offset.map_or(raw.len(), |v| v as usize))?;
         raw.get(self.full_target_offset? as usize..)
+    }
+    /// Attach a proved ordinary-color diagonal-source GXP segment. Its separate
+    /// boundary is encoded in the current REELSHD2 envelope.
+    pub fn with_diagonal_variant(
+        mut self,
+        offset: u32,
+        raw: &[u8],
+    ) -> Result<Self, EffectShaderPayloadError> {
+        self.diagonal_offset = Some(offset);
+        if !self.is_valid() || offset as usize >= raw.len() {
+            return Err(EffectShaderPayloadError::Invalid);
+        }
+        self.shader_key = self.content_key(raw);
+        Ok(self)
+    }
+    /// Borrow the diagonal-source segment after proving its runtime mapping.
+    pub fn diagonal_code<'a>(&self, raw: &'a [u8]) -> Option<&'a [u8]> {
+        raw.get(self.diagonal_offset? as usize..)
     }
     fn content_key(&self, raw: &[u8]) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
@@ -191,6 +217,7 @@ impl EffectShaderDescriptor {
         hash.update(&[u8::from(self.source_sampler)]);
         hash.update(&self.coverage_offset.unwrap_or(0).to_le_bytes());
         hash.update(&self.full_target_offset.unwrap_or(0).to_le_bytes());
+        hash.update(&self.diagonal_offset.unwrap_or(0).to_le_bytes());
         if let Some(footprint) = self.source_footprint {
             hash.update(b"source-footprint\0");
             for value in footprint.logical_halo {
@@ -213,22 +240,26 @@ impl EffectShaderDescriptor {
             && self
                 .full_target_offset
                 .is_none_or(|o| (o as usize) < raw.len())
+            && self
+                .diagonal_offset
+                .is_none_or(|o| (o as usize) < raw.len())
             && self.shader_key == self.content_key(raw)
     }
-    /// Encode the version-one little-endian prepared shader envelope. The header
-    /// carries this descriptor followed by the complete target fragment bytes.
+    /// Encode the little-endian prepared shader envelope followed by complete
+    /// target fragment bytes. REELSHD2 gives every optional code segment its own
+    /// boundary; zero denotes an absent segment.
     pub fn encode_payload(&self, raw: &[u8]) -> Result<Vec<u8>, EffectShaderPayloadError> {
         if !self.matches_bytes(raw) {
             return Err(EffectShaderPayloadError::Invalid);
         }
-        let capacity = 104usize
+        let capacity = 108usize
             .checked_add(16 * usize::from(self.source_footprint.is_some()))
             .ok_or(EffectShaderPayloadError::Limit)?
             .checked_add(self.parameters.len())
             .and_then(|v| v.checked_add(raw.len()))
             .ok_or(EffectShaderPayloadError::Limit)?;
         let mut bytes = Vec::with_capacity(capacity);
-        bytes.extend_from_slice(b"REELSHD1");
+        bytes.extend_from_slice(b"REELSHD2");
         bytes.extend_from_slice(&self.abi.to_le_bytes());
         bytes.push(format_byte(self.format));
         bytes.push(type_byte(self.output));
@@ -243,6 +274,7 @@ impl EffectShaderDescriptor {
         bytes.extend_from_slice(&self.textures.to_le_bytes());
         bytes.extend_from_slice(&self.coverage_offset.unwrap_or(0).to_le_bytes());
         bytes.extend_from_slice(&self.full_target_offset.unwrap_or(0).to_le_bytes());
+        bytes.extend_from_slice(&self.diagonal_offset.unwrap_or(0).to_le_bytes());
         if let Some(footprint) = self.source_footprint {
             for value in footprint.logical_halo {
                 bytes.extend_from_slice(&value.to_le_bytes());
@@ -265,7 +297,7 @@ impl EffectShaderDescriptor {
         if bytes.len() > max_payload_bytes {
             return Err(Limit);
         }
-        if bytes.len() < 104 || &bytes[..8] != b"REELSHD1" || (bytes[14] > 1 || bytes[15] > 1) {
+        if bytes.len() < 108 || &bytes[..8] != b"REELSHD2" || bytes[14] > 1 || bytes[15] > 1 {
             return Err(Invalid);
         }
         let source_sampler = bytes[14] != 0;
@@ -286,18 +318,29 @@ impl EffectShaderDescriptor {
         let coverage_offset = (offset != 0).then_some(offset);
         let full = u32::from_le_bytes(bytes[100..104].try_into().unwrap());
         let full_target_offset = (full != 0).then_some(full);
+        let diagonal = u32::from_le_bytes(bytes[104..108].try_into().unwrap());
+        let diagonal_offset = (diagonal != 0).then_some(diagonal);
+        if diagonal_offset.is_some_and(|offset| {
+            offset as usize >= size
+                || offset <= full.max(coverage_offset.unwrap_or(0))
+                || format != EffectShaderFormat::Gxp
+                || output != EffectType::Vec4
+                || !source_sampler
+        }) {
+            return Err(Invalid);
+        }
         if coverage_offset.is_some_and(|v| v as usize >= size)
             || full_target_offset.is_some_and(|v| v as usize >= size || v <= offset)
         {
             return Err(Invalid);
         }
-        let schema = 104 + 16 * usize::from(bytes[15] != 0);
+        let schema = 108 + 16 * usize::from(bytes[15] != 0);
         if bytes.len() < schema {
             return Err(Invalid);
         }
         let source_footprint = (bytes[15] != 0).then(|| EffectSourceFootprint {
             logical_halo: std::array::from_fn(|i| {
-                u32::from_le_bytes(bytes[104 + i * 4..108 + i * 4].try_into().unwrap())
+                u32::from_le_bytes(bytes[108 + i * 4..112 + i * 4].try_into().unwrap())
             }),
         });
         if source_footprint.is_some() && (!source_sampler || output != EffectType::Vec4) {
@@ -326,6 +369,7 @@ impl EffectShaderDescriptor {
                 output,
                 coverage_offset,
                 full_target_offset,
+                diagonal_offset,
                 source_footprint,
             },
             start..bytes.len(),
@@ -340,6 +384,16 @@ impl EffectShaderDescriptor {
             && self
                 .full_target_offset
                 .is_none_or(|offset| offset > self.coverage_offset.unwrap_or(0))
+            && self.diagonal_offset.is_none_or(|offset| {
+                offset
+                    > self
+                        .full_target_offset
+                        .or(self.coverage_offset)
+                        .unwrap_or(0)
+                    && self.format == EffectShaderFormat::Gxp
+                    && self.output == EffectType::Vec4
+                    && self.source_sampler
+            })
             && self.coverage_offset.is_none_or(|offset| {
                 offset > 0
                     && self.output == EffectType::Vec4
@@ -400,6 +454,100 @@ fn byte_type(value: u8) -> Option<EffectType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_envelope_roundtrips_with_and_without_diagonal_code() {
+        let original_raw = b"ordinarymaskedfull";
+        let original = EffectShaderDescriptor::new(
+            [7; 32],
+            EffectShaderFormat::Gxp,
+            vec![],
+            EffectType::Vec4,
+            original_raw,
+        )
+        .unwrap()
+        .with_coverage_variant(8, original_raw)
+        .unwrap()
+        .with_full_target_variant(14, original_raw)
+        .unwrap()
+        .with_source_footprint(
+            Some(EffectSourceFootprint {
+                logical_halo: [30, 0, 30, 0],
+            }),
+            original_raw,
+        )
+        .unwrap();
+        let base = original.encode_payload(original_raw).unwrap();
+        assert_eq!(&base[..8], b"REELSHD2");
+        assert_eq!(&base[104..108], &0u32.to_le_bytes());
+        let (decoded, range) = EffectShaderDescriptor::decode_payload(&base, base.len()).unwrap();
+        assert_eq!(decoded, original);
+        assert_eq!(range.start, 124);
+        assert_eq!(decoded.encode_payload(&base[range]).unwrap(), base);
+
+        let raw = b"ordinarymaskedfulldiagonal";
+        let descriptor = original.clone().with_diagonal_variant(18, raw).unwrap();
+        assert_eq!(descriptor.code(raw, false), Some(&b"ordinary"[..]));
+        assert_eq!(descriptor.code(raw, true), Some(&b"masked"[..]));
+        assert_eq!(descriptor.full_target_code(raw), Some(&b"full"[..]));
+        assert_eq!(descriptor.diagonal_code(raw), Some(&b"diagonal"[..]));
+        let bytes = descriptor.encode_payload(raw).unwrap();
+        assert_eq!(&bytes[..8], b"REELSHD2");
+        let (decoded, range) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
+        assert_eq!(range.start, 124);
+        assert_eq!(decoded, descriptor);
+        assert!(decoded.matches_bytes(&bytes[range]));
+        assert_ne!(original.shader_key, descriptor.shader_key);
+        let mut changed = descriptor;
+        changed.diagonal_offset = Some(19);
+        assert!(!changed.matches_bytes(raw));
+    }
+
+    #[test]
+    fn diagonal_segment_rejects_empty_overlap_format_and_truncated_v2_headers() {
+        let raw = b"ordinarymaskedfulldiagonal";
+        let base = EffectShaderDescriptor::new(
+            [9; 32],
+            EffectShaderFormat::Gxp,
+            vec![],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap()
+        .with_coverage_variant(8, raw)
+        .unwrap()
+        .with_full_target_variant(14, raw)
+        .unwrap();
+        let descriptor = base.clone().with_diagonal_variant(18, raw).unwrap();
+        let bytes = descriptor.encode_payload(raw).unwrap();
+        assert!(base.clone().with_diagonal_variant(0, raw).is_err());
+        for offset in [8u32, 14, raw.len() as u32, raw.len() as u32 + 1] {
+            assert!(base.clone().with_diagonal_variant(offset, raw).is_err());
+            let mut invalid = bytes.clone();
+            invalid[104..108].copy_from_slice(&offset.to_le_bytes());
+            assert!(EffectShaderDescriptor::decode_payload(&invalid, invalid.len()).is_err());
+        }
+        for length in [103, 104, 107] {
+            assert!(EffectShaderDescriptor::decode_payload(&bytes[..length], bytes.len()).is_err());
+        }
+        for (index, value) in [(12, 1), (13, 1), (14, 0)] {
+            let mut invalid = bytes.clone();
+            invalid[index] = value;
+            assert!(EffectShaderDescriptor::decode_payload(&invalid, invalid.len()).is_err());
+        }
+        let ordinary = EffectShaderDescriptor::new(
+            [9; 32],
+            EffectShaderFormat::Gxp,
+            vec![],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap()
+        .with_diagonal_variant(18, raw)
+        .unwrap();
+        assert_eq!(ordinary.code(raw, false), Some(&raw[..18]));
+        assert!(ordinary.full_target_code(raw).is_none());
+        assert_eq!(ordinary.diagonal_code(raw), Some(&raw[18..]));
+    }
     #[test]
     fn footprint_envelope_is_optional_identity_bound_and_length_checked() {
         let raw = b"ordinary fragment";

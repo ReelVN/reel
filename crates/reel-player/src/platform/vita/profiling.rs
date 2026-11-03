@@ -1,8 +1,59 @@
 //! Sample native state in memory; the session writes it after closing playback.
-use crate::probe::Recording;
+use crate::performance::recording::Recording;
 use reel_render::gxm::GxmBackend;
 use std::time::Duration;
 use vita_native::app::wake::WaitResult;
+
+#[cfg(feature = "thread-profiling")]
+pub(super) fn install_thread_clock() {
+    let clocks = vita_native::app::power::clock_frequencies();
+    let raw = |value: Result<u32, vita_native::app::Error>| {
+        value.map_or_else(|error| i64::from(error.code), i64::from)
+    };
+    eprintln!(
+        "[reel-clock-frequencies] arm_mhz={} gpu_mhz={} bus_mhz={} gpu_xbar_mhz={} negative_values=native_query_errors",
+        raw(clocks.arm_mhz),
+        raw(clocks.gpu_mhz),
+        raw(clocks.bus_mhz),
+        raw(clocks.gpu_xbar_mhz)
+    );
+    let checked = (|| {
+        let before = vita_native::app::time::thread_runtime()?;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(1) {
+            std::hint::spin_loop();
+        }
+        let after = vita_native::app::time::thread_runtime()?;
+        let wall = start.elapsed().as_micros() as u64;
+        let run = after.run_micros.checked_sub(before.run_micros);
+        if before.thread_id != after.thread_id || !run.is_some_and(|run| run > 0 && run <= wall) {
+            return Err(vita_native::app::Error {
+                operation: "kernel thread counter does not support short-scope observation",
+                code: -1,
+            });
+        }
+        Ok::<(), vita_native::app::Error>(())
+    })();
+    if let Err(error) = checked {
+        eprintln!("[reel-thread-clock] unavailable={error}");
+        return;
+    }
+    reel_core::profile::install_thread_clock(|| {
+        vita_native::app::time::thread_runtime()
+            .map(|value| reel_core::profile::ThreadTime {
+                thread: value.thread_id as u64,
+                run_us: value.run_micros,
+            })
+            .map_err(|error| error.code)
+    });
+    match vita_native::app::time::thread_runtime() {
+        Ok(value) => eprintln!(
+            "[reel-thread-clock] source=kernel_runClocks thread={} priority={} affinity={} cpu={} run_us={} vm_stride=127 replay_stride=1 present_stride=1",
+            value.thread_id, value.priority, value.affinity, value.cpu, value.run_micros
+        ),
+        Err(error) => eprintln!("[reel-thread-clock] initialization_error={error}"),
+    }
+}
 
 /// Cumulative timed waits; elapsed time includes kernel scheduling after wakeup.
 #[derive(Default)]
@@ -47,6 +98,7 @@ pub(super) fn record_device(
     contiguous: &reel_core::budget::BudgetPool,
     waits: &Waits,
 ) {
+    let _observer = reel_core::profile::Scope::new(reel_core::profile::Phase::Observer);
     let Ok(native) = backend.native_memory_usage() else {
         return;
     };
@@ -61,6 +113,25 @@ pub(super) fn record_device(
     let memory = backend.native_memory_state();
     let main = memory.main;
     let contiguous = contiguous.usage();
+    // Preserve cumulative observations even when the startup check rejects
+    // short scopes. Long intervals can be compared after checking thread ID
+    // and monotonicity; these values do not identify individual phase CPU time.
+    #[cfg(feature = "thread-profiling")]
+    let runtime = match vita_native::app::time::thread_runtime() {
+        Ok(value) => [
+            1,
+            value.thread_id as u32 as u64,
+            value.run_micros,
+            vita_native::app::time::monotonic_micros(),
+            value.priority as u32 as u64,
+            value.affinity as u32 as u64,
+            value.cpu as u32 as u64,
+            u64::MAX,
+        ],
+        Err(error) => [0, 0, 0, 0, 0, 0, 0, error.code as u32 as u64],
+    };
+    #[cfg(not(feature = "thread-profiling"))]
+    let runtime = [0, 0, 0, 0, 0, 0, 0, u64::MAX];
     recording.record_device([
         renderer.resources,
         renderer.targets,
@@ -177,5 +248,43 @@ pub(super) fn record_device(
         u64::from(slow.after.same_target),
         slow.after.oldest_age_us,
         u64::from(slow.result as u32),
+        runtime[0],
+        runtime[1],
+        runtime[2],
+        runtime[3],
+        runtime[4],
+        runtime[5],
+        runtime[6],
+        runtime[7],
     ]);
+}
+
+/// Read existing accounting without polling or adding a GPU synchronization.
+pub(super) fn record_submission(recording: &mut Recording, backend: &GxmBackend) {
+    let _observer = reel_core::profile::Scope::new(reel_core::profile::Phase::Observer);
+    let sample = backend.native_memory_usage().ok().map(|usage| {
+        let t = usage.submission_timing;
+        [
+            t.scene_begin.calls,
+            t.scene_begin.cpu_us,
+            t.scene_end.calls,
+            t.scene_end.cpu_us,
+            t.uniform_reserve.calls,
+            t.uniform_reserve.cpu_us,
+            t.draw.calls,
+            t.draw.cpu_us,
+            t.notification_capacity_wait.calls,
+            t.notification_capacity_wait.cpu_us,
+            t.upload_capacity_wait.calls,
+            t.upload_capacity_wait.cpu_us,
+            t.resource_replacement_wait.calls,
+            t.resource_replacement_wait.cpu_us,
+            t.notifications.submissions,
+            t.notifications.observations,
+            t.notifications.observed_age_us,
+            u64::from(t.notifications.pending.count),
+            t.notifications.pending.oldest_age_us,
+        ]
+    });
+    recording.record_submission(sample);
 }

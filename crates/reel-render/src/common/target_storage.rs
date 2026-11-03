@@ -60,9 +60,22 @@ impl Plan {
     /// Fold smaller size classes into existing storage only when their exact
     /// combined lifetime peak occupies fewer bytes. Root output stays exact.
     /// Requests keep their logical size and therefore their rasterization grid.
+    #[cfg(test)]
     pub(crate) fn from_lifetimes<R>(
         events: &[Event],
         root: [u32; 2],
+        cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+        reserve: impl FnMut(u64) -> Result<R, GpuError>,
+    ) -> Result<(Self, Vec<R>), GpuError> {
+        Self::from_lifetimes_exact(events, root, &[], cost, reserve)
+    }
+
+    /// Exact classes preserve a selected source's normalized sampling phase.
+    /// They participate in the same liveness traversal, without class folding.
+    pub(crate) fn from_lifetimes_exact<R>(
+        events: &[Event],
+        root: [u32; 2],
+        exact: &[[u32; 2]],
         cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, Vec<R>), GpuError> {
@@ -129,7 +142,7 @@ impl Plan {
             let span = class.span.clone();
             let original = class.cost.checked_mul(peak).ok_or(GpuError::InvalidSize)?;
             let mut best = None;
-            if size != root {
+            if size != root && !exact.contains(&size) {
                 // Sequential source chains cannot overlap when their complete
                 // event envelopes are disjoint. Their joint peak is already
                 // known; only intersecting envelopes need the timeline sweep.
@@ -219,7 +232,7 @@ impl Plan {
                         size,
                         peak,
                         cost: class.cost,
-                        protected: size == root,
+                        protected: size == root || exact.contains(&size),
                         live: 0,
                         combined_peak: 0,
                         span,
@@ -238,7 +251,11 @@ impl Plan {
                 retained.push(reserve(bytes)?);
                 Ok(())
             },
-        )?;
+        )?
+        .with_exact(exact, |bytes| {
+            retained.push(reserve(bytes)?);
+            Ok(())
+        })?;
         for group in &groups {
             plan.bytes = plan
                 .bytes

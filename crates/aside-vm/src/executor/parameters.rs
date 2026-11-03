@@ -94,7 +94,7 @@ impl Vm {
                 let literal = sig
                     .parameters
                     .get(parameter as usize)
-                    .filter(|_| self.slots.read(at(n.bound, parameter)).is_err())
+                    .filter(|_| self.slots.read_vm(at(n.bound, parameter)).is_err())
                     .and_then(|p| match p.default {
                         Some(ParameterDefault::Constant(id)) => Some((id, p.ty)),
                         _ => None,
@@ -111,7 +111,7 @@ impl Vm {
                 }
                 if parameter == count + u32::from(sig.rest.is_some()) {
                     n.phase = NativePhase::Resume(NativeInput::Entry);
-                } else if self.slots.read(at(n.bound, parameter)).is_ok() {
+                } else if self.slots.read_vm(at(n.bound, parameter)).is_ok() {
                     let storage = if n.bindings.is_some() {
                         self.native_storage(n.native, parameter)?
                     } else {

@@ -1,8 +1,30 @@
 //! Shared parameter, coordinate and resource admission for prepared effects.
 pub(crate) mod implicit_mesh;
+#[cfg(all(test, feature = "profiling"))]
+pub(crate) mod raster_scale;
+#[cfg(test)]
+mod raster_tests;
 pub(crate) mod roi;
 #[cfg(test)]
 mod terminal_tests;
+#[cfg(all(test, feature = "wgpu"))]
+pub(crate) mod testing {
+    std::thread_local! {
+        static LEGACY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    pub(super) fn legacy() -> bool {
+        LEGACY.get()
+    }
+    /// Compare the new local calculation with the former frame-space product.
+    pub(crate) fn with_legacy<T>(run: impl FnOnce() -> T) -> T {
+        LEGACY.with(|legacy| {
+            assert!(!legacy.replace(true));
+            let result = run();
+            legacy.set(false);
+            result
+        })
+    }
+}
 use super::GpuError;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
@@ -20,6 +42,9 @@ pub(crate) struct Shader<'a> {
 pub(crate) struct SourceLayout {
     pub size: [u32; 2],
     pub frame_to_source: Affine,
+    /// Authored effect coordinates mapped directly to this local raster.
+    /// Keep this map instead of cancelling the frame transform for nested effects.
+    pub effect_to_source: Affine,
 }
 /// Source coordinates remain available when a proved color effect has no pixel
 /// dependency. Sampled effects always retain their actual texture and storage.
@@ -27,6 +52,7 @@ pub(crate) struct Source<'a, T> {
     pub size: [u32; 2],
     pub storage_size: [u32; 2],
     pub pixels: Option<&'a T>,
+    pub crop: Option<super::source_crop::Crop>,
 }
 impl<'a, T> Source<'a, T> {
     pub(crate) fn sampled(pixels: &'a T, size: [u32; 2], storage_size: [u32; 2]) -> Self {
@@ -34,6 +60,7 @@ impl<'a, T> Source<'a, T> {
             size,
             storage_size,
             pixels: Some(pixels),
+            crop: None,
         }
     }
     pub(crate) fn unused(size: [u32; 2]) -> Self {
@@ -41,7 +68,15 @@ impl<'a, T> Source<'a, T> {
             size,
             storage_size: size,
             pixels: None,
+            crop: None,
         }
+    }
+    pub(crate) fn cropped(mut self, crop: Option<super::source_crop::Crop>) -> Self {
+        if let Some(crop) = crop {
+            self.size = crop.logical;
+        }
+        self.crop = crop;
+        self
     }
 }
 
@@ -62,7 +97,41 @@ pub(crate) fn same_source_domain(
     })
 }
 
-/// A sole effect child can transfer its result to the isolated parent. Exact
+/// Reuse the established local map only when the parent raster represents the
+/// same authored domain. Other effects retain their actual parent-space map.
+pub(crate) fn output_transform(
+    group: &reel_ui::frame::FrameGroup,
+    parent: Option<(&reel_ui::frame::FrameGroup, Affine)>,
+    outer: Affine,
+) -> Affine {
+    #[cfg(all(test, feature = "wgpu"))]
+    if testing::legacy() {
+        return outer * group.effect_to_target;
+    }
+    parent
+        .filter(|(parent, _)| same_source_domain(group, Some(parent)))
+        .map_or_else(|| outer * group.effect_to_target, |(_, local)| local)
+}
+
+/// The local raster grid depends on its bounds and selected pixel size, not on
+/// the frame-space placement that was inverted to draw its source geometry.
+pub(crate) fn local_transform(
+    effect: &FrameEffect,
+    effect_to_frame: Affine,
+    size: [u32; 2],
+) -> Affine {
+    let bounds = effect.bounds;
+    if bounds.width() > 0. && bounds.height() > 0. && effect_to_frame.determinant() != 0. {
+        Affine::scale_non_uniform(
+            f64::from(size[0]) / bounds.width(),
+            f64::from(size[1]) / bounds.height(),
+        ) * Affine::translate((-bounds.x0, -bounds.y0))
+    } else {
+        Affine::scale(0.)
+    }
+}
+
+/// A sole effect child can transfer its result to an exclusive isolated parent. Exact
 /// grid equality preserves sample positions and avoids an intermediate copy;
 /// other composites retain their independent source and destination.
 pub(crate) fn forwards_source(
@@ -70,8 +139,10 @@ pub(crate) fn forwards_source(
     source: &SourceLayout,
     parent_transform: Affine,
     parent_size: [u32; 2],
+    parent_shared: bool,
 ) -> bool {
-    source.size == parent_size
+    !parent_shared
+        && source.size == parent_size
         && source.frame_to_source == parent_transform
         && group.effect.is_some()
         && group.mask_effect.is_none()
@@ -182,20 +253,36 @@ pub(crate) fn source_layout(
         });
     }
     let size = extent.map(|v| v.ceil().max(1.) as u32);
+    #[cfg(all(test, feature = "profiling"))]
+    let size = raster_scale::select(size, max_dimension);
+    #[cfg(all(test, feature = "profiling"))]
+    let size = raster_scale::testing::orientation_grid(
+        size,
+        [bounds.width().max(0.), bounds.height().max(0.)],
+        physical,
+        max_dimension,
+    );
+    Ok(layout_for_size(effect, effect_to_frame, size))
+}
+
+pub(crate) fn layout_for_size(
+    effect: &FrameEffect,
+    effect_to_frame: Affine,
+    size: [u32; 2],
+) -> SourceLayout {
+    let bounds = effect.bounds;
+    let effect_to_source = local_transform(effect, effect_to_frame, size);
     let frame_to_source =
         if bounds.width() > 0. && bounds.height() > 0. && effect_to_frame.determinant() != 0. {
-            Affine::scale_non_uniform(
-                f64::from(size[0]) / bounds.width(),
-                f64::from(size[1]) / bounds.height(),
-            ) * Affine::translate((-bounds.x0, -bounds.y0))
-                * effect_to_frame.inverse()
+            effect_to_source * effect_to_frame.inverse()
         } else {
             Affine::scale(0.)
         };
-    Ok(SourceLayout {
+    SourceLayout {
         size,
         frame_to_source,
-    })
+        effect_to_source,
+    }
 }
 pub(crate) fn shader<'a>(
     drawing: &'a FrameDrawing,
@@ -330,7 +417,8 @@ fn coverage_variant(drawing: &FrameDrawing, group: &reel_ui::frame::FrameGroup) 
         let ResourceView::EffectShader { descriptor, .. } = lease.view() else {
             return false;
         };
-        descriptor.coverage_offset.is_some()
+        effect.resolution_scale == 1.
+            && descriptor.coverage_offset.is_some()
             && crate::effect::OutputTail::supports_coverage(
                 descriptor.output,
                 descriptor.textures,
@@ -537,6 +625,7 @@ mod tests {
             images: vec![],
             bounds: reel_ui::kurbo::Rect::new(0., 0., 240., 100.),
             coverage_invert: false,
+            resolution_scale: 1.,
         };
         let output = [170, 130];
         let storage = [240, 100];
@@ -584,6 +673,7 @@ mod tests {
             images: vec![],
             bounds: reel_ui::kurbo::Rect::new(4., 8., 104., 58.),
             coverage_invert: false,
+            resolution_scale: 1.,
         };
         let transform = Affine::translate((30., 20.))
             * Affine::rotate(0.3)
@@ -645,6 +735,7 @@ mod tests {
             images: vec![],
             bounds: reel_ui::kurbo::Rect::new(4., 8., 104., 58.),
             coverage_invert: false,
+            resolution_scale: 1.,
         };
         let target_size = [200, 38];
         for transform in [

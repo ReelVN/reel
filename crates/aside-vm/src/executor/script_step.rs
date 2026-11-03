@@ -4,7 +4,43 @@ use super::*;
 impl Vm {
     pub(super) fn script_step(
         &mut self,
-        mut s: ScriptFrame,
+        s: &mut ScriptFrame,
+        m: &mut Meter,
+    ) -> Result<bool, VmError> {
+        #[cfg(feature = "execution-counts")]
+        self.execution_counts.step(&s.phase);
+        if matches!(s.phase, ScriptPhase::Body) {
+            return self.script_body_step(s, m);
+        }
+        self.script_continuation_step(s, m)
+    }
+
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
+    fn script_continuation_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        m: &mut Meter,
+    ) -> Result<bool, VmError> {
+        #[cfg(feature = "profiling")]
+        let span = match s.phase {
+            ScriptPhase::Exit { .. }
+            | ScriptPhase::ExitApply { .. }
+            | ScriptPhase::Release { .. } => {
+                self.step_costs.start_part(step_costs::Part::ScriptExit)
+            }
+            ScriptPhase::DefaultCall { .. } | ScriptPhase::DefaultConstant { .. } => {
+                self.step_costs.start_part(step_costs::Part::ScriptPrepare)
+            }
+            _ => None,
+        };
+        let result = self.script_continuation_inner(s, m);
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_part(span, None);
+        result
+    }
+    fn script_continuation_inner(
+        &mut self,
+        s: &mut ScriptFrame,
         m: &mut Meter,
     ) -> Result<bool, VmError> {
         let top = self.active.frames.data.len() - 1;
@@ -34,7 +70,7 @@ impl Vm {
                 s.phase = ScriptPhase::Body;
             }
             ScriptPhase::GeneratorCreate => {
-                if !self.generator_create_step(&mut s, m)? {
+                if !self.generator_create_step(s, m)? {
                     return Ok(false);
                 }
             }
@@ -43,7 +79,7 @@ impl Vm {
                 index,
                 created,
             } => {
-                if !self.generator_capture_step(&mut s, part, index, created, m)? {
+                if !self.generator_capture_step(s, part, index, created, m)? {
                     return Ok(false);
                 }
                 if self.active.frames.data.len() <= top {
@@ -51,8 +87,8 @@ impl Vm {
                 }
             }
             ScriptPhase::GeneratorStart { action, call } => {
-                self.active.frames.data[top] = Frame::Script(s);
-                if !self.generator_start_step(&mut s, action, call, m)? {
+                self.publish_script_frame(top, s);
+                if !self.generator_start_step(s, action, call, m)? {
                     return Ok(false);
                 }
             }
@@ -61,45 +97,20 @@ impl Vm {
                 index,
                 closing,
             } => {
-                if !self.generator_restore_step(&mut s, part, index, closing, m)? {
+                if !self.generator_restore_step(s, part, index, closing, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::Class(step) => {
-                if !self.class_step(&mut s, step, m)? {
+                if !self.class_step(s, step, m)? {
                     return Ok(false);
                 }
             }
-            ScriptPhase::Copy { source, index } => {
-                if !m.take(0, self.argument_work(source, index), 0) {
-                    return Ok(false);
-                }
-                if index < s.argument_count {
-                    match self.checked_argument(source, index) {
-                        Ok((name, v)) => {
-                            self.put(s.args, index * 2, name)?;
-                            self.put(s.args, index * 2 + 1, v)?;
-                            s.phase = ScriptPhase::Copy {
-                                source,
-                                index: index + 1,
-                            };
-                        }
-                        Err(e) => {
-                            let kind = language_fault(e)?;
-                            self.preparation_fault(&mut s, kind)?;
-                        }
-                    }
-                } else {
-                    s.phase = if self.program.package().signatures[signature.index()]
-                        .rest
-                        .is_some()
-                    {
-                        ScriptPhase::Rest
-                    } else {
-                        ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(s)?))
-                    };
-                }
-            }
+            ScriptPhase::Copy { .. }
+            | ScriptPhase::Bind(_)
+            | ScriptPhase::Defaults { .. }
+            | ScriptPhase::Parameter { .. }
+            | ScriptPhase::Install { .. } => return self.preparation_step(m),
             ScriptPhase::Rest => {
                 if !m.take(0, 1, 0) {
                     return Ok(false);
@@ -110,104 +121,13 @@ impl Vm {
                 match self.heap.alloc_array(&[]) {
                     Ok(rest) => {
                         self.put(s.bound, count, rest)?;
-                        s.phase = ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(s)?));
+                        s.phase = ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(
+                            s.env,
+                            s.closure,
+                            s.shared_parameters,
+                        )?));
                     }
-                    Err(error) => self.preparation_fault(&mut s, heap_fault(error))?,
-                }
-            }
-            ScriptPhase::Bind(mut binding) => {
-                let result = if binding.index == s.argument_count {
-                    if !m.take(0, 1, 0) {
-                        return Ok(false);
-                    }
-                    s.phase = ScriptPhase::Defaults { parameter: 0 };
-                    None
-                } else if s.shared_parameters {
-                    if !m.take(0, 1, 0) {
-                        return Ok(false);
-                    }
-                    let value = self.value(s.args, binding.index * 2 + 1)?;
-                    self.put(s.bound, binding.index, value)?;
-                    binding.advance(Value::int(-1));
-                    Some(ArgumentStep::Ready(Ok(())))
-                } else {
-                    Some(self.bind_argument_step(
-                        signature,
-                        s.bound,
-                        s.args,
-                        &mut binding,
-                        m,
-                        false,
-                    )?)
-                };
-                if let Some(result) = result {
-                    s.phase = ScriptPhase::Bind(binding);
-                    match result {
-                        ArgumentStep::Blocked => {
-                            self.active.frames.data[top] = Frame::Script(s);
-                            return Ok(false);
-                        }
-                        ArgumentStep::Ready(Err(kind)) => self.preparation_fault(&mut s, kind)?,
-                        _ => {}
-                    }
-                }
-            }
-            ScriptPhase::Defaults { parameter } => {
-                let sig = &self.program.package().signatures[signature.index()];
-                let bound = self.slots.read(at(s.bound, parameter)).is_ok();
-                let allocation = sig
-                    .parameters
-                    .get(parameter as usize)
-                    .filter(|_| !bound)
-                    .and_then(|p| p.default)
-                    .map_or(0, |default| match default {
-                        ParameterDefault::Constant(id) => self.constant_allocation_bytes(id),
-                        _ => 0,
-                    });
-                let work = 2 + if bound {
-                    self.program.script_parameter_lookup_work()
-                } else {
-                    0
-                };
-                if !m.take(0, work, allocation) {
-                    return Ok(false);
-                }
-                if parameter as usize == sig.parameters.len() + usize::from(sig.rest.is_some()) {
-                    s.phase = ScriptPhase::Install { binding: 0 };
-                } else if bound {
-                    let storage = self
-                        .program
-                        .script_parameter_storage(s.code.function, parameter);
-                    s.phase = ScriptPhase::Parameter { parameter, storage };
-                } else if let Some(default) = sig.parameters[parameter as usize].default {
-                    match default {
-                        ParameterDefault::Function(function) => {
-                            s.phase = ScriptPhase::DefaultCall {
-                                parameter,
-                                function,
-                            }
-                        }
-                        ParameterDefault::Constant(id) => {
-                            match self.start_constant(id, s.env, [1, 2]) {
-                                Ok(Some(value)) => {
-                                    self.put(s.bound, parameter, value)?;
-                                }
-                                Ok(None) => {
-                                    s.phase = ScriptPhase::DefaultConstant {
-                                        parameter,
-                                        work: constants::ConstantWork {
-                                            dest: Reg(parameter),
-                                            id,
-                                            index: 0,
-                                        },
-                                    }
-                                }
-                                Err(kind) => self.preparation_fault(&mut s, kind)?,
-                            }
-                        }
-                    }
-                } else {
-                    self.preparation_fault(&mut s, FaultKind::MissingArgument)?;
+                    Err(error) => self.preparation_fault(s, heap_fault(error))?,
                 }
             }
             ScriptPhase::DefaultCall {
@@ -223,7 +143,7 @@ impl Vm {
                 } else {
                     None
                 };
-                self.active.frames.data[top] = Frame::Script(s);
+                self.publish_script_frame(top, s);
                 let prepared = self.push_script(
                     default,
                     closure,
@@ -242,260 +162,11 @@ impl Vm {
                     Ok(()) => return Ok(true),
                     Err(e) => {
                         let kind = language_fault(e)?;
-                        self.preparation_fault(&mut s, kind)?;
+                        self.preparation_fault(s, kind)?;
                     }
                 }
             }
-            ScriptPhase::Parameter { parameter, storage } => {
-                let bytes = if matches!(storage, BindingStorage::Cell(_)) && !s.shared_parameters {
-                    std::mem::size_of::<crate::cell::CellState>() as u64
-                } else {
-                    0
-                };
-                let sig = &self.program.package().signatures[signature.index()];
-                let p = sig
-                    .parameters
-                    .get(parameter as usize)
-                    .or(sig.rest.as_ref())
-                    .unwrap();
-                if !m.take(0, 4 + self.type_checks.extra(p.ty), bytes) {
-                    return Ok(false);
-                }
-                let input = self.value(s.bound, parameter)?;
-                let contract = self.contract(ModuleId(s.parameter_module.0), p.ty, p.mutable);
-                let prepared = self.parameter_value(contract, input, storage, s.shared_parameters);
-                match prepared {
-                    Ok(value) => {
-                        self.put(s.bound, parameter, value)?;
-                        self.put(s.regs, storage.reg().0, value)?;
-                        s.phase = ScriptPhase::Defaults {
-                            parameter: parameter + 1,
-                        };
-                    }
-                    Err(kind) => self.preparation_fault(&mut s, kind)?,
-                }
-            }
-            ScriptPhase::Install { binding } => {
-                if !m.take(0, 1, 0) {
-                    return Ok(false);
-                }
-                let f = &self.program.package().functions[s.code.function.index()];
-                if (binding as usize) < f.bindings.len() {
-                    let b = f.bindings[binding as usize].clone();
-                    match b.initialization {
-                        BindingInitialization::Explicit => {
-                            // Value binding bitmap starts uninitialized even if a temporary used it.
-                            if matches!(b.storage, BindingStorage::Value(_)) {
-                                self.clear(s.regs, b.storage.reg().0)?;
-                            }
-                        }
-                        // Prepared in parameter order before subsequent defaults.
-                        BindingInitialization::Parameter(_) => {}
-                    }
-                    s.phase = ScriptPhase::Install {
-                        binding: binding + 1,
-                    };
-                } else {
-                    s.phase = if self.program.package().functions[s.code.function.index()].kind
-                        == FunctionKind::Generator
-                    {
-                        ScriptPhase::GeneratorCreate
-                    } else {
-                        ScriptPhase::Body
-                    };
-                }
-            }
-            ScriptPhase::Body => {
-                if !m.admits(0, 1, 0) {
-                    return Ok(false);
-                }
-                let (instruction, next_pc) = if let Some(instruction) =
-                    s.instruction.filter(|_| s.instruction_pc == s.pc)
-                {
-                    (instruction, s.instruction_end.index())
-                } else {
-                    let Some(decoded) = self.program.package().functions[s.code.function.index()]
-                        .code
-                        .fetch_budgeted(
-                            s.pc.index(),
-                            &mut self.code_window,
-                            &mut |work, allocation| m.take(0, work, allocation),
-                        )?
-                    else {
-                        return Ok(false);
-                    };
-                    s.instruction = Some(decoded.0);
-                    s.instruction_pc = s.pc;
-                    decoded
-                };
-                s.instruction_end = Pc(next_pc as u32);
-                s.member_symbol = matches!(instruction.opcode, value if value == Opcode::MemberGet as u16 || value == Opcode::MemberSet as u16).then_some(SymbolId(instruction.operands[2]));
-                let mut op = instruction_spec(instruction.opcode)
-                    .expect("verified spec")
-                    .opcode;
-                let [a, mut b, mut c] = instruction.operands;
-                let mut index_work = 0;
-                if matches!(op, Opcode::IndexGet | Opcode::IndexSet) {
-                    let object = self
-                        .slots
-                        .read(at(s.regs, if op == Opcode::IndexGet { b } else { a }))?;
-                    if object.tag() == ValueTag::Object
-                        && matches!(
-                            self.heap.info(object)?.kind,
-                            ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
-                        )
-                    {
-                        let key = self
-                            .slots
-                            .read(at(s.regs, if op == Opcode::IndexGet { c } else { b }))?;
-                        let bytes = if key.tag() == ValueTag::Object {
-                            self.heap.info(key)?.len
-                        } else {
-                            0
-                        };
-                        index_work = self.type_checks.symbol_work(bytes);
-                        // A dynamic name uses the existing immutable symbol index.
-                        // Check its work before comparing text; register reads do
-                        // not re-evaluate the author's object or key expressions.
-                        if !m.admits(1, index_work + 1, 0) {
-                            self.active.frames.data[top] = Frame::Script(s);
-                            return Ok(false);
-                        }
-                        let name = self
-                            .type_checks
-                            .symbol(self.program.package(), &self.heap, key)
-                            .map_err(heap_fault)
-                            .and_then(|name| name.ok_or(FaultKind::MissingKey));
-                        let name = match name {
-                            Ok(name) => name,
-                            Err(kind) => {
-                                assert!(m.take(1, index_work + 1, 0));
-                                self.collection_fault(&mut s, kind)?;
-                                self.active.frames.data[top] = Frame::Script(s);
-                                return Ok(true);
-                            }
-                        };
-                        // Execute the ordinary member operation in this same
-                        // frame and PC, including reactive refresh and writes.
-                        op = if op == Opcode::IndexGet {
-                            Opcode::MemberGet
-                        } else {
-                            b = c;
-                            Opcode::MemberSet
-                        };
-                        c = name.0;
-                    }
-                }
-                let (work, allocation) = match self.instruction_cost(&s, op, a, b, c) {
-                    Ok((work, allocation)) => (work + index_work, allocation),
-                    Err(error) => {
-                        if !m.take(1, 1 + index_work, 0) {
-                            self.active.frames.data[top] = Frame::Script(s);
-                            return Ok(false);
-                        }
-                        self.put(s.env, 1, Value::NULL)?;
-                        self.clear(s.env, 2)?;
-                        s.phase = ScriptPhase::Exit {
-                            origin: s.pc,
-                            reason: ExitReason::Throw(FaultSeed {
-                                fault: None,
-                                explicit: None,
-                                author_value: false,
-                                awaited: None,
-
-                                kind: vm_fault(error),
-                                location: self.loc(s, s.pc),
-                            }),
-                            skip: None,
-                        };
-                        self.active.frames.data[top] = Frame::Script(s);
-                        return Ok(true);
-                    }
-                };
-                let mut cost = (work, allocation);
-                let refresh = if op == Opcode::MemberGet {
-                    let object = self.slots.read(at(s.regs, b))?;
-                    let property = if self.heap.is_property_ref(object)
-                        && self.program.package().symbols[c as usize] == "value"
-                    {
-                        let (property, _) = self.heap.property_ref(object)?;
-                        Some(property)
-                    } else if self.heap.reactive_evaluating()
-                        && matches!(
-                            self.heap.info(object)?.kind,
-                            ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
-                        )
-                    {
-                        cost.0 += self.class_member_cost(object)?;
-                        match self.class_read_property(object, SymbolId(c)) {
-                            Ok(property) => property,
-                            Err(kind) => {
-                                self.collection_fault(&mut s, kind)?;
-                                self.active.frames.data[top] = Frame::Script(s);
-                                return Ok(true);
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(property) = property {
-                        match self.reactive_read_plan(property, &mut cost) {
-                            Ok(read) => read,
-                            Err(error) => {
-                                self.collection_fault(&mut s, vm_fault(error))?;
-                                self.active.frames.data[top] = Frame::Script(s);
-                                return Ok(true);
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                if !m.take(1, cost.0, cost.1) {
-                    // Dynamic class indexing resolved its symbol before the
-                    // final member operation's allocation admission.
-                    m.usage.work += index_work;
-                    self.active.frames.data[top] = Frame::Script(s);
-                    return Ok(false);
-                }
-                if let Some(read) = refresh {
-                    self.active.frames.data[top] = Frame::Script(s);
-                    if let Err(error) = self.push_reactive_read(s, read) {
-                        self.collection_fault(&mut s, vm_fault(error))?;
-                        self.active.frames.data[top] = Frame::Script(s);
-                    }
-                    return Ok(true);
-                }
-                s.instruction = None;
-                let step = self.execute(&mut s, op, a, b, c, Pc(next_pc as u32));
-                match step {
-                    Ok(true) => {
-                        self.active.frames.data[top] = Frame::Script(s);
-                        return Ok(true);
-                    }
-                    Ok(false) => {}
-                    Err(kind) => {
-                        self.abort_class(s)?;
-                        self.put(s.env, 1, Value::NULL)?;
-                        self.clear(s.env, 2)?;
-                        s.phase = ScriptPhase::Exit {
-                            origin: s.pc,
-                            reason: ExitReason::Throw(FaultSeed {
-                                fault: None,
-                                explicit: None,
-                                author_value: false,
-                                awaited: None,
-
-                                kind,
-                                location: self.loc(s, s.pc),
-                            }),
-                            skip: None,
-                        };
-                    }
-                }
-            }
+            ScriptPhase::Body => unreachable!("Body dispatches before continuation work"),
             ScriptPhase::Constant(mut work) | ScriptPhase::DefaultConstant { mut work, .. } => {
                 let parameter = match s.phase {
                     ScriptPhase::DefaultConstant { parameter, .. } => Some(parameter),
@@ -522,41 +193,41 @@ impl Vm {
                                     s.pc = s.instruction_end;
                                     s.phase = ScriptPhase::Body;
                                 }
-                                Err(kind) => self.collection_fault(&mut s, kind)?,
+                                Err(kind) => self.collection_fault(s, kind)?,
                             }
                         }
                     }
                     constants::ConstantStep::Fault(kind) => {
                         if parameter.is_some() {
-                            self.preparation_fault(&mut s, kind)?;
+                            self.preparation_fault(s, kind)?;
                         } else {
-                            self.collection_fault(&mut s, kind)?;
+                            self.collection_fault(s, kind)?;
                         }
                     }
                 }
             }
             ScriptPhase::Spread(work) => {
-                if !self.spread_step(&mut s, work, m)? {
+                if !self.spread_step(s, work, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::TableSpread(work) => {
-                if !self.table_spread_step(&mut s, work, m)? {
+                if !self.table_spread_step(s, work, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::KeyPath { index } => {
-                if !self.key_path_step(&mut s, index, m)? {
+                if !self.key_path_step(s, index, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::TableValidate | ScriptPhase::TableScan => {
-                if !self.table_step(&mut s, m)? {
+                if !self.table_step(s, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::HostMethod { object, dest } => {
-                if !self.host_method_step(&mut s, object, dest, m)? {
+                if !self.host_method_step(s, object, dest, m)? {
                     return Ok(false);
                 }
             }
@@ -566,12 +237,12 @@ impl Vm {
                 index,
                 tuple,
             } => {
-                if !self.sequence_step(&mut s, dest, window, index, tuple, m)? {
+                if !self.sequence_step(s, dest, window, index, tuple, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::TextFinish { .. } => {
-                if !self.text_finish_step(&mut s, m)? {
+                if !self.text_finish_step(s, m)? {
                     return Ok(false);
                 }
             }
@@ -580,33 +251,33 @@ impl Vm {
                 input,
                 offset,
             } => {
-                if !self.text_push_step(&mut s, builder, input, offset, m)? {
+                if !self.text_push_step(s, builder, input, offset, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::Builtin(_) => {
-                if !self.builtin_step(&mut s, m)? {
-                    self.active.frames.data[top] = Frame::Script(s);
+                if !self.builtin_step(s, m)? {
+                    self.publish_script_frame(top, s);
                     return Ok(false);
                 }
             }
             ScriptPhase::Search(work) => {
-                if !self.search_step(&mut s, work, m)? {
+                if !self.search_step(s, work, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::Sort(work) => {
-                if !self.sort_step(&mut s, work, m)? {
+                if !self.sort_step(s, work, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::Bulk(work) => {
-                if !self.bulk_step(&mut s, work, m)? {
+                if !self.bulk_step(s, work, m)? {
                     return Ok(false);
                 }
             }
             ScriptPhase::TextBuiltin(work) => {
-                if !self.text_builtin_step(&mut s, work, m)? {
+                if !self.text_builtin_step(s, work, m)? {
                     return Ok(false);
                 }
             }
@@ -616,58 +287,13 @@ impl Vm {
                 right,
                 offset,
             } => {
-                if !self.concat_step(&mut s, dest, left, right, offset, m)? {
+                if !self.concat_step(s, dest, left, right, offset, m)? {
                     return Ok(false);
                 }
             }
-            ScriptPhase::Equality { dest, negated } => {
-                if !m.take(0, 1, 0) {
+            ScriptPhase::Equality { .. } | ScriptPhase::EqualityCleanup { .. } => {
+                if !self.equality_phase_step(s, m)? {
                     return Ok(false);
-                }
-                self.equality_step(&mut s, dest, negated)?;
-            }
-            ScriptPhase::EqualityCleanup {
-                dest,
-                negated,
-                result,
-            } => {
-                if !m.take(0, 1, 0) {
-                    return Ok(false);
-                }
-                if !self.active.equality_cursors.data.is_empty() {
-                    let depth = self.active.equality_cursors.data.len() as u32 - 1;
-                    self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
-                    self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
-                    self.active.equality_cursors.data.pop();
-                } else {
-                    if s.table_work.is_some() {
-                        self.table_comparison_done(&mut s, result)?;
-                    } else {
-                        match result {
-                            Ok(equal) => {
-                                self.put(s.regs, dest.0, Value::bool(equal != negated))?;
-                                s.pc = s.instruction_end;
-                                s.phase = ScriptPhase::Body;
-                            }
-                            Err(kind) => {
-                                self.put(s.env, 1, Value::NULL)?;
-                                self.clear(s.env, 2)?;
-                                s.phase = ScriptPhase::Exit {
-                                    origin: s.pc,
-                                    reason: ExitReason::Throw(FaultSeed {
-                                        fault: None,
-                                        explicit: None,
-                                        author_value: false,
-                                        awaited: None,
-
-                                        kind,
-                                        location: self.loc(s, s.pc),
-                                    }),
-                                    skip: None,
-                                };
-                            }
-                        }
-                    }
                 }
             }
             ScriptPhase::Exit {
@@ -723,7 +349,7 @@ impl Vm {
                 if !m.take(0, work, alloc + roots.1) {
                     return Ok(false);
                 }
-                if !self.exit_step(&mut s, origin, reason, handler, superseded)? {
+                if !self.exit_step(s, origin, reason, handler, superseded)? {
                     return Ok(false);
                 }
             }
@@ -757,7 +383,7 @@ impl Vm {
                     let record = self.active.caught.data.remove(index);
                     self.clear(s.env, 4 + record.region.0 * 2)?;
                     self.clear(s.env, 5 + record.region.0 * 2)?;
-                    self.active.frames.data[top] = Frame::Script(s);
+                    self.publish_script_frame(top, s);
                     return Ok(true);
                 }
                 let value = self.value(s.env, 1)?;
@@ -766,20 +392,20 @@ impl Vm {
                     _ => None,
                 };
                 let committed = if s.generator {
-                    self.generator_release(s, value, cause, error)?
+                    self.generator_release(*s, value, cause, error)?
                 } else {
                     self.commit(s.ret, value, cause, error)?
                 };
                 if !committed {
-                    self.active.frames.data[top] = Frame::Script(s);
+                    self.publish_script_frame(top, s);
                     return Ok(true);
                 }
-                self.release_frame(Frame::Script(s))?;
+                self.release_frame(Frame::Script(*s))?;
                 self.active.frames.data.remove(top);
                 return Ok(true);
             }
         }
-        self.active.frames.data[top] = Frame::Script(s);
+        self.publish_script_frame(top, s);
         Ok(true)
     }
     pub(super) fn instruction_cost(
@@ -789,6 +415,7 @@ impl Vm {
         _a: u32,
         b: u32,
         c: u32,
+        plan: &mut InstructionPlan,
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
@@ -801,7 +428,7 @@ impl Vm {
             Opcode::CellWrite => {
                 let contract = self
                     .heap
-                    .cell_info(self.slots.read(at(s.regs, _a))?)?
+                    .cell_info(self.slots.read_vm(at(s.regs, _a))?)?
                     .contract;
                 (
                     1 + contract.type_id.map_or(0, |ty| self.type_checks.extra(ty)),
@@ -824,7 +451,7 @@ impl Vm {
                     Arguments::Window(w) => w.len,
                     Arguments::Packed(r) => {
                         self.heap
-                            .packed_array_len(self.slots.read(at(s.regs, r.0))?)?
+                            .packed_array_len(self.slots.read_vm(at(s.regs, r.0))?)?
                             / 2
                     }
                 };
@@ -838,16 +465,31 @@ impl Vm {
                     CallTarget::Function(id) => self.script_push_cost(id, native_count),
                     CallTarget::Native(id) => self.native_push_cost(id, native_count),
                     CallTarget::Register(r) => {
-                        let target = self.slots.read(at(s.regs, r.0))?;
-                        if self.is_text(target, ObjectKind::Class) {
+                        let target = self.slots.read_vm(at(s.regs, r.0))?;
+                        let target_read = self.heap.read_object(target);
+                        if target_read
+                            .as_ref()
+                            .is_ok_and(|read| read.kind() == ObjectKind::Class)
+                        {
                             allocation = Values::allocation_bytes(4);
                             (24, 0)
                         } else {
-                            let cost = self
-                                .closure_function(target)
-                                .map(|id| self.script_push_cost(id, count))
+                            let bound = target_read
+                                .as_ref()
+                                .is_ok_and(|read| read.kind() == ObjectKind::BoundScript);
+                            let callee = target_read
+                                .map_err(VmError::from)
+                                .and_then(|read| self.read_callee_from(target, read));
+                            let cost = callee
+                                .as_ref()
+                                .map(|read| self.script_push_cost(read.function, count))
                                 .unwrap_or((1, 0));
-                            if self.is_text(target, ObjectKind::BoundScript) {
+                            if let Ok(read) = callee
+                                && let Some(callee) = self.prepare_callee(target, read)
+                            {
+                                *plan = InstructionPlan::Callee(callee);
+                                cost
+                            } else if bound {
                                 let (work, bytes) = self.initializer_cost(target)?;
                                 allocation = bytes;
                                 (cost.0 + work, cost.1)
@@ -868,7 +510,7 @@ impl Vm {
             Opcode::Await => {
                 let cost = self
                     .heap
-                    .host_await(self.slots.read(at(s.regs, b))?)
+                    .host_await(self.slots.read_vm(at(s.regs, b))?)
                     .map(|id| self.native_push_cost(id, 1))
                     .unwrap_or((1, 0));
                 (
@@ -916,19 +558,19 @@ impl Vm {
             Opcode::MakeClass => (24, Values::allocation_bytes(9)),
             Opcode::SuperRef => (4, Values::allocation_bytes(2)),
             Opcode::PropertyRef => {
-                let object = self.slots.read(at(s.regs, b))?;
+                let object = self.slots.read_vm(at(s.regs, b))?;
                 if object.tag() == ValueTag::Object
                     && matches!(
-                        self.heap.info(object)?.kind,
+                        self.heap.read_object(object)?.kind(),
                         ObjectKind::Instance | ObjectKind::Super
                     )
                 {
                     let Descriptor::Property { key, .. } = f.descriptors[c as usize] else {
                         unreachable!()
                     };
-                    let key = self.slots.read(at(s.regs, key.0))?;
+                    let key = self.slots.read_vm(at(s.regs, key.0))?;
                     let bytes = if key.tag() == ValueTag::Object {
-                        self.heap.info(key)?.len
+                        self.heap.read_object(key)?.len()
                     } else {
                         0
                     };
@@ -943,8 +585,32 @@ impl Vm {
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self
                     .slots
-                    .read(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
-                let kind = self.heap.info(object)?.kind;
+                    .read_vm(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
+                let object_read = self.heap.read_object(object)?;
+                let info = object_read.info();
+                let kind = info.kind;
+                #[cfg(feature = "execution-counts")]
+                if op == Opcode::MemberGet && s.member_symbol.is_some() {
+                    let counter = match kind {
+                        ObjectKind::Table => execution_counts::Counter::MemberGetTableCosts,
+                        ObjectKind::Host => execution_counts::Counter::MemberGetHostCosts,
+                        ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super => {
+                            execution_counts::Counter::MemberGetClassCosts
+                        }
+                        ObjectKind::PropertyRef => {
+                            execution_counts::Counter::MemberGetPropertyCosts
+                        }
+                        _ => execution_counts::Counter::MemberGetOtherCosts,
+                    };
+                    self.execution_counts.add(counter, 1);
+                }
+                if op == Opcode::MemberGet
+                    && s.member_symbol.is_some()
+                    && let Some(read) = self.prepare_named_read(object, info)
+                {
+                    *plan = InstructionPlan::NamedRead(read);
+                    return Ok((1, 0));
+                }
                 if matches!(
                     kind,
                     ObjectKind::FaultEnvelope
@@ -965,6 +631,23 @@ impl Vm {
                     kind,
                     ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
                 ) {
+                    let prepare = op == Opcode::MemberGet;
+                    #[cfg(test)]
+                    let prepare = prepare && !self.work_probe.general_class_reads;
+                    if prepare
+                        && let Ok((target, property)) = self.class_read_from(
+                            object,
+                            object_read,
+                            SymbolId(c),
+                            s.member_symbol.map(|_| (s.code.function, s.pc)),
+                        )
+                    {
+                        let work = target.work();
+                        *plan = InstructionPlan::ClassRead(target, property);
+                        // Three-slot bound methods currently use inline Values;
+                        // this preserves their existing payload admission.
+                        return Ok((work, Values::allocation_bytes(3)));
+                    }
                     let extra = if op == Opcode::MemberSet {
                         self.class_write_cost(object, SymbolId(c))?
                     } else {
@@ -991,8 +674,8 @@ impl Vm {
             | Opcode::MakeRange
             | Opcode::MakeRangeInclusive => (4, Values::allocation_bytes(3)),
             Opcode::ChildrenPush | Opcode::ArrayPush => {
-                let array = self.slots.read(at(s.regs, _a))?;
-                let value = self.slots.read(at(s.regs, b))?;
+                let array = self.slots.read_vm(at(s.regs, _a))?;
+                let value = self.slots.read_vm(at(s.regs, b))?;
                 let len = self.heap.info(array)?.len;
                 (
                     1,
@@ -1004,7 +687,7 @@ impl Vm {
                 )
             }
             Opcode::ArgsPush | Opcode::ArgsNamed => {
-                let packed = self.slots.read(at(s.regs, _a))?;
+                let packed = self.slots.read_vm(at(s.regs, _a))?;
                 let len = self.heap.packed_array_len(packed)?;
                 (2, Values::growth_bytes(len.into(), 2))
             }

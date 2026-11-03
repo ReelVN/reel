@@ -419,6 +419,8 @@ fn default_package(
             capabilities: vec![],
         }];
         registered.natives = vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             signature: package.signatures[0].clone(),

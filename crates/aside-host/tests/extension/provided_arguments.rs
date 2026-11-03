@@ -180,6 +180,8 @@ fn default_slots_remain_measured_separately_from_borrowed_provided_arguments() {
     let mut costs = Vec::new();
     for parameters in [3, 64] {
         let contract = NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "sample::record".into(),
             abi_version: 1,
             parameters: (0..parameters)

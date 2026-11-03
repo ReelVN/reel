@@ -1,4 +1,4 @@
-use crate::payload::{Payload, VALUE_CHUNK_BYTES};
+use crate::payload::{Payload, Table, VALUE_CHUNK_BYTES};
 use crate::slots::RangeKey;
 use crate::{Heap, HeapError, RootRangeToken, RootRanges};
 
@@ -447,7 +447,38 @@ impl Heap {
                 obj.payload = Payload::Empty;
                 released
             }
-            Payload::Values(values) | Payload::Table(values) if !values.empty() => {
+            Payload::Table(Table {
+                index: Some(index), ..
+            }) if !index.entries.is_empty() => {
+                index.entries.pop_first();
+                if index.entries.is_empty() {
+                    drop(std::mem::take(&mut index.entries));
+                }
+                p.units += 1;
+                return true;
+            }
+            Payload::Table(Table {
+                index: Some(index), ..
+            }) if index.reserved != 0 => {
+                let released = index
+                    .reserved
+                    .min(VALUE_CHUNK_BYTES)
+                    .min(budget.bytes.saturating_sub(p.bytes));
+                if released == 0 {
+                    return false;
+                }
+                index.reserved -= released;
+                released
+            }
+            Payload::Table(table) if table.index.is_some() => {
+                let released = crate::payload::table::INDEX_BASE_BYTES;
+                if budget.bytes.saturating_sub(p.bytes) < released {
+                    return false;
+                }
+                table.index = None;
+                released
+            }
+            Payload::Values(values) | Payload::Table(Table { values, .. }) if !values.empty() => {
                 let remaining = values.first_chunk_len() - values.release_cursor;
                 if remaining != 0 {
                     if p.release_edges == budget.release_edges {

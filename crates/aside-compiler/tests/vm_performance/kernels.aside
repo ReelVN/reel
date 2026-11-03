@@ -1,0 +1,217 @@
+// Original Aside workloads. Each returns a deterministic integer oracle.
+fn bench_echo(value: any) -> any { value }
+fn bench_model(value: any) -> any { value }
+fn bench_derive(callback: any) -> any { callback() }
+fn bench_flush() -> any { null }
+fn bench_host(value: any) -> any { value }
+fn bench_method(receiver: any, value: any) -> any { value }
+
+class MotionHost {
+    let curve: any = bench_host({});
+    fn sample(self, seconds: int) -> int { self.curve.sample(seconds) }
+}
+
+class Base {
+    let value: int = 7;
+    fn read(self) -> int { self.value }
+}
+class Child: Base {
+    let offset: int = 3;
+    fn read(self) -> int { self.value + self.offset }
+}
+
+class ObservedState {
+    let mut value: int = 0;
+    let factor: int = 3;
+}
+
+fn arithmetic(n: int) -> int {
+    let mut result = 0;
+    for i in 0..n { result += (i * 3 + 1) % 97; }
+    result
+}
+
+fn step(value: int) -> int { value * 3 + 1 }
+fn calls(n: int) -> int {
+    let mut result = 0;
+    for i in 0..n { result += step(i); }
+    result
+}
+
+fn fields(n: int) -> int {
+    let value = Child();
+    let mut result = 0;
+    for i in 0..n { result += value.value + value.offset; }
+    result
+}
+
+fn named_tables(n: int) -> int {
+    let value = {value: 7, offset: 3};
+    let mut result = 0;
+    for i in 0..n { result += value.value + value.offset; }
+    result
+}
+
+fn polymorphic_tables(n: int) -> int {
+    let values = [{value: 7, offset: 3}, {offset: 3, value: 7}];
+    let mut result = 0;
+    for i in 0..n {
+        let value = values[i % 2];
+        result += value.value + value.offset;
+    }
+    result
+}
+
+fn named_host_fields(n: int) -> int {
+    let value = bench_host({value: 7, offset: 3});
+    let mut result = 0;
+    for i in 0..n { result += value.value + value.offset; }
+    result
+}
+
+fn methods(n: int) -> int {
+    let value = Child();
+    let mut result = 0;
+    for i in 0..n { result += value.read(); }
+    result
+}
+
+fn retained_method(n: int) -> int {
+    let value = Child();
+    let read = value.read;
+    let mut result = 0;
+    for i in 0..n { result += read(); }
+    result
+}
+
+fn captured_cells(n: int) -> int {
+    let mut value = 0;
+    let read = || value;
+    let mut result = 0;
+    for i in 0..n {
+        value = i;
+        result += read();
+    }
+    result
+}
+
+fn host_calls(n: int) -> int {
+    let mut result = 0;
+    for i in 0..n { result += bench_echo(i); }
+    result
+}
+
+fn host_methods(n: int) -> int {
+    let curve = bench_host({});
+    let mut result = 0;
+    for i in 0..n { result += curve.sample(i); }
+    result
+}
+
+fn retained_host_method(n: int) -> int {
+    let curve = bench_host({});
+    let sample = curve.sample;
+    let mut result = 0;
+    for i in 0..n { result += sample(i); }
+    result
+}
+
+fn host_motion_methods(n: int) -> int {
+    let values = [];
+    for i in 0..143 { values.append(MotionHost()); }
+    let mut result = 0;
+    for i in 0..n { result += values[i % 143].sample(i); }
+    result
+}
+
+fn locals_step(i: int) -> int {
+    let a = i + 1; let b = i + 2; let c = i + 3; let d = i + 4;
+    let e = i + 5; let f = i + 6; let g = i + 7; let h = i + 8;
+    let j = i + 9; let k = i + 10; let l = i + 11; let m = i + 12;
+    let o = i + 13; let p = i + 14; let q = i + 15; let r = i + 16;
+    a + b + c + d + e + f + g + h + j + k + l + m + o + p + q + r
+}
+fn locals(n: int) -> int {
+    let mut result = 0;
+    for i in 0..n { result += locals_step(i); }
+    result
+}
+
+fn allocation(n: int) -> int {
+    let mut result = 0;
+    for i in 0..n {
+        let values = [i, i + 1, i + 2, i + 3];
+        result += values[3];
+    }
+    result
+}
+
+fn reactive(n: int) -> int {
+    let state = bench_model({value: 0});
+    let value = bench_derive(|| state.value * 3 + 7);
+    let mut result = 0;
+    for i in 0..n {
+        state.value = i;
+        bench_flush();
+        result += value.value;
+    }
+    result
+}
+
+fn reactive_fields(n: int) -> int {
+    let state = bench_model(ObservedState());
+    let value = bench_derive(|| state.value * state.factor + 7);
+    let mut result = 0;
+    for i in 0..n {
+        state.value = i;
+        bench_flush();
+        result += value.value;
+    }
+    result
+}
+
+class WideFields {
+    let a: int = 1;
+    let b: int = 2;
+    let c: int = 3;
+    let d: int = 4;
+    let e: int = 5;
+    let f: int = 6;
+    let g: int = 7;
+    let h: int = 8;
+}
+
+// Eight class members make each read cost 21 work, doubled in a derived read.
+fn reactive_wide_fields(n: int) -> int {
+    let fields = WideFields();
+    let state = bench_model({value: 0});
+    let value = bench_derive(|| state.value + fields.a + fields.b + fields.c + fields.d
+        + fields.e + fields.f + fields.g + fields.h);
+    let mut result = 0;
+    for i in 0..n {
+        state.value = i;
+        bench_flush();
+        result += value.value;
+    }
+    result
+}
+
+fn text_compare(n: int) -> int {
+    let left = "The clock advances while the whole scene keeps moving, including its text and menus.";
+    let right = "The clock advances while the whole scene keeps moving, including its text and " + "menus.";
+    let different = "The clock advances while the whole scene keeps moving, including its text and menus!";
+    let mut result = 0;
+    for i in 0..n {
+        if left == right { result += 1; }
+        if left != different { result += 2; }
+    }
+    result
+}
+
+fn string_keys(n: int) -> int {
+    let state = {motion_duration: 7, motion_repeat: 3, motion_easing: 5};
+    let key = "motion_" + "duration";
+    let mut result = 0;
+    for i in 0..n { result += state[key]; }
+    result
+}

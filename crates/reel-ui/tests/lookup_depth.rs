@@ -4,12 +4,6 @@
 //! Lookup stack/allocation contract, independently of build and destruction.
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::{alloc::System, hint::black_box, process::Command, time::Instant};
-#[expect(
-    dead_code,
-    reason = "The production UI uses arena operations outside this isolated allocation probe"
-)]
-#[path = "../src/tree_arena.rs"]
-mod tree_arena;
 use tree_arena::{ArenaMutList, TreeArena};
 
 #[global_allocator]
@@ -39,22 +33,20 @@ mod lookup_probe {
         };
         let mut cases: Vec<_> = probes
             .into_iter()
-            .map(|(op, depth, stack)| (op, depth, stack, 0, 1))
+            .map(|(op, depth, stack)| (op, depth, stack, 1))
             .collect();
         for op in ["find", "find_mut"] {
             for stack in [65536, 131072] {
-                cases.push((op, 128, stack, 128, 1));
+                cases.push((op, 128, stack, 100));
             }
             if !cfg!(debug_assertions) {
                 for depth in [128, 512, 2048] {
-                    for capacity in [1, 32, 128, depth] {
-                        cases.push((op, depth, 65536, capacity, 100));
-                    }
+                    cases.push((op, depth, 65536, 100));
                 }
             }
         }
-        for (op, depth, stack, capacity, samples) in cases {
-            let case = format!("{op},{depth},{stack},{capacity},{samples}");
+        for (op, depth, stack, samples) in cases {
+            let case = format!("{op},{depth},{stack},{samples}");
             let child = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -93,8 +85,7 @@ mod lookup_probe {
         let op = args[0].to_owned();
         let depth: u64 = args[1].parse().unwrap();
         let stack: usize = args[2].parse().unwrap();
-        let capacity: usize = args[3].parse().unwrap();
-        let samples: usize = args[4].parse().unwrap();
+        let samples: usize = args[3].parse().unwrap();
         let mut tree = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
@@ -105,9 +96,6 @@ mod lookup_probe {
             .unwrap()
             .join()
             .unwrap();
-        if capacity > 0 {
-            tree.configure_lookup_path_storage(capacity);
-        }
         std::thread::Builder::new().name("lookup-probe".into()).stack_size(stack).spawn(move || {
         let mut elapsed = Vec::with_capacity(samples);
         let region = Region::new(ALLOCATOR);
@@ -122,10 +110,8 @@ mod lookup_probe {
         assert_eq!(stats.reallocations,0,"lookup reallocated");
         assert_eq!(*tree.find(depth).unwrap().item,if op == "find" { depth } else { depth+u64::try_from(samples).unwrap() },"mutation result");
         elapsed.sort_unstable();
-        println!("OK op={op} depth={depth} stack_bytes={stack} capacity={capacity} samples={samples} allocations={} reallocations={} bytes={} p95_ns={} max_ns={}",stats.allocations,stats.reallocations,stats.bytes_allocated,elapsed[(samples*95).div_ceil(100)-1],elapsed[samples-1]);
-        // Recursive nested HashMap destruction is outside the lookup contract.
-        // The isolated process releases this tree after reporting the measurement.
-        std::mem::forget(tree);
+        println!("OK op={op} depth={depth} stack_bytes={stack} samples={samples} allocations={} reallocations={} bytes={} p95_ns={} max_ns={}",stats.allocations,stats.reallocations,stats.bytes_allocated,elapsed[(samples*95).div_ceil(100)-1],elapsed[samples-1]);
+        drop(tree);
     }).unwrap().join().unwrap();
     }
 }

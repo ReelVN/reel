@@ -2,6 +2,17 @@
 use super::*;
 use reel_engine::{Epoch, InputAction, Session, SessionId, aside::VmLimits};
 
+#[test]
+fn runtime_control_footprint() {
+    // Moving the scheduler or a save result transfers session ownership, not its VM buffers.
+    assert!(size_of::<StoryRuntime>() < 4096);
+    assert!(
+        size_of::<
+            Result<crate::saves::Capture, (Box<AsideSessionUi>, reel_engine::aside::AdapterError)>,
+        >() < 512
+    );
+}
+
 fn runtime(code: &str) -> StoryRuntime {
     StoryRuntime::new(
         AsideSessionUi::from_source(

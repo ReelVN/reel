@@ -2,13 +2,73 @@
 use super::*;
 
 #[test]
+fn source_limits_retain_four_tap_blocks_before_falling_back_to_single_taps() {
+    let program = sampling_program(30);
+    for language in [Language::Cg, Language::Wgsl] {
+        let four = generate_inner(&program, language, 1 << 20, 4).unwrap();
+        let limit = four.function.len() + four.declarations.len();
+        assert_eq!(
+            generate(&program, language, limit).unwrap().function,
+            four.function
+        );
+        for tail in [OutputTail::Ordinary, OutputTail::AlphaCoverage] {
+            let four = generate_inner(&program, language, 1 << 20, 4).unwrap();
+            let four = match language {
+                Language::Cg => cg::compile(&program, four, tail, FragmentCoverage::Local, 1 << 20),
+                Language::Wgsl => {
+                    wgsl::compile(&program, four, tail, FragmentCoverage::Local, 1 << 20)
+                }
+            }
+            .unwrap();
+            let admitted =
+                compile_fragment_with_tail(&program, language, tail, four.source.len()).unwrap();
+            assert_eq!(admitted.source, four.source);
+            assert_eq!(admitted.parameters, four.parameters);
+        }
+    }
+}
+
+#[test]
+fn cg_parallel_clip_keeps_predicates_and_sampling_body_with_bounded_admission() {
+    for count in [3, 17, 31, 32, 61] {
+        let offsets: Vec<_> = (0..count).map(|i| i as f32).collect();
+        let program = sampling_offsets(&offsets);
+        for tail in [OutputTail::Ordinary, OutputTail::AlphaCoverage] {
+            let local = compile_fragment_with_tail(&program, Language::Cg, tail, 1 << 20).unwrap();
+            assert!(local.source.contains(cg::PIXEL_KILL));
+            assert!(local.source.contains(cg::UV_KILL));
+            let generated = generate_inner(&program, Language::Cg, 1 << 20, 5).unwrap();
+            assert!(local.source.contains(&generated.function));
+            let admitted =
+                compile_fragment_with_tail(&program, Language::Cg, tail, local.source.len())
+                    .unwrap();
+            assert_eq!(admitted.source, local.source);
+        }
+        let complex = sampling_offsets_with_complexity(&offsets, true);
+        let local = compile_fragment(&complex, Language::Cg, 1 << 20).unwrap();
+        assert!(local.source.contains(cg::PIXEL_KILL));
+        let full = compile_fragment_variant(
+            &program,
+            Language::Cg,
+            OutputTail::Ordinary,
+            FragmentCoverage::FullTarget,
+            1 << 20,
+        )
+        .unwrap();
+        assert!(!full.source.contains("clip("));
+    }
+}
+
+#[test]
 fn blocks_reproduce_all_original_counter_bits_and_keep_short_or_complex_loops() {
     for (first, step, count, width) in [
         (0, 1, 32, 4),
         (-16, 1, 34, 4),
-        (-16, 1, 35, 4),
-        (-30, 1, 61, 4),
-        (30, -1, 61, 4),
+        (-16, 1, 35, 5),
+        (-20, 1, 41, 5),
+        (-25, 1, 51, 5),
+        (-30, 1, 61, 5),
+        (30, -1, 61, 5),
         (-16_777_216, 2, 33, 4),
         (16_777_184, 1, 33, 1),
         (-8, 1, 17, 1),
@@ -34,7 +94,7 @@ fn blocks_reproduce_all_original_counter_bits_and_keep_short_or_complex_loops() 
                 .unwrap();
             }
         }
-        if width == 4 {
+        if width > 1 {
             let mut actual = Vec::new();
             let mut counter = plan.first as f32;
             for _ in 0..plan.iterations() / width {
@@ -71,8 +131,8 @@ fn blocks_reproduce_all_original_counter_bits_and_keep_short_or_complex_loops() 
 fn loop_blocks_preserve_body_and_complete_wrapper_source_admission() {
     let program = sampling_program(30);
     for language in [Language::Cg, Language::Wgsl] {
-        let baseline = generate_inner(&program, language, 1 << 20, false).unwrap();
-        let blocked = generate_inner(&program, language, 1 << 20, true).unwrap();
+        let baseline = generate_inner(&program, language, 1 << 20, 1).unwrap();
+        let blocked = generate_inner(&program, language, 1 << 20, 4).unwrap();
         assert!(blocked.function.len() > baseline.function.len());
         let admitted = generate(
             &program,
@@ -87,7 +147,7 @@ fn loop_blocks_preserve_body_and_complete_wrapper_source_admission() {
             (OutputTail::AlphaCoverage, FragmentCoverage::Local),
             (OutputTail::Ordinary, FragmentCoverage::FullTarget),
         ] {
-            let generated = generate_inner(&program, language, 1 << 20, false).unwrap();
+            let generated = generate_inner(&program, language, 1 << 20, 1).unwrap();
             let original = match language {
                 Language::Cg => cg::compile(&program, generated, tail, coverage, 1 << 20),
                 Language::Wgsl => wgsl::compile(&program, generated, tail, coverage, 1 << 20),

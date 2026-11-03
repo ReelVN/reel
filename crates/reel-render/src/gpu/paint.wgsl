@@ -74,6 +74,14 @@ fn tint(v: VertexOut, pixel: vec4<f32>) -> vec4<f32> {
     }
     if appearance.offset_enabled.w == 0.0 { return tinted; }
     if tinted.a == 0.0 { return tinted; }
+    // Zero gain makes the adjusted RGB independent of the sampled/tinted RGB.
+    // Preserve the preceding gradient alpha and the ordinary transfer curve.
+    if all(appearance.gain_saturation.xyz == vec3<f32>(0.0)) {
+        let adjusted = clamp(appearance.offset_enabled.xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+        let linear = select(pow((adjusted + 0.055) / 1.055, vec3<f32>(2.4)),
+            adjusted / 12.92, adjusted <= vec3<f32>(0.04045));
+        return vec4<f32>(linear * tinted.a, tinted.a);
+    }
     let linear = max(tinted.rgb / tinted.a, vec3<f32>(0.0));
     let srgb = select(1.055 * pow(linear, vec3<f32>(1.0 / 2.4)) - 0.055,
         12.92 * linear, linear <= vec3<f32>(0.0031308));

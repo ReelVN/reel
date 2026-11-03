@@ -1,12 +1,71 @@
-use anyhow::{Result, bail};
-use reel_dev::{audio, maintenance, root, vita};
-use std::{env, path::Path, process::Command};
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use reel_dev::{audio, frame_cost, maintenance, performance, render_cost, root, vita};
+use std::{path::PathBuf, process::Command};
+
+#[derive(Parser)]
+#[command(
+    name = "reel-dev",
+    about = "Reel repository checks and performance tools"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Action,
+}
+
+#[derive(Subcommand)]
+enum Action {
+    /// Check the preserved compiler source fixtures.
+    Check,
+    /// Check workspace dependencies and platform boundaries.
+    Deps,
+    AudioRegression {
+        #[arg(long)]
+        release: bool,
+    },
+    AudioProbe,
+    VitaAssets(vita::Assets),
+    Perf(performance::Options),
+    FrameCost {
+        scope: String,
+        input: PathBuf,
+        output: PathBuf,
+        budget: Option<PathBuf>,
+    },
+    RenderCost {
+        scope: String,
+        input: PathBuf,
+        output: PathBuf,
+    },
+    RootNegative,
+    CompilerProbe {
+        probe: String,
+        mode: Option<String>,
+    },
+    Measure {
+        build: PathBuf,
+        target: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<String>,
+    },
+}
 
 fn main() -> Result<()> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let command = args.iter().map(String::as_str).collect::<Vec<_>>();
-    match command.as_slice() {
-        ["check"] => {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.print()?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    match cli.command {
+        Action::Check => {
             let status = Command::new("cargo")
                 .current_dir(root())
                 .args([
@@ -22,21 +81,59 @@ fn main() -> Result<()> {
                 .status()?;
             anyhow::ensure!(status.success(), "compiler source fixture contract failed");
         }
-        ["deps"] => maintenance::dependencies()?,
-        ["audio-regression"] => audio::regression(false)?,
-        ["audio-regression", "--release"] => audio::regression(true)?,
-        ["audio-probe"] => audio::probes()?,
-        ["vita-assets", ..] => vita::assets(&args[1..])?,
-        ["root-negative"] => maintenance::negative_controls()?,
-        ["compiler-probe", probe, mode] => maintenance::compiler_probe(probe, Some(mode))?,
-        ["compiler-probe", probe] => maintenance::compiler_probe(probe, None)?,
-        ["measure", build, target, ..] => {
-            maintenance::measure(Path::new(build), target, &args[3..])?
+        Action::Deps => maintenance::dependencies()?,
+        Action::AudioRegression { release } => audio::regression(release)?,
+        Action::AudioProbe => audio::probes()?,
+        Action::VitaAssets(options) => vita::assets(options)?,
+        Action::Perf(options) => performance::execute(options)?,
+        Action::FrameCost {
+            scope,
+            input,
+            output,
+            budget,
+        } => frame_cost::report(&scope, &input, &output, budget.as_deref())?,
+        Action::RenderCost {
+            scope,
+            input,
+            output,
+        } => render_cost::report(&scope, &input, &output)?,
+        Action::RootNegative => maintenance::negative_controls()?,
+        Action::CompilerProbe { probe, mode } => {
+            maintenance::compiler_probe(&probe, mode.as_deref())?
         }
-        _ => bail!(
-            "Usage: cargo run -p reel-dev -- <check|deps|audio-regression [--release]|audio-probe|vita-assets --font FILE --font-license FILE|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
-            root().display()
-        ),
+        Action::Measure {
+            build,
+            target,
+            arguments,
+        } => maintenance::measure(&build, &target, &arguments)?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn command_tree_and_forwarded_arguments() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+        let parsed = Cli::try_parse_from([
+            "reel-dev",
+            "measure",
+            "build.json",
+            "contracts",
+            "--ignored",
+            "--nocapture",
+        ])
+        .unwrap();
+        let Action::Measure { arguments, .. } = parsed.command else {
+            panic!("measure");
+        };
+        assert_eq!(arguments, ["--ignored", "--nocapture"]);
+        assert!(Cli::try_parse_from(["reel-dev", "vita-assets", "--font", "f.ttf"]).is_err());
+        assert!(
+            Cli::try_parse_from(["reel-dev", "perf", "--help"])
+                .is_err_and(|e| e.kind() == clap::error::ErrorKind::DisplayHelp)
+        );
+    }
 }

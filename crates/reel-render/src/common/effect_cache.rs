@@ -1,7 +1,13 @@
 //! Device-owned shader identity cache, with explicit producer and metadata lives.
 use super::GpuError;
+use hashbrown::HashTable;
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::resources::{ResourceHandle, ResourceLease, ResourceWeak};
+use std::hash::{BuildHasher, DefaultHasher};
+
+fn hash(key: &[u8; 32]) -> u64 {
+    std::hash::BuildHasherDefault::<DefaultHasher>::default().hash_one(key)
+}
 
 struct Entry<T> {
     key: [u8; 32],
@@ -10,13 +16,13 @@ struct Entry<T> {
     storage: BudgetTicket,
 }
 pub(crate) struct Cache<T> {
-    entries: Vec<Entry<T>>,
+    entries: HashTable<Entry<T>>,
     storage: Option<BudgetTicket>,
 }
 impl<T> Default for Cache<T> {
     fn default() -> Self {
         Self {
-            entries: Vec::new(),
+            entries: HashTable::new(),
             storage: None,
         }
     }
@@ -58,12 +64,12 @@ fn grow<T>(values: &mut Vec<T>, pool: &BudgetPool, limit: u64) -> Result<BudgetT
 }
 impl<T: Clone> Cache<T> {
     pub(crate) fn prune(&mut self) {
-        self.entries.retain_mut(|entry| {
+        self.entries.retain(|entry| {
             entry.owners.retain(|(_, owner)| !owner.is_released());
             !entry.owners.is_empty()
         });
         if self.entries.is_empty() {
-            self.entries = Vec::new();
+            self.entries = HashTable::new();
             self.storage = None;
         }
     }
@@ -74,8 +80,7 @@ impl<T: Clone> Cache<T> {
         pool: &BudgetPool,
         limit: u64,
     ) -> Result<Option<T>, GpuError> {
-        self.prune();
-        let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) else {
+        let Some(entry) = self.entries.find_mut(hash(&key), |entry| entry.key == key) else {
             return Ok(None);
         };
         if !entry
@@ -98,16 +103,29 @@ impl<T: Clone> Cache<T> {
         pool: &BudgetPool,
         limit: u64,
     ) -> Result<(), GpuError> {
-        if self.entries.len() == self.entries.capacity() {
-            self.storage = Some(grow(&mut self.entries, pool, limit)?);
-        }
+        reel_core::budget::collections::reserve_table(
+            &mut self.entries,
+            1,
+            &mut self.storage,
+            pool,
+            |entry| hash(&entry.key),
+        )
+        .map_err(|_| GpuError::Budget {
+            domain: "effect pipeline metadata",
+            requested: size_of::<Entry<T>>() as u64,
+            available: limit.saturating_sub(pool.usage().bytes),
+        })?;
         let storage = reserve(pool, size_of::<(ResourceHandle, ResourceWeak)>(), limit)?;
-        self.entries.push(Entry {
-            key,
-            compiled,
-            owners: vec![(lease.handle(), lease.downgrade())],
-            storage,
-        });
+        self.entries.insert_unique(
+            hash(&key),
+            Entry {
+                key,
+                compiled,
+                owners: vec![(lease.handle(), lease.downgrade())],
+                storage,
+            },
+            |entry| hash(&entry.key),
+        );
         Ok(())
     }
 }

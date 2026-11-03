@@ -19,6 +19,8 @@ pub(crate) struct Dependencies {
     pub ancestor_revision: u64,
     // Non-owning mark for one synchronous freshness walk; restored cold.
     pub freshness_visit: u64,
+    // A successful check survives unchanged values, bindings and capture epochs.
+    pub freshness_revision: [u64; 3],
     pub ancestor_reserved: u64,
 }
 impl Dependencies {

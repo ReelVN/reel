@@ -102,7 +102,7 @@ impl Vm {
         else {
             unreachable!()
         };
-        let value = self.slots.read(at(s.regs, input.0))?;
+        let value = self.slots.read_vm(at(s.regs, input.0))?;
         let info = self.heap.info(value)?;
         let count = (info.len - offset).min(self.text_scratch.data.capacity() as u32);
         if !meter.take(0, u64::from(count) * 2 + 1, 0) {
@@ -150,8 +150,8 @@ impl Vm {
         offset: u32,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
-        let buffer = self.slots.read(at(s.regs, builder.0))?;
-        let mut input_value = self.slots.read(at(s.regs, input.0))?;
+        let buffer = self.slots.read_vm(at(s.regs, builder.0))?;
+        let mut input_value = self.slots.read_vm(at(s.regs, input.0))?;
         let kind = if input_value.tag() == ValueTag::Object {
             Some(self.heap.info(input_value)?.kind)
         } else {

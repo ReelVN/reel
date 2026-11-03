@@ -143,6 +143,7 @@ pub(super) fn upload_batch<T>(
     limits: crate::common::GpuLimits,
     batch: &crate::common::draw_batch::Batch<T>,
 ) -> Result<(Storage, BudgetTicket, Option<BudgetTicket>), GpuError> {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GeometryUpload);
     let mut reused = cache.take_batch(batch, local);
     let partial = if let Some((storage, _)) = &mut reused {
         storage.storage.upload_segments(

@@ -15,7 +15,10 @@ use reel_ui::{
 use std::time::Instant;
 
 mod atlas;
+mod effects;
 mod nine_slice;
+mod pipelines;
+mod textures;
 
 mod synthesis;
 

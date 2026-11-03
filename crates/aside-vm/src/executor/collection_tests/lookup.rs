@@ -2,6 +2,332 @@
 use super::*;
 
 #[test]
+fn own_membership_tracks_the_matched_field_and_missing_insertions() {
+    let mut package = text_method_package("has_own");
+    let remove = SymbolId(package.symbols.len() as u32);
+    package.symbols.push("remove".into());
+    let mut function = package.functions[0].clone();
+    function.code[0].operands[2] = remove.0;
+    package.functions.push(function);
+    let mut vm = load(package);
+    let table = vm.heap_mut().alloc_table().unwrap();
+    let table_root = vm
+        .heap_mut()
+        .add_root(RootOwner(7), RootKind::Host, table)
+        .unwrap();
+    let watched = vm.heap_mut().alloc_string("watched").unwrap();
+    let other = vm.heap_mut().alloc_string("other").unwrap();
+    vm.heap_mut()
+        .table_store(table, 0, watched, Value::NULL)
+        .unwrap();
+    vm.heap_mut()
+        .table_store(table, 1, other, Value::int(0))
+        .unwrap();
+    vm.heap_mut().observe_model_object(table).unwrap();
+    let output = vm.heap_mut().alloc_derived(Value::NULL).unwrap();
+    let output_root = vm
+        .heap_mut()
+        .add_root(RootOwner(8), RootKind::Host, output)
+        .unwrap();
+    let evaluate = |vm: &mut Vm, expected| {
+        vm.heap_mut().begin_derived(output).unwrap();
+        let task = vm
+            .start(
+                FunctionId(0),
+                &[table, watched],
+                RootOwner(9),
+                Context::Derived,
+            )
+            .unwrap();
+        let value = returned(vm, task);
+        assert_eq!(value.as_bool(), Some(expected));
+        vm.heap_mut().commit_derived(output, value).unwrap();
+    };
+    evaluate(&mut vm, true);
+    for value in 1..32 {
+        vm.heap_mut()
+            .table_store(table, 1, other, Value::int(value))
+            .unwrap();
+        assert!(
+            !vm.heap().derived_pending(),
+            "unrelated field invalidated own membership"
+        );
+    }
+    let task = vm
+        .start(
+            FunctionId(1),
+            &[table, watched],
+            RootOwner(9),
+            Context::Ordinary,
+        )
+        .unwrap();
+    assert!(returned(&mut vm, task).same_bits(Value::NULL));
+    assert!(
+        vm.heap_mut()
+            .next_derived()
+            .unwrap()
+            .unwrap()
+            .same_bits(output)
+    );
+    evaluate(&mut vm, false);
+    vm.heap_mut()
+        .table_store(table, 1, watched, Value::bool(false))
+        .unwrap();
+    assert!(
+        vm.heap_mut()
+            .next_derived()
+            .unwrap()
+            .unwrap()
+            .same_bits(output)
+    );
+    evaluate(&mut vm, true);
+    // Removal changed slot positions. Membership now follows the new stable field.
+    vm.heap_mut()
+        .table_store(table, 0, other, Value::int(100))
+        .unwrap();
+    assert!(!vm.heap().derived_pending());
+    vm.heap_mut().clear_collection(table).unwrap();
+    assert!(
+        vm.heap_mut()
+            .next_derived()
+            .unwrap()
+            .unwrap()
+            .same_bits(output)
+    );
+    evaluate(&mut vm, false);
+    vm.heap_mut().release_root(output_root).unwrap();
+    vm.heap_mut().release_root(table_root).unwrap();
+}
+
+#[test]
+fn table_get_method_observes_only_the_committed_value_or_a_missing_key() {
+    let mut vm = load(text_method_package("get"));
+    let table = vm.heap_mut().alloc_table().unwrap();
+    let table_root = vm
+        .heap_mut()
+        .add_root(RootOwner(7), RootKind::Host, table)
+        .unwrap();
+    let watched = vm.heap_mut().alloc_string("watched").unwrap();
+    let other = vm.heap_mut().alloc_string("other").unwrap();
+    vm.heap_mut()
+        .table_store(table, 0, watched, Value::int(42))
+        .unwrap();
+    vm.heap_mut()
+        .table_store(table, 1, other, Value::int(0))
+        .unwrap();
+    vm.heap_mut().observe_model_object(table).unwrap();
+    let output = vm.heap_mut().alloc_derived(Value::NULL).unwrap();
+    let output_root = vm
+        .heap_mut()
+        .add_root(RootOwner(8), RootKind::Host, output)
+        .unwrap();
+    let evaluate = |vm: &mut Vm, expected: Value| {
+        vm.heap_mut().begin_derived(output).unwrap();
+        let task = vm
+            .start(
+                FunctionId(0),
+                &[table, watched],
+                RootOwner(9),
+                Context::Derived,
+            )
+            .unwrap();
+        let value = returned(vm, task);
+        assert!(value.same_bits(expected));
+        vm.heap_mut().commit_derived(output, value).unwrap();
+    };
+    evaluate(&mut vm, Value::int(42));
+    vm.heap_mut()
+        .table_store(table, 1, other, Value::int(9))
+        .unwrap();
+    assert!(!vm.heap().derived_pending());
+    vm.heap_mut()
+        .table_store(table, 0, watched, Value::int(84))
+        .unwrap();
+    assert!(
+        vm.heap_mut()
+            .next_derived()
+            .unwrap()
+            .unwrap()
+            .same_bits(output)
+    );
+    evaluate(&mut vm, Value::int(84));
+    vm.heap_mut().clear_collection(table).unwrap();
+    assert!(
+        vm.heap_mut()
+            .next_derived()
+            .unwrap()
+            .unwrap()
+            .same_bits(output)
+    );
+    evaluate(&mut vm, Value::NULL);
+    vm.heap_mut()
+        .table_store(table, 0, watched, Value::bool(false))
+        .unwrap();
+    assert!(
+        vm.heap_mut()
+            .next_derived()
+            .unwrap()
+            .unwrap()
+            .same_bits(output)
+    );
+    evaluate(&mut vm, Value::bool(false));
+    vm.heap_mut().release_root(output_root).unwrap();
+    vm.heap_mut().release_root(table_root).unwrap();
+}
+
+#[test]
+fn absent_builtin_members_reuse_the_scan_and_recheck_shadowing_and_receivers() {
+    let mut p = method_package("has_own");
+    p.functions[0].code = vec![p.functions[0].code[0], op(Opcode::Return, 1, 0, 0)];
+    p.functions[0].source_map.truncate(2);
+    let mut vm = load(p);
+    let table = vm.heap_mut().alloc_table().unwrap();
+    let root = vm
+        .heap_mut()
+        .add_root(RootOwner(7), RootKind::Host, table)
+        .unwrap();
+    for i in 0..64 {
+        let key = vm.heap_mut().alloc_string(&format!("field{i}")).unwrap();
+        vm.heap_mut()
+            .table_store(table, i, key, Value::int(i as i64))
+            .unwrap();
+    }
+    let before = vm.stats().cumulative_work;
+    assert_eq!(warm_point_lookup(&mut vm, table).tag(), ValueTag::Object);
+    let cold = vm.stats().cumulative_work - before;
+    let before = vm.stats().cumulative_work;
+    assert_eq!(warm_point_lookup(&mut vm, table).tag(), ValueTag::Object);
+    let warm = vm.stats().cumulative_work - before;
+    assert!(warm * 2 < cold, "cold={cold}, warm={warm}");
+
+    let method = vm.heap_mut().alloc_string("has_own").unwrap();
+    vm.heap_mut()
+        .table_store(table, 64, method, Value::NULL)
+        .unwrap();
+    assert!(warm_point_lookup(&mut vm, table).same_bits(Value::NULL));
+    vm.heap_mut().clear_collection(table).unwrap();
+    // Empty tables finish directly, including when the previous absence had
+    // position zero. A cached miss must not loop on that initial scan position.
+    for _ in 0..2 {
+        assert_eq!(warm_point_lookup(&mut vm, table).tag(), ValueTag::Object);
+    }
+    let other = vm.heap_mut().alloc_string("other").unwrap();
+    vm.heap_mut()
+        .table_store(table, 0, other, Value::int(1))
+        .unwrap();
+    assert_eq!(warm_point_lookup(&mut vm, table).tag(), ValueTag::Object);
+    assert_eq!(warm_point_lookup(&mut vm, table).tag(), ValueTag::Object);
+    let second = vm.heap_mut().alloc_table().unwrap();
+    let method = vm.heap_mut().alloc_string("has_own").unwrap();
+    vm.heap_mut()
+        .table_store(second, 0, method, Value::int(42))
+        .unwrap();
+    assert_eq!(warm_point_lookup(&mut vm, second).as_int(), Some(42));
+    assert_eq!(warm_point_lookup(&mut vm, table).tag(), ValueTag::Object);
+    vm.heap_mut().release_root(root).unwrap();
+}
+
+#[test]
+fn dynamic_string_queries_reuse_positions_and_observe_value_and_shape_changes() {
+    let mut vm = load(point_lookup_package(true, false));
+    let table = vm.heap_mut().alloc_table().unwrap();
+    let root = vm
+        .heap_mut()
+        .add_root(RootOwner(7), RootKind::Host, table)
+        .unwrap();
+    for i in 0..64 {
+        let name = if i == 63 {
+            "position".to_owned()
+        } else {
+            format!("field{i}")
+        };
+        let key = vm.heap_mut().alloc_string(&name).unwrap();
+        vm.heap_mut()
+            .table_store(table, i, key, Value::int(42))
+            .unwrap();
+    }
+    let before = vm.stats().cumulative_work;
+    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(42));
+    let cold = vm.stats().cumulative_work - before;
+    let before = vm.stats().cumulative_work;
+    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(42));
+    let warm = vm.stats().cumulative_work - before;
+    assert!(warm * 2 < cold, "cold={cold}, warm={warm}");
+    let key = vm.heap().table_key(table, 63).unwrap();
+    vm.heap_mut()
+        .table_store(table, 63, key, Value::int(84))
+        .unwrap();
+    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(84));
+    vm.heap_mut().clear_collection(table).unwrap();
+    for i in 0..64 {
+        let name = if i == 0 {
+            "position".to_owned()
+        } else {
+            format!("field{i}")
+        };
+        let key = vm.heap_mut().alloc_string(&name).unwrap();
+        vm.heap_mut()
+            .table_store(table, i, key, Value::int(126))
+            .unwrap();
+    }
+    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(126));
+    vm.heap_mut().release_root(root).unwrap();
+}
+
+#[test]
+fn class_hint_collisions_preserve_warm_table_work_and_slice_boundaries() {
+    let mut vm = load(point_lookup_package(false, false));
+    let table = vm.heap_mut().alloc_table().unwrap();
+    for (index, name) in ["other", "position"].into_iter().enumerate() {
+        let key = vm.heap_mut().alloc_string(name).unwrap();
+        vm.heap_mut()
+            .table_store(table, index as u32, key, Value::int(42))
+            .unwrap();
+    }
+    let members = vm.heap_mut().alloc_array(&[]).unwrap();
+    let mut run = |collide: bool| {
+        if collide {
+            // This is the exact table lookup site, so a shared store would
+            // replace its proven table position with an unrelated class entry.
+            vm.class_member_hints
+                .remember(FunctionId(0), Pc(0), 0, members, 0);
+        }
+        let task = vm
+            .start(FunctionId(0), &[table], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let mut trace = Vec::new();
+        loop {
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work: 128,
+                        ..SliceBudget::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            trace.push(vm.last_usage);
+            match outcome {
+                RunOutcome::BudgetYield(_) => {}
+                RunOutcome::Returned(delivery) => {
+                    assert_eq!(vm.delivery_value(delivery).unwrap().as_int(), Some(42));
+                    vm.discard_delivery(delivery).unwrap();
+                    return trace;
+                }
+                other => panic!("table lookup returned {other:?}"),
+            }
+        }
+    };
+    run(false); // Warm the position and all frame/root admission storage.
+    let expected = run(false);
+    assert_eq!(run(true), expected);
+    assert_eq!(run(false), expected);
+    assert_eq!(run(true), expected);
+}
+
+#[test]
 fn host_own_string_lookup_is_bounded_and_does_not_confuse_null_with_missing() {
     let mut vm = load(table_package(
         vec![Const::Utf8("ab".into()), Const::Utf8("ac".into())],

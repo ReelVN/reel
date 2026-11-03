@@ -256,7 +256,7 @@ impl Vm {
             s.phase = ScriptPhase::Sort(work);
             // Argument preparation and native call sites read the published caller.
             let top = self.index(s.id)?;
-            self.active.frames.data[top] = Frame::Script(*s);
+            self.publish_script_frame(top, s);
             if let Err(error) = self.push_script(
                 function,
                 Some(callback),

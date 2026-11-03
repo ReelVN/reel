@@ -3,11 +3,16 @@
     clippy::result_large_err,
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
+/// Desktop retains shared source packing. Vita keeps independent source
+/// textures until shared placement preserves the hardware pixel oracle.
+#[cfg(any(feature = "wgpu", feature = "gxm", feature = "profiling"))]
+const SHARED_SOURCE_ATLAS_DEFAULT: bool = !cfg!(target_os = "vita");
+
 mod capture_color;
-#[cfg(feature = "profiling")]
-pub mod profiling;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
 mod common;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 #[cfg(any(feature = "wgpu", feature = "gxm"))]
 pub use common::usage::Usage;
 /// CPU-only generation of complete prepared stage-effect fragments.

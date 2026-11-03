@@ -50,11 +50,14 @@ enum Picker {
     Theme,
     Language,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Language {
     #[default]
+    #[serde(rename = "zh")]
     Chinese,
+    #[serde(rename = "en")]
     English,
+    #[serde(rename = "ja")]
     Japanese,
 }
 impl Language {
@@ -64,9 +67,6 @@ impl Language {
             Self::English => en,
             Self::Japanese => ja,
         }
-    }
-    fn code(self) -> &'static str {
-        self.pick("zh", "en", "ja")
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,7 +85,8 @@ enum Action {
     Exit,
     ConfirmExit,
 }
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct Preferences {
     light: bool,
     language: Language,
@@ -155,7 +156,7 @@ impl Launcher {
                 ),
                 Request::Save(preferences) => Reply::Saved(
                     catalog::save_preferences(&directory, &preferences)
-                        .map_err(|e| format!("launcher.tsv: {e}")),
+                        .map_err(|e| format!("launcher.json: {e}")),
                 ),
             },
             |_| {},

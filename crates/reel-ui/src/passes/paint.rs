@@ -348,12 +348,8 @@ fn paint_widget(
         border_box_to_window,
         content_to_window,
     );
-    let inverse = content_to_window.inverse();
-    let local_viewport = inverse
-        .is_finite()
-        .then(|| inverse.transform_rect_bbox(viewport));
     if !is_stashed {
-        state.request_paint |= widget.set_paint_viewport(local_viewport);
+        state.request_paint |= widget.set_paint_viewport(viewport, content_to_window);
     }
 
     // TODO - Handle damage regions
@@ -396,6 +392,7 @@ fn paint_widget(
             if !requested {
                 continue;
             }
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiPaintRecord);
             cached.clear();
             let cursor = Cell::new(0);
             let mut ctx = PaintCtx {
@@ -427,10 +424,7 @@ fn paint_widget(
                 );
                 if next != viewport {
                     viewport = next;
-                    let local = inverse
-                        .is_finite()
-                        .then(|| inverse.transform_rect_bbox(viewport));
-                    state.request_paint |= widget.set_paint_viewport(local);
+                    state.request_paint |= widget.set_paint_viewport(viewport, content_to_window);
                 }
             }
         }
@@ -675,6 +669,7 @@ fn paint_widget(
 // --- MARK: ROOT
 /// See the [passes documentation](crate::doc::pass_system#render-passes).
 pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiPaint);
     let _span = info_span!("paint").entered();
 
     // TODO - This is a bit of a hack until we refactor widget tree mutation.

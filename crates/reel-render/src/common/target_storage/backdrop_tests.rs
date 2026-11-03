@@ -107,12 +107,16 @@ fn current_pixel_destination_retires_the_backdrop_without_eliding_the_source() {
             destination,
             &Default::default(),
             None,
+            None,
+            |_, bytes| Ok((bytes, ())),
             |_| Ok(()),
         )
         .unwrap()
     };
-    let (sampled, sampled_bytes, _) = choose_access(DestinationAccess::Sampled);
-    let (current, current_bytes, _) = choose_access(DestinationAccess::CurrentPixelUnorm8);
+    let (sampled, sampled_bytes, _, ()) = choose_access(DestinationAccess::Sampled);
+    let (current, current_bytes, _, ()) = choose_access(DestinationAccess::CurrentPixelUnorm8);
+    assert!(sampled.sampled_backdrop());
+    assert!(!current.sampled_backdrop());
     let source = sampled
         .requirements()
         .iter()
@@ -181,7 +185,17 @@ fn separate(frame: &RenderFrame) -> (target_plan::Requirements, u64) {
     .unwrap();
     assert!(measured.bytes < LIMIT && measured.local_backdrop);
     let requirements = measured.requirements(|_| Ok(())).unwrap();
-    match Plan::capacities(&requirements, ROOT, 4096, LIMIT, &cost, |_| Ok(())).unwrap() {
+    match Plan::capacities(
+        &requirements,
+        ROOT,
+        4096,
+        LIMIT,
+        &cost,
+        &target_plan::Requirements::default(),
+        |_| Ok(()),
+    )
+    .unwrap()
+    {
         Some((plan, _)) => (plan.requirements, plan.bytes),
         None => (requirements, measured.bytes),
     }

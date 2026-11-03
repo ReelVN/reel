@@ -1566,7 +1566,11 @@ fn main() {{
                 .session
                 .as_mut()
                 .unwrap()
-                .tick(Default::default(), || 0)
+                .tick(
+                    Default::default(),
+                    crate::story_runtime::FrameProduction::Ready,
+                    || 0,
+                )
                 .unwrap();
         }
         assert!(state.player.settings_pending());

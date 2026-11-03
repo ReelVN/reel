@@ -8,15 +8,21 @@ pub use effect::{
     EFFECT_SHADER_ABI, EffectShaderDescriptor, EffectShaderFormat, EffectShaderPayloadError,
     EffectSourceFootprint,
 };
+use hashbrown::HashTable;
 use reel_core::budget::{
     BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, OwnedBytes, QueueLimits,
 };
 pub use reel_core::identity::ResourceVersion;
 use reel_core::texture::{ImageView, TextureDescriptor, TexturePayload};
+use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
+
+fn version_hash(version: &ResourceVersion) -> u64 {
+    BuildHasherDefault::<DefaultHasher>::default().hash_one(version)
+}
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -614,6 +620,7 @@ pub enum ResourceError {
 #[derive(Debug)]
 struct Slot {
     generation: u64,
+    version_hash: u64,
     active: Option<ResourceLease>,
     last: ResourceWeak,
 }
@@ -621,6 +628,10 @@ struct Slot {
 pub struct ResourceRegistry {
     id: u64,
     slots: Vec<Slot>,
+    versions: HashTable<(u64, u32)>,
+    version_storage: Option<BudgetTicket>,
+    free: Vec<u32>,
+    released: Vec<u32>,
     descriptors: BudgetPool,
     _storage: BudgetTicket,
 }
@@ -630,16 +641,26 @@ impl ResourceRegistry {
         let descriptors = BudgetPool::new(
             BudgetCategory::Temporary,
             QueueLimits {
-                max_requests: max_resources.saturating_mul(3).saturating_add(1),
+                max_requests: max_resources.saturating_mul(3).saturating_add(2),
                 max_bytes,
             },
         );
         let bytes = (max_resources as usize)
-            .checked_mul(size_of::<Slot>())
+            .checked_mul(size_of::<Slot>() + 2 * size_of::<u32>())
             .ok_or(ResourceError::Bytes)?;
         let storage = descriptors
             .reserve(bytes as u64)
             .map_err(|_| ResourceError::Bytes)?;
+        let mut versions = HashTable::new();
+        let mut version_storage = None;
+        reel_core::budget::collections::reserve_table(
+            &mut versions,
+            max_resources as usize,
+            &mut version_storage,
+            &descriptors,
+            |entry: &(u64, u32)| entry.0,
+        )
+        .map_err(|_| ResourceError::Bytes)?;
         let mut next = NEXT_REGISTRY
             .lock()
             .expect("resource registry identity poisoned");
@@ -650,6 +671,7 @@ impl ResourceRegistry {
         let slots = (0..max_resources)
             .map(|_| Slot {
                 generation: 0,
+                version_hash: 0,
                 active: None,
                 last: ResourceWeak {
                     weak: Weak::new(),
@@ -660,6 +682,10 @@ impl ResourceRegistry {
         Ok(Self {
             id,
             slots,
+            versions,
+            version_storage,
+            free: (0..max_resources).rev().collect(),
+            released: Vec::with_capacity(max_resources as usize),
             descriptors,
             _storage: storage,
         })
@@ -812,7 +838,13 @@ impl ResourceRegistry {
         {
             return Err(ResourceError::InvalidData);
         }
-        for existing in self.slots.iter().filter_map(|s| s.last.weak.upgrade()) {
+        let hash = version_hash(&version);
+        for existing in self
+            .versions
+            .iter_hash(hash)
+            .filter(|entry| entry.0 == hash)
+            .filter_map(|entry| self.slots[entry.1 as usize].last.weak.upgrade())
+        {
             if existing.version == version {
                 if existing.retired.load(Ordering::Acquire) {
                     return Err(ResourceError::RetiredOrForeign);
@@ -824,12 +856,30 @@ impl ResourceRegistry {
                 };
             }
         }
-        let (index, slot) = self
-            .slots
-            .iter_mut()
-            .enumerate()
-            .find(|(_, s)| s.active.is_none() && s.last.is_released())
-            .ok_or(ResourceError::Capacity)?;
+        if self.free.is_empty() {
+            self.released.retain(|&index| {
+                let slot = &self.slots[index as usize];
+                if !slot.last.is_released() {
+                    return true;
+                }
+                self.versions
+                    .find_entry(slot.version_hash, |entry| entry.1 == index)
+                    .expect("released resource has a version index")
+                    .remove();
+                self.free.push(index);
+                false
+            });
+        }
+        let index = *self.free.last().ok_or(ResourceError::Capacity)?;
+        reel_core::budget::collections::reserve_table(
+            &mut self.versions,
+            1,
+            &mut self.version_storage,
+            &self.descriptors,
+            |entry| entry.0,
+        )
+        .map_err(|_| ResourceError::Bytes)?;
+        let slot = &mut self.slots[index as usize];
         let generation = slot
             .generation
             .checked_add(1)
@@ -857,7 +907,7 @@ impl ResourceRegistry {
             .map_err(|_| ResourceError::Bytes)?;
         let handle = ResourceHandle {
             registry: self.id,
-            slot: index as u32,
+            slot: index,
             generation,
         };
         let image_coverage = match &data {
@@ -912,8 +962,12 @@ impl ResourceRegistry {
             descriptor_ticket: Arc::new(descriptor),
         }));
         slot.generation = generation;
+        slot.version_hash = hash;
         slot.last = lease.downgrade();
         slot.active = Some(lease);
+        self.free.pop();
+        self.versions
+            .insert_unique(hash, (hash, index), |entry| entry.0);
         Ok(handle)
     }
     pub fn acquire(&self, handle: ResourceHandle) -> Result<ResourceLease, ResourceError> {
@@ -933,6 +987,7 @@ impl ResourceRegistry {
         }
         slot.active.as_ref().unwrap().prohibit_new_leases();
         slot.active = None;
+        self.released.push(handle.slot);
         true
     }
     /// Release the producer's registration. Existing immutable leases can still
@@ -946,6 +1001,7 @@ impl ResourceRegistry {
             return false;
         }
         slot.active = None;
+        self.released.push(handle.slot);
         true
     }
     /// Freeze only the selected versions before a build can pause or retirement can occur.

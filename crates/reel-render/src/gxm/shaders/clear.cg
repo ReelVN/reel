@@ -1,5 +1,4 @@
-uniform float4 u_clear_color,reel_clip_rect;
-float4 main(float4 fragment_position : WPOS) : COLOR {
-    if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;
+uniform float4 u_clear_color;
+float4 main() : COLOR {
     return u_clear_color;
 }

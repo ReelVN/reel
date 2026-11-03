@@ -44,7 +44,7 @@ mod tests {
                     &gpu,
                     size,
                     quality,
-                    0,
+                    &[],
                     &budgets.targets,
                     cost,
                     &crate::common::target_plan::Requirements::default(),
@@ -85,7 +85,7 @@ mod tests {
                 &gpu,
                 [32, 32],
                 quality,
-                0,
+                &[],
                 &budgets.targets,
                 32 * 32 * 4,
                 &crate::common::target_plan::Requirements::default(),
@@ -131,7 +131,7 @@ mod tests {
                 &gpu,
                 size,
                 quality,
-                0,
+                &[],
                 &budgets.targets,
                 cost,
                 &requirements,
@@ -145,37 +145,82 @@ mod tests {
             limits.transient_bytes,
         );
         cache.publish([64, 64], quality, std::slice::from_ref(&first));
-        let pin = first
-            .target
-            .pin_effect(
-                crate::common::effect_result::Token(1, 1),
-                &budgets.transient,
+        let token = crate::common::effect_result::Token(1, 1);
+        let mut content = first.target.clone().with_effect_content(token);
+        assert_eq!(content.effect_token(), Some(token));
+        assert!(!content.is_effect_pinned());
+        let scratch = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                &[],
+                &budgets.targets,
+                cost,
+                &requirements,
             )
             .unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &scratch),
+            "content identity does not reserve pixels"
+        );
+        assert_eq!(
+            scratch.target.effect_token(),
+            None,
+            "a new logical view starts unlabelled"
+        );
+        drop(scratch);
+        let pin = content.pin_effect(token, &budgets.transient).unwrap();
         let retained = pin.clone();
+        content.clear_effect_content();
+        assert_eq!(content.effect_token(), None);
+        assert_eq!(retained.effect_token(), Some(token));
         assert!(first.target.is_effect_pinned());
         let second = cache
             .get(
                 &gpu,
                 size,
                 quality,
-                0,
+                &[],
                 &budgets.targets,
                 cost,
                 &requirements,
             )
             .unwrap();
         assert!(!Arc::ptr_eq(&first, &second));
+        let equal_content = second.target.clone().with_effect_content(token);
+        assert_eq!(equal_content.effect_token(), pin.effect_token());
+        assert!(
+            !equal_content.same_allocation(&pin),
+            "equal pixels can occupy different allocations"
+        );
+        assert!(!equal_content.is_effect_pinned());
+        drop((content, equal_content));
         drop(pin);
         assert!(first.target.is_effect_pinned());
         drop(retained);
         assert!(!first.target.is_effect_pinned());
+        // Releasing an earlier pin adds it back to the eligible set. Selection
+        // must still exclude a target already owned by the current candidate.
+        let unused = cache
+            .get(
+                &gpu,
+                size,
+                quality,
+                std::slice::from_ref(&first),
+                &budgets.targets,
+                cost,
+                &requirements,
+            )
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &unused));
+        drop(unused);
         let again = cache
             .get(
                 &gpu,
                 size,
                 quality,
-                0,
+                &[],
                 &budgets.targets,
                 cost,
                 &requirements,
@@ -206,23 +251,43 @@ mod tests {
             degraded: false,
         };
         let root = [960, 544];
-        for bucketed in [false, true] {
+        for mode in ["exact", "padded", "resident"] {
             let budgets = Budgets::new(limits);
             let cache = TargetCache::default();
             cache.configure(root, quality);
             let mut previous = std::sync::Weak::new();
             let mut allocations = 0;
+            if mode == "resident" {
+                let size = [512, 400];
+                let required = Requirements::collect([(size, 1)].into_iter(), |_| Ok(())).unwrap();
+                let bytes = super::super::targets::target_bytes(size, quality).unwrap();
+                let owner = cache
+                    .get(&gpu, size, quality, &[], &budgets.targets, bytes, &required)
+                    .unwrap();
+                previous = Arc::downgrade(&owner);
+                allocations = 1;
+                let used = [owner];
+                cache.reserve_metadata(
+                    root,
+                    quality,
+                    &used,
+                    &budgets.transient,
+                    limits.transient_bytes,
+                );
+                cache.publish(root, quality, &used);
+            }
             let began = std::time::Instant::now();
             for frame in 0..256 {
                 let logical = [481 + frame % 32, 384];
                 let exact = Requirements::collect([(logical, 1)].into_iter(), |_| Ok(())).unwrap();
-                let plan = if bucketed {
+                let plan = if mode != "exact" {
                     target_storage::Plan::capacities(
                         &exact,
                         root,
                         4096,
                         limits.target_bytes,
                         &|size| super::super::targets::target_bytes(size, quality),
+                        &cache.capacities(root, quality, |_| Ok(())).unwrap(),
                         |_| Ok(()),
                     )
                     .unwrap()
@@ -232,9 +297,12 @@ mod tests {
                 let (size, required) = plan.as_ref().map_or((logical, &exact), |(plan, _)| {
                     (plan.storage_size(logical), plan.requirements())
                 });
+                if mode == "resident" {
+                    assert_eq!(size, [512, 400]);
+                }
                 let bytes = super::super::targets::target_bytes(size, quality).unwrap();
                 let allocation = cache
-                    .get(&gpu, size, quality, 0, &budgets.targets, bytes, required)
+                    .get(&gpu, size, quality, &[], &budgets.targets, bytes, required)
                     .unwrap();
                 allocations += usize::from(
                     !previous
@@ -253,11 +321,11 @@ mod tests {
                 cache.publish(root, quality, &used);
             }
             println!(
-                "target_capacity bucketed={bucketed} frames=256 allocations={allocations} elapsed_us={} peak_bytes={}",
+                "target_capacity mode={mode} frames=256 allocations={allocations} elapsed_us={} peak_bytes={}",
                 began.elapsed().as_micros(),
                 budgets.targets.usage().peak_bytes
             );
-            assert_eq!(allocations, if bucketed { 1 } else { 256 });
+            assert_eq!(allocations, if mode == "exact" { 256 } else { 1 });
             cache.clear();
             assert_eq!(budgets.targets.usage().bytes, 0);
         }
@@ -276,6 +344,23 @@ pub(super) struct TargetCache(
 );
 
 impl TargetCache {
+    pub(super) fn capacities(
+        &self,
+        size: [u32; 2],
+        quality: Quality,
+        reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<crate::common::target_plan::Requirements, GpuError> {
+        let cache = self.0.lock().unwrap();
+        let Some(entries) = cache
+            .as_ref()
+            .filter(|entries| entries.size == size && entries.quality == quality)
+        else {
+            return Ok(Default::default());
+        };
+        entries
+            .slots
+            .capacities(|owner| !owner.target.is_effect_pinned(), reserve)
+    }
     #[cfg(test)]
     pub(super) fn metadata_bytes(&self) -> u64 {
         self.0
@@ -309,16 +394,17 @@ impl TargetCache {
         gpu: &Gpu,
         size: [u32; 2],
         quality: Quality,
-        index: usize,
+        used: &[Arc<Allocation>],
         pool: &BudgetPool,
         cost: u64,
         required: &crate::common::target_plan::Requirements,
     ) -> Result<Arc<Allocation>, GpuError> {
         if let Some(entries) = self.0.lock().unwrap().as_ref()
             && entries.quality == quality
-            && let Some(target) = entries
-                .slots
-                .get_eligible(size, index, |target| !target.target.is_effect_pinned())
+            && let Some(target) = entries.slots.get_eligible(size, 0, |target| {
+                !target.target.is_effect_pinned()
+                    && !used.iter().any(|used| Arc::ptr_eq(used, target))
+            })
         {
             reel_core::profile::count(reel_core::profile::Phase::TargetReused);
             return Ok(target.clone());
@@ -347,11 +433,23 @@ impl TargetCache {
                 }
             }
         }
-        let resident = resident.map_err(|_| GpuError::Pressure {
-            domain: "targets",
-            requested: cost,
-            available: gpu.limits.target_bytes.saturating_sub(pool.usage().bytes),
+        let resident = resident.map_err(|_| {
+            #[cfg(feature = "profiling")]
+            crate::profiling::record_effect_input_event(
+                crate::profiling::EffectInputEvent::TargetPoolPressure,
+                1,
+            );
+            GpuError::Pressure {
+                domain: "targets",
+                requested: cost,
+                available: gpu.limits.target_bytes.saturating_sub(pool.usage().bytes),
+            }
         })?;
+        #[cfg(feature = "profiling")]
+        crate::profiling::record_effect_input_event(
+            crate::profiling::EffectInputEvent::TargetCreations,
+            1,
+        );
         Ok(Arc::new_cyclic(|owner| {
             let mut target = Target::new(&gpu.device, size, quality);
             target.allocation = Some(owner.clone());
@@ -437,7 +535,6 @@ impl TargetCache {
     }
 
     pub(super) fn release_idle(&self) {
-        self.1.lock().unwrap().disable();
         if let Some(entries) = self.0.lock().unwrap().as_mut() {
             entries
                 .slots

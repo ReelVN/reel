@@ -19,13 +19,6 @@ struct Item {
     source_bytes: u64,
     origin: [u32; 2],
 }
-#[derive(Clone, Copy)]
-struct Rect {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-}
 
 /// Publish one page and one view file per original path in an immutable object.
 pub(super) fn prepare(
@@ -317,7 +310,7 @@ fn encode_independent_blocks(
     Ok(result)
 }
 
-/// Best short-side fit with disjoint guillotine splits. Every rectangle has a
+/// Deterministic guillotiere allocation. Every rectangle has a
 /// four-texel edge gutter and starts on a compression-block boundary.
 fn pack(items: &mut [Item], size: [u32; 2], power_of_two: bool) -> io::Result<[u32; 2]> {
     let mut order: Vec<usize> = (0..items.len()).collect();
@@ -329,65 +322,19 @@ fn pack(items: &mut [Item], size: [u32; 2], power_of_two: bool) -> io::Result<[u
             items[i].name.clone(),
         )
     });
-    let mut free = vec![Rect {
-        x: 0,
-        y: 0,
-        w: size[0],
-        h: size[1],
-    }];
+    let mut allocator =
+        guillotiere::SimpleAtlasAllocator::new(guillotiere::size2(size[0] as i32, size[1] as i32));
     for i in order {
         let [w, h] = items[i].content.map(|n| n.next_multiple_of(4) + 8);
-        let best = free
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.w >= w && r.h >= h)
-            .min_by_key(|(_, r)| ((r.w - w).min(r.h - h), (r.w - w).max(r.h - h), r.y, r.x))
-            .map(|(i, _)| i)
+        let rectangle = allocator
+            .allocate(guillotiere::size2(w as i32, h as i32))
             .ok_or_else(|| {
                 invalid(format!(
                     "atlas page cannot fit {:?}; enlarge page_size or split the cohort",
                     items[i].name
                 ))
             })?;
-        let r = free.swap_remove(best);
-        items[i].origin = [r.x + 4, r.y + 4];
-        let right = r.w - w;
-        let bottom = r.h - h;
-        if right > bottom {
-            if right > 0 {
-                free.push(Rect {
-                    x: r.x + w,
-                    y: r.y,
-                    w: right,
-                    h: r.h,
-                });
-            }
-            if bottom > 0 {
-                free.push(Rect {
-                    x: r.x,
-                    y: r.y + h,
-                    w,
-                    h: bottom,
-                });
-            }
-        } else {
-            if right > 0 {
-                free.push(Rect {
-                    x: r.x + w,
-                    y: r.y,
-                    w: right,
-                    h,
-                });
-            }
-            if bottom > 0 {
-                free.push(Rect {
-                    x: r.x,
-                    y: r.y + h,
-                    w: r.w,
-                    h: bottom,
-                });
-            }
-        }
+        items[i].origin = [rectangle.min.x as u32 + 4, rectangle.min.y as u32 + 4];
     }
     let mut used = [8, 8];
     for item in items {

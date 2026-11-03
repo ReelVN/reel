@@ -69,6 +69,7 @@ pub struct RenderRoot {
 
 /// State shared between passes.
 pub(crate) struct RenderRootState {
+    pub(crate) registered_widgets: usize,
     pub(crate) geometry_revision: u64,
     /// Sink for signals to be processed by the event loop.
     pub(crate) signal_sink: Box<dyn FnMut(RenderRootSignal)>,
@@ -414,6 +415,7 @@ impl RenderRoot {
                 is_ime_active: false,
                 is_text_input_focused: false,
                 last_sent_ime_area: INVALID_IME_AREA,
+                registered_widgets: 0,
                 scene_cache: HashMap::new(),
                 widget_tags: HashMap::new(),
                 attached_layers: HashMap::new(),
@@ -541,7 +543,7 @@ impl RenderRoot {
             .widget_arena
             .nodes
             .roots()
-            .item(self.root_id())
+            .into_item(self.root_id())
             .expect("root widget not in widget tree")
             .item
             .state
@@ -932,6 +934,7 @@ impl RenderRoot {
     ///
     /// See the [passes documentation](crate::doc::pass_system) for details.
     pub(crate) fn run_rewrite_passes(&mut self) {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiRewrite);
         const REWRITE_PASSES_MAX: usize = 4;
 
         for _ in 0..REWRITE_PASSES_MAX {
@@ -1215,7 +1218,7 @@ impl std::fmt::Debug for RenderRoot {
             .field("property_arena", &self.property_arena)
             .field(
                 "widget_arena",
-                &format!("<{} widgets>", self.widget_arena.nodes.len()),
+                &format!("<{} widgets>", self.global_state.registered_widgets),
             )
             .field("layer_stack", &self.layer_stack)
             .field("global_state", &self.global_state)

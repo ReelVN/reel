@@ -1,4 +1,4 @@
-//! Host-side runtime costs, without a window, renderer, or device claims.
+//! Host-side distribution costs with optional ordinary rendering.
 use aside_vm::{GcPhase, snapshot::SnapshotBudget};
 use reel_engine::{
     Epoch, Session, SessionId, SessionIdentity,
@@ -6,6 +6,12 @@ use reel_engine::{
 };
 use reel_player::{aside_session::AsideSessionUi, story_runtime::StoryRuntime};
 use std::time::Instant;
+#[cfg(feature = "profiling")]
+#[path = "runtime_cost/render.rs"]
+mod render;
+#[cfg(feature = "vm-profiling")]
+#[path = "runtime_cost/vm_profile.rs"]
+mod vm_profile;
 
 fn measure<T>(work: impl FnOnce() -> T) -> (T, allocation_counter::AllocationInfo) {
     let mut result = None;
@@ -24,6 +30,10 @@ fn measure<T>(work: impl FnOnce() -> T) -> (T, allocation_counter::AllocationInf
 /// REEL_PROFILE_SLICE_US optionally sets a wall deadline for each layout tick.
 /// REEL_PROFILE_LAYOUT_FRAMES runs fixed 60 Hz clock frames through the CPU host.
 /// A frame advances only after its script batch, resources, and publication settle.
+/// REEL_PROFILE_RENDERER enables ordinary frame preparation and submission feedback.
+/// Rendering uses a temporary WGSL effect overlay generated from the package's
+/// retained effect programs; CPU-only measurements may select GXP asset paths
+/// with REEL_PROFILE_EFFECT_FORMAT=gxp without creating that overlay.
 #[test]
 #[ignore = "requires an external release distribution"]
 fn distribution_startup_cost() {
@@ -35,8 +45,16 @@ fn distribution_startup_cost() {
 }
 
 fn distribution_startup_cost_inner() {
+    eprintln!(
+        "host_options legacy_script={} legacy_body_clock={} renderer={}",
+        std::env::var("ASIDE_VM_LEGACY_SCRIPT_EXECUTION").unwrap_or_else(|_| "0".into()),
+        std::env::var("ASIDE_VM_LEGACY_BODY_CLOCK").unwrap_or_else(|_| "0".into()),
+        std::env::var_os("REEL_PROFILE_RENDERER").is_some()
+    );
     let path = std::env::var_os("REEL_PROFILE_PACKAGE").expect("REEL_PROFILE_PACKAGE");
     let started = Instant::now();
+    #[cfg(feature = "profiling")]
+    let profile_begin = reel_core::profile::Sample::snapshot();
     let mut loaded = reel_player::distribution::load(std::path::Path::new(&path), None).unwrap();
     if let Some(resources) = std::env::var_os("REEL_PROFILE_RESOURCES") {
         let path = std::path::Path::new(&resources);
@@ -47,6 +65,11 @@ fn distribution_startup_cost_inner() {
         loaded.loose = context.loose;
     }
     let load_time = started.elapsed();
+    if let Ok(path) = std::env::var("ASIDE_DISASSEMBLY_OUT") {
+        let mut text = String::new();
+        aside_vm::bytecode::disassemble(loaded.package.program(), &mut text).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     let code_bytes = loaded.package.program().execution_capacity_bytes();
     eprintln!(
         "decode_ms={} code_bytes={} code={:?}",
@@ -55,6 +78,10 @@ fn distribution_startup_cost_inner() {
         loaded.package.program().code_cache_stats()
     );
     let started = Instant::now();
+    let mut story = reel_player::distribution::story_from_package(loaded.package).unwrap();
+    #[cfg(feature = "profiling")]
+    let mut renderer = std::env::var_os("REEL_PROFILE_RENDERER")
+        .map(|_| render::Probe::new(&story.effects, &mut loaded.loose));
     let assets =
         reel_player::assets::Assets::packaged(Default::default(), loaded.packages, loaded.loose)
             .unwrap();
@@ -76,7 +103,6 @@ fn distribution_startup_cost_inner() {
             .map_err(|error| error.to_string())
         },
     );
-    let mut story = reel_player::distribution::story_from_package(loaded.package).unwrap();
     if let Ok(entry) = std::env::var("REEL_PROFILE_ENTRY") {
         let (module, name) = entry.rsplit_once("::").unwrap();
         let package = story.program.package();
@@ -101,7 +127,7 @@ fn distribution_startup_cost_inner() {
     limits.slots.max_capacity = 65_536;
     limits.max_tasks = 256;
     let started = Instant::now();
-    let session = AsideSessionUi::from_compiled(
+    let mut session = AsideSessionUi::from_compiled(
         Session::new(SessionId(1), Epoch(1)).unwrap(),
         story,
         "zh-CN",
@@ -111,6 +137,13 @@ fn distribution_startup_cost_inner() {
     .with_assets(assets)
     .with_media(Box::new(media))
     .unwrap();
+    if let Ok(format) = std::env::var("REEL_PROFILE_EFFECT_FORMAT") {
+        session.set_effect_shader_format(match format.as_str() {
+            "gxp" => reel_ui::resources::EffectShaderFormat::Gxp,
+            "wgsl" => reel_ui::resources::EffectShaderFormat::Wgsl,
+            _ => panic!("REEL_PROFILE_EFFECT_FORMAT must be gxp or wgsl"),
+        });
+    }
     eprintln!(
         "vm_ms={} charged_bytes={}",
         started.elapsed().as_millis(),
@@ -130,6 +163,8 @@ fn distribution_startup_cost_inner() {
         reel_core::wake::WakeSignal::new(|| {}),
     );
     let initializer_task = session.adapter().task();
+    let mut canvas_id = None;
+    let mut applied_canvas = None;
     let mut layout = std::env::var_os("REEL_PROFILE_LAYOUT").map(|_| {
         use reel_ui::{
             app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
@@ -138,8 +173,10 @@ fn distribution_startup_cost_inner() {
         };
         let widget = session.widget().prepare();
         let root = widget.id();
+        let canvas = reel_ui::widgets::Canvas::viewport(widget).prepare();
+        canvas_id = Some(canvas.id());
         let tree = RenderRoot::new(
-            widget,
+            canvas,
             |_| {},
             RenderRootOptions {
                 use_system_fonts: false,
@@ -179,6 +216,12 @@ fn distribution_startup_cost_inner() {
     let mut initialized = false;
     let mut layout_last_work = (0, 0);
     let mut accepted_stamp = None;
+    #[cfg(feature = "profiling")]
+    let mut frame_profile = reel_core::profile::Sample::snapshot();
+    #[cfg(feature = "profiling")]
+    let mut frame_vm = [0u64; 4];
+    #[cfg(feature = "vm-profiling")]
+    let mut vm_profile = vm_profile::VmProfile::default();
     let slice_ns = std::env::var("REEL_PROFILE_SLICE_US")
         .ok()
         .filter(|_| layout.is_some())
@@ -203,9 +246,28 @@ fn distribution_startup_cost_inner() {
             }
         });
         tick_ns += tick.elapsed().as_nanos();
+        if runtime.close_complete() {
+            result.unwrap();
+            #[cfg(feature = "vm-profiling")]
+            vm_profile.finish(runtime.driver().adapter().vm());
+            eprintln!(
+                "host_cost clock_frames={clock_frames} tick_ns={tick_ns} sync_ns={sync_ns} premature_projections={premature_projections} game_closed=true"
+            );
+            return;
+        }
         let sync_started = Instant::now();
         if let Some((bridge, root, frames)) = &mut layout {
             let driver = runtime.driver_mut().unwrap();
+            let canvas = driver.adapter().game_settings().canvas_size;
+            if applied_canvas != Some(canvas) {
+                bridge.edit_widget(canvas_id.unwrap(), |mut widget| {
+                    reel_ui::widgets::Canvas::set_size(
+                        &mut widget.downcast::<reel_ui::widgets::Canvas>(),
+                        canvas,
+                    );
+                });
+                applied_canvas = Some(canvas);
+            }
             let blocked =
                 !driver.adapter().stage_ready() && !driver.adapter().virtual_feedback_boundary();
             let before = driver.adapter().stage().revision();
@@ -215,16 +277,64 @@ fn distribution_startup_cost_inner() {
             let id = reel_core::identity::FrameId(*frames + 1);
             let stamp = driver.projection_stamp();
             if accepted_stamp != Some(stamp)
+                && !driver.ui().images_pending()
                 && let Some((source, receipt)) = driver.record(bridge, *root, id).unwrap()
             {
-                bridge.resolve(reel_ui::bridge::PresentationNotice::new(
-                    source.key(),
-                    source.key().surface_epoch(),
+                let key = source.key();
+                let epoch = key.surface_epoch();
+                let notice = reel_ui::bridge::PresentationNotice::new(
+                    key,
+                    epoch,
                     reel_ui::bridge::PresentationOutcome::Accepted(id),
-                ));
+                );
+                #[cfg(feature = "profiling")]
+                if let Some(renderer) = &mut renderer {
+                    renderer.stage(
+                        source,
+                        driver.ui().image_resources(),
+                        receipt.frame_transitions(),
+                    );
+                }
+                assert_eq!(
+                    bridge.resolve(notice),
+                    reel_ui::bridge::NoticeResult::Accepted
+                );
                 driver.presented(bridge, &receipt).unwrap();
                 accepted_stamp = Some(stamp);
                 *frames += 1;
+                #[cfg(feature = "profiling")]
+                {
+                    use reel_core::profile::{Phase, Sample};
+                    let now = Sample::snapshot();
+                    let delta = now.delta(frame_profile);
+                    frame_profile = now;
+                    let stats = driver.adapter().vm().stats();
+                    let now = [
+                        stats.cumulative_instructions,
+                        stats.cumulative_work,
+                        stats.slices,
+                        stats.native_entries,
+                    ];
+                    let work: [u64; 4] = std::array::from_fn(|i| now[i] - frame_vm[i]);
+                    frame_vm = now;
+                    let phase = |p: Phase| (delta.micros[p as usize], delta.calls[p as usize]);
+                    eprintln!(
+                        "host_presented frame={frames} title={:?} clock={clock_frames} vm_us_calls={:?} schedule_us_calls={:?} host_us_calls={:?} instructions={} work={} slices={} native_entries={}",
+                        driver.adapter().game_settings().title,
+                        phase(Phase::VmSlice),
+                        phase(Phase::SessionSchedule),
+                        phase(Phase::HostCall),
+                        work[0],
+                        work[1],
+                        work[2],
+                        work[3]
+                    );
+                    #[cfg(feature = "vm-profiling")]
+                    vm_profile.observe(
+                        driver.adapter().vm(),
+                        &driver.adapter().game_settings().title,
+                    );
+                }
             }
             runtime.wake_input();
         }
@@ -301,10 +411,30 @@ fn distribution_startup_cost_inner() {
         }
         result.unwrap();
         assert!(
-            layout.is_none() || elapsed_ms < 15_000,
+            layout.is_none()
+                || elapsed_ms
+                    < if std::env::var_os("REEL_PROFILE_RENDERER").is_some() {
+                        180_000
+                    } else {
+                        15_000
+                    },
             "layout probe did not settle"
         );
         if settled {
+            #[cfg(feature = "profiling")]
+            {
+                let delta = reel_core::profile::Sample::snapshot().delta(profile_begin);
+                for (i, name) in reel_core::profile::NAMES.iter().enumerate() {
+                    if delta.calls[i] != 0 {
+                        eprintln!(
+                            "host_phase {name} us={} calls={}",
+                            delta.micros[i], delta.calls[i]
+                        );
+                    }
+                }
+            }
+            #[cfg(feature = "vm-profiling")]
+            vm_profile.finish(runtime.driver().adapter().vm());
             eprintln!(
                 "host_cost clock_frames={clock_frames} tick_ns={tick_ns} sync_ns={sync_ns} premature_projections={premature_projections}"
             );

@@ -255,7 +255,7 @@ fn large_proved_reduction_keeps_integer_constants_and_final_scaling() {
     for language in [Language::Wgsl, Language::Cg] {
         let fragment = compile_fragment(&program, language, 1 << 20).unwrap();
         let function = generate(&program, language, 1 << 20).unwrap().function;
-        assert_eq!(function.matches(" = reel_source_sample(").count(), 5);
+        assert_eq!(function.matches(" = reel_source_sample(").count(), 6);
         assert!(function.contains("!= 30;"));
         assert!(function.contains("+= 1;"));
         assert!(function.contains("= -30;"));
@@ -1070,5 +1070,67 @@ fn independent_coverage_tail_preserves_typed_author_program_and_sampler_bound() 
 #[path = "effect_reduction_tests.rs"]
 mod reduction_tests;
 
+#[path = "effect_output_tests.rs"]
+mod output_tests;
+
 #[path = "effect_coverage_tests.rs"]
 mod coverage_tests;
+
+#[path = "effect_diagonal_tests.rs"]
+mod diagonal_tests;
+
+#[test]
+fn predicates_short_varying_choices_and_retains_uniform_sampling_branches() {
+    let uniform = generate(&sampled_program(), Language::Cg, 16384).unwrap();
+    assert!(!uniform.function.contains("#pragma branch"));
+
+    for samples in [0, 3] {
+        let mut graph = Graph::default();
+        let uv = graph.node(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
+        let x = graph.node(EffectType::Float, EffectOp::Extract { value: uv, lane: 0 });
+        let half = graph.float(0.5);
+        let condition = graph.node(
+            EffectType::Bool,
+            EffectOp::Binary {
+                op: EffectBinary::Less,
+                left: x,
+                right: half,
+            },
+        );
+        let mut value = x;
+        for _ in 0..samples {
+            let sample = graph.node(EffectType::Vec4, EffectOp::SourceSample { uv });
+            let red = graph.node(
+                EffectType::Float,
+                EffectOp::Extract {
+                    value: sample,
+                    lane: 0,
+                },
+            );
+            value = graph.node(
+                EffectType::Float,
+                EffectOp::Binary {
+                    op: EffectBinary::Add,
+                    left: value,
+                    right: red,
+                },
+            );
+        }
+        let output = graph.node(
+            EffectType::Float,
+            EffectOp::Select {
+                condition,
+                when_true: value,
+                when_false: half,
+            },
+        );
+        let program = graph.finish(output);
+        let cg = generate(&program, Language::Cg, 16384).unwrap();
+        assert_eq!(
+            cg.function.contains("#pragma branch (flatten: always)"),
+            samples == 0
+        );
+        let wgsl = generate(&program, Language::Wgsl, 16384).unwrap();
+        assert!(!wgsl.function.contains("#pragma"));
+    }
+}

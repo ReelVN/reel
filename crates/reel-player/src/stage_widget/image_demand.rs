@@ -84,7 +84,7 @@ fn props_match(a: &NodeProps, b: &NodeProps) -> bool {
         reveal, reveal_fade, reveal_fade_from, reveal_fade_step,
         text_outline_color, text_shadow_color, color, text_gradient, background,
         border_width, border_color, corner_radius,
-        mask, effect, mask_effect, mask_progress, mask_softness, mask_invert, mask_x, mask_y,
+        mask, effect, effect_resolution_scale, mask_effect, mask_progress, mask_softness, mask_invert, mask_x, mask_y,
     ) && a.mask.as_ref().map(|mask| mask.sources()) == b.mask.as_ref().map(|mask| mask.sources())
         && effect_matches(&a.effect, &b.effect)
         && effect_matches(&a.mask_effect, &b.mask_effect)

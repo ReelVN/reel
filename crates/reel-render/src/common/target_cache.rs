@@ -25,6 +25,26 @@ impl<T> Default for Cache<T> {
     }
 }
 impl<T> Cache<T> {
+    /// Describe compatible scratch owners without exposing platform handles.
+    pub(crate) fn capacities(
+        &self,
+        mut eligible: impl FnMut(&T) -> bool,
+        reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<Requirements, GpuError> {
+        Requirements::collect(
+            self.slots
+                .iter()
+                .map(|slot| (slot.size, u64::from(eligible(&slot.value)))),
+            reserve,
+        )
+    }
+    /// Visit cached owners without changing their recency or ownership.
+    #[cfg(all(feature = "profiling", feature = "gxm", target_os = "vita"))]
+    pub(crate) fn observe(&self, mut visit: impl FnMut(&T, u8, u8)) {
+        for slot in &self.slots {
+            visit(&slot.value, slot.age, slot.uses);
+        }
+    }
     #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn capacity_bytes(&self) -> u64 {
         (self.slots.capacity() * size_of::<Slot<T>>()) as u64
@@ -60,6 +80,31 @@ impl<T> Cache<T> {
             .filter(|slot| eligible(&slot.value))
             .nth(index)
             .map(|slot| &slot.value)
+    }
+
+    /// Replace one compatible owner's immutable view and its sorted size key.
+    /// Failed view construction leaves the old owner, key and recency intact;
+    /// successful replacement keeps the existing metadata capacity and usage.
+    #[cfg(any(feature = "gxm", test))]
+    pub(crate) fn map_eligible(
+        &mut self,
+        size: [u32; 2],
+        mut eligible: impl FnMut(&T) -> bool,
+        map: impl FnOnce(&T) -> Result<T, GpuError>,
+    ) -> Result<Option<T>, GpuError>
+    where
+        T: Clone,
+    {
+        let Some(index) = self.slots.iter().position(|slot| eligible(&slot.value)) else {
+            return Ok(None);
+        };
+        let value = map(&self.slots[index].value)?;
+        let mut slot = self.slots.remove(index);
+        slot.size = size;
+        slot.value = value.clone();
+        let index = self.slots.partition_point(|slot| slot.size <= size);
+        self.slots.insert(index, slot);
+        Ok(Some(value))
     }
 
     /// Admit overlapping old/new metadata capacity before growing the vector.
@@ -182,12 +227,26 @@ impl<T> Cache<T> {
 
     /// Retained effect results are outside scratch requirements and must not
     /// consume the protected scratch multiplicity for a size class.
+    #[cfg(any(feature = "wgpu", test))]
     pub(crate) fn reclaim_eligible(
+        &mut self,
+        required: &Requirements,
+        recent: bool,
+        eligible: impl FnMut(&T) -> bool,
+        unique: impl FnMut(&T) -> bool,
+    ) -> bool {
+        self.reclaim_eligible_observed(required, recent, eligible, unique, |_, _, _| {})
+    }
+
+    /// Report the selected removal before dropping it. Observers cannot change
+    /// candidate selection, protected multiplicity, recency or owner lifetime.
+    pub(crate) fn reclaim_eligible_observed(
         &mut self,
         required: &Requirements,
         recent: bool,
         mut eligible: impl FnMut(&T) -> bool,
         mut unique: impl FnMut(&T) -> bool,
+        mut removed: impl FnMut(&T, u8, u8),
     ) -> bool {
         let mut previous = None;
         let mut index = 0;
@@ -212,6 +271,8 @@ impl<T> Cache<T> {
             }
         }
         if let Some((position, _)) = candidate {
+            let slot = &self.slots[position];
+            removed(&slot.value, slot.age, slot.uses);
             self.slots.remove(position);
             true
         } else {

@@ -216,6 +216,7 @@ fn frames_with_chain(
                 .unwrap_or_default(),
             bounds: Rect::new(0., 0., if color { 100. } else { 240. }, 80.),
             coverage_invert: coverage,
+            resolution_scale: 1.,
         };
         if coverage {
             widget.mask_effect = Some(paint);
@@ -464,6 +465,7 @@ fn mixed_extent_effect_frame() -> RenderFrame {
             images: vec![],
             bounds,
             coverage_invert: false,
+            resolution_scale: 1.,
         };
         let mut scene = Scene::new();
         scene.draw(Draw::Fill {

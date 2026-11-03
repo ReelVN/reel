@@ -1,6 +1,7 @@
 use super::{Compilation, Error, ErrorKind, ir::*};
 use aside_vm::bytecode as bc;
 use std::mem::size_of;
+mod binding_reads;
 
 fn source_run(
     output: &mut bc::FunctionDef,
@@ -27,6 +28,7 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
         b.span = f.span;
         let definition = &ir.package.functions[f.output.index()];
         direct_destinations(&mut f, definition, b)?;
+        binding_reads::eliminate(&mut f, definition, b)?;
         pack_clears(&mut f, b)?;
         let mut pcs = b.filled(f.blocks.len(), None)?;
         let mut boundaries = Vec::new();

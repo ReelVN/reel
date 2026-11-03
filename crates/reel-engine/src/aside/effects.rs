@@ -124,6 +124,8 @@ pub(super) fn contracts() -> Vec<aside_host::NativeContract> {
     declarations
         .into_iter()
         .map(|(symbol, parameters, result, effects)| NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: symbol.into(),
             abi_version: 1,
             parameters: parameters

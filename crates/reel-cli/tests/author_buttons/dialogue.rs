@@ -91,7 +91,14 @@ fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() 
                 .map(|l| l.visible_text().to_owned())
                 .collect::<Vec<_>>()
         };
-        tick(&mut runtime, 0);
+        // Startup can yield after a complete stage batch. Settle those host
+        // turns without accepting a drawing before checking reveal admission.
+        for _ in 0..1024 {
+            tick(&mut runtime, 0);
+            if !runtime.needs_tick() {
+                break;
+            }
+        }
         assert!(
             !runtime.needs_tick(),
             "no reveal before an accepted presentation"

@@ -8,17 +8,9 @@ impl Heap {
         &mut self,
         property: PropertyId,
     ) -> Result<(Option<Value>, u64), HeapError> {
-        if self.reactive_capture.is_none() {
+        let Some(output) = self.reactive_derived_source(property)? else {
             return Ok((None, 0));
-        }
-        let object = self.object(self.key(property.host)?)?;
-        if !object.model && property.field >= object.observable_fields {
-            return Ok((None, 0));
-        }
-        let output = self.property_source(property)?.0.host;
-        if !self.object(self.key(output)?)?.derived {
-            return Ok((None, 0));
-        }
+        };
         let mut active = self.reactive_capture;
         let mut work = 1;
         while let Some(capture) = active {
@@ -31,6 +23,22 @@ impl Heap {
         }
         let current = self.derived_is_current_work(output, None, &mut work)?;
         Ok(((!current).then_some(output), work))
+    }
+    /// The shared read-only prefix performs no freshness walk or cache growth.
+    /// Body borrows handle plain endpoints and leave derived sources to driver.
+    pub(crate) fn reactive_derived_source(
+        &self,
+        property: PropertyId,
+    ) -> Result<Option<Value>, HeapError> {
+        if self.reactive_capture.is_none() {
+            return Ok(None);
+        }
+        let object = self.object(self.key(property.host)?)?;
+        if !object.model && property.field >= object.observable_fields {
+            return Ok(None);
+        }
+        let output = self.property_source(property)?.0.host;
+        Ok(self.object(self.key(output)?)?.derived.then_some(output))
     }
     fn dependency_payload(
         &self,
@@ -176,6 +184,27 @@ impl Heap {
         evaluating: Option<Value>,
         work: &mut u64,
     ) -> Result<bool, HeapError> {
+        let revision = [
+            self.mutation_revision,
+            self.binding_revision,
+            self.evaluation,
+        ];
+        let root = self.object(self.key(output)?)?;
+        let cached = if evaluating.is_none() && root.derived {
+            let dependencies = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
+            if dependencies.same_bits(Value::NULL) {
+                None
+            } else {
+                let key = self.key(dependencies)?;
+                *work += 1;
+                if self.dependency_payload(key)?.freshness_revision == revision {
+                    return Ok(true);
+                }
+                Some(key)
+            }
+        } else {
+            None
+        };
         self.freshness_walk = self
             .freshness_walk
             .checked_add(1)
@@ -235,6 +264,14 @@ impl Heap {
                 *work += 1;
                 self.queue_freshness_input(next)?;
             }
+        }
+        if let Some(key) = cached {
+            let Payload::Dependencies(dependencies) =
+                &mut self.objects.get_mut(key).unwrap().payload
+            else {
+                unreachable!()
+            };
+            dependencies.freshness_revision = revision;
         }
         Ok(true)
     }

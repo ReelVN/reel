@@ -29,7 +29,7 @@ impl Vm {
                     .unwrap();
                 let value = self
                     .slots
-                    .read(at(self.constants, self.native_values.data[index].1))
+                    .read_vm(at(self.constants, self.native_values.data[index].1))
                     .map_err(heap_fault)?;
                 self.write(s.regs, r(a), value)?;
                 s.pc = next_pc;
@@ -39,7 +39,6 @@ impl Vm {
         if matches!(
             op,
             Opcode::CellWrite
-                | Opcode::BindWrite
                 | Opcode::GlobalWrite
                 | Opcode::GlobalInit
                 | Opcode::IndexSet
@@ -47,12 +46,6 @@ impl Vm {
         ) {
             let allowed = if s.context.derived {
                 match op {
-                    Opcode::BindWrite => match f.bindings[a as usize].storage {
-                        BindingStorage::Value(_) => true,
-                        BindingStorage::Cell(reg) => {
-                            self.heap.derived_write_allowed(self.read(s.regs, reg)?)
-                        }
-                    },
                     Opcode::CellWrite | Opcode::IndexSet | Opcode::MemberSet => {
                         self.heap.derived_write_allowed(self.read(s.regs, r(a))?)
                     }
@@ -108,7 +101,9 @@ impl Vm {
             }
             Opcode::TextPush => {
                 let builder = self.read(s.regs, r(a))?;
-                if self.heap.info(builder).map_err(heap_fault)?.kind != ObjectKind::ByteBuffer {
+                if self.heap.read_object(builder).map_err(heap_fault)?.kind()
+                    != ObjectKind::ByteBuffer
+                {
                     return Err(FaultKind::Type);
                 }
                 s.phase = ScriptPhase::TextPush {
@@ -205,7 +200,9 @@ impl Vm {
                     self.generator_begin(s, iterator, GeneratorAction::Close(None))?;
                     return Ok(false);
                 }
-                if self.heap.info(iterator).map_err(heap_fault)?.kind != ObjectKind::Iterator {
+                if self.heap.read_object(iterator).map_err(heap_fault)?.kind()
+                    != ObjectKind::Iterator
+                {
                     return Err(FaultKind::Type);
                 }
                 self.heap
@@ -242,7 +239,7 @@ impl Vm {
                 };
                 let key = self.read(s.regs, key)?;
                 if matches!(
-                    self.heap.info(host).map_err(heap_fault)?.kind,
+                    self.heap.read_object(host).map_err(heap_fault)?.kind(),
                     ObjectKind::Instance | ObjectKind::Super
                 ) {
                     let reference = self.class_property_ref(host, key, writable)?;
@@ -265,8 +262,10 @@ impl Vm {
             }
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self.read(s.regs, r(if op == Opcode::MemberGet { b } else { a }))?;
+                let object_read = self.heap.read_object(object).map_err(heap_fault)?;
+                let kind = object_read.kind();
                 if matches!(
-                    self.heap.info(object).map_err(heap_fault)?.kind,
+                    kind,
                     ObjectKind::FaultEnvelope
                         | ObjectKind::FaultStack
                         | ObjectKind::FaultCause
@@ -285,7 +284,7 @@ impl Vm {
                     return Ok(true);
                 }
                 if matches!(
-                    self.heap.info(object).map_err(heap_fault)?.kind,
+                    kind,
                     ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
                 ) {
                     let value = if op == Opcode::MemberSet {
@@ -313,28 +312,26 @@ impl Vm {
                     s.pc = next_pc;
                     return Ok(true);
                 }
-                if op == Opcode::MemberGet {
-                    let kind = self.heap.info(object).map_err(heap_fault)?.kind;
-                    if matches!(
+                if op == Opcode::MemberGet
+                    && matches!(
                         kind,
                         ObjectKind::Array
                             | ObjectKind::Tuple
                             | ObjectKind::String
                             | ObjectKind::Generator
                             | ObjectKind::Bytes
-                    ) {
-                        let method =
-                            Builtin::lookup(kind, &self.program.package().symbols[c as usize])
-                                .ok_or(FaultKind::MissingKey)?;
-                        let value = self.bound_builtin(object, method, s.effects)?;
-                        self.write(s.regs, r(a), value)?;
-                        s.pc = next_pc;
-                        return Ok(false);
-                    }
+                    )
+                {
+                    let method = Builtin::lookup(kind, &self.program.package().symbols[c as usize])
+                        .ok_or(FaultKind::MissingKey)?;
+                    let value = self.bound_builtin(object, method, s.effects)?;
+                    self.write(s.regs, r(a), value)?;
+                    s.pc = next_pc;
+                    return Ok(false);
                 }
-                let host = self.is_text(object, ObjectKind::Host);
+                let host = kind == ObjectKind::Host;
                 let object = if host {
-                    match self.heap.host_fields(object) {
+                    match object_read.host_fields() {
                         Ok(fields) => fields,
                         Err(HeapError::RetiredHost) if op == Opcode::MemberGet => {
                             let key = self.value(self.constants, c).map_err(vm_fault)?;
@@ -438,16 +435,16 @@ impl Vm {
                 self.write(s.regs, r(a), v)?;
             }
             Opcode::Clear | Opcode::Clear2 | Opcode::Clear3 => {
-                let count = match op {
-                    Opcode::Clear => 1,
-                    Opcode::Clear2 => 2,
-                    _ => 3,
-                };
-                for register in [a, b, c].into_iter().take(count) {
-                    self.slots
-                        .clear(&mut self.heap, at(s.regs, register))
-                        .map_err(heap_fault)?;
+                match op {
+                    Opcode::Clear => self.slots.clear_vm(&mut self.heap, at(s.regs, a)),
+                    Opcode::Clear2 => self
+                        .slots
+                        .clear_registers_vm(&mut self.heap, s.regs, [a, b]),
+                    _ => self
+                        .slots
+                        .clear_registers_vm(&mut self.heap, s.regs, [a, b, c]),
                 }
+                .map_err(heap_fault)?;
             }
             Opcode::CellNew => {
                 let binding = f.bindings[a as usize].clone();
@@ -473,34 +470,20 @@ impl Vm {
                 self.heap.cell_write(cell, v).map_err(heap_fault)?;
             }
             Opcode::BindInit | Opcode::BindWrite => {
-                let binding = f.bindings[a as usize].clone();
-                let v = self.read(s.regs, r(b))?;
-                self.check_type(binding.ty, v)?;
-                match binding.storage {
-                    BindingStorage::Cell(reg) => {
-                        let cell = self.read(s.regs, reg)?;
-                        if op == Opcode::BindInit {
-                            self.heap.cell_initialize(cell, v)
-                        } else {
-                            self.heap.cell_write(cell, v)
-                        }
-                        .map_err(heap_fault)?;
-                    }
-                    BindingStorage::Value(reg) => {
-                        let old = self.slots.read(at(s.regs, reg.0));
-                        if op == Opcode::BindInit {
-                            if old.is_ok() {
-                                return Err(FaultKind::InvalidState);
-                            }
-                        } else {
-                            old.map_err(heap_fault)?;
-                            if !binding.mutable {
-                                return Err(FaultKind::ReadOnly);
-                            }
-                        }
-                        self.write(s.regs, reg, v)?;
-                    }
-                }
+                body_operations::bind(
+                    &mut body_operations::Checked {
+                        slots: &mut self.slots,
+                        heap: &mut self.heap,
+                        registers: s.regs,
+                        environment: s.env,
+                    },
+                    &self.program,
+                    &self.type_checks,
+                    &f.bindings[a as usize],
+                    (s.context, s.effects),
+                    op,
+                    b,
+                )?;
             }
             Opcode::BindRead => {
                 let binding = f.bindings[b as usize].clone();
@@ -511,14 +494,17 @@ impl Vm {
                 self.write(s.regs, r(a), v)?;
             }
             Opcode::CaptureRead => {
-                if !s.closure {
-                    return Err(FaultKind::InvalidState);
-                }
-                let closure = self
-                    .script_closure(self.slots.read(at(s.env, 0)).map_err(heap_fault)?)
-                    .map_err(vm_fault)?;
-                let v = self.heap.get_field(closure, b + 3).map_err(heap_fault)?;
-                self.write(s.regs, r(a), v)?;
+                body_operations::capture(
+                    &mut body_operations::Checked {
+                        slots: &mut self.slots,
+                        heap: &mut self.heap,
+                        registers: s.regs,
+                        environment: s.env,
+                    },
+                    s.closure,
+                    a,
+                    b,
+                )?;
             }
             Opcode::GlobalRead | Opcode::GlobalInit | Opcode::GlobalWrite => {
                 let Descriptor::Global { module, global } = f.descriptors[b as usize] else {
@@ -530,7 +516,7 @@ impl Vm {
                     .expect("verified module binding");
                 let cell = self
                     .slots
-                    .read(at(self.globals, binding.offset))
+                    .read_vm(at(self.globals, binding.offset))
                     .map_err(heap_fault)?;
                 if op == Opcode::GlobalRead {
                     let v = self.heap.cell_read(cell).map_err(|error| {
@@ -555,21 +541,10 @@ impl Vm {
                     .map_err(heap_fault)?;
                 }
             }
-            Opcode::Jump => {
-                s.pc = Pc(a);
-                return Ok(false);
-            }
-            Opcode::BranchBool => {
-                let condition = self.read(s.regs, r(a))?.as_bool().ok_or(FaultKind::Type)?;
-                s.pc = Pc(if condition { b } else { c });
-                return Ok(false);
-            }
-            Opcode::BranchNull => {
-                s.pc = Pc(if self.read(s.regs, r(a))?.tag() == ValueTag::Null {
-                    b
-                } else {
-                    c
-                });
+            Opcode::Jump | Opcode::BranchBool | Opcode::BranchNull => {
+                s.pc = scalars::branch_target(op, [a, b, c], |register| {
+                    self.read(s.regs, r(register))
+                })?;
                 return Ok(false);
             }
             Opcode::Neg | Opcode::Pos | Opcode::Not | Opcode::BitNot => {
@@ -603,7 +578,7 @@ impl Vm {
                     && left.tag() == ValueTag::Object
                     && right.tag() == ValueTag::Object
                     && matches!(
-                        self.heap.info(left).map_err(heap_fault)?.kind,
+                        self.heap.read_object(left).map_err(heap_fault)?.kind(),
                         ObjectKind::Tuple | ObjectKind::String | ObjectKind::Bytes
                     )
                 {
@@ -664,7 +639,9 @@ impl Vm {
                         }
                         CaptureSource::Capture(id) => {
                             let closure = self
-                                .script_closure(self.slots.read(at(s.env, 0)).map_err(heap_fault)?)
+                                .script_closure(
+                                    self.slots.read_vm(at(s.env, 0)).map_err(heap_fault)?,
+                                )
                                 .map_err(vm_fault)?;
                             self.heap.get_field(closure, id.0 + 3).map_err(heap_fault)?
                         }
@@ -740,133 +717,7 @@ impl Vm {
                 return Ok(false);
             }
             Opcode::Call | Opcode::CallNoWait => {
-                let Descriptor::Call(desc) = &f.descriptors[b as usize] else {
-                    unreachable!()
-                };
-                let target = desc.target;
-                let count = match desc.arguments {
-                    Arguments::Window(w) => w.len,
-                    Arguments::Packed(r) => {
-                        let v = self.read(s.regs, r)?;
-                        self.heap.packed_array_len(v).map_err(heap_fault)? / 2
-                    }
-                };
-                let source = if let Some(contract) = desc.contract {
-                    ArgSource::CheckedCaller {
-                        frame: s.id,
-                        descriptor: DescriptorId(b),
-                        contract,
-                    }
-                } else {
-                    ArgSource::Caller {
-                        frame: s.id,
-                        descriptor: DescriptorId(b),
-                    }
-                };
-                if let Some(contract) = desc.contract {
-                    let TypeDef::Function { parameters, .. } =
-                        &self.program.package().types[contract.index()]
-                    else {
-                        unreachable!()
-                    };
-                    match (count as usize).cmp(&parameters.len()) {
-                        std::cmp::Ordering::Less => return Err(FaultKind::MissingArgument),
-                        std::cmp::Ordering::Greater => return Err(FaultKind::UnknownArgument),
-                        std::cmp::Ordering::Equal => {}
-                    }
-                }
-                let mut caller = *s;
-                if op == Opcode::CallNoWait
-                    || self.active.unwinds.data.iter().any(|u| u.frame == s.id)
-                {
-                    caller.context = inherit(caller.context, Context::NoWait);
-                }
-                let dynamic = if let CallTarget::Register(reg) = target {
-                    let closure = self.read(s.regs, reg)?;
-                    if self.is_text(closure, ObjectKind::Class) {
-                        self.start_construct(s, closure, r(a), DescriptorId(b), count)?;
-                        return Ok(false);
-                    }
-                    if self.is_text(closure, ObjectKind::BoundBuiltin) {
-                        self.start_builtin(s, closure, DescriptorId(b), r(a), count)?;
-                        return Ok(false);
-                    }
-                    Some((
-                        closure,
-                        self.closure_function(closure).map_err(|error| {
-                            if matches!(error, VmError::Heap(HeapError::ConstructionFailed)) {
-                                FaultKind::ConstructionFailed
-                            } else {
-                                FaultKind::Type
-                            }
-                        })?,
-                    ))
-                } else {
-                    None
-                };
-                s.pc = next_pc;
-                let caller_index = self.index(s.id).map_err(|_| FaultKind::InvalidState)?;
-                self.active.frames.data[caller_index] = Frame::Script(*s);
-                match target {
-                    CallTarget::Native(native) => {
-                        let site = NativeSite {
-                            owner: caller.owner,
-                            module: caller.module,
-                            context: caller.context,
-                            effects: caller.effects,
-                            location: self.loc(caller, caller.pc),
-                            ret: ReturnTo::Register {
-                                frame: caller.id,
-                                reg: r(a),
-                                call: caller.pc,
-                            },
-                        };
-                        if let Err(e) = self.push_native(native, source, count, site) {
-                            s.pc = caller.pc;
-                            return Err(vm_fault(e));
-                        }
-                    }
-                    CallTarget::Function(function) => {
-                        if let Err(e) = self.push_script(
-                            function,
-                            None,
-                            source,
-                            count,
-                            s.owner,
-                            caller.context,
-                            s.effects,
-                            ReturnTo::Register {
-                                frame: s.id,
-                                reg: r(a),
-                                call: caller.pc,
-                            },
-                        ) {
-                            s.pc = caller.pc;
-                            return Err(vm_fault(e));
-                        }
-                    }
-                    CallTarget::Register(_) => {
-                        let (closure, function) = dynamic.unwrap();
-                        if let Err(e) = self.push_script(
-                            function,
-                            Some(closure),
-                            source,
-                            count,
-                            s.owner,
-                            caller.context,
-                            s.effects,
-                            ReturnTo::Register {
-                                frame: s.id,
-                                reg: r(a),
-                                call: caller.pc,
-                            },
-                        ) {
-                            s.pc = caller.pc;
-                            return Err(vm_fault(e));
-                        }
-                    }
-                }
-                return Ok(true);
+                return self.execute_call(s, op, a, b, next_pc, None);
             }
             Opcode::Await => {
                 self.start_await(s, r(a), r(b))?;
@@ -884,7 +735,7 @@ impl Vm {
                     v,
                 )?;
                 self.slots
-                    .write(&mut self.heap, at(s.env, 1), v)
+                    .write_vm(&mut self.heap, at(s.env, 1), v)
                     .map_err(heap_fault)?;
                 s.phase = ScriptPhase::Exit {
                     origin: s.pc,
@@ -907,7 +758,7 @@ impl Vm {
                     origin: s.pc,
                     reason: ExitReason::Throw(FaultSeed {
                         kind: FaultKind::Thrown,
-                        location: self.loc(*s, s.pc),
+                        location: self.loc(s.code, s.pc),
                         fault: None,
                         explicit: None,
                         author_value: true,
@@ -952,7 +803,7 @@ impl Vm {
             }
             Opcode::Leave => {
                 self.slots
-                    .write(&mut self.heap, at(s.env, 1), Value::NULL)
+                    .write_vm(&mut self.heap, at(s.env, 1), Value::NULL)
                     .map_err(heap_fault)?;
                 s.phase = ScriptPhase::Exit {
                     origin: s.pc,
@@ -972,9 +823,9 @@ impl Vm {
                 else {
                     return Err(FaultKind::InvalidState);
                 };
-                let value = self.slots.read(at(u.value, 0)).map_err(heap_fault)?;
+                let value = self.slots.read_vm(at(u.value, 0)).map_err(heap_fault)?;
                 self.slots
-                    .write(&mut self.heap, at(s.env, 1), value)
+                    .write_vm(&mut self.heap, at(s.env, 1), value)
                     .map_err(heap_fault)?;
                 if matches!(u.reason,ExitReason::Throw(info) if info.fault.is_some()) {
                     let cause = self.value(u.value, 1).map_err(vm_fault)?;
@@ -999,6 +850,10 @@ impl Vm {
         Ok(false)
     }
     pub(super) fn is_text(&self, v: Value, kind: ObjectKind) -> bool {
-        v.tag() == ValueTag::Object && self.heap.info(v).is_ok_and(|i| i.kind == kind)
+        v.tag() == ValueTag::Object
+            && self
+                .heap
+                .read_object(v)
+                .is_ok_and(|read| read.kind() == kind)
     }
 }

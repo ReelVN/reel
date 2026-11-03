@@ -245,6 +245,7 @@ pub(super) struct Programs {
     #[cfg(feature = "gxm-tile-destination")]
     tile: [std::cell::OnceCell<Shader>; 13],
     pub source_over: Shader,
+    pub effect_resample: Shader,
     pub alpha_mask: Shader,
     pub mask_8: Shader,
     pub mask_16: Shader,
@@ -294,6 +295,7 @@ impl Programs {
             composite: Shader::composite(context, shader_code!("composite"))?,
             extended_blend: Shader::composite(context, shader_code!("extended_blend"))?,
             source_over: Shader::composite(context, shader_code!("source_over"))?,
+            effect_resample: Shader::composite(context, shader_code!("effect_resample"))?,
             alpha_mask: Shader::composite(context, shader_code!("alpha_mask"))?,
             mask_8: Shader::new(context, shader_code!("mask_8"))?,
             mask_16: Shader::new(context, shader_code!("mask_16"))?,
@@ -305,14 +307,14 @@ impl Programs {
             mask: Shader::new(context, shader_code!("mask"))?,
             mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,
             mask_threshold: Shader::new(context, shader_code!("mask_threshold"))?,
-            mask_sample_chain_composite: Shader::with_vertex(
+            // Composite quads already end at the integer clip bounds. Keeping
+            // discard here would unnecessarily select a feedback pixel program.
+            mask_sample_chain_composite: Shader::composite(
                 context,
-                shader_code!("composite_vertex"),
                 shader_code!("mask_sample_chain_composite"),
             )?,
-            mask_threshold_composite: Shader::with_vertex(
+            mask_threshold_composite: Shader::composite(
                 context,
-                shader_code!("composite_vertex"),
                 shader_code!("mask_threshold_composite"),
             )?,
             mask_paired: [
@@ -322,26 +324,10 @@ impl Programs {
                 Shader::new(context, shader_code!("mask_paired_gg"))?,
             ],
             mask_paired_composite: [
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_aa_composite"),
-                )?,
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_ag_composite"),
-                )?,
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_ga_composite"),
-                )?,
-                Shader::with_vertex(
-                    context,
-                    shader_code!("composite_vertex"),
-                    shader_code!("mask_paired_gg_composite"),
-                )?,
+                Shader::composite(context, shader_code!("mask_paired_aa_composite"))?,
+                Shader::composite(context, shader_code!("mask_paired_ag_composite"))?,
+                Shader::composite(context, shader_code!("mask_paired_ga_composite"))?,
+                Shader::composite(context, shader_code!("mask_paired_gg_composite"))?,
             ],
             // The final quad covers the viewport with no narrower scissor.
             // Omitting discard lets GXM schedule the texture fetch independently.
@@ -529,12 +515,62 @@ pub(super) fn attributes() -> [VertexAttribute; 4] {
     ]
 }
 struct TargetStorage {
+    // Drop native cell owners before releasing their one shared budget ticket.
+    macrotile: Option<native::MacrotileTarget>,
     _ticket: super::ownership::NativeTicket,
     effect_pins: std::cell::Cell<usize>,
+    #[cfg(feature = "profiling")]
+    trace_id: u64,
+}
+#[cfg(feature = "profiling")]
+impl Drop for TargetStorage {
+    fn drop(&mut self) {
+        crate::profiling::record_trace(
+            crate::profiling::TraceKind::TargetCache,
+            crate::profiling::TraceData {
+                label: "owner-drop-begin",
+                status: crate::profiling::TraceStatus::Ok,
+                output_target: self.trace_id,
+                bytes: self._ticket.bytes(),
+                count: 1,
+                ..Default::default()
+            },
+        );
+    }
+}
+#[cfg(feature = "profiling")]
+fn trace_native_code(error: &native::Error) -> Option<i32> {
+    match error {
+        native::Error::Sdk(_, code) | native::Error::Allocation { code, .. } => Some(*code),
+        native::Error::Terminal(fault) => Some(fault.code),
+        _ => None,
+    }
+}
+#[cfg(feature = "profiling")]
+fn target_request_trace(
+    size: [u32; 2],
+    format: native::TargetFormat,
+    storage: native::TargetStorage,
+) -> crate::profiling::TraceData {
+    use crate::profiling::*;
+    TraceData {
+        storage: size,
+        output_extent: size,
+        count: 1,
+        target_format: match format {
+            native::TargetFormat::Rgba8 => 1,
+            native::TargetFormat::Coverage8 => 2,
+        },
+        storage_kind: match storage {
+            native::TargetStorage::Linear => 1,
+            native::TargetStorage::Tiled => 2,
+        },
+        known: KNOWN_STORAGE | KNOWN_OUTPUT_EXTENT | KNOWN_TARGET_FORMAT | KNOWN_STORAGE_KIND,
+        ..Default::default()
+    }
 }
 struct EffectPin {
     storage: Rc<TargetStorage>,
-    token: crate::common::effect_result::Token,
     _metadata: BudgetTicket,
 }
 impl Drop for EffectPin {
@@ -542,23 +578,152 @@ impl Drop for EffectPin {
         self.storage
             .effect_pins
             .set(self.storage.effect_pins.get() - 1);
+        #[cfg(feature = "profiling")]
+        crate::profiling::record_trace(
+            crate::profiling::TraceKind::TargetCache,
+            crate::profiling::TraceData {
+                label: "effect-unpin",
+                status: crate::profiling::TraceStatus::Ok,
+                output_target: self.storage.trace_id,
+                bytes: self.storage._ticket.bytes(),
+                count: self.storage.effect_pins.get() as u64,
+                ..Default::default()
+            },
+        );
     }
 }
 #[derive(Clone)]
 pub(super) struct Target {
+    pub effect_cache_allowed: bool,
     pub slot: usize,
     pub size: [u32; 2],
+    pub source_crop: Option<crate::common::source_crop::Crop>,
     pub view: Texture,
     pub framebuffer: Framebuffer,
     _storage: Rc<TargetStorage>,
+    effect_content: Option<crate::common::effect_result::Token>,
     effect_pin: Option<Rc<EffectPin>>,
+    #[cfg(feature = "profiling")]
+    trace_view: u64,
+    #[cfg(feature = "profiling")]
+    trace_lease: u64,
+    #[cfg(feature = "profiling")]
+    trace_region: Option<[u32; 4]>,
+    #[cfg(feature = "profiling")]
+    trace_cell: Option<u32>,
 }
 impl Target {
+    #[cfg(feature = "profiling")]
+    pub(super) fn trace_id(&self) -> u64 {
+        self._storage.trace_id
+    }
+    #[cfg(feature = "profiling")]
+    pub(super) fn trace_view_id(&self) -> u64 {
+        self.trace_view
+    }
+    #[cfg(feature = "profiling")]
+    pub(super) fn trace_lease_id(&self) -> u64 {
+        self.trace_lease
+    }
+    #[cfg(feature = "profiling")]
+    /// A macro cell's write window is atlas-absolute; ordinary windows are view-local.
+    /// The mirror observes admitted bounds, not shaded pixels or PBE traffic.
+    pub(super) fn trace_data(&self) -> crate::profiling::TraceData {
+        use crate::profiling::*;
+        let view = self.view.size();
+        let mut data = TraceData {
+            output_target: self.trace_id(),
+            view_id: self.trace_view,
+            lease_id: self.trace_lease,
+            logical: self.size,
+            storage: self.macrotile_extent().unwrap_or(view),
+            output_extent: view,
+            bytes: self.view.allocated_bytes() as u64,
+            stride_bytes: self.view.layout().row_stride_bytes as u64,
+            known: KNOWN_LOGICAL | KNOWN_STORAGE | KNOWN_OUTPUT_EXTENT | KNOWN_STRIDE,
+            ..Default::default()
+        };
+        if let Some(storage) = self.view.target_storage() {
+            data.storage_kind = match storage {
+                native::TargetStorage::Linear => 1,
+                native::TargetStorage::Tiled => 2,
+            };
+            data.known |= KNOWN_STORAGE_KIND;
+        }
+        data.target_format = match self.view.format() {
+            native::TextureFormat::Rgba8 => 1,
+            native::TextureFormat::Coverage8 => 2,
+            _ => 0,
+        };
+        if data.target_format != 0 {
+            data.known |= KNOWN_TARGET_FORMAT;
+        }
+        data.write_region = self.trace_region.unwrap_or_else(|| {
+            self._storage
+                .macrotile
+                .as_ref()
+                .zip(self.trace_cell)
+                .and_then(|(owner, cell)| owner.layout().cell_rect(cell))
+                .unwrap_or([0, 0, view[0], view[1]])
+        });
+        data.valid_region = self.macrotile_extent().unwrap_or([
+            data.write_region[0] + data.write_region[2],
+            data.write_region[1] + data.write_region[3],
+        ]);
+        data.known |= KNOWN_WRITE_REGION | KNOWN_VALID_REGION;
+        data
+    }
+    #[cfg(feature = "profiling")]
+    pub(super) fn trace_event(&self, kind: crate::profiling::TraceKind, label: &'static str) {
+        if !crate::profiling::trace_enabled() {
+            return;
+        }
+        let mut data = self.trace_data();
+        data.label = label;
+        data.status = crate::profiling::TraceStatus::Ok;
+        data.count = 1;
+        crate::profiling::record_trace(kind, data);
+    }
+    #[cfg(feature = "profiling")]
+    pub(super) fn trace_write_region(&mut self, region: Option<[u32; 4]>) {
+        self.trace_region = region;
+    }
+    #[cfg(feature = "profiling")]
+    pub(super) fn trace_begin_use(&mut self) {
+        self.trace_lease = crate::profiling::targets::next_id();
+        self.trace_event(crate::profiling::TraceKind::TargetAcquire, "lease-begin");
+    }
+    #[cfg(feature = "profiling")]
+    pub(super) fn trace_share_use(&mut self, source: &Self) {
+        self.trace_lease = source.trace_lease;
+        self.trace_region = source.trace_region;
+    }
+    pub(super) fn macrotile_extent(&self) -> Option<[u32; 2]> {
+        self._storage
+            .macrotile
+            .as_ref()
+            .map(|owner| owner.layout().size())
+    }
+    pub(super) fn cache_only_owners(&self, owners: usize) -> bool {
+        Rc::strong_count(&self._storage) == owners
+    }
     pub(super) fn is_effect_pinned(&self) -> bool {
         self._storage.effect_pins.get() != 0
     }
     pub(super) fn effect_token(&self) -> Option<crate::common::effect_result::Token> {
-        self.effect_pin.as_ref().map(|pin| pin.token)
+        self.effect_content
+    }
+    /// Label the completed pixels of this logical view without retaining them.
+    pub(super) fn with_effect_content(
+        mut self,
+        token: crate::common::effect_result::Token,
+    ) -> Self {
+        self.effect_content = Some(token);
+        self
+    }
+    /// End the old logical content before this scratch view can be written again.
+    pub(super) fn clear_effect_content(&mut self) {
+        self.effect_content = None;
     }
     pub(super) fn pin_effect(
         &self,
@@ -571,12 +736,13 @@ impl Target {
         self._storage
             .effect_pins
             .set(self._storage.effect_pins.get().checked_add(1)?);
-        let mut result = self.clone();
+        let mut result = self.clone().with_effect_content(token);
         result.effect_pin = Some(Rc::new(EffectPin {
             storage: self._storage.clone(),
-            token,
             _metadata: metadata,
         }));
+        #[cfg(feature = "profiling")]
+        result.trace_event(crate::profiling::TraceKind::TargetCache, "effect-pin");
         Some(result)
     }
     pub fn source_uv(&self, parent: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
@@ -592,18 +758,99 @@ impl Target {
     pub(super) fn cache_only(&self) -> bool {
         Rc::strong_count(&self._storage) == 1
     }
+    /// Replace only the immutable native descriptors of one linear allocation.
+    /// The exact requested raster and the complete physical budget owner survive.
+    pub(super) fn reshaped(
+        &self,
+        context: &super::ownership::Device,
+        size: [u32; 2],
+    ) -> Result<Self, GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetReshape);
+        #[cfg(feature = "profiling")]
+        let mut trace = {
+            let mut data = self.trace_data();
+            data.source_target = data.output_target;
+            data.source_view_id = data.view_id;
+            data.source_lease_id = data.lease_id;
+            data.source_extent = self.view.size();
+            data.logical = size;
+            data.storage = size;
+            data.output_extent = size;
+            // The new immutable descriptor does not exist until construction
+            // succeeds; its requested geometry has no observed write window yet.
+            data.known &= !(crate::profiling::KNOWN_WRITE_REGION
+                | crate::profiling::KNOWN_VALID_REGION
+                | crate::profiling::KNOWN_STRIDE);
+            data.write_region = [0; 4];
+            data.valid_region = [0; 2];
+            data.stride_bytes = 0;
+            data.known |= crate::profiling::KNOWN_SOURCE_EXTENT;
+            crate::profiling::targets::Operation::new("reshape", data)
+        };
+        #[cfg(feature = "profiling")]
+        trace.stage("reshape-texture");
+        let view = context
+            .reshape_target_texture(&self.view, size)
+            .map_err(|error| {
+                #[cfg(feature = "profiling")]
+                trace.fail(trace_native_code(&error));
+                error
+            })?;
+        #[cfg(feature = "profiling")]
+        trace.stage("reshape-framebuffer");
+        let framebuffer = context.framebuffer(&view).map_err(|error| {
+            #[cfg(feature = "profiling")]
+            trace.fail(trace_native_code(&error));
+            error
+        })?;
+        let mut result = self.clone();
+        result.view = view;
+        result.framebuffer = framebuffer;
+        result.size = size;
+        result.source_crop = None;
+        result.clear_effect_content();
+        #[cfg(feature = "profiling")]
+        {
+            result.trace_view = crate::profiling::targets::next_id();
+            result.trace_lease = 0;
+            result.trace_region = None;
+            let mut data = result.trace_data();
+            data.source_target = self.trace_id();
+            data.source_view_id = self.trace_view_id();
+            data.source_lease_id = self.trace_lease_id();
+            data.source_extent = self.view.size();
+            data.known |= crate::profiling::KNOWN_SOURCE_EXTENT;
+            trace.complete(data);
+        }
+        Ok(result)
+    }
     pub fn new(
         context: &super::ownership::Device,
         size: [u32; 2],
         format: native::TargetFormat,
+        target_storage: native::TargetStorage,
         budget: &BudgetPool,
         limit: u64,
     ) -> Result<Self, (GpuError, Option<super::ownership::NativeTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
-        let bytes = context
-            .target_layout(size, format)
-            .map_err(|error| (error.into(), None))?
-            .texture_bytes;
+        #[cfg(feature = "profiling")]
+        let mut trace = crate::profiling::targets::Operation::new(
+            "new",
+            target_request_trace(size, format, target_storage),
+        );
+        let layout = target_storage.layout(size, format).map_err(|error| {
+            #[cfg(feature = "profiling")]
+            trace.fail(trace_native_code(&error));
+            (error.into(), None)
+        })?;
+        let bytes = layout.texture_bytes;
+        #[cfg(feature = "profiling")]
+        {
+            trace.data_mut().bytes = bytes;
+            trace.data_mut().stride_bytes = layout.row_stride_bytes;
+            trace.data_mut().known |= crate::profiling::KNOWN_STRIDE;
+            trace.stage("budget");
+        }
         let storage = {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetReserve);
             budget.reserve(bytes)
@@ -621,11 +868,15 @@ impl Target {
         let storage = context.ticket(storage);
         let built = (|| {
             let view = {
+                #[cfg(feature = "profiling")]
+                trace.stage("texture");
                 let _timing =
                     reel_core::profile::Scope::new(reel_core::profile::Phase::TargetTexture);
-                super::super::create_target_texture(context, size, format)?
+                context.create_target_texture_with_storage(size, format, target_storage)?
             };
             let framebuffer = {
+                #[cfg(feature = "profiling")]
+                trace.stage("framebuffer");
                 let _timing =
                     reel_core::profile::Scope::new(reel_core::profile::Phase::TargetFramebuffer);
                 context.framebuffer(&view)?
@@ -635,6 +886,8 @@ impl Target {
         let (view, framebuffer) = match built {
             Ok(value) => value,
             Err(error) => {
+                #[cfg(feature = "profiling")]
+                trace.fail(trace_native_code(&error));
                 let error = GpuError::from(error);
                 if error.is_memory_pressure() {
                     // Construction has issued no GPU work. Native owners have
@@ -647,16 +900,147 @@ impl Target {
             }
         };
         reel_core::profile::count(reel_core::profile::Phase::TargetCreated);
-        Ok(Self {
+        let result = Self {
+            effect_cache_allowed: true,
             slot: 0,
+            source_crop: None,
             view,
             framebuffer,
             size,
             _storage: Rc::new(TargetStorage {
+                macrotile: None,
                 _ticket: storage,
                 effect_pins: std::cell::Cell::new(0),
+                #[cfg(feature = "profiling")]
+                trace_id: crate::profiling::targets::next_id(),
             }),
+            effect_content: None,
             effect_pin: None,
-        })
+            #[cfg(feature = "profiling")]
+            trace_view: crate::profiling::targets::next_id(),
+            #[cfg(feature = "profiling")]
+            trace_lease: 0,
+            #[cfg(feature = "profiling")]
+            trace_region: None,
+            #[cfg(feature = "profiling")]
+            trace_cell: None,
+        };
+        #[cfg(feature = "profiling")]
+        trace.complete(result.trace_data());
+        Ok(result)
+    }
+
+    /// All cell views share exactly one physical pixel owner and budget charge.
+    pub(super) fn macrotile(
+        context: &super::ownership::Device,
+        layout: native::MacrotileLayout,
+        sizes: &[[u32; 2]],
+        budget: &BudgetPool,
+        limit: u64,
+    ) -> Result<SmallVec<[Self; 4]>, (GpuError, Option<super::ownership::NativeTicket>)> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
+        #[cfg(feature = "profiling")]
+        let mut trace = {
+            let mut data = target_request_trace(
+                layout.size(),
+                native::TargetFormat::Rgba8,
+                native::TargetStorage::Linear,
+            );
+            data.count = sizes.len() as u64;
+            crate::profiling::targets::Operation::new("macro-new", data)
+        };
+        let bytes = context
+            .macrotile_target_footprint(layout, sizes)
+            .map_err(|error| {
+                #[cfg(feature = "profiling")]
+                trace.fail(trace_native_code(&error));
+                (error.into(), None)
+            })?
+            .texture
+            .texture_bytes;
+        #[cfg(feature = "profiling")]
+        {
+            trace.data_mut().bytes = bytes;
+            trace.stage("macro-budget");
+        }
+        let ticket = {
+            let _reserve = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetReserve);
+            budget.reserve(bytes)
+        }
+        .map_err(|_| {
+            (
+                GpuError::Pressure {
+                    domain: "offscreen targets",
+                    requested: bytes,
+                    available: limit.saturating_sub(budget.usage().bytes),
+                },
+                None,
+            )
+        })?;
+        let ticket = context.ticket(ticket);
+        #[cfg(feature = "profiling")]
+        trace.stage("macro-native-unsplit");
+        let owner = match context.create_macrotile_target(layout, sizes) {
+            Ok(owner) => owner,
+            Err(error) => {
+                #[cfg(feature = "profiling")]
+                trace.fail(trace_native_code(&error));
+                let error = GpuError::from(error);
+                if error.is_memory_pressure() {
+                    drop(ticket);
+                    context.check().map_err(|error| (error, None))?;
+                    return Err((error, None));
+                }
+                return Err((error, Some(ticket)));
+            }
+        };
+        let storage = Rc::new(TargetStorage {
+            macrotile: Some(owner),
+            _ticket: ticket,
+            effect_pins: std::cell::Cell::new(0),
+            #[cfg(feature = "profiling")]
+            trace_id: crate::profiling::targets::next_id(),
+        });
+        let cells: SmallVec<[Self; 4]> = (0..sizes.len())
+            .map(|index| {
+                let framebuffer = storage
+                    .macrotile
+                    .as_ref()
+                    .unwrap()
+                    .cell(index)
+                    .expect("validated macrotile cell")
+                    .clone();
+                Self {
+                    effect_cache_allowed: true,
+                    slot: 0,
+                    source_crop: None,
+                    size: sizes[index],
+                    view: framebuffer.texture().clone(),
+                    framebuffer,
+                    _storage: storage.clone(),
+                    effect_content: None,
+                    effect_pin: None,
+                    #[cfg(feature = "profiling")]
+                    trace_view: crate::profiling::targets::next_id(),
+                    #[cfg(feature = "profiling")]
+                    trace_lease: 0,
+                    #[cfg(feature = "profiling")]
+                    trace_region: None,
+                    #[cfg(feature = "profiling")]
+                    trace_cell: Some(index as u32),
+                }
+            })
+            .collect();
+        reel_core::profile::count(reel_core::profile::Phase::TargetCreated);
+        #[cfg(feature = "profiling")]
+        {
+            let mut data = cells[0].trace_data();
+            data.count = sizes.len() as u64;
+            trace.complete(data);
+            for cell in &cells {
+                cell.trace_event(crate::profiling::TraceKind::TargetCache, "macro-cell-view");
+            }
+        }
+        Ok(cells)
     }
 }

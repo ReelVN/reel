@@ -357,6 +357,33 @@ pub struct VmStats {
     pub derived_outputs: u64,
     /// Registered standard outputs admitted to compact recomputation; reset on restore.
     pub compact_derived_outputs: u64,
+    /// Complete Value parameter transactions admitted by an opted-in validation build.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub value_entry_transactions: u64,
+    /// Those transactions using a receiver already rooted by the original call push.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub value_entry_receivers: u64,
+    /// Experimental residual spans retired by an opted-in validation build.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub residual_body_spans: u64,
+    /// Original instructions retired by those spans, with unchanged instruction grants.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub residual_body_instructions: u64,
+    /// Guarded residual plans selected by an opted-in validation build.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub residual_body_hits: u64,
+    /// Candidate plans rejected by their current object/value guards.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub residual_body_guard_fallbacks: u64,
+    /// Residual spans sent through the original per-instruction budget path.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub residual_body_budget_fallbacks: u64,
+    /// Residual spans limited by an original supplied-clock checkpoint.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub residual_body_clock_fallbacks: u64,
+    /// Residual entry guards reused through current weak receiver/version proofs.
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    pub residual_body_memo_hits: u64,
     pub usage: SliceUsage,
     pub heap: HeapStats,
     pub slots: FrameSlotsStats,

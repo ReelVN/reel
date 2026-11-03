@@ -1,8 +1,55 @@
 //! Class layouts are shared traced records. Building a layout and constructing
 //! an instance advance one member at a time on the ordinary budgeted stack.
 use super::*;
+pub(in crate::executor) fn script_closure_value(
+    heap: &Heap,
+    value: Value,
+) -> Result<Value, VmError> {
+    let read = heap.read_object(value)?;
+    Ok(script_closure_from_in(heap, value, read)?.0)
+}
+
+fn class_alive_in(heap: &Heap, value: Value) -> Result<(), FaultKind> {
+    let read = heap.read_object(value).map_err(heap_fault)?;
+    let slot = match read.kind() {
+        ObjectKind::Class => ClassSlot::State as u32,
+        ObjectKind::Instance => InstanceSlot::State as u32,
+        _ => return Err(FaultKind::Type),
+    };
+    if read.field(slot).map_err(heap_fault)?.as_int() == Some(State::Failed as i64) {
+        Err(FaultKind::ConstructionFailed)
+    } else {
+        Ok(())
+    }
+}
+
+fn script_closure_from_in(
+    heap: &Heap,
+    value: Value,
+    read: crate::heap::ObjectRead<'_>,
+) -> Result<(Value, Option<Value>), VmError> {
+    if read.kind() == ObjectKind::BoundScript {
+        let receiver = read.field(1)?;
+        if !receiver.same_bits(Value::NULL) {
+            class_alive_in(heap, receiver)
+                .map_err(|_| VmError::Heap(HeapError::ConstructionFailed))?;
+        }
+        Ok((
+            read.field(0)?,
+            (!receiver.same_bits(Value::NULL)).then_some(receiver),
+        ))
+    } else {
+        Ok((value, None))
+    }
+}
 
 use crate::class::{ClassSlot, InstanceSlot, MemberSlot, State};
+
+mod reads;
+pub(super) use reads::{ClassRead, ClassReadContext};
+
+#[cfg(test)]
+mod read_tests;
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum ClassStep {
@@ -69,28 +116,13 @@ impl Vm {
         Ok(desc)
     }
     fn class_alive(&self, value: Value) -> Result<(), FaultKind> {
-        let slot = match self.heap.info(value).map_err(heap_fault)?.kind {
-            ObjectKind::Class => ClassSlot::State as u32,
-            ObjectKind::Instance => InstanceSlot::State as u32,
-            _ => return Err(FaultKind::Type),
-        };
-        if self
-            .heap
-            .get_field(value, slot)
-            .map_err(heap_fault)?
-            .as_int()
-            == Some(State::Failed as i64)
-        {
-            Err(FaultKind::ConstructionFailed)
-        } else {
-            Ok(())
-        }
+        class_alive_in(&self.heap, value)
     }
-    pub(super) fn abort_class(&mut self, s: ScriptFrame) -> Result<(), VmError> {
+    pub(super) fn abort_class(&mut self, s: &ScriptFrame) -> Result<(), VmError> {
         let Ok(value) = self.value(s.env, 3) else {
             return Ok(());
         };
-        let slot = match self.heap.info(value)?.kind {
+        let slot = match self.heap.read_object(value)?.kind() {
             ObjectKind::Class => ClassSlot::State as u32,
             ObjectKind::Instance => InstanceSlot::State as u32,
             _ => return Err(VmError::Contract("class work root")),
@@ -103,30 +135,34 @@ impl Vm {
         Ok(())
     }
     pub(super) fn script_closure(&self, value: Value) -> Result<Value, VmError> {
-        if self.heap.info(value)?.kind == ObjectKind::BoundScript {
-            let receiver = self.heap.get_field(value, 1)?;
-            if !receiver.same_bits(Value::NULL) {
-                self.class_alive(receiver)
-                    .map_err(|_| VmError::Heap(HeapError::ConstructionFailed))?;
-            }
-            Ok(self.heap.get_field(value, 0)?)
-        } else {
-            Ok(value)
-        }
+        script_closure_value(&self.heap, value)
+    }
+    pub(super) fn script_closure_from(
+        &self,
+        value: Value,
+        read: crate::heap::ObjectRead<'_>,
+    ) -> Result<(Value, Option<Value>), VmError> {
+        script_closure_from_in(&self.heap, value, read)
     }
     pub(super) fn script_receiver(&self, value: Value) -> Result<Option<Value>, VmError> {
-        if self.heap.info(value)?.kind != ObjectKind::BoundScript {
+        let read = self.heap.read_object(value)?;
+        if read.kind() != ObjectKind::BoundScript {
             return Ok(None);
         }
-        let receiver = self.heap.get_field(value, 1)?;
+        let receiver = read.field(1)?;
         Ok((!receiver.same_bits(Value::NULL)).then_some(receiver))
     }
-    pub(super) fn receiver_prefix(&self, s: ScriptFrame) -> Result<u32, VmError> {
-        if !s.closure || s.shared_parameters {
+    pub(super) fn receiver_prefix(
+        &self,
+        env: RootRangeToken,
+        closure: bool,
+        shared_parameters: bool,
+    ) -> Result<u32, VmError> {
+        if !closure || shared_parameters {
             return Ok(0);
         }
         Ok(u32::from(
-            self.script_receiver(self.value(s.env, 0)?)?.is_some(),
+            self.script_receiver(self.value(env, 0)?)?.is_some(),
         ))
     }
     pub(super) fn enter_initializer(
@@ -135,7 +171,7 @@ impl Vm {
         function: FunctionId,
     ) -> Result<(), VmError> {
         if self.init_symbol != Some(self.program.package().functions[function.index()].name)
-            || self.heap.info(closure)?.kind != ObjectKind::BoundScript
+            || self.heap.read_object(closure)?.kind() != ObjectKind::BoundScript
         {
             return Ok(());
         }
@@ -171,7 +207,7 @@ impl Vm {
         );
         if let Some(callable) = self.method_bindings.get(key) {
             let value = Value::object(self.heap.id(), callable);
-            if self.heap.info(value).is_ok() {
+            if self.heap.read_object(value).is_ok() {
                 self.script_binding_hits += 1;
                 return Ok(value);
             }
@@ -186,7 +222,7 @@ impl Vm {
     }
     pub(super) fn super_ref(&mut self, s: ScriptFrame) -> Result<Value, FaultKind> {
         let method = self.value(s.env, 0).map_err(vm_fault)?;
-        if self.heap.info(method).map_err(heap_fault)?.kind != ObjectKind::BoundScript {
+        if self.heap.read_object(method).map_err(heap_fault)?.kind() != ObjectKind::BoundScript {
             return Err(FaultKind::Type);
         }
         let receiver = self.heap.get_field(method, 1).map_err(heap_fault)?;
@@ -200,102 +236,6 @@ impl Vm {
         self.heap
             .alloc_record(ObjectKind::Super, &[receiver, base])
             .map_err(heap_fault)
-    }
-    fn member_find(&self, class: Value, key: i64) -> Result<(Value, u32), HeapError> {
-        let members = self.class_slot(class, ClassSlot::Members)?;
-        let mut lo = 0;
-        let mut hi = self.heap.info(members)?.len;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let member = self.heap.get_field(members, mid)?;
-            if self
-                .heap
-                .get_field(member, MemberSlot::Key as u32)?
-                .as_int()
-                .unwrap()
-                < key
-            {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        let found = if lo < self.heap.info(members)?.len {
-            let member = self.heap.get_field(members, lo)?;
-            (self
-                .heap
-                .get_field(member, MemberSlot::Key as u32)?
-                .as_int()
-                == Some(key))
-            .then_some(member)
-        } else {
-            None
-        };
-        Ok((found.unwrap_or(Value::NULL), lo))
-    }
-    fn member_target(&self, object: Value, name: SymbolId) -> Result<(Value, Value), FaultKind> {
-        let (receiver, class, is_static) = match self.heap.info(object).map_err(heap_fault)?.kind {
-            ObjectKind::Instance => (
-                object,
-                self.instance_slot(object, InstanceSlot::Class)
-                    .map_err(heap_fault)?,
-                false,
-            ),
-            ObjectKind::Class => (object, object, true),
-            ObjectKind::Super => (
-                self.heap.get_field(object, 0).map_err(heap_fault)?,
-                self.heap.get_field(object, 1).map_err(heap_fault)?,
-                false,
-            ),
-            _ => return Err(FaultKind::Type),
-        };
-        self.class_alive(receiver)?;
-        let (member, _) = self
-            .member_find(class, i64::from(name.0) * 2 + i64::from(is_static))
-            .map_err(heap_fault)?;
-        if member.same_bits(Value::NULL) {
-            return Err(FaultKind::MissingKey);
-        }
-        Ok((receiver, member))
-    }
-    fn member_cell(&self, receiver: Value, member: Value) -> Result<Value, HeapError> {
-        let index = self
-            .heap
-            .get_field(member, MemberSlot::Offset as u32)?
-            .as_int()
-            .unwrap() as u32;
-        let fields = if self.heap.info(receiver)?.kind == ObjectKind::Class {
-            let owner = self.heap.get_field(member, MemberSlot::Owner as u32)?;
-            self.class_slot(owner, ClassSlot::Statics)?
-        } else {
-            self.instance_slot(receiver, InstanceSlot::Fields)?
-        };
-        self.heap.get_field(fields, index)
-    }
-    pub(super) fn class_read_property(
-        &self,
-        object: Value,
-        name: SymbolId,
-    ) -> Result<Option<crate::PropertyId>, FaultKind> {
-        let (receiver, member) = self.member_target(object, name)?;
-        if self
-            .heap
-            .get_field(member, MemberSlot::Method as u32)
-            .map_err(heap_fault)?
-            .as_bool()
-            == Some(true)
-        {
-            return Ok(None);
-        }
-        let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
-        Ok(self
-            .heap
-            .is_model_cell(cell)
-            .map_err(heap_fault)?
-            .then_some(crate::PropertyId {
-                host: cell,
-                field: 0,
-            }))
     }
     pub(super) fn class_member(
         &mut self,
@@ -315,36 +255,11 @@ impl Vm {
             if write.is_some() {
                 return Err(FaultKind::ReadOnly);
             }
-            if effects.0 & Effects::ALLOCATE == 0 {
-                return Err(FaultKind::Effect);
-            }
-            let owner = self
-                .heap
-                .get_field(member, MemberSlot::Owner as u32)
-                .map_err(heap_fault)?;
-            let index = self
-                .heap
-                .get_field(member, MemberSlot::Index as u32)
-                .map_err(heap_fault)?
-                .as_int()
-                .unwrap() as u32;
-            let closures = self
-                .class_slot(owner, ClassSlot::Closures)
-                .map_err(heap_fault)?;
-            let closure = self.heap.get_field(closures, index).map_err(heap_fault)?;
-            let receiver =
-                if self.heap.info(receiver).map_err(heap_fault)?.kind == ObjectKind::Class {
-                    Value::NULL
-                } else {
-                    receiver
-                };
-            return self
-                .bind_script(closure, receiver, owner)
-                .map_err(heap_fault);
+            return self.class_method_value(receiver, member, effects);
         }
         let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
-        let info = self.heap.cell_info(cell).map_err(heap_fault)?;
         if let Some(value) = write {
+            let info = self.heap.cell_info(cell).map_err(heap_fault)?;
             if !self.heap.is_model_cell(cell).map_err(heap_fault)? {
                 self.check_cell_type(info.contract, value)?;
             }
@@ -354,11 +269,8 @@ impl Vm {
                 self.heap.cell_initialize(cell, value).map_err(heap_fault)?;
             }
             Ok(value)
-        } else if !info.initialized {
-            Err(FaultKind::UninitializedField)
         } else {
-            self.heap.observe_read(cell, Some(0)).map_err(heap_fault)?;
-            self.heap.cell_read(cell).map_err(heap_fault)
+            self.class_cell_value(cell)
         }
     }
 
@@ -395,7 +307,7 @@ impl Vm {
             .map_err(heap_fault)
     }
     pub(super) fn class_member_cost(&self, object: Value) -> Result<u64, VmError> {
-        let class = match self.heap.info(object)?.kind {
+        let class = match self.heap.read_object(object)?.kind() {
             ObjectKind::Instance => self.instance_slot(object, InstanceSlot::Class)?,
             ObjectKind::Super => self.heap.get_field(object, 1)?,
             _ => object,
@@ -608,7 +520,7 @@ impl Vm {
     ) -> Result<(), VmError> {
         let function = self.closure_function(closure)?;
         let i = self.index(s.id)?;
-        self.active.frames.data[i] = Frame::Script(s);
+        self.publish_script_frame(i, &s);
         self.push_script(
             function,
             Some(closure),
@@ -630,7 +542,7 @@ impl Vm {
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
         let root = self.value(s.env, 3)?;
-        let class = if self.heap.info(root)?.kind == ObjectKind::Class {
+        let class = if self.heap.read_object(root)?.kind() == ObjectKind::Class {
             root
         } else {
             self.instance_slot(root, InstanceSlot::Class)?
@@ -861,7 +773,7 @@ impl Vm {
         }
         let result = self.class_advance(s, step, root, class);
         if let Err(error) = result {
-            self.abort_class(*s)?;
+            self.abort_class(s)?;
             self.collection_fault(s, language_fault(error)?)?;
         }
         Ok(true)

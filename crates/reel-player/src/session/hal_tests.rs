@@ -384,6 +384,16 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     for _ in 0..64 {
         player.tick(&mut host).unwrap();
     }
+    // Accept the queued click feedback before another visual sample takes the
+    // next candidate slot. Its completion releases the recording consumer too.
+    player.render(&mut host).unwrap();
+    assert!(
+        player
+            .backend
+            .inner
+            .complete_render(player.backend.inner.last_submission().unwrap())
+    );
+    player.poll_completions().unwrap();
     host.now = MonoTime(250_000_000);
     player.tick(&mut host).unwrap();
     let x = |player: &mut Player<&mut Backend>| {
@@ -417,7 +427,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     player.resize(&mut host, metrics).unwrap();
     assert_eq!(player.backend.configurations.len(), configurations);
     player.render(&mut host).unwrap();
-    assert_eq!(host.presents, 1);
+    assert_eq!(host.presents, 2);
     assert!(player.presentation.bridge.accepted_key().is_none());
     host.now = MonoTime(10_250_000_000);
     player.resume(&mut host).unwrap();
@@ -428,7 +438,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     player.tick(&mut host).unwrap();
     assert_eq!(x(&mut player), 25., "suspension freezes animation time");
     player.render(&mut host).unwrap();
-    assert_eq!(host.presents, 2);
+    assert_eq!(host.presents, 3);
     assert_ne!(
         player.presentation.bridge.accepted_key().unwrap(),
         &accepted

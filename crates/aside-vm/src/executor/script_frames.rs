@@ -1,7 +1,23 @@
 //! Script frame admission and task allocation.
 use super::*;
+mod body;
 
 impl Vm {
+    // A Script-to-Script publication copies the payload directly instead of
+    // constructing a temporary enum. Keep replacement behavior for other kinds.
+    #[inline]
+    pub(super) fn publish_script_frame(&mut self, index: usize, source: &ScriptFrame) {
+        #[cfg(test)]
+        if self.work_probe.legacy_script_publication {
+            self.active.frames.data[index] = Frame::Script(*source);
+            return;
+        }
+        match &mut self.active.frames.data[index] {
+            Frame::Script(stored) => *stored = *source,
+            stored => *stored = Frame::Script(*source),
+        }
+    }
+
     // All construction inputs are explicit so failed root publication rolls back
     // as one transaction before a frame becomes visible.
     #[allow(clippy::too_many_arguments)]
@@ -16,6 +32,49 @@ impl Vm {
         effects: Effects,
         ret: ReturnTo,
     ) -> Result<(), VmError> {
+        self.push_script_with_receiver(
+            function, closure, source, count, owner, context, effects, ret, None,
+        )
+    }
+
+    // A cached receiver is valid only inside the originating Call admission.
+    // Some(None) proves there is no receiver; None resolves at the original
+    // point. Resolve failures use the ordinary wrapper, retaining quota order.
+    #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
+    pub(super) fn push_script_with_receiver(
+        &mut self,
+        function: FunctionId,
+        closure: Option<Value>,
+        source: ArgSource,
+        count: u32,
+        owner: RootOwner,
+        context: ContextFlags,
+        effects: Effects,
+        ret: ReturnTo,
+        receiver: Option<Option<Value>>,
+    ) -> Result<(), VmError> {
+        part_cost!(
+            self.step_costs,
+            CallPushScript,
+            self.push_script_with_receiver_inner(
+                function, closure, source, count, owner, context, effects, ret, receiver
+            )
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn push_script_with_receiver_inner(
+        &mut self,
+        function: FunctionId,
+        closure: Option<Value>,
+        source: ArgSource,
+        count: u32,
+        owner: RootOwner,
+        context: ContextFlags,
+        effects: Effects,
+        ret: ReturnTo,
+        receiver: Option<Option<Value>>,
+    ) -> Result<(), VmError> {
         if self.active.frames.data.len() == self.limits.max_frames as usize
             || count > self.limits.max_arguments
         {
@@ -24,10 +83,13 @@ impl Vm {
         let f = &self.program.package().functions[function.index()];
         if let FunctionKind::Native(native) = f.kind {
             let site = self.native_site(function, owner, context, effects, ret)?;
-            let receiver = closure
-                .map(|value| self.callable_receiver(value))
-                .transpose()?
-                .flatten();
+            let receiver = match receiver {
+                Some(receiver) => receiver,
+                None => closure
+                    .map(|value| self.callable_receiver(value))
+                    .transpose()?
+                    .flatten(),
+            };
             return self.push_native_bound(native, source, count, site, receiver);
         }
         let parameters = &self.program.package().signatures[f.signature.index()];
@@ -102,10 +164,13 @@ impl Vm {
         };
         self.put(env, 0, closure.unwrap_or(Value::NULL))?;
         if !shared_parameters
-            && let Some(receiver) = closure
-                .map(|v| self.script_receiver(v))
-                .transpose()?
-                .flatten()
+            && let Some(receiver) = match receiver {
+                Some(receiver) => receiver,
+                None => closure
+                    .map(|v| self.script_receiver(v))
+                    .transpose()?
+                    .flatten(),
+            }
         {
             self.put(bound, 0, receiver)?;
         }
@@ -139,6 +204,18 @@ impl Vm {
             generator: false,
         };
         self.active.frames.data.push(Frame::Script(s));
+        #[cfg(feature = "profiling")]
+        self.step_costs.script_entry(function, false);
+        execution_count!(self, ScriptEntries, 1);
+        execution_count!(self, ScriptRegisters, u64::from(registers));
+        execution_count!(self, ScriptParameters, u64::from(n));
+        execution_count!(
+            self,
+            ScriptBindings,
+            self.program.package().functions[function.index()]
+                .bindings
+                .len() as u64
+        );
         Ok(())
     }
     pub fn start(
@@ -233,6 +310,10 @@ impl Vm {
         for (i, &v) in args.iter().enumerate() {
             self.put(arguments, i as u32 * 2, Value::int(-1))?;
             self.put(arguments, i as u32 * 2 + 1, v)?;
+            #[cfg(feature = "execution-counts")]
+            if matches!(frame, Frame::Script(_)) {
+                execution_count!(self, ArgumentCopies, 1);
+            }
         }
         let signature = self.program.package().functions[function.index()].signature;
         let rest = self.program.package().signatures[signature.index()]
@@ -243,7 +324,11 @@ impl Vm {
                 s.phase = if rest {
                     ScriptPhase::Rest
                 } else {
-                    ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(*s)?))
+                    ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(
+                        s.env,
+                        s.closure,
+                        s.shared_parameters,
+                    )?))
                 }
             }
             Frame::Native(n) => {
@@ -289,3 +374,6 @@ impl Vm {
         Ok(slot)
     }
 }
+
+#[cfg(test)]
+mod tests;

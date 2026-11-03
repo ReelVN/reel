@@ -723,7 +723,6 @@ pub(in crate::heap) struct PreparedProperty {
     property: PropertyId,
     value: Value,
     rebound: bool,
-    index_slot: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -746,45 +745,47 @@ impl Heap {
     pub fn begin_property_configuration_work(&self) {
         self.property_work_used.set(0);
     }
-    pub(super) fn batch_hash(property: PropertyId) -> usize {
+    fn batch_key(property: PropertyId) -> (u64, u32) {
         let (_, key) = property
             .host
             .object_parts()
             .expect("validated property host");
-        let bits = key ^ u64::from(property.field).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        (bits ^ (bits >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd) as usize
+        (key, property.field)
     }
     fn batch_position(&self, property: PropertyId) -> Option<usize> {
-        if self.property_batch_index.is_empty() {
-            return None;
-        }
-        let mask = self.property_batch_index.len() - 1;
-        let mut slot = Self::batch_hash(property) & mask;
-        loop {
-            self.property_index_work
-                .set(self.property_index_work.get() + 1);
-            let index = self.property_batch_index[slot];
-            if index == usize::MAX {
-                return None;
-            }
-            if self.property_batch[index].property.same(property) {
-                return Some(index);
-            }
-            slot = (slot + 1) & mask;
-        }
-    }
-    fn batch_index_insert(&mut self, index: usize) {
-        let mask = self.property_batch_index.len() - 1;
-        let mut slot = Self::batch_hash(self.property_batch[index].property) & mask;
-        while self.property_batch_index[slot] != usize::MAX {
-            self.property_index_work
-                .set(self.property_index_work.get() + 1);
-            slot = (slot + 1) & mask;
-        }
-        self.property_batch_index[slot] = index;
         self.property_index_work
             .set(self.property_index_work.get() + 1);
-        self.property_batch[index].index_slot = slot;
+        self.property_batch_index
+            .get(&Self::batch_key(property))
+            .copied()
+    }
+    fn reserve_batch_index(&mut self) -> Result<(), HeapError> {
+        if self.property_batch_index.len() < self.property_batch_index.capacity() {
+            return Ok(());
+        }
+        let old = self.property_batch_index.allocation_size();
+        // hashbrown 0.17 grows its power-of-two bucket array by doubling. Admit
+        // both arrays during relocation; include control bytes and alignment.
+        let buckets = (self.property_batch_index.capacity() + 1)
+            .next_power_of_two()
+            .saturating_mul(2)
+            .max(4);
+        let peak = buckets
+            .saturating_mul(size_of::<((u64, u32), usize)>() + 1)
+            .saturating_add(64);
+        let reservation = self.usage.reserve(peak as u64)?;
+        self.property_batch_index
+            .try_reserve(1)
+            .map_err(|_| HeapError::AllocationFailure)?;
+        let allocated = self.property_batch_index.allocation_size();
+        debug_assert!(allocated <= peak);
+        drop(reservation);
+        let additional = (allocated - old) as u64;
+        self.usage.charge(additional);
+        self.reserved += additional;
+        self.property_index_work
+            .set(self.property_index_work.get() + buckets as u64);
+        Ok(())
     }
     fn batch_push(
         &mut self,
@@ -802,25 +803,7 @@ impl Heap {
             previous.rebound |= rebound;
             return Ok(());
         }
-        if (self.property_batch.len() + 1) * 2 > self.property_batch_index.len() {
-            let old = self.property_batch_index.capacity();
-            let new = (self.property_batch_index.len() * 2).max(16);
-            self.ensure_bytes(((new - old) * std::mem::size_of::<usize>()) as u64)?;
-            self.property_batch_index
-                .try_reserve_exact(new - self.property_batch_index.len())
-                .map_err(|_| HeapError::AllocationFailure)?;
-            let bytes = ((self.property_batch_index.capacity() - old)
-                * std::mem::size_of::<usize>()) as u64;
-            self.usage.charge(bytes);
-            self.reserved += bytes;
-            self.property_batch_index.resize(new, usize::MAX);
-            self.property_batch_index.fill(usize::MAX);
-            self.property_index_work
-                .set(self.property_index_work.get() + (2 * new - old) as u64);
-            for index in 0..self.property_batch.len() {
-                self.batch_index_insert(index);
-            }
-        }
+        self.reserve_batch_index()?;
         if self.property_batch.len() == self.property_batch.capacity() {
             let old = self.property_batch.capacity();
             let new = (old * 2).max(8);
@@ -837,15 +820,15 @@ impl Heap {
             property,
             value,
             rebound,
-            index_slot: usize::MAX,
         });
-        self.batch_index_insert(self.property_batch.len() - 1);
+        self.property_batch_index
+            .insert(Self::batch_key(property), self.property_batch.len() - 1);
+        self.property_index_work
+            .set(self.property_index_work.get() + 1);
         Ok(())
     }
     fn clear_property_batch(&mut self) {
-        for property in &self.property_batch {
-            self.property_batch_index[property.index_slot] = usize::MAX;
-        }
+        self.property_batch_index.clear();
         self.property_batch.clear();
     }
     fn reserve_binding_plan(&mut self) -> Result<(), HeapError> {

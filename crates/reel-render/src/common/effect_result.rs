@@ -1,11 +1,21 @@
-//! Content identity for already-materialized ordinary effect outputs.
+//! Stable effect dependencies and optional materialized output pixels.
 use reel_core::budget::{BudgetPool, BudgetTicket};
 mod admission;
+pub(crate) mod chain;
+pub(crate) mod context;
+pub(crate) mod coverage;
+#[cfg(all(feature = "profiling", any(target_os = "vita", feature = "wgpu", test)))]
+mod diagnostics;
+mod geometry;
+#[cfg(any(feature = "gxm", test))]
+mod warming;
 pub(crate) use admission::Admission;
+#[cfg(test)]
+mod content_tests;
 #[cfg(test)]
 mod tests;
 use reel_ui::{
-    frame::{FrameDraw, FrameDrawing, FrameEffect, FrameImage, FrameOp, LocalId},
+    frame::{FrameCommand, FrameDraw, FrameDrawing, FrameEffect, FrameImage, FrameOp, LocalId},
     imaging::record::Scene,
     kurbo::{Affine, Rect},
     peniko::{Brush, Extend, ImageBrush, ImageQuality},
@@ -31,6 +41,7 @@ fn rect(value: Rect) -> [u64; 4] {
 pub(crate) struct Grid {
     pub source_transform: [u64; 6],
     pub effect_transform: [u64; 6],
+    pub effect_context: Option<context::Key>,
     pub source_size: [u32; 2],
     pub source_storage: [u32; 2],
     /// Validly drawn source pixels; the rest of its storage remains transparent.
@@ -43,6 +54,21 @@ pub(crate) struct Grid {
 impl Grid {
     pub(crate) fn transforms(source: Affine, effect: Affine) -> ([u64; 6], [u64; 6]) {
         (affine(source), affine(effect))
+    }
+    /// Use the exact uploaded inputs for an ordinary materialized color pass.
+    /// Cropped sources and scalar or terminal passes retain their affine key.
+    pub(crate) fn color_context(mut self, effect: &FrameEffect) -> Self {
+        self.effect_context = context::ordinary(
+            effect,
+            Affine::new(self.effect_transform.map(f64::from_bits)),
+            self.output_size,
+            self.source_size,
+            self.source_storage,
+        );
+        if self.effect_context.is_some() {
+            self.effect_transform = affine(Affine::IDENTITY);
+        }
+        self
     }
 }
 
@@ -85,20 +111,39 @@ impl ImageProjection {
         }
     }
 }
+#[derive(Clone)]
 struct Recording {
     owner: u64,
     scene: Arc<Scene>,
     local: LocalId,
     image: ImageProjection,
+    geometry: Option<geometry::Key>,
+    /// Source-local wrapper bounds, before intersecting the current work ROI.
+    bounds: super::scissor::Scissor,
+}
+impl Recording {
+    fn same_pixels(&self, other: &Self) -> bool {
+        if self.image == other.image {
+            return true;
+        }
+        let (Some(left), Some(right)) = (&self.geometry, &other.geometry) else {
+            return false;
+        };
+        let mut image = self.image;
+        image.transform = other.image.transform;
+        image == other.image && left == right
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// The first component uniquely identifies pixels; the second identifies the
-// stable producer family across changed parameter or image versions.
+// The first component identifies a complete pixel dependency set; identical
+// computations retain it independently of physical pixel residency. The second
+// identifies the stable producer family across changed inputs.
 pub(crate) struct Token(pub(crate) usize, pub(crate) usize);
 #[allow(
     clippy::large_enum_variant,
     reason = "cache probes keep recording identity inline to avoid a heap allocation on every lookup"
 )]
+#[derive(Clone)]
 enum Source {
     Recording(Recording),
     Output(Token),
@@ -125,7 +170,7 @@ impl PartialEq for Source {
                 a.owner == b.owner
                     && Arc::ptr_eq(&a.scene, &b.scene)
                     && a.local == b.local
-                    && a.image == b.image
+                    && a.same_pixels(b)
             }
             (Self::Output(a), Self::Output(b)) => a == b,
             _ => false,
@@ -140,6 +185,34 @@ pub(crate) struct Probe<'a> {
     source: Source,
     effect: &'a FrameEffect,
     grid: Grid,
+    /// Present only on a proved exclusive source-chain query.
+    required: Option<super::scissor::Scissor>,
+}
+
+/// Recorded source coordinates and its proved early cache-reuse boundary.
+pub(crate) struct SourceCommands {
+    pub commands: Range<usize>,
+    pub transform: Affine,
+    pub region: super::scissor::Scissor,
+    pub early_reusable: bool,
+}
+
+/// End of the complete group, including neutral wrappers around its image.
+pub(crate) fn source_end(commands: &[FrameCommand], push: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (index, command) in commands.iter().enumerate().skip(push) {
+        match command.op {
+            FrameOp::PushGroup(_) => depth += 1,
+            FrameOp::PopGroup => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 impl<'a> Probe<'a> {
     pub(crate) fn new(
@@ -147,6 +220,7 @@ impl<'a> Probe<'a> {
         commands: Range<usize>,
         effect: &'a FrameEffect,
         mut grid: Grid,
+        uncropped: bool,
     ) -> Option<Self> {
         if !drawing.transitions().is_empty() || !drawing.masks().is_empty() {
             return None;
@@ -161,15 +235,39 @@ impl<'a> Probe<'a> {
         let owner = group.owner.to_raw();
         let outer = Affine::new(grid.source_transform.map(f64::from_bits));
         let mut source = None;
+        let mut depth = 1;
+        let [x, y, width, height] = grid.source_scissor;
+        let mut region = super::scissor::Scissor {
+            x,
+            y,
+            width,
+            height,
+        };
+        let mut source_bounds = super::scissor::Scissor::full(grid.source_size);
         for command in &commands[1..commands.len() - 1] {
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => {}
-                FrameOp::Draw(FrameDraw::Fill {
-                    transform,
-                    brush_transform,
-                    brush: Brush::Image(brush),
-                    ..
-                }) if source.is_none() => {
+                FrameOp::PushGroup(group)
+                    if source.is_none() && super::scopes::source_over(group, false) =>
+                {
+                    depth += 1;
+                    if let Some(bounds) =
+                        super::scissor::Scissor::group_bounds(group, outer, grid.source_size, false)
+                    {
+                        region = region.intersect(bounds);
+                        source_bounds = source_bounds.intersect(bounds);
+                    }
+                }
+                FrameOp::PopGroup if source.is_some() && depth > 1 => depth -= 1,
+                FrameOp::Draw(
+                    draw @ FrameDraw::Fill {
+                        transform,
+                        brush_transform,
+                        brush: Brush::Image(brush),
+                        composite,
+                        ..
+                    },
+                ) if source.is_none() && (depth == 1 || composite.blend == Default::default()) => {
                     let (recording, local) = drawing.recording(command.origin)?;
                     if !recording.mask_path().is_empty() {
                         return None;
@@ -179,11 +277,19 @@ impl<'a> Probe<'a> {
                         scene: recording.root().upgrade()?,
                         local,
                         image: ImageProjection::new(brush, *transform, *brush_transform, outer),
+                        geometry: uncropped
+                            .then(|| geometry::image(drawing, draw, outer, grid.source_size))
+                            .flatten(),
+                        bounds: source_bounds,
                     }));
                 }
                 _ => return None,
             }
         }
+        if depth != 1 {
+            return None;
+        }
+        grid.source_scissor = [region.x, region.y, region.width, region.height];
         // The source matrix has been consumed by the exact geometry and
         // appearance projections above; all physical extents and scissors remain keyed.
         grid.source_transform = affine(Affine::IDENTITY);
@@ -191,16 +297,18 @@ impl<'a> Probe<'a> {
             source: source?,
             effect,
             grid,
+            required: None,
         })
     }
-    /// The token denotes an immutable, exclusively held previous effect result.
+    /// The token identifies the complete inputs of the preceding effect.
     pub(crate) fn from_output(token: Token, effect: &'a FrameEffect, mut grid: Grid) -> Self {
-        // The token already identifies the rendered source pixels.
+        // The preceding raster grid is already part of the content identity.
         grid.source_transform = affine(Affine::IDENTITY);
         Self {
             source: Source::Output(token),
             effect,
             grid,
+            required: None,
         }
     }
 }
@@ -213,19 +321,23 @@ pub(crate) struct Key {
     images: Vec<ResourceHandle>,
     bounds: [u64; 4],
     coverage_invert: bool,
+    resolution_scale: u64,
     grid: Grid,
     _storage: BudgetTicket,
 }
 impl Key {
     pub(crate) fn matches(&self, probe: &Probe<'_>) -> bool {
-        self.source == probe.source
-            && self.definition == probe.effect.definition
+        self.grid == probe.grid && self.dependencies_match(probe)
+    }
+    fn dependencies_match(&self, probe: &Probe<'_>) -> bool {
+        self.definition == probe.effect.definition
             && self.shader == probe.effect.shader
             && self.values == probe.effect.values
             && self.images == probe.effect.images
             && self.bounds == rect(probe.effect.bounds)
             && self.coverage_invert == probe.effect.coverage_invert
-            && self.grid == probe.grid
+            && self.resolution_scale == probe.effect.resolution_scale.to_bits()
+            && self.source == probe.source
     }
     fn same_family(&self, other: &Self) -> bool {
         self.source.same_family(&other.source) && self.definition == other.definition
@@ -256,6 +368,7 @@ impl Key {
             images: probe.effect.images.clone(),
             bounds: rect(probe.effect.bounds),
             coverage_invert: probe.effect.coverage_invert,
+            resolution_scale: probe.effect.resolution_scale.to_bits(),
             grid: probe.grid,
             _storage: storage,
         })
@@ -266,6 +379,9 @@ struct Entry<T> {
     key: Key,
     token: Token,
     output: Option<T>,
+    tail_only: bool,
+    #[cfg(any(feature = "gxm", test))]
+    warming: Option<[u32; 2]>,
     last_used: u64,
 }
 struct State<T> {
@@ -290,8 +406,9 @@ impl<T> Default for State<T> {
         }
     }
 }
-/// Optional results; output owners retain their original target reservations.
-/// Tokens never repeat within this renderer, including after eviction or clear.
+/// Content identity and optional pixels. Equal dependencies retain their token;
+/// changed or cleared producers receive a fresh token. Pixel owners keep their
+/// original target reservations independently of metadata observations.
 pub(crate) struct Cache<T>(std::sync::Mutex<State<T>>);
 impl<T> Default for Cache<T> {
     fn default() -> Self {
@@ -304,11 +421,18 @@ pub(crate) struct Candidate {
     /// New producers may retain immediately; changed producers first publish
     /// metadata until an identical dependency set recurs in a later candidate.
     pub(crate) retain: bool,
+    #[cfg(any(feature = "gxm", test))]
+    observed: bool,
 }
 pub(crate) struct Pending<T> {
     key: Key,
     pub(crate) token: Token,
     output: Option<T>,
+    replaces_source: bool,
+    eligible: bool,
+    tail_only: bool,
+    #[cfg(any(feature = "gxm", test))]
+    warming: Option<[u32; 2]>,
 }
 impl Candidate {
     pub(crate) fn finish<T>(self, output: T) -> Pending<T> {
@@ -317,7 +441,19 @@ impl Candidate {
             key: self.key,
             token: self.token,
             output: Some(output),
+            replaces_source: false,
+            eligible: self.retain,
+            tail_only: false,
+            #[cfg(any(feature = "gxm", test))]
+            warming: None,
         }
+    }
+    /// Retain a consumer proved reusable at its source entry, so publishing its
+    /// pixels can retire the preceding materialized input without replaying it.
+    pub(crate) fn finish_replacing_source<T>(self, output: T) -> Pending<T> {
+        let mut pending = self.finish(output);
+        pending.replaces_source = true;
+        pending
     }
     /// Publish only dependency identity, leaving this frame's pixels recyclable.
     pub(crate) fn observe<T>(self) -> Pending<T> {
@@ -325,25 +461,85 @@ impl Candidate {
             key: self.key,
             token: self.token,
             output: None,
+            replaces_source: false,
+            eligible: self.retain,
+            tail_only: false,
+            #[cfg(any(feature = "gxm", test))]
+            warming: None,
+        }
+    }
+}
+impl<T> Pending<T> {
+    /// Attach pixels still carrying this eligible producer's final write. The
+    /// caller pins their existing allocation through the producing submission.
+    pub(crate) fn materialize(&mut self, output: T, replaces_source: bool) {
+        assert!(
+            self.eligible && self.output.is_none(),
+            "eligible unpublished effect pixels"
+        );
+        self.output = Some(output);
+        self.replaces_source = replaces_source;
+        self.tail_only = true;
+        #[cfg(any(feature = "gxm", test))]
+        {
+            self.warming = None;
         }
     }
 }
 impl<T: Clone> Cache<T> {
+    /// A metadata-only cache cannot replace a source in this preparation.
+    pub(crate) fn has_outputs(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.output.is_some())
+    }
+    /// Resolve submitted content identity without requiring retained pixels.
+    /// Touching an observation preserves any existing materialized output.
+    pub(crate) fn lookup_content(&self, probe: &Probe<'_>) -> Option<Token> {
+        let mut state = self.0.lock().unwrap();
+        let anchor = probe.source.anchor();
+        let start = state
+            .entries
+            .partition_point(|entry| entry.key.source.anchor() < anchor);
+        let offset = state.entries[start..]
+            .iter()
+            .take_while(|entry| entry.key.source.anchor() == anchor)
+            .position(|entry| entry.key.matches(probe) || entry.key.covers(probe))?;
+        let submitted = state.submitted;
+        let entry = &mut state.entries[start + offset];
+        entry.last_used = submitted;
+        Some(entry.token)
+    }
+
     pub(crate) fn lookup(&self, probe: &Probe<'_>) -> Option<(Token, T)> {
         let mut state = self.0.lock().unwrap();
         let anchor = probe.source.anchor();
         let start = state
             .entries
             .partition_point(|entry| entry.key.source.anchor() < anchor);
-        let index = start
-            + state.entries[start..]
-                .iter()
-                .take_while(|entry| entry.key.source.anchor() == anchor)
-                .position(|entry| entry.key.matches(probe))?;
+        let range = &state.entries[start..];
+        let Some(offset) = range
+            .iter()
+            .take_while(|entry| entry.key.source.anchor() == anchor)
+            .position(|entry| entry.key.matches(probe) || entry.key.covers(probe))
+        else {
+            #[cfg(all(feature = "profiling", any(target_os = "vita", feature = "wgpu", test)))]
+            diagnostics::record(range, probe);
+            return None;
+        };
+        let index = start + offset;
         let submitted = state.submitted;
         let entry = &mut state.entries[index];
         entry.last_used = submitted;
-        let hit = (entry.token, entry.output.as_ref()?.clone());
+        let Some(output) = entry.output.as_ref() else {
+            #[cfg(all(feature = "profiling", any(target_os = "vita", feature = "wgpu", test)))]
+            diagnostics::record(std::slice::from_ref(entry), probe);
+            return None;
+        };
+        let hit = (entry.token, output.clone());
         #[cfg(test)]
         {
             state.hits[anchor.0 as usize] += 1;
@@ -377,14 +573,34 @@ impl<T: Clone> Cache<T> {
                 entry.key.source.same_family(&probe.source)
                     && entry.key.definition == probe.effect.definition
             });
-        let retain = previous.is_none_or(|entry| entry.key.matches(&probe));
+        let observed = previous.is_some_and(|entry| entry.key.matches(&probe));
+        let retain = previous.is_none() || observed;
         let family = previous.map_or(state.next, |entry| entry.token.1);
         let key = Key::new(probe, pool)?;
-        let token = Token(state.next, family);
-        state.next = state.next.checked_add(1)?;
-        Some(Candidate { key, token, retain })
+        let token = if observed {
+            previous.unwrap().token
+        } else {
+            let token = Token(state.next, family);
+            state.next = state.next.checked_add(1)?;
+            token
+        };
+        Some(Candidate {
+            key,
+            token,
+            retain,
+            #[cfg(any(feature = "gxm", test))]
+            observed,
+        })
     }
     pub(crate) fn publish(&self, pending: Pending<T>, pool: &BudgetPool) -> bool {
+        let consumed = match (
+            &pending.key.source,
+            &pending.output,
+            pending.replaces_source,
+        ) {
+            (Source::Output(token), Some(_), true) => Some(*token),
+            _ => None,
+        };
         let mut state = self.0.lock().unwrap();
         let anchor = pending.key.source.anchor();
         let start = state
@@ -437,9 +653,23 @@ impl<T: Clone> Cache<T> {
                 key: pending.key,
                 token: pending.token,
                 output: pending.output,
+                tail_only: pending.tail_only,
+                #[cfg(any(feature = "gxm", test))]
+                warming: pending.warming,
                 last_used: submitted,
             },
         );
+        // A retained consumer replaces this prefix's optional pixels. Keep its
+        // content identity for chain resolution; submitted readers own clones.
+        if let Some(token) = consumed
+            && let Some(input) = state.entries.iter_mut().find(|entry| entry.token == token)
+        {
+            input.output = None;
+            #[cfg(any(feature = "gxm", test))]
+            {
+                input.warming = None;
+            }
+        }
         true
     }
     /// Advance only after submission and inspect one optional result at a time.
@@ -474,9 +704,44 @@ impl<T: Clone> Cache<T> {
         state.metadata = None;
         state.cursor = 0;
     }
+    /// Return optional GPU owners and replacement requests while preserving
+    /// submitted content identities and raster evidence. Readers already
+    /// admitted by a candidate retain their independent clones.
+    #[cfg(any(feature = "wgpu", feature = "gxm", test))]
+    pub(crate) fn release_outputs(&self) {
+        let mut state = self.0.lock().unwrap();
+        for entry in &mut state.entries {
+            entry.output = None;
+            #[cfg(any(feature = "gxm", test))]
+            {
+                entry.warming = None;
+            }
+        }
+    }
+    /// Return sealed scratch pixels that this preparation did not select as
+    /// inputs. Submitted readers retain their own pins and content stays known.
+    pub(crate) fn release_tail_outputs(&self, mut keep: impl FnMut(Token) -> bool) -> usize {
+        let mut state = self.0.lock().unwrap();
+        let mut released = 0;
+        for entry in &mut state.entries {
+            if entry.tail_only && entry.output.is_some() && !keep(entry.token) {
+                entry.output = None;
+                #[cfg(any(feature = "gxm", test))]
+                {
+                    entry.warming = None;
+                }
+                released += 1;
+            }
+        }
+        #[cfg(feature = "profiling")]
+        crate::profiling::record_effect_input_event(
+            crate::profiling::EffectInputEvent::TailOutputsReleased,
+            released as u64,
+        );
+        released
+    }
     /// Release one optional pixel owner before retrying a required allocation.
     /// Keep its observation and family; submitted readers own their own clones.
-    #[cfg(any(feature = "gxm", test))]
     pub(crate) fn reclaim_output(&self) -> bool {
         let mut state = self.0.lock().unwrap();
         let Some(index) = state
@@ -490,6 +755,10 @@ impl<T: Clone> Cache<T> {
             return false;
         };
         state.entries[index].output = None;
+        #[cfg(any(feature = "gxm", test))]
+        {
+            state.entries[index].warming = None;
+        }
         true
     }
 }

@@ -357,9 +357,7 @@ pub(crate) fn allocate(
                     heap.ensure_bytes(crate::dependencies::BASE_BYTES)?;
                     Payload::Dependencies(Box::default())
                 }
-                Layout::Table if meta.kind == ObjectKind::Table => {
-                    Payload::Table(Values::default())
-                }
+                Layout::Table if meta.kind == ObjectKind::Table => Payload::Table(Table::default()),
                 Layout::Bytes
                     if matches!(
                         meta.kind,
@@ -553,7 +551,9 @@ pub(crate) fn connect(
                         heap.validate_host_flags(value)?;
                     }
                     let extra = match &heap.object(key)?.payload {
-                        Payload::Values(v) | Payload::Table(v) if v.len == offset => {
+                        Payload::Values(v) | Payload::Table(Table { values: v, .. })
+                            if v.len == offset =>
+                        {
                             Values::growth_bytes(v.len.into(), 1)
                         }
                         Payload::Dependencies(d) if d.values.len == offset => {
@@ -571,7 +571,9 @@ pub(crate) fn connect(
                     heap.charge(extra, chunks);
                     let obj = heap.objects.get_mut(key).unwrap();
                     match &mut obj.payload {
-                        Payload::Values(v) | Payload::Table(v) => v.push(value),
+                        Payload::Values(v) | Payload::Table(Table { values: v, .. }) => {
+                            v.push(value)
+                        }
                         Payload::Dependencies(d) => d.restore_push(value),
                         Payload::Cell(cell) => cell.value = Some(value),
                         Payload::Fault(fault) => fault.edges[offset as usize] = value,
@@ -607,7 +609,7 @@ pub(crate) fn validate(
         )));
     }
     if let Payload::Table(v) = &obj.payload
-        && v.len % 2 != 0
+        && v.values.len % 2 != 0
     {
         return Err(SnapshotError::Invalid("odd table payload".into()));
     }

@@ -285,6 +285,7 @@ impl Images {
         limits: crate::common::GpuLimits,
         item: &crate::common::image_plan::Required<'_>,
     ) -> Result<Pending, GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageAllocate);
         let source = item.source;
         let pixels = if source.pixel_byte_len().is_some() {
             Some(crate::common::image_plan::required_pixels(
@@ -406,6 +407,8 @@ impl Images {
                         native::TextureMemory::Main,
                     )?
                 };
+                let _transfer =
+                    reel_core::profile::Scope::new(reel_core::profile::Phase::ImageTransfer);
                 match descriptor.storage_layout {
                     reel_core::texture::TextureStorageLayout::Linear => {
                         gpu.upload_bc_texture(&texture, blocks.bytes())?
@@ -746,6 +749,8 @@ fn progress(
             let bytes = rows as usize * row;
             let data = scratch.get(&budgets.transient, limits.transient_bytes, bytes)?;
             let start = pending.row as usize * stride;
+            let conversion =
+                reel_core::profile::Scope::new(reel_core::profile::Phase::ImageConvert);
             for (source, target) in pixels[start..start + rows as usize * stride]
                 .as_chunks::<4>()
                 .0
@@ -759,12 +764,17 @@ fn progress(
                 );
                 target.copy_from_slice(&linear);
             }
+            drop(conversion);
+            let _transfer =
+                reel_core::profile::Scope::new(reel_core::profile::Phase::ImageTransfer);
             gpu.upload(texture, [0, pending.row], [size[0], rows], data, row)?;
             pending.row += rows;
             *quota = quota.saturating_sub(bytes as u64);
         } else {
             let start = pending.row as usize * stride;
             let span = (rows as usize - 1) * stride + row;
+            let _transfer =
+                reel_core::profile::Scope::new(reel_core::profile::Phase::ImageTransfer);
             if pending
                 .source
                 .texture_descriptor()

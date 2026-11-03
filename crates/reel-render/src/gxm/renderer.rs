@@ -35,6 +35,25 @@ struct CacheRetry {
     released: bool,
 }
 
+/// These errors name the shared temporary ledger that owns cache metadata.
+/// Native MAIN/CDRAM and target capacity failures retain dependency evidence.
+fn effect_metadata_pressure(error: &GpuError) -> bool {
+    match error {
+        GpuError::Shader { source, .. } => effect_metadata_pressure(source),
+        GpuError::Budget { domain, .. } | GpuError::Pressure { domain, .. } => matches!(
+            *domain,
+            "transient"
+                | "retained plan"
+                | "image plan"
+                | "target capacities"
+                | "geometry packing"
+                | "geometry"
+                | "mesh scratch"
+        ),
+        _ => false,
+    }
+}
+
 /// Device references and their shared resource admission limits.
 #[derive(Clone, Copy)]
 struct DeviceResources<'a> {
@@ -51,6 +70,8 @@ struct Flight {
     _images: Vec<Rc<Image>>,
     upload: bool,
     retained: Option<usize>,
+    #[cfg(feature = "profiling")]
+    trace: Option<crate::profiling::TraceLink>,
 }
 /// The renderer owns its native context; the host supplies only portable lifecycle
 /// and presentation callbacks. Submitted resources survive until their GPU fence.
@@ -83,6 +104,27 @@ pub struct Backend {
     drain_failed: bool,
 }
 impl Backend {
+    /// Clear immutable effect results for a controlled fixed-frame replay.
+    /// The probe drains submissions first; ordinary target and image pools stay
+    /// resident. This diagnostic changes cache reuse and is not a gameplay mode.
+    #[cfg(feature = "profiling")]
+    pub fn clear_effect_results_for_probe(&mut self) -> Result<(), GpuError> {
+        self.check_native()?;
+        if !self.flights.is_empty() || !self.events.is_empty() {
+            return Err(GpuError::Busy);
+        }
+        self.effect_results.clear();
+        self.check_native()?;
+        crate::profiling::record_trace(
+            crate::profiling::TraceKind::EffectCache,
+            crate::profiling::TraceData {
+                label: "probe-clear",
+                status: crate::profiling::TraceStatus::Ok,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    }
     /// Create the device and notify the host after display completion.
     /// The wake callback only signals the host; graphics work stays on this thread.
     /// Physical admission shares MAIN with CPU arenas and accounts CDRAM separately.
@@ -240,6 +282,7 @@ impl Backend {
     // A failed command can already have reached the device. Retire its owners
     // only after a successful drain; a failed drain makes this backend terminal.
     fn drain_error(&mut self) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::RenderDrain);
         let result = (|| {
             self.context.refresh();
             self.check_native()?;
@@ -281,7 +324,13 @@ impl Backend {
         {
             let cause = result.err().unwrap();
             let resident = self._group.usage().bytes;
-            self.effect_results.clear();
+            let metadata_pressure = effect_metadata_pressure(&cause);
+            if metadata_pressure {
+                self.effect_results.clear();
+                self.targets.groups.disable();
+            } else {
+                self.effect_results.release_outputs();
+            }
             self.targets.release_idle();
             self.coverage_targets.release_idle();
             self.check_native()?;
@@ -302,6 +351,9 @@ impl Backend {
                 }),
             );
             self.geometry.cpu_disabled = false;
+            if metadata_pressure {
+                self.targets.groups.clear();
+            }
             return self.resolve_pressure(result);
         }
         self.resolve_pressure(result)
@@ -541,6 +593,8 @@ impl Backend {
                 _images: touched,
                 upload: true,
                 retained: None,
+                #[cfg(feature = "profiling")]
+                trace: crate::profiling::trace_link(),
             });
             return Err(GpuError::Busy);
         }
@@ -593,13 +647,10 @@ impl Backend {
         ) {
             Ok(prepared) => {
                 if let Some(token) = prepared.retained {
-                    let storage = prepared.output.view.size();
                     self.retained.stage(
                         token,
                         prepared.output.clone(),
-                        self.context
-                            .target_layout(storage, native::TargetFormat::Rgba8)?
-                            .texture_bytes,
+                        prepared.output.view.allocated_bytes() as u64,
                     );
                     self.targets.clear();
                     self.coverage_targets.clear();
@@ -615,6 +666,41 @@ impl Backend {
             }
             Err((error, work)) => {
                 self.images.release_idle();
+                if error.is_memory_pressure() {
+                    reel_core::profile::count(if work.stream_started {
+                        reel_core::profile::Phase::RenderStreamPressure
+                    } else {
+                        reel_core::profile::Phase::RenderPreparationPressure
+                    });
+                    if !work.stream_started {
+                        self.context.refresh();
+                        if let Err(fault) = self.check_native() {
+                            self.failed_work.push(work);
+                            return Err(fault);
+                        }
+                        // Preparation has issued no draws. Native transfer leases
+                        // retain any glyph uploads independently of this work owner.
+                        drop(work);
+                        self.check_native()?;
+                        let fence = self.context.fence().map_err(native_error)?;
+                        if !fence.poll().map_err(native_error)? {
+                            // Give pending uploads the normal completion wakeup
+                            // needed for pressure reclamation and another attempt.
+                            self.flights.push_back(Flight {
+                                fence: Rc::new(fence),
+                                submission: None,
+                                _frame: frame.clone(),
+                                _prepared: None,
+                                _images: Vec::new(),
+                                upload: true,
+                                retained: None,
+                                #[cfg(feature = "profiling")]
+                                trace: crate::profiling::trace_link(),
+                            });
+                        }
+                        return Err(error);
+                    }
+                }
                 if let Err(fault) = self.drain_error() {
                     self.failed_work.push(work);
                     return Err(fault);
@@ -630,6 +716,7 @@ impl Backend {
         submission: Option<(SubmissionId, FrameId)>,
     ) -> Result<(Rc<replay::Prepared>, Rc<native::Fence>), GpuError> {
         let prepared = Rc::new(prepared);
+        let fence_timing = reel_core::profile::Scope::new(reel_core::profile::Phase::RenderFence);
         let fence = match self.context.fence() {
             Ok(fence) => Rc::new(fence),
             Err(error) => {
@@ -647,6 +734,7 @@ impl Backend {
             }
             return Err(error.into());
         }
+        drop(fence_timing);
         self.effect_results.submitted();
         for pending in prepared.take_effect_pending() {
             self.effect_results
@@ -660,6 +748,8 @@ impl Backend {
             _images: Vec::new(),
             upload: false,
             retained: prepared.retained,
+            #[cfg(feature = "profiling")]
+            trace: crate::profiling::trace_link(),
         });
         self.check_native()?;
         self.images.submitted();
@@ -770,43 +860,87 @@ impl RenderBackend for Backend {
         frame: &RenderFrame,
         before_present: impl FnOnce(),
     ) -> Result<PresentOutcome, GpuError> {
-        self.check_native()?;
-        if self.suspended {
-            return Ok(PresentOutcome::Skipped(SkipReason::Suspended));
-        }
-        let info = self.info.ok_or(GpuError::InvalidSurface)?;
-        if frame.surface_epoch() != info.surface_epoch
-            || frame.info().physical_size != info.physical_size
-        {
-            return Err(GpuError::WrongSurface);
-        }
-        let id = SubmissionId(self.next_submission);
-        let next = self
-            .next_submission
-            .checked_add(1)
-            .ok_or(GpuError::IdentityExhausted)?;
-        let prepared = match self.prepare(frame, info.physical_size, false) {
-            Err(GpuError::Preparing) => return Ok(PresentOutcome::Preparing),
-            result => result?,
-        };
-        if let Err(error) =
-            self.programs
-                .present(&self.context, &prepared.output, info.physical_size)
-        {
-            if let Err(fault) = self.drain_error() {
-                self.failed_prepared.push(Rc::new(prepared));
-                return Err(fault);
+        #[cfg(feature = "profiling")]
+        let trace = crate::profiling::TraceAttempt::begin(frame.frame_id());
+        let result = (|| {
+            self.check_native()?;
+            if self.suspended {
+                return Ok(PresentOutcome::Skipped(SkipReason::Suspended));
             }
-            return Err(error);
+            let info = self.info.ok_or(GpuError::InvalidSurface)?;
+            if frame.surface_epoch() != info.surface_epoch
+                || frame.info().physical_size != info.physical_size
+            {
+                return Err(GpuError::WrongSurface);
+            }
+            let id = SubmissionId(self.next_submission);
+            let next = self
+                .next_submission
+                .checked_add(1)
+                .ok_or(GpuError::IdentityExhausted)?;
+            #[cfg(feature = "profiling")]
+            let completion = crate::profiling::FrameCompletion::start();
+            #[cfg(feature = "profiling")]
+            let prepare_trace = crate::profiling::TracePass::begin("prepare", Default::default());
+            let preparation = self.prepare(frame, info.physical_size, false);
+            #[cfg(feature = "profiling")]
+            if let Some(trace) = prepare_trace {
+                use crate::profiling::{TraceData, TraceStatus};
+                let (status, data) = match &preparation {
+                    Ok(prepared) => (TraceStatus::Ok, prepared.output.trace_data()),
+                    Err(GpuError::Preparing | GpuError::Busy) => {
+                        (TraceStatus::Preparing, TraceData::default())
+                    }
+                    Err(_) => (TraceStatus::Error, TraceData::default()),
+                };
+                trace.finish(status, data);
+            }
+            let prepared = match preparation {
+                Err(GpuError::Preparing) => return Ok(PresentOutcome::Preparing),
+                result => result?,
+            };
+            if let Err(error) =
+                self.programs
+                    .present(&self.context, &prepared.output, info.physical_size)
+            {
+                if let Err(fault) = self.drain_error() {
+                    self.failed_prepared.push(Rc::new(prepared));
+                    return Err(fault);
+                }
+                return Err(error);
+            }
+            self.next_submission = next;
+            #[cfg(feature = "profiling")]
+            crate::profiling::trace_submission(id.0);
+            let (_, fence) = self.submit(frame, prepared, Some((id, frame.frame_id())))?;
+            #[cfg(feature = "profiling")]
+            if let Some(completion) = completion {
+                completion
+                    .complete(|timeout| fence.wait(timeout))
+                    .map_err(native_error)?;
+            }
+            #[cfg(not(feature = "profiling"))]
+            let _ = fence;
+            before_present();
+            {
+                let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Present);
+                self.context.present().map_err(native_error)?;
+            }
+            Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
+        })();
+        #[cfg(feature = "profiling")]
+        if let Some(trace) = trace {
+            use crate::profiling::{TraceData, TraceStatus};
+            let status = match &result {
+                Ok(PresentOutcome::PresentAccepted(_)) => TraceStatus::Ok,
+                Ok(PresentOutcome::Preparing) => TraceStatus::Preparing,
+                Ok(_) => TraceStatus::Skipped,
+                Err(GpuError::Preparing | GpuError::Busy) => TraceStatus::Preparing,
+                Err(_) => TraceStatus::Error,
+            };
+            trace.finish(status, TraceData::default());
         }
-        self.next_submission = next;
-        self.submit(frame, prepared, Some((id, frame.frame_id())))?;
-        before_present();
-        {
-            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Present);
-            self.context.present().map_err(native_error)?;
-        }
-        Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
+        result
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {
         self.images.prune(resources);
@@ -832,6 +966,24 @@ impl RenderBackend for Backend {
                 break;
             }
             let flight = self.flights.pop_front().unwrap();
+            #[cfg(feature = "profiling")]
+            if let Some(link) = flight.trace {
+                let mut data = flight
+                    ._prepared
+                    .as_ref()
+                    .map_or_else(crate::profiling::TraceData::default, |prepared| {
+                        prepared.output.trace_data()
+                    });
+                data.label = if flight.submission.is_some() {
+                    "final-flight-observed"
+                } else if flight.upload {
+                    "upload-flight-observed"
+                } else {
+                    "retained-flight-observed"
+                };
+                data.count = 1;
+                crate::profiling::trace_completed(link, data);
+            }
             if let Some(prepared) = &flight._prepared {
                 for (handle, image) in prepared.images() {
                     if !image.discard_pending.get() {

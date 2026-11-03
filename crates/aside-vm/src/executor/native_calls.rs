@@ -1,6 +1,12 @@
 //! Native callable binding, host tickets and continuations.
 use super::*;
 
+pub(super) struct CalleeRead<'a> {
+    pub(super) function: FunctionId,
+    pub(super) target: crate::heap::ObjectRead<'a>,
+    pub(super) script_receiver: Option<Value>,
+}
+
 impl Vm {
     /// Register a trusted callable host object. Its first native parameter is
     /// the object itself; argument binding and effects share ordinary calls.
@@ -11,10 +17,17 @@ impl Vm {
     }
 
     pub(super) fn callable_receiver(&self, value: Value) -> Result<Option<Value>, VmError> {
-        match self.heap.info(value)?.kind {
-            ObjectKind::BoundNative => Ok(Some(self.heap.get_field(value, 3)?)),
+        self.callable_receiver_from(value, self.heap.read_object(value)?)
+    }
+    pub(super) fn callable_receiver_from(
+        &self,
+        value: Value,
+        read: crate::heap::ObjectRead<'_>,
+    ) -> Result<Option<Value>, VmError> {
+        match read.kind() {
+            ObjectKind::BoundNative => Ok(Some(read.field(3)?)),
             ObjectKind::Host => {
-                self.heap.host_call(value)?;
+                read.host_call()?;
                 Ok(Some(value))
             }
             _ => Ok(None),
@@ -46,12 +59,61 @@ impl Vm {
         frame.member_symbol
     }
 
+    pub(super) fn host_binding_cost(&self, function: FunctionId) -> (u64, u64) {
+        let p = self.program.package();
+        let signature = p.functions[function.index()].signature;
+        let receiver = p.signatures[signature.index()].parameters[0].ty;
+        (
+            4 + self.type_checks.extra(receiver),
+            Values::allocation_bytes(4),
+        )
+    }
+
+    pub(super) fn host_binding_value(
+        &mut self,
+        host: Value,
+        function: FunctionId,
+        effects: Effects,
+    ) -> Result<Value, FaultKind> {
+        if effects.0 & Effects::ALLOCATE == 0 {
+            Err(FaultKind::Effect)
+        } else {
+            self.bind_native(host, function).map_err(vm_fault)
+        }
+    }
+
     /// Bind the receiver of an admitted native callable. The immutable value
     /// traces its receiver and shares ordinary native argument preparation.
     /// Live bindings may be reused through the bounded weak cache shared with
     /// script methods. Collected or
     /// GC-unconfirmed bindings are recreated instead of revived.
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub fn bind_native(&mut self, receiver: Value, function: FunctionId) -> Result<Value, VmError> {
+        #[cfg(feature = "profiling")]
+        let span = self
+            .step_costs
+            .start_part(step_costs::Part::MethodNativeError);
+        #[cfg(feature = "profiling")]
+        let hits = self.native_binding_hits;
+        let result = self.bind_native_inner(receiver, function);
+        #[cfg(feature = "profiling")]
+        self.step_costs.finish_part(
+            span,
+            Some(if result.is_err() {
+                step_costs::Part::MethodNativeError
+            } else if self.native_binding_hits != hits {
+                step_costs::Part::MethodNativeHit
+            } else {
+                step_costs::Part::MethodNativeMiss
+            }),
+        );
+        result
+    }
+    fn bind_native_inner(
+        &mut self,
+        receiver: Value,
+        function: FunctionId,
+    ) -> Result<Value, VmError> {
         self.validate_native_receiver(receiver, function)?;
         let receiver_key = receiver.object_parts().map(|(_, key)| key);
         if let Some(key) = receiver_key
@@ -60,7 +122,7 @@ impl Vm {
                 .get(method_bindings::MethodKey::native(key, function))
         {
             let value = Value::object(self.heap.id(), callable);
-            if self.heap.info(value).is_ok() {
+            if self.heap.read_object(value).is_ok() {
                 self.native_binding_hits += 1;
                 return Ok(value);
             }
@@ -141,7 +203,7 @@ impl Vm {
     /// The identity belongs to this verified program; no heap value crosses into
     /// a replacement VM. Hosts validate the entry's signature and context.
     pub fn unbound_function(&self, value: Value) -> Result<FunctionId, VmError> {
-        if self.heap.info(value)?.kind != ObjectKind::Closure {
+        if self.heap.read_object(value)?.kind() != ObjectKind::Closure {
             return Err(VmError::Contract("entry must be an unbound function"));
         }
         let function = self.closure_function(value)?;
@@ -155,24 +217,42 @@ impl Vm {
     }
 
     pub(super) fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
-        let closure = self.script_closure(closure)?;
-        let info = self.heap.info(closure)?;
-        if info.kind == ObjectKind::Host {
-            return Ok(self.heap.host_call(closure)?);
+        Ok(self.read_callee(closure)?.function)
+    }
+    pub(super) fn read_callee(&self, closure: Value) -> Result<CalleeRead<'_>, VmError> {
+        let target = self.heap.read_object(closure)?;
+        self.read_callee_from(closure, target)
+    }
+    pub(super) fn read_callee_from<'a>(
+        &'a self,
+        closure: Value,
+        target: crate::heap::ObjectRead<'a>,
+    ) -> Result<CalleeRead<'a>, VmError> {
+        let (closure, script_receiver) = self.script_closure_from(closure, target)?;
+        let read = if target.kind() == ObjectKind::BoundScript {
+            self.heap.read_object(closure)?
+        } else {
+            target
+        };
+        let kind = read.kind();
+        if kind == ObjectKind::Host {
+            return Ok(CalleeRead {
+                function: read.host_call()?,
+                target,
+                script_receiver,
+            });
         }
-        let bound = info.kind == ObjectKind::BoundNative;
-        if info.kind != ObjectKind::Closure && !bound {
+        let bound = kind == ObjectKind::BoundNative;
+        if kind != ObjectKind::Closure && !bound {
             return Err(VmError::Contract("callee is not a closure"));
         }
-        let fi = self
-            .heap
-            .get_field(closure, 0)?
+        let fi = read
+            .field(0)?
             .as_int()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(VmError::Contract("invalid closure code"))?;
-        let version = self
-            .heap
-            .get_field(closure, 1)?
+        let version = read
+            .field(1)?
             .as_int()
             .ok_or(VmError::Contract("invalid closure version"))? as u64;
         let f = self
@@ -182,13 +262,17 @@ impl Vm {
             .get(fi as usize)
             .ok_or(VmError::Contract("foreign closure code"))?;
         if version != self.program.package().content_version
-            || self.heap.get_field(closure, 2)?.as_int() != Some(f.module.0 as i64)
-            || info.len != f.captures.len() as u32 + 3 + u32::from(bound)
+            || read.field(2)?.as_int() != Some(f.module.0 as i64)
+            || read.len() != f.captures.len() as u32 + 3 + u32::from(bound)
             || (bound && !matches!(f.kind, FunctionKind::Native(_)))
         {
             return Err(VmError::Contract("foreign closure environment/version"));
         }
-        Ok(FunctionId(fi))
+        Ok(CalleeRead {
+            function: FunctionId(fi),
+            target,
+            script_receiver,
+        })
     }
     pub(super) fn argument_contract(&self, source: ArgSource, index: u32) -> Option<TypeId> {
         let ArgSource::CheckedCaller { contract, .. } = source else {
@@ -235,7 +319,7 @@ impl Vm {
                 let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
                     return Err(VmError::Contract("await argument source"));
                 };
-                Ok((Value::int(-1), self.slots.read(at(s.regs, value.0))?))
+                Ok((Value::int(-1), self.slots.read_vm(at(s.regs, value.0))?))
             }
             ArgSource::Caller { frame, descriptor }
             | ArgSource::CheckedCaller {
@@ -259,11 +343,11 @@ impl Vm {
                             .map_or(-1, |i| i64::from(desc.names[i].name.0));
                         Ok((
                             Value::int(name),
-                            self.slots.read(at(s.regs, w.start.0 + index))?,
+                            self.slots.read_vm(at(s.regs, w.start.0 + index))?,
                         ))
                     }
                     Arguments::Packed(r) => {
-                        let packed = self.slots.read(at(s.regs, r.0))?;
+                        let packed = self.slots.read_vm(at(s.regs, r.0))?;
                         Ok((
                             self.heap.get_field(packed, index * 2)?,
                             self.heap.get_field(packed, index * 2 + 1)?,
@@ -299,7 +383,22 @@ impl Vm {
     ) -> Result<(), VmError> {
         self.push_native_bound(native, source, count, site, None)
     }
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub(super) fn push_native_bound(
+        &mut self,
+        native: NativeId,
+        source: ArgSource,
+        count: u32,
+        site: NativeSite,
+        receiver: Option<Value>,
+    ) -> Result<(), VmError> {
+        part_cost!(
+            self.step_costs,
+            CallPushNative,
+            self.push_native_bound_inner(native, source, count, site, receiver)
+        )
+    }
+    fn push_native_bound_inner(
         &mut self,
         native: NativeId,
         source: ArgSource,
@@ -327,6 +426,7 @@ impl Vm {
         let NativeParameters {
             has_defaults,
             needs_cells,
+            ..
         } = self.native_parameters.data[native.index()];
         let argument_plan = if receiver.is_none() {
             if let ArgSource::Caller { frame, descriptor } = source {
@@ -434,6 +534,7 @@ impl Vm {
                 NativePhase::Copy { source, index: 0 }
             },
         }));
+        execution_count!(self, NativeFrames, 1);
         Ok(())
     }
     pub(super) fn positional_native_source(&self, source: ArgSource, count: u32) -> bool {

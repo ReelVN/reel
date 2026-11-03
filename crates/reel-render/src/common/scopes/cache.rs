@@ -268,7 +268,7 @@ mod tests {
             for index in 0..iterations {
                 let frame = &frames[index % frames.len()];
                 let proof = cached.then(|| cache.get(frame.drawing(), false, &budget).unwrap());
-                let (plan, bytes, _) = crate::common::offscreen::Plan::choose_with_groups(
+                let (plan, bytes, _, ()) = crate::common::offscreen::Plan::choose_with_groups(
                     frame,
                     None,
                     [960, 544],
@@ -283,6 +283,8 @@ mod tests {
                     crate::common::blend::DestinationAccess::Sampled,
                     &selection,
                     proof,
+                    None,
+                    |_, bytes| Ok((bytes, ())),
                     |_| {
                         allocations += 1;
                         Ok(())

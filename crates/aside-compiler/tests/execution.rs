@@ -2,6 +2,8 @@
 use aside_compiler::{AnalysisOptions, analyze_module, lowering, semantic::NoModules};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
+#[path = "execution/binding_reads.rs"]
+mod binding_reads;
 #[path = "execution/generators.rs"]
 mod generators;
 
@@ -1165,6 +1167,8 @@ mod sorting {
             });
             functions.push(function);
             support.natives.push(bc::NativeSupport {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol: symbol.into(),
                 abi_version: 1,
                 signature: contract,

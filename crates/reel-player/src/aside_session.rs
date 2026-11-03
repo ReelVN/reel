@@ -346,6 +346,11 @@ impl AsideSessionUi {
             .then(|| self.vm.activities_poll_after())
             .flatten()
     }
+    pub(crate) fn activities_deadline_after(&self) -> Option<std::time::Duration> {
+        (self.state == StoryState::Running)
+            .then(|| self.vm.activities_deadline_after())
+            .flatten()
+    }
     pub fn activities_pending(&self) -> bool {
         self.vm.activities_pending()
     }
@@ -355,15 +360,18 @@ impl AsideSessionUi {
         seconds: f64,
         work: u32,
     ) -> Result<reel_engine::aside::ActivityProgress, Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionActivity);
         if self.state != StoryState::Running {
             return Ok(Default::default());
         }
         Ok(self.vm.advance_time(self.ui.session(), seconds, work)?)
     }
     pub fn begin_collection(&mut self) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionGcBegin);
         Ok(self.vm.begin_collection()?)
     }
     pub fn gc_step(&mut self, budget: GcBudget) -> Result<GcProgress, Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionGc);
         Ok(self.vm.gc_step(budget)?)
     }
     pub fn widget(&self) -> SessionWidget {
@@ -380,11 +388,20 @@ impl AsideSessionUi {
         self.transitions.pending()
     }
     pub(crate) fn frame_ready(&self) -> bool {
-        (self.vm.stage_ready()
-            || (self.vm.virtual_feedback_ready()
-                && self.ui.permits_virtual_feedback(self.vm.stage())))
+        !self.skip_presentation_pending()
+            && (self.vm.stage_ready()
+                || (self.vm.virtual_feedback_ready()
+                    && self.ui.permits_virtual_feedback(self.vm.stage())))
             && !self.ui.images_block_presentation()
             && self.transitions.ready()
+    }
+    fn skip_presentation_pending(&self) -> bool {
+        self.state == StoryState::Running
+            && (self.ui.skip_reveal_pending()
+                || (self.ui.session().reading().skipping()
+                    && self.ui.session().view().interaction.is_none()
+                    && (self.vm.completion_pending(self.ui.session())
+                        || self.vm.main_task_runnable())))
     }
     pub fn record(
         &self,
@@ -392,6 +409,9 @@ impl AsideSessionUi {
         root: WidgetId,
         id: reel_core::identity::FrameId,
     ) -> Result<Option<(reel_ui::bridge::RecordedSource, RecordedProjection)>, Error> {
+        if self.skip_presentation_pending() {
+            return Ok(None);
+        }
         // sync can turn layout feedback into more reactive work. Do not record
         // that intermediate tree (for example an empty far-scroll window), or
         // mint a receipt that could complete a geometry/presentation barrier.

@@ -14,6 +14,7 @@ fn effect(width: f64, height: f64) -> FrameEffect {
         images: Vec::new(),
         bounds: Rect::new(0., 0., width, height),
         coverage_invert: false,
+        resolution_scale: 1.,
     }
 }
 fn dot32(row: [f32; 4], p: [f32; 2], fused: bool) -> f32 {
@@ -111,6 +112,130 @@ fn ill_conditioned_abi_coordinates_retain_the_full_source() {
             [128, 96]
         )
         .is_none()
+    );
+}
+
+#[test]
+fn physical_initialization_preserves_poisoned_padding_and_filter_neighbors() {
+    let mut saved = false;
+    for (size, storage) in [
+        ([509, 287], [544, 320]),
+        ([512, 288], [512, 288]),
+        ([997, 673], [1024, 704]),
+    ] {
+        let effect = effect(f64::from(size[0]), f64::from(size[1]));
+        let mut context = context(&effect, Affine::IDENTITY, size, size).unwrap();
+        map_storage(&mut context, size, storage);
+        let footprint = EffectSourceFootprint {
+            logical_halo: [30, 1, 30, 1],
+        };
+        for output in [
+            Scissor {
+                x: 65,
+                y: 49,
+                width: 19,
+                height: 13,
+            },
+            Scissor {
+                x: size[0] - 19,
+                y: size[1] - 13,
+                width: 19,
+                height: 13,
+            },
+            Scissor {
+                x: 0,
+                y: 0,
+                width: 19,
+                height: 13,
+            },
+        ] {
+            let edges = required_edges(&context, footprint, output, size).unwrap();
+            let draw = logical_rectangle(edges, size);
+            let initialize = initialization(edges, storage).unwrap();
+            saved |= initialize.width * initialize.height < storage[0] * storage[1];
+            assert_eq!(initialize.intersect(draw), draw);
+            assert!(initialize.tile_exact(32, storage));
+            for fused in [false, true] {
+                for y in output.y..output.y + output.height {
+                    for x in output.x..output.x + output.width {
+                        let p = [x as f32 + 0.5, y as f32 + 0.5];
+                        let uv = [dot32(context[0], p, fused), dot32(context[1], p, fused)];
+                        for tap in -30..=30 {
+                            let sampled = [
+                                (uv[0] + tap as f32 / context[4][2]).clamp(0., 1.),
+                                (uv[1] + (tap % 2) as f32 / context[4][3]).clamp(0., 1.),
+                            ];
+                            let texel: [f32; 2] = std::array::from_fn(|axis| {
+                                let half = 0.5 / context[5][axis + 2];
+                                let q = dot32(context[axis + 2], sampled, fused).clamp(
+                                    context[6][axis] + half,
+                                    context[6][axis] + context[6][axis + 2] - half,
+                                );
+                                q * storage[axis] as f32 - 0.5
+                            });
+                            // Model the actual repeat-addressed bilinear read.
+                            // Fresh raw geometry may leave any demanded pixel
+                            // transparent; old bytes outside the clear stay poison.
+                            let mut full = 0.;
+                            let mut partial = 0.;
+                            for dy in 0..2 {
+                                for dx in 0..2 {
+                                    let pixel = [
+                                        (texel[0].floor() as i32 + dx).rem_euclid(storage[0] as i32)
+                                            as u32,
+                                        (texel[1].floor() as i32 + dy).rem_euclid(storage[1] as i32)
+                                            as u32,
+                                    ];
+                                    let inside = |rect: Scissor| {
+                                        pixel[0] >= rect.x
+                                            && pixel[0] < rect.x + rect.width
+                                            && pixel[1] >= rect.y
+                                            && pixel[1] < rect.y + rect.height
+                                    };
+                                    let value = if inside(draw) && (pixel[0] + pixel[1]) % 3 == 0 {
+                                        ((pixel[0] * 17 + pixel[1] * 37) % 251) as f64 / 255.
+                                    } else {
+                                        0.
+                                    };
+                                    let fraction = texel.map(|v| f64::from(v - v.floor()));
+                                    let weight = if dx == 0 {
+                                        1. - fraction[0]
+                                    } else {
+                                        fraction[0]
+                                    } * if dy == 0 {
+                                        1. - fraction[1]
+                                    } else {
+                                        fraction[1]
+                                    };
+                                    full += value * weight;
+                                    partial +=
+                                        if inside(initialize) { value } else { 0.9375 } * weight;
+                                }
+                            }
+                            assert_eq!(
+                                full, partial,
+                                "size={size:?} storage={storage:?} output={output:?} initialize={initialize:?} tap={tap} texel={texel:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saved,
+        "interior demand must initialize fewer physical pixels"
+    );
+    // A conservative support interval crossing either repeat edge includes the
+    // opposite physical edge, rather than truncating it to the logical raster.
+    assert_eq!(
+        initialization([[-2., 34.], [65., 100.]], [193, 131]).unwrap(),
+        Scissor {
+            x: 0,
+            y: 64,
+            width: 193,
+            height: 64
+        }
     );
 }
 

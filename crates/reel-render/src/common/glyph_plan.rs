@@ -55,6 +55,7 @@ impl Plan {
         selection: &super::retained::Plan,
         prepare: &mut impl Prepare,
     ) -> Result<Self, GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphPrepare);
         let mut plan = Self::default();
         let mut streams = Vec::new();
         for frame in frames {

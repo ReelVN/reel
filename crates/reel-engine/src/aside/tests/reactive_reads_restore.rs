@@ -15,6 +15,21 @@ fn opening(){
     }); narrator("ready");
 }"#;
 
+fn nested_refresh(vm: &SessionVm, active: &mut Option<(aside_vm::executor::TaskId, u64)>) -> bool {
+    let Some(task) = vm.derived_task else {
+        *active = None;
+        return false;
+    };
+    let starts = vm.vm.stats().derived_starts;
+    match *active {
+        Some((previous, baseline)) if previous == task => starts > baseline,
+        _ => {
+            *active = Some((task, starts));
+            false
+        }
+    }
+}
+
 fn restore(session: &Session, vm: &SessionVm) -> (Session, SessionVm) {
     let mut capture = vm.snapshot_begin(session).unwrap();
     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
@@ -50,6 +65,7 @@ fn nested_reactive_read_restores_and_collects_after_each_nested_budget_boundary(
             .id;
         vm.click(&mut session, button).unwrap();
         let mut nested = false;
+        let mut active = None;
         let mut captures = 0;
         let mut work = 1;
         for _ in 0..20_000 {
@@ -64,6 +80,7 @@ fn nested_reactive_read_restores_and_collects_after_each_nested_budget_boundary(
                     || 0,
                 )
                 .unwrap();
+            nested |= nested_refresh(&vm, &mut active);
             match step {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     if let (Some(task), Some(output)) =
@@ -135,10 +152,11 @@ fn cancelling_nested_reactive_read_releases_both_capture_levels() {
             .id;
         vm.click(&mut session, button).unwrap();
         let mut nested = false;
+        let mut active = None;
         let mut stopped = false;
         let mut work = 1;
         for _ in 0..20_000 {
-            match vm
+            let step = vm
                 .step(
                     &mut session,
                     SessionBudget::Exact(SliceBudget {
@@ -148,8 +166,9 @@ fn cancelling_nested_reactive_read_releases_both_capture_levels() {
                     }),
                     || 0,
                 )
-                .unwrap()
-            {
+                .unwrap();
+            nested |= nested_refresh(&vm, &mut active);
+            match step {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     if let (Some(task), Some(output)) =
                         (vm.derived_task, vm.vm.reactive_output(ticket).unwrap())

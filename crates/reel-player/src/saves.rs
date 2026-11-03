@@ -23,7 +23,7 @@ use std::{
 type CaptureCursor<'a> = Option<SessionCapture<'a>>;
 self_cell::self_cell! {
     struct CaptureCell {
-        owner: AsideSessionUi,
+        owner: Box<AsideSessionUi>,
         #[not_covariant]
         dependent: CaptureCursor,
     }
@@ -34,15 +34,14 @@ pub(crate) struct Capture {
 }
 impl Capture {
     // Admission returns the original live driver without an extra allocation.
-    #[allow(clippy::result_large_err)]
-    pub fn new(driver: AsideSessionUi) -> Result<Self, (AsideSessionUi, AdapterError)> {
+    pub fn new(driver: Box<AsideSessionUi>) -> Result<Self, (Box<AsideSessionUi>, AdapterError)> {
         CaptureCell::try_new_or_recover(driver, |driver| driver.snapshot_begin().map(Some))
             .map(|cell| Self { cell, bytes: 0 })
     }
     pub fn owner(&self) -> &AsideSessionUi {
         self.cell.borrow_owner()
     }
-    pub fn cancel(self) -> AsideSessionUi {
+    pub fn cancel(self) -> Box<AsideSessionUi> {
         self.cell.into_owner()
     }
     pub fn step(&mut self, budget: SnapshotBudget) -> Result<bool, AdapterError> {
@@ -52,7 +51,7 @@ impl Capture {
         self.bytes += progress.bytes;
         Ok(progress.complete)
     }
-    pub fn finish(mut self) -> Result<(AsideSessionUi, SessionSnapshot), AdapterError> {
+    pub fn finish(mut self) -> Result<(Box<AsideSessionUi>, SessionSnapshot), AdapterError> {
         let snapshot = self
             .cell
             .with_dependent_mut(|_, cursor| cursor.take().unwrap().finish())?;
@@ -88,7 +87,7 @@ impl RuntimeSaves {
     }
 }
 pub(crate) struct Candidate {
-    pub driver: AsideSessionUi,
+    pub driver: Box<AsideSessionUi>,
     pub bridge: reel_ui::bridge::PresentationBridge,
     pub root: reel_ui::core::WidgetId,
 }
@@ -130,7 +129,7 @@ impl Candidate {
         )
         .map_err(|error| format!("restored stage layout: {error:?}"))?;
         Ok(Self {
-            driver,
+            driver: Box::new(driver),
             bridge,
             root,
         })

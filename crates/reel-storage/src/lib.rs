@@ -8,10 +8,11 @@ mod generation;
 use desktop as platform;
 #[cfg(target_os = "vita")]
 use generation as platform;
+#[cfg(target_os = "vita")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 /// A committed operation with any subsequent staging cleanup warning.
@@ -67,10 +68,36 @@ fn destination(target: &Path) -> io::Result<PathBuf> {
     Ok(parent.join(target.file_name().expect("normalized target filename")))
 }
 
+#[cfg(not(target_os = "vita"))]
+struct Staging {
+    path: PathBuf,
+    directory: Option<tempfile::TempDir>,
+}
+#[cfg(not(target_os = "vita"))]
+impl Staging {
+    fn new(parent: &Path) -> io::Result<Self> {
+        let directory = tempfile::Builder::new()
+            .prefix(".reel-stage-")
+            .tempdir_in(parent)?;
+        Ok(Self {
+            path: directory.path().to_owned(),
+            directory: Some(directory),
+        })
+    }
+    fn cleanup(&mut self) -> io::Result<()> {
+        self.directory
+            .take()
+            .expect("staging cleanup called once")
+            .close()
+    }
+}
+
+#[cfg(target_os = "vita")]
 struct Staging {
     path: PathBuf,
     owned: bool,
 }
+#[cfg(target_os = "vita")]
 impl Staging {
     fn new(parent: &Path) -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -105,6 +132,7 @@ impl Staging {
         Ok(())
     }
 }
+#[cfg(target_os = "vita")]
 impl Drop for Staging {
     fn drop(&mut self) {
         if self.owned {

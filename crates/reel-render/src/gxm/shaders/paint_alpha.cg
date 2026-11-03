@@ -1,0 +1,37 @@
+// Zero-gain RGB with proved premultiplied block-alpha source and vertex colors.
+// Coordinates retain float32; only bounded color and alpha use binary16.
+varying out half4 reel_output : COLOR;
+varying float4 fragment_position : WPOS;
+varying half4 v_color : TEXCOORD1;
+uniform float4 u_appearance[10];
+#ifndef REEL_OPAQUE_SOURCE
+varying float2 v_uv : TEXCOORD0;
+uniform sampler2D u_image : TEXUNIT0;
+#ifdef REEL_REGIONAL
+varying float4 v_window : TEXCOORD2;
+uniform float2 u_dimensions;
+#endif
+#endif
+#ifndef REEL_UNCLIPPED
+uniform float4 reel_clip_rect;
+#endif
+float3 linear_srgb(float3 x){return lerp(pow((x+0.055)/1.055,float3(2.4)),x/12.92,step(x,float3(0.04045)));}
+void main(){
+#ifndef REEL_UNCLIPPED
+ if(any(fragment_position.xy<reel_clip_rect.xy)||any(fragment_position.xy>=reel_clip_rect.zw))discard;
+#endif
+ half alpha=1.0;
+#ifndef REEL_OPAQUE_SOURCE
+#ifdef REEL_REGIONAL
+ float2 half_texel=0.5/u_dimensions,span=v_window.zw;
+ float2 inset=min(half_texel,span*0.5);
+ float2 uv=clamp(clamp(v_uv,v_window.xy+inset,v_window.xy+span-inset),half_texel,float2(1.0)-half_texel);
+ alpha=tex2D(u_image,uv).a;
+#else
+ alpha=tex2D(u_image,v_uv).a;
+#endif
+#endif
+ // Transfer decode depends only on uniforms and stays float32 in the secondary program.
+ half4 color=half4(linear_srgb(clamp(u_appearance[7].xyz,0.0,1.0)),1.0);
+ reel_output=color*alpha*v_color.a;
+}

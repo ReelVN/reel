@@ -172,26 +172,31 @@ pub struct SourcePosition {
 /// Borrows the source; indexes LF/CRLF lines once. Invalid byte boundaries return None.
 #[derive(Debug)]
 pub struct SourceMap<'a> {
-    source: &'a str,
-    lines: Vec<usize>,
+    _source: &'a str,
+    lines: line_index::LineIndex,
 }
 impl<'a> SourceMap<'a> {
     pub fn new(source: &'a str) -> Self {
-        let mut lines = vec![0];
-        lines.extend(source.match_indices('\n').map(|(i, _)| i + 1));
-        Self { source, lines }
+        Self {
+            _source: source,
+            lines: line_index::LineIndex::new(source),
+        }
     }
     pub fn position(&self, offset: usize) -> Option<SourcePosition> {
-        if !self.source.is_char_boundary(offset) {
-            return None;
-        }
-        let line = self.lines.partition_point(|&i| i <= offset) - 1;
-        let prefix = &self.source[self.lines[line]..offset];
+        let position = self
+            .lines
+            .try_line_col(u32::try_from(offset).ok()?.into())?;
         Some(SourcePosition {
-            line,
-            byte_column: prefix.len(),
-            scalar_column: prefix.chars().count(),
-            utf16_column: prefix.encode_utf16().count(),
+            line: position.line as usize,
+            byte_column: position.col as usize,
+            scalar_column: self
+                .lines
+                .to_wide(line_index::WideEncoding::Utf32, position)?
+                .col as usize,
+            utf16_column: self
+                .lines
+                .to_wide(line_index::WideEncoding::Utf16, position)?
+                .col as usize,
         })
     }
 }

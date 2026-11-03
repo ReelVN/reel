@@ -398,6 +398,8 @@ fn model_indices_share_bind_locations_and_replace_derived_dependencies() {
     let support = bc::RuntimeSupport {
         natives: ["model", "derive"]
             .map(|name| bc::NativeSupport {
+                standard_derived_commit: false,
+                read_only_leaf: None,
                 symbol: name.into(),
                 abi_version: 1,
                 signature: signature.clone(),

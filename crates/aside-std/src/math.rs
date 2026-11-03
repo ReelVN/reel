@@ -2,7 +2,7 @@
 use crate::{NativeError, StandardLibrary};
 use aside_host::aside_vm::{
     Heap, HeapError, Value,
-    bytecode::{BuiltinType, Effects},
+    bytecode::{BuiltinType, Effects, ReadOnlyLeaf},
 };
 use aside_host::{CallContext, FromValue, NativeBinding, native};
 
@@ -30,14 +30,20 @@ impl FromValue for Number {
 
 macro_rules! unary {
     ($($(#[doc = $doc:tt])* $name:ident, $symbol:tt, $method:ident);* $(;)?) => {$ (
+        impl Number {
+            fn $name(self) -> f64 { self.0.$method() }
+        }
         $(#[doc = $doc])*
         /// Accept int or float, converting integer input to float64. Return float.
-        #[native(symbol = $symbol, abi = 1, effects = Effects(0))]
+        #[native(symbol = $symbol, abi = 1, effects = Effects(0),
+            read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+                Number::read(args[0]).ok().map(|value| Value::float(value.$name()))
+            } })]
         fn $name(
             #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
             #[aside(doc_type = aside_host::source::number())] value: Number,
         ) -> Result<f64, NativeError> {
-            Ok(value.0.$method())
+            Ok(value.$name())
         }
     )*};
 }
@@ -78,37 +84,58 @@ unary! {
     degrees, "std::math::degrees", to_degrees;
 }
 
+impl Number {
+    fn atan2(self, x: Self) -> f64 {
+        self.0.atan2(x.0)
+    }
+    fn hypot(self, y: Self) -> f64 {
+        self.0.hypot(y.0)
+    }
+    fn pow(self, exponent: Self) -> f64 {
+        self.0.powf(exponent.0)
+    }
+}
+
 /// Return the signed angle of `(x, y)` in radians, preserving the quadrant.
 /// Accept int or float inputs, converting integers to float64. Return float.
-#[native(symbol = "std::math::atan2", abi = 1, effects = Effects(0))]
+#[native(symbol = "std::math::atan2", abi = 1, effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        Some(Value::float(Number::read(args[0]).ok()?.atan2(Number::read(args[1]).ok()?)))
+    } })]
 fn atan2(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
     #[aside(doc_type = aside_host::source::number())] y: Number,
     #[aside(doc_type = aside_host::source::number())] x: Number,
 ) -> Result<f64, NativeError> {
-    Ok(y.0.atan2(x.0))
+    Ok(y.atan2(x))
 }
 
 /// Return the Euclidean length of `(x, y)` with scaled intermediate arithmetic.
 /// Accept int or float inputs, converting integers to float64. Return float.
-#[native(symbol = "std::math::hypot", abi = 1, effects = Effects(0))]
+#[native(symbol = "std::math::hypot", abi = 1, effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        Some(Value::float(Number::read(args[0]).ok()?.hypot(Number::read(args[1]).ok()?)))
+    } })]
 fn hypot(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
     #[aside(doc_type = aside_host::source::number())] x: Number,
     #[aside(doc_type = aside_host::source::number())] y: Number,
 ) -> Result<f64, NativeError> {
-    Ok(x.0.hypot(y.0))
+    Ok(x.hypot(y))
 }
 
 /// Raise `base` to `exponent`, returning a float.
 /// Accept int or float inputs, converting integers to float64.
-#[native(symbol = "std::math::pow", abi = 1, effects = Effects(0))]
+#[native(symbol = "std::math::pow", abi = 1, effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        Some(Value::float(Number::read(args[0]).ok()?.pow(Number::read(args[1]).ok()?)))
+    } })]
 fn pow(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
     #[aside(doc_type = aside_host::source::number())] base: Number,
     #[aside(doc_type = aside_host::source::number())] exponent: Number,
 ) -> Result<f64, NativeError> {
-    Ok(base.0.powf(exponent.0))
+    Ok(base.pow(exponent))
 }
 
 /// Convert a number to int, truncating fractional values toward zero.
@@ -122,11 +149,18 @@ fn pow(
 ///     if index != 25 || to_int(-2.9) != -2 { throw "conversion"; }
 /// }
 /// ```
-#[native(symbol = "std::math::to_int", abi = 1, effects = Effects(0))]
+#[native(symbol = "std::math::to_int", abi = 1, effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        to_int_value(args[0]).ok().map(Value::int)
+    } })]
 fn to_int(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
     #[aside(doc_type = aside_host::source::number())] value: Value,
 ) -> Result<i64, NativeError> {
+    to_int_value(value)
+}
+
+fn to_int_value(value: Value) -> Result<i64, NativeError> {
     if let Some(integer) = value.as_int() {
         return Ok(integer);
     }

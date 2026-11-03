@@ -635,6 +635,22 @@ pub(in crate::aside) fn font_weight(value: Value) -> Result<f64, AdapterError> {
 pub(in crate::aside) fn validate_font_weight(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(font_weight(value))
 }
+pub(in crate::aside) fn validate_effect_resolution_scale(
+    _: &Heap,
+    value: Value,
+) -> Result<(), HeapError> {
+    validation(effect_resolution_scale(value).map(|_| ()))
+}
+fn effect_resolution_scale(value: Value) -> Result<f64, AdapterError> {
+    let scale = number(value)?;
+    if scale > 0. && scale <= 1. {
+        Ok(scale)
+    } else {
+        Err(AdapterError::Input(
+            "effect_resolution_scale must be in (0, 1]",
+        ))
+    }
+}
 pub(in crate::aside) fn text_spacing(value: Value) -> Result<f64, AdapterError> {
     let spacing = number(value)?;
     if (spacing as f32).is_finite() {
@@ -889,6 +905,9 @@ pub(super) fn read_props(
     };
     let mut props = NodeProps {
         effect,
+        effect_resolution_scale: effect_resolution_scale(get(
+            NodeProperty::EffectResolutionScale,
+        )?)?,
         mask_effect,
         flex: nonnegative(get(NodeProperty::Flex)?)?,
         x: number(get(NodeProperty::X)?)?,

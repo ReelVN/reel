@@ -197,11 +197,11 @@ impl Vm {
                 .map_err(heap_fault)
         } else if let Some(parameter) = sig.parameters.get(parameter as usize) {
             let ty = parameter.ty;
-            match self.slots.read(at(bound, slot)) {
+            match self.slots.read_vm(at(bound, slot)) {
                 Ok(_) => Err(FaultKind::DuplicateArgument),
                 Err(HeapError::UninitializedSlot) => self.check_type(ty, value).and_then(|()| {
                     self.slots
-                        .write(&mut self.heap, at(bound, slot), value)
+                        .write_vm(&mut self.heap, at(bound, slot), value)
                         .map_err(heap_fault)
                 }),
                 Err(e) => Err(heap_fault(e)),

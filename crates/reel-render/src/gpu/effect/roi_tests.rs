@@ -24,6 +24,8 @@ use reel_ui::{
     stage::effect::*,
 };
 use std::sync::Arc;
+#[path = "source_crop_tests.rs"]
+mod source_crop_tests;
 
 fn node(nodes: &mut Vec<EffectNode>, ty: EffectType, op: EffectOp) -> EffectNodeId {
     let id = EffectNodeId(nodes.len() as u32);
@@ -190,6 +192,7 @@ fn chain(proved: bool) -> (RenderFrame, PresentationBridge) {
             images: Vec::new(),
             bounds: Rect::new(0., 0., 1528., 1528.),
             coverage_invert: false,
+            resolution_scale: 1.,
         });
         parent
             .inner

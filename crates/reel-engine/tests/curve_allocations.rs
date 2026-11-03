@@ -142,7 +142,10 @@ fn scalar_curve_reactive_sampling_cost() {
                 stats.reallocations,
                 vm.vm().heap().stats().chunk_allocations - chunks
             );
-            assert_eq!(samples, if native { visible * 120 } else { 0 });
+            assert_eq!(
+                samples, 0,
+                "pure curve samples execute without a host continuation"
+            );
             let values: Vec<_> = vm
                 .stage()
                 .nodes()

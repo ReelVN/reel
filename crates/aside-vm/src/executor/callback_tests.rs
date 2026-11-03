@@ -74,6 +74,8 @@ fn program(encoded: bool) -> (VerifiedProgram, RuntimeSupport) {
         capabilities: vec!["host.echo".into()],
         opcodes: vec![],
         natives: vec![NativeSupport {
+            standard_derived_commit: false,
+            read_only_leaf: None,
             symbol: "host::echo".into(),
             abi_version: 1,
             signature: p.signatures[0].clone(),

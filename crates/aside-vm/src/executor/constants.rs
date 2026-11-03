@@ -27,9 +27,10 @@ impl Vm {
             Const::FloatBits(bits) => Some(Value::float(f64::from_bits(*bits))),
             _ => {
                 let value = self.constant_cache.data[id.index()];
-                // info rejects stale generations, dying objects and objects
+                // Object resolution rejects stale generations, dying objects and objects
                 // not confirmed alive after the incremental GC cutoff.
-                (value.tag() == ValueTag::Object && self.heap.info(value).is_ok()).then_some(value)
+                (value.tag() == ValueTag::Object && self.heap.read_object(value).is_ok())
+                    .then_some(value)
             }
         }
     }

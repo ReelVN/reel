@@ -92,34 +92,40 @@ impl Media {
             }
         }
     }
-    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+    pub(super) fn snapshot_records(
+        &self,
+    ) -> Result<super::snapshot::RecordStream<'_>, AdapterError> {
         use super::snapshot::{Part, Record};
-        Box::new(
-            self.live
-                .iter()
-                .map(|entry| {
-                    let playback = if entry.result.is_some() {
-                        None
-                    } else {
-                        Some(
-                            self.backend
-                                .as_ref()
-                                .ok_or(AdapterError::Input("media backend missing"))?
-                                .snapshot(entry.id)
-                                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?,
-                        )
-                    };
-                    Record::new(
-                        Part::Media,
-                        &SavedMedia {
-                            root: entry.root,
-                            pending_start: entry.pending_start,
-                            target: entry.target,
-                            playback,
-                            result: entry.result.clone(),
-                        },
+        // Sample transport state before the incremental VM capture. Native audio
+        // continues playing while the remaining immutable session is serialized.
+        let captured = self
+            .live
+            .iter()
+            .map(|entry| {
+                let playback = if entry.result.is_some() {
+                    None
+                } else {
+                    Some(
+                        self.backend
+                            .as_ref()
+                            .ok_or(AdapterError::Input("media backend missing"))?
+                            .snapshot(entry.id)
+                            .map_err(aside_vm::snapshot::SnapshotError::Invalid)?,
                     )
+                };
+                Ok(SavedMedia {
+                    root: entry.root,
+                    pending_start: entry.pending_start,
+                    target: entry.target,
+                    playback,
+                    result: entry.result.clone(),
                 })
+            })
+            .collect::<Result<Vec<_>, AdapterError>>()?;
+        Ok(Box::new(
+            captured
+                .into_iter()
+                .map(|entry| Record::new(Part::Media, &entry))
                 .chain(
                     self.cues
                         .iter()
@@ -160,7 +166,7 @@ impl Media {
                         .iter()
                         .map(|wait| Record::new(Part::MediaWait, wait)),
                 ),
-        )
+        ))
     }
     pub(super) fn restore_record(
         &mut self,
@@ -433,6 +439,8 @@ impl SessionVm {
             backend.resume();
         }
     }
+    /// Collect transport progress and request a reactive sampling turn when a
+    /// frame, cue, waiter or unpublished terminal result needs delivery.
     pub fn maintain_media(&mut self) -> Result<bool, AdapterError> {
         let now = self.logical_time();
         let elapsed = std::time::Duration::from_secs_f64((now - self.media.last_time).max(0.));
@@ -514,7 +522,13 @@ impl SessionVm {
             }
             self.media.poster_cursor += 1;
         }
-        Ok(changed | self.settle_media_cues()? | self.complete_media_waits()?)
+        // Terminal delivery happens at the reactive sampling boundary. Request
+        // that turn even for sounds with no waiter; an immediate poll alone
+        // would keep waking the host without advancing the pending result.
+        Ok(changed
+            | self.settle_media_cues()?
+            | self.complete_media_waits()?
+            | (self.media.pending_terminals != 0))
     }
     fn complete_media_waits(&mut self) -> Result<bool, AdapterError> {
         let mut woke = false;

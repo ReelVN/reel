@@ -87,8 +87,83 @@ pub enum Phase {
     UiImageTiles,
     /// Apply a stage view to the retained widget tree.
     UiWidgetSync,
+    /// Incremental VM collection driven by the session scheduler.
+    SessionGc,
+    /// Session activity/time updates, including bounded animation graph work.
+    SessionActivity,
+    /// Task selection/maintenance and VM slices; excludes later host dispatch.
+    SessionSchedule,
+    /// Project VM node properties into the authored stage; nested in its caller.
+    StageProperties,
+    /// Synchronous session diagnostic formatting and stderr output, nested in Session.
+    SessionDiagnostics,
+    /// Complete backend render/present call, including its nested preparation and submission.
+    RenderSubmission,
+    /// Session host maintenance before clock and interpreter work; may contain nested services.
+    SessionMaintenance,
+    /// Begin a VM collection; incremental collection slices use SessionGc.
+    SessionGcBegin,
+    /// Poll media and deliver its session completions, nested in SessionMaintenance.
+    SessionMedia,
+    /// Advance save requests and storage completions, nested in SessionMaintenance.
+    SessionSaves,
+    /// Poll localization and script asset reads, nested in SessionMaintenance.
+    SessionAssets,
+    /// End the final scene and publish its completion fence; may wait for driver capacity.
+    RenderFence,
+    /// Native draw call wall time, including driver backpressure.
+    DriverDraw,
+    /// Native clear call wall time, including driver backpressure.
+    DriverClear,
+    /// Main-thread diagnostic collection and recording.
+    Observer,
+    /// Successfully admitted ordered effect chains; instantaneous count.
+    MacrotileChain,
+    /// Effect outputs selected from ordered macrotile cells; instantaneous count.
+    MacrotilePass,
+    /// Error recovery waiting for all native graphics, transfer and display work.
+    RenderDrain,
+    /// Physical pressure before drawing begins; instantaneous count.
+    RenderPreparationPressure,
+    /// Physical pressure after drawing begins; instantaneous count.
+    RenderStreamPressure,
+    /// Scratch acquisitions during drawing beyond the prepared set; instantaneous count.
+    TargetUnplanned,
+    /// Rebuilding an equal-capacity scratch view; includes scheduling metadata,
+    /// without allocating color storage. Counts attempts, including failures.
+    TargetReshape,
+    /// Settle widget mutations, layout, transforms and input state.
+    UiRewrite,
+    /// Measure and arrange dirty widget subtrees, nested in UiRewrite.
+    UiLayout,
+    /// Update widget transforms and clipping, nested in UiRewrite.
+    UiCompose,
+    /// Record retained widget paint commands.
+    UiPaint,
+    /// Capture or reuse candidate input/layout geometry.
+    UiGeometry,
+    /// Resolve image metadata and resource leases in a stage projection.
+    UiImageResolve,
+    /// Prepare glyph residency and measured group ink before replay.
+    GlyphPrepare,
+    /// Look up or construct drawable geometry during replay, including nested draws.
+    GeometryPrepare,
+    /// Prepare image storage and metadata, including nested pixel transfers.
+    ImageAllocate,
+    /// Transfer prepared image pixels into native texture storage.
+    ImageTransfer,
+    /// Convert source pixels to the backend's upload encoding.
+    ImageConvert,
+    /// Select reusable geometry buffers and upload changed vertex/index ranges.
+    GeometryUpload,
+    /// Pack ordered geometry segments into a backend upload layout.
+    GeometryPack,
+    /// Resolve paint programs, uniforms and state, including nested driver calls.
+    DrawPrepare,
+    /// Record invalidated widget paint; excludes traversal of cached widgets.
+    UiPaintRecord,
 }
-pub const NAMES: [&str; 56] = [
+pub const NAMES: [&str; 93] = [
     "input",
     "tick",
     "session",
@@ -145,6 +220,43 @@ pub const NAMES: [&str; 56] = [
     "ui_image_requests",
     "ui_image_tiles",
     "ui_widget_sync",
+    "session_gc",
+    "session_activity",
+    "session_schedule",
+    "stage_properties",
+    "session_diagnostics",
+    "render_submission",
+    "session_maintenance",
+    "session_gc_begin",
+    "session_media",
+    "session_saves",
+    "session_assets",
+    "render_fence",
+    "driver_draw",
+    "driver_clear",
+    "observer",
+    "macrotile_chain",
+    "macrotile_pass",
+    "render_drain",
+    "render_preparation_pressure",
+    "render_stream_pressure",
+    "target_unplanned",
+    "target_reshape",
+    "ui_rewrite",
+    "ui_layout",
+    "ui_compose",
+    "ui_paint",
+    "ui_geometry",
+    "ui_image_resolve",
+    "glyph_prepare",
+    "geometry_prepare",
+    "image_allocate",
+    "image_transfer",
+    "image_convert",
+    "geometry_upload",
+    "geometry_pack",
+    "draw_prepare",
+    "ui_paint_record",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.
@@ -181,21 +293,52 @@ pub struct Scope {
     start: std::time::Instant,
     #[cfg(feature = "profiling")]
     phase: Phase,
+    #[cfg(feature = "profiling")]
+    thread: Option<thread::Probe>,
+    #[cfg(feature = "profiling")]
+    wall: Option<wall::Token>,
+    #[cfg(feature = "profiling")]
+    counted: bool,
+    #[cfg(feature = "profiling")]
+    owner: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl Scope {
     #[inline]
     pub fn new(phase: Phase) -> Self {
+        #[cfg(feature = "profiling")]
+        let start = std::time::Instant::now();
         #[cfg(not(feature = "profiling"))]
         let _ = phase;
         let scope = Self {
             #[cfg(feature = "profiling")]
-            start: std::time::Instant::now(),
+            start,
             #[cfg(feature = "profiling")]
             phase,
+            #[cfg(feature = "profiling")]
+            thread: thread::Probe::begin(phase),
+            #[cfg(feature = "profiling")]
+            wall: wall::begin(phase, start),
+            #[cfg(feature = "profiling")]
+            counted: true,
+            #[cfg(feature = "profiling")]
+            owner: std::marker::PhantomData,
         };
         #[cfg(feature = "profiling")]
         enabled::begin(phase, scope.start);
         scope
+    }
+
+    /// Finish this interval, adding a call only when `completed` is true.
+    /// Both outcomes retain elapsed duration and close thread/wall accounting;
+    /// ordinary scope destruction continues to count one call unconditionally.
+    #[inline]
+    pub fn finish_counted(mut self, completed: bool) {
+        #[cfg(feature = "profiling")]
+        {
+            self.counted = completed;
+        }
+        #[cfg(not(feature = "profiling"))]
+        let _ = (&mut self, completed);
     }
 }
 #[cfg(not(feature = "profiling"))]
@@ -318,9 +461,19 @@ mod enabled {
 
     impl Drop for Scope {
         fn drop(&mut self) {
+            if let Some(probe) = self.thread.take() {
+                probe.finish();
+            }
             let index = self.phase as usize;
-            MICROS[index].fetch_add(self.start.elapsed().as_micros() as u64, Ordering::Relaxed);
-            CALLS[index].fetch_add(1, Ordering::Relaxed);
+            let end = std::time::Instant::now();
+            wall::end(self.wall.take(), end);
+            MICROS[index].fetch_add(
+                end.duration_since(self.start).as_micros() as u64,
+                Ordering::Relaxed,
+            );
+            if self.counted {
+                CALLS[index].fetch_add(1, Ordering::Relaxed);
+            }
             if tracked(self.phase) {
                 ACTIVE[index].fetch_sub(1, Ordering::Relaxed);
             }
@@ -384,3 +537,48 @@ mod enabled {
 }
 #[cfg(feature = "profiling")]
 pub use enabled::{GeometryUploads, RetainedCache, Sample};
+
+#[cfg(feature = "profiling")]
+mod wall;
+#[cfg(feature = "profiling")]
+pub use wall::{WallRecording, WallSnapshot};
+
+#[cfg(feature = "profiling")]
+mod thread;
+#[cfg(feature = "profiling")]
+pub use thread::{
+    METRICS as THREAD_METRICS, PHASES as THREAD_PHASES, ThreadCost, ThreadSnapshot, ThreadTime,
+    install_thread_clock,
+};
+
+#[cfg(all(test, feature = "profiling"))]
+mod counted_scope_tests {
+    use super::*;
+
+    #[test]
+    fn failed_interval_keeps_time_without_counting_success_or_leaking_wall_scope() {
+        let _recording = WallRecording::start().unwrap();
+        let before_wall = WallSnapshot::capture().unwrap();
+        let before = Sample::snapshot();
+        let phase = Phase::TargetReshape;
+        let failed = Scope::new(phase);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        failed.finish_counted(false);
+        Scope::new(phase).finish_counted(true);
+        drop(Scope::new(phase));
+        let delta = Sample::snapshot().delta(before);
+        assert_eq!(delta.calls[phase as usize], 2);
+        assert!(delta.micros[phase as usize] > 0);
+        assert!(Sample::active()[phase as usize].is_none());
+        let wall = WallSnapshot::capture()
+            .unwrap()
+            .checked_delta(&before_wall)
+            .unwrap();
+        assert_eq!(wall.calls[phase as usize], 3);
+        assert_eq!(wall.errors, 0);
+        assert_eq!(
+            wall.wall_ns,
+            wall.nanos.iter().sum::<u64>() + wall.unscoped_ns + wall.lost_ns
+        );
+    }
+}

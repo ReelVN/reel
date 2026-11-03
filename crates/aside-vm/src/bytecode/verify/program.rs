@@ -392,7 +392,16 @@ pub(super) fn validate_program(
     parameter_layouts.release(&mut b);
     let native_calls = native_calls::build(p, &native_parameter_cells, &mut b)?;
     let compact_derived = compact_derived::build(p, &mut b)?;
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    let scalar_suffixes = scalar_suffixes::build(p, &mut b)?;
+    let scalar_entries = scalar_entry::build(p, &mut b)?;
+    #[cfg(not(any(test, feature = "vm-validation-oracle")))]
+    let scalar_suffix_bytes = 0;
+    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    let scalar_suffix_bytes = scalar_suffixes.capacity_bytes();
     let derived_capacity_bytes = compact_derived.capacity() * size_of::<u32>()
+        + scalar_suffix_bytes
+        + scalar_entries.capacity_bytes()
         + native_calls.capacity_bytes()
         + native_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>()
         + script_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>()
@@ -423,6 +432,9 @@ pub(super) fn validate_program(
             member_symbols,
             native_calls,
             compact_derived,
+            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            scalar_suffixes,
+            scalar_entries,
         },
     ))
 }

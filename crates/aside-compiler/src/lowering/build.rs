@@ -4,6 +4,7 @@ mod classes;
 mod collections;
 mod composition;
 pub(super) mod constants;
+mod demand;
 mod expansions;
 mod expressions;
 mod functions;
@@ -22,6 +23,7 @@ use crate::{
     hir::{self as h, Form, HirKind as H},
 };
 use aside_vm::bytecode as bc;
+use demand::Demand;
 use std::borrow::Cow;
 
 /// Admit the VM's editable clone and its temporary PC-remapping workspace.

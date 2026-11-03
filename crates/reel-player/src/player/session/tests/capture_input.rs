@@ -127,7 +127,13 @@ fn capture_routes_noop_input_and_preserves_authored_action_thresholds() {
         };
         // Accept the input scope through CPU geometry; no pixels are captured.
         for _ in 0..1000 {
-            window.tick(SliceBudget::default(), || 0).unwrap();
+            window
+                .tick(
+                    SliceBudget::default(),
+                    crate::story_runtime::FrameProduction::Ready,
+                    || 0,
+                )
+                .unwrap();
             window.sync(&mut bridge, root).unwrap();
             if !window.needs_tick() {
                 break;
@@ -187,7 +193,11 @@ fn capture_routes_noop_input_and_preserves_authored_action_thresholds() {
         }
         for _ in 0..1000 {
             window
-                .tick(SliceBudget::default(), || 1_000_000_000)
+                .tick(
+                    SliceBudget::default(),
+                    crate::story_runtime::FrameProduction::Ready,
+                    || 1_000_000_000,
+                )
                 .unwrap();
             window.sync(&mut bridge, root).unwrap();
             if window.story_mut().unwrap().capturing() {
@@ -259,7 +269,11 @@ fn capture_routes_noop_input_and_preserves_authored_action_thresholds() {
                 "save did not settle: {name}"
             );
             window
-                .tick(SliceBudget::default(), || 1_000_000_000)
+                .tick(
+                    SliceBudget::default(),
+                    crate::story_runtime::FrameProduction::Ready,
+                    || 1_000_000_000,
+                )
                 .unwrap();
             window.sync(&mut bridge, root).unwrap();
             std::thread::yield_now();

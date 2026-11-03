@@ -1,0 +1,9 @@
+// Output helper from reel-render at da5bc228886aaf5b7c82bb928094d3f247769ab1.
+// Retained as the device pixel oracle for normalized output selection.
+float4 reel_output(float4 color, float coverage) {
+    float mode = reel_context[1].w;
+    if (mode == 0.0) return color;
+    float4 stored = color;
+    if (mode == 1.0) stored = floor(clamp(color, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+    return stored * coverage * reel_context[2].w;
+}

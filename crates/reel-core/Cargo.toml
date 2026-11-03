@@ -10,6 +10,7 @@ test-support = []
 profiling = []
 
 [dependencies]
+hashbrown.workspace = true
 serde = { version = "=1.0.229", features = ["derive", "rc"] }
 
 [lints]

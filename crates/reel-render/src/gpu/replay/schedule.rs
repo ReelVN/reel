@@ -6,7 +6,7 @@ impl Stream<'_> {
         &self,
         group: &Scope<'_>,
         capture: bool,
-    ) -> Option<(std::ops::Range<usize>, Affine, Scissor)> {
+    ) -> Option<crate::common::effect_result::SourceCommands> {
         group
             .source_input
             .filter(|_| {
@@ -19,7 +19,14 @@ impl Stream<'_> {
                     && self.drawing.capture_exclusions().is_empty()
             })
             .zip(self.offset)
-            .map(|((push, raster, region), offset)| (push..offset + self.next, raster, region))
+            .map(
+                |((push, raster, region), offset)| crate::common::effect_result::SourceCommands {
+                    commands: push..offset + self.next,
+                    transform: raster,
+                    region,
+                    early_reusable: group.early_reusable,
+                },
+            )
     }
     pub(super) fn draw_selected(&self, plan: &crate::common::retained::Plan, index: usize) -> bool {
         self.offset
@@ -73,10 +80,77 @@ impl Context<'_> {
     }
 }
 impl Context<'_> {
+    pub(super) fn defer_composite<'a>(
+        &mut self,
+        current: &mut Stream<'a>,
+        item: DeferredComposite<'a>,
+        last: bool,
+        shared: bool,
+    ) -> Result<(), GpuError> {
+        push_stack(&mut current.deferred, item, |bytes| self.transient(bytes))?;
+        if last {
+            let mut pending = std::mem::take(&mut current.deferred);
+            self.scheduled_parent(current, &pending)?;
+            for (index, item) in pending.drain(..).enumerate() {
+                if (!shared || index == 0)
+                    && self
+                        .offscreen
+                        .entry(item.push)
+                        .unwrap()
+                        .canonical_push
+                        .is_none()
+                {
+                    self.recycle_target(item.source)?;
+                }
+            }
+            current.deferred = pending;
+        }
+        Ok(())
+    }
+
     fn combine_views(
         &mut self,
+        drawing: &FrameDrawing,
         target: &Target,
-        pending: &[DeferredComposite],
+        pending: &[DeferredComposite<'_>],
+    ) -> Result<(), GpuError> {
+        let saved = (self.size, self.scissor, self.mesh_clip);
+        let mut next = 0;
+        while next < pending.len() {
+            let item = &pending[next];
+            if let Some((effect, transform, at)) = item.effect {
+                self.size = item.size;
+                self.scissor = item.scissor;
+                self.mesh_clip = item.mesh_clip;
+                self.effect_into(
+                    drawing,
+                    effect,
+                    transform,
+                    &item.source,
+                    target,
+                    item.opacity,
+                    None,
+                    at,
+                )?;
+                next += 1;
+            } else {
+                let end = next
+                    + pending[next..]
+                        .iter()
+                        .position(|item| item.effect.is_some())
+                        .unwrap_or(pending.len() - next);
+                self.combine_plain_views(target, &pending[next..end])?;
+                next = end;
+            }
+        }
+        (self.size, self.scissor, self.mesh_clip) = saved;
+        Ok(())
+    }
+
+    fn combine_plain_views(
+        &mut self,
+        target: &Target,
+        pending: &[DeferredComposite<'_>],
     ) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
         self.flush_draws()?;
@@ -101,7 +175,7 @@ impl Context<'_> {
                         invert: item.invert,
                         operation: CompositeOperation::SourceOver,
                         blend: 0,
-                        source_origin: item.view.origin(),
+                        source_origin: item.view.expect("ordinary scheduled source view").origin(),
                         backdrop_origin: [0; 2],
                     },
                 )
@@ -114,17 +188,19 @@ impl Context<'_> {
     pub(super) fn scheduled_parent(
         &mut self,
         current: &Stream<'_>,
-        pending: &[DeferredComposite],
+        pending: &[DeferredComposite<'_>],
     ) -> Result<(), GpuError> {
         self.flush_draws()?;
         for item in pending {
             self.ensure_sampled(&item.source.view);
         }
-        let target = &current.scopes.last().target;
+        let target = current.scopes.last().target();
         let mut cursor = self.offscreen.parent_cursor(pending[0].push);
         while let Some(step) = self.offscreen.next_parent(current.commands, &mut cursor) {
             match step {
-                ParentStep::Sources(range) => self.combine_views(target, &pending[range])?,
+                ParentStep::Sources(range) => {
+                    self.combine_views(current.drawing, target, &pending[range])?
+                }
                 ParentStep::Draws(range) => {
                     let mut next = range.start;
                     while next < range.end {

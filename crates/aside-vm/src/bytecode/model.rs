@@ -67,7 +67,7 @@ impl<C, S> Default for BytecodePackage<C, S> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Const {
     Null,
     Bool(bool),
@@ -505,4 +505,26 @@ pub struct NativeSupport {
     pub signature: Signature,
     /// Required by the trusted host registration, independent of package claims.
     pub required_capabilities: Vec<String>,
+    /// Trusted read-only implementation, independent of bytecode effects.
+    pub read_only_leaf: Option<ReadOnlyLeaf>,
+    /// Allow the VM to commit an existing standard compact derived observer.
+    /// This absorbs its CallbackReturned ticket using the original atomic host
+    /// contract: one issue unit plus one commit unit, with hard heap accounting
+    /// and a clock check after publication. Dependency work is not charged per edge.
+    /// False preserves host interception and callback reentry. Restore rebinds it.
+    pub standard_derived_commit: bool,
+}
+
+/// A bounded, allocation-free scalar computation registered by the host.
+/// The implementation may read the supplied heap and arguments, but must not
+/// access external state, allocate, invoke script, or wait. `Some` returns a
+/// scalar Value; `None` delegates error handling to the ordinary native entry.
+/// Parameter preparation and return checking remain the VM's responsibility.
+/// This metadata is rebuilt from trusted registrations when restoring a VM.
+#[derive(Clone, Copy, Debug)]
+pub struct ReadOnlyLeaf {
+    /// Nonzero work charged to the current VM slice before invocation.
+    pub work: u32,
+    /// Borrow current rooted arguments for the duration of this computation.
+    pub invoke: fn(&crate::Heap, &[crate::Value]) -> Option<crate::Value>,
 }

@@ -80,7 +80,8 @@ impl Vm {
                 .observe_write(receiver, None)
                 .map_err(heap_fault)?;
         }
-        if !method.mutates() {
+        // Point queries subscribe at lookup commit, after the key is known.
+        if !method.mutates() && !matches!(method, Builtin::HasOwn | Builtin::Get) {
             self.heap.observe_read(receiver, None).map_err(heap_fault)?;
         }
         self.put(s.env, 1, receiver).map_err(vm_fault)?;

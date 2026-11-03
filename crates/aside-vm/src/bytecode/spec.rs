@@ -213,6 +213,10 @@ instructions! {
 pub fn instruction_spec(opcode: u16) -> Option<&'static InstructionSpec> {
     INSTRUCTION_SPECS.get(*OPCODE_SPEC_INDEX.get(opcode as usize)? as usize)
 }
+#[cfg(feature = "execution-counts")]
+pub(crate) fn instruction_spec_index(opcode: Opcode) -> usize {
+    OPCODE_SPEC_INDEX[opcode as usize] as usize
+}
 const fn semantic_rule(op: Opcode) -> SemanticRule {
     match op {
         Opcode::BindRead | Opcode::CellRead | Opcode::GlobalRead => SemanticRule::BindingRead,
