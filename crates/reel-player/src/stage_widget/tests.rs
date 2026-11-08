@@ -7,6 +7,7 @@ mod prepared_textures;
 mod radio_navigation;
 mod retained;
 mod scroll_alignment;
+mod scroll_bounce;
 mod scroll_restore;
 mod styles;
 mod virtual_images;
@@ -92,6 +93,7 @@ fn virtual_fixture_with_font(
     let scroll = stage
         .create(
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
                 align: reel_ui::widgets::ScrollAlign::Start,
@@ -537,6 +539,7 @@ fn stretched_background_follows_content_without_changing_flow_or_scroll_extent()
         .update(
             f.root,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 offset: Vec2::ZERO,
                 follow_end: false,
@@ -706,6 +709,7 @@ fn scroll_retains_layouts_reading_position_and_end_following() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis,
                     follow_end: true,
                     align: reel_ui::widgets::ScrollAlign::Start,
@@ -805,6 +809,7 @@ fn scroll_retains_layouts_reading_position_and_end_following() {
         .update(
             f.root,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: true,
                 align: reel_ui::widgets::ScrollAlign::End,

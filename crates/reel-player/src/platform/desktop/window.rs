@@ -395,6 +395,7 @@ impl State {
             recorded_projection: None,
             closing: false,
             first_frame_pending,
+            ui_animation: Default::default(),
             completions: Vec::new(),
             pixel_recovery: Default::default(),
             window_state: Arc::new(Default::default()),

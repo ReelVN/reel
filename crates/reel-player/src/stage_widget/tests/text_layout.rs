@@ -379,6 +379,7 @@ fn authored_text_width_controls_scroll_extent_independently_of_parent_width() {
         .update(
             f.root,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: true,
                 align: reel_ui::widgets::ScrollAlign::End,

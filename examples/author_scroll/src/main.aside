@@ -3,7 +3,7 @@ pub fn main() {
     game.configure(width: 640, height: 420, fonts: ["fonts/body.ttf"]);
     let choices = game.choice();
     stage.replace(
-        scroll(x: 20, y: 20, width: 300, height: 180) {
+        scroll(x: 20, y: 20, width: 300, height: 180, overscroll: "bounce") {
             view(
                 || column() {
                     for option in choices.options {

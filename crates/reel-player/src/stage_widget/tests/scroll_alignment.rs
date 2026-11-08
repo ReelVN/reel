@@ -90,6 +90,7 @@ fn scroll_cross_axis_keeps_explicit_caps_alignment_and_hit_geometry() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis,
                     follow_end: false,
                     align: reel_ui::widgets::ScrollAlign::Start,
@@ -134,6 +135,7 @@ fn scroll_cross_axis_keeps_explicit_caps_alignment_and_hit_geometry() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis,
                     follow_end: false,
                     align: reel_ui::widgets::ScrollAlign::Start,

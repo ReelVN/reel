@@ -414,6 +414,7 @@ impl Launcher {
             )?;
             let scroll = self.stage.create(
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis: ScrollAxis::Vertical,
                     follow_end: false,
                     align: ScrollAlign::Start,
@@ -696,6 +697,7 @@ impl Launcher {
         self.stage.update(text, node.kind.clone(), props)?;
         let scroll = self.stage.create(
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
                 align: ScrollAlign::Start,

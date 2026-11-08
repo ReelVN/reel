@@ -622,6 +622,7 @@ impl Launcher {
         self.stage.update(
             list.scroll,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis,
                 follow_end,
                 align,

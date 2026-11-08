@@ -582,13 +582,15 @@ pub fn dialogue_view(model) {
     }
 }
 pub fn nvl_view(model) {
-    scroll(height: 600, follow_end: true) {
+    scroll(height: 600, follow_end: true, overscroll: "bounce") {
         view(|| column(gap: 24) {
             for line in model.lines { dialogue_view(line); }
         });
     }
 }
 ```
+
+`scroll` clamps offsets to the content range by default. `overscroll: "bounce"` enables elastic edges for touch panning; scroll positions, scrollbars and virtual lists keep using bounded logical offsets. Native UI drives the rebound.
 
 Use `say` to combine simultaneous character lines. Each line retains its speaker, styling and reveal state.
 

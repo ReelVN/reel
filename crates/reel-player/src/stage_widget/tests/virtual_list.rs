@@ -42,6 +42,7 @@ fn virtual_list_rich_text_layout_cost_depends_on_mounted_rows() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis: ScrollAxis::Vertical,
                     follow_end: false,
                     align: reel_ui::widgets::ScrollAlign::Start,
@@ -113,6 +114,7 @@ fn virtual_list_reports_only_mounted_rows_and_keeps_layouts_while_scrolling() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis: ScrollAxis::Vertical,
                     follow_end: false,
                     align: reel_ui::widgets::ScrollAlign::Start,
@@ -302,6 +304,7 @@ fn virtual_list_measures_changed_rows_and_coalesces_latest_viewport() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis: ScrollAxis::Vertical,
                     follow_end: false,
                     align: reel_ui::widgets::ScrollAlign::Start,

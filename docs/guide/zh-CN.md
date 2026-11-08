@@ -582,13 +582,15 @@ pub fn dialogue_view(model) {
     }
 }
 pub fn nvl_view(model) {
-    scroll(height: 600, follow_end: true) {
+    scroll(height: 600, follow_end: true, overscroll: "bounce") {
         view(|| column(gap: 24) {
             for line in model.lines { dialogue_view(line); }
         });
     }
 }
 ```
+
+`scroll` 默认将偏移限制在内容范围内。`overscroll: "bounce"` 启用触摸拖拽的边界回弹；滚动位置、滚动条和虚拟列表仍使用合法偏移。回弹由原生 UI 驱动。
 
 同时发言用 `say` 组合多个角色行。每行保留自己的姓名、样式与显现状态。
 

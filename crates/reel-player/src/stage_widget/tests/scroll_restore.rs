@@ -24,6 +24,7 @@ fn check_hidden_scroll(nested: bool) {
     let scroll = stage
         .create(
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Both,
                 follow_end: false,
                 align: reel_ui::widgets::ScrollAlign::Start,
@@ -96,6 +97,7 @@ fn check_hidden_scroll(nested: bool) {
         .update(
             scroll,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Both,
                 follow_end: false,
                 align: reel_ui::widgets::ScrollAlign::Start,

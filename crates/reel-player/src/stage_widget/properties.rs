@@ -775,6 +775,20 @@ impl SceneWidget {
                 (*offset != this.widget.scroll.offset()).then_some(*offset);
             this.ctx.request_compose();
         }
+        if let (
+            NodeKind::Scroll {
+                overscroll: old, ..
+            },
+            NodeKind::Scroll {
+                overscroll: new, ..
+            },
+        ) = (&this.widget.node.kind, &view.node.kind)
+            && old != new
+        {
+            this.widget.scroll.set_overscroll(*new);
+            this.ctx.invalidate_input_configuration();
+            this.ctx.request_compose();
+        }
         if this.widget.node != view.node {
             let old = &this.widget.node.props;
             let new = &view.node.props;

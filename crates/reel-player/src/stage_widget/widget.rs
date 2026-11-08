@@ -1,5 +1,6 @@
 //! Scene control input, layout, composition and painting.
 use super::*;
+use reel_ui::widgets::ScrollAlign;
 
 impl Widget for SceneWidget {
     type Action = NodeEvent;
@@ -50,7 +51,11 @@ impl Widget for SceneWidget {
         event: &PointerEvent,
     ) {
         if matches!(self.node.kind, NodeKind::Scroll { .. }) {
+            let before = self.scroll.translation(ScrollAlign::Start);
             self.scroll.preview(ctx, event);
+            if before != self.scroll.translation(ScrollAlign::Start) {
+                ctx.request_compose();
+            }
         }
     }
     fn scroll_to_child(
@@ -284,9 +289,15 @@ impl Widget for SceneWidget {
         self.button.update(event);
         if matches!(
             event,
-            Update::DisabledChanged(true) | Update::StashedChanged(true)
+            Update::DisabledChanged(true)
+                | Update::StashedChanged(true)
+                | Update::WindowFocusChanged(false)
         ) {
+            let before = self.scroll.translation(ScrollAlign::Start);
             self.scroll.cancel();
+            if before != self.scroll.translation(ScrollAlign::Start) {
+                ctx.request_compose();
+            }
         }
         if self.is_button()
             && matches!(
@@ -345,6 +356,19 @@ impl Widget for SceneWidget {
             )
         {
             ctx.submit_action::<NodeEvent>(event);
+        }
+    }
+    fn on_anim_frame(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        elapsed_ns: u64,
+    ) {
+        if self.scroll.advance(elapsed_ns) {
+            ctx.request_compose();
+        }
+        if self.scroll.animating() {
+            ctx.request_anim_frame();
         }
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
@@ -733,9 +757,13 @@ impl Widget for SceneWidget {
             state.children.sort_unstable_by_key(|row| row.index);
         }
         if let NodeKind::Scroll {
-            axis, follow_end, ..
+            axis,
+            overscroll,
+            follow_end,
+            ..
         } = self.node.kind
         {
+            self.scroll.set_overscroll(overscroll);
             self.scroll.layout(inner, extent, axis, follow_end);
             self.scroll_laid_out = true;
         }
@@ -764,7 +792,10 @@ impl Widget for SceneWidget {
                 self.scroll.viewport(),
                 self.scroll.content(),
             );
-            if self.scroll_feedback != Some(metrics) || self.scroll_baseline != metrics.0 {
+            if self.scroll_input
+                || self.scroll_feedback != Some(metrics)
+                || self.scroll_baseline != metrics.0
+            {
                 ctx.submit_action::<NodeEvent>(NodeEvent::Scroll(reel_ui::stage::NodeScroll {
                     input: std::mem::take(&mut self.scroll_input),
                     node: self.node.id,
@@ -803,7 +834,11 @@ impl Widget for SceneWidget {
                     .filter(|old| old.retained.as_ref() == state.retained.as_slice())
                     .map(|old| old.retained.clone())
                     .unwrap_or_else(|| Arc::from(state.retained.as_slice()));
-                let start = -translation.y - node.props.padding;
+                let align = match self.node.kind {
+                    NodeKind::Scroll { align, .. } => align,
+                    _ => unreachable!(),
+                };
+                let start = -self.scroll.logical_translation(align).y - node.props.padding;
                 state.viewport_start = start;
                 let feedback = NodeVirtualList {
                     node: node.id,

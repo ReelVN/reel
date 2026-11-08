@@ -213,6 +213,7 @@ fn radio_group_live_navigation_discovers_a_virtual_list_without_a_mounted_member
             stage
                 .create(
                     NodeKind::Scroll {
+                        overscroll: Default::default(),
                         axis: ScrollAxis::Vertical,
                         follow_end: false,
                         align: reel_ui::widgets::ScrollAlign::Start,

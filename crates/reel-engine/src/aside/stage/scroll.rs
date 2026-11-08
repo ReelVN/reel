@@ -3,13 +3,18 @@ use super::*;
 use reel_ui::{
     kurbo::Vec2,
     stage::NodeScroll,
-    widgets::{ScrollAlign, ScrollAxis},
+    widgets::{ScrollAlign, ScrollAxis, ScrollOverscroll},
 };
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ScrollField {
     #[aside(name = "axis", ty = String, default = "vertical", validate = validate_axis)]
     Axis,
+    /// Boundary behavior: `clamp` keeps direct touch panning bounded; `bounce`
+    /// adds a damped edge pull and native return animation. Logical offsets stay
+    /// bounded in both modes. Wheel and programmatic positioning remain clamped.
+    #[aside(name = "overscroll", ty = String, default = "clamp", validate = validate_overscroll)]
+    Overscroll,
     #[aside(name = "follow_end", ty = Bool, default = false)]
     FollowEnd,
     #[aside(name = "content_align", ty = String, default = "start", validate = validate_align)]
@@ -59,6 +64,16 @@ fn align(heap: &Heap, value: Value) -> Result<ScrollAlign, HeapError> {
 fn validate_axis(heap: &Heap, value: Value) -> Result<(), HeapError> {
     axis(heap, value).map(|_| ())
 }
+fn overscroll(heap: &Heap, value: Value) -> Result<ScrollOverscroll, HeapError> {
+    word(heap, value, |word| match word {
+        b"clamp" => Ok(ScrollOverscroll::Clamp),
+        b"bounce" => Ok(ScrollOverscroll::Bounce),
+        _ => Err(HeapError::TypeMismatch),
+    })
+}
+fn validate_overscroll(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    overscroll(heap, value).map(|_| ())
+}
 fn validate_align(heap: &Heap, value: Value) -> Result<(), HeapError> {
     align(heap, value).map(|_| ())
 }
@@ -67,6 +82,7 @@ pub(super) fn kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError>
         |field: ScrollField| Ok::<_, HeapError>(heap.table_entry(fields, field.index() as u32)?.1);
     Ok(NodeKind::Scroll {
         axis: axis(heap, get(ScrollField::Axis)?)?,
+        overscroll: overscroll(heap, get(ScrollField::Overscroll)?)?,
         follow_end: boolean(get(ScrollField::FollowEnd)?)?,
         align: align(heap, get(ScrollField::ContentAlign)?)?,
         offset: Vec2::new(number(get(ScrollField::X)?)?, number(get(ScrollField::Y)?)?),

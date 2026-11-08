@@ -43,6 +43,7 @@ fn scene(root: &RenderRoot, id: WidgetId) -> WidgetRef<'_, SceneWidget> {
 }
 fn scroll(offset: f64) -> NodeKind {
     NodeKind::Scroll {
+        overscroll: Default::default(),
         axis: ScrollAxis::Vertical,
         follow_end: false,
         align: reel_ui::widgets::ScrollAlign::Start,

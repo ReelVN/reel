@@ -109,6 +109,7 @@ fn virtual_list_natural_first_frame_packs_measured_neighbors_and_keeps_actual_hi
     let viewport = stage
         .create(
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
                 align: reel_ui::widgets::ScrollAlign::Start,

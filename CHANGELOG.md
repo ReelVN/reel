@@ -6,6 +6,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Added
 
+- Add opt-in touch overscroll with native rebound animation while preserving bounded logical scroll positions.
 - Include the selected desktop render-quality tier in per-frame performance counts.
 - Add a shared `preload` node property to prepare hidden mounted image and effect sources with low-priority IO and bounded spare residency.
 

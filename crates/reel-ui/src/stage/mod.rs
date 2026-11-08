@@ -347,6 +347,7 @@ pub enum NodeKind {
     },
     Scroll {
         axis: crate::widgets::ScrollAxis,
+        overscroll: crate::widgets::ScrollOverscroll,
         follow_end: bool,
         align: crate::widgets::ScrollAlign,
         offset: Vec2,
