@@ -3,6 +3,9 @@ use super::*;
 
 impl Binder<'_> {
     pub(super) fn visit(&mut self, n: NodeId, ctx: &Context) -> TypeId {
+        self.visit_expected(n, ctx, ANY)
+    }
+    pub(super) fn visit_expected(&mut self, n: NodeId, ctx: &Context, expected: TypeId) -> TypeId {
         if !self.budget(n) {
             return ANY;
         }
@@ -10,10 +13,10 @@ impl Binder<'_> {
         let children = self.children(n);
         use HirKind as H;
         let ty = match self.kind(n) {
-            H::Module | H::Block => return self.block(n, ctx, true),
+            H::Module | H::Block => return self.block_expected(n, ctx, true, expected),
             H::ModifiedDeclaration => children.first().map_or(NULL, |&c| self.visit(c, ctx)),
             H::Function => return self.function(n, ctx, Receiver::None),
-            H::Closure => return self.function(n, ctx, Receiver::None),
+            H::Closure => return self.function_expected(n, ctx, Receiver::None, expected),
             H::Let => {
                 let pattern = children.iter().copied().find(|&c| is_pattern(self.kind(c)));
                 let annotation = children
@@ -25,7 +28,9 @@ impl Binder<'_> {
                     .iter()
                     .copied()
                     .find(|&c| !is_pattern(self.kind(c)) && !is_type(self.kind(c)));
-                let value = init.map_or(ANY, |c| self.visit(c, ctx));
+                let value = init.map_or(ANY, |c| {
+                    self.visit_expected(c, ctx, annotation.unwrap_or(ANY))
+                });
                 if let (Some(init), Some(expected)) = (init, annotation) {
                     self.require(init, value, expected, "let initializer");
                 }
@@ -98,7 +103,9 @@ impl Binder<'_> {
                 TABLE
             }
             H::Group => {
-                let t = children.first().map_or(ANY, |&c| self.visit(c, ctx));
+                let t = children
+                    .first()
+                    .map_or(ANY, |&c| self.visit_expected(c, ctx, expected));
                 if let Some(&c) = children.first()
                     && let Some(ext) = self.external_nodes.get(&c)
                 {
@@ -113,7 +120,7 @@ impl Binder<'_> {
             | H::Spread => {
                 let mut result = NULL;
                 for c in children {
-                    result = self.visit(c, ctx);
+                    result = self.visit_expected(c, ctx, expected);
                 }
                 result
             }
@@ -482,11 +489,17 @@ impl Binder<'_> {
         };
         self.location(target, ctx);
         let rhs = rest.first().copied();
+        let expected = self
+            .member_write_types
+            .get(&target)
+            .copied()
+            .flatten()
+            .unwrap_or(self.ty(target));
         let value = rhs.map_or(ANY, |c| {
             if self.kind(c) == HirKind::Assignment {
                 self.assignment(c, ctx)
             } else {
-                self.visit(c, ctx)
+                self.visit_expected(c, ctx, expected)
             }
         });
         if is_pattern(self.kind(target)) {

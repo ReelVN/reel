@@ -27,8 +27,9 @@ pub(super) enum TabField {
     /// Fixed unique {key, label} descriptors; labels may be bound properties.
     #[aside(name="items", ty=Array, readonly)]
     Items,
-    /// Optional no-wait content factory receiving a read-only observable TabItem.
-    #[aside(name="build", ty=Any, doc_type=aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default=null, readonly)]
+    /// Optional no-wait content factory: fn(TabItem) -> (Node | null).
+    /// Unannotated lambda parameters inherit the read-only observable TabItem type.
+    #[aside(name="build", ty=Any, doc_type=api::tab_factory_type(), default=null, readonly)]
     Build,
     /// Navigation and flow axis: horizontal or vertical.
     #[aside(name="orientation", ty=String, default="horizontal", readonly)]

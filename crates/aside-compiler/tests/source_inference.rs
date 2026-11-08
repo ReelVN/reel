@@ -479,3 +479,32 @@ fn loop_carried_field_changes_are_not_limited_to_one_iteration() {
     );
     assert_eq!(expression(&analysis, "state.a").ty, TypeHint::Any);
 }
+
+#[test]
+fn contextual_lambda_parameters_keep_bound_types_in_editor_summaries() {
+    let analysis = module(
+        r#"
+        class Item{let label:string="item";}
+        fn use_it(build:fn(Item)->string){}
+        fn main(){use_it(|item|item.label);let render:fn(string)->int=|label|label.byte_len();}
+    "#,
+    );
+    assert_eq!(expression(&analysis, "item.label").ty, TypeHint::String);
+    assert_eq!(expression(&analysis, "label.byte_len()").ty, TypeHint::Int);
+    let m = analysis.module().unwrap();
+    let parameter = m
+        .symbols()
+        .iter()
+        .find(|s| m.hir().name(s.name) == "item")
+        .unwrap();
+    assert!(matches!(
+        m.types()[parameter.ty.0 as usize],
+        Type::Instance(_)
+    ));
+    let parameter = m
+        .symbols()
+        .iter()
+        .find(|s| m.hir().name(s.name) == "label" && s.kind == SymbolKind::Parameter)
+        .unwrap();
+    assert_eq!(m.types()[parameter.ty.0 as usize], Type::String);
+}

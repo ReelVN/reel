@@ -602,7 +602,8 @@ fn tab_content_uses_the_same_native_control_for_feedback_appearance_gc_and_resto
 
 #[test]
 fn failed_tab_factories_retire_exposed_controls_without_restarting() {
-    let code = r#"fn opening() {
+    let code = r#"fn invalid_result() {42}
+    fn opening() {
         stage.replace(stack());
         let saved={control:null,built:0};let selected=model({value:0});let original={message:"factory fault"};
         for mode in [0,1,2] {
@@ -611,7 +612,7 @@ fn failed_tab_factories_retire_exposed_controls_without_restarting() {
                 let _=tab_bar(value:bind(selected.value),items:[{key:0,label:"First"},{key:1,label:"Second"}],build:|item| {
                     saved.built+=1;saved.control=item.control;
                     if mode==0 {throw original;}
-                    if mode==1 {return 42;}
+                    if mode==1 {return invalid_result();}
                     item.control.remove();text("detached")
                 });
             } catch e {

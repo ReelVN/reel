@@ -16,6 +16,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Fixed
 
+- Infer direct lambda parameters and results from expected callable types in calls, typed bindings, assignments and returns, including native page and tab factories.
 - Preserve authored scroll animations through virtual-list anchor feedback and layout clamping while retaining explicit input takeover.
 - Keep recent frame samples separate from historical slow frames across performance-label changes.
 - Preserve identity-key ordering when restoring VM snapshots so retained lists, page caches and in-progress keyed sorts continue correctly.

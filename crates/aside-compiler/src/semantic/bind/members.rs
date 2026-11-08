@@ -260,13 +260,40 @@ impl Binder<'_> {
                 }
             }
         }
+        let bound = matches!(
+            self.out.types[ty.0 as usize],
+            Type::BoundMethod(_) | Type::Class(_)
+        );
+        let constructor = if let Type::Class(class) = self.out.types[ty.0 as usize] {
+            let init = self.intern_name("init");
+            self.find_class_member(class, init, false)
+                .and_then(|n| self.fn_nodes.get(&n).copied())
+        } else {
+            None
+        };
+        let function = match self.out.types[ty.0 as usize] {
+            Type::Function(f) | Type::BoundMethod(f) => Some(f),
+            _ => constructor,
+        };
+        let external = descriptor.clone();
+        let effect = external
+            .as_ref()
+            .and_then(|e| e.signature.as_ref())
+            .map_or(CallEffect::Unknown, |s| s.effect);
+        let call = CallSite {
+            node: n,
+            caller: ctx.function,
+            callee: function,
+            bound,
+            effect,
+            no_wait: ctx.no_wait,
+            named_callee,
+        };
         let mut actual_ctx = ctx.clone();
         if optional || chain {
             actual_ctx.conditional = true;
         }
-        for c in arguments.into_iter().chain(trailing) {
-            self.visit(c, &actual_ctx);
-        }
+        self.contextual_arguments(&call, ty, &actual_ctx);
         if let Some(arguments) = arguments {
             for arg in self.children(arguments) {
                 if self.kind(arg) == HirKind::Spread {
@@ -322,35 +349,6 @@ impl Binder<'_> {
         if ty == NULL && (optional || chain) {
             return NULL;
         }
-        let bound = matches!(
-            self.out.types[ty.0 as usize],
-            Type::BoundMethod(_) | Type::Class(_)
-        );
-        let constructor = if let Type::Class(class) = self.out.types[ty.0 as usize] {
-            let init = self.intern_name("init");
-            self.find_class_member(class, init, false)
-                .and_then(|n| self.fn_nodes.get(&n).copied())
-        } else {
-            None
-        };
-        let function = match self.out.types[ty.0 as usize] {
-            Type::Function(f) | Type::BoundMethod(f) => Some(f),
-            _ => constructor,
-        };
-        let external = descriptor.clone();
-        let effect = external
-            .as_ref()
-            .and_then(|e| e.signature.as_ref())
-            .map_or(CallEffect::Unknown, |s| s.effect);
-        let call = CallSite {
-            node: n,
-            caller: ctx.function,
-            callee: function,
-            bound,
-            effect,
-            no_wait: ctx.no_wait,
-            named_callee,
-        };
         self.calls.push(call.clone());
         self.check(n, RuntimeChecks::CALL);
         if ctx.no_wait {

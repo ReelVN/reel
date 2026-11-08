@@ -244,8 +244,10 @@ impl Binder<'_> {
                 }
                 if let Some(f) = ctx.function {
                     target = Some(self.out.functions[f.0 as usize].node);
-                    let t = children.first().map_or(NULL, |&c| self.visit(c, ctx));
                     let expected = self.out.functions[f.0 as usize].return_type;
+                    let t = children
+                        .first()
+                        .map_or(NULL, |&c| self.visit_expected(c, ctx, expected));
                     self.require(
                         children.first().copied().unwrap_or(n),
                         t,

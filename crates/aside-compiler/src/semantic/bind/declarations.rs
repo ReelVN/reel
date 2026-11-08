@@ -177,7 +177,7 @@ impl Binder<'_> {
                             }
                         }
                         let annotation = annotation.map(|a| self.annotation(a, &c));
-                        let t = self.visit(init, &c);
+                        let t = self.visit_expected(init, &c, annotation.unwrap_or(ANY));
                         if let Some(expected) = annotation {
                             self.require(init, t, expected, "field initializer");
                         }

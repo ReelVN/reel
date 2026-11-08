@@ -441,6 +441,7 @@ pub(super) fn analyze_editor(
         exhausted: b.exhausted,
     }
 }
+mod contextual;
 mod control_flow;
 mod declarations;
 mod expressions;
@@ -802,6 +803,15 @@ impl Binder<'_> {
         }
     }
     fn block(&mut self, n: NodeId, ctx: &Context, new_scope: bool) -> TypeId {
+        self.block_expected(n, ctx, new_scope, ANY)
+    }
+    fn block_expected(
+        &mut self,
+        n: NodeId,
+        ctx: &Context,
+        new_scope: bool,
+        expected: TypeId,
+    ) -> TypeId {
         if !self.budget(n) {
             return ANY;
         }
@@ -857,12 +867,20 @@ impl Binder<'_> {
             }
         }
         let mut result = NULL;
+        let tail = match self.out.hir.node(n).form {
+            Form::Block { tail } => tail,
+            _ => None,
+        };
         for &child in &children {
             if self.exhausted {
                 break;
             }
             if self.kind(self.unwrap(child)) != HirKind::Import {
-                result = self.visit(child, ctx);
+                result = self.visit_expected(
+                    child,
+                    ctx,
+                    if tail == Some(child) { expected } else { ANY },
+                );
             }
         }
         if let Some(&last) = children.last()

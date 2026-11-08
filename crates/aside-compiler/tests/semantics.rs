@@ -2,6 +2,8 @@ use aside_compiler::{hir::*, semantic::*, *};
 
 #[path = "semantics/call_arguments.rs"]
 mod call_arguments;
+#[path = "semantics/contextual_callables.rs"]
+mod contextual_callables;
 #[path = "semantics/initializer_locals.rs"]
 mod initializer_locals;
 #[path = "semantics/refinement.rs"]

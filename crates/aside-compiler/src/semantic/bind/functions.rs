@@ -213,6 +213,15 @@ impl Binder<'_> {
         }
     }
     pub(super) fn function(&mut self, n: NodeId, ctx: &Context, receiver: Receiver) -> TypeId {
+        self.function_expected(n, ctx, receiver, ANY)
+    }
+    pub(super) fn function_expected(
+        &mut self,
+        n: NodeId,
+        ctx: &Context,
+        receiver: Receiver,
+        expected: TypeId,
+    ) -> TypeId {
         if self.exhausted {
             return ANY;
         }
@@ -224,6 +233,7 @@ impl Binder<'_> {
         if !self.analyzed_functions.insert(f) {
             return self.set_ty(n, ty);
         }
+        self.contextual_signature(n, f, expected);
         let previous = self.scope;
         self.scope = self.out.facts[n.0 as usize]
             .scope
@@ -242,7 +252,7 @@ impl Binder<'_> {
                 default_ctx.default = true;
                 default_ctx.default_return_boundary = Some(default);
                 default_ctx.no_wait = true;
-                let actual = self.visit(default, &default_ctx);
+                let actual = self.visit_expected(default, &default_ctx, annotation.unwrap_or(ANY));
                 if let Some(expected) = annotation {
                     self.require(default, actual, expected, "parameter default");
                 }
@@ -251,12 +261,12 @@ impl Binder<'_> {
         }
         let body = self.out.functions[f.0 as usize].body;
         if body != n {
-            let result = if self.kind(body) == HirKind::Block {
-                self.block(body, &inner, false)
-            } else {
-                self.visit(body, &inner)
-            };
             let expected = self.out.functions[f.0 as usize].return_type;
+            let result = if self.kind(body) == HirKind::Block {
+                self.block_expected(body, &inner, false, expected)
+            } else {
+                self.visit_expected(body, &inner, expected)
+            };
             // Explicit terminal transfers do not create an implicit null return.
             if self.falls_through(body) {
                 self.require(body, result, expected, "function result");

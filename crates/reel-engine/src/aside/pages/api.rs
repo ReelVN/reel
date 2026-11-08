@@ -3,6 +3,14 @@ use super::*;
 use aside_vm::bytecode::{BuiltinType, Const};
 use registry::{NativeContract, NativeParameter};
 
+pub(super) fn tab_factory_type() -> aside_compiler::semantic::TypeHint {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{named, nullable};
+    nullable(TypeHint::Callable(
+        vec![named("reel::types::TabItem")],
+        Box::new(nullable(named("reel::types::Node"))),
+    ))
+}
 aside_host::native_documentation! {
     pub(in crate::aside) fn documentation {
         /// Keep lazily constructed pages under a common stage container. `items` is a
@@ -42,7 +50,9 @@ aside_host::native_documentation! {
         /// records. Share value with any page stack or authored view. Each bar has its
         /// own focus group. Horizontal/vertical arrows wrap within the bar; automatic
         /// activation selects on arrows, manual activation selects on confirmation.
-        /// The optional no-wait `build(item)` returns custom content. Its read-only
+        /// The optional no-wait `build: fn(TabItem) -> (Node | null)` returns custom
+        /// content. A direct `|item|` lambda inherits this signature during source
+        /// checking, including member access and result validation. Its read-only
         /// observable fields are `key`, `label`, `selected`, and `control: RadioNode`.
         /// The control exists before the factory runs. Use its ordinary appearance,
         /// hover and focus_visible properties with bind/derive to style custom content.
