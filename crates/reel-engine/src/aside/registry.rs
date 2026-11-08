@@ -26,6 +26,7 @@ pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
     ("checkbox", "reel::types::ToggleNode"),
     ("radio", "reel::types::RadioNode"),
     ("scroll", "reel::types::ScrollNode"),
+    ("scrollbar", "reel::types::ScrollBarNode"),
     ("popup", "reel::types::PopupNode"),
     ("camera", "reel::types::CameraNode"),
 ];
@@ -54,6 +55,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::grid" => super::stage::flow::GridField::NAMES,
         "reel::camera" => super::stage::camera::CameraField::NAMES,
         "reel::scroll" => super::stage::scroll::ScrollField::NAMES,
+        "reel::scrollbar" => super::stage::scrollbar::ScrollBarField::NAMES,
         "reel::popup" => super::stage::popup::PopupField::NAMES,
         "reel::text" => super::stage::appearance::TextField::NAMES,
         "reel::text_input" | "reel::text_area" => super::stage::text_input::TextInputField::NAMES,
@@ -295,6 +297,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             );
         } else if name == "particles" {
             parameters.extend(super::particles::parameters());
+        } else if name == "scrollbar" {
+            parameters.extend(
+                super::stage::scrollbar::ScrollBarField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
         } else if name == "scroll" {
             parameters.extend(
                 super::stage::scroll::ScrollField::PROPERTIES
@@ -1290,6 +1298,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.extend(super::effects::contracts());
     contracts.extend(super::gradients::contracts());
     contracts.extend(super::pages::contracts());
+    contracts.extend(super::stage::scrollbar::contracts());
     contracts.extend(super::stage::interaction_appearance::contracts());
     contracts
 }

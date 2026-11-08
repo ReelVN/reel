@@ -34,6 +34,7 @@ pub(in crate::aside) fn properties(symbol: &str) -> Vec<PropertyDocumentation> {
     let mut properties = match symbol {
         "reel::page_stack" => schema::<super::super::pages::PageField>(),
         "reel::tab_bar" => schema::<super::super::pages::TabField>(),
+        "reel::scrollbar" => schema::<scrollbar::ScrollBarField>(),
         "reel::image" | "reel::video" => schema::<appearance::ImageField>(),
         "reel::text" => schema::<appearance::TextField>(),
         "reel::button" => schema::<appearance::ButtonField>(),

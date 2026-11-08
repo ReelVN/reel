@@ -125,22 +125,8 @@ fn descriptor(h: &Heap, object: Value, name: &str, limit: usize) -> Result<Value
         "page/tab item is missing a required field",
     ))
 }
-fn default_value(h: &mut Heap, value: &aside_vm::bytecode::Const) -> Result<Value, HeapError> {
-    use aside_vm::bytecode::Const;
-    Ok(match value {
-        Const::Null => Value::NULL,
-        Const::Bool(v) => Value::bool(*v),
-        Const::Int(v) => Value::int(*v),
-        Const::FloatBits(v) => Value::float(f64::from_bits(*v)),
-        Const::Utf8(v) => h.alloc_string(v)?,
-        _ => return Err(HeapError::TypeMismatch),
-    })
-}
 fn layout(h: &mut Heap) -> Result<Vec<Value>, HeapError> {
-    stage::NodeProperty::PROPERTIES
-        .iter()
-        .map(|p| default_value(h, p.parameter().default.as_ref().unwrap()))
-        .collect()
+    stage::defaults::layout(h)
 }
 pub(super) fn validate(h: &Heap, i: u32, v: Value, tab: bool) -> Result<(), HeapError> {
     let prefix = if tab {

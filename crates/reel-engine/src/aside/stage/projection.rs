@@ -51,6 +51,7 @@ impl StageBinding {
             };
             if version == binding.fields_version
                 && !binding.projection_dirty
+                && !matches!(node.kind, NodeKind::ScrollBar(_))
                 && !super::super::effects::changed(heap, binding.effect_source)?
                 && !mask_changed(heap, binding.mask_source)?
                 && !binding
@@ -99,6 +100,10 @@ impl StageBinding {
                 NodeKind::Scroll { .. } => (
                     scroll::kind(heap, fields)?,
                     scroll::ScrollField::PROPERTIES.len(),
+                ),
+                NodeKind::ScrollBar(_) => (
+                    scrollbar::kind(heap, fields)?,
+                    scrollbar::ScrollBarField::PROPERTIES.len(),
                 ),
                 NodeKind::Popup(_) => (
                     popup::kind(heap, fields)?,

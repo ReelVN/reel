@@ -4,6 +4,7 @@ mod cursor;
 mod flow;
 mod input_focus;
 mod native_pages;
+mod native_scrollbar;
 mod prepared_textures;
 mod radio_navigation;
 mod retained;

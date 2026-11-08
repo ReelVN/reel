@@ -223,6 +223,13 @@ impl StageBinding {
         heap: &mut Heap,
         change: &NodeChange,
     ) -> Result<Option<(Value, Value, Value)>, AdapterError> {
+        if self
+            .scene
+            .node(change.node)
+            .is_some_and(|n| matches!(n.kind, NodeKind::ScrollBar(_)))
+        {
+            return self.change_scrollbar(heap, change);
+        }
         let Some(node) = self.scene.node(change.node) else {
             return Ok(None);
         };

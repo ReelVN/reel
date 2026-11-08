@@ -389,6 +389,12 @@ Ogg Opus 沿软件解码接口提供单声道与双声道内容，时间线扣�
 
 `tab_bar(value, items: [{key, label}], build: null, orientation: "horizontal", activation: "automatic")` 提供独立分组的标签选择、焦点、方向键与无障碍语义，与 page_stack 共享同一个可写选中值。方向可为 horizontal 或 vertical；automatic 随焦点切换，manual 由确认输入激活。可选工厂 `build(item)` 构建内容，item 提供只读可观察的 key、label、selected，以及只读 control 引用；control 是拥有输入、焦点与无障碍语义的原生 RadioNode，作者可用其交互反馈与 appearance 自定义标签。组件实现使用 Rust，作者可分别组合标签、页面与其他舞台内容。
 
+### 原生滚动条
+
+`scrollbar(viewport, axis: "vertical", min_thumb_size: 16, thumb_size: null, step: 40, inset_start: 0, inset_end: 0)` 返回可组合的 `ScrollBarNode`。viewport 是已有 ScrollNode，滚动条借用其逻辑偏移和实测内容/视口尺寸。axis 为 vertical 或 horizontal；thumb_size 为空时按可见比例计算，数值指定固定逻辑长度，最终长度限制在轨道内。公开只读 viewport、track 与 thumb 引用；track/thumb 是稳定内容槽，内部 wrapper 控制其位置和尺寸，作者组合槽内外观。组件退休只回收自身节点。
+
+Rust UI 处理滑块抓取偏移、轨道点击、滚轮、键盘/手柄与无障碍范围操作；主轴方向按 step 移动，翻页按视口长度，Home/End 到边界。`scroll_by(delta)` 和 `scroll_to(offset)` 复用目标偏移的普通写入与限幅路径。输入以已接受几何为准，隐藏、禁用、失焦、目标退休或输入几何失效时取消抓取；释放沿目标 scroll 既有合同处理。逻辑偏移继续由 viewport 保存，瞬时抓取和几何不进入执行快照。滚动条不生成 NodeScroll 尺寸反馈，也不启动逐次移动的 Aside 回调任务。
+
 ## 对白、历史与阅读
 
 对白在提交时建立完整行组并预留历史。推进先补全显现，再结束等待；选择保留由交互身份限定的业务 key。正文、富文本样式和历史内容通过只读模型交给作者组件。

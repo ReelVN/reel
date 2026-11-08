@@ -592,6 +592,20 @@ pub fn nvl_view(model) {
 
 `scroll` 默认将偏移限制在内容范围内。`overscroll: "bounce"` 启用触摸拖拽的边界回弹；滚动位置、滚动条和虚拟列表仍使用合法偏移。回弹由原生 UI 驱动。
 
+把 `scrollbar(viewport)` 与同一个滚动视口并排放置。`track`、`thumb` 是稳定内容槽，可以设置背景或添加 `stretch: "both"` 的图片；省略 `thumb_size` 时，滑块长度跟随可见内容的比例。外部按钮可以调用 `scroll_by`、`scroll_to`，轨道、拖动、键盘和手柄共用目标滚动位置。参数和生命周期见[滚动条源码 API](../../crates/reel-engine/src/aside/stage/scrollbar.rs)。
+
+```aside
+fn main() {
+    let viewport = scroll(width: 280, height: 120) {
+        column() { for i in 0 .. 20 { text(f"Line {i}"); } }
+    };
+    let bar = scrollbar(viewport, width: 16, height: 120);
+    bar.track.background = "#28303a";
+    bar.thumb.background = "#9daabe";
+    stage.replace(row(gap: 8) { viewport; bar; });
+}
+```
+
 同时发言用 `say` 组合多个角色行。每行保留自己的姓名、样式与显现状态。
 
 ```aside

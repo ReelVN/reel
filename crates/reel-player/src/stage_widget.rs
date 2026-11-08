@@ -39,6 +39,7 @@ mod input;
 pub(crate) mod popup;
 #[cfg(test)]
 mod projection_tests;
+mod scrollbar;
 mod selection;
 #[cfg(test)]
 mod tests;
@@ -1081,6 +1082,7 @@ struct SceneWidget {
     interaction: Option<InteractionState>,
     input: Option<NodeInput>,
     slider: Option<WidgetPod<Slider>>,
+    scrollbar: Option<reel_ui::widgets::ScrollBarState>,
     label: Option<WidgetPod<Label>>,
     editor: Option<WidgetPod<TextInput>>,
     image: Option<WidgetPod<Image>>,
@@ -1173,6 +1175,7 @@ fn decoration_changed(old: &SceneProperties, new: &SceneProperties) -> bool {
         | NodeKind::TextInput { .. }
         | NodeKind::Button { .. }
         | NodeKind::Slider { .. }
+        | NodeKind::ScrollBar(_)
         | NodeKind::Image { .. }
         | NodeKind::Input { .. }
         | NodeKind::Scroll { .. }

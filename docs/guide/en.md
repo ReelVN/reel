@@ -592,6 +592,20 @@ pub fn nvl_view(model) {
 
 `scroll` clamps offsets to the content range by default. `overscroll: "bounce"` enables elastic edges for touch panning; scroll positions, scrollbars and virtual lists keep using bounded logical offsets. Native UI drives the rebound.
 
+Place `scrollbar(viewport)` beside the same scroll viewport. Its stable `track` and `thumb` content slots accept backgrounds or images with `stretch: "both"`; omitting `thumb_size` makes the thumb follow the visible-content proportion. External buttons can call `scroll_by` or `scroll_to`. Track clicks, dragging, keyboard and controller input share the target scroll position. See the [scrollbar source API](../../crates/reel-engine/src/aside/stage/scrollbar.rs) for parameters and lifetime behavior.
+
+```aside
+fn main() {
+    let viewport = scroll(width: 280, height: 120) {
+        column() { for i in 0 .. 20 { text(f"Line {i}"); } }
+    };
+    let bar = scrollbar(viewport, width: 16, height: 120);
+    bar.track.background = "#28303a";
+    bar.thumb.background = "#9daabe";
+    stage.replace(row(gap: 8) { viewport; bar; });
+}
+```
+
 Use `say` to combine simultaneous character lines. Each line retains its speaker, styling and reveal state.
 
 ```aside

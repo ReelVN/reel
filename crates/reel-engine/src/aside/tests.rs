@@ -32,6 +32,7 @@ mod masks;
 mod media_positions;
 mod models;
 mod native_pages;
+mod native_scrollbar;
 mod particles;
 mod persistent;
 mod popups;

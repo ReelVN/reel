@@ -359,6 +359,8 @@ pub enum NodeKind {
         align: crate::widgets::ScrollAlign,
         offset: Vec2,
     },
+    /// Native scrollbar over borrowed scroll metrics; children are visual wrappers.
+    ScrollBar(crate::widgets::ScrollBarView),
     Camera(CameraView),
     Popup(PopupView),
     Row(FlowOptions),
@@ -910,6 +912,7 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -958,6 +961,7 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -1049,6 +1053,7 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }

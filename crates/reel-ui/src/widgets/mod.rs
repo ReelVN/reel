@@ -14,6 +14,8 @@ mod slider;
 pub use slider::*;
 mod scroll;
 pub use scroll::*;
+mod scrollbar;
+pub use scrollbar::*;
 mod canvas;
 pub use canvas::*;
 mod popup;

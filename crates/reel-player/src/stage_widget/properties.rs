@@ -53,6 +53,7 @@ impl SceneWidget {
     }
     pub(super) fn content_changed(old: &NodeKind, new: &NodeKind) -> bool {
         match (old, new) {
+            (NodeKind::ScrollBar(a), NodeKind::ScrollBar(b)) => !a.same_geometry(*b),
             (
                 NodeKind::Image {
                     source: a,
@@ -297,6 +298,11 @@ impl SceneWidget {
             } else {
                 None
             },
+            scrollbar: if let NodeKind::ScrollBar(config) = view.node.kind {
+                Some(reel_ui::widgets::ScrollBarState::new(config))
+            } else {
+                None
+            },
             particle_sampler: Default::default(),
             particle_image: matches!(view.node.kind, NodeKind::Particles(_))
                 .then(|| view.images.image_resource.clone())
@@ -493,6 +499,17 @@ impl SceneWidget {
                     active: tint,
                     inactive: tint.with_alpha(tint.components[3] * 0.3),
                 });
+            }
+        }
+        if let (Some(state), NodeKind::ScrollBar(config)) =
+            (&mut this.widget.scrollbar, &view.node.kind)
+        {
+            let previous = state.view();
+            if state.configure(*config) {
+                this.ctx.invalidate_input_configuration();
+                this.ctx.request_layout();
+            } else if previous != *config {
+                this.ctx.request_compose();
             }
         }
         if let (

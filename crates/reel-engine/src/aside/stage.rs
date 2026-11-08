@@ -110,6 +110,7 @@ pub(super) mod appearance;
 pub(super) mod camera;
 pub(super) mod configure;
 pub(super) mod controls;
+pub(super) mod defaults;
 pub(super) mod flow;
 pub(super) mod input;
 mod interaction;
@@ -117,6 +118,7 @@ pub(in crate::aside) mod interaction_appearance;
 pub(super) mod overrides;
 pub(super) mod popup;
 pub(super) mod scroll;
+pub(super) mod scrollbar;
 pub(super) mod snapshot;
 pub(super) mod source;
 pub(super) mod text_input;
@@ -633,6 +635,10 @@ impl StageBinding {
             return Ok(Value::NULL);
         }
 
+        if symbol == "reel::scrollbar" {
+            return self.create_scrollbar(vm, owner, args, read_limit, origin);
+        }
+
         self.create(
             vm,
             (
@@ -1114,6 +1120,7 @@ impl StageBinding {
                 || match &node.kind {
                     NodeKind::Text(_) => self.handles[&id].text_listening,
                     NodeKind::Slider { .. }
+                    | NodeKind::ScrollBar(_)
                     | NodeKind::Toggle { .. }
                     | NodeKind::Radio { .. }
                     | NodeKind::TextInput { .. } => true,

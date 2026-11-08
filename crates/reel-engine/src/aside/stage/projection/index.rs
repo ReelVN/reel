@@ -131,6 +131,13 @@ impl Index {
             let binding = &handles[&id];
             let host = heap.import_handle(binding.handle)?;
             self.watch(heap, heap.host_fields(host)?, id)?;
+            if binding.shape == snapshot::Shape::ScrollBar {
+                let target = scrollbar::target(heap, heap.host_fields(host)?)?;
+                if let Ok(fields) = heap.host_fields(target) {
+                    self.watch(heap, target, id)?;
+                    self.watch(heap, fields, id)?;
+                }
+            }
             for (handle, _) in [binding.mask_source, binding.effect_source]
                 .into_iter()
                 .flatten()

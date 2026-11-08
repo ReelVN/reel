@@ -28,6 +28,7 @@ pub(in crate::aside) enum Shape {
     Popup,
     PageStack,
     TabBar,
+    ScrollBar,
 }
 
 impl Shape {
@@ -35,6 +36,7 @@ impl Shape {
         match symbol {
             "reel::page_stack" => Self::PageStack,
             "reel::tab_bar" => Self::TabBar,
+            "reel::scrollbar" => Self::ScrollBar,
             "reel::text" => Self::Text,
             "reel::text_input" => Self::TextInput,
             "reel::text_area" => Self::TextArea,
@@ -62,6 +64,7 @@ impl Shape {
         match self {
             Self::PageStack => super::super::pages::PageField::PROPERTIES.len(),
             Self::TabBar => super::super::pages::TabField::PROPERTIES.len(),
+            Self::ScrollBar => scrollbar::ScrollBarField::PROPERTIES.len(),
             Self::Text => 2,
             Self::Button => appearance::ButtonField::PROPERTIES.len(),
             Self::Image | Self::Video => registry::IMAGE_PREFIX.len(),
@@ -137,6 +140,7 @@ impl Shape {
             }
             Self::Camera => camera::kind(heap, fields)?,
             Self::Scroll => scroll::kind(heap, fields)?,
+            Self::ScrollBar => scrollbar::kind(heap, fields)?,
             Self::Popup => popup::kind(heap, fields)?,
             Self::Row | Self::Column => flow::flow_kind(heap, fields, self == Self::Row)?,
             Self::Grid => flow::grid_kind(heap, fields)?,
@@ -172,6 +176,9 @@ impl Shape {
                 h, i, v
             )),
             Self::Slider => descriptor!("reel.slider", controls::validate_slider),
+            Self::ScrollBar => {
+                descriptor!("reel.scrollbar", |h, _, i, v| scrollbar::validate(h, i, v))
+            }
             Self::Switch | Self::Checkbox => {
                 descriptor!("reel.toggle", |h, _, i, v| controls::validate_toggle(
                     h, i, v
@@ -240,6 +247,7 @@ impl StageBinding {
             Shape::Stack,
             Shape::PageStack,
             Shape::TabBar,
+            Shape::ScrollBar,
         ] {
             registry.register_validator(shape.validator())?;
         }

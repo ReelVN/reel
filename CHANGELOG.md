@@ -6,6 +6,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Added
 
+- Add composable native scrollbars with custom track/thumb content, bounded scrolling, pointer capture, keyboard/controller input and accessibility range actions.
 - Retain verified stable continuation metadata through source compilation, ASB release builds, external text binding and distribution re-encoding.
 - Add budgeted typed-state graph and business-continuation capture/restoration APIs for embedding hosts, preserving current class behavior, shared references and defaulted new fields.
 - Add native `page_stack` and `tab_bar` compositions with retained lazy pages, shared construction tasks, customizable tab content, and keyboard/controller navigation.
