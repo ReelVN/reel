@@ -53,6 +53,8 @@ pub struct ProjectModule {
 #[derive(Debug)]
 pub struct ProjectCompilation {
     pub program: bc::VerifiedProgram,
+    /// One stable continuation contract for the fully linked current project.
+    pub resume: aside_vm::resume::ResumeTable,
     pub stats: Stats,
     pub modules: Vec<ProjectModule>,
     pub initializer: bc::FunctionId,
@@ -397,6 +399,7 @@ pub fn compile_project_with_progress(
         });
         let program = bc::verify(state.package, limits)
             .map_err(|e| state.budget.error(ErrorKind::Bytecode, e.to_string()))?;
+        let resume = super::resume::build(&program, &results.iter().map(|module| &module.metadata).collect::<Vec<_>>(), &mut state.budget)?;
 
         progress(crate::Progress {
             stage: crate::ProgressStage::Verify,
@@ -414,6 +417,7 @@ pub fn compile_project_with_progress(
         stats.capacity_bytes = capacity_bytes;
         Ok(ProjectCompilation {
             program,
+            resume,
             stats,
             modules: results,
             initializer,

@@ -2,8 +2,15 @@ use super::*;
 use crate::aside::data::{Capture, DataDocument};
 use crate::aside::saves::{SaveOperation, SaveResult};
 
-fn pending_write(code: &str, encoded: bool) -> (Session, SessionVm, HostTicket, Value) {
-    let (mut session, mut vm) = models::prepared(code, encoded);
+pub(super) fn pending_write(code: &str, encoded: bool) -> (Session, SessionVm, HostTicket, Value) {
+    pending_write_version(code, encoded, 1)
+}
+pub(super) fn pending_write_version(
+    code: &str,
+    encoded: bool,
+    version: u64,
+) -> (Session, SessionVm, HostTicket, Value) {
+    let (mut session, mut vm) = models::prepared_version(code, encoded, version);
     loop {
         match next(&mut vm, &mut session) {
             RunOutcome::HostCall(ticket) => {

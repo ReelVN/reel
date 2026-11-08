@@ -121,6 +121,12 @@ pub struct ExternalResultCase {
 pub enum Intrinsic {
     Bind,
     Derive,
+    /// Declare the stable identity of an ordinary resumable function.
+    ResumeFlow,
+    /// Mark the following complete waiting-operation call.
+    ResumePoint,
+    /// Mark the return continuation of the following ordinary flow call.
+    ResumeReturn,
 }
 #[derive(Debug, Clone)]
 pub struct NamespaceRef {

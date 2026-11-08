@@ -27,7 +27,7 @@ pub fn decode_story(bytes: &[u8]) -> Result<CompiledStory, reel_package::Error> 
 pub fn story_from_package(
     package: reel_package::CodePackage,
 ) -> Result<CompiledStory, reel_package::Error> {
-    let (program, metadata, products) = package.into_parts();
+    let (program, metadata, products, resume) = package.into_parts();
     let bindings = products
         .bindings
         .iter()
@@ -62,6 +62,7 @@ pub fn story_from_package(
     })?;
     Ok(CompiledStory {
         program,
+        resume,
         initializer: bc::FunctionId(metadata.initializer.function_id),
         entry: bc::FunctionId(entry.function_id),
         catalogs: Default::default(),

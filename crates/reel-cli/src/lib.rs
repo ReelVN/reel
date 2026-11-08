@@ -181,6 +181,12 @@ pub fn source_failure(failure: SourceError) -> Failure {
             failure.span,
             failure.detail,
         ),
+        SourceError::Resume(failure) => error(
+            "resume",
+            DiagnosticCode::InvalidHir,
+            TextRange::empty(0.into()),
+            failure.to_string(),
+        ),
         SourceError::Format(failure) => error(
             "bytecode",
             DiagnosticCode::InvalidHir,
@@ -236,8 +242,14 @@ pub fn source_failure(failure: SourceError) -> Failure {
 
 pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failure> {
     let entry = artifact::select_entry(&checked, Some(entry))?.expect("requested entry");
+    let resume = checked
+        .compilation
+        .program
+        .verify_resume(checked.compilation.resume, Default::default())
+        .map_err(|failure| source_failure(SourceError::Resume(failure)))?;
     Ok(CompiledStory {
         program: checked.compilation.program,
+        resume,
         initializer: checked.compilation.initializer,
         entry: bc::FunctionId(entry.function_id),
         catalogs: checked.catalogs,

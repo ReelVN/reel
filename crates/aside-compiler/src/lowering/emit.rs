@@ -279,6 +279,7 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
         }
         error
     })?;
+    let resume = super::resume::build(&program, &[&ir.metadata], b)?;
     let stats = program.stats();
     // The shared verifier reports the final package and derived cache capacities.
     // Replace conservative seed-clone admission with actual retained allocation;
@@ -292,6 +293,7 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
     b.stats.capacity_bytes = capacity_bytes;
     Ok(Compilation {
         program,
+        resume,
         stats: b.stats,
         metadata: ir.metadata,
         entry: ir.entry,

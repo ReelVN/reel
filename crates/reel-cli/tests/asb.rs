@@ -245,6 +245,7 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
             m,
             None,
             read.effects(),
+            read.resume().table(),
             Limits::default()
         )
         .unwrap(),
@@ -525,6 +526,7 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
         package.metadata(),
         Some(&manifest),
         package.effects(),
+        package.resume().table(),
         Limits::default(),
     )
     .unwrap();

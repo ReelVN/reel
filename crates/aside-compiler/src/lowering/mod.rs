@@ -7,6 +7,7 @@ mod emit;
 pub mod ir;
 mod project;
 mod registers;
+mod resume;
 mod signatures;
 pub use project::{
     ProjectCompilation, ProjectError, ProjectModule, compile_project, compile_project_with_progress,
@@ -159,6 +160,8 @@ pub fn lower(
 #[derive(Debug)]
 pub struct Compilation {
     pub program: bc::VerifiedProgram,
+    /// Versioned current-code logical continuation contract.
+    pub resume: aside_vm::resume::ResumeTable,
     pub stats: Stats,
     pub metadata: Metadata,
     pub entry: bc::FunctionId,
@@ -180,6 +183,7 @@ pub struct Metadata {
     pub natives: Vec<NativeIdentity>,
     pub symbol_count: u32,
     pub source_span: TextRange,
+    pub(crate) resume_source: Vec<resume::SourceFlow>,
     pub(crate) capacity_bytes: usize,
 }
 #[derive(Debug, Clone, Copy)]

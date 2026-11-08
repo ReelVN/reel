@@ -104,6 +104,7 @@ pub(super) fn api() -> &'static Api {
             version: "1".into(),
             exports: math,
         });
+        super::resume::describe(&mut api);
         api
     })
 }

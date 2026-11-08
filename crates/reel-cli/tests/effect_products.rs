@@ -79,6 +79,7 @@ fn source_function_bindings_survive_debug_release_and_reencoding() {
             package.metadata(),
             Some(&distribution),
             package.effects(),
+            package.resume().table(),
             Default::default(),
         )
         .unwrap();
@@ -158,6 +159,7 @@ fn package_and_engine_validate_distinct_effect_boundaries() {
             loaded.metadata(),
             None,
             products,
+            loaded.resume().table(),
             Default::default(),
         )
     };

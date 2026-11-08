@@ -472,6 +472,7 @@ pub(super) fn lower_prepared<'a>(
             dynamic_calls: f.dynamic_calls,
         }
     }));
+    let resume_source = super::resume::collect(m, &function_metadata, lower.source, &mut lower.b)?;
     let outputs_capacity = lower.outputs.capacity() * std::mem::size_of::<Option<bc::FunctionId>>();
     lower.b.release(lower.outputs);
     let metadata_capacity = lower.b.stats.capacity_bytes - metadata_before
@@ -494,6 +495,7 @@ pub(super) fn lower_prepared<'a>(
         natives: lower.native_identities,
         symbol_count: m.symbols().len() as u32,
         source_span: m.hir().node(h::NodeId(0)).span,
+        resume_source,
         capacity_bytes: metadata_capacity,
     };
     Ok(IrModule {

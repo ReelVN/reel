@@ -6,6 +6,8 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Added
 
+- Retain verified stable continuation metadata through source compilation, ASB release builds, external text binding and distribution re-encoding.
+- Add budgeted typed-state graph and business-continuation capture/restoration APIs for embedding hosts, preserving current class behavior, shared references and defaulted new fields.
 - Add native `page_stack` and `tab_bar` compositions with retained lazy pages, shared construction tasks, customizable tab content, and keyboard/controller navigation.
 - Add opt-in touch overscroll with native rebound animation while preserving bounded logical scroll positions.
 - Include the selected desktop render-quality tier in per-frame performance counts.

@@ -77,6 +77,7 @@ fn rebuild_code_with_frozen_resource_archives() {
         package.metadata(),
         Some(&manifest),
         package.effects(),
+        package.resume().table(),
         limits,
     )
     .unwrap();

@@ -67,6 +67,18 @@ impl FunctionBuilder<'_, '_> {
         let depth = self.expression_depth(n, depth)?;
         let kind = self.l.m.hir().node(n).kind;
         let form = self.l.m.hir().node(n).form;
+        if kind == H::Call && matches!(
+            self.l.m.facts()[n.0 as usize].intrinsic,
+            Some(crate::semantic::Intrinsic::ResumeFlow
+                | crate::semantic::Intrinsic::ResumePoint
+                | crate::semantic::Intrinsic::ResumeReturn)
+        ) {
+            if demand != Demand::Discard {
+                return Err(self.l.b.error(ErrorKind::Unsupported,
+                    "resume declarations must be standalone statements"));
+            }
+            return Ok(None);
+        }
         if matches!(kind, H::Name | H::Member)
             && let Some(value) = self.l.external_constant(n)?
         {

@@ -16,7 +16,9 @@ mod payload;
 mod root_ranges;
 mod slots;
 pub mod snapshot;
+pub mod resume;
 mod type_checks;
+pub mod typed_data;
 mod value;
 
 pub use cell::{CellContract, CellInfo};

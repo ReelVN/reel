@@ -14,6 +14,7 @@ mod callbacks;
 use budget::SliceMinimum;
 pub use budget::{NativeBudget, SessionBudget};
 pub mod capture;
+pub mod checkpoint;
 mod game;
 mod input_hints;
 pub use game::GameSettings;
@@ -231,6 +232,7 @@ pub enum SessionStep {
 /// work by the VM's most recently active task.
 pub struct SessionVm {
     vm: Vm,
+    resume: aside_vm::resume::VerifiedResumeTable,
     identity: SessionIdentity,
     owner: OwnerHandle,
     root_owner: RootOwner,
@@ -310,6 +312,7 @@ impl SessionVm {
     ) -> Result<Self, AdapterError> {
         story.validate()?;
         let mut vm = Self::load(session, story.program, limits)?;
+        vm.resume = story.resume;
         vm.stage.set_effect_products(vm.vm.heap(), story.effects)?;
         if !story.catalogs.catalogs.is_empty() {
             vm.set_source_catalogs(localization::SourceCatalogs::from_products(story.catalogs))?;
@@ -319,6 +322,10 @@ impl SessionVm {
     /// Share compiled effect definitions when starting or restoring this program.
     pub fn effect_products(&self) -> std::sync::Arc<source::EffectProducts> {
         self.stage.effect_products.clone()
+    }
+    /// Share current-code continuation metadata when starting or restoring this story.
+    pub fn resume_table(&self) -> &aside_vm::resume::VerifiedResumeTable {
+        &self.resume
     }
     pub fn load(
         session: &Session,
@@ -344,8 +351,11 @@ impl SessionVm {
         let owner = session.root_owner();
         let stage = stage::StageBinding::new(vm.heap())?;
         let standard = aside_std::StandardLibrary::new(vm.program());
+        let resume = vm.program().verify_resume(Default::default(), Default::default())
+            .expect("the empty continuation table is valid for every verified program");
         Ok(Self {
             vm,
+            resume,
             identity,
             owner,
             root_owner: RootOwner(owner.owner_id().0),

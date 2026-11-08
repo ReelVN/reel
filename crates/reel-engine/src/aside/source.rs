@@ -139,6 +139,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::rich_text::documentation(&contract.symbol))
                 .or_else(|| super::particles::documentation(&contract.symbol))
                 .or_else(|| super::stage::documentation(&contract.symbol))
+                .or_else(|| super::stage::scrollbar::documentation(&contract.symbol))
                 .or_else(|| super::stage::text_input::documentation(&contract.symbol))
                 .or_else(|| super::stage::configure::documentation(&contract.symbol))
                 .or_else(|| super::game::documentation(&contract.symbol))
@@ -183,6 +184,8 @@ pub fn node_property_documentation()
 
 pub struct CompiledStory {
     pub program: bc::VerifiedProgram,
+    /// Stable continuation metadata verified against this compilation.
+    pub resume: aside_vm::resume::VerifiedResumeTable,
     /// Run the real emitted module initializer before the selected story entry.
     pub initializer: bc::FunctionId,
     pub entry: bc::FunctionId,
@@ -243,6 +246,7 @@ pub enum SourceError {
     Analysis(aside_compiler::semantic::AnalysisFailure),
     Lowering(Box<lowering::Error>),
     Format(bc::Error),
+    Resume(aside_vm::resume::ResumeError),
     Entry,
     ProjectAnalysis(aside_compiler::semantic::ProjectAnalysis),
     ProjectLowering(lowering::ProjectError),
@@ -313,6 +317,7 @@ fn build_api() -> Api {
     super::stage::configure::describe(&mut api);
     super::lists::describe(&mut api);
     super::pages::describe(&mut api);
+    super::stage::scrollbar::describe(&mut api);
     api.refine(
         "reel::derive",
         aside_host::source::named("Binding"),
@@ -668,8 +673,13 @@ pub fn compile_story(
     let entry = compiled.metadata.functions[function_index]
         .output
         .ok_or(SourceError::Entry)?;
+    let resume = compiled
+        .program
+        .verify_resume(compiled.resume, Default::default())
+        .map_err(SourceError::Resume)?;
     let story = CompiledStory {
         program: compiled.program,
+        resume,
         initializer: compiled.entry,
         entry,
         catalogs,

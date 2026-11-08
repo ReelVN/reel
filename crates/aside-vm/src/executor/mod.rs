@@ -52,6 +52,7 @@ mod native_leaf_tests;
 mod native_roots;
 use native_leaf::NativeParameters;
 mod reactive;
+pub(crate) mod resume;
 pub(crate) mod snapshot;
 mod text;
 use crate::type_checks as types;

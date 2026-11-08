@@ -52,6 +52,7 @@ mod tasks;
 mod text_editing;
 mod text_fade;
 mod transitions;
+mod typed_data;
 mod video;
 mod virtual_lists;
 mod window;

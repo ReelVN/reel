@@ -11,6 +11,7 @@ pub use curve::{curve_key, curve_key_count, sample_curve};
 mod math;
 mod number;
 mod random;
+mod resume;
 mod source;
 mod time;
 

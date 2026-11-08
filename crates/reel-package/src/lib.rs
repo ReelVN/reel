@@ -94,10 +94,12 @@ pub struct CodePackage {
     metadata: Metadata,
     distribution: Option<distribution::Distribution>,
     effects: EffectProducts,
+    resume: aside_vm::resume::VerifiedResumeTable,
 }
 impl CodePackage {
     /// Bind the external immutable text storage before runtime admission.
     pub fn bind_text_pool(mut self, pool: bc::TextPool) -> Result<Self, Error> {
+        self.resume = self.resume.bind_text_pool(pool.clone())?;
         self.program = self
             .program
             .bind_text_pool(pool)
@@ -117,9 +119,20 @@ impl CodePackage {
     pub fn effects(&self) -> &EffectProducts {
         &self.effects
     }
-    /// Transfer code, metadata and effect products together to engine admission.
-    pub fn into_parts(self) -> (bc::VerifiedProgram, Metadata, EffectProducts) {
-        (self.program, self.metadata, self.effects)
+    /// Current continuation metadata, already verified against this code.
+    pub fn resume(&self) -> &aside_vm::resume::VerifiedResumeTable {
+        &self.resume
+    }
+    /// Transfer code, metadata, effects and continuations together to engine admission.
+    pub fn into_parts(
+        self,
+    ) -> (
+        bc::VerifiedProgram,
+        Metadata,
+        EffectProducts,
+        aside_vm::resume::VerifiedResumeTable,
+    ) {
+        (self.program, self.metadata, self.effects, self.resume)
     }
 }
 pub fn digest(bytes: &[u8]) -> String {

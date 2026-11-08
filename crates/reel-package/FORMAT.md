@@ -16,12 +16,13 @@ Each 56-byte index record contains `kind:u32`, `flags:u32`, `offset:u64`,
 | 2 | UTF-8 JSON code metadata, schema 1 | Required |
 | 3 | UTF-8 JSON `Distribution` | Exported projects |
 | 4 | Effect definitions and linked function bindings | Projects using compiled effects |
+| 5 | UTF-8 JSON logical continuation table, version 1 | Projects declaring stable resume flows |
 
 Known sections set flags=1 (required when present). Kinds are unique; nonempty
 ranges are disjoint and outside the header/index. Unknown required sections
 fail. Full decoding hash-checks all payloads, including optional unknown sections.
-Writers emit header, bytecode, metadata, optional distribution, optional effects
-and index.
+Writers emit header, bytecode, metadata, optional distribution, optional effects,
+optional logical continuations and index.
 Container writers receive immutable serialized bytecode paired with its verified
 program and validate metadata against that shared program.
 
@@ -62,6 +63,20 @@ spans, native handles and live instance values are excluded. The engine decoder
 bounds table allocations and reconstructs the shared validated EffectProgram.
 These products survive debug stripping and ASB re-encoding. GPU-target artifacts
 are prepared separately from this portable definition identity.
+
+## Logical continuations v1
+
+Section 5 stores `aside_vm::resume::ResumeTable`. Stable flow and site keys map
+to the current function ids, execution word PCs, result slots and live binding
+layouts. The VM verifies the complete table against the decoded current program
+before the package is admitted. The package retains that verified table; binding
+an external text pool preserves the verification and shares the bound pool with
+the execution program. JSON and resume verification use the package metadata and
+work limits. An absent section denotes an empty version 1 table.
+
+Continuation metadata survives release debug stripping, external text extraction
+and distribution re-encoding. It describes current code; saved logical records
+store stable keys and data independently of this numeric layout.
 
 ## Resource and text archives v1
 

@@ -2,8 +2,11 @@ use super::*;
 use reel_ui::stage::{ControlValue, NodeChange, NodeKind};
 
 pub(super) fn prepared(code: &str, encoded: bool) -> (Session, SessionVm) {
+    prepared_version(code, encoded, 1)
+}
+pub(super) fn prepared_version(code: &str, encoded: bool, version: u64) -> (Session, SessionVm) {
     let mut session = session();
-    let mut story = source::compile_story(code, "model", 1, "opening").unwrap();
+    let mut story = source::compile_story(code, "model", version, "opening").unwrap();
     if encoded {
         let bytes = bc::encode(story.program.package(), bc::Limits::default()).unwrap();
         story.program = bc::verify(

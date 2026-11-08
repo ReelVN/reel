@@ -84,6 +84,7 @@ fn update_manifest(
         package.metadata(),
         Some(&manifest),
         package.effects(),
+        package.resume().table(),
         limits,
     )
     .map_err(io::Error::other)
@@ -413,6 +414,7 @@ pub fn export(
             package.metadata(),
             Some(&manifest),
             package.effects(),
+            package.resume().table(),
             limits,
         )
         .map_err(io::Error::other)?;
