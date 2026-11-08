@@ -11,6 +11,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Fixed
 
+- Keep large reusable desktop image-upload buffers when smaller completed uploads fill the staging cache.
 - Raise desktop defaults to 1 GiB each for GPU resources and offscreen targets, 64 MiB for transient rendering data and 512 MiB for decoded CPU resources, allocating within these limits as needed.
 - Prepare admitted viewport-sized desktop scratch targets and mapped upload buffers during surface setup for reuse by the first transitions and image-heavy pages.
 - Account hidden prefetch residency separately from fonts and visible resources while retaining the total source-memory limit.

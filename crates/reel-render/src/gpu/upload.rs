@@ -36,14 +36,12 @@ impl Buffer {
 }
 pub(super) struct Cache {
     slots: [Option<Box<Buffer>>; 16],
-    next: usize,
     warmed: bool,
 }
 impl Default for Cache {
     fn default() -> Self {
         Self {
             slots: std::array::from_fn(|_| None),
-            next: 0,
             warmed: false,
         }
     }
@@ -104,17 +102,25 @@ impl Cache {
     }
     pub fn clear(&mut self) {
         self.slots.iter_mut().for_each(|slot| *slot = None);
-        self.next = 0;
     }
     pub fn put(&mut self, buffer: Box<Buffer>) {
         if buffer.ready() {
-            let index = self
-                .slots
-                .iter()
-                .position(Option::is_none)
-                .unwrap_or(self.next);
+            let index = if let Some(index) = self.slots.iter().position(Option::is_none) {
+                index
+            } else {
+                let (index, smallest) = self
+                    .slots
+                    .iter()
+                    .enumerate()
+                    .map(|(index, slot)| (index, slot.as_ref().unwrap().capacity))
+                    .min_by_key(|(_, capacity)| *capacity)
+                    .unwrap();
+                if buffer.capacity <= smallest {
+                    return;
+                }
+                index
+            };
             self.slots[index] = Some(buffer);
-            self.next = (index + 1) % self.slots.len();
         }
     }
     pub fn acquire(
@@ -178,6 +184,44 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "actual adapter; bounded capacity-aware upload cache"]
+    fn small_upload_returns_preserve_large_reusable_buffers() {
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            Default::default(),
+        ))
+        .unwrap();
+        let budgets = Budgets::new(gpu.limits);
+        let mut cache = Cache::default();
+        let large = cache.acquire(&gpu, &budgets, 4 << 20).unwrap().unwrap();
+        let address = (&*large as *const Buffer) as usize;
+        let small: Vec<_> = (1..=16)
+            .map(|index| cache.acquire(&gpu, &budgets, index * 256).unwrap().unwrap())
+            .collect();
+        cache.put(large);
+        for buffer in small {
+            cache.put(buffer);
+        }
+        let creations = gpu.upload_creations.staging.load(Ordering::Relaxed);
+        let large = cache.acquire(&gpu, &budgets, 4 << 20).unwrap().unwrap();
+        assert_eq!((&*large as *const Buffer) as usize, address);
+        assert_eq!(
+            gpu.upload_creations.staging.load(Ordering::Relaxed),
+            creations
+        );
+        assert_eq!(
+            budgets.resources.usage().bytes,
+            (4 << 20) + (2..=16).sum::<u64>() * 256
+        );
+        cache.put(large);
+        cache.clear();
+        assert_eq!(budgets.resources.usage().bytes, 0);
+        assert_eq!(budgets.transient.usage().bytes, 0);
+        gpu.check().unwrap();
+    }
     #[test]
     #[ignore = "requires actual graphics adapter; buffer submission only, no pixel readback"]
     fn completed_texture_upload_buffers_reuse_mapping_allocation_and_reservation() {
