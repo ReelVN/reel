@@ -37,16 +37,63 @@ impl Buffer {
 pub(super) struct Cache {
     slots: [Option<Box<Buffer>>; 16],
     next: usize,
+    warmed: bool,
 }
 impl Default for Cache {
     fn default() -> Self {
         Self {
             slots: std::array::from_fn(|_| None),
             next: 0,
+            warmed: false,
         }
     }
 }
 impl Cache {
+    pub(super) fn warm(&mut self, gpu: &Gpu, budgets: &Budgets) -> Result<(), GpuError> {
+        if self.warmed {
+            return Ok(());
+        }
+        let alignment = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let bytes = gpu
+            .limits
+            .image_upload_bytes_per_prepare
+            .min(gpu.limits.resource_bytes / 8)
+            / alignment
+            * alignment;
+        if bytes == 0
+            || self
+                .slots
+                .iter()
+                .flatten()
+                .filter(|slot| slot.capacity >= bytes)
+                .count()
+                >= 2
+        {
+            self.warmed = true;
+            return Ok(());
+        }
+        let mut buffers = [None, None];
+        for slot in &mut buffers {
+            let allocating = self.capacity() < bytes;
+            if allocating && bytes > budgets.resources.available_bytes() {
+                break;
+            }
+            *slot = self.acquire(gpu, budgets, bytes)?;
+            if allocating && let Some(buffer) = slot {
+                let mut mapped = buffer
+                    .buffer
+                    .slice(..)
+                    .get_mapped_range_mut()
+                    .map_err(|e| GpuError::Readback(e.to_string()))?;
+                mapped.slice(..).fill(0);
+            }
+        }
+        for buffer in buffers.into_iter().flatten() {
+            self.put(buffer);
+        }
+        self.warmed = true;
+        Ok(())
+    }
     pub fn capacity(&self) -> u64 {
         self.slots
             .iter()
@@ -108,6 +155,7 @@ impl Cache {
                     .resource_bytes
                     .saturating_sub(budgets.resources.usage().bytes),
             })?;
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
         let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reusable image upload"),
             size: bytes,
@@ -184,5 +232,20 @@ mod tests {
         eprintln!(
             "8 completed texture buffer uploads: staging_buffer_creations=1 (former=8), native_copy_calls=8, retained_capacity=4096"
         );
+        cache.warm(&gpu, &budgets).unwrap();
+        let bytes = gpu.limits.image_upload_bytes_per_prepare;
+        assert_eq!(budgets.resources.usage().bytes, bytes * 2);
+        let in_flight = cache.acquire(&gpu, &budgets, bytes).unwrap().unwrap();
+        let creations = gpu.upload_creations.staging.load(Ordering::Relaxed);
+        cache.warm(&gpu, &budgets).unwrap();
+        assert_eq!(
+            gpu.upload_creations.staging.load(Ordering::Relaxed),
+            creations
+        );
+        cache.put(in_flight);
+        cache.clear();
+        cache.warm(&gpu, &budgets).unwrap();
+        assert_eq!(budgets.resources.usage().bytes, 0);
+        assert_eq!(budgets.transient.usage().bytes, 0);
     }
 }

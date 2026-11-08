@@ -295,11 +295,11 @@ impl SessionVm {
             _ => bottom - viewport,
         };
         let padding = gap_padding(self.vm.heap(), s)?;
-        let offset = (old_offset + next - start).clamp(
+        let offset = (next + (old_offset - start)).clamp(
             0.,
             (total(self.vm.heap(), s)? + padding * 2. - viewport).max(0.),
         );
-        let next = start + offset - old_offset;
+        let next = offset + (start - old_offset);
         if scroll.tag() != ValueTag::Null {
             self.vm.heap_mut().write_host_property(
                 aside_vm::PropertyId {

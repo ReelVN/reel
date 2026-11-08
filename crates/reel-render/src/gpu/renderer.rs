@@ -173,6 +173,31 @@ impl Renderer {
         }
         Ok(())
     }
+    /// Prepare viewport-sized transition scratch at the highest supported tier
+    /// and one allocation at lower tiers, within target and metadata quotas.
+    pub(super) fn prepare_viewport(&self, size: [u32; 2]) -> Result<(), GpuError> {
+        if size.contains(&0) {
+            return Ok(());
+        }
+        for (index, quality) in self.gpu.supported_qualities().enumerate() {
+            let cost = super::targets::target_bytes(size, quality)?;
+            let count = if index == 0 && cost <= self.gpu.limits.target_bytes / 3 {
+                3
+            } else {
+                1
+            };
+            self.targets.warm(
+                &self.gpu,
+                size,
+                quality,
+                count,
+                &self.budgets.targets,
+                &self.budgets.transient,
+            )?;
+        }
+        self.images.prepare_staging(&self.gpu, &self.budgets)?;
+        self.gpu.check()
+    }
     pub(super) fn reserve_readback(
         &self,
         prepared: &Prepared,
@@ -802,6 +827,13 @@ impl Renderer {
                     })?
                     .0
             };
+            #[cfg(feature = "profiling")]
+            reel_core::profile::count(match (quality.format, quality.samples) {
+                (wgpu::TextureFormat::Rgba16Float, 4) => reel_core::profile::Phase::RenderTier16f4x,
+                (wgpu::TextureFormat::Rgba16Float, 1) => reel_core::profile::Phase::RenderTier16f1x,
+                (wgpu::TextureFormat::Rgba8Unorm, 1) => reel_core::profile::Phase::RenderTier8u1x,
+                _ => unreachable!("negotiated color target quality"),
+            });
             let pipelines = self.pipelines.get(&self.gpu, quality)?;
             let coverage_pipeline = if offscreen.coverage_requirements().iter().len() != 0 {
                 Some(

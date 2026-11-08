@@ -54,6 +54,9 @@ struct Copy {
 }
 
 impl ImageCache {
+    pub(super) fn prepare_staging(&self, gpu: &Gpu, budgets: &Budgets) -> Result<(), GpuError> {
+        self.staging.lock().unwrap().warm(gpu, budgets)
+    }
     pub(super) fn submitted(&self) {
         self.retired.lock().unwrap().submitted();
     }

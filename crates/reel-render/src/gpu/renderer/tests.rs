@@ -725,6 +725,75 @@ fn white_texture_whole_frame_quality_and_budget_failures_release() {
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
+fn alternating_frame_quality_reuses_targets_and_preserves_pixels() {
+    let pool = pool();
+    let plain = frame(workload(1, 0, Color::WHITE), &pool);
+    let mut nested = workload(1, 0, Color::WHITE);
+    nested.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    fill(&mut nested, Color::WHITE);
+    nested.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    fill(&mut nested, Color::WHITE);
+    fill(&mut nested, Color::WHITE);
+    nested.pop_group();
+    fill(&mut nested, Color::WHITE);
+    nested.pop_group();
+    let nested = frame(nested, &pool);
+    let mut renderer = renderer(crate::gpu::GpuLimits {
+        target_bytes: 2 * 64 * 48 * 40,
+        ..Default::default()
+    });
+    renderer.prepare_viewport([64, 48]).unwrap();
+    let initial = renderer.usage().targets;
+    assert!(
+        initial > 64 * 48 * 40,
+        "viewport prepares another admitted tier"
+    );
+    renderer.prepare_viewport([64, 48]).unwrap();
+    assert_eq!(
+        renderer.usage().targets,
+        initial,
+        "repeated configuration reuses storage"
+    );
+    let mut owners: [Vec<std::sync::Weak<super::super::target_cache::Allocation>>; 2] =
+        Default::default();
+    for iteration in 0..12 {
+        let index = iteration % 2;
+        let prepared = renderer
+            .prepare(if index == 0 { &plain } else { &nested })
+            .unwrap();
+        assert_eq!(prepared.quality().samples, if index == 0 { 4 } else { 1 });
+        if owners[index].is_empty() {
+            owners[index] = prepared.targets.iter().map(Arc::downgrade).collect();
+        } else {
+            assert_eq!(owners[index].len(), prepared.targets.len());
+            for (old, new) in owners[index].iter().zip(&prepared.targets) {
+                assert!(
+                    old.upgrade().is_some_and(|old| Arc::ptr_eq(&old, new)),
+                    "returning quality recreated its target"
+                );
+            }
+        }
+        let pixels = renderer.readback(prepared).unwrap();
+        assert!(pixels.iter().flatten().all(|c| (*c - 1.).abs() < 0.002));
+        assert!(renderer.budgets.targets.usage().bytes <= renderer.gpu.limits.target_bytes);
+    }
+    renderer.gpu.check().unwrap();
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
 fn white_texture_concurrent_contexts_and_delayed_completion_keep_tickets() {
     let pool = pool();
     let frame = frame(workload(50, 25, Color::WHITE), &pool);

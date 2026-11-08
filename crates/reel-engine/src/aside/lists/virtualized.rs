@@ -58,6 +58,8 @@ const INDEX_HEIGHTS: u64 = 3;
 const WINDOW: u64 = 4;
 const BUILT: u64 = 5;
 const PREPARE_WINDOW: u64 = 6;
+const OVERSCAN: f64 = 0.25;
+const REFILL: f64 = OVERSCAN * 0.5;
 const SORT: u64 = 7;
 
 fn get(h: &Heap, s: Value, f: S) -> Result<Value, HeapError> {

@@ -6,10 +6,16 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Added
 
+- Include the selected desktop render-quality tier in per-frame performance counts.
 - Add a shared `preload` node property to prepare hidden mounted image and effect sources with low-priority IO and bounded spare residency.
 
 ### Fixed
 
+- Raise desktop defaults to 1 GiB each for GPU resources and offscreen targets, 64 MiB for transient rendering data and 512 MiB for decoded CPU resources, allocating within these limits as needed.
+- Prepare admitted viewport-sized desktop scratch targets and mapped upload buffers during surface setup for reuse by the first transitions and image-heavy pages.
+- Account hidden prefetch residency separately from fonts and visible resources while retaining the total source-memory limit.
+- Reduce virtual-list row construction outside the viewport while preserving refill hysteresis, measured-height anchoring and pinned navigation.
+- Preserve desktop scratch targets across render-quality switches, reclaiming idle allocations across tiers within the shared target budget.
 - Reuse materialized effects whose source is a stable ordered composition of multiple images, sharing dependency and lifetime rules across desktop and Vita.
 - Record cold page preparation in the performance timeline, coalescing equal readiness states while preserving publication and presentation boundaries, callback gaps, and eviction counts.
 - Wait for image and font readiness before requesting another redraw, avoiding repeated UI work while resources load.
@@ -30,7 +36,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Omit image draws outside their paint viewport so hidden pages do not request GPU image uploads.
 - Preserve rendering caches when a WGPU image upload yields at its preparation quota; reclaim them only for allocation pressure.
 - Use smaller parallel conversion batches to distribute desktop image uploads across available workers.
-- Allow 16 MiB per desktop image preparation to reduce completion-wake round trips when opening image-heavy pages, within the existing GPU resource budget.
+- Allow 64 MiB per desktop image preparation to reduce completion-wake round trips when opening image-heavy pages, within the existing GPU resource budget.
 - Separate CPU glyph preparation from desktop/Vita atlas uploads, resolving the font lease once per run. Desktop batches distinct missing glyphs on bounded Rayon lanes and keeps raster scratch storage owned by the renderer.
 - Keep desktop screenshot targets separate from the displayed viewport, preserving target and geometry caches through thumbnail capture and reclaiming idle caches on actual budget pressure.
 

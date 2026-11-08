@@ -437,10 +437,11 @@ impl Images {
             } else {
                 AssetKind::Image
             };
+            let limit = self.assets.prefetch_available(self.hidden_prefetch_bytes());
             let request = if let Some(bytes) = self.encoded.get(&source) {
-                self.assets.prefetch_encoded(source.clone(), bytes)
+                self.assets.prefetch_encoded(source.clone(), bytes, limit)
             } else {
-                Ok(self.assets.prefetch(source.clone(), kind))
+                Ok(self.assets.prefetch(source.clone(), kind, limit))
             };
             match request {
                 Ok(id) => self.push_pending(Pending {
@@ -467,6 +468,31 @@ impl Images {
     }
     fn is_loading(&self, source: &str) -> bool {
         self.pending.iter().any(|pending| pending.source == source)
+    }
+    fn hidden_prefetch_bytes(&self) -> u64 {
+        use reel_ui::resources::ResourceView;
+        let mut backings = BTreeSet::new();
+        self.loaded
+            .iter()
+            .filter_map(|(source, lease)| {
+                if !self.prefetch.contains(source) || self.wanted.contains_key(source) {
+                    return None;
+                }
+                let backing = lease.image_backing();
+                if !backings.insert(backing.handle()) {
+                    return None;
+                }
+                if backing.pixels_resident() {
+                    let header = u64::from(backing.texture_descriptor().is_some())
+                        * reel_core::texture::TextureHeader::LEN as u64;
+                    Some(backing.pixel_byte_len().unwrap() as u64 + header)
+                } else if let ResourceView::EffectShader { bytes, .. } = backing.view() {
+                    Some(bytes.data().len() as u64)
+                } else {
+                    None
+                }
+            })
+            .sum()
     }
     fn free_slots(&self) -> usize {
         (self.assets.worker_limits().max_requests as usize).saturating_sub(self.pending.len())

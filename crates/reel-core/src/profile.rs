@@ -188,8 +188,14 @@ pub enum Phase {
     GlyphStroke,
     /// Allocate and rasterize the glyph's alpha coverage.
     GlyphCoverage,
+    /// Desktop preparations that selected RGBA16F with four samples; instantaneous count.
+    RenderTier16f4x,
+    /// Desktop preparations that selected RGBA16F with one sample; instantaneous count.
+    RenderTier16f1x,
+    /// Desktop preparations that selected RGBA8 with one sample; instantaneous count.
+    RenderTier8u1x,
 }
-pub const NAMES: [&str; 106] = [
+pub const NAMES: [&str; 109] = [
     "input",
     "tick",
     "session",
@@ -296,6 +302,9 @@ pub const NAMES: [&str; 106] = [
     "glyph_outline",
     "glyph_stroke",
     "glyph_coverage",
+    "render_tier_16f_4x",
+    "render_tier_16f_1x",
+    "render_tier_8u_1x",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

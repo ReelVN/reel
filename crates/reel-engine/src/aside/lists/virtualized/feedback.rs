@@ -27,7 +27,7 @@ impl SessionVm {
                     .1,
             )?;
             let offset = (total(self.vm.heap(), s)? + padding * 2. - (end - start)).max(0.);
-            start + offset - previous
+            offset + (start - previous)
         } else if n > 0 && old_index >= 0 {
             let key = get(self.vm.heap(), s, S::AnchorKey)?;
             let found = find(
@@ -46,7 +46,7 @@ impl SessionVm {
             0.
         };
         let delta = next - start;
-        let offset = (previous + delta).max(0.);
+        let offset = (next + (previous - start)).max(0.);
         self.vm
             .heap_mut()
             .write_host_property(property, Value::float(offset), true)?;
@@ -191,10 +191,8 @@ impl SessionVm {
             }
         }
         changed |= refresh_estimate(self.vm.heap_mut(), s)?;
-        // Refill before unknown rows become visible. Half a viewport is the
-        // low-water mark; construction restores a full viewport on both sides.
-        // The hysteresis keeps small scrolls from rerunning the window observer.
-        let reserve = (event.visible_end - event.visible_start) * 0.5;
+        // Refill at half the prepared buffer before unknown rows become visible.
+        let reserve = (event.visible_end - event.visible_start) * REFILL;
         let first = locate(self.vm.heap(), s, (event.visible_start - reserve).max(0.))?;
         let last = locate(self.vm.heap(), s, (event.visible_end + reserve).max(0.))?;
         if count(self.vm.heap(), s)? > 0

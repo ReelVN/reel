@@ -103,6 +103,7 @@ impl Service {
     }
     fn attach_atlas(&mut self, id: LoadId, path: &str) -> Result<(), String> {
         let priority = self.loads[&id].priority;
+        let prefetch_limit = self.loads[&id].prefetch_limit;
         if self.atlas_pages.0.values().any(|page| page.load == id) {
             return Err("atlas page cannot reference another atlas view".into());
         }
@@ -133,6 +134,7 @@ impl Service {
                 reloadable: true,
                 kind: AssetKind::Image,
                 priority,
+                prefetch_limit,
                 phase: Phase::Describe,
                 input: None,
                 size: [0; 2],

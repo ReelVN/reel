@@ -58,9 +58,10 @@ impl SessionVm {
         let n = count(self.vm.heap(), s)?;
         let start = num(self.vm.heap(), s, S::Start)?;
         let end = num(self.vm.heap(), s, S::End)?;
-        let first = locate(self.vm.heap(), s, (start - (end - start)).max(0.))?;
+        let reserve = (end - start) * OVERSCAN;
+        let first = locate(self.vm.heap(), s, (start - reserve).max(0.))?;
         let last = if end > start {
-            locate(self.vm.heap(), s, end + (end - start))?
+            locate(self.vm.heap(), s, end + reserve)?
         } else {
             first
         };

@@ -16,6 +16,164 @@ mod tests {
     use crate::common::renderer::Budgets;
 
     #[test]
+    #[ignore = "actual adapter; quality-tier reuse and physical reservations"]
+    fn quality_tiers_preserve_allocations_and_share_the_original_budget() {
+        let limits = super::super::GpuLimits {
+            target_bytes: 1 << 20,
+            ..Default::default()
+        };
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            limits,
+        ))
+        .unwrap();
+        let budgets = Budgets::new(limits);
+        let cache = TargetCache::default();
+        let size = [64, 48];
+        let qualities = [
+            Quality {
+                format: wgpu::TextureFormat::Rgba16Float,
+                samples: 4,
+                degraded: false,
+            },
+            Quality {
+                format: wgpu::TextureFormat::Rgba16Float,
+                samples: 1,
+                degraded: true,
+            },
+            Quality {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                samples: 1,
+                degraded: true,
+            },
+        ];
+        let mut first = [const { None }; 3];
+        let required = crate::common::target_plan::Requirements::default();
+        for frame in 0..48 {
+            let index = frame % 3;
+            let quality = qualities[index];
+            cache.configure(size, quality);
+            let cost = super::super::targets::target_bytes(size, quality).unwrap();
+            let allocation = cache
+                .get(&gpu, size, quality, &[], &budgets.targets, cost, &required)
+                .unwrap();
+            if let Some(first) = &first[index] {
+                assert!(
+                    Arc::ptr_eq(first, &allocation),
+                    "quality switch recreated a warm target"
+                );
+            } else {
+                first[index] = Some(allocation.clone());
+            }
+            let slots = [allocation];
+            cache.reserve_metadata(
+                size,
+                quality,
+                &slots,
+                &budgets.transient,
+                limits.transient_bytes,
+            );
+            cache.publish(size, quality, &slots, None);
+        }
+        let expected = qualities
+            .into_iter()
+            .map(|q| super::super::targets::target_bytes(size, q).unwrap())
+            .sum::<u64>();
+        assert_eq!(budgets.targets.usage().bytes, expected);
+        assert_eq!(budgets.targets.usage().peak_bytes, expected);
+        for _ in 0..2 {
+            for quality in qualities {
+                cache
+                    .warm(&gpu, size, quality, 3, &budgets.targets, &budgets.transient)
+                    .unwrap();
+            }
+            assert_eq!(budgets.targets.usage().bytes, expected * 3);
+            assert_eq!(budgets.targets.usage().peak_bytes, expected * 3);
+        }
+        drop(first);
+        cache.clear();
+        assert_eq!(budgets.targets.usage().bytes, 0);
+        assert_eq!(budgets.transient.usage().bytes, 0);
+        gpu.check().unwrap();
+    }
+
+    #[test]
+    #[ignore = "actual adapter; cross-tier pressure keeps in-flight leases alive"]
+    fn quality_tier_pressure_reclaims_idle_storage_after_live_owners_retire() {
+        let limits = super::super::GpuLimits {
+            target_bytes: 32 * 32 * 48,
+            ..Default::default()
+        };
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            super::super::DeviceGeneration(1),
+            limits,
+        ))
+        .unwrap();
+        let budgets = Budgets::new(limits);
+        let cache = TargetCache::default();
+        let size = [32, 32];
+        let qualities = [
+            Quality {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                samples: 1,
+                degraded: true,
+            },
+            Quality {
+                format: wgpu::TextureFormat::Rgba16Float,
+                samples: 1,
+                degraded: true,
+            },
+            Quality {
+                format: wgpu::TextureFormat::Rgba16Float,
+                samples: 4,
+                degraded: false,
+            },
+        ];
+        let required = crate::common::target_plan::Requirements::default();
+        let get = |quality| {
+            cache.get(
+                &gpu,
+                size,
+                quality,
+                &[],
+                &budgets.targets,
+                super::super::targets::target_bytes(size, quality).unwrap(),
+                &required,
+            )
+        };
+        let mut flights = Vec::new();
+        for quality in qualities[..2].iter().copied() {
+            cache.configure(size, quality);
+            let allocation = get(quality).unwrap();
+            cache.reserve_metadata(
+                size,
+                quality,
+                std::slice::from_ref(&allocation),
+                &budgets.transient,
+                limits.transient_bytes,
+            );
+            cache.publish(size, quality, std::slice::from_ref(&allocation), None);
+            flights.push(allocation);
+        }
+        let old = Arc::downgrade(&flights[0]);
+        cache.configure(size, qualities[2]);
+        assert!(matches!(get(qualities[2]), Err(GpuError::Pressure { .. })));
+        assert!(old.upgrade().is_some());
+        drop(flights.remove(0));
+        let high = get(qualities[2]).unwrap();
+        assert!(old.upgrade().is_none());
+        assert_eq!(budgets.targets.usage().bytes, limits.target_bytes);
+        drop((high, flights));
+        cache.clear();
+        assert_eq!(budgets.targets.usage().bytes, 0);
+        gpu.check().unwrap();
+    }
+
+    #[test]
     #[ignore = "requires actual graphics adapter; validates allocation ownership"]
     fn retained_output_excludes_only_its_own_storage_from_scratch_reuse() {
         let gpu = pollster::block_on(Gpu::request(
@@ -399,10 +557,59 @@ mod tests {
         gpu.check().unwrap();
     }
 }
-struct Entries {
-    size: [u32; 2],
+struct Tier {
     quality: Quality,
     slots: crate::common::target_cache::Cache<Arc<Allocation>>,
+}
+impl Tier {
+    fn matches(&self, quality: Quality) -> bool {
+        self.quality.format == quality.format && self.quality.samples == quality.samples
+    }
+}
+struct Entries {
+    size: [u32; 2],
+    // The device negotiates three color tiers and their matching coverage tiers.
+    tiers: [Option<Tier>; 3],
+}
+impl Entries {
+    fn tier(&self, quality: Quality) -> Option<&Tier> {
+        self.tiers
+            .iter()
+            .flatten()
+            .find(|tier| tier.matches(quality))
+    }
+    fn tier_mut(&mut self, quality: Quality) -> Option<&mut Tier> {
+        self.tiers
+            .iter_mut()
+            .flatten()
+            .find(|tier| tier.matches(quality))
+    }
+    fn reclaim(
+        &mut self,
+        quality: Quality,
+        required: &crate::common::target_plan::Requirements,
+        recent: bool,
+    ) -> bool {
+        let unused = crate::common::target_plan::Requirements::default();
+        for current in [false, true] {
+            for tier in self
+                .tiers
+                .iter_mut()
+                .flatten()
+                .filter(|tier| tier.matches(quality) == current)
+            {
+                if tier.slots.reclaim_eligible(
+                    if current { required } else { &unused },
+                    recent,
+                    |owner| !owner.target.is_effect_pinned(),
+                    |owner| Arc::strong_count(owner) == 1,
+                ) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 #[derive(Default)]
 pub(super) struct TargetCache(
@@ -411,6 +618,54 @@ pub(super) struct TargetCache(
 );
 
 impl TargetCache {
+    pub(super) fn warm(
+        &self,
+        gpu: &Gpu,
+        size: [u32; 2],
+        quality: Quality,
+        count: usize,
+        targets: &BudgetPool,
+        metadata: &BudgetPool,
+    ) -> Result<(), GpuError> {
+        self.configure(size, quality);
+        let cost = super::targets::target_bytes(size, quality)?;
+        let mut owners = smallvec::SmallVec::<[Arc<Allocation>; 3]>::new();
+        for index in 0..count {
+            let mut cache = self.0.lock().unwrap();
+            let tier = cache.as_mut().unwrap().tier_mut(quality).unwrap();
+            if let Some(owner) = tier
+                .slots
+                .get_eligible(size, index, |owner| !owner.target.is_effect_pinned())
+            {
+                owners.push(owner.clone());
+                continue;
+            }
+            if tier
+                .slots
+                .reserve(1, metadata, gpu.limits.transient_bytes)
+                .is_err()
+            {
+                break;
+            }
+            drop(cache);
+            if cost > targets.available_bytes() {
+                break;
+            }
+            let allocation = self.get(
+                gpu,
+                size,
+                quality,
+                &owners,
+                targets,
+                cost,
+                &Default::default(),
+            )?;
+            self.publish(size, quality, std::slice::from_ref(&allocation), None);
+            owners.push(allocation);
+        }
+        Ok(())
+    }
+
     pub(super) fn capacities(
         &self,
         size: [u32; 2],
@@ -418,35 +673,44 @@ impl TargetCache {
         reserve: impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<crate::common::target_plan::Requirements, GpuError> {
         let cache = self.0.lock().unwrap();
-        let Some(entries) = cache
+        let Some(tier) = cache
             .as_ref()
-            .filter(|entries| entries.size == size && entries.quality == quality)
+            .filter(|entries| entries.size == size)
+            .and_then(|entries| entries.tier(quality))
         else {
             return Ok(Default::default());
         };
-        entries
-            .slots
+        tier.slots
             .capacities(|owner| !owner.target.is_effect_pinned(), reserve)
     }
     #[cfg(test)]
     pub(super) fn metadata_bytes(&self) -> u64 {
-        self.0
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map_or(0, |entries| entries.slots.capacity_bytes())
-            + self.1.lock().unwrap().metadata_bytes()
+        self.0.lock().unwrap().as_ref().map_or(0, |entries| {
+            entries
+                .tiers
+                .iter()
+                .flatten()
+                .map(|tier| tier.slots.capacity_bytes())
+                .sum::<u64>()
+        }) + self.1.lock().unwrap().metadata_bytes()
     }
     pub(super) fn configure(&self, size: [u32; 2], quality: Quality) {
         let mut cache = self.0.lock().unwrap();
-        if let Some(entries) = cache.as_ref()
-            && entries.size == size
-            && entries.quality == quality
-        {
+        if cache.as_ref().is_none_or(|entries| entries.size != size) {
+            *cache = Some(Entries {
+                size,
+                tiers: [const { None }; 3],
+            });
+        }
+        let entries = cache.as_mut().unwrap();
+        if entries.tier(quality).is_some() {
             return;
         }
-        *cache = Some(Entries {
-            size,
+        *entries
+            .tiers
+            .iter_mut()
+            .find(|tier| tier.is_none())
+            .expect("negotiated target tier") = Some(Tier {
             quality,
             slots: Default::default(),
         });
@@ -466,9 +730,13 @@ impl TargetCache {
         cost: u64,
         required: &crate::common::target_plan::Requirements,
     ) -> Result<Arc<Allocation>, GpuError> {
-        if let Some(entries) = self.0.lock().unwrap().as_ref()
-            && entries.quality == quality
-            && let Some(target) = entries.slots.get_eligible(size, 0, |target| {
+        if let Some(tier) = self
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|entries| entries.tier(quality))
+            && let Some(target) = tier.slots.get_eligible(size, 0, |target| {
                 !target.target.is_effect_pinned()
                     && !used.iter().any(|used| Arc::ptr_eq(used, target))
             })
@@ -484,15 +752,7 @@ impl TargetCache {
                     .lock()
                     .unwrap()
                     .as_mut()
-                    .filter(|entries| entries.quality == quality)
-                    .is_some_and(|entries| {
-                        entries.slots.reclaim_eligible(
-                            required,
-                            recent,
-                            |owner| !owner.target.is_effect_pinned(),
-                            |owner| Arc::strong_count(owner) == 1,
-                        )
-                    });
+                    .is_some_and(|entries| entries.reclaim(quality, required, recent));
                 if released {
                     resident = pool.reserve(cost);
                 } else {
@@ -537,24 +797,24 @@ impl TargetCache {
         limit: u64,
     ) {
         let mut cache = self.0.lock().unwrap();
-        if let Some(entries) = cache.as_mut()
-            && entries.size == size
-            && entries.quality == quality
+        if let Some(tier) = cache
+            .as_mut()
+            .filter(|entries| entries.size == size)
+            .and_then(|entries| entries.tier_mut(quality))
         {
             let additional = slots
                 .iter()
                 .filter(|allocation| allocation.target.texture.format() == quality.format)
                 .filter(|allocation| {
-                    !entries
+                    !tier
                         .slots
                         .contains(allocation.target.storage_size(), |cached| {
                             Arc::ptr_eq(cached, allocation)
                         })
                 })
                 .count();
-            // Reuse is optional. Metadata pressure cannot reject an otherwise
-            // fully prepared submission; publish keeps only admitted slots.
-            let _ = entries.slots.reserve(additional, metadata, limit);
+            // Metadata pressure leaves this submission's native owners intact.
+            let _ = tier.slots.reserve(additional, metadata, limit);
         }
     }
 
@@ -566,34 +826,31 @@ impl TargetCache {
         retained: Option<&Arc<Allocation>>,
     ) {
         let mut cache = self.0.lock().unwrap();
-        if let Some(entries) = cache.as_mut()
-            && entries.size == size
-            && entries.quality == quality
-        {
+        if let Some(entries) = cache.as_mut().filter(|entries| entries.size == size) {
+            for tier in entries.tiers.iter_mut().flatten() {
+                tier.slots.submitted();
+            }
+            let tier = entries
+                .tier_mut(quality)
+                .expect("configured target quality");
             if let Some(retained) = retained {
-                // Only the retained output stays readable after this submission.
-                // Other scratch uses are ordered before the next queue submission.
-                entries
-                    .slots
-                    .exclude(|cached| Arc::ptr_eq(cached, retained));
+                tier.slots.exclude(|cached| Arc::ptr_eq(cached, retained));
             }
             let reusable = |allocation: &&Arc<Allocation>| {
                 allocation.target.texture.format() == quality.format
                     && !retained.is_some_and(|retained| Arc::ptr_eq(allocation, retained))
             };
-            entries.slots.submitted();
             for allocation in slots.iter().filter(reusable) {
                 let size = allocation.target.storage_size();
-                if !entries
+                if !tier
                     .slots
                     .contains(size, |cached| Arc::ptr_eq(cached, allocation))
                 {
-                    entries.slots.insert(size, allocation.clone());
+                    tier.slots.insert(size, allocation.clone());
                 }
             }
             for allocation in slots.iter().filter(reusable) {
-                entries
-                    .slots
+                tier.slots
                     .mark_used(allocation.target.storage_size(), |cached| {
                         Arc::ptr_eq(cached, allocation)
                     });
@@ -603,12 +860,12 @@ impl TargetCache {
 
     pub(super) fn release_idle(&self) {
         if let Some(entries) = self.0.lock().unwrap().as_mut() {
-            entries
-                .slots
-                .release_idle(|owner| Arc::strong_count(owner) == 1);
+            for tier in entries.tiers.iter_mut().flatten() {
+                tier.slots
+                    .release_idle(|owner| Arc::strong_count(owner) == 1);
+            }
         }
     }
-
     pub(super) fn clear(&self) {
         self.1.lock().unwrap().clear();
         *self.0.lock().unwrap() = None;

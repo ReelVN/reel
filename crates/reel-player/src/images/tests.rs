@@ -139,6 +139,29 @@ fn prefetch_quota_rejection_is_settled_then_visible_demand_loads_normally() {
     assert!(images.loaded.contains_key("assets/panels.png"));
 }
 
+#[test]
+fn foreground_residency_does_not_consume_the_hidden_prefetch_share() {
+    const PANEL: u64 = 160 * 90 * 4;
+    let (mut images, wake) = configured(PANEL * 4, 256 << 20);
+    let foreground = images.pool.reserve(PANEL * 2).unwrap();
+    let (stage, _) = preload_stage("assets/panels.png");
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    images.prefetch.insert("assets/sun.jpg".into());
+    assert!(images.poll().unwrap());
+    while !images.skipped.contains("assets/sun.jpg") {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(images.poll().unwrap());
+    }
+    assert!(images.loaded.contains_key("assets/panels.png"));
+    assert!(!images.loaded.contains_key("assets/sun.jpg"));
+    assert_eq!(images.hidden_prefetch_bytes(), PANEL);
+    assert_eq!(images.pool.usage().bytes, PANEL * 3);
+    images.close();
+    assert_eq!(images.pool.usage().bytes, PANEL * 2);
+    drop(foreground);
+    assert_eq!(images.pool.usage().bytes, 0);
+}
+
 fn loader() -> (Images, Receiver<()>) {
     configured(256 << 20, 256 << 20)
 }

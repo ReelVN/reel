@@ -38,6 +38,8 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct AssetOptions {
     pub root: PathBuf,
+    /// Decoded source payload admission ceiling: 512 MiB on desktop hosts and
+    /// 256 MiB elsewhere. Platform players can select a smaller quota.
     pub resident_bytes: u64,
     /// Independent archive metadata admission ceiling, including parsing peak.
     /// The default 32 MiB is a limit; mounts reserve their actual capacities.
@@ -53,7 +55,15 @@ impl Default for AssetOptions {
     fn default() -> Self {
         Self {
             root: ".".into(),
-            resident_bytes: 256 << 20,
+            resident_bytes: if cfg!(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "macos"
+            )) {
+                512 << 20
+            } else {
+                256 << 20
+            },
             metadata_bytes: 32 << 20,
             input_bytes: 64 << 20,
             decode_bytes: 256 << 20,
@@ -112,6 +122,7 @@ struct Load {
     reloadable: bool,
     kind: AssetKind,
     priority: Priority,
+    prefetch_limit: u64,
     phase: Phase,
     input: Option<Arc<OwnedBytes>>,
     size: [u32; 2],
@@ -396,6 +407,7 @@ impl Assets {
             },
             kind,
             Priority::Visible,
+            u64::MAX,
         )
     }
     /// Restore a retained asset from the selected fixed source.
@@ -407,9 +419,10 @@ impl Assets {
             },
             kind,
             Priority::Visible,
+            u64::MAX,
         )
     }
-    pub(crate) fn prefetch(&self, source: String, kind: AssetKind) -> LoadId {
+    pub(crate) fn prefetch(&self, source: String, kind: AssetKind, limit: u64) -> LoadId {
         self.request_source(
             AssetSource {
                 key: AssetKey(source),
@@ -417,9 +430,16 @@ impl Assets {
             },
             kind,
             Priority::Prefetch,
+            limit,
         )
     }
-    fn request_source(&self, source: AssetSource, kind: AssetKind, priority: Priority) -> LoadId {
+    fn request_source(
+        &self,
+        source: AssetSource,
+        kind: AssetKind,
+        priority: Priority,
+        prefetch_limit: u64,
+    ) -> LoadId {
         let mut service = self.0.borrow_mut();
         service.next = service
             .next
@@ -438,6 +458,7 @@ impl Assets {
                 reloadable: true,
                 kind,
                 priority,
+                prefetch_limit,
                 phase,
                 input: None,
                 size: [0; 2],
@@ -467,10 +488,15 @@ impl Assets {
         key: String,
         bytes: &[u8],
     ) -> Result<Option<LoadId>, String> {
-        self.encoded(key, bytes, Priority::Visible)
+        self.encoded(key, bytes, Priority::Visible, u64::MAX)
     }
-    pub(crate) fn prefetch_encoded(&self, key: String, bytes: &[u8]) -> Result<LoadId, String> {
-        self.encoded(key, bytes, Priority::Prefetch)?
+    pub(crate) fn prefetch_encoded(
+        &self,
+        key: String,
+        bytes: &[u8],
+        limit: u64,
+    ) -> Result<LoadId, String> {
+        self.encoded(key, bytes, Priority::Prefetch, limit)?
             .ok_or_else(|| "prefetch input capacity exhausted".into())
     }
     fn encoded(
@@ -478,6 +504,7 @@ impl Assets {
         key: String,
         bytes: &[u8],
         priority: Priority,
+        prefetch_limit: u64,
     ) -> Result<Option<LoadId>, String> {
         let mut service = self.0.borrow_mut();
         if service.executor.is_none() {
@@ -507,6 +534,7 @@ impl Assets {
                 reloadable: false,
                 kind: AssetKind::Image,
                 priority,
+                prefetch_limit,
                 phase: Phase::Probe,
                 input: Some(Arc::new(input)),
                 size: [0; 2],
@@ -614,6 +642,9 @@ impl Assets {
     }
     pub fn output_pool(&self) -> BudgetPool {
         self.0.borrow().output.clone()
+    }
+    pub(crate) fn prefetch_available(&self, hidden_bytes: u64) -> u64 {
+        (self.0.borrow().options.resident_bytes / 4).saturating_sub(hidden_bytes)
     }
     pub(crate) fn resident_available(&self) -> u64 {
         let service = self.0.borrow();
@@ -1044,8 +1075,10 @@ impl Service {
 
 impl Service {
     fn admit_prefetch(&self, load: &Load) -> Result<(), String> {
-        let spare = (self.options.resident_bytes / 4).saturating_sub(self.output.usage().bytes);
-        if load.priority == Priority::Prefetch && load.output > spare {
+        let header = u64::from(load.texture.is_some()) * TextureHeader::LEN as u64;
+        if load.priority == Priority::Prefetch
+            && load.output.saturating_add(header) > load.prefetch_limit
+        {
             return Err("prefetch resident capacity exhausted".into());
         }
         Ok(())

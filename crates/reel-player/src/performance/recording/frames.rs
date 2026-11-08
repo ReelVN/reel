@@ -23,7 +23,14 @@ use std::io::{self, Write};
 const CAPACITY: usize = 512;
 const SLOW_CAPACITY: usize = 64;
 const LABELS: usize = super::SEGMENTS;
-const CALL_PHASES: [Phase; 3] = [Phase::VmSlice, Phase::HostCall, Phase::SessionGc];
+const CALL_PHASES: [Phase; 6] = [
+    Phase::VmSlice,
+    Phase::HostCall,
+    Phase::SessionGc,
+    Phase::RenderTier16f4x,
+    Phase::RenderTier16f1x,
+    Phase::RenderTier8u1x,
+];
 const PHASES: [Phase; 42] = [
     Phase::VmSlice,
     Phase::HostCall,

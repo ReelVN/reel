@@ -140,6 +140,7 @@ impl RenderBackend for WgpuBackend {
         // First configuration happens before the host exposes its initial view.
         // Device recovery gets fresh slots; resize only reuses initialized ones.
         self.renderer.prepare_pipelines()?;
+        self.renderer.prepare_viewport(info.physical_size)?;
         self.vsync = config.present_mode == wgpu::PresentMode::Fifo;
         self.unsynchronized = unsynchronized;
         self.config = Some(config);
