@@ -16,6 +16,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Fixed
 
+- Preserve authored scroll animations through virtual-list anchor feedback and layout clamping while retaining explicit input takeover.
 - Keep recent frame samples separate from historical slow frames across performance-label changes.
 - Preserve identity-key ordering when restoring VM snapshots so retained lists, page caches and in-progress keyed sorts continue correctly.
 - Preserve virtual-list viewports through nested containers, clipping and transforms, with indexed scroll ownership and consistent positioning and image-readiness checks.

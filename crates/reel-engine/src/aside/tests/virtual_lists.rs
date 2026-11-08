@@ -4,6 +4,7 @@ use reel_ui::{
     stage::{NodeEvent, NodeId, NodeKind, NodeScroll, NodeVirtualList, VirtualRowMeasurement},
 };
 mod nested;
+mod scroll_activity;
 
 fn drive(vm: &mut SessionVm, session: &mut Session) {
     for _ in 0..2_000_000 {

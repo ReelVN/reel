@@ -21,6 +21,10 @@ impl SessionVm {
         if stage::number(self.vm.heap().host_property(property)?)? != previous {
             return Ok(());
         }
+        let source = self.vm.heap().property_source(property)?.0;
+        if self.vm.heap().property_claim(source)?.tag() != ValueTag::Null {
+            return Ok(());
+        }
         let n = count(self.vm.heap(), s)?;
         let old_index = int(self.vm.heap(), s, S::AnchorIndex)?;
         let start = num(self.vm.heap(), s, S::Start)?;
@@ -54,9 +58,11 @@ impl SessionVm {
         let offset = (previous + (next - start) / scale).max(0.);
         let delta = (offset - previous) * scale;
         let next = start + delta;
-        self.vm
-            .heap_mut()
-            .write_host_property(property, Value::float(offset), true)?;
+        if offset != previous {
+            self.vm
+                .heap_mut()
+                .write_host_property(property, Value::float(offset), false)?;
+        }
         put(self.vm.heap_mut(), s, S::Offset, Value::float(offset))?;
         put(self.vm.heap_mut(), s, S::Start, Value::float(next))?;
         put(self.vm.heap_mut(), s, S::End, Value::float(end + delta))?;

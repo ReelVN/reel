@@ -19,8 +19,12 @@ pub(in crate::aside) enum ScrollField {
     FollowEnd,
     #[aside(name = "content_align", ty = String, default = "start", validate = validate_align)]
     ContentAlign,
+    /// Logical horizontal offset. Layout feedback preserves an owning activity;
+    /// user scrolling or an explicit assignment takes over that activity.
     #[aside(name = "scroll_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     X,
+    /// Logical vertical offset. Layout feedback preserves an owning activity;
+    /// user scrolling or an explicit assignment takes over that activity.
     #[aside(name = "scroll_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Y,
 }
@@ -129,8 +133,8 @@ impl StageBinding {
                 accepted_y = event.input || current == requested;
             }
             // A newer script write wins over feedback from the previous projection.
-            if (event.input || current == requested) && current != actual {
-                heap.write_host_property(property, Value::float(actual), true)?;
+            if (event.input || current == requested) && (event.input || current != actual) {
+                heap.write_host_property(property, Value::float(actual), event.input)?;
                 changed = true;
             }
         }
