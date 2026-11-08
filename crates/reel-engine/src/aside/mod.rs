@@ -28,6 +28,7 @@ mod localization;
 pub use localization::SourceCatalogs;
 mod narrative;
 mod observable;
+mod pages;
 mod particles;
 mod publication;
 mod registry;
@@ -138,6 +139,7 @@ impl AdapterError {
     pub fn native_fault_kind(&self) -> Option<FaultKind> {
         match self {
             Self::Vm(VmError::Effect) => Some(FaultKind::Effect),
+            Self::Vm(VmError::Limit) => Some(FaultKind::Resource),
             Self::InputQueue(_) => Some(FaultKind::Resource),
             Self::Input(_) | Self::Markup(_) => Some(FaultKind::Type),
             Self::Stage(_) => Some(FaultKind::Type),
@@ -541,6 +543,7 @@ impl SessionVm {
             && !self.activities.pending()
             && !self.transitions.pending(self.activities.time())
             && !self.particles.needs_work(self.stage.retirement_revision)
+            && self.stage.pages_ready(self.vm.heap(), self.read_limit)
     }
     /// Whether the latest scheduler step executed ordinary task VM instructions.
     /// Reactive evaluation, maintenance and host-only continuation dispatch return

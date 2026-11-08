@@ -393,4 +393,5 @@ fn failed_reconciliation_preserves_mounted_children_and_reports_the_source() {
     assert!(!vm.vm.heap().reactive_evaluating());
 }
 
+mod object_restore;
 mod sort;

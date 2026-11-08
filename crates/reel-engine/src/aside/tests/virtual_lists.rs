@@ -3,6 +3,7 @@ use reel_ui::{
     kurbo::{Size, Vec2},
     stage::{NodeEvent, NodeId, NodeKind, NodeScroll, NodeVirtualList, VirtualRowMeasurement},
 };
+mod nested;
 
 fn drive(vm: &mut SessionVm, session: &mut Session) {
     for _ in 0..2_000_000 {
@@ -95,6 +96,8 @@ fn event(vm: &SessionVm, y: f64, width: f64, retained: &[NodeId]) -> NodeVirtual
         requested: offset,
         offset: Vec2::new(0., y),
         viewport: Size::new(width, 120.),
+        scroll_scale: 1.,
+        scroll_limit: (view.total_height - 120.).max(0.),
         width,
         visible_start: y,
         visible_end: y + 120.,

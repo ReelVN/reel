@@ -13,6 +13,7 @@ fn radio_group_deferred_selection_requires_current_anchor_and_accepted_frame() {
             selected,
             group: Some(group),
             revision: 0,
+            tabs: None,
         };
         let props = f.stage.node(first).unwrap().props.clone();
         f.stage.update(first, radio(true, group), props).unwrap();
@@ -170,6 +171,7 @@ fn radio_group_live_navigation_discovers_a_virtual_list_without_a_mounted_member
                 selected: true,
                 group: Some(SelectionGroupId(1, 0)),
                 revision: 0,
+                tabs: None,
             },
             NodeProps {
                 height: Some(40.),

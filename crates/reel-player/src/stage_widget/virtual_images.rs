@@ -137,16 +137,15 @@ impl StageWidget {
                 let Some(viewport) = &state.feedback else {
                     return false;
                 };
-                let scroll = stage
+                let list = stage
                     .nodes
-                    .get(&viewport.scroll)
+                    .get(&viewport.node)
                     .and_then(|id| geometry.get(*id))
                     .unwrap();
-                let bounds = scroll
-                    .window_transform
-                    .transform_rect_bbox(scroll.size.to_rect());
+                let bounds = list.window_transform.transform_rect_bbox(state.visible);
                 let mut segment: Option<(usize, f64)> = None;
-                let mut covered = view.total_rows == 0;
+                let mut covered =
+                    view.total_rows == 0 || viewport.visible_end <= viewport.visible_start;
                 for (index, row) in view.rows.iter().enumerate() {
                     let child = &node.children[state.child_indices[index]];
                     let ready =

@@ -1,6 +1,54 @@
 use super::*;
 use reel_ui::stage::{VirtualListView, VirtualRow};
 
+#[test]
+fn bounce_checks_actual_visible_overflow_without_moving_logical_demand() {
+    let (mut f, list, _, waiting) = fixture();
+    f.edit(waiting, |props| props.y = -302.);
+    let node = f.stage.node(f.root).unwrap();
+    let mut kind = node.kind.clone();
+    let NodeKind::Scroll { overscroll, .. } = &mut kind else {
+        panic!()
+    };
+    *overscroll = reel_ui::widgets::ScrollOverscroll::Bounce;
+    f.stage.update(f.root, kind, node.props.clone()).unwrap();
+    let first = f.record();
+    f.accept(&first);
+    assert!(
+        f.ui.virtual_feedback_visible(&mut f.bridge, f.widget)
+            .unwrap()
+    );
+    for event in [
+        super::cursor::pointer(PointerType::Touch, (20., 20.), Some(true)),
+        super::cursor::pointer(PointerType::Touch, (20., 60.), None),
+    ] {
+        f.ui.handle_pointer(&mut f.bridge, event).unwrap();
+    }
+    let geometry = f.bridge.layout_geometry().unwrap();
+    let widget = f
+        .bridge
+        .root()
+        .get_widget(f.layouts()[&list].0)
+        .unwrap()
+        .downcast::<SceneWidget>()
+        .unwrap();
+    let state = widget.virtual_list.as_ref().unwrap();
+    let demand = state.feedback.as_ref().unwrap();
+    assert_eq!((demand.visible_start, demand.visible_end), (-4., 96.));
+    let bounds = geometry
+        .get(widget.id())
+        .unwrap()
+        .window_transform
+        .transform_rect_bbox(state.visible);
+    assert!(bounds.y0.abs() < 0.01 && (bounds.y1 - 100.).abs() < 0.01);
+    assert!(
+        !f.ui
+            .virtual_feedback_visible(&mut f.bridge, f.widget)
+            .unwrap(),
+        "the missing retained image enters the fixed scroll clip during bounce"
+    );
+}
+
 fn fixture() -> (Fixture, NodeId, NodeId, NodeId) {
     fixture_with_overflow(None)
 }

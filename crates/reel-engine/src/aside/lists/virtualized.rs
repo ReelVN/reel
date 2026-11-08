@@ -7,6 +7,8 @@ use reel_ui::stage::{
 use std::sync::Arc;
 mod feedback;
 mod index;
+mod scroll_owners;
+pub(in crate::aside) use scroll_owners::{ScrollGeometry, ScrollOwners};
 mod target;
 mod window;
 use index::*;

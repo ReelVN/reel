@@ -71,6 +71,7 @@ struct SceneSummary {
     image: bool,
     button: bool,
     input: bool,
+    virtual_list: bool,
     popup: bool,
     modal: Option<NodeId>,
 }
@@ -83,6 +84,7 @@ struct SceneNode {
     image_branch: bool,
     button_branch: bool,
     input_branch: bool,
+    virtual_list_branch: bool,
     modal: Option<NodeId>,
     images: SceneImages,
 }
@@ -322,6 +324,7 @@ impl StageView {
                         summary.image |= child.image_branch;
                         summary.button |= child.button_branch;
                         summary.input |= child.input_branch;
+                        summary.virtual_list |= child.virtual_list_branch;
                         summary.popup |= child.popup_branch();
                         if !matches!(child.node.kind, NodeKind::Popup(_)) {
                             summary.modal = child.modal.or(summary.modal);
@@ -338,6 +341,8 @@ impl StageView {
                 matches!(node.kind, NodeKind::Button { .. }) || children_summary.button;
             let input_branch =
                 matches!(node.kind, NodeKind::Input { .. }) || children_summary.input;
+            let virtual_list_branch =
+                matches!(node.kind, NodeKind::VirtualList(_)) || children_summary.virtual_list;
             let modal = node
                 .props
                 .visible
@@ -370,6 +375,7 @@ impl StageView {
                 image_branch,
                 button_branch,
                 input_branch,
+                virtual_list_branch,
                 modal,
                 images,
             })
@@ -808,6 +814,7 @@ fn resolve_image_nodes(
             image_branch: node.image_branch,
             button_branch: node.button_branch,
             input_branch: node.input_branch,
+            virtual_list_branch: node.virtual_list_branch,
             modal: node.modal,
             images,
         })
@@ -1041,6 +1048,13 @@ impl Widget for StageWidget {
                 self.root_props.transform(ctx.child_size(root))
             };
             ctx.set_child_transform(root, transform);
+            let viewport = virtual_list::VirtualViewport::new(ctx.content_box())
+                .mapped(ctx.child_layout_transform(root));
+            if let Some((root, mut root_ctx)) = ctx.get_raw_mut(root)
+                && root.projection.virtual_list_branch
+            {
+                root.set_virtual_viewport(&mut root_ctx, viewport);
+            }
         }
     }
     fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
@@ -1083,6 +1097,7 @@ struct SceneWidget {
     scroll_baseline: Vec2,
     scroll_input: bool,
     virtual_list: Option<Box<VirtualListState>>,
+    virtual_viewport: Option<virtual_list::VirtualViewport>,
     #[cfg(test)]
     layouts: usize,
     #[cfg(test)]

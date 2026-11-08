@@ -16,6 +16,8 @@ pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
     ("column", "reel::types::FlowNode"),
     ("grid", "reel::types::GridNode"),
     ("stack", "reel::types::Node"),
+    ("page_stack", "reel::types::PageStackNode"),
+    ("tab_bar", "reel::types::TabBarNode"),
     ("cursor", "reel::types::Node"),
     ("button", "reel::types::ButtonNode"),
     ("input", "reel::types::InputNode"),
@@ -46,6 +48,8 @@ pub(super) fn is_node_constructor(symbol: &str) -> bool {
 
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
+        "reel::page_stack" => super::pages::PageField::NAMES,
+        "reel::tab_bar" => super::pages::TabField::NAMES,
         "reel::row" | "reel::column" => super::stage::flow::FlowField::NAMES,
         "reel::grid" => super::stage::flow::GridField::NAMES,
         "reel::camera" => super::stage::camera::CameraField::NAMES,
@@ -264,7 +268,19 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for &(name, _) in NODE_CONSTRUCTORS {
         let mut parameters = Vec::new();
-        if matches!(name, "row" | "column" | "grid") {
+        if name == "page_stack" || name == "tab_bar" {
+            let properties = if name == "page_stack" {
+                super::pages::PageField::PROPERTIES
+            } else {
+                super::pages::TabField::PROPERTIES
+            };
+            parameters.extend(properties.iter().map(|p| p.parameter()));
+            parameters
+                .iter_mut()
+                .find(|p| p.name == "items")
+                .unwrap()
+                .default = None;
+        } else if matches!(name, "row" | "column" | "grid") {
             let properties = if name == "grid" {
                 super::stage::flow::GridField::PROPERTIES
             } else {
@@ -1273,6 +1289,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.extend(super::masks::contracts());
     contracts.extend(super::effects::contracts());
     contracts.extend(super::gradients::contracts());
+    contracts.extend(super::pages::contracts());
     contracts.extend(super::stage::interaction_appearance::contracts());
     contracts
 }

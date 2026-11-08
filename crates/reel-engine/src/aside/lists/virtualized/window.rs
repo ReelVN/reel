@@ -1,12 +1,25 @@
 use super::*;
 
 impl SessionVm {
-    pub(super) fn virtual_window(&mut self, t: HostTicket, s: Value) -> Result<(), AdapterError> {
-        if get(self.vm.heap(), s, S::Fault)?.as_bool() == Some(true) {
+    fn virtual_window_fault(&self, s: Value) -> Result<(), AdapterError> {
+        let fault = get(self.vm.heap(), s, S::Fault)?;
+        if fault.as_bool() == Some(true) {
             return Err(AdapterError::Input(
                 "virtual list rows must have positive natural height",
             ));
         }
+        match fault.as_int() {
+            Some(1) => Err(AdapterError::Input(
+                "virtual list target cannot be reached along its scroll owner's vertical axis",
+            )),
+            Some(2) => Err(AdapterError::Input(
+                "virtual list target is outside its scroll owner's reachable range",
+            )),
+            _ => Ok(()),
+        }
+    }
+    pub(super) fn virtual_window(&mut self, t: HostTicket, s: Value) -> Result<(), AdapterError> {
+        self.virtual_window_fault(s)?;
         let candidate = get(self.vm.heap(), s, S::Candidate)?;
         if candidate.tag() != ValueTag::Null {
             let mut values = [Value::NULL; 8];
@@ -47,6 +60,7 @@ impl SessionVm {
         s: Value,
     ) -> Result<(), AdapterError> {
         self.virtual_target_position(s)?;
+        self.virtual_window_fault(s)?;
         let output = get(self.vm.heap(), s, S::Window)?;
         let source = get(self.vm.heap(), s, S::Source)?;
         let demand = get(self.vm.heap(), s, S::Demand)?;
@@ -69,8 +83,12 @@ impl SessionVm {
         let order = get(self.vm.heap(), s, S::Order)?;
         let pins = get(self.vm.heap(), s, S::Pinned)?;
         let nav = get(self.vm.heap(), s, S::Navigation)?;
-        let capacity = usize::try_from(last.saturating_sub(first) + 1).unwrap()
-            + self.vm.heap().sequence_len(pins)? as usize
+        let visible = end > start || get(self.vm.heap(), s, S::Scroll)?.tag() == ValueTag::Null;
+        let capacity = if visible {
+            usize::try_from(last.saturating_sub(first) + 1).unwrap()
+        } else {
+            0
+        } + self.vm.heap().sequence_len(pins)? as usize
             + 1;
         let _reservation = self
             .vm
@@ -81,7 +99,7 @@ impl SessionVm {
         indices
             .try_reserve_exact(capacity)
             .map_err(|_| AdapterError::Allocation)?;
-        if n > 0 {
+        if n > 0 && visible {
             indices.extend(first..=last.min(n - 1));
         }
         for i in 0..self.vm.heap().sequence_len(pins)? {
@@ -171,6 +189,11 @@ impl SessionVm {
         if w.version == int(h, s, S::Request)? as u64 {
             return Ok(true);
         }
+        if num(h, s, S::End)? <= num(h, s, S::Start)?
+            && get(h, s, S::Scroll)?.tag() != ValueTag::Null
+        {
+            return Ok(false);
+        }
         let includes = |index: u32| -> Result<bool, AdapterError> {
             let mut lo = 0;
             let mut hi = h.sequence_len(w.source)?;
@@ -186,11 +209,13 @@ impl SessionVm {
             }
             Ok(false)
         };
-        if count(h, s)? > 0 {
+        if count(h, s)? > 0 && num(h, s, S::End)? > num(h, s, S::Start)? {
             let first = locate(h, s, num(h, s, S::Start)?.max(0.))?;
             let last = locate(h, s, num(h, s, S::End)?.max(0.))?;
             if i64::from(first) < h.sequence_get(w.sorted, 2)?.as_int().unwrap()
                 || i64::from(last) > h.sequence_get(w.sorted, 3)?.as_int().unwrap()
+                || !includes(first)?
+                || !includes(last)?
             {
                 return Ok(false);
             }

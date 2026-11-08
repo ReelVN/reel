@@ -11,6 +11,13 @@ impl SessionVm {
             field: stage::scroll::ScrollField::Y.index() as u32,
         };
         let previous = num(self.vm.heap(), s, S::Offset)?;
+        let Some(geometry) = self.virtual_geometry(s)? else {
+            return Ok(());
+        };
+        let scale = geometry.scale;
+        if scale.abs() <= 1e-9 {
+            return Ok(());
+        }
         if stage::number(self.vm.heap().host_property(property)?)? != previous {
             return Ok(());
         }
@@ -26,8 +33,7 @@ impl SessionVm {
                     .table_entry(fields, stage::NodeProperty::Padding.index() as u32)?
                     .1,
             )?;
-            let offset = (total(self.vm.heap(), s)? + padding * 2. - (end - start)).max(0.);
-            offset + (start - previous)
+            (total(self.vm.heap(), s)? + padding - (end - start)).max(-padding)
         } else if n > 0 && old_index >= 0 {
             let key = get(self.vm.heap(), s, S::AnchorKey)?;
             let found = find(
@@ -45,8 +51,9 @@ impl SessionVm {
         } else {
             0.
         };
-        let delta = next - start;
-        let offset = (next + (previous - start)).max(0.);
+        let offset = (previous + (next - start) / scale).max(0.);
+        let delta = (offset - previous) * scale;
+        let next = start + delta;
         self.vm
             .heap_mut()
             .write_host_property(property, Value::float(offset), true)?;
@@ -80,6 +87,13 @@ impl SessionVm {
         if stage::number(self.vm.heap().host_property(scroll_y)?)? != event.offset.y {
             return Ok(false);
         }
+        let geometry = ScrollGeometry {
+            owner: event.scroll,
+            scale: event.scroll_scale,
+            limit: event.scroll_limit,
+        };
+        let previous_geometry = self.stage.virtual_scrolls.geometry(event.node);
+        self.stage.virtual_scrolls.feedback(event.node, geometry);
         let follow = matches!(
             self.stage.scene.node(event.scroll).map(|n| &n.kind),
             Some(NodeKind::Scroll {
@@ -87,7 +101,12 @@ impl SessionVm {
                 ..
             })
         );
+        let first_feedback = previous_geometry.is_none();
         let mut changed = self.virtual_target_feedback(s, event)?;
+        changed |= first_feedback
+            || (num(self.vm.heap(), s, S::End)? > num(self.vm.heap(), s, S::Start)?)
+                != (event.visible_end > event.visible_start);
+        changed |= previous_geometry != Some(geometry);
         if get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null
             && num(self.vm.heap(), s, S::End)? - num(self.vm.heap(), s, S::Start)?
                 != event.visible_end - event.visible_start
@@ -195,7 +214,8 @@ impl SessionVm {
         let reserve = (event.visible_end - event.visible_start) * REFILL;
         let first = locate(self.vm.heap(), s, (event.visible_start - reserve).max(0.))?;
         let last = locate(self.vm.heap(), s, (event.visible_end + reserve).max(0.))?;
-        if count(self.vm.heap(), s)? > 0
+        if event.visible_end > event.visible_start
+            && count(self.vm.heap(), s)? > 0
             && (first..=last).any(|index| !view.rows.iter().any(|r| r.index == index as usize))
         {
             changed = true;
@@ -221,7 +241,9 @@ impl SessionVm {
         )?;
         if changed {
             self.virtual_target_invalidate(s)?;
-            if !self.virtual_target_position(s)? {
+            let positionable = event.scroll_scale.abs() > 1e-9
+                || get(self.vm.heap(), s, S::Target)?.tag() == ValueTag::Null;
+            if positionable && !self.virtual_target_position(s)? {
                 self.virtual_anchor(s)?;
             }
         }

@@ -958,6 +958,30 @@ column(gap: 12) {
 }
 ```
 
+`tab_bar` 和 `page_stack` 通过同一个选中值组合。页面首次访问时构建，切换后保留控件和编辑状态；标签内容可通过 `item.control` 的交互反馈和 `appearance` 自定义。`manual` 使用方向键移动焦点、确认键切换页面，默认 `automatic` 随焦点切换。
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let settings = model({page: "display", volume: 0.8});
+    let pages = page_stack(value: bind(settings.page), width: 600, height: 180, items: [
+        {key: "display", build: || text("Display settings")},
+        {key: "sound", build: || column(gap: 12) {
+            text("Volume");
+            slider(value: bind(settings.volume), min: 0, max: 1, width: 300);
+        }}
+    ]);
+    let tabs = tab_bar(value: bind(settings.page), activation: "manual", items: [
+        {key: "display", label: "Display"},
+        {key: "sound", label: "Sound"}
+    ], build: |item| text(item.label,
+        opacity: derive(|| if item.selected || item.control.focus_visible {1} else {0.5})));
+    stage.replace(column(x: 24, y: 24, gap: 16) { tabs; pages; });
+}
+```
+
+`pages.get(key)` 取得已构建页面；`await pages.ensure(key)` 提前构建并取得页面；`pages.evict(key)` 释放未选中页。页面中的预览、音频和任务用作用域管理每次访问，控件的保留与访问工作的生命周期分别表达。
+
 设置页可以直接连接阅读状态。自动阅读在文字呈现后等待设定时间，选择处等待玩家；快进按已读与选择策略推进。模态界面、暂停和失焦沿阅读状态处理。
 
 ```aside

@@ -31,7 +31,6 @@ impl StageBinding {
         read_limit: usize,
     ) -> Result<(), AdapterError> {
         let mut updates = Vec::new();
-        let mut virtuals = Vec::new();
         for id in nodes {
             #[cfg(test)]
             {
@@ -43,9 +42,6 @@ impl StageBinding {
                 .ok_or(AdapterError::Input("retired stage node"))?;
             let binding = self.handles.get_mut(&id).unwrap();
             let value = heap.import_handle(binding.handle)?;
-            if matches!(node.kind, NodeKind::VirtualList(_)) {
-                virtuals.push(id);
-            }
             let fields = heap.host_fields(value)?;
             let version = heap.info(fields)?.content_version;
             let selected = if binding.overrides.is_some() {
@@ -67,6 +63,14 @@ impl StageBinding {
                 continue;
             }
             let (mut kind, offset) = match &node.kind {
+                _ if binding.shape == snapshot::Shape::PageStack => (
+                    NodeKind::Stack,
+                    super::super::pages::PageField::PROPERTIES.len(),
+                ),
+                _ if binding.shape == snapshot::Shape::TabBar => (
+                    super::super::pages::tab_kind(heap, fields, read_limit)?,
+                    super::super::pages::TabField::PROPERTIES.len(),
+                ),
                 NodeKind::Row(_) | NodeKind::Column(_) => (
                     flow::flow_kind(heap, fields, matches!(node.kind, NodeKind::Row(_)))?,
                     flow::FlowField::PROPERTIES.len(),
@@ -257,6 +261,7 @@ impl StageBinding {
                 },
             )?;
             overrides::apply_offsets(heap, value, &mut props)?;
+            super::super::pages::semantics(binding.shape, &kind, &mut props);
             validate_text_props(&kind, &props)?;
             if matches!(kind, NodeKind::VirtualList(_)) {
                 validate_virtual_props(&props)?;
@@ -314,36 +319,6 @@ impl StageBinding {
             let selected = overrides::selection(heap, host)?;
             binding.interaction_listening =
                 interaction::listening(heap, fields, binding.interaction_offset, selected)?;
-        }
-        for id in virtuals {
-            if let Some(parent) = self.scene.node(id).unwrap().parent {
-                let parent = self.scene.node(parent).unwrap();
-                if !matches!(
-                    parent.kind,
-                    NodeKind::Scroll {
-                        axis: reel_ui::widgets::ScrollAxis::Vertical,
-                        ..
-                    }
-                ) || parent
-                    .children
-                    .iter()
-                    .filter(|id| {
-                        !self
-                            .scene
-                            .node(**id)
-                            .unwrap()
-                            .props
-                            .stretch
-                            .axis(reel_ui::kurbo::Axis::Vertical)
-                    })
-                    .count()
-                    != 1
-                {
-                    return Err(AdapterError::Input(
-                        "virtual list must be the only flow child of a vertical scroll",
-                    ));
-                }
-            }
         }
         Ok(())
     }

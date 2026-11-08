@@ -28,6 +28,13 @@ impl SessionVm {
         }
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::page_stack" | "reel::tab_bar" => {
+                self.dispatch_pages(session, ticket, &symbol, budget)
+            }
+            name if name.starts_with("reel::page_stack::") => {
+                self.dispatch_pages(session, ticket, &symbol, budget)
+            }
+            "reel::tab_bar::observe_label" => self.dispatch_pages(session, ticket, &symbol, budget),
             "reel::game::start" => {
                 let value = self.vm.host_arguments(ticket)?[0];
                 let entry = self.vm.unbound_function(value)?;

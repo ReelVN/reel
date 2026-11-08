@@ -1,5 +1,5 @@
 use super::*;
-fn setup(n: usize, encoded: bool) -> (Session, SessionVm) {
+pub(super) fn setup(n: usize, encoded: bool) -> (Session, SessionVm) {
     setup_source(n, encoded, false)
 }
 fn setup_source(n: usize, encoded: bool, upstream: bool) -> (Session, SessionVm) {
@@ -156,7 +156,7 @@ fn virtual_list_scroll_to_far_window_is_bounded_without_reindexing() {
     );
 }
 
-fn restore(vm: &mut SessionVm, session: &Session) -> (Session, SessionVm) {
+pub(super) fn restore(vm: &mut SessionVm, session: &Session) -> (Session, SessionVm) {
     use aside_vm::snapshot::SnapshotBudget;
     vm.advance_time(session, 0., 64).unwrap();
     let mut capture = vm.snapshot_begin(session).unwrap();
@@ -618,6 +618,8 @@ fn virtual_list_scroll_to_source_invalidation_does_not_block_an_unrelated_list()
                     requested: offset,
                     offset,
                     viewport,
+                    scroll_scale: 1.,
+                    scroll_limit: (content.height - viewport.height).max(0.),
                     width: 320.,
                     visible_start: offset.y,
                     visible_end: offset.y + 120.,

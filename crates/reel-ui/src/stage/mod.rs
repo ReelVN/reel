@@ -142,7 +142,8 @@ pub struct VirtualRowMeasurement {
     pub node: NodeId,
     pub height: f64,
 }
-/// Latest layout/input demand. Measurements and offsets use list content coordinates.
+/// Latest layout/input demand. Visible ranges and measurements use list content
+/// coordinates; requested/offset/viewport belong to the nearest scroll owner.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeVirtualList {
     pub node: NodeId,
@@ -151,6 +152,10 @@ pub struct NodeVirtualList {
     pub requested: Vec2,
     pub offset: Vec2,
     pub viewport: Size,
+    /// Change in list-local vertical position per positive owner scroll pixel.
+    pub scroll_scale: f64,
+    /// Maximum legal vertical offset of the scroll owner after layout.
+    pub scroll_limit: f64,
     pub width: f64,
     pub visible_start: f64,
     pub visible_end: f64,
@@ -312,6 +317,8 @@ pub enum NodeKind {
         group: Option<crate::core::SelectionGroupId>,
         /// Changes only when the option's identity changes, not for hover/value updates.
         revision: u64,
+        /// Tab controls reuse radio value proposals with an independent navigation group.
+        tabs: Option<crate::core::TabNavigation>,
     },
     Image {
         source: ImageSource,
@@ -383,8 +390,19 @@ impl Stretch {
     }
 }
 
+/// Accessibility identity supplied by a native composition.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NodeSemantics {
+    #[default]
+    Generic,
+    TabList,
+    Tab,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeProps {
+    /// Semantic role supplied by the owning native composition.
+    pub semantics: NodeSemantics,
     /// Positive weights share the remaining row/column space. Zero keeps intrinsic sizing.
     pub flex: f64,
     pub x: f64,
@@ -480,6 +498,7 @@ impl Default for NodeProps {
         static FONT: std::sync::LazyLock<Arc<str>> =
             std::sync::LazyLock::new(|| Arc::from("system-ui"));
         Self {
+            semantics: NodeSemantics::Generic,
             flex: 0.,
             x: 0.,
             y: 0.,

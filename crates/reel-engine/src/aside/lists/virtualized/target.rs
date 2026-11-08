@@ -49,33 +49,27 @@ pub(in crate::aside) fn presentation_current(
 }
 
 impl SessionVm {
-    fn virtual_scroll_state(&self, scroll: NodeId) -> Result<Option<Value>, AdapterError> {
-        let list = self.stage.scene.node(scroll).and_then(|n| {
-            n.children
-                .iter()
-                .find(|id| {
-                    matches!(
-                        self.stage.scene.node(**id).map(|n| &n.kind),
-                        Some(NodeKind::VirtualList(_))
-                    )
-                })
-                .copied()
-        });
-        list.map(|id| {
-            let host = self.stage.value(self.vm.heap(), id)?;
-            Ok(state(self.vm.heap(), host)?)
-        })
-        .transpose()
+    pub(super) fn virtual_geometry(
+        &self,
+        s: Value,
+    ) -> Result<Option<ScrollGeometry>, AdapterError> {
+        let list = self.stage.id(self.vm.heap(), node(self.vm.heap(), s)?)?;
+        Ok(self.stage.virtual_scrolls.geometry(list))
     }
     pub(in crate::aside) fn virtual_scroll_input(
         &mut self,
         scroll: NodeId,
     ) -> Result<(), AdapterError> {
-        if let Some(s) = self.virtual_scroll_state(scroll)?
-            && get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null
-        {
-            self.virtual_target_cancel(s)?;
-            self.virtual_target_demand(s)?;
+        let Some(lists) = self.stage.virtual_scrolls.get(scroll) else {
+            return Ok(());
+        };
+        for &list in lists.iter() {
+            let host = self.stage.value(self.vm.heap(), list)?;
+            let s = state(self.vm.heap(), host)?;
+            if get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null {
+                self.virtual_target_cancel(s)?;
+                self.virtual_target_demand(s)?;
+            }
         }
         Ok(())
     }
@@ -85,22 +79,28 @@ impl SessionVm {
         &mut self,
         event: &reel_ui::stage::NodeScroll,
     ) -> Result<(), AdapterError> {
-        let Some(s) = self.virtual_scroll_state(event.node)? else {
+        let Some(lists) = self.stage.virtual_scrolls.get(event.node) else {
             return Ok(());
         };
-        let t = get(self.vm.heap(), s, S::Target)?;
-        if t.tag() == ValueTag::Null {
-            return Ok(());
-        }
-        let expected = field(self.vm.heap(), t, T::Expected)?;
-        if expected.tag() != ValueTag::Null
-            && stage::number(expected)? == event.requested.y
-            && event.requested.y != event.offset.y
-        {
-            self.virtual_target_invalidate(s)?;
-            self.vm
-                .heap_mut()
-                .set_field(t, T::Expected as u32, Value::float(event.offset.y))?;
+        for &list in lists.iter() {
+            let host = self.stage.value(self.vm.heap(), list)?;
+            let s = state(self.vm.heap(), host)?;
+            let t = get(self.vm.heap(), s, S::Target)?;
+            if t.tag() == ValueTag::Null {
+                continue;
+            }
+            let expected = field(self.vm.heap(), t, T::Expected)?;
+            if expected.tag() != ValueTag::Null
+                && stage::number(expected)? == event.requested.y
+                && event.requested.y != event.offset.y
+            {
+                self.virtual_target_invalidate(s)?;
+                self.vm.heap_mut().set_field(
+                    t,
+                    T::Expected as u32,
+                    Value::float(event.offset.y),
+                )?;
+            }
         }
         Ok(())
     }
@@ -116,6 +116,11 @@ impl SessionVm {
         }
         let host = self.stage.value(self.vm.heap(), id)?;
         let s = state(self.vm.heap(), host)?;
+        let scroll = get(self.vm.heap(), s, S::Scroll)?;
+        if scroll.tag() != ValueTag::Null {
+            let owner = NodeId(self.vm.heap().host_payload(scroll, 0)?.as_int().unwrap() as u64);
+            self.stage.virtual_scrolls.bind(id, owner);
+        }
         put(self.vm.heap_mut(), s, S::MeasuredRevision, Value::NULL)?;
         put(self.vm.heap_mut(), s, S::LastNavigation, Value::int(0))?;
         let t = get(self.vm.heap(), s, S::Target)?;
@@ -186,6 +191,9 @@ impl SessionVm {
         Ok(())
     }
     pub(super) fn virtual_target_cancel(&mut self, s: Value) -> Result<(), AdapterError> {
+        if get(self.vm.heap(), s, S::Fault)?.as_int().is_some() {
+            put(self.vm.heap_mut(), s, S::Fault, Value::NULL)?;
+        }
         let t = get(self.vm.heap(), s, S::Target)?;
         if t.tag() != ValueTag::Null {
             let result = field(self.vm.heap(), t, T::Result)?;
@@ -261,8 +269,15 @@ impl SessionVm {
         let Some(e) = self.virtual_target_entry(s)? else {
             return Ok(false);
         };
+        if get(self.vm.heap(), s, S::Fault)?.as_int().is_some() {
+            put(self.vm.heap_mut(), s, S::Fault, Value::NULL)?;
+        }
         let t = get(self.vm.heap(), s, S::Target)?;
         let scroll = get(self.vm.heap(), s, S::Scroll)?;
+        let geometry = self.virtual_geometry(s)?;
+        if scroll.tag() != ValueTag::Null && geometry.is_none() {
+            return Ok(true);
+        }
         let old_offset = num(self.vm.heap(), s, S::Offset)?;
         let expected = field(self.vm.heap(), t, T::Expected)?;
         if scroll.tag() != ValueTag::Null && expected.tag() != ValueTag::Null {
@@ -294,12 +309,23 @@ impl SessionVm {
             _ if (top - start).abs() <= (bottom - viewport - start).abs() => top,
             _ => bottom - viewport,
         };
-        let padding = gap_padding(self.vm.heap(), s)?;
-        let offset = (next + (old_offset - start)).clamp(
-            0.,
-            (total(self.vm.heap(), s)? + padding * 2. - viewport).max(0.),
-        );
-        let next = offset + (start - old_offset);
+        let scale = geometry.map_or(1., |geometry| geometry.scale);
+        let limit = if scroll.tag() == ValueTag::Null {
+            let padding = gap_padding(self.vm.heap(), s)?;
+            (total(self.vm.heap(), s)? + padding * 2. - viewport).max(0.)
+        } else {
+            geometry.unwrap().limit
+        };
+        if scale.abs() <= 1e-9 && (viewport <= 0. || (next - start).abs() > 0.01) {
+            put(self.vm.heap_mut(), s, S::Fault, Value::int(1))?;
+            return Ok(true);
+        }
+        let offset = if scale.abs() <= 1e-9 {
+            old_offset
+        } else {
+            (old_offset + (next - start) / scale).clamp(0., limit)
+        };
+        let next = start + (offset - old_offset) * scale;
         if scroll.tag() != ValueTag::Null {
             self.vm.heap_mut().write_host_property(
                 aside_vm::PropertyId {
@@ -393,6 +419,9 @@ impl SessionVm {
         let Some(e) = self.virtual_target_entry(s)? else {
             return Ok(false);
         };
+        if self.virtual_geometry(s)?.is_none() {
+            return Ok(false);
+        }
         let t = get(self.vm.heap(), s, S::Target)?;
         let result = field(self.vm.heap(), t, T::Result)?;
         let revision = get(self.vm.heap(), s, S::Revision)?;
@@ -406,6 +435,19 @@ impl SessionVm {
         let window = get(self.vm.heap(), s, S::Window)?;
         if !self.vm.heap_mut().derived_is_current(window, None)? {
             return Ok(false);
+        }
+        let start = num(self.vm.heap(), s, S::Start)?;
+        let end = num(self.vm.heap(), s, S::End)?;
+        let index = self.vm.heap().sequence_get(e, INDEX)?.as_int().unwrap() as u32;
+        let top = prefix(self.vm.heap(), s, index)?;
+        let bottom = top + height(self.vm.heap(), s, e)?;
+        if end <= start {
+            return Ok(false);
+        }
+        if bottom <= start || top >= end {
+            put(self.vm.heap_mut(), s, S::Fault, Value::int(2))?;
+            self.virtual_target_demand(s)?;
+            return Ok(true);
         }
         let child = entry(self.vm.heap(), e, Entry::Node)?;
         if child.tag() == ValueTag::Null {

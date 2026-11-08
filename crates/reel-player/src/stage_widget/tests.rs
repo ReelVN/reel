@@ -3,6 +3,7 @@ mod animation_cost;
 mod cursor;
 mod flow;
 mod input_focus;
+mod native_pages;
 mod prepared_textures;
 mod radio_navigation;
 mod retained;
@@ -618,6 +619,7 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
                 label: Some("Radio".into()),
                 selected: false,
                 revision: 0,
+                tabs: None,
             },
             NodeProps {
                 y: 110.,
@@ -1446,6 +1448,7 @@ mod font_weight;
 mod natural_height;
 mod text_spacing;
 
+mod nested_virtual_list;
 mod text_layout;
 mod virtual_list;
 

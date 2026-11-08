@@ -420,7 +420,7 @@ pub(super) fn asset_path(heap: &Heap, result: Value) -> Result<Value, AdapterErr
 pub(super) fn asset_error(heap: &Heap, result: Value) -> Result<Value, AdapterError> {
     Ok(heap.host_payload(result, Slot::Value as u32)?)
 }
-fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, AdapterError> {
+pub(super) fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, AdapterError> {
     let state = state(heap, object)?;
     let value = heap.host_payload(object, Slot::Value as u32)?;
     Ok(match state {
@@ -446,6 +446,9 @@ fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, Adapte
     })
 }
 impl Results {
+    pub(super) fn create_task(&mut self, vm: &mut Vm, owner: Value) -> Result<Value, AdapterError> {
+        self.create(vm, owner, Kind::Task)
+    }
     pub(super) fn create_condition(
         &mut self,
         vm: &mut Vm,

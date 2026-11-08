@@ -374,11 +374,14 @@ pub(super) struct StageBinding {
     projection_index: projection::Index,
     pub(super) types: super::source::HostTypes,
     pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
+    pub(in crate::aside) page_methods: Option<[aside_vm::bytecode::FunctionId; 5]>,
     pub scene: Stage,
     pub(super) effect_products: Arc<super::source::EffectProducts>,
     effect_projection: super::effects::ProjectionCache,
     pub retirement_revision: u64,
+    pub(super) virtual_scrolls: super::lists::virtualized::ScrollOwners,
     handles: BTreeMap<NodeId, NodeBinding>,
+    pub(in crate::aside) page_stacks: std::collections::BTreeSet<NodeId>,
     root: Option<RootToken>,
     // Schema names are immutable and shared by live nodes. Weak handles let
     // unused schemas disappear with their last node and require no save roots.
@@ -454,11 +457,14 @@ impl StageBinding {
             projection_index: projection::Index::new(heap)?,
             types: super::source::HostTypes::new(heap)?,
             text_filter_function: None,
+            page_methods: None,
             scene: Stage::default(),
             effect_products: Arc::default(),
             effect_projection: Default::default(),
             retirement_revision: 0,
+            virtual_scrolls: Default::default(),
             handles: BTreeMap::new(),
+            page_stacks: Default::default(),
             root: None,
             property_keys: Default::default(),
             editing_limits: Default::default(),
@@ -529,7 +535,14 @@ impl StageBinding {
             }
         }
         for i in 0..heap.sequence_len(references)? {
-            heap.set_host_payload(heap.sequence_get(references, i)?, 2, container)?;
+            let child = heap.sequence_get(references, i)?;
+            if !heap.host_payload(child, 2)?.same_bits(container) {
+                let id = self.id(heap, child)?;
+                if self.handles[&id].shape == snapshot::Shape::Radio {
+                    self.handles.get_mut(&id).unwrap().projection_dirty = true;
+                }
+                heap.set_host_payload(child, 2, container)?;
+            }
         }
         heap.set_host_payload(container, 1, references)?;
         let retired = self.scene.reconcile_children(parent, children)?;
@@ -588,23 +601,7 @@ impl StageBinding {
 
     pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
         let id = self.id(heap, value)?;
-        Ok(match self.scene.node(id).unwrap().kind {
-            NodeKind::Row(_) | NodeKind::Column(_) => flow::FlowField::PROPERTIES.len() as u32,
-            NodeKind::Grid(_) => flow::GridField::PROPERTIES.len() as u32,
-            NodeKind::Camera(_) => camera::CameraField::PROPERTIES.len() as u32,
-            NodeKind::Particles(_) => super::particles::PREFIX.len() as u32,
-            NodeKind::Text(_) => 2,
-            NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
-            NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
-            NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
-            NodeKind::Radio { .. } => controls::RadioField::PROPERTIES.len() as u32,
-            NodeKind::Input { .. } => input::InputField::PROPERTIES.len() as u32,
-            NodeKind::Scroll { .. } => scroll::ScrollField::PROPERTIES.len() as u32,
-            NodeKind::Popup(_) => popup::PopupField::PROPERTIES.len() as u32,
-            NodeKind::Image { .. } => registry::IMAGE_PREFIX.len() as u32,
-            NodeKind::Button { .. } => appearance::ButtonField::PROPERTIES.len() as u32,
-            _ => 0,
-        })
+        Ok(self.handles[&id].shape.prefix() as u32)
     }
 
     pub fn dispatch(
@@ -683,7 +680,7 @@ impl StageBinding {
         } else {
             (shape.project(heap, fields, origin, read_limit)?, None)
         };
-        let props = read_props(
+        let mut props = read_props(
             heap,
             fields,
             prefix.len(),
@@ -696,6 +693,7 @@ impl StageBinding {
                 effect_projection: &mut self.effect_projection,
             },
         )?;
+        super::pages::semantics(shape, &kind, &mut props);
         validate_text_props(&kind, &props)?;
         let mask_source = mask_handle(heap, fields, prefix.len(), Value::NULL)?;
         let effect_source = effect_stamp(heap, fields, prefix.len(), Value::NULL)?;
@@ -832,6 +830,9 @@ impl StageBinding {
         controls::project_group(heap, value, &mut kind)?;
         text_input::project(heap, value, &mut kind)?;
         self.scene.create(kind, props, children)?;
+        if shape == snapshot::Shape::PageStack {
+            self.page_stacks.insert(id);
+        }
         // Keeping any part of a component keeps its ancestors and siblings
         // alive. Explicit retirement clears both directions of these edges.
         for index in 0..heap.sequence_len(references)? {
@@ -907,6 +908,8 @@ impl StageBinding {
             self.retirement_revision = self.retirement_revision.wrapping_add(1);
         }
         for id in nodes {
+            self.page_stacks.remove(&id);
+            self.virtual_scrolls.retire(id);
             if let Some(binding) = self.handles.remove(&id)
                 && let Ok(value) = heap.import_handle(binding.handle)
             {

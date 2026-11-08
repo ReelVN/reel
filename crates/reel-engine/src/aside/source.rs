@@ -115,7 +115,10 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
         .filter(|contract| {
             !matches!(
                 contract.symbol.as_str(),
-                "reel::when::evaluate" | super::stage::text_input::filter::SYMBOL
+                "reel::when::evaluate"
+                    | "reel::page_stack::produce"
+                    | "reel::tab_bar::observe_label"
+                    | super::stage::text_input::filter::SYMBOL
             )
         })
         .cloned()
@@ -129,6 +132,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::results::documentation(&contract.symbol))
                 .or_else(|| super::observable::documentation(&contract.symbol))
                 .or_else(|| super::lists::documentation(&contract.symbol))
+                .or_else(|| super::pages::documentation(&contract.symbol))
                 .or_else(|| super::views::documentation(&contract.symbol))
                 .or_else(|| super::layered_image::documentation(&contract.symbol))
                 .or_else(|| super::localization::documentation(&contract.symbol))
@@ -308,6 +312,7 @@ fn build_api() -> Api {
     super::transitions::describe(&mut api);
     super::stage::configure::describe(&mut api);
     super::lists::describe(&mut api);
+    super::pages::describe(&mut api);
     api.refine(
         "reel::derive",
         aside_host::source::named("Binding"),

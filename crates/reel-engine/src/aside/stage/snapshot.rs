@@ -26,11 +26,15 @@ pub(in crate::aside) enum Shape {
     TextArea,
     Grid,
     Popup,
+    PageStack,
+    TabBar,
 }
 
 impl Shape {
     pub(super) fn from_symbol(symbol: &str) -> Self {
         match symbol {
+            "reel::page_stack" => Self::PageStack,
+            "reel::tab_bar" => Self::TabBar,
             "reel::text" => Self::Text,
             "reel::text_input" => Self::TextInput,
             "reel::text_area" => Self::TextArea,
@@ -54,8 +58,10 @@ impl Shape {
             _ => unreachable!("registered stage constructor"),
         }
     }
-    fn prefix(self) -> usize {
+    pub(super) fn prefix(self) -> usize {
         match self {
+            Self::PageStack => super::super::pages::PageField::PROPERTIES.len(),
+            Self::TabBar => super::super::pages::TabField::PROPERTIES.len(),
             Self::Text => 2,
             Self::Button => appearance::ButtonField::PROPERTIES.len(),
             Self::Image | Self::Video => registry::IMAGE_PREFIX.len(),
@@ -134,7 +140,8 @@ impl Shape {
             Self::Popup => popup::kind(heap, fields)?,
             Self::Row | Self::Column => flow::flow_kind(heap, fields, self == Self::Row)?,
             Self::Grid => flow::grid_kind(heap, fields)?,
-            Self::Stack => NodeKind::Stack,
+            Self::Stack | Self::PageStack => NodeKind::Stack,
+            Self::TabBar => super::super::pages::tab_kind(heap, fields, limit)?,
             Self::Cursor => NodeKind::Cursor,
             Self::VirtualList => unreachable!("virtual list projects its VM-owned state"),
         })
@@ -148,6 +155,12 @@ impl Shape {
             }};
         }
         match self {
+            Self::PageStack => descriptor!("reel.page_stack", |h, _, i, v| {
+                super::super::pages::validate(h, i, v, false)
+            }),
+            Self::TabBar => descriptor!("reel.tab_bar", |h, _, i, v| {
+                super::super::pages::validate(h, i, v, true)
+            }),
             Self::Text => descriptor!("reel.text", |h, _, i, v| validate_text_property(h, i, v)),
             Self::TextInput => descriptor!("reel.text_input", |h, _, i, v| text_input::validate(
                 h, i, v, false
@@ -225,6 +238,8 @@ impl StageBinding {
             Shape::Row,
             Shape::Grid,
             Shape::Stack,
+            Shape::PageStack,
+            Shape::TabBar,
         ] {
             registry.register_validator(shape.validator())?;
         }
@@ -310,6 +325,7 @@ impl StageBinding {
             },
         )?;
         overrides::apply_offsets(heap, value, &mut props)?;
+        super::super::pages::semantics(saved.shape, &kind, &mut props);
         let mask_source = mask_handle(heap, fields, saved.shape.prefix(), selected)?;
         let effect_source = effect_stamp(heap, fields, saved.shape.prefix(), selected)?;
         let overrides = if selected.tag() == ValueTag::Null {
@@ -324,6 +340,9 @@ impl StageBinding {
             return Err(AdapterError::Input("saved node identity"));
         }
         self.scene.restore_node(id, kind, props)?;
+        if saved.shape == Shape::PageStack {
+            self.page_stacks.insert(id);
+        }
         self.handles.insert(
             id,
             NodeBinding {

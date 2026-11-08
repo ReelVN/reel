@@ -6,12 +6,19 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Added
 
+- Add native `page_stack` and `tab_bar` compositions with retained lazy pages, shared construction tasks, customizable tab content, and keyboard/controller navigation.
 - Add opt-in touch overscroll with native rebound animation while preserving bounded logical scroll positions.
 - Include the selected desktop render-quality tier in per-frame performance counts.
 - Add a shared `preload` node property to prepare hidden mounted image and effect sources with low-priority IO and bounded spare residency.
+- Record shader creation, image upload preparation and surface acquisition timing in performance captures.
+- Record audio device checks, format queries and native stream control timing in performance captures.
+- Record font outline, stroke expansion and alpha coverage timing separately in performance captures.
 
 ### Fixed
 
+- Keep recent frame samples separate from historical slow frames across performance-label changes.
+- Preserve identity-key ordering when restoring VM snapshots so retained lists, page caches and in-progress keyed sorts continue correctly.
+- Preserve virtual-list viewports through nested containers, clipping and transforms, with indexed scroll ownership and consistent positioning and image-readiness checks.
 - Keep large reusable desktop image-upload buffers when smaller completed uploads fill the staging cache.
 - Raise desktop defaults to 1 GiB each for GPU resources and offscreen targets, 64 MiB for transient rendering data and 512 MiB for decoded CPU resources, allocating within these limits as needed.
 - Prepare admitted viewport-sized desktop scratch targets and mapped upload buffers during surface setup for reuse by the first transitions and image-heavy pages.
@@ -41,12 +48,6 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Allow 64 MiB per desktop image preparation to reduce completion-wake round trips when opening image-heavy pages, within the existing GPU resource budget.
 - Separate CPU glyph preparation from desktop/Vita atlas uploads, resolving the font lease once per run. Desktop batches distinct missing glyphs on bounded Rayon lanes and keeps raster scratch storage owned by the renderer.
 - Keep desktop screenshot targets separate from the displayed viewport, preserving target and geometry caches through thumbnail capture and reclaiming idle caches on actual budget pressure.
-
-### Added
-
-- Shader creation, image upload preparation and surface acquisition timing in performance captures.
-- Audio device checks, format queries and native stream control timing in performance captures.
-- Separate font outline, stroke expansion and alpha coverage timing in performance captures.
 
 ## 0.3.0 — 2026-11-03
 

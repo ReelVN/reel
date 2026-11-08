@@ -2,6 +2,13 @@
 use super::*;
 
 impl SceneWidget {
+    pub(super) fn visual_caption(node: &SceneProperties) -> Option<&str> {
+        if node.props.semantics == reel_ui::stage::NodeSemantics::Tab && !node.props.decorated {
+            None
+        } else {
+            Self::caption(&node.kind)
+        }
+    }
     pub(super) fn image_widget(view: &SceneNode) -> Option<WidgetPod<Image>> {
         let NodeKind::Image {
             fit,
@@ -132,7 +139,7 @@ impl SceneWidget {
             })
     }
     pub(super) fn reveal_range(node: &SceneProperties) -> std::ops::Range<usize> {
-        let text = Self::caption(&node.kind).unwrap_or("");
+        let text = Self::visual_caption(node).unwrap_or("");
         let mut end = node.props.reveal.unwrap_or(text.len()).min(text.len());
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -163,7 +170,7 @@ impl SceneWidget {
                     Label::new("")
                         .with_rich_text(match &view.node.kind {
                             NodeKind::Text(text) => text.clone(),
-                            kind => Self::caption(kind).unwrap_or("").into(),
+                            _ => Self::visual_caption(&view.node).unwrap_or("").into(),
                         })
                         .with_visible_bytes(Self::reveal_range(&view.node))
                         .with_reveal_fade(Self::reveal_fade(&view.node))
@@ -317,6 +324,7 @@ impl SceneWidget {
                 _ => Vec2::ZERO,
             },
             virtual_list: matches!(view.node.kind, NodeKind::VirtualList(_)).then(Default::default),
+            virtual_viewport: None,
             #[cfg(test)]
             layouts: 0,
             #[cfg(test)]
@@ -619,7 +627,7 @@ impl SceneWidget {
         }
         let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
             (NodeKind::Text(a), NodeKind::Text(b)) => a != b,
-            _ => Self::caption(&this.widget.node.kind) != Self::caption(&view.node.kind),
+            _ => Self::visual_caption(&this.widget.node) != Self::visual_caption(&view.node),
         };
         if caption_changed {
             this.ctx.request_layout();
@@ -632,7 +640,7 @@ impl SceneWidget {
                     &mut label,
                     match &view.node.kind {
                         NodeKind::Text(text) => text.clone(),
-                        kind => Self::caption(kind).unwrap_or("").into(),
+                        _ => Self::visual_caption(&view.node).unwrap_or("").into(),
                     },
                 );
             }

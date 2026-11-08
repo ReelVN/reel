@@ -904,6 +904,7 @@ pub(super) fn read_props(
         &default_font
     };
     let mut props = NodeProps {
+        semantics: reel_ui::stage::NodeSemantics::Generic,
         effect,
         effect_resolution_scale: effect_resolution_scale(get(
             NodeProperty::EffectResolutionScale,

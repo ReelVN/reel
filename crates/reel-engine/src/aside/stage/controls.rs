@@ -66,6 +66,7 @@ pub(super) fn radio_kind(
         .is_eq(),
         group: None,
         revision,
+        tabs: None,
     })
 }
 
@@ -73,8 +74,8 @@ pub(super) fn project_group(
     heap: &Heap,
     value: Value,
     kind: &mut NodeKind,
-) -> Result<(), HeapError> {
-    if let NodeKind::Radio { group, .. } = kind {
+) -> Result<(), AdapterError> {
+    if let NodeKind::Radio { group, tabs, .. } = kind {
         let (source, writable) = heap.property_source(PropertyId {
             host: value,
             field: RadioField::Value.index() as u32,
@@ -83,6 +84,10 @@ pub(super) fn project_group(
             heap.handle(source.host)?.key,
             source.field,
         ));
+        if let Some((id, policy)) = super::super::pages::tab_group(heap, value)? {
+            *group = Some(id);
+            *tabs = Some(policy);
+        }
     }
     Ok(())
 }

@@ -8,8 +8,10 @@ aside_host::native_documentation! {
         /// The builder receives observable row fields `value` and `index`. Keys must be
         /// unique: scalars preserve their type, strings compare by content, and other
         /// objects compare by identity. Stable keys retain mounted rows through reordering.
-        /// With `virtual: true`, mount the scroll view's requested window and navigation
-        /// targets, retiring rows outside that window. Keep persistent row state in the
+        /// With `virtual: true`, mount the nearest enclosing scroll's visible window and
+        /// navigation targets through ordinary containers, accounting for their layout,
+        /// transforms and clipping. An empty viewport retains only pinned targets.
+        /// Retire rows outside that window. Keep persistent row state in the
         /// item model because remounting creates fresh row nodes. The returned
         /// VirtualListNode exposes scroll_to(key, align: "nearest"). Key indexing
         /// and duplicate validation use bounded native continuations, including
@@ -21,6 +23,8 @@ aside_host::native_documentation! {
         /// key, retiring the list, starting another request, or user scrolling/navigation
         /// that supersedes this target cancels the pending request. The result is owned by
         /// the list; cancelling one consumer's await does not cancel the producer.
+        /// Positioning uses the owner's logical vertical axis, including container
+        /// scaling. An unreachable target reports a source-located native error.
         "reel::list::scroll_to";
     }
 }
@@ -28,7 +32,7 @@ use super::*;
 use aside_vm::executor::{Continuation, FaultRetention};
 use aside_vm::{Heap, ObjectKind, ValueTag};
 use std::cmp::Ordering;
-mod sort;
+pub(in crate::aside) mod sort;
 pub(super) mod virtualized;
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {

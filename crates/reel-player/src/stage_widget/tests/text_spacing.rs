@@ -86,6 +86,7 @@ fn text_spacing_moves_real_glyphs_and_keeps_stable_widget_layouts() {
             selected: false,
             group: None,
             revision: 0,
+            tabs: None,
         },
     ] {
         let mut f = fixture(kind.clone());

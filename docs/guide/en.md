@@ -958,6 +958,30 @@ column(gap: 12) {
 }
 ```
 
+Compose `tab_bar` and `page_stack` through one selected value. Pages are built on first use and retain their controls and edits when switched away. Customize tab content with the interaction feedback and `appearance` on `item.control`. In `manual` mode, arrows move focus and confirmation selects a page; the default `automatic` mode selects with focus.
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let settings = model({page: "display", volume: 0.8});
+    let pages = page_stack(value: bind(settings.page), width: 600, height: 180, items: [
+        {key: "display", build: || text("Display settings")},
+        {key: "sound", build: || column(gap: 12) {
+            text("Volume");
+            slider(value: bind(settings.volume), min: 0, max: 1, width: 300);
+        }}
+    ]);
+    let tabs = tab_bar(value: bind(settings.page), activation: "manual", items: [
+        {key: "display", label: "Display"},
+        {key: "sound", label: "Sound"}
+    ], build: |item| text(item.label,
+        opacity: derive(|| if item.selected || item.control.focus_visible {1} else {0.5})));
+    stage.replace(column(x: 24, y: 24, gap: 16) { tabs; pages; });
+}
+```
+
+`pages.get(key)` retrieves a built page; `await pages.ensure(key)` builds and retrieves one in advance; `pages.evict(key)` releases an inactive page. Use scopes for each visit's previews, audio and tasks, with control retention and visit work following their respective lifetimes.
+
 Settings pages can connect directly to reading state. Auto mode waits after text presentation and pauses for choices; skipping follows read and choice policies. Modal UI, pauses and focus loss use the reading state.
 
 ```aside
