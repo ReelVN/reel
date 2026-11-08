@@ -2,6 +2,75 @@
 use super::*;
 
 #[test]
+#[ignore = "requires REEL_R01_TEST_FONT; CPU batch parity and cost"]
+fn parallel_glyph_batches_preserve_pixels_errors_and_budget_ownership() {
+    use crate::common::glyph::{RasterLimits, RasterRun, Rasterizer};
+    let (_pool, _registry, _handle, frame, _bridge) = long_text_fixture();
+    let budgets = Budgets::new(Default::default());
+    let limits = RasterLimits {
+        available: u64::MAX,
+        max_dimension: 8192,
+        budget: budgets.transient.clone(),
+    };
+    let mut serial = Rasterizer::default();
+    let batch_context = crate::common::glyph::Rasterizers::default();
+    let mut serial_time = std::time::Duration::ZERO;
+    let mut parallel_time = std::time::Duration::ZERO;
+    let mut glyphs = 0;
+    for command in frame.commands() {
+        let reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) = &command.op
+        else {
+            continue;
+        };
+        let mut indices = Vec::new();
+        for (index, position) in run.glyphs.iter().enumerate() {
+            if !indices
+                .iter()
+                .any(|&prior: &usize| run.glyphs[prior].id == position.id)
+            {
+                indices.push(index);
+            }
+            if indices.len() == 32 {
+                break;
+            }
+        }
+        let raster = RasterRun::new(frame.drawing(), run, 1., command.origin.at).unwrap();
+        let start = Instant::now();
+        let expected: Vec<_> = indices
+            .iter()
+            .map(|&index| raster.glyph(&mut serial, index, limits.clone()).unwrap())
+            .collect();
+        serial_time += start.elapsed();
+        let start = Instant::now();
+        let actual = raster.batch(&batch_context, &indices, limits.clone());
+        parallel_time += start.elapsed();
+        glyphs += indices.len();
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            let pixels = |bitmap: Option<crate::common::glyph::GlyphBitmap>| {
+                bitmap.map(|bitmap| (bitmap.x, bitmap.y, bitmap.size, bitmap.alpha))
+            };
+            assert_eq!(pixels(actual.unwrap()), pixels(expected));
+        }
+        assert_eq!(budgets.transient.usage().bytes, 0);
+        let mut invalid = run.clone();
+        invalid.glyphs[indices[0]].id = u32::MAX;
+        let raster = RasterRun::new(frame.drawing(), &invalid, 1., command.origin.at).unwrap();
+        let results = raster.batch(&batch_context, &indices, limits.clone());
+        assert!(
+            matches!(&results[0], Err(GpuError::Unsupported { at, record: "glyph id" }) if *at == command.origin.at)
+        );
+        drop(results);
+        assert_eq!(budgets.transient.usage().bytes, 0);
+    }
+    assert!(glyphs > 32);
+    eprintln!(
+        "glyph_batch glyphs={glyphs} serial_us={} parallel_us={}",
+        serial_time.as_micros(),
+        parallel_time.as_micros()
+    );
+}
+
+#[test]
 #[ignore = "requires actual graphics adapter and REEL_R01_TEST_FONT"]
 fn retained_text_preparation_publishes_glyphs_for_the_following_draw() {
     use reel_ui::frame::{FrameTransition, RetainBuild};
@@ -380,7 +449,7 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
             }
         ),
         Err(GpuError::Budget {
-            domain: "glyph raster",
+            domain: "glyph stroke path",
             ..
         })
     ));
@@ -487,7 +556,7 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    let variants = if pipelines.bounded.is_some() { 25 } else { 19 };
+    let variants = if pipelines.bounded.is_some() { 27 } else { 21 };
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
         [3, variants, variants, variants, 8]

@@ -159,13 +159,11 @@ impl GlyphCache {
         self.failures.clear();
         self.pending_glyphs.clear();
     }
-    fn rasterize(
+    fn upload(
         &mut self,
         device: DeviceResources<'_>,
-        frame: &FrameDrawing,
-        run: &FrameGlyphRun,
-        sample: (f64, usize),
-        at: RecordLocation,
+        font: &reel_ui::resources::ResourceLease,
+        bitmap: Option<glyph::GlyphBitmap>,
         uploads: &mut crate::common::glyph_upload::Batch<Rc<Glyph>>,
     ) -> Result<Rc<Glyph>, GpuError> {
         let DeviceResources {
@@ -173,35 +171,9 @@ impl GlyphCache {
             budgets,
             limits,
         } = device;
-        let (density, index) = sample;
-        let source = crate::common::resources::ResourceSource::new(
-            frame
-                .resources()
-                .leases()
-                .iter()
-                .find(|r| r.handle() == run.font)
-                .ok_or(GpuError::Unsupported {
-                    at,
-                    record: "missing font",
-                })?,
-        );
+        let source = crate::common::resources::ResourceSource::new(font);
         let max = gpu.capabilities().max_texture_size;
-        let Some(bitmap) = glyph::rasterize(
-            &mut self.raster,
-            frame,
-            run,
-            density,
-            index,
-            at,
-            glyph::RasterLimits {
-                available: limits
-                    .transient_bytes
-                    .saturating_sub(budgets.transient.usage().bytes),
-                max_dimension: max.saturating_sub(2),
-                budget: budgets.transient.clone(),
-            },
-        )?
-        else {
+        let Some(bitmap) = bitmap else {
             return Ok(Rc::new(Glyph {
                 source,
                 image: None,
@@ -326,22 +298,33 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
         at: RecordLocation,
     ) -> Result<InkBounds, GpuError> {
         let key = Arc::new(RunKey::new(run, density));
+        let raster = glyph::RasterRun::new(frame, run, density, at)?;
         let mut ink = InkBounds::Empty;
         for (index, position) in run.glyphs.iter().enumerate() {
             let key = Key::new(key.clone(), position.id);
             let glyph = if let Some(glyph) = self.glyph_cache.entries.get(&key) {
                 glyph.clone()
             } else {
-                let glyph = self.glyph_cache.rasterize(
+                let bitmap = raster.glyph(
+                    &mut self.glyph_cache.raster,
+                    index,
+                    glyph::RasterLimits {
+                        available: self
+                            .limits
+                            .transient_bytes
+                            .saturating_sub(self.budgets.transient.usage().bytes),
+                        max_dimension: self.gpu.capabilities().max_texture_size.saturating_sub(2),
+                        budget: self.budgets.transient.clone(),
+                    },
+                )?;
+                let glyph = self.glyph_cache.upload(
                     DeviceResources {
                         gpu: self.gpu,
                         budgets: self.budgets,
                         limits: self.limits,
                     },
-                    frame,
-                    run,
-                    (density, index),
-                    at,
+                    raster.source,
+                    bitmap,
                     &mut self.glyph_uploads,
                 )?;
                 self.glyph_cache.entries.insert(key, glyph.clone());

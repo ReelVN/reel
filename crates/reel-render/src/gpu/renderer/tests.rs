@@ -15,6 +15,7 @@ use reel_ui::{
 use std::time::Instant;
 
 mod atlas;
+mod captures;
 mod effects;
 mod nine_slice;
 mod pipelines;

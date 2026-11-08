@@ -20,6 +20,7 @@ pub struct Prepared {
     pub(super) texture: wgpu::Texture,
     pub(super) quality: Quality,
     pub(super) size: [u32; 2],
+    cache_targets: bool,
     frames: Vec<RenderFrame>,
     tickets: Vec<Reservation>,
     images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
@@ -177,13 +178,27 @@ impl Renderer {
         prepared: &Prepared,
         bytes: u64,
     ) -> Result<Reservation, GpuError> {
-        reserve(
+        let result = reserve(
             &self.budgets.transient,
             &prepared.budget_scope.transient,
             bytes,
             self.gpu.limits.transient_bytes,
             "readback",
-        )
+        );
+        if matches!(result, Err(GpuError::Pressure { .. })) {
+            self.geometry.clear();
+            self.effect_uniforms.clear();
+            self.effect_results.clear();
+            self.images.clear_idle();
+            return reserve(
+                &self.budgets.transient,
+                &prepared.budget_scope.transient,
+                bytes,
+                self.gpu.limits.transient_bytes,
+                "readback",
+            );
+        }
+        result
     }
     /// Current renderer-owned residency across the shared accounting domains.
     pub fn usage(&self) -> Usage {
@@ -390,7 +405,7 @@ impl Renderer {
         capture: bool,
     ) -> Result<Prepared, GpuError> {
         let mut epoch = self.retained.epoch.lock().unwrap();
-        if *epoch != Some(frame.surface_epoch()) {
+        if !capture && *epoch != Some(frame.surface_epoch()) {
             self.retained.inputs.clear();
             self.effect_results.clear();
             self.effect_uniforms.clear();
@@ -400,14 +415,6 @@ impl Renderer {
         drop(epoch);
         if !capture && self.retained.inputs.pending(&frame.key()) {
             return Err(GpuError::Preparing);
-        }
-        // Capture reserves its output and readback after replay. Keep that
-        // original admission path free of optional reusable staging.
-        if capture {
-            self.geometry.clear();
-            self.images.clear_idle();
-            self.effect_results.clear();
-            self.effect_uniforms.clear();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
         let result = self.prepare_cached(frame, second, size, capture, &policy, None);
@@ -497,6 +504,26 @@ impl Renderer {
         geometry_policy: &super::geometry::UploadPolicy,
         mut retry: Option<CacheRetry>,
     ) -> Result<Prepared, GpuError> {
+        // Capture owns a separate scratch namespace. A thumbnail must not
+        // reconfigure the live viewport's target pool or publish its output there.
+        let capture_targets = super::target_cache::TargetCache::default();
+        let capture_coverage = super::target_cache::TargetCache::default();
+        let capture_geometry = super::geometry::Cache::default();
+        let target_cache = if capture {
+            &capture_targets
+        } else {
+            &self.targets
+        };
+        let coverage_target_cache = if capture {
+            &capture_coverage
+        } else {
+            &self.coverage_targets
+        };
+        let geometry_cache = if capture {
+            &capture_geometry
+        } else {
+            &self.geometry
+        };
         let effect_results_enabled = retry.is_none();
         loop {
             self.gpu.check()?;
@@ -527,7 +554,9 @@ impl Renderer {
                     Ok(())
                 },
             )?);
-            self.retained.inputs.retain(&selection);
+            if !capture {
+                self.retained.inputs.retain(&selection);
+            }
             let preferred = cached_quality.filter(|_| selection.has_cached());
             let plan = super::image_plan::collect(
                 std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
@@ -637,7 +666,7 @@ impl Renderer {
                     images: &self.images,
                 },
             )?;
-            let groups = self.targets.1.lock().unwrap().get(
+            let groups = target_cache.1.lock().unwrap().get(
                 frame.drawing(),
                 capture,
                 &self.budgets.transient,
@@ -655,7 +684,7 @@ impl Renderer {
                     super::targets::target_bytes(extent, coverage_quality.expect("coverage format"))
                 };
                 let mut resident_tickets = Vec::new();
-                let resident = self.targets.capacities(size, quality, |bytes| {
+                let resident = target_cache.capacities(size, quality, |bytes| {
                     resident_tickets.push(reserve(
                         &self.budgets.transient,
                         &budget_scope.transient,
@@ -807,12 +836,12 @@ impl Renderer {
             // Upload batches own their own admission. Reserving this earlier would
             // deadlock cold frames on a host configured for one in-flight submission.
             let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
-            self.targets.configure(size, quality);
+            target_cache.configure(size, quality);
             let coverage_quality = self.gpu.coverage_quality(quality);
             if let Some(coverage_quality) = coverage_quality {
-                self.coverage_targets.configure(size, coverage_quality);
+                coverage_target_cache.configure(size, coverage_quality);
             } else {
-                self.coverage_targets.clear();
+                coverage_target_cache.clear();
             }
             let warm = selection
                 .warm
@@ -844,8 +873,8 @@ impl Renderer {
                 offscreen,
                 effects: Vec::new(),
                 white: None,
-                target_cache: &self.targets,
-                coverage_target_cache: &self.coverage_targets,
+                target_cache,
+                coverage_target_cache,
                 coverage_quality,
                 coverage_pipeline,
                 retained_cache: &self.retained.inputs,
@@ -875,7 +904,7 @@ impl Renderer {
                 #[cfg(test)]
                 sprite_instances_enabled: self.sprite_instances_enabled,
                 geometry_policy,
-                geometry_cache: &self.geometry,
+                geometry_cache,
                 geometry: Vec::new(),
             };
             let transform = Affine::scale_non_uniform(
@@ -958,6 +987,7 @@ impl Renderer {
             };
             let mut prepared = Prepared {
                 capture: None,
+                cache_targets: !capture,
                 encoder: ctx.encoder,
                 output: output.view,
                 texture: output.texture,
@@ -996,24 +1026,23 @@ impl Renderer {
                 self.gpu
                     .queue
                     .on_submitted_work_done(move || signal.store(true, Ordering::Release));
-                self.targets.reserve_metadata(
+                target_cache.reserve_metadata(
                     size,
                     quality,
                     &prepared.targets,
                     &self.budgets.transient,
                     self.gpu.limits.transient_bytes,
                 );
-                self.targets
-                    .publish(size, quality, &prepared.targets, Some(&retained_output));
+                target_cache.publish(size, quality, &prepared.targets, Some(&retained_output));
                 if let Some(coverage) = self.gpu.coverage_quality(quality) {
-                    self.coverage_targets.reserve_metadata(
+                    coverage_target_cache.reserve_metadata(
                         size,
                         coverage,
                         &prepared.targets,
                         &self.budgets.transient,
                         self.gpu.limits.transient_bytes,
                     );
-                    self.coverage_targets.publish(
+                    coverage_target_cache.publish(
                         size,
                         coverage,
                         &prepared.targets,
@@ -1072,21 +1101,23 @@ impl Renderer {
         let id = self.next;
         self.next = id.checked_add(1).ok_or(GpuError::IdentityExhausted)?;
         let done = Arc::new(AtomicBool::new(false));
-        self.targets.reserve_metadata(
-            prepared.size,
-            prepared.quality,
-            &prepared.targets,
-            &self.budgets.transient,
-            self.gpu.limits.transient_bytes,
-        );
-        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
-            self.coverage_targets.reserve_metadata(
+        if prepared.cache_targets {
+            self.targets.reserve_metadata(
                 prepared.size,
-                coverage_quality,
+                prepared.quality,
                 &prepared.targets,
                 &self.budgets.transient,
                 self.gpu.limits.transient_bytes,
             );
+            if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+                self.coverage_targets.reserve_metadata(
+                    prepared.size,
+                    coverage_quality,
+                    &prepared.targets,
+                    &self.budgets.transient,
+                    self.gpu.limits.transient_bytes,
+                );
+            }
         }
         for slot in &mut prepared.effect_uniform_slots {
             slot.upload(&self.gpu);
@@ -1103,6 +1134,7 @@ impl Renderer {
         self.gpu
             .queue
             .on_submitted_work_done(move || signal.store(true, Ordering::Release));
+        let cache_targets = prepared.cache_targets;
         self.inflight.push(Inflight {
             capture: prepared.capture,
             id,
@@ -1121,19 +1153,21 @@ impl Renderer {
         });
         self.gpu.check()?;
         self.images.submitted();
-        self.targets.publish(
-            prepared.size,
-            prepared.quality,
-            &self.inflight.last().unwrap()._targets,
-            None,
-        );
-        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
-            self.coverage_targets.publish(
+        if cache_targets {
+            self.targets.publish(
                 prepared.size,
-                coverage_quality,
+                prepared.quality,
                 &self.inflight.last().unwrap()._targets,
                 None,
             );
+            if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+                self.coverage_targets.publish(
+                    prepared.size,
+                    coverage_quality,
+                    &self.inflight.last().unwrap()._targets,
+                    None,
+                );
+            }
         }
         Ok(id)
     }

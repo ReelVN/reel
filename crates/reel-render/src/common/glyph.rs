@@ -1,6 +1,8 @@
 //! Consumes shaped glyph IDs/positions; this module never invokes Swash shaping.
 use super::GpuError;
-use reel_ui::frame::{FrameDrawing, FrameGlyphRun, RecordLocation};
+#[cfg(test)]
+use reel_ui::frame::FrameDrawing;
+use reel_ui::frame::{FrameGlyphRun, RecordLocation};
 use reel_ui::resources::ResourceView;
 use reel_ui::{kurbo, peniko};
 use swash::{
@@ -8,7 +10,11 @@ use swash::{
     zeno,
 };
 
+mod run;
 mod stroke;
+pub(crate) use run::RasterRun;
+#[cfg(feature = "wgpu")]
+pub(crate) use run::Rasterizers;
 #[path = "synthesis.rs"]
 mod synthesis;
 
@@ -46,6 +52,7 @@ impl GlyphBitmap {
     }
 }
 
+#[derive(Clone)]
 pub struct RasterLimits {
     pub available: u64,
     pub max_dimension: u32,
@@ -104,9 +111,22 @@ mod density_tests {
     }
 }
 
+#[cfg(test)]
 pub fn rasterize(
     context: &mut Rasterizer,
     frame: &FrameDrawing,
+    run: &FrameGlyphRun,
+    density: f64,
+    index: usize,
+    at: RecordLocation,
+    limits: RasterLimits,
+) -> Result<Option<GlyphBitmap>, GpuError> {
+    RasterRun::new(frame, run, density, at)?.glyph(context, index, limits)
+}
+
+fn rasterize_resource(
+    context: &mut Rasterizer,
+    resource: &reel_ui::resources::ResourceLease,
     run: &FrameGlyphRun,
     density: f64,
     index: usize,
@@ -119,15 +139,6 @@ pub fn rasterize(
 ) -> Result<Option<GlyphBitmap>, GpuError> {
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
     let outline_timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphOutline);
-    let resource = frame
-        .resources()
-        .leases()
-        .iter()
-        .find(|r| r.handle() == run.font)
-        .ok_or(GpuError::Unsupported {
-            at,
-            record: "missing font lease",
-        })?;
     let ResourceView::Font(font) = resource.view() else {
         return Err(GpuError::Unsupported {
             at,
