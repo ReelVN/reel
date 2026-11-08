@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "aside-compiler"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aside-syntax",
  "aside-vm",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "aside-host"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aside-compiler",
  "aside-host-macros",
@@ -281,14 +281,14 @@ dependencies = [
 
 [[package]]
 name = "aside-host-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "moxy",
 ]
 
 [[package]]
 name = "aside-lsp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aside-compiler",
  "lsp-server",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "aside-std"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aside-host",
  "fastrand",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "aside-syntax"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "countme",
  "hashbrown 0.17.1",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "aside-vm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -3412,7 +3412,7 @@ dependencies = [
 
 [[package]]
 name = "reel-audio"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "atomic-arena",
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "reel-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aside-compiler",
  "aside-host",
@@ -3462,7 +3462,7 @@ dependencies = [
 
 [[package]]
 name = "reel-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "hashbrown 0.17.1",
  "serde",
@@ -3470,7 +3470,7 @@ dependencies = [
 
 [[package]]
 name = "reel-dev"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3487,7 +3487,7 @@ dependencies = [
 
 [[package]]
 name = "reel-engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aside-compiler",
  "aside-host",
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "reel-media"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atomic_refcell",
  "cpal",
@@ -3530,7 +3530,7 @@ dependencies = [
 
 [[package]]
 name = "reel-package"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "allocation-counter",
  "aside-vm",
@@ -3544,7 +3544,7 @@ dependencies = [
 
 [[package]]
 name = "reel-player"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "allocation-counter",
  "arboard",
@@ -3578,7 +3578,7 @@ dependencies = [
 
 [[package]]
 name = "reel-render"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "reel-storage"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "atomic-write-file",
  "tempfile",
@@ -3609,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "reel-text"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "accesskit",
  "core_maths",
@@ -3627,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "reel-ui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "accesskit",
  "anymap3",
