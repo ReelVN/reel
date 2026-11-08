@@ -401,6 +401,8 @@ pub struct NodeProps {
     /// Blend the completed subtree with its backdrop.
     pub blend: crate::frame::BlendMode,
     pub visible: bool,
+    /// Prepare mounted image/effect sources in spare capacity, including hidden descendants.
+    pub preload: bool,
     /// Include this subtree in stage captures; ordinary presentation is unchanged.
     pub capture_included: bool,
     pub enabled: bool,
@@ -491,6 +493,7 @@ impl Default for NodeProps {
             invert: 0.,
             blend: Default::default(),
             visible: true,
+            preload: false,
             capture_included: true,
             enabled: true,
             modal: false,

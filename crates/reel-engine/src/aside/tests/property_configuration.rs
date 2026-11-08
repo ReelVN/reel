@@ -83,6 +83,11 @@ fn with_source_asb_preserves_identity_presence_and_final_binding_graph() {
     let code = r#"fn opening() {
         let state=model({position:1,other:7});
         let node=text("first",x:bind(state.position),width:80);
+        if node.preload {throw "preload default";}
+        node.with(preload:true);
+        if !node.preload {throw "preload writeback";}
+        let hidden=stack(visible:false,preload:true);
+        if hidden.visible || !hidden.preload {throw "preload constructor";}
         let result=node.with(value:"second",y:4);
         if result!=node || node.x!=1 || node.y!=4 || node.width!=80 || node.value!="second" {throw "identity/presence";}
         node.with(width:null).with(x:3);

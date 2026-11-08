@@ -165,6 +165,7 @@ mod tests {
             },
             reloadable: true,
             kind: AssetKind::Image,
+            priority: reel_core::identity::Priority::Visible,
             phase: Phase::Describe,
             input: None,
             size: [0, 0],

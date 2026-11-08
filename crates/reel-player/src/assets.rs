@@ -111,6 +111,7 @@ struct Load {
     source: AssetSource,
     reloadable: bool,
     kind: AssetKind,
+    priority: Priority,
     phase: Phase,
     input: Option<Arc<OwnedBytes>>,
     size: [u32; 2],
@@ -394,6 +395,7 @@ impl Assets {
                 version: None,
             },
             kind,
+            Priority::Visible,
         )
     }
     /// Restore a retained asset from the selected fixed source.
@@ -404,9 +406,20 @@ impl Assets {
                 version: Some(version.version),
             },
             kind,
+            Priority::Visible,
         )
     }
-    fn request_source(&self, source: AssetSource, kind: AssetKind) -> LoadId {
+    pub(crate) fn prefetch(&self, source: String, kind: AssetKind) -> LoadId {
+        self.request_source(
+            AssetSource {
+                key: AssetKey(source),
+                version: None,
+            },
+            kind,
+            Priority::Prefetch,
+        )
+    }
+    fn request_source(&self, source: AssetSource, kind: AssetKind, priority: Priority) -> LoadId {
         let mut service = self.0.borrow_mut();
         service.next = service
             .next
@@ -424,6 +437,7 @@ impl Assets {
                 source,
                 reloadable: true,
                 kind,
+                priority,
                 phase,
                 input: None,
                 size: [0; 2],
@@ -453,6 +467,18 @@ impl Assets {
         key: String,
         bytes: &[u8],
     ) -> Result<Option<LoadId>, String> {
+        self.encoded(key, bytes, Priority::Visible)
+    }
+    pub(crate) fn prefetch_encoded(&self, key: String, bytes: &[u8]) -> Result<LoadId, String> {
+        self.encoded(key, bytes, Priority::Prefetch)?
+            .ok_or_else(|| "prefetch input capacity exhausted".into())
+    }
+    fn encoded(
+        &self,
+        key: String,
+        bytes: &[u8],
+        priority: Priority,
+    ) -> Result<Option<LoadId>, String> {
         let mut service = self.0.borrow_mut();
         if service.executor.is_none() {
             return Err("asset service closed".into());
@@ -480,6 +506,7 @@ impl Assets {
                 },
                 reloadable: false,
                 kind: AssetKind::Image,
+                priority,
                 phase: Phase::Probe,
                 input: Some(Arc::new(input)),
                 size: [0; 2],
@@ -775,7 +802,7 @@ impl Service {
         match load.phase {
             Phase::Describe => match self.io.as_mut().unwrap().describe(DescribeRequest {
                 resource: load.source.clone(),
-                priority: Priority::Visible,
+                priority: load.priority,
                 scope: Scope::Process,
                 completion: completion()?,
             }) {
@@ -793,6 +820,9 @@ impl Service {
                     ));
                 }
                 let Ok(output) = self.input.reserve(u64::from(len)) else {
+                    if load.priority == Priority::Prefetch {
+                        return Err("prefetch input capacity exhausted".into());
+                    }
                     // Other reads/decoders own the input tickets. Keep this
                     // request pending until their existing maintenance releases them.
                     return Ok(());
@@ -802,7 +832,7 @@ impl Service {
                     resource: load.source.clone(),
                     offset: 0,
                     len,
-                    priority: Priority::Visible,
+                    priority: load.priority,
                     scope: Scope::Process,
                     output,
                     completion: completion()?,
@@ -822,6 +852,8 @@ impl Service {
                 );
             }
             Phase::Decode if matches!(load.kind, AssetKind::Font | AssetKind::EffectShader) => {
+                load.output = load.input.as_ref().unwrap().as_slice().len() as u64;
+                self.admit_prefetch(load)?;
                 let input = load.input.take().unwrap();
                 let mut bytes =
                     Arc::try_unwrap(input).expect("undecoded resource input has one owner");
@@ -905,6 +937,7 @@ impl Service {
                     };
                     load.phase = Phase::Decode;
                     probe = false;
+                    self.admit_prefetch(load)?;
                     if header.codec() == TextureCodec::Raw
                         && let Some(lease) = self.origins.shared(load)
                     {
@@ -935,6 +968,9 @@ impl Service {
                         load.phase = Phase::Done(result);
                         return Ok(());
                     }
+                }
+                if !probe {
+                    self.admit_prefetch(load)?;
                 }
                 let decode_bytes = self.options.decode_bytes - self.io_workspace_bytes;
                 if !probe && load.temporary > decode_bytes {
@@ -981,7 +1017,7 @@ impl Service {
                     },
                     input: load.input.as_ref().unwrap().clone(),
                     scope: Scope::Process,
-                    priority: Priority::Visible,
+                    priority: load.priority,
                     reservations: WorkReservations {
                         output,
                         temporary,
@@ -1001,6 +1037,16 @@ impl Service {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl Service {
+    fn admit_prefetch(&self, load: &Load) -> Result<(), String> {
+        let spare = (self.options.resident_bytes / 4).saturating_sub(self.output.usage().bytes);
+        if load.priority == Priority::Prefetch && load.output > spare {
+            return Err("prefetch resident capacity exhausted".into());
         }
         Ok(())
     }

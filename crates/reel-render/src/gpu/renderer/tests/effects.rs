@@ -1,5 +1,6 @@
 //! Finite real-backend checks for optional result lifetimes and physical tickets.
 use super::*;
+mod composition;
 #[cfg(feature = "profiling")]
 mod raster_scale;
 mod region;
@@ -40,6 +41,15 @@ fn resolution_chain(
     transform: Affine,
     patterned: bool,
     resolution_scale: f64,
+) -> (RenderFrame, PresentationBridge) {
+    image_composition_chain(size, transform, patterned, resolution_scale, 1)
+}
+fn image_composition_chain(
+    size: [u32; 2],
+    transform: Affine,
+    patterned: bool,
+    resolution_scale: f64,
+    images: usize,
 ) -> (RenderFrame, PresentationBridge) {
     let pool = r01_fixture::pool();
     let program = EffectProgram::new(
@@ -137,16 +147,18 @@ fn resolution_chain(
         .unwrap();
     let bounds = Rect::new(0., 0., f64::from(size[0]), f64::from(size[1]));
     let mut scene = Scene::new();
-    scene.draw(Draw::Fill {
-        transform: Affine::IDENTITY,
-        fill_rule: Default::default(),
-        brush: Brush::Image(ImageBrush::new(crate::test_support::image_data(
-            &registry.acquire(image).unwrap(),
-        ))),
-        brush_transform: None,
-        shape: Geometry::Rect(bounds),
-        composite: Composite::default(),
-    });
+    for image_index in 0..images {
+        scene.draw(Draw::Fill {
+            transform: Affine::translate((image_index as f64 * 2.25, image_index as f64 * -1.5)),
+            fill_rule: Default::default(),
+            brush: Brush::Image(ImageBrush::new(crate::test_support::image_data(
+                &registry.acquire(image).unwrap(),
+            ))),
+            brush_transform: None,
+            shape: Geometry::Rect(bounds),
+            composite: Composite::default(),
+        });
+    }
     let paint = PaintEffect {
         instance: EffectInstance::new(
             [17; 32],

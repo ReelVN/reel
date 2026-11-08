@@ -370,6 +370,16 @@ caption.with(opacity: 0.5);
 
 Await `stage.presented()` when choreography should start after the current scene is visible. The player retains the previous presented view while resources prepare.
 
+Retain frequently opened pages and switch their `visible` property. Set `preload: true` on a hidden page to read and decode its images and effects in spare resource capacity, then reuse them when shown. Descendants inherit this setting; removing the page releases its requests and resources.
+
+```aside
+let menu = stack(visible: false, preload: true) {
+    image("assets/panels.png", width: 320, height: 180);
+};
+scene.add(menu);
+menu.visible = true;
+```
+
 ```aside
 stage.replace(scene);
 await stage.presented(owner: scene);

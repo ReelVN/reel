@@ -20,6 +20,7 @@ struct Entry {
     uses: Vec<Usage>,
     encoded: Option<Arc<[u8]>>,
     shader: bool,
+    preload: bool,
 }
 
 struct Usage {
@@ -90,9 +91,11 @@ impl ResourceIndex {
         let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
         let mut pending: Vec<_> = root
             .into_iter()
-            .map(|node| (node, true, true, false, false))
+            .map(|node| (node, true, true, false, false, false))
             .collect();
-        while let Some((node, parent_visible, parent_enabled, has_parent, cursor)) = pending.pop() {
+        while let Some((node, parent_visible, parent_enabled, has_parent, cursor, preload)) =
+            pending.pop()
+        {
             if !node.image_branch {
                 continue;
             }
@@ -101,10 +104,11 @@ impl ResourceIndex {
                 && node.node.props.enabled
                 && !matches!(node.node.kind, NodeKind::Cursor);
             let cursor = cursor || matches!(node.node.kind, NodeKind::Cursor);
+            let preload = preload || node.node.props.preload;
             pending.extend(
                 node.children
                     .iter()
-                    .map(|child| (child, visible, enabled, true, cursor)),
+                    .map(|child| (child, visible, enabled, true, cursor, preload)),
             );
             let mut add =
                 |source: &str, origin: Option<&str>, image, shader, encoded: Option<Arc<[u8]>>| {
@@ -113,16 +117,20 @@ impl ResourceIndex {
                         uses: Vec::new(),
                         encoded: None,
                         shader: false,
+                        preload: false,
                     });
+                    entry.preload |= preload;
+                    if visible || preload {
+                        entry.shader |= shader;
+                        if encoded.is_some() {
+                            entry.encoded = encoded.clone();
+                        }
+                    }
                     if visible {
                         entry.uses.push(Usage {
                             origin: origin.map(str::to_owned),
                             image,
                         });
-                        entry.shader |= shader;
-                        if encoded.is_some() {
-                            entry.encoded = encoded;
-                        }
                     }
                 };
             // Keep appearance dependencies before the image for diagnostic precedence.
@@ -187,6 +195,12 @@ impl ResourceIndex {
 
     pub fn mounted(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|entry| entry.source.as_str())
+    }
+    pub fn preloaded(&self) -> impl Iterator<Item = &str> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.preload)
+            .map(|entry| entry.source.as_str())
     }
     pub fn encoded(&self) -> impl Iterator<Item = (&str, &Arc<[u8]>)> {
         self.entries.iter().filter_map(|entry| {
@@ -260,8 +274,8 @@ pub(super) fn same_inputs(a: Option<&Arc<SceneNode>>, b: Option<&Arc<SceneNode>>
         if !Arc::ptr_eq(&a.node, &b.node) {
             let ap = &a.node.props;
             let bp = &b.node.props;
-            if (ap.visible, ap.enabled, a.has_fixed_image_size())
-                != (bp.visible, bp.enabled, b.has_fixed_image_size())
+            if (ap.visible, ap.enabled, ap.preload, a.has_fixed_image_size())
+                != (bp.visible, bp.enabled, bp.preload, b.has_fixed_image_size())
                 || matches!(a.node.kind, NodeKind::Popup(_))
                     != matches!(b.node.kind, NodeKind::Popup(_))
                 || matches!(a.node.kind, NodeKind::Cursor)

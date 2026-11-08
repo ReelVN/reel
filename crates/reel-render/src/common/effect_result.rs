@@ -7,6 +7,7 @@ pub(crate) mod coverage;
 #[cfg(all(feature = "profiling", any(target_os = "vita", feature = "wgpu", test)))]
 mod diagnostics;
 mod geometry;
+mod multiple;
 #[cfg(any(feature = "gxm", test))]
 mod warming;
 pub(crate) use admission::Admission;
@@ -144,45 +145,61 @@ pub(crate) struct Token(pub(crate) usize, pub(crate) usize);
     reason = "cache probes keep recording identity inline to avoid a heap allocation on every lookup"
 )]
 #[derive(Clone)]
-enum Source {
+enum Source<'a> {
     Recording(Recording),
     Output(Token),
+    Multiple(multiple::Images<'a>),
 }
-impl Source {
+impl Source<'_> {
     fn anchor(&self) -> (u8, u64) {
         match self {
             Self::Recording(recording) => (0, recording.owner),
             Self::Output(token) => (1, token.1 as u64),
+            Self::Multiple(images) => (0, images.owner()),
         }
     }
-    fn same_family(&self, other: &Self) -> bool {
+    fn same_family(&self, other: &Source<'_>) -> bool {
         match (self, other) {
-            (Self::Recording(a), Self::Recording(b)) => a.owner == b.owner,
-            (Self::Output(a), Self::Output(b)) => a.1 == b.1,
+            (Source::Recording(a), Source::Recording(b)) => a.owner == b.owner,
+            (Source::Output(a), Source::Output(b)) => a.1 == b.1,
+            (Source::Multiple(a), Source::Multiple(b)) => a.owner() == b.owner(),
+            (Source::Recording(a), Source::Multiple(b)) => a.owner == b.owner(),
+            (Source::Multiple(a), Source::Recording(b)) => a.owner() == b.owner,
             _ => false,
         }
     }
-}
-impl PartialEq for Source {
-    fn eq(&self, other: &Self) -> bool {
+    fn same(&self, other: &Source<'_>) -> bool {
         match (self, other) {
-            (Self::Recording(a), Self::Recording(b)) => {
+            (Source::Recording(a), Source::Recording(b)) => {
                 a.owner == b.owner
                     && Arc::ptr_eq(&a.scene, &b.scene)
                     && a.local == b.local
                     && a.same_pixels(b)
             }
-            (Self::Output(a), Self::Output(b)) => a == b,
+            (Source::Output(a), Source::Output(b)) => a == b,
+            (Source::Multiple(a), Source::Multiple(b)) => a.same(b),
             _ => false,
         }
     }
+    fn into_owned(self, pool: &BudgetPool) -> Option<Source<'static>> {
+        Some(match self {
+            Self::Recording(recording) => Source::Recording(recording),
+            Self::Output(token) => Source::Output(token),
+            Self::Multiple(images) => Source::Multiple(images.into_owned(pool)?),
+        })
+    }
 }
-impl Eq for Source {}
+impl PartialEq for Source<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.same(other)
+    }
+}
+impl Eq for Source<'_> {}
 
 /// Borrowed probe. No serialized command or copied parameter/texture vectors are
 /// built on a hit. The scene is upgraded to prevent identity reuse during lookup.
 pub(crate) struct Probe<'a> {
-    source: Source,
+    source: Source<'a>,
     effect: &'a FrameEffect,
     grid: Grid,
     /// Present only on a proved exclusive source-chain query.
@@ -216,6 +233,16 @@ pub(crate) fn source_end(commands: &[FrameCommand], push: usize) -> Option<usize
 }
 impl<'a> Probe<'a> {
     pub(crate) fn new(
+        drawing: &'a FrameDrawing,
+        commands: Range<usize>,
+        effect: &'a FrameEffect,
+        grid: Grid,
+        uncropped: bool,
+    ) -> Option<Self> {
+        Self::single(drawing, commands.clone(), effect, grid, uncropped)
+            .or_else(|| multiple::probe(drawing, commands, effect, grid, uncropped))
+    }
+    fn single(
         drawing: &FrameDrawing,
         commands: Range<usize>,
         effect: &'a FrameEffect,
@@ -314,7 +341,7 @@ impl<'a> Probe<'a> {
 }
 
 pub(crate) struct Key {
-    source: Source,
+    source: Source<'static>,
     definition: [u8; 32],
     shader: ResourceHandle,
     values: Vec<EffectValue>,
@@ -337,7 +364,7 @@ impl Key {
             && self.bounds == rect(probe.effect.bounds)
             && self.coverage_invert == probe.effect.coverage_invert
             && self.resolution_scale == probe.effect.resolution_scale.to_bits()
-            && self.source == probe.source
+            && self.source.same(&probe.source)
     }
     fn same_family(&self, other: &Self) -> bool {
         self.source.same_family(&other.source) && self.definition == other.definition
@@ -361,7 +388,7 @@ impl Key {
             )?;
         let storage = pool.reserve(bytes as u64).ok()?;
         Some(Self {
-            source: probe.source,
+            source: probe.source.into_owned(pool)?,
             definition: probe.effect.definition,
             shader: probe.effect.shader,
             values: probe.effect.values.clone(),

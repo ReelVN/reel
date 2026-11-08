@@ -370,6 +370,16 @@ caption.with(opacity: 0.5);
 
 需要让玩家先看到当前画面再开始演出时，等待 `stage.presented()`。资源准备期间播放器保留上一幅已显示画面。
 
+反复打开的页面保留原节点，通过 `visible` 切换。给隐藏页面设置 `preload: true`，播放器会用空余资源容量提前读取、解码图片和效果，显示时复用这些资源。该设置继承到子节点；页面移除后释放请求与资源。
+
+```aside
+let menu = stack(visible: false, preload: true) {
+    image("assets/panels.png", width: 320, height: 180);
+};
+scene.add(menu);
+menu.visible = true;
+```
+
 ```aside
 stage.replace(scene);
 await stage.presented(owner: scene);

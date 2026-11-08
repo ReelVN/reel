@@ -1,6 +1,29 @@
 use super::*;
 use reel_ui::stage::MaskProgram;
 
+#[test]
+fn hidden_preload_is_inherited_without_becoming_visible_demand() {
+    let (mut stage, root, _) = fixture(3);
+    let mut props = stage.node(root).unwrap().props.clone();
+    props.visible = false;
+    props.preload = true;
+    stage.update(root, NodeKind::Stack, props.clone()).unwrap();
+    let view = StageView::capture(&stage);
+    let requests = view.image_requests(EffectShaderFormat::Wgsl).unwrap();
+    assert_eq!(requests.required().count(), 0);
+    assert_eq!(
+        requests.index.preloaded().collect::<Vec<_>>(),
+        ["picture-0.png", "picture-1.png", "picture-2.png"]
+    );
+    props.preload = false;
+    stage.update(root, NodeKind::Stack, props).unwrap();
+    let changed = StageView::update(&stage, Some(&view));
+    assert!(!same_inputs(view.root.as_ref(), changed.root.as_ref()));
+    let requests = changed.image_requests(EffectShaderFormat::Wgsl).unwrap();
+    assert_eq!(requests.index.preloaded().count(), 0);
+    assert_eq!(requests.required().count(), 0);
+}
+
 fn image(source: &str) -> NodeKind {
     NodeKind::Image {
         source: source.into(),

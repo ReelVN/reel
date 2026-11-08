@@ -4,8 +4,13 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+### Added
+
+- Add a shared `preload` node property to prepare hidden mounted image and effect sources with low-priority IO and bounded spare residency.
+
 ### Fixed
 
+- Reuse materialized effects whose source is a stable ordered composition of multiple images, sharing dependency and lifetime rules across desktop and Vita.
 - Record cold page preparation in the performance timeline, coalescing equal readiness states while preserving publication and presentation boundaries, callback gaps, and eviction counts.
 - Wait for image and font readiness before requesting another redraw, avoiding repeated UI work while resources load.
 - Reuse glyphs uploaded during retained-scene preparation in the following WGPU draw.

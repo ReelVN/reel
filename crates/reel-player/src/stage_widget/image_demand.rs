@@ -56,6 +56,7 @@ fn props_match(a: &NodeProps, b: &NodeProps) -> bool {
         align_y,
         stretch,
         visible,
+        preload,
         enabled,
         clip,
         decorated,

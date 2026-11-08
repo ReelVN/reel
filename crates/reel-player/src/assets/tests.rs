@@ -314,6 +314,7 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
         },
         reloadable: false,
         kind: AssetKind::Font,
+        priority: Priority::Visible,
         phase: Phase::Decode,
         input: Some(Arc::new(
             OwnedBytes::new(content, service.input.reserve(128).unwrap()).unwrap(),

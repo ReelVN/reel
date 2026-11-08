@@ -12,7 +12,7 @@ pub(super) fn pool() -> BudgetPool {
 }
 
 #[test]
-fn early_lookup_requires_a_complete_single_image_source() {
+fn early_lookup_requires_complete_ordered_image_sources() {
     use crate::test_support::r01_fixture;
     use reel_core::{budget::OwnedBytes, identity::*};
     use reel_ui::{
@@ -94,7 +94,7 @@ fn early_lookup_requires_a_complete_single_image_source() {
                         .iter()
                         .any(|c| matches!(c.op, FrameOp::PushGroup(_)))
                     {
-                        assert_eq!(probe.is_some(), draws == 1);
+                        assert!(probe.is_some());
                         assert_eq!(source_end(drawing.commands(), start), Some(index + 1));
                         // A prefix ending at a child's close is not the full source.
                         let first = drawing.commands()[start + 1..index]
@@ -111,13 +111,13 @@ fn early_lookup_requires_a_complete_single_image_source() {
                 _ => {}
             }
         }
-        assert_eq!(hits > 0, draws == 1);
+        assert!(hits > 0);
         if nested {
             assert!(nested_sources > 0);
         }
     }
 }
-fn source(scene: Arc<Scene>) -> Source {
+fn source(scene: Arc<Scene>) -> Source<'static> {
     Source::Recording(Recording {
         owner: 1,
         scene,

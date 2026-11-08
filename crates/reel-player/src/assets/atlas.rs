@@ -102,10 +102,14 @@ impl Service {
         }
     }
     fn attach_atlas(&mut self, id: LoadId, path: &str) -> Result<(), String> {
+        let priority = self.loads[&id].priority;
         if self.atlas_pages.0.values().any(|page| page.load == id) {
             return Err("atlas page cannot reference another atlas view".into());
         }
         if let Some(page) = self.atlas_pages.0.get_mut(path) {
+            if let Some(load) = self.loads.get_mut(&page.load) {
+                load.priority = load.priority.max(priority);
+            }
             page.waiters = page.waiters.checked_add(1).ok_or("atlas waiter capacity")?;
             return Ok(());
         }
@@ -128,6 +132,7 @@ impl Service {
                 },
                 reloadable: true,
                 kind: AssetKind::Image,
+                priority,
                 phase: Phase::Describe,
                 input: None,
                 size: [0; 2],
