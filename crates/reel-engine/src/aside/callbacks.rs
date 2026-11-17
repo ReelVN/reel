@@ -618,20 +618,13 @@ impl SessionVm {
         if let Some(scope) = self.current_scope(task)? {
             return Ok(scope);
         }
-        if let Some(root) = self
-            .tasks
-            .iter()
-            .find(|c| c.task == task)
-            .and_then(|c| c.result)
-        {
+        let Some(callback) = self.tasks.iter().find(|c| c.task == task) else {
+            return Ok(Value::NULL);
+        };
+        if let Some(root) = callback.result {
             return results::owner(self.vm.heap(), self.vm.heap().root_value(root)?);
         }
-        match self
-            .tasks
-            .iter()
-            .find(|c| c.task == task)
-            .and_then(|c| c.node)
-        {
+        match callback.node {
             Some(node) => self.stage.value(self.vm.heap(), node),
             None => Ok(Value::NULL),
         }

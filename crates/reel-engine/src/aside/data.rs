@@ -253,14 +253,19 @@ impl Capture {
                 };
                 let id = u32::try_from(self.document.objects.len())
                     .map_err(|_| AdapterError::Allocation)?;
+                let source = Source {
+                    value,
+                    version: info.content_version,
+                    len: len as u32,
+                    object: id,
+                };
                 if let (Some(state), Some(context)) = (&mut self.typed, context) {
                     state
                         .record(
                             heap,
                             context,
-                            value,
+                            &source,
                             info.kind,
-                            id,
                             reference,
                             &mut self.charge,
                         )
@@ -281,12 +286,7 @@ impl Capture {
                     .map_err(|_| AdapterError::Allocation)?;
                 self.document.payload_bytes += object.bytes();
                 self.document.objects.push(object);
-                self.sources.push(Source {
-                    value,
-                    version: info.content_version,
-                    len: len as u32,
-                    object: id,
-                });
+                self.sources.push(source);
                 self.ids.insert(handle, id);
                 if info.kind == ObjectKind::Host {
                     self.watch_cell(heap, heap.host_fields(value)?)?;
@@ -472,23 +472,24 @@ impl Capture {
                         let (key, value) = heap.table_entry(value, offset as u32)?;
                         (self.atom(heap, key, context)?, value)
                     };
-                    let value = self.atom(heap, value, context).map_err(|e| {
-                        if let Some(context) = context {
-                            let key_name = match key {
-                                Atom::Object(id) => match &self.document.objects[id as usize] {
-                                    Object::String(v) => String::from_utf8_lossy(v).into_owned(),
-                                    _ => format!("[{offset}]"),
-                                },
-                                _ => format!("[{offset}]"),
-                            };
-                            if context.error.borrow().is_none() {
-                                context.error.replace(Some(typed::TypedDataError::Field {
-                                    path: format!("object[{object}].{key_name}"),
-                                    reason: e.to_string(),
-                                }));
-                            }
+                    let value = self.atom(heap, value, context).inspect_err(|e| {
+                        let Some(context) = context else {
+                            return;
+                        };
+                        if context.error.borrow().is_some() {
+                            return;
                         }
-                        e
+                        let key_name = match key {
+                            Atom::Object(id) => match &self.document.objects[id as usize] {
+                                Object::String(v) => String::from_utf8_lossy(v).into_owned(),
+                                _ => format!("[{offset}]"),
+                            },
+                            _ => format!("[{offset}]"),
+                        };
+                        context.error.replace(Some(typed::TypedDataError::Field {
+                            path: format!("object[{object}].{key_name}"),
+                            reason: e.to_string(),
+                        }));
                     })?;
                     let Object::Table(entries) = &mut self.document.objects[object] else {
                         unreachable!()

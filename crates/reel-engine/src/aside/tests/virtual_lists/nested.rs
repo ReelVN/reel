@@ -115,7 +115,7 @@ fn scroll_to_and_anchor_use_owner_to_list_scale() {
             (offset.y - row.offset * scale).abs() < 0.01,
             "scale={scale}: {offset:?}, row={row:?}"
         );
-        vm.accept_presentation(&mut session, vm.presentation_request())
+        vm.accept_presentation(&session, vm.presentation_request())
             .unwrap();
         drive(&mut vm, &mut session);
         let previous_offset = offset.y;

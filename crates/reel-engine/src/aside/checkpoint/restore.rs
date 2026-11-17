@@ -41,8 +41,8 @@ impl RestoredCheckpoint {
 pub struct CheckpointDataRestore {
     owner: RootOwner,
     record: Arc<CheckpointRecord>,
-    graph: Option<TypedRestore>,
-    charge: Option<HeapReservation>,
+    graph: TypedRestore,
+    charge: HeapReservation,
     complete: bool,
 }
 impl SessionVm {
@@ -105,8 +105,8 @@ impl SessionVm {
         Ok(CheckpointDataRestore {
             owner: self.root_owner,
             record,
-            graph: Some(graph),
-            charge: Some(charge),
+            graph,
+            charge,
             complete: false,
         })
     }
@@ -157,7 +157,7 @@ impl CheckpointDataRestore {
             candidate.read_limit,
         )
         .with_media(&mut candidate.media);
-        self.complete = self.graph.as_mut().unwrap().step(
+        self.complete = self.graph.step(
             candidate.vm.heap_mut(),
             candidate.flow.registry.as_ref().unwrap(),
             &references,
@@ -177,43 +177,42 @@ impl CheckpointDataRestore {
                 "checkpoint data restoration incomplete",
             ));
         }
-        let graph = self.graph.take().unwrap();
-        let root = graph.value_root(candidate.vm.heap_mut(), self.owner)?;
-        if let Err(error) = graph.release(candidate.vm.heap_mut()) {
-            candidate.vm.heap_mut().release_root(root)?;
-            return Err(error.into());
+        let heap = candidate.vm.heap_mut();
+        // Release the graph's temporary root even if creating the result root fails.
+        let root = self.graph.value_root(heap, self.owner);
+        let released = self.graph.release(heap);
+        let root = root?;
+        let restored = (|| {
+            released?;
+            let array = heap.root_value(root)?;
+            let info = heap.info(array)?;
+            let count = 1 + self
+                .record
+                .bindings()
+                .iter()
+                .flatten()
+                .filter(|binding| matches!(binding, CheckpointBinding::Data(_)))
+                .count();
+            if info.kind != ObjectKind::Array || info.len as usize != count {
+                return Err(CheckpointError::Contract(
+                    "checkpoint root array differs from its binding contract",
+                ));
+            }
+            self.charge.resize(self.record.retained_bytes())?;
+            Ok(RestoredCheckpoint {
+                record: self.record,
+                root,
+                _charge: self.charge,
+            })
+        })();
+        if restored.is_err() {
+            heap.release_root(root)?;
         }
-        let array = candidate.vm.heap().root_value(root)?;
-        let info = candidate.vm.heap().info(array)?;
-        let count = 1 + self
-            .record
-            .bindings()
-            .iter()
-            .flatten()
-            .filter(|binding| matches!(binding, CheckpointBinding::Data(_)))
-            .count();
-        if info.kind != ObjectKind::Array || info.len as usize != count {
-            candidate.vm.heap_mut().release_root(root)?;
-            return Err(CheckpointError::Contract(
-                "checkpoint root array differs from its binding contract",
-            ));
-        }
-        let mut charge = self.charge.take().unwrap();
-        if let Err(error) = charge.resize(self.record.retained_bytes()) {
-            candidate.vm.heap_mut().release_root(root)?;
-            return Err(error.into());
-        }
-        Ok(RestoredCheckpoint {
-            record: self.record.clone(),
-            root,
-            _charge: charge,
-        })
+        restored
     }
     /// Cancel data preparation before discarding the isolated candidate session.
-    pub fn cancel(mut self, candidate: &mut SessionVm) -> Result<(), CheckpointError> {
-        if let Some(graph) = self.graph.take() {
-            graph.release(candidate.vm.heap_mut())?;
-        }
+    pub fn cancel(self, candidate: &mut SessionVm) -> Result<(), CheckpointError> {
+        self.graph.release(candidate.vm.heap_mut())?;
         Ok(())
     }
 }

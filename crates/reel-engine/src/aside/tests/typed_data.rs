@@ -33,7 +33,7 @@ fn capture(vm: &mut SessionVm, value: Value, registry: &Registry) -> Arc<TypedDo
     let owner = vm.root_owner;
     let mut capture = TypedCapture::new(vm.vm.heap_mut(), owner, value).unwrap();
     while !capture
-        .step(vm.vm.heap(), &registry, &NoReferences, 1, 1)
+        .step(vm.vm.heap(), registry, &NoReferences, 1, 1)
         .unwrap()
         .0
     {

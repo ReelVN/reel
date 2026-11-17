@@ -182,6 +182,41 @@ fn checkpoint_restores_current_root_shared_state_and_current_native_callback_cha
             .unwrap(),
         NativeDispatch::Ready { .. }
     ) {}
+    let roots = current.vm.heap().stats().roots;
+    let mut capture = crate::aside::data::TypedCapture::new(
+        current.vm.heap_mut(),
+        current.root_owner,
+        Value::int(7),
+    )
+    .unwrap();
+    let registry = current.flow.registry.as_ref().unwrap();
+    while !capture
+        .step(
+            current.vm.heap(),
+            registry,
+            &crate::aside::data::NoReferences,
+            1,
+            1,
+        )
+        .unwrap()
+        .0
+    {}
+    let (scalar, scalar_charge) = capture.finish(current.vm.heap_mut()).unwrap();
+    let malformed = CheckpointRecord::new(
+        record.root().clone(),
+        record.continuation().clone(),
+        record.bindings().to_vec(),
+        scalar,
+    )
+    .unwrap();
+    drop(scalar_charge);
+    let mut data = current
+        .restore_checkpoint_data_begin(Arc::new(malformed))
+        .unwrap();
+    while !data.step(&mut current, 1, 1).unwrap() {}
+    assert!(data.finish(&mut current).is_err());
+    assert_eq!(current.vm.heap().stats().roots, roots);
+
     let mut data = current.restore_checkpoint_data_begin(record).unwrap();
     while !data.step(&mut current, 1, 1).unwrap() {}
     let restored = data.finish(&mut current).unwrap();

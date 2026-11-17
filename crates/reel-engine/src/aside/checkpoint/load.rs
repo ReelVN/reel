@@ -116,6 +116,10 @@ impl CheckpointLoad {
 
     /// Advance one bounded host turn. The host services candidate asset,
     /// localization, media and persistent-data requests between these turns.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The host supplies separate native, data and VM slice budgets for this turn"
+    )]
     pub fn step(
         &mut self,
         candidate: &mut SessionVm,

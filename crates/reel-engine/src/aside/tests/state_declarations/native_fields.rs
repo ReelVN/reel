@@ -139,7 +139,6 @@ fn trusted_native_fields_keep_current_types_state_values_and_subtype_aliases_sou
             .step(current.vm.heap_mut(), &registry, &references, 1, 1)
             .unwrap()
         {}
-        drop(references);
         let root = restore.value_root(current.vm.heap_mut(), owner).unwrap();
         let loaded = current.vm.heap().root_value(root).unwrap();
         restore.release(current.vm.heap_mut()).unwrap();

@@ -92,7 +92,7 @@ fn advance(vm: &mut SessionVm, session: &mut Session) {
 
 fn start_root(vm: &mut SessionVm, session: &mut Session) {
     loop {
-        match vm
+        if let SessionStep::Vm(RunOutcome::Returned(_)) = vm
             .step(
                 session,
                 SessionBudget::RetryMinimum(SliceBudget::default()),
@@ -100,11 +100,8 @@ fn start_root(vm: &mut SessionVm, session: &mut Session) {
             )
             .unwrap()
         {
-            SessionStep::Vm(RunOutcome::Returned(_)) => {
-                vm.discard_delivery(session).unwrap();
-                break;
-            }
-            _ => (),
+            vm.discard_delivery(session).unwrap();
+            break;
         }
     }
     vm.start_root(session, None).unwrap();

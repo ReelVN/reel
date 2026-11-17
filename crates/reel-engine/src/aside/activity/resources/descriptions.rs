@@ -57,7 +57,7 @@ pub(super) fn field(
                     .ok_or(TypedDataError::Contract(
                         "tween target must be a public scene property",
                     ))?;
-                let goal = (index - 3) % 2 == 0;
+                let goal = (index - 3).is_multiple_of(2);
                 (
                     format!("{}.{name}", if goal { "goal" } else { "from" }).into(),
                     heap.sequence_get(goals, offset + if goal { 2 } else { 1 })?,

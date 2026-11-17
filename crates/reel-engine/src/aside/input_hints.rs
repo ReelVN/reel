@@ -36,7 +36,7 @@ fn buttons(heap: &mut Heap, layout: GamepadLayout) -> Result<Value, AdapterError
     for ((field, name), label) in fields.iter_mut().zip(BUTTONS).zip(labels) {
         *field = (name, heap.alloc_string(label)?);
     }
-    Ok(observable::record(heap, &fields, &[])?)
+    observable::record(heap, &fields, &[])
 }
 aside_host::native_documentation! {
     pub(super) fn documentation {

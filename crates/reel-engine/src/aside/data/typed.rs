@@ -276,8 +276,8 @@ fn metadata_bytes(m: &Metadata) -> usize {
             .map(super::bindings::Property::bytes)
             .sum::<usize>()
         + m.references
-            .iter()
-            .map(|(_, r)| r.kind.capacity() + r.payload.capacity())
+            .values()
+            .map(|r| r.kind.capacity() + r.payload.capacity())
             .sum::<usize>()
 }
 pub(super) struct Context<'a> {
@@ -345,16 +345,18 @@ impl CaptureState {
         self.metadata.properties.insert(id, property);
         Ok(())
     }
-    pub fn record(
+    pub(super) fn record(
         &mut self,
         heap: &Heap,
         context: &Context<'_>,
-        value: Value,
+        source: &Source,
         kind: ObjectKind,
-        id: u32,
         reference: Option<LogicalReference>,
         charge: &mut HeapReservation,
     ) -> Result<(), SchemaError> {
+        let Source {
+            value, object: id, ..
+        } = *source;
         charge.resize(charge.bytes() + 512)?;
         if kind != ObjectKind::Host && heap.data_is_observable(value)? {
             let before = self.metadata.observable.capacity();
@@ -538,11 +540,7 @@ fn reserve_slot<T>(
     if values.len() < values.capacity() {
         return Ok(());
     }
-    let capacity = values
-        .capacity()
-        .checked_mul(2)
-        .unwrap_or(usize::MAX)
-        .max(4);
+    let capacity = values.capacity().saturating_mul(2).max(4);
     let requested = capacity
         .checked_mul(size_of::<T>())
         .ok_or(TypedDataError::Contract("State mapping capacity overflow"))?;

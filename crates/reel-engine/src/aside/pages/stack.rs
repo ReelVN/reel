@@ -26,13 +26,12 @@ impl SessionVm {
         retry: bool,
     ) -> Result<Value, AdapterError> {
         let task = get(self.vm.heap(), e, E::Task)?;
-        if task.tag() != ValueTag::Null {
-            if get(self.vm.heap(), e, E::Node)?.tag() != ValueTag::Null
+        if task.tag() != ValueTag::Null
+            && (get(self.vm.heap(), e, E::Node)?.tag() != ValueTag::Null
                 || field(self.vm.heap(), task, 0)?.as_bool() == Some(true)
-                || !retry
-            {
-                return Ok(task);
-            }
+                || !retry)
+        {
+            return Ok(task);
         }
         let task = self.results.create_task(&mut self.vm, root)?;
         let request = self.vm.heap_mut().alloc_array(&[root, e, task])?;

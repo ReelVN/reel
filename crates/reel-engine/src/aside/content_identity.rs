@@ -63,7 +63,7 @@ impl OrdinaryPath<'_> {
 struct LogicalPath<'a> {
     vm: &'a Vm,
     table: &'a VerifiedResumeTable,
-    ticket: HostTicket,
+    ticket: &'a HostTicket,
     boundary: aside_vm::executor::FrameId,
     root: &'a str,
     bound: ResumeDescriptorBound,
@@ -84,7 +84,7 @@ impl LogicalPath<'_> {
     fn finish(self) -> Result<(String, u32), AdapterError> {
         let descriptor = self.vm.resume_descriptor(
             self.table,
-            self.ticket,
+            *self.ticket,
             self.boundary,
             ResumeLimits {
                 work: self.bound.work,
@@ -148,11 +148,11 @@ impl Path<'_> {
 }
 
 impl SessionVm {
-    fn content_path(&self, ticket: HostTicket) -> Result<Path<'_>, AdapterError> {
+    fn content_path<'a>(&'a self, ticket: &'a HostTicket) -> Result<Path<'a>, AdapterError> {
         let p = self.vm.program().package();
         let function = &p.functions[ticket.location.code.function.index()];
         let ordinary = OrdinaryPath {
-            sites: self.vm.host_call_sites(ticket)?,
+            sites: self.vm.host_call_sites(*ticket)?,
             namespace: &p.symbols[p.modules[function.module.index()].path.index()],
         };
         if let Some((task, boundary)) = self.flow_boundary()
@@ -172,7 +172,7 @@ impl SessionVm {
                         "active business flow has no Root identity",
                     ))?
                     .0,
-                bound: self.vm.resume_descriptor_bound(&self.resume, ticket)?,
+                bound: self.vm.resume_descriptor_bound(&self.resume, *ticket)?,
             };
             return Ok(Path::Logical(logical, ordinary));
         }
@@ -180,7 +180,7 @@ impl SessionVm {
     }
 
     pub(super) fn content_id_required_work(&self, ticket: HostTicket) -> Result<u32, AdapterError> {
-        Ok(self.content_path(ticket)?.required_work())
+        Ok(self.content_path(&ticket)?.required_work())
     }
 
     pub(super) fn prepare_content_id(
@@ -188,7 +188,7 @@ impl SessionVm {
         ticket: HostTicket,
         budget: NativeBudget,
     ) -> Result<Preparation, AdapterError> {
-        let path = self.content_path(ticket)?;
+        let path = self.content_path(&ticket)?;
         let required_work = path.required_work();
         if budget.with_minimum(required_work) < required_work {
             return Ok(Preparation::BudgetYield { required_work });

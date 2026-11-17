@@ -101,7 +101,6 @@ fn image_state_and_children_share_one_graph_identity_source_asb() {
             .step(current.vm.heap_mut(), &registry, &adapter, 1, 1)
             .unwrap()
         {}
-        drop(adapter);
         let root = restore.value_root(current.vm.heap_mut(), owner).unwrap();
         let loaded = current.vm.heap().root_value(root).unwrap();
         restore.release(current.vm.heap_mut()).unwrap();
@@ -211,7 +210,6 @@ fn tween_original_curve_delay_and_clock_phase_resume_after_adoption_source_asb()
             .step(current.vm.heap_mut(), &registry, &adapter, 1, 1)
             .unwrap()
         {}
-        drop(adapter);
         let token = restore.value_root(current.vm.heap_mut(), owner).unwrap();
         let loaded = current.vm.heap().root_value(token).unwrap();
         restore.release(current.vm.heap_mut()).unwrap();
@@ -351,7 +349,6 @@ fn inactive_explicit_start_and_terminal_activity_keep_public_controls_source_asb
             .step(current.vm.heap_mut(), &registry, &adapter, 1, 1)
             .unwrap()
         {}
-        drop(adapter);
         let root = restore.value_root(current.vm.heap_mut(), owner).unwrap();
         let loaded = current.vm.heap().root_value(root).unwrap();
         restore.release(current.vm.heap_mut()).unwrap();
@@ -465,7 +462,6 @@ fn restore_document(
         .step(vm.vm.heap_mut(), &registry, &references, 1, 1)
         .unwrap()
     {}
-    drop(references);
     let root = restore.value_root(vm.vm.heap_mut(), owner).unwrap();
     let value = vm.vm.heap().root_value(root).unwrap();
     restore.release(vm.vm.heap_mut()).unwrap();

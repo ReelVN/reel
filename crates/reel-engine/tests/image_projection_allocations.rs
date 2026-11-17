@@ -54,6 +54,10 @@ fn moving_images_reuse_fixed_property_storage() {
             allocations.reallocations,
             allocations.bytes_allocated,
         );
+        assert!(
+            allocations.allocations <= 1200,
+            "single-node motion allocated a staging buffer: {allocations:?}"
+        );
         if let Some(baseline) = baseline {
             assert_eq!(
                 cost, baseline,

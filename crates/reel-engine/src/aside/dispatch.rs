@@ -26,11 +26,15 @@ impl SessionVm {
             self.dispatch_media(ticket, symbol)?;
             return Ok(NativeDispatch::Ready { work: 1 });
         }
-        let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
-        if let Some(progress) = self.resume_reading_point(session, ticket, &symbol, budget)? {
+        // Retain the verified program while dispatch mutates the VM. Its immutable
+        // symbol storage is shared, so dispatch needs no per-call string copy.
+        let program = self.vm.program().clone();
+        let p = program.package();
+        let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].as_str();
+        if let Some(progress) = self.resume_reading_point(session, ticket, symbol, budget)? {
             return Ok(progress);
         }
-        match symbol.as_str() {
+        match symbol {
             "reel::run_flow" => self.dispatch_run_flow(session, ticket, budget),
             "reel::scrollbar" => {
                 if work < 5 {
@@ -44,7 +48,7 @@ impl SessionVm {
                 let value = self.stage.dispatch(
                     &mut self.vm,
                     self.root_owner,
-                    &symbol,
+                    symbol,
                     &args,
                     self.read_limit,
                     origin,
@@ -67,12 +71,12 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::page_stack" | "reel::tab_bar" => {
-                self.dispatch_pages(session, ticket, &symbol, budget)
+                self.dispatch_pages(session, ticket, symbol, budget)
             }
             name if name.starts_with("reel::page_stack::") => {
-                self.dispatch_pages(session, ticket, &symbol, budget)
+                self.dispatch_pages(session, ticket, symbol, budget)
             }
-            "reel::tab_bar::observe_label" => self.dispatch_pages(session, ticket, &symbol, budget),
+            "reel::tab_bar::observe_label" => self.dispatch_pages(session, ticket, symbol, budget),
             "reel::game::start" => {
                 let value = self.vm.host_arguments(ticket)?[0];
                 let entry = self.vm.unbound_function(value)?;
@@ -100,7 +104,7 @@ impl SessionVm {
             | "reel::stage::pointer"
             | "reel::stage::move_pointer"
             | "reel::stage::focus" => {
-                self.dispatch_window(ticket, &symbol)?;
+                self.dispatch_window(ticket, symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::assets::read" => {
@@ -109,16 +113,16 @@ impl SessionVm {
             }
             "reel::saves::can_capture" => self.dispatch_save_availability(ticket, budget),
             "reel::saves::can_jump" | "reel::saves::jump" | "reel::saves::track_history" => {
-                self.dispatch_history_save(session, ticket, &symbol)
+                self.dispatch_history_save(session, ticket, symbol)
             }
             "reel::saves::save"
             | "reel::saves::load"
             | "reel::saves::copy"
             | "reel::saves::delete"
             | "reel::saves::list"
-            | "reel::saves::thumbnail" => self.dispatch_save(session, ticket, &symbol, work),
+            | "reel::saves::thumbnail" => self.dispatch_save(session, ticket, symbol, work),
             "reel::persistent::read" | "reel::persistent::write" | "reel::persistent::delete" => {
-                self.dispatch_persistent(ticket, &symbol, work)
+                self.dispatch_persistent(ticket, symbol, work)
             }
             "reel::game::exit" => {
                 self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
@@ -243,7 +247,7 @@ impl SessionVm {
                 if symbol != "reel::localization::locale" && symbol != "reel::tr" {
                     self.check_wait(session, ticket)?;
                 }
-                self.dispatch_localization(ticket, &symbol)?;
+                self.dispatch_localization(ticket, symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::video::play"
@@ -264,7 +268,7 @@ impl SessionVm {
                 if symbol == "reel::audio::await" {
                     self.check_wait(session, ticket)?;
                 }
-                self.dispatch_media(ticket, &symbol)?;
+                self.dispatch_media(ticket, symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::game::dialogue"
@@ -278,7 +282,7 @@ impl SessionVm {
             | "reel::reading::pause"
             | "reel::dialogue::clear"
             | "reel::choice::select" => {
-                self.dispatch_narrative(session, ticket, &symbol)?;
+                self.dispatch_narrative(session, ticket, symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::view" => {
@@ -305,7 +309,7 @@ impl SessionVm {
                 if symbol == "reel::completion::await" {
                     self.check_wait(session, ticket)?;
                 }
-                self.dispatch_result(session, ticket, &symbol)?;
+                self.dispatch_result(session, ticket, symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::list::scroll_to" => {
@@ -344,7 +348,7 @@ impl SessionVm {
             | "reel::action::then"
             | "reel::action::together" => {
                 let pair = symbol.starts_with("reel::action::");
-                let kind = if matches!(symbol.as_str(), "reel::sequence" | "reel::action::then") {
+                let kind = if matches!(symbol, "reel::sequence" | "reel::action::then") {
                     activity::action::Kind::Sequence
                 } else {
                     activity::action::Kind::Parallel
@@ -427,7 +431,7 @@ impl SessionVm {
             }
             "reel::tween" | "reel::repeat" | "reel::delay" => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
-                let value = match symbol.as_str() {
+                let value = match symbol {
                     "reel::delay" => activity::action::delay(self.vm.heap_mut(), args[0])?,
                     "reel::tween" => activity::action::tween(
                         self.vm.heap_mut(),
@@ -462,14 +466,14 @@ impl SessionVm {
                 if results::kind(self.vm.heap(), self.vm.host_arguments(ticket)?[0]).ok()
                     == Some(results::Kind::Particle)
                 {
-                    self.control_particles(ticket, &symbol)?;
+                    self.control_particles(ticket, symbol)?;
                     return Ok(NativeDispatch::Ready { work: 1 });
                 }
                 if media::is_media(self.vm.heap(), self.vm.host_arguments(ticket)?[0]) {
-                    self.dispatch_media(ticket, &symbol)?;
+                    self.dispatch_media(ticket, symbol)?;
                     return Ok(NativeDispatch::Ready { work: 1 });
                 }
-                let command = match symbol.as_str() {
+                let command = match symbol {
                     "reel::pause" => activity::Command::Pause,
                     "reel::resume" => activity::Command::Resume,
                     "reel::stop" => activity::Command::Stop,
@@ -504,7 +508,7 @@ impl SessionVm {
             }
             "reel::character::speak" => self.character_speak(session, ticket, locale, budget),
             "reel::speech::append" | "reel::speech::wait" | "reel::speech::revealed" => {
-                let command = match symbol.as_str() {
+                let command = match symbol {
                     "reel::speech::append" => dialogue::SpeechCommand::Append,
                     "reel::speech::wait" => dialogue::SpeechCommand::Wait,
                     _ => dialogue::SpeechCommand::Revealed,
@@ -525,7 +529,7 @@ impl SessionVm {
             | stage::remove::SYMBOL
             | stage::clear::SYMBOL
             | stage::move_child::SYMBOL => {
-                let invoke = match symbol.as_str() {
+                let invoke = match symbol {
                     stage::add::SYMBOL => stage::add::invoke,
                     stage::remove::SYMBOL => stage::remove::invoke,
                     stage::move_child::SYMBOL => stage::move_child::invoke,
@@ -593,7 +597,7 @@ impl SessionVm {
                 let value = self.stage.dispatch(
                     &mut self.vm,
                     self.root_owner,
-                    &symbol,
+                    symbol,
                     &arguments,
                     self.read_limit,
                     origin,
@@ -605,7 +609,7 @@ impl SessionVm {
                 })
             }
             _ => {
-                let schema = stage::configure::schema(&symbol)
+                let schema = stage::configure::schema(symbol)
                     .ok_or(AdapterError::Input("unregistered session native"))?;
                 let progress = stage::configure::runtime::dispatch(
                     &self.stage,

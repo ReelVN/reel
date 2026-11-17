@@ -165,15 +165,16 @@ impl SessionVm {
             changed |= self.apply_window_measurements(s, event, epoch)?;
         }
         changed |= refresh_estimate(self.vm.heap_mut(), s)?;
-        // Refill at half the prepared buffer before unknown rows become visible.
-        let reserve = (event.visible_end - event.visible_start) * REFILL;
-        let first = locate(self.vm.heap(), s, (event.visible_start - reserve).max(0.))?;
-        let last = locate(self.vm.heap(), s, (event.visible_end + reserve).max(0.))?;
-        if event.visible_end > event.visible_start
-            && count(self.vm.heap(), s)? > 0
-            && (first..=last).any(|index| !view.rows.iter().any(|r| r.index == index as usize))
-        {
-            changed = true;
+        if event.visible_end > event.visible_start && count(self.vm.heap(), s)? > 0 {
+            // Refill at half the prepared buffer before unknown rows become visible.
+            // The committed window stores its rows in sorted, unique index order.
+            let reserve = (event.visible_end - event.visible_start) * REFILL;
+            let first =
+                locate(self.vm.heap(), s, (event.visible_start - reserve).max(0.))? as usize;
+            let last = locate(self.vm.heap(), s, (event.visible_end + reserve).max(0.))? as usize;
+            let start = view.rows.partition_point(|row| row.index < first);
+            let end = view.rows.partition_point(|row| row.index <= last);
+            changed |= end - start != last - first + 1;
         }
         put(
             self.vm.heap_mut(),

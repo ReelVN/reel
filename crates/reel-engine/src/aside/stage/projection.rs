@@ -30,7 +30,10 @@ impl StageBinding {
         nodes: impl IntoIterator<Item = NodeId>,
         read_limit: usize,
     ) -> Result<(), AdapterError> {
-        let mut updates = Vec::new();
+        // A single animated node needs no heap buffer. Decode and validate
+        // the whole batch before publishing its stage properties.
+        let mut first_update = None;
+        let mut remaining_updates = Vec::new();
         for id in nodes {
             #[cfg(test)]
             {
@@ -297,7 +300,7 @@ impl StageBinding {
             } else {
                 version
             };
-            updates.push((
+            let update = (
                 id,
                 kind,
                 props,
@@ -305,9 +308,16 @@ impl StageBinding {
                 mask_source,
                 effect_source,
                 projected_image,
-            ));
+            );
+            if first_update.is_none() {
+                first_update = Some(update);
+            } else {
+                remaining_updates.push(update);
+            }
         }
-        for (id, kind, props, version, mask_source, effect_source, projected_image) in updates {
+        for (id, kind, props, version, mask_source, effect_source, projected_image) in
+            first_update.into_iter().chain(remaining_updates)
+        {
             let mut kind = kind;
             let host = heap.import_handle(self.handles[&id].handle)?;
             text_input::project(heap, host, &mut kind)?;
