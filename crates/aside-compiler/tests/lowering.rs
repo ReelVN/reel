@@ -44,7 +44,7 @@ fn compiled(source: &str) -> lowering::Compilation {
             .iter()
             .all(|b| f.blocks[b.0 as usize].terminator.is_some())
     }));
-    let result = ir.emit().unwrap();
+    let result = ir.emit(&[]).unwrap();
     let encoded = bc::encode(result.program.package(), bc::Limits::default()).unwrap();
     let decoded = bc::decode(&encoded, bc::Limits::default()).unwrap();
     assert_eq!(result.program.package(), &decoded);
@@ -173,7 +173,7 @@ fn source_runs_preserve_computation_and_control_flow_locations() {
             (function.output, spans)
         })
         .collect();
-    let compiled = ir.emit().unwrap();
+    let compiled = ir.emit(&[]).unwrap();
     assert!(
         compiled
             .program
@@ -682,6 +682,7 @@ fn invalid_default_control_and_shared_emission_limits_are_located() {
     let error = lowering::compile(
         &module,
         &Linkage::default(),
+        &[],
         Options {
             bytecode_limits: bc::Limits {
                 max_records: 1,
@@ -766,7 +767,8 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
         .unwrap();
         assert!(analysis.is_ok(), "{:?}", analysis.diagnostics);
         let module = analysis.into_module().unwrap();
-        let result = lowering::compile(&module, &Linkage::default(), Options::default()).unwrap();
+        let result =
+            lowering::compile(&module, &Linkage::default(), &[], Options::default()).unwrap();
         assert_eq!(result.metadata.entry_context, context);
         assert_eq!(result.metadata.canonical_path, "game::scene");
         assert_eq!(result.metadata.source_version, "revision-7");
@@ -816,7 +818,8 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
             .unwrap();
             if context == AnalysisContext::Module {
                 let result =
-                    lowering::compile(&module, &Linkage::default(), Options::default()).unwrap();
+                    lowering::compile(&module, &Linkage::default(), &[], Options::default())
+                        .unwrap();
                 assert!(result.program.package().modules[0].globals.is_empty());
                 assert_eq!(
                     result.program.package().functions[result.entry.index()]
@@ -826,8 +829,9 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
                 );
                 assert_eq!(module.symbols()[0].origin, hir::BindingOrigin::EntryLocal);
             } else {
-                let error = lowering::compile(&module, &Linkage::default(), Options::default())
-                    .unwrap_err();
+                let error =
+                    lowering::compile(&module, &Linkage::default(), &[], Options::default())
+                        .unwrap_err();
                 assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
                 assert_eq!(&source[aside_compiler::byte_range(error.span)], "x");
                 assert_eq!(error.stats.capacity_bytes, 0);
@@ -902,7 +906,7 @@ fn parameter_cell_defaults_use_body_prefix_and_definition_captures() {
         f.origin,
         lowering::ir::Origin::Default { parameter: 1, .. }
     ) && f.output == function_default(&s.parameters[1])));
-    let result = ir.emit().unwrap();
+    let result = ir.emit(&[]).unwrap();
     let encoded = bc::encode(result.program.package(), bc::Limits::default()).unwrap();
     let decoded = bc::decode(&encoded, bc::Limits::default()).unwrap();
     bc::verify(decoded, bc::Limits::default()).unwrap();
@@ -1036,7 +1040,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         natives: &native_links,
         expansions: &[],
     };
-    let result = lowering::compile(&module, &linkage, Options::default()).unwrap();
+    let result = lowering::compile(&module, &linkage, &[], Options::default()).unwrap();
     let p = result.program.package();
     assert_eq!(p.natives[0], seed.package().natives[0]);
     assert_eq!(p.natives[0].abi_version, 1);
@@ -1094,6 +1098,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
             natives: &aliases,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap();
@@ -1112,12 +1117,14 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
             natives: &aliases,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap_err();
     assert_eq!(conflict.kind, lowering::ErrorKind::LinkContract);
     assert!(conflict.detail.contains("ambiguous native binding"));
-    let no_link = lowering::compile(&module, &Linkage::default(), Options::default()).unwrap_err();
+    let no_link =
+        lowering::compile(&module, &Linkage::default(), &[], Options::default()).unwrap_err();
     assert_eq!(no_link.kind, lowering::ErrorKind::MissingLink);
     assert_eq!(&source[aside_compiler::byte_range(no_link.span)], "host");
     let changed = SymbolReference {
@@ -1136,6 +1143,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
             natives: &wrong_links,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap_err();
@@ -1150,6 +1158,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
             natives: &native_links,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap_err();
@@ -1180,6 +1189,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
             natives: &value_links,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap();
@@ -1395,7 +1405,7 @@ fn imported_script_bindings_fail_instead_of_skipping_module_initialization() {
         .unwrap()
         .into_module()
         .unwrap();
-    let error = lowering::compile(&m, &Linkage::default(), Options::default()).unwrap_err();
+    let error = lowering::compile(&m, &Linkage::default(), &[], Options::default()).unwrap_err();
     assert_eq!(error.kind, lowering::ErrorKind::MissingLink);
     assert_eq!(
         &source[aside_compiler::byte_range(error.span)],
@@ -1489,6 +1499,7 @@ fn native_default_prefix_cells_and_fast_value_slots_come_from_shared_verifier() 
             natives: &links,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap();
@@ -1609,6 +1620,7 @@ fn qualified_native_import_retains_namespace_and_registration_identity() {
             natives: &links,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap();
@@ -1644,6 +1656,7 @@ fn source_and_constants_use_the_package_budget() {
     let compiled = lowering::compile(
         &module,
         &Linkage::default(),
+        &[],
         Options {
             bytecode_limits: limits,
             ..Default::default()

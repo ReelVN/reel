@@ -50,6 +50,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             vec![("node", node)],
         ),
         ("cancel", TypeHint::Bool, Vec::new()),
+        ("wait", TypeHint::Null, Vec::new()),
         ("finish", TypeHint::Bool, vec![("value", TypeHint::Any)]),
     ] {
         let mut parameters = parameters;
@@ -66,7 +67,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         "reel::types::Scope",
         "A callback lifetime that owns tasks, activities, nodes and property overrides.",
         [
-            "run", "spawn", "add", "override", "offset", "cancel", "finish",
+            "run", "spawn", "add", "override", "offset", "cancel", "finish", "wait",
         ]
         .into_iter()
         .map(|method| {
@@ -150,6 +151,9 @@ aside_host::native_documentation! {
         /// }
         /// ```
         "reel::scope::finish";
+        /// Park the current scope body until a callback finishes or cancels it.
+        /// The original scope call receives the finish result.
+        "reel::scope::wait";
         /// Start an action owned by this scope, optionally paused.
         "reel::scope::run";
         /// Start a zero-argument task owned by this scope. Its result is awaitable.
@@ -231,6 +235,20 @@ impl Scopes {
 }
 
 impl SessionVm {
+    pub(super) fn dispatch_scope_wait(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+        let object = self.vm.host_arguments(ticket)?[0];
+        if !self
+            .current_scope(ticket.task)?
+            .is_some_and(|scope| scope.same_bits(object))
+        {
+            return Err(AdapterError::Input("wait requires the current scope body"));
+        }
+        self.vm
+            .respond(ticket, HostResponse::Pending(ticket.wait_id()))?;
+        self.issued = None;
+        Ok(())
+    }
+
     pub(super) fn current_scope(&self, task: TaskId) -> Result<Option<Value>, AdapterError> {
         self.scopes
             .live
@@ -286,6 +304,7 @@ impl SessionVm {
         session: &mut Session,
         task: TaskId,
     ) -> Result<(), AdapterError> {
+        self.retire_flow_region(task, None)?;
         for index in (0..self.scopes.live.len()).rev() {
             if self.scopes.live[index].task == task {
                 self.close_scope(session, index)?;
@@ -300,6 +319,7 @@ impl SessionVm {
         task: TaskId,
         frame: FrameId,
     ) -> Result<(), AdapterError> {
+        self.retire_flow_region(task, Some(frame))?;
         for index in (0..self.scopes.live.len()).rev() {
             let scope = &self.scopes.live[index];
             if scope.task == task && scope.frame.0 > frame.0 {
@@ -514,7 +534,7 @@ impl SessionVm {
         } else {
             let response = match ticket.input {
                 NativeInput::CallbackReturned => {
-                    HostResponse::Ready(self.vm.host_callback_value(ticket)?)
+                    HostResponse::Ready(self.vm.host_resume_value(ticket)?)
                 }
                 NativeInput::CallbackFault => {
                     HostResponse::ForwardFault(self.vm.host_callback_fault(ticket)?.unwrap().id)

@@ -73,6 +73,7 @@ impl Vm {
                 | Opcode::ArgsNamed
                 | Opcode::ArgsSpread
                 | Opcode::ArraySpread
+                | Opcode::ChildrenSpread
                 | Opcode::TableSpread
                 | Opcode::ArrayPush
                 | Opcode::ChildrenPush
@@ -130,12 +131,7 @@ impl Vm {
             }
             Opcode::ChildrenPush => {
                 let (array, child) = self.read_pair(s.regs, a, b)?;
-                if !child.same_bits(Value::NULL) {
-                    if !self.heap.is_composable_host(child).map_err(heap_fault)? {
-                        return Err(FaultKind::Type);
-                    }
-                    self.heap.array_push(array, child).map_err(heap_fault)?;
-                }
+                self.push_child(array, child)?;
             }
             Opcode::ArrayPush => {
                 let (array, value) = self.read_pair(s.regs, a, b)?;
@@ -677,7 +673,7 @@ impl Vm {
                     )
                     .map_err(heap_fault)?;
             }
-            Opcode::ArgsSpread | Opcode::ArraySpread => {
+            Opcode::ArgsSpread | Opcode::ArraySpread | Opcode::ChildrenSpread => {
                 let (packed, source) = self.read_pair(s.regs, a, b)?;
                 let arguments = op == Opcode::ArgsSpread;
                 let named = arguments && self.is_text(source, ObjectKind::Table);
@@ -706,6 +702,8 @@ impl Vm {
                         collections::CaptureKind::NamedArguments
                     } else if arguments {
                         collections::CaptureKind::PositionalArguments
+                    } else if op == Opcode::ChildrenSpread {
+                        collections::CaptureKind::Children
                     } else {
                         collections::CaptureKind::Elements
                     },

@@ -1,4 +1,4 @@
-use super::{Gpu, GpuError, SurfacePass};
+use super::{Gpu, GpuError, Quality, SurfacePass};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ContractError {
@@ -57,6 +57,7 @@ pub(crate) fn negotiate(
         wgpu::SurfaceConfiguration,
         SurfacePass,
         Option<wgpu::PresentMode>,
+        Quality,
     ),
     GpuError,
 > {
@@ -68,13 +69,13 @@ pub(crate) fn negotiate(
     if !vsync && let Some(mode) = unsynchronized {
         config.present_mode = mode;
     }
-    gpu.quality([config.width, config.height])?;
+    let quality = gpu.quality([config.width, config.height])?;
     let output = SurfacePass::new(&gpu.device, config.format)?;
     if !size.contains(&0) {
         surface.configure(&gpu.device, &config);
     }
     gpu.check()?;
-    Ok((config, output, unsynchronized))
+    Ok((config, output, unsynchronized, quality))
 }
 #[cfg(test)]
 mod tests {

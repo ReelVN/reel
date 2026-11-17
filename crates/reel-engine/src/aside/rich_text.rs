@@ -109,7 +109,11 @@ pub(super) fn create(heap: &mut Heap, source: Value, chunk: usize) -> Result<Val
 }
 
 /// Build the same immutable host graph from already validated text fields.
-fn assemble(heap: &mut Heap, source: Value, plain: Value) -> Result<Value, AdapterError> {
+pub(in crate::aside) fn assemble(
+    heap: &mut Heap,
+    source: Value,
+    plain: Value,
+) -> Result<Value, AdapterError> {
     let fields = heap.alloc_table()?;
     let key = heap.alloc_string("plain")?;
     heap.table_store(fields, 0, key, plain)?;

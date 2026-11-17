@@ -22,6 +22,9 @@ reel-render = { path = "../reel-render", features = ["profiling"], optional = tr
 reel-player = { path = "../reel-player", features = ["performance"] }
 vita-native = { workspace = true, features = ["app"], optional = true }
 
+[target.'cfg(windows)'.dependencies]
+tempfile = "=3.27.0"
+
 [target.'cfg(target_os = "vita")'.dependencies]
 reel-render = { path = "../reel-render", features = ["gxm"], optional = true }
 vita-native = { workspace = true, features = ["graphics"], optional = true }

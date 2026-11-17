@@ -32,26 +32,39 @@ impl ResourceTarget {
         &self.0
     }
 
+    /// Whether this resource variant uses the desktop runtime's export contracts.
+    pub fn is_desktop(&self) -> bool {
+        self.as_str() != "vita"
+    }
+
+    /// Shared source overlay and conversion rules below the exact target.
+    pub fn fallback(&self) -> Option<&'static str> {
+        match self.as_str() {
+            "windows" | "linux" | "macos" => Some("desktop"),
+            _ => None,
+        }
+    }
+
     /// Resolve a logical file directly in its source tree, without copying it.
-    /// The selected target's same-path regular file overrides the common file.
+    /// The exact target takes precedence over the shared overlay and common file.
     /// Top-level `@NAME/` paths belong to selection and cannot be requested as
     /// logical resource paths; nested `@NAME` directories remain ordinary paths.
     pub fn resolve(&self, root: &Path, logical: &str) -> io::Result<PathBuf> {
         validate_logical_path(logical, io::ErrorKind::NotFound)?;
-        let variant = root.join(format!("@{}", self.0)).join(logical);
-        match fs::metadata(&variant) {
-            Ok(metadata) if metadata.is_file() => Ok(variant),
-            Ok(_) => Ok(root.join(logical)),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                ) =>
-            {
-                Ok(root.join(logical))
+        for name in std::iter::once(self.as_str()).chain(self.fallback()) {
+            let variant = root.join(format!("@{name}")).join(logical);
+            match fs::metadata(&variant) {
+                Ok(metadata) if metadata.is_file() => return Ok(variant),
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) => {}
+                Err(error) => return Err(error),
             }
-            Err(error) => Err(error),
         }
+        Ok(root.join(logical))
     }
 
     /// Collect selected logical names in stable order while retaining source
@@ -69,14 +82,16 @@ impl ResourceTarget {
             }
             collect_entry(root, &path, kind, &mut files)?;
         }
-        let selected = root.join(format!("@{}", self.0));
-        match fs::metadata(&selected) {
-            Ok(metadata) if metadata.is_dir() => {
-                collect_directory(&selected, &selected, &mut files)?
+        for name in self.fallback().into_iter().chain([self.as_str()]) {
+            let selected = root.join(format!("@{name}"));
+            match fs::metadata(&selected) {
+                Ok(metadata) if metadata.is_dir() => {
+                    collect_directory(&selected, &selected, &mut files)?
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
         }
         Ok(files)
     }

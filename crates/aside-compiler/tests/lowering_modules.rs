@@ -27,6 +27,7 @@ fn compile(inputs: &[(&str, &str)]) -> lowering::ProjectCompilation {
         modules,
         &plan,
         &seed,
+        &[],
         &links,
         &[],
         lowering::Options::default(),

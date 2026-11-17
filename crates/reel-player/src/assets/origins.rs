@@ -165,6 +165,8 @@ mod tests {
             },
             reloadable: true,
             kind: AssetKind::Image,
+            priority: reel_core::identity::Priority::Visible,
+            prefetch_limit: u64::MAX,
             phase: Phase::Describe,
             input: None,
             size: [0, 0],
@@ -256,34 +258,5 @@ mod tests {
             leases[1].handle()
         );
         assert_eq!(limited.usage().bytes, 0);
-    }
-    #[test]
-    #[ignore = "release-mode lookup cost comparison"]
-    fn lookup_cost_comparison() {
-        use std::{hint::black_box, time::Instant};
-        for count in [8, 256, 1024] {
-            let (mut origins, _, leases) = fixture(count, pool(1 << 20));
-            let requests: Vec<_> = leases
-                .iter()
-                .map(|lease| load(lease.version().clone()))
-                .collect();
-            let run = |origins: &Origins| {
-                let start = Instant::now();
-                for _ in 0..100 {
-                    for request in &requests {
-                        black_box(origins.shared(black_box(request))).unwrap();
-                    }
-                }
-                start.elapsed()
-            };
-            let indexed = run(&origins);
-            let bytes = origins.metadata.usage().bytes;
-            origins.index = None;
-            let linear = run(&origins);
-            println!(
-                "origins={count} lookups={} index_bytes={bytes} indexed={indexed:?} linear={linear:?}",
-                count * 100
-            );
-        }
     }
 }

@@ -6,9 +6,6 @@
 pub use tree_arena::{ArenaMut, ArenaMutList, ArenaRef, ArenaRefList, TreeArena};
 
 #[cfg(test)]
-mod cost;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 

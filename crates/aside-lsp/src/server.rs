@@ -42,6 +42,21 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
             .as_ref()
             .and_then(|general| general.position_encodings.as_deref()),
     );
+    let text_document = params.capabilities.text_document.as_ref();
+    let hierarchical_symbols = text_document
+        .and_then(|client| client.document_symbol.as_ref())
+        .and_then(|symbols| symbols.hierarchical_document_symbol_support)
+        .unwrap_or_default();
+    let versioned_quick_fixes = text_document
+        .and_then(|client| client.code_action.as_ref())
+        .is_some_and(|actions| actions.code_action_literal_support.is_some())
+        && params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|client| client.workspace_edit.as_ref())
+            .and_then(|edit| edit.document_changes)
+            == Some(true);
     let capabilities = ServerCapabilities {
         position_encoding: Some(encoding.kind()),
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -53,6 +68,14 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        code_action_provider: versioned_quick_fixes.then(|| {
+            CodeActionProviderCapability::Options(CodeActionOptions {
+                code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                ..Default::default()
+            })
+        }),
         semantic_tokens_provider: Some(crate::semantic_tokens::options().into()),
         document_formatting_provider: Some(OneOf::Left(true)),
         signature_help_provider: Some(SignatureHelpOptions {
@@ -142,7 +165,7 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
                     )
                 } else {
                     let id = request.id.clone();
-                    match dispatch(&mut workspace, request, encoding) {
+                    match dispatch(&mut workspace, request, encoding, hierarchical_symbols) {
                         Ok(result) => Response::new_ok(id, result),
                         Err((code, message)) => Response::new_err(id, code as i32, message),
                     }
@@ -372,13 +395,30 @@ fn failure(uri: Uri, message: String) -> PublishDiagnosticsParams {
     }
 }
 type RequestResult = std::result::Result<Value, (ErrorCode, String)>;
-fn dispatch(workspace: &mut Workspace, request: Request, encoding: Encoding) -> RequestResult {
+fn dispatch(
+    workspace: &mut Workspace,
+    request: Request,
+    encoding: Encoding,
+    hierarchical_symbols: bool,
+) -> RequestResult {
     fn params<T: serde::de::DeserializeOwned>(
         value: Value,
     ) -> std::result::Result<T, (ErrorCode, String)> {
         serde_json::from_value(value).map_err(|error| (ErrorCode::InvalidParams, error.to_string()))
     }
     let result = match request.method.as_str() {
+        "textDocument/documentSymbol" => {
+            let params: DocumentSymbolParams = params(request.params)?;
+            workspace
+                .document_symbols(&params.text_document.uri, encoding, hierarchical_symbols)
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "textDocument/codeAction" => {
+            let params: CodeActionParams = params(request.params)?;
+            workspace
+                .quick_fixes(params, encoding)
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
         "textDocument/semanticTokens/full" => {
             let params: SemanticTokensParams = params(request.params)?;
             workspace
@@ -418,6 +458,17 @@ fn dispatch(workspace: &mut Workspace, request: Request, encoding: Encoding) -> 
                     &params.text_document_position_params.text_document.uri,
                     params.text_document_position_params.position,
                     encoding,
+                )
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "textDocument/references" => {
+            let params: ReferenceParams = params(request.params)?;
+            workspace
+                .references(
+                    &params.text_document_position.text_document.uri,
+                    params.text_document_position.position,
+                    encoding,
+                    params.context.include_declaration,
                 )
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         }

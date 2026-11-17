@@ -26,6 +26,7 @@ impl StoryRuntime {
         )?;
         let story = CompiledStory {
             program: old.adapter().vm().program().clone(),
+            resume: old.adapter().resume_table().clone(),
             initializer: old.initializer(),
             entry: self.starting.unwrap(),
             catalogs: Default::default(),

@@ -11,7 +11,18 @@ impl SessionVm {
             field: stage::scroll::ScrollField::Y.index() as u32,
         };
         let previous = num(self.vm.heap(), s, S::Offset)?;
+        let Some(geometry) = self.virtual_geometry(s)? else {
+            return Ok(());
+        };
+        let scale = geometry.scale;
+        if scale.abs() <= 1e-9 {
+            return Ok(());
+        }
         if stage::number(self.vm.heap().host_property(property)?)? != previous {
+            return Ok(());
+        }
+        let source = self.vm.heap().property_source(property)?.0;
+        if self.vm.heap().property_claim(source)?.tag() != ValueTag::Null {
             return Ok(());
         }
         let n = count(self.vm.heap(), s)?;
@@ -26,8 +37,7 @@ impl SessionVm {
                     .table_entry(fields, stage::NodeProperty::Padding.index() as u32)?
                     .1,
             )?;
-            let offset = (total(self.vm.heap(), s)? + padding * 2. - (end - start)).max(0.);
-            start + offset - previous
+            (total(self.vm.heap(), s)? + padding - (end - start)).max(-padding)
         } else if n > 0 && old_index >= 0 {
             let key = get(self.vm.heap(), s, S::AnchorKey)?;
             let found = find(
@@ -45,11 +55,14 @@ impl SessionVm {
         } else {
             0.
         };
-        let delta = next - start;
-        let offset = (previous + delta).max(0.);
-        self.vm
-            .heap_mut()
-            .write_host_property(property, Value::float(offset), true)?;
+        let offset = (previous + (next - start) / scale).max(0.);
+        let delta = (offset - previous) * scale;
+        let next = start + delta;
+        if offset != previous {
+            self.vm
+                .heap_mut()
+                .write_host_property(property, Value::float(offset), false)?;
+        }
         put(self.vm.heap_mut(), s, S::Offset, Value::float(offset))?;
         put(self.vm.heap_mut(), s, S::Start, Value::float(next))?;
         put(self.vm.heap_mut(), s, S::End, Value::float(end + delta))?;
@@ -80,6 +93,13 @@ impl SessionVm {
         if stage::number(self.vm.heap().host_property(scroll_y)?)? != event.offset.y {
             return Ok(false);
         }
+        let geometry = ScrollGeometry {
+            owner: event.scroll,
+            scale: event.scroll_scale,
+            limit: event.scroll_limit,
+        };
+        let previous_geometry = self.stage.virtual_scrolls.geometry(event.node);
+        self.stage.virtual_scrolls.feedback(event.node, geometry);
         let follow = matches!(
             self.stage.scene.node(event.scroll).map(|n| &n.kind),
             Some(NodeKind::Scroll {
@@ -87,7 +107,12 @@ impl SessionVm {
                 ..
             })
         );
+        let first_feedback = previous_geometry.is_none();
         let mut changed = self.virtual_target_feedback(s, event)?;
+        changed |= first_feedback
+            || (num(self.vm.heap(), s, S::End)? > num(self.vm.heap(), s, S::Start)?)
+                != (event.visible_end > event.visible_start);
+        changed |= previous_geometry != Some(geometry);
         if get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null
             && num(self.vm.heap(), s, S::End)? - num(self.vm.heap(), s, S::Start)?
                 != event.visible_end - event.visible_start
@@ -125,12 +150,69 @@ impl SessionVm {
             )?;
             put(self.vm.heap_mut(), s, S::AnchorOffset, Value::float(offset))?;
         }
+        let mut epoch = int(self.vm.heap(), s, S::Epoch)?;
         if num(self.vm.heap(), s, S::Width)? != event.width {
-            let epoch = int(self.vm.heap(), s, S::Epoch)? + 1;
+            epoch += 1;
             put(self.vm.heap_mut(), s, S::Epoch, Value::int(epoch))?;
             put(self.vm.heap_mut(), s, S::Width, Value::float(event.width))?;
             changed = true;
         }
+        if !self
+            .stage
+            .virtual_scrolls
+            .measurements_applied(event, epoch)
+        {
+            changed |= self.apply_window_measurements(s, event, epoch)?;
+        }
+        changed |= refresh_estimate(self.vm.heap_mut(), s)?;
+        // Refill at half the prepared buffer before unknown rows become visible.
+        let reserve = (event.visible_end - event.visible_start) * REFILL;
+        let first = locate(self.vm.heap(), s, (event.visible_start - reserve).max(0.))?;
+        let last = locate(self.vm.heap(), s, (event.visible_end + reserve).max(0.))?;
+        if event.visible_end > event.visible_start
+            && count(self.vm.heap(), s)? > 0
+            && (first..=last).any(|index| !view.rows.iter().any(|r| r.index == index as usize))
+        {
+            changed = true;
+        }
+        put(
+            self.vm.heap_mut(),
+            s,
+            S::MeasuredRevision,
+            Value::int(event.revision as i64),
+        )?;
+        if changed {
+            self.virtual_target_invalidate(s)?;
+            let positionable = event.scroll_scale.abs() > 1e-9
+                || get(self.vm.heap(), s, S::Target)?.tag() == ValueTag::Null;
+            if positionable && !self.virtual_target_position(s)? {
+                self.virtual_anchor(s)?;
+            }
+        }
+        if changed || moved {
+            let request = int(self.vm.heap(), s, S::Request)? + 1;
+            put(self.vm.heap_mut(), s, S::Request, Value::int(request))?;
+            if changed {
+                let demand = get(self.vm.heap(), s, S::Demand)?;
+                observable::publish(self.vm.heap_mut(), demand, 0, Value::int(request))?;
+            }
+        }
+        let armed = if !changed {
+            self.virtual_target_arm(s)?
+        } else {
+            false
+        };
+        Ok(changed || armed)
+    }
+
+    fn apply_window_measurements(
+        &mut self,
+        s: Value,
+        event: &NodeVirtualList,
+        epoch: i64,
+    ) -> Result<bool, AdapterError> {
+        let mut changed = false;
+        let mut valid = true;
         let mounted = get(self.vm.heap(), s, S::Mounted)?;
         let _measurement_storage = self
             .vm
@@ -160,10 +242,10 @@ impl SessionVm {
                 if !measurement.height.is_finite() || measurement.height <= 0. {
                     put(self.vm.heap_mut(), s, S::Fault, Value::bool(true))?;
                     changed = true;
+                    valid = false;
                     continue;
                 }
                 let index = self.vm.heap().sequence_get(e, INDEX)?.as_int().unwrap() as u32;
-                let epoch = int(self.vm.heap(), s, S::Epoch)?;
                 let measured = self.vm.heap().sequence_get(e, EPOCH)?.as_int() == Some(epoch);
                 let old = if measured {
                     stage::number(self.vm.heap().sequence_get(e, HEIGHT)?)?
@@ -190,18 +272,6 @@ impl SessionVm {
                 }
             }
         }
-        changed |= refresh_estimate(self.vm.heap_mut(), s)?;
-        // Refill before unknown rows become visible. Half a viewport is the
-        // low-water mark; construction restores a full viewport on both sides.
-        // The hysteresis keeps small scrolls from rerunning the window observer.
-        let reserve = (event.visible_end - event.visible_start) * 0.5;
-        let first = locate(self.vm.heap(), s, (event.visible_start - reserve).max(0.))?;
-        let last = locate(self.vm.heap(), s, (event.visible_end + reserve).max(0.))?;
-        if count(self.vm.heap(), s)? > 0
-            && (first..=last).any(|index| !view.rows.iter().any(|r| r.index == index as usize))
-        {
-            changed = true;
-        }
         let pins = get(self.vm.heap(), s, S::Pinned)?;
         let same = self.vm.heap().sequence_len(pins)? as usize == retained.len()
             && retained.iter().enumerate().all(|(i, v)| {
@@ -215,31 +285,11 @@ impl SessionVm {
             put(self.vm.heap_mut(), s, S::Pinned, pins)?;
             changed = true;
         }
-        put(
-            self.vm.heap_mut(),
-            s,
-            S::MeasuredRevision,
-            Value::int(event.revision as i64),
-        )?;
-        if changed {
-            self.virtual_target_invalidate(s)?;
-            if !self.virtual_target_position(s)? {
-                self.virtual_anchor(s)?;
-            }
+        if valid {
+            self.stage
+                .virtual_scrolls
+                .remember_measurements(event, epoch);
         }
-        if changed || moved {
-            let request = int(self.vm.heap(), s, S::Request)? + 1;
-            put(self.vm.heap_mut(), s, S::Request, Value::int(request))?;
-            if changed {
-                let demand = get(self.vm.heap(), s, S::Demand)?;
-                observable::publish(self.vm.heap_mut(), demand, 0, Value::int(request))?;
-            }
-        }
-        let armed = if !changed {
-            self.virtual_target_arm(s)?
-        } else {
-            false
-        };
-        Ok(changed || armed)
+        Ok(changed)
     }
 }

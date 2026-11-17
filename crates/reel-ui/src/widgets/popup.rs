@@ -102,6 +102,7 @@ pub enum PopupDismiss {
 pub struct Popup {
     child: WidgetPod<dyn Widget>,
     modal: bool,
+    hint: bool,
     back_pressed: bool,
     escape_pressed: bool,
 }
@@ -111,6 +112,7 @@ impl Popup {
         Self {
             child: child.erased().to_pod(),
             modal: true,
+            hint: false,
             back_pressed: false,
             escape_pressed: false,
         }
@@ -137,6 +139,12 @@ impl Popup {
         self.modal = modal;
         self
     }
+
+    /// Configure a passive tooltip layer.
+    pub fn with_hint(mut self, hint: bool) -> Self {
+        self.hint = hint;
+        self
+    }
 }
 
 impl Layer for Popup {
@@ -146,7 +154,9 @@ impl Layer for Popup {
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        if let Some(reason) = Self::outside_dismissal(ctx, event) {
+        if !self.hint
+            && let Some(reason) = Self::outside_dismissal(ctx, event)
+        {
             ctx.submit_action::<PopupDismiss>(reason);
         }
     }
@@ -162,6 +172,9 @@ impl Widget for Popup {
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
         if matches!(event, Update::WidgetAdded) {
             ctx.set_modal(self.modal);
+            if self.hint {
+                ctx.set_disabled(true);
+            }
         }
         if matches!(
             event,
@@ -235,11 +248,21 @@ impl Widget for Popup {
 
     fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
     fn accessibility_role(&self) -> Role {
-        Role::GenericContainer
+        if self.hint {
+            Role::Tooltip
+        } else {
+            Role::GenericContainer
+        }
     }
     fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
     fn children_ids(&self) -> ChildrenIds {
         ChildrenIds::from_slice(&[self.child.id()])
+    }
+    fn accepts_pointer_interaction(&self) -> bool {
+        !self.hint
+    }
+    fn propagates_pointer_interaction(&self) -> bool {
+        !self.hint
     }
     fn as_layer(&mut self) -> Option<&mut dyn Layer> {
         Some(self)

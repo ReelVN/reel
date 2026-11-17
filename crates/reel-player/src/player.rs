@@ -23,6 +23,7 @@ type Error = Box<dyn std::error::Error>;
 mod display;
 pub(crate) mod pixel_recovery;
 pub(crate) mod session;
+mod ui_animation;
 use session::PlayerSession;
 
 /// Shared player configuration. Display size and author canvas remain independent.
@@ -122,6 +123,7 @@ pub struct Player<B: RenderBackend + CaptureBackend> {
     pub(crate) recorded_projection: Option<RecordedProjection>,
     pub(crate) closing: bool,
     pub(crate) first_frame_pending: bool,
+    pub(crate) ui_animation: ui_animation::UiAnimation,
     pub(crate) completions: Vec<RenderEvent<<B as RenderBackend>::Error>>,
     pub(crate) pixel_recovery: pixel_recovery::PixelRecovery,
     pub(crate) captures: crate::capture::CaptureService<B::Capture>,
@@ -225,6 +227,7 @@ where
             recorded_projection: None,
             closing: false,
             first_frame_pending: true,
+            ui_animation: Default::default(),
             completions: Vec::new(),
             pixel_recovery: pixel_recovery::PixelRecovery::default(),
             captures: crate::capture::CaptureService::new(
@@ -280,13 +283,19 @@ where
 
     /// Apply the geometry carried by a display event. Suspended displays retain
     /// the new geometry and wait for resume before configuring their device.
+    /// Repeated geometry preserves the surface and its accepted input view.
     pub fn resize(&mut self, host: &mut impl Host, metrics: DisplayMetrics) -> Result<(), Error> {
-        let suspended = self.presentation.is_suspended();
-        self.invalidate_surface(metrics)?;
-        if suspended {
-            self.presentation.suspend();
-        } else {
-            self.backend.configure(self.presentation.surface_info())?;
+        let current = self.presentation.surface_info();
+        if current.physical_size != metrics.physical_size
+            || current.scale_factor != metrics.scale_factor
+        {
+            let suspended = self.presentation.is_suspended();
+            self.invalidate_surface(metrics)?;
+            if suspended {
+                self.presentation.suspend();
+            } else {
+                self.backend.configure(self.presentation.surface_info())?;
+            }
         }
         let complete = host.window_resized();
         self.publish_window_info(host)?;
@@ -298,6 +307,7 @@ where
     }
     /// Cancel active input, retire presentation and freeze the session clock.
     pub fn suspend(&mut self, host: &mut impl Host) -> Result<(), Error> {
+        self.ui_animation.reset();
         self.presentation
             .bridge
             .handle_text_event(TextEvent::WindowFocusChange(false));
@@ -368,9 +378,15 @@ where
         if self.captures.busy() {
             return Some(MonoTime(now.0.saturating_add(8_000_000)));
         }
-        self.session
-            .as_ref()?
-            .wake_deadline(now, self.frame_production())
+        let story = self
+            .session
+            .as_ref()
+            .and_then(|session| session.wake_deadline(now, self.frame_production()));
+        let animation = self.ui_animation_deadline(now);
+        match (story, animation) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn frame_production(&self) -> crate::story_runtime::FrameProduction {
@@ -395,6 +411,7 @@ where
         self.maintain_captures()?;
         self.maintain_pixel_recovery()?;
         let production = self.frame_production();
+        self.request_ui_frame(host);
         let Some(session) = &mut self.session else {
             return Ok(());
         };
@@ -414,6 +431,7 @@ where
             session.tick(budget, production, now)?;
         }
         if identity != session.ui().session().identity() {
+            self.ui_animation.reset();
             self.pixel_recovery.cancel(&session.ui().assets());
             self.presentation.cancel_preparation(&mut self.backend);
             self.recorded_projection = None;
@@ -698,10 +716,14 @@ where
 
     /// Prepare and present ready content. Only acceptance publishes input geometry.
     pub fn render(&mut self, host: &mut impl Host) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::PlayerRender);
         if !self.frame_inputs_ready() {
             return Ok(());
         }
         self.poll_completions()?;
+        if self.presentation.needs_redraw() && !self.presentation.is_preparing() {
+            self.animate_ui(host);
+        }
         let Self {
             presentation,
             backend,
@@ -992,7 +1014,7 @@ pub(crate) fn build_frame(
     .map_err(|e| format!("build: {e:?}"))?;
     if let Some(receipt) = recorded_projection {
         build
-            .set_transitions(receipt.frame_transitions().to_vec())
+            .set_transitions(std::mem::take(&mut receipt.frame_transitions))
             .map_err(|error| format!("transition frame: {error:?}"))?;
     }
     let mut budget = StepBudget {

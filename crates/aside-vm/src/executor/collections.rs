@@ -298,6 +298,10 @@ pub(super) enum TableAction {
         fallback: Option<u32>,
     },
     Remove(BuiltinCall),
+    EntryOrInsert {
+        call: BuiltinCall,
+        filled: bool,
+    },
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct TableWork {
@@ -470,6 +474,7 @@ impl Vm {
             | TableAction::MemberGet { .. }
             | TableAction::GetDefault { .. }
             | TableAction::GetHost { .. }
+            | TableAction::EntryOrInsert { .. }
             | TableAction::Set(_)
             | TableAction::SetHost { .. }
             | TableAction::HasOwn(_)
@@ -605,6 +610,7 @@ impl Vm {
                     | TableAction::GetHost { .. }
                     | TableAction::MemberGet { .. }
                     | TableAction::HasOwn(_)
+                    | TableAction::EntryOrInsert { filled: false, .. }
                     | TableAction::Remove(_)
             );
         let fallback = scan
@@ -899,6 +905,32 @@ impl Vm {
                 .remember(s.code.function, s.pc, work.entry, table, work.version);
         }
         match work.action {
+            TableAction::EntryOrInsert { call, filled } => {
+                if work.matched {
+                    if let Some(value) = self.read_matched_member(s, table, work.entry, None)? {
+                        self.finish_table_entry(s, call, value)?;
+                    }
+                } else if filled {
+                    let value = self.value(s.env, 3)?;
+                    if self.heap.is_property_ref(value)
+                        && s.effects.0 & Effects::ALLOCATE == 0
+                        && self.heap.is_model_table(table)?
+                    {
+                        return self.collection_fault(s, FaultKind::Effect);
+                    }
+                    if let Err(error) = self.heap.table_store(table, work.entry, key, value) {
+                        return self.collection_fault(s, heap_fault(error));
+                    }
+                    self.finish_table_entry(s, call, value)?;
+                } else {
+                    s.table_work = None;
+                    s.phase = ScriptPhase::EntryFactory {
+                        call,
+                        waiting: false,
+                    };
+                }
+                return Ok(());
+            }
             TableAction::Remove(call) => {
                 if !work.matched {
                     return self.collection_fault(s, FaultKind::MissingKey);

@@ -239,39 +239,6 @@ fn compact_dynamic_builtin_keeps_output_root_during_sliced_search() {
 }
 
 #[test]
-#[ignore = "release repeated native receiver binding measurement"]
-fn native_binding_working_set_cost() {
-    for count in [64, 128, 256] {
-        let (mut vm, _, _, _) = prepared_expression(false, true);
-        let mut receivers = Vec::new();
-        for _ in 0..count {
-            let fields = vm.heap.alloc_table().unwrap();
-            receivers.push(vm.heap.alloc_host(fields, &[], None).unwrap());
-        }
-        for &receiver in &receivers {
-            vm.bind_native(receiver, FunctionId(4)).unwrap();
-        }
-        let before = vm.heap.stats();
-        let hits = vm.native_binding_hits;
-        let misses = vm.native_binding_misses;
-        let start = std::time::Instant::now();
-        for _ in 0..128 {
-            for &receiver in &receivers {
-                vm.bind_native(receiver, FunctionId(4)).unwrap();
-            }
-        }
-        eprintln!(
-            "native_bindings count={count} rounds=128 elapsed_us={} hits={} misses={} added_objects={} added_bytes={}",
-            start.elapsed().as_micros(),
-            vm.native_binding_hits - hits,
-            vm.native_binding_misses - misses,
-            vm.heap.stats().live_objects - before.live_objects,
-            vm.heap.stats().charged_bytes - before.charged_bytes
-        );
-    }
-}
-
-#[test]
 fn native_binding_set_remains_weak_and_rejects_collected_generations() {
     let (mut vm, _, _, _) = prepared_expression(false, true);
     let fields = vm.heap.alloc_table().unwrap();
@@ -364,80 +331,5 @@ fn positional_receiver_plan_restores_admission_and_preserves_provided_arguments(
             drive(&mut vm, task, true).0,
             RunOutcome::Returned(_)
         ));
-    }
-}
-
-#[test]
-#[ignore = "release differential bound-native positional argument measurement"]
-fn positional_native_call_cost() {
-    for generic_parameters in [true, false] {
-        let (mut vm, output, _, _) = prepared_options(false, true, generic_parameters);
-        let mut work = 0;
-        let start = std::time::Instant::now();
-        for _ in 0..50000 {
-            let task = vm.start_derived(output, RootOwner(1)).unwrap();
-            let (result, w, _, _, _, _) = drive(&mut vm, task, false);
-            work += w;
-            let RunOutcome::Returned(delivery) = result else {
-                panic!("derive");
-            };
-            vm.discard_delivery(delivery).unwrap();
-        }
-        eprintln!(
-            "positional_native generic={generic_parameters} evaluations=50000 elapsed_us={} work={work}",
-            start.elapsed().as_micros()
-        );
-    }
-}
-
-#[test]
-#[ignore = "release differential packed derived and member lookup measurement"]
-fn packed_derived_lookup_cost() {
-    for (generic, identities) in [
-        (true, false),
-        (false, false),
-        (false, true),
-        (false, true),
-        (false, false),
-        (true, false),
-    ] {
-        let (mut vm, output, _, _) = prepared_storage(generic, true, false, true);
-        vm.member_hints.identities = identities;
-        let mut work = 0;
-        let start = std::time::Instant::now();
-        for _ in 0..100000 {
-            let task = vm.start_derived(output, RootOwner(1)).unwrap();
-            let (outcome, used, _, _, _, _) = drive(&mut vm, task, false);
-            work += used;
-            let RunOutcome::Returned(delivery) = outcome else {
-                panic!("derive");
-            };
-            vm.discard_delivery(delivery).unwrap();
-        }
-        eprintln!(
-            "packed_derived generic={generic} member_identity={identities} evaluations=100000 elapsed_us={} work={work}",
-            start.elapsed().as_micros()
-        );
-    }
-}
-
-#[test]
-#[ignore = "release differential paired-register derived measurement"]
-fn packed_derived_operand_cost() {
-    for paired in [false, true, true, false] {
-        let (mut vm, output, _, _) = prepared_storage(false, true, false, true);
-        vm.slots.paired_reads = paired;
-        let start = std::time::Instant::now();
-        for _ in 0..100000 {
-            let task = vm.start_derived(output, RootOwner(1)).unwrap();
-            let RunOutcome::Returned(delivery) = drive(&mut vm, task, false).0 else {
-                panic!("derive");
-            };
-            vm.discard_delivery(delivery).unwrap();
-        }
-        eprintln!(
-            "packed_derived_operands paired={paired} evaluations=100000 elapsed_us={}",
-            start.elapsed().as_micros()
-        );
     }
 }

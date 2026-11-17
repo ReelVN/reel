@@ -130,6 +130,32 @@ impl Vm {
             } else {
                 false
             };
+        if !changed && work.call.method == Builtin::Resize && work.index >= work.original_len {
+            let count = (work.len - work.index)
+                .min(crate::payload::VALUE_CHUNK_LEN as u32)
+                .min(self.limits.heap.max_mutation_values);
+            if count > 1
+                && meter.take(
+                    0,
+                    6 + u64::from(count),
+                    Values::growth_bytes(work.index.into(), count.into()),
+                )
+            {
+                let result = self.builtin_argument(s, work.call, 1).and_then(|value| {
+                    self.heap
+                        .array_append_repeated(buffer, value, count)
+                        .map_err(VmError::from)
+                });
+                match result {
+                    Ok(written) => {
+                        work.index += written as u32;
+                        s.phase = ScriptPhase::Bulk(work);
+                    }
+                    Err(error) => self.collection_fault(s, vm_fault(error))?,
+                }
+                return Ok(true);
+            }
+        }
         let removing_table = matches!(work.call.method, Builtin::TableRemove);
         let extra = if !changed && work.index < work.len && removing_table {
             let copying = work.index < work.original_len - 1;

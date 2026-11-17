@@ -6,7 +6,7 @@
 
 下载工具包，将包含 `reel`、`reel-lsp` 和 `reel-game` 的目录加入 `PATH`，重新打开终端。安装 Aside VS Code 扩展后，可使用补全、参数提示、F12 和保存时格式化。`aside.server.path` 指定语言服务，`aside.reel.path` 指定运行工具。
 
-创建 `MyGame` 目录，使用 `src/main.aside` 入口和 `resources/` 资源目录。各作品共用工具安装，各自保存源码、资源和 `build/` 产物。脚本中的资源路径相对 `resources/`。
+创建 `MyGame` 目录，使用 `src/main.aside` 入口和 `resources/` 资源目录。各作品共用工具安装，各自保存源码和资源。本地构建产物放在 `build/`，分发包放在 `dist/`。脚本中的资源路径相对 `resources/`。
 
 ```sh
 cd MyGame
@@ -20,11 +20,15 @@ reel export --release
 
 `dev` 将编译缓存保存在 `build/dev/`，工具与源码内容未变时直接复用；修改源码后重新编译。修改素材后重新启动游戏以加载新内容。
 
+需要复查卡顿或脚本错误时，可用 `reel-dev debug` 启动源码项目。手动复现后关闭窗口，再查看日志和逐场景帧耗时。 [开发诊断用法](../../crates/reel-dev/README.md#inspect-a-development-session)
+
 交互终端中的源码命令显示当前阶段、模块进度和耗时；`dev` 复用缓存时显示缓存状态。
 
-`export` 默认生成 `build/export/目标/debug/` 开发工程，`--release` 使用同一目标下的 `release/`。例如 Vita 发布目录为 `build/export/vita/release/`。发布目录包含播放器、代码、文本包和资源卷；整个目录交给玩家。默认输出重复执行时更新，显式 `--output` 通过 `--overwrite` 替换已有目标。替换导出目录前，将存档放在独立位置；`--save-directory` 指定运行数据目录。
+`export` 默认生成 `dist/目标/debug/` 开发工程。`--release` 使用 `dist/目标/release/`，例如 `dist/vita/release/`。将整个发布目录交给玩家，包含代码、文本包、资源卷和随包附带的播放器。默认输出重复执行时更新，显式 `--output` 通过 `--overwrite` 替换已有目标。替换导出目录前，将存档放在独立位置。`--save-directory` 指定运行数据目录。
 
-平台素材放在 `resources/@目标/`，按相同路径覆盖公共素材。例如 `resources/@vita/bg/room.png` 覆盖 `resources/bg/room.png`，脚本仍引用 `bg/room.png`。目标内独有的文件也会选入，其余目标目录跳过；缺少覆盖时使用公共文件。默认资源目标为宿主系统名，如 `windows`、`linux` 或 `macos`。
+发布前可用 `reel-dev perf verify` 验收正式播放器完成的关键场景。策略指定目标、运行环境、场景标签和提交间隔或内存额度。输出的 `verification.json` 记录观测值和未通过项。 [发布验收用法](../../crates/reel-dev/README.md#verify-a-release)
+
+平台素材放在 `resources/@目标/`，按相同路径覆盖公共素材。例如 `resources/@vita/bg/room.png` 覆盖 `resources/bg/room.png`，脚本仍引用 `bg/room.png`。目标内独有的文件也会选入。Windows、Linux 和 macOS 依次选用系统专属素材、`resources/@desktop/` 和公共素材。默认资源目标为宿主系统名。
 
 ```sh
 reel dev --resource-target vita
@@ -59,13 +63,13 @@ reel export --release --resource-target vita --data-only
 
 将导出目录复制到 `ux0:/data/reel/作品名/`。启动器列出含 `game.asb` 的作品目录；进度保存在各作品的 `saves/` 目录。游戏中按 SELECT + START 返回作品列表。
 
-在启动器中按 SELECT 打开设置，选择界面语言和主题；设置保存在 `ux0:/data/reel/launcher.json`。复制新作品后按 START 刷新列表。
+启动器用圆圈确认、叉键返回。按 SELECT 设置语言和主题，复制新作品后按 START 刷新列表。设置保存在 `ux0:/data/reel/launcher.json`。
 
-在项目根添加 `resources.toml`，可以自动生成目标平台的素材副本：
+桌面开发时，`reel dev` 可直接读取 PNG、JPEG 和静态 WebP。在项目根添加 `resources.toml`，按发行目标生成资源副本：
 
 ```toml
 [[targets.vita]]
-match = "images/**/*.{png,jpg,jpeg}"
+match = "images/**/*.{png,jpg,jpeg,webp}"
 convert = "texture"
 scale = 0.5
 format = "auto"
@@ -85,13 +89,28 @@ bitrate = 4000000
 
 规则按顺序取首个匹配，未匹配的文件直接使用原内容；`convert = "copy"` 可保留特定文件。先选取公共素材和平台覆盖，再应用转换。纹理缩放保留原有逻辑尺寸和 `source_rect` 坐标；原脚本中的图片、音频路径继续使用。BC 纹理与瓦片自动选择编码质量，保持所选格式的 GPU 存储大小。
 
+需要优先保住画质时，给 BC 纹理规则设置 `fallback = "source"`。Reel 会比较所选编码与缩放后的图像，超过显示误差阈值时打包原图。Vita 上若原图超出解码预算，导出会指出该资源。
+
+`targets.desktop` 为 Windows、Linux 和 macOS 提供通用转换规则。具体系统的规则先匹配，再用桌面通用规则。`--resource-target desktop` 可以单独预览这组规则。下面的规则把 8 位 PNG 无损转为 WebP，把选中的音频转为 Opus。已有 WebP 和 Opus 直接打包。
+
+```toml
+[[targets.desktop]]
+match = "**/*.png"
+convert = "webp"
+
+[[targets.desktop]]
+match = "**/*.{wav,ogg,mp3,flac}"
+convert = "opus"
+bitrate = 96000
+```
+
 给渐变素材单独配置 `format = "rgba8"` 与 `dither = "ordered"`，并把该规则放在通用纹理规则之前。抖动分散颜色量化误差，alpha 保持不变；RGBA8 的纹理内存是 BC1 的八倍。单个文件可运行 `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`。
 
 把同时使用的小图片合入图集，可在通用纹理规则前添加：
 
 ```toml
 [[targets.vita]]
-match = "images/ui/**/*.{png,jpg,jpeg}"
+match = "images/ui/**/*.{png,jpg,jpeg,webp}"
 convert = "atlas"
 page_size = [1024, 1024]
 format = "auto"
@@ -113,7 +132,7 @@ reel export --release --resource-target vita
 
 字体默认使用完整文件。需要裁剪时，显式选择 `convert = "font"`，用 `unicode = ["U+0020-024F", "U+3000-9FFF", "U+FF00-FFEF"]` 指定字符区间，用 `text = ["src/**/*.aside"]` 加入剧情与翻译用字。按作品支持的语言扩展区间，覆盖玩家输入；范围外字符会缺字。字体转换需要 Python 的 FontTools 包；`REEL_FONT_PYTHON` 可指定已安装该包的 Python。字体族、样式和字体集合中的各字体均保留。
 
-`reel clean --resources` 清理转换缓存并保留导出包；下一次准备会重新转换。`reel clean` 清理整个 `build/`。
+`reel clean --resources` 清理转换缓存，下次准备时重新转换。`reel clean` 清理整个 `build/`，保留 `dist/` 中的分发包。
 
 在项目根运行 `reel fmt` 整理源码，`reel fmt --check` 检查排版。格式化使用 4 空格缩进和 100 字符目标行宽，长调用紧凑排列参数。英文 API 文档由 Rust 声明生成，可在编辑器中悬停或跳转查看。
 
@@ -131,10 +150,10 @@ fn main() {
 }
 ```
 
-内容增长后，按章节、菜单或小游戏拆分模块。入口配置作品、创建共享状态并开始流程。`game::ui::title` 对应 `src/ui/title.aside`：
+内容增长后，按章节、菜单或小游戏拆分模块。入口配置作品、创建共享状态并开始流程。项目导入从 `src/` 起算，`ui::title` 对应 `src/ui/title.aside`。
 
 ```aside
-use game::ui::title::title;
+use ui::title::title;
 
 fn main() {
     game.configure(title: "窗边", width: 1920, height: 1080, fonts: ["fonts/body.ttf"]);
@@ -145,7 +164,7 @@ fn main() {
 `src/ui/title.aside` 返回作者组合的标题页。普通页面通过函数调用衔接；`game.start` 创建新会话。后文给出 `src/story/opening.aside` 的剧情函数。
 
 ```aside
-use game::story::opening::opening;
+use story::opening::opening;
 
 pub fn title() {
     column(x: 760, y: 480, gap: 24) {
@@ -165,6 +184,10 @@ for value in 1..=3 { values.append(value); }
 let latest = values.pop();
 stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
+
+字段名和变量名相同时可以直接写变量名，例如 `{width, height, fullscreen: false}`。
+
+用 `progress?.volume ?? 0.8` 从可空的进度对象读取音量并提供默认值。`??` 只在左侧为 `null` 时计算默认值，已有的 `0` 会保留。`if progress != null` 内可以直接使用局部变量 `progress` 的具体类型。
 
 需要逐项计算内容时，用 `gen fn` 和 `yield`。调用创建生成器，`for` 每取一项才继续正文；提前退出循环会执行生成器的 `finally`。下面按需生成位置，避免建立中间数组。
 
@@ -220,6 +243,8 @@ stage.replace(stack {
 ```
 
 tuple 适合固定形状的数据。`let` 和 `for` 支持固定长度解构，`_` 跳过一个位置；类型或长度不符会抛出 `PatternMismatch`。
+
+对象也可按字段解构，例如 `let {value: item, index} = row;`。省略字段后的别名时，局部变量沿用字段名。
 
 ```aside
 let settings = {language: "zh-CN", volume: 0.8};
@@ -336,6 +361,10 @@ panel.add(pointer);
 
 只需展示时，函数返回节点即可。组件需要持续操作或明确数据结构时，用类表达字段和方法。类型注解帮助检查、补全与定义跳转。
 
+`Node`、`TextNode` 和 `Scope` 等 Reel 类型可直接用于注解。
+
+视图返回具名部件时，可以写 `-> {node: Node, caption: TextNode}`。菜单可以用 `-> "back" | "title"` 限定返回值。
+
 ```aside
 class PoemWord {
     let text: string;
@@ -369,6 +398,16 @@ caption.with(opacity: 0.5);
 ```
 
 需要让玩家先看到当前画面再开始演出时，等待 `stage.presented()`。资源准备期间播放器保留上一幅已显示画面。
+
+移入视口的定尺寸图片由播放器根据已布局的运动自动准备。通过 `visible` 显示的页面可以保留原节点，并在需要即时打开时为相关子树设置 `preload: true`。播放器用空余资源容量提前读取、解码图片和效果。该设置继承到子节点；页面移除后释放请求与资源。
+
+```aside
+let menu = stack(visible: false, preload: true) {
+    image("assets/panels.png", width: 320, height: 180);
+};
+scene.add(menu);
+menu.visible = true;
+```
 
 ```aside
 stage.replace(scene);
@@ -485,7 +524,7 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 一个场景可以返回根节点以及剧情需要操作的部分。将下面的组件放在 `src/ui/room.aside`，由剧情函数控制人物、CG 和对白区域。
 
 ```aside
-use game::ui::dialogue::dialogue_view;
+use ui::dialogue::dialogue_view;
 
 pub fn room_view(dialogue) {
     let portrait = image("assets/mio.png", x: 220, y: 140);
@@ -508,9 +547,10 @@ pub fn room_view(dialogue) {
 可复用容器接收 `children`，调用方决定内容。同一容器可以装对白、设置或小游戏。
 
 ```aside
-fn card(children = []) {
+fn card(title, children = []) {
     column(gap: 12, padding: 24) {
-        for child in children { child; }
+        text(title);
+        ...children;
     }
 }
 ```
@@ -547,7 +587,7 @@ say([mio.line("Noise.", history: false), eri.line("Stay.", history: rich("[b]Sta
 `src/story/opening.aside` 用普通控制流组织剧情。`choose` 返回稳定的分支 key，调用对应章节即可组成共同线和个人线。
 
 ```aside
-use game::ui::room::room_view;
+use ui::room::room_view;
 
 let mio = character("Mio");
 
@@ -572,11 +612,29 @@ pub fn dialogue_view(model) {
     }
 }
 pub fn nvl_view(model) {
-    scroll(height: 600, follow_end: true) {
+    scroll(height: 600, follow_end: true, overscroll: "bounce") {
         view(|| column(gap: 24) {
             for line in model.lines { dialogue_view(line); }
         });
     }
+}
+```
+
+`scroll` 默认将偏移限制在内容范围内。`overscroll: "bounce"` 启用触摸拖拽的边界回弹；滚动位置、滚动条和虚拟列表仍使用合法偏移。回弹由原生 UI 驱动。
+
+固定高度的列表可以用 `scroll(snap_y: 48)` 指定纵向停靠间距。滚轮、触摸松手和关联滚动条停在整行位置，内容末端也是停靠点。脚本仍可用 `scroll_y` 指定精确偏移。
+
+把 `scrollbar(viewport)` 与同一个滚动视口并排放置。`track`、`thumb` 是稳定内容槽，可以设置背景或添加 `stretch: "both"` 的图片；省略 `thumb_size` 时，滑块长度跟随可见内容的比例。外部按钮可以调用 `scroll_by`、`scroll_to`，轨道、拖动、键盘和手柄共用目标滚动位置。参数和生命周期见[滚动条源码 API](../../crates/reel-engine/src/aside/stage/scrollbar.rs)。
+
+```aside
+fn main() {
+    let viewport = scroll(width: 280, height: 120) {
+        column() { for i in 0 .. 20 { text(f"Line {i}"); } }
+    };
+    let bar = scrollbar(viewport, width: 16, height: 120);
+    bar.track.background = "#28303a";
+    bar.thumb.background = "#9daabe";
+    stage.replace(row(gap: 8) { viewport; bar; });
 }
 ```
 
@@ -725,6 +783,8 @@ fn story_page(root) {
 
 `scope` 拥有临时节点和活动。正文结束时统一释放它们，适合全屏 CG、确认框和临时玩法。
 
+页面由按钮或返回动作调用 `s.finish(result)` 结束时，在正文末尾写 `s.wait();` 保持页面打开。
+
 ```aside
 fn show_cg(view) {
     scope(body: |s| {
@@ -812,6 +872,8 @@ hint.remove();
 
 ## 8 菜单、输入与设置
 
+`input(on_back: close)` 用 Escape、鼠标右键和手柄返回键触发关闭。需要自定义按键时，在 `actions.back` 声明绑定。
+
 按钮回调可以修改状态，也可以等待演出。回调属于按钮节点；按钮退出时结束它拥有的任务。
 
 ```aside
@@ -873,7 +935,7 @@ fn main() {
 
 命名动作把键盘、鼠标和手柄映射到同一行为。连续移动用时钟更新；输入回调更新玩家意图。文本编辑时，聚焦编辑器处理自己的键盘和输入法事件。
 
-用 `stage.input()` 的只读可观察字段 `source` 和 `layout` 选择输入提示。`source` 表示最后使用的输入方式，手柄的 `layout` 为 `xbox`、`playstation`、`nintendo` 或 `generic`；作品提供对应图标。
+用 `stage.input()` 的只读可观察字段 `source` 和 `layout` 选择输入提示。`source` 表示最后使用的输入方式，手柄的 `layout` 为 `xbox`、`playstation`、`nintendo` 或 `generic`。`buttons` 提供 `South`、`East`、`North`、`West`、`LeftShoulder`、`RightShoulder`、`LeftTrigger`、`RightTrigger`、`Select` 和 `Start` 的显示标签。按键绑定使用逻辑控制名，作品可以选择自己的图标。
 
 需要指针位置时，用 `input(on_pointer: |event| ...)` 读取节点内的 `event.x`、`event.y` 和 `event.phase`。悬停与拖动都会产生 `moved`；主按钮或触摸产生 `pressed`、`released` 和 `cancelled`。自定义拖动控件用 `event.dragging` 判断该节点是否持有拖动。
 
@@ -946,6 +1008,33 @@ column(gap: 12) {
 }
 ```
 
+`tab_bar` 和 `page_stack` 可以共享选中值和 `{key, label, build}` 列表，每个页面只声明一次。页面首次访问时构建，切换后保留控件和编辑状态。标签内容可通过 `item.control` 的交互反馈和 `appearance` 自定义。`manual` 使用方向键移动焦点、确认键切换页面，默认 `automatic` 随焦点切换。
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let settings = model({page: "display", volume: 0.8});
+    let items = [
+        {key: "display", label: "Display", build: || text("Display settings")},
+        {key: "sound", label: "Sound", build: || column(gap: 12) {
+            text("Volume");
+            slider(value: bind(settings.volume), min: 0, max: 1, width: 300);
+        }}
+    ];
+    let pages = page_stack(value: bind(settings.page), width: 600, height: 180, items: items);
+    let tabs = tab_bar(value: bind(settings.page), activation: "manual", items: items,
+        build: |item| text(item.label,
+            opacity: derive(|| if item.selected || item.control.focus_visible {1} else {0.5})));
+    stage.replace(column(x: 24, y: 24, gap: 16) { tabs; pages; });
+}
+```
+
+`pages.get(key)` 取得已构建页面；`await pages.ensure(key)` 提前构建并取得页面；`pages.evict(key)` 释放未选中页。页面中的预览、音频和任务用作用域管理每次访问，控件的保留与访问工作的生命周期分别表达。
+
+切换前需要准备时，在标签栏设置 `on_select: |event| { await pages.select(event.value); }`。页面就绪后会更新绑定的选中值。在控件内放入 `tooltip() { text("Open settings"); }`，鼠标悬停或显示焦点时就会出现提示。
+
+用 `progress_bar(value: bind(state.loaded), max: 100, width: 240, height: 16)` 显示进度。`background` 设置轨道，`color` 设置填充，子节点可在进度条上叠加文字或图标。
+
 设置页可以直接连接阅读状态。自动阅读在文字呈现后等待设定时间，选择处等待玩家；快进按已读与选择策略推进。模态界面、暂停和失焦沿阅读状态处理。
 
 ```aside
@@ -977,9 +1066,9 @@ fn main() {
 }
 ```
 
-先通过 `window.info().capabilities` 判断可用设置，再等待 `window.configure` 返回应用后的状态。窗口大小与逻辑画布分别设置。
+先通过 `window.info().capabilities` 判断可用设置，再等待 `window.configure` 返回应用后的状态。窗口尺寸和显示器分辨率使用物理像素，`game.configure` 的画布尺寸使用逻辑坐标。
 
-补间、粒子和转场默认跟随显示器刷新率，宿主未知时使用 60 Hz。`game.configure(frame_rate: 144)` 设置目标更新频率，`frame_rate: 0` 恢复自动；垂直同步沿用 `window.configure(vsync: ...)`。当前显示器频率可从 `window.info().refresh_rate` 读取。
+补间、粒子和转场默认跟随显示器刷新率，宿主未知时使用 60 Hz。`game.configure(frame_rate: 144)` 设置目标更新频率，`frame_rate: 0` 恢复自动。测持续动画的吞吐时，使用 `frame_rate: "uncapped"`，并单独关闭窗口垂直同步。静止页面仍按需绘制。当前显示器频率可从 `window.info().refresh_rate` 读取。
 
 ```aside
 let mut display = window.info();
@@ -1333,7 +1422,46 @@ narrator("A new chapter begins.");
 game.reading().clear_history(keep_last: 37);
 ```
 
-`saves` 保存和恢复执行位置、状态与画面。捕获期间需要修改会话的输入会使本次保存以 `CaptureBusy` 失败；旧槽位保留。先用 `stage.capture` 取得缩略图，再传给保存请求。存档列表提供数据，作者组合槽位界面。
+`saves` 保存业务状态、剧情位置、当前对白及历史。用 State 声明持久数据，用 Root 建立当前界面；`run_flow` 进入正文，`flow` 为该段剧情命名。
+
+```aside
+use std::resume::{state, root, flow};
+
+class GameState {
+    let mut score: int = 0;
+}
+state(GameState, "game.state");
+root(start_story, "game");
+
+fn start_story(state: GameState = model(GameState())) {
+    reading(|| {
+        let dialogue = game.dialogue();
+        stage.replace(stack() {
+            text(value: derive(|| dialogue.text));
+            button("Save", y: 80, on_click: || { await saves.save("slot1"); });
+        });
+        run_flow(chapter_one, state)
+    })
+}
+
+fn chapter_one(state: GameState) {
+    flow("chapter_one");
+    narrator("The train has arrived.");
+    state.score += 1;
+}
+```
+
+新游戏求值 Root 的普通默认参数；读档将恢复的 State 传给当前 Root，重建界面，再接回保存的 point。增加有默认值的 State 字段、调整函数位置或修改 point 后续剧情时，已有存档沿稳定名称连接当前代码。字段改名可以在 `state` 的 `fields` 参数中保留原 key；flow、point 和 Root 的 key 在作品发布后保持稳定。
+
+编译器为能验证的对白等待、选项和 flow 调用生成续接位置。保留等待和调用结构的补丁可以沿用这些位置。作者用 `point` 明确命名发布后需要独立保留身份的关键位置。
+
+需要历史跳转时，在 Root 调用 `saves.track_history(true)`，在历史菜单用 `saves.can_jump(entry.group_id)` 判断是否显示跳转按钮。点击后等待 `saves.jump(entry.group_id)`，恢复该段对白和当时的业务状态。只有窗口中仍保留的条目可以跳转。
+
+Root 加载当前设置、建立 Reading 和界面，正文的推进、计数和分支放在 flow 内。业务数据及需要续接的原生资源放入 State 或业务局部绑定；界面工厂和回调由当前 Root 建立。
+
+正文需要场景对象时，用 `run_flow(chapter_one, state, context: scene)` 调用普通双参数入口 `chapter_one(state, scene)`。读档将 `scene` 及它的局部别名连接到当前 Root 新建的对象。多个服务可以用 `context: {scene: scene, selection: selection}` 命名，读档按同名字段连接这些对象。State 保存背景、角色位置和小游戏进度，Root 据此建立界面和等待结果。
+
+打开存档页时可以调用 `saves.can_capture()`，根据当前正文是否可续接启用按钮。需要缩略图时，用 `stage.capture` 取得图片并传给保存请求。存档列表提供数据，作者组合槽位界面。捕获期间改变会话的输入会使本次保存以 `CaptureBusy` 失败，旧槽位保留。
 
 ```aside
 let menu = model({slots: [], busy: false, error: ""});
@@ -1363,7 +1491,9 @@ let indicator = text("Music", visible: bind(settings.music), color: bind(setting
 settings.palette.accent = "#ffd580";
 ```
 
-全局设置和解锁进度用 `persistent` 独立读写。启动与剧情读档后重新读取并应用当前设置；存入的数据独立于剧情执行快照。
+全局设置和解锁进度用 `persistent` 独立读写。Root 启动时读取并应用当前设置；存入的数据独立于剧情检查点。
+
+将 `window.configure` 放在普通启动流程或已呈现界面的设置菜单。读档准备期间，Root 可以用 `window.info()` 读取当前窗口。
 
 ```aside
 class Preferences {

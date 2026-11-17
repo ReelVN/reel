@@ -39,10 +39,12 @@ mod input;
 pub(crate) mod popup;
 #[cfg(test)]
 mod projection_tests;
+mod scrollbar;
 mod selection;
 #[cfg(test)]
 mod tests;
 mod virtual_images;
+pub(crate) use virtual_images::OffscreenImage;
 mod virtual_list;
 use input::NodeInput;
 use virtual_list::VirtualListState;
@@ -71,6 +73,7 @@ struct SceneSummary {
     image: bool,
     button: bool,
     input: bool,
+    virtual_list: bool,
     popup: bool,
     modal: Option<NodeId>,
 }
@@ -83,6 +86,7 @@ struct SceneNode {
     image_branch: bool,
     button_branch: bool,
     input_branch: bool,
+    virtual_list_branch: bool,
     modal: Option<NodeId>,
     images: SceneImages,
 }
@@ -322,6 +326,7 @@ impl StageView {
                         summary.image |= child.image_branch;
                         summary.button |= child.button_branch;
                         summary.input |= child.input_branch;
+                        summary.virtual_list |= child.virtual_list_branch;
                         summary.popup |= child.popup_branch();
                         if !matches!(child.node.kind, NodeKind::Popup(_)) {
                             summary.modal = child.modal.or(summary.modal);
@@ -338,6 +343,8 @@ impl StageView {
                 matches!(node.kind, NodeKind::Button { .. }) || children_summary.button;
             let input_branch =
                 matches!(node.kind, NodeKind::Input { .. }) || children_summary.input;
+            let virtual_list_branch =
+                matches!(node.kind, NodeKind::VirtualList(_)) || children_summary.virtual_list;
             let modal = node
                 .props
                 .visible
@@ -370,6 +377,7 @@ impl StageView {
                 image_branch,
                 button_branch,
                 input_branch,
+                virtual_list_branch,
                 modal,
                 images,
             })
@@ -409,6 +417,7 @@ impl StageView {
                 .unwrap_or_default()
                 .iter()
                 .rev()
+                .filter(|popup| popup.popup().hint.is_none())
                 .find_map(|popup| popup.root.modal)
                 .or_else(|| {
                     self.root
@@ -808,6 +817,7 @@ fn resolve_image_nodes(
             image_branch: node.image_branch,
             button_branch: node.button_branch,
             input_branch: node.input_branch,
+            virtual_list_branch: node.virtual_list_branch,
             modal: node.modal,
             images,
         })
@@ -926,6 +936,26 @@ impl StageWidget {
     pub(crate) fn node_widget(&self, node: NodeId) -> Option<WidgetId> {
         self.nodes.get(&node).copied()
     }
+    pub(crate) fn scroll_reveal(
+        root: &reel_ui::app::RenderRoot,
+        viewport: WidgetId,
+        [x, y, width, height]: [f64; 4],
+        margins: [f64; 2],
+    ) -> Option<reel_engine::aside::RevealProjection> {
+        let widget = root.get_widget(viewport)?.downcast::<SceneWidget>()?;
+        let NodeKind::Scroll { offset, .. } = widget.node.kind else {
+            return None;
+        };
+        let bounds =
+            Rect::new(x, y, x + width, y + height) - Vec2::splat(widget.node.props.padding);
+        let rendered = widget.scroll.offset();
+        let target = widget.scroll.reveal_offset(bounds, margins);
+        Some(reel_engine::aside::RevealProjection {
+            requested: [offset.x, offset.y],
+            rendered: [rendered.x, rendered.y],
+            target: [target.x, target.y],
+        })
+    }
     pub(crate) fn text_caret(
         &self,
         root: &reel_ui::app::RenderRoot,
@@ -1041,6 +1071,13 @@ impl Widget for StageWidget {
                 self.root_props.transform(ctx.child_size(root))
             };
             ctx.set_child_transform(root, transform);
+            let viewport = virtual_list::VirtualViewport::new(ctx.content_box())
+                .mapped(ctx.child_layout_transform(root));
+            if let Some((root, mut root_ctx)) = ctx.get_raw_mut(root)
+                && root.projection.virtual_list_branch
+            {
+                root.set_virtual_viewport(&mut root_ctx, viewport);
+            }
         }
     }
     fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
@@ -1067,6 +1104,7 @@ struct SceneWidget {
     interaction: Option<InteractionState>,
     input: Option<NodeInput>,
     slider: Option<WidgetPod<Slider>>,
+    scrollbar: Option<reel_ui::widgets::ScrollBarState>,
     label: Option<WidgetPod<Label>>,
     editor: Option<WidgetPod<TextInput>>,
     image: Option<WidgetPod<Image>>,
@@ -1079,10 +1117,11 @@ struct SceneWidget {
     scroll: ScrollState,
     scroll_laid_out: bool,
     scroll_request: Option<Vec2>,
-    scroll_feedback: Option<(Vec2, Size, Size)>,
+    scroll_feedback: Option<(Size, Size)>,
     scroll_baseline: Vec2,
     scroll_input: bool,
     virtual_list: Option<Box<VirtualListState>>,
+    virtual_viewport: Option<virtual_list::VirtualViewport>,
     #[cfg(test)]
     layouts: usize,
     #[cfg(test)]
@@ -1137,7 +1176,10 @@ fn decoration_changed(old: &SceneProperties, new: &SceneProperties) -> bool {
         || (props.color != next.color
             && matches!(
                 new.kind,
-                NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
+                NodeKind::Button { .. }
+                    | NodeKind::Toggle { .. }
+                    | NodeKind::Radio { .. }
+                    | NodeKind::ProgressBar { .. }
             ))
     {
         return true;
@@ -1154,10 +1196,14 @@ fn decoration_changed(old: &SceneProperties, new: &SceneProperties) -> bool {
         NodeKind::Radio { selected, .. } => {
             !matches!(&old.kind, NodeKind::Radio { selected: previous, .. } if previous == selected)
         }
+        NodeKind::ProgressBar { value, max } => {
+            !matches!(&old.kind, NodeKind::ProgressBar { value: previous, max: previous_max } if previous / previous_max == value / max)
+        }
         NodeKind::Text(_)
         | NodeKind::TextInput { .. }
         | NodeKind::Button { .. }
         | NodeKind::Slider { .. }
+        | NodeKind::ScrollBar(_)
         | NodeKind::Image { .. }
         | NodeKind::Input { .. }
         | NodeKind::Scroll { .. }

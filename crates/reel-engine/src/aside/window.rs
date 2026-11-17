@@ -442,14 +442,15 @@ impl SessionVm {
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Return the host's current portable window information immediately.
-        /// Fields include platform, logical width/height, remembered windowed dimensions,
+        /// Fields include platform, physical client width/height, remembered windowed dimensions,
         /// scale_factor, fullscreen, vsync, refresh_rate in Hz (null when unknown),
         /// supported resolutions, and capabilities for
         /// resize, fullscreen, vsync and pointer_move. This reads host state without a request.
         "reel::window::info";
-        /// Request changes to logical window dimensions, fullscreen or vsync.
+        /// Request changes to physical client dimensions, fullscreen or vsync.
         /// Null fields preserve existing settings; dimensions must be positive and finite.
         /// Unsupported capabilities and a concurrent pending window request are rejected.
+        /// A candidate preparing a saved session may read the window but its change request is rejected.
         /// Returns an awaitable result whose value is the actual host window information,
         /// rather than a prediction of the requested settings. `owner` defaults to the current
         /// scope owner; retirement cancels the result. Host application of a claimed native

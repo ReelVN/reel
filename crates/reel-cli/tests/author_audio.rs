@@ -8,10 +8,11 @@ use reel_engine::{
     Epoch, Session, SessionId,
     aside::{SliceBudget, VmLimits},
 };
+use reel_media::DesktopAudio;
 use reel_player::{
     aside_session::{AsideSessionUi, StoryState},
     assets::{AssetOptions, Assets},
-    media::{MediaOptions, native},
+    media::{MediaOptions, MediaPlayer},
     story_runtime::StoryRuntime,
 };
 use std::time::{Duration, Instant};
@@ -34,13 +35,21 @@ fn author_audio_source_and_asb_complete_on_native_output() {
         reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ];
     for story in stories {
-        let backend = native(
+        let wake = reel_core::wake::WakeSignal::new(|| {});
+        let output = DesktopAudio::new(wake.clone());
+        let backend = MediaPlayer::new(
             Assets::directory(AssetOptions {
                 root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
                 ..Default::default()
             }),
             MediaOptions::default(),
-            reel_core::wake::WakeSignal::new(|| {}),
+            wake,
+            move |_| {
+                output
+                    .session()
+                    .map(|audio| Box::new(audio) as Box<dyn reel_media::AudioOutput>)
+                    .map_err(|error| error.to_string())
+            },
         );
         let driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),

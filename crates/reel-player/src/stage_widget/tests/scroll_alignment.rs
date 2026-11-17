@@ -90,8 +90,10 @@ fn scroll_cross_axis_keeps_explicit_caps_alignment_and_hit_geometry() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis,
                     follow_end: false,
+                    snap_y: None,
                     align: reel_ui::widgets::ScrollAlign::Start,
                     offset: Vec2::ZERO,
                 },
@@ -105,6 +107,11 @@ fn scroll_cross_axis_keeps_explicit_caps_alignment_and_hit_geometry() {
             .unwrap();
         let first = f.record();
         f.accept(&first);
+        assert!(
+            f.ui.take_events()
+                .iter()
+                .any(|event| matches!(event, NodeEvent::Scroll(scroll) if scroll.node == f.root))
+        );
         let ids = f.layouts();
         let geometry = first.geometry().get(ids[&child].0).unwrap();
         assert_eq!(
@@ -134,8 +141,10 @@ fn scroll_cross_axis_keeps_explicit_caps_alignment_and_hit_geometry() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis,
                     follow_end: false,
+                    snap_y: None,
                     align: reel_ui::widgets::ScrollAlign::Start,
                     offset: if vertical {
                         Vec2::new(0., 30.)
@@ -148,6 +157,12 @@ fn scroll_cross_axis_keeps_explicit_caps_alignment_and_hit_geometry() {
             .unwrap();
         let moved = f.record();
         f.accept(&moved);
+        assert!(
+            !f.ui
+                .take_events()
+                .iter()
+                .any(|event| matches!(event, NodeEvent::Scroll(scroll) if scroll.node == f.root))
+        );
         assert_eq!(
             f.layouts(),
             ids,

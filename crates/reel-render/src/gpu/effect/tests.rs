@@ -144,12 +144,55 @@ fn terminal_effect_submission_preserves_visible_sources_and_culls_invisible_outp
 fn coverage_frame(variant: bool) -> reel_ui::frame::RenderFrame {
     coverage_frame_variant(variant, false, false)
 }
+
+#[test]
+#[ignore = "requires an actual graphics adapter for pipeline construction"]
+fn effect_blend_variants_share_the_shader_and_layouts() {
+    use reel_ui::frame::FrameOp;
+    let frame = coverage_frame(false);
+    let (effect, at) = frame
+        .commands()
+        .iter()
+        .find_map(|command| {
+            let FrameOp::PushGroup(group) = &command.op else {
+                return None;
+            };
+            group
+                .effect
+                .as_ref()
+                .map(|effect| (effect, command.origin.at))
+        })
+        .unwrap();
+    let shader = super::effect_plan::shader(frame.drawing(), effect, at).unwrap();
+    let pool = r01_fixture::pool();
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits::default(),
+    ))
+    .unwrap();
+    let quality = crate::gpu::Quality {
+        format: wgpu::TextureFormat::Rgba16Float,
+        samples: 1,
+        degraded: false,
+    };
+    let cache = super::Cache::default();
+    let ordinary = cache
+        .get(
+            &gpu, quality, false, false, false, false, &shader, &pool, at,
+        )
+        .unwrap();
+    let blended = cache
+        .get(&gpu, quality, false, true, false, false, &shader, &pool, at)
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&ordinary.shader, &blended.shader));
+}
 fn coverage_frame_variant(
     variant: bool,
     full: bool,
     materialized: bool,
 ) -> reel_ui::frame::RenderFrame {
-    let pool = r01_fixture::pool();
     let program = EffectProgram::new(
         vec![],
         vec![
@@ -167,8 +210,19 @@ fn coverage_frame_variant(
         EffectNodeId(1),
     )
     .unwrap();
+    coverage_program_frame(program, variant, full, materialized, |_| {})
+}
+
+fn coverage_program_frame(
+    program: std::sync::Arc<EffectProgram>,
+    variant: bool,
+    full: bool,
+    materialized: bool,
+    paint: impl FnOnce(&mut Scene),
+) -> reel_ui::frame::RenderFrame {
+    let pool = r01_fixture::pool();
     let fragment =
-        crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 16384).unwrap();
+        crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 32768).unwrap();
     // The full variant fixture rejects an accidental ordinary-program selection.
     let mut code = if full {
         b"full-target variant required".to_vec()
@@ -247,6 +301,7 @@ fn coverage_frame_variant(
         shape: Geometry::Rect(bounds),
         composite: Default::default(),
     });
+    paint(&mut scene);
     let mut widget = r01_fixture::RecordWidget::new(scene);
     widget.clip = !materialized;
     widget.invert = if materialized { 0.1 } else { 0. };
@@ -940,6 +995,97 @@ fn full_target_effect_keeps_local_domain_and_initializes_unwritten_pixels() {
     for (before, after) in expected.iter().zip(&actual) {
         for (a, b) in before.iter().zip(after) {
             assert!((a - b).abs() <= 0.004);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires graphics adapter for weighted-sampling pixel comparison"]
+fn compact_scalar_sampling_matches_unrolled_pixels() {
+    fn program(compact: bool) -> std::sync::Arc<EffectProgram> {
+        let mut nodes = Vec::new();
+        let mut add = |ty, op| {
+            let id = EffectNodeId(nodes.len() as u32);
+            nodes.push(EffectNode { ty, op });
+            id
+        };
+        let binary = |op, left, right| EffectOp::Binary { op, left, right };
+        let float = |value: f32| EffectOp::Constant(EffectValue::Float(value.to_bits()));
+        let uv = add(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
+        let u = add(EffectType::Float, EffectOp::Extract { value: uv, lane: 0 });
+        let v = add(EffectType::Float, EffectOp::Extract { value: uv, lane: 1 });
+        let offsets = [-0.125, -0.0625, 0., 0.0625, 0.125]
+            .map(|offset| add(EffectType::Float, float(offset)));
+        let zero = offsets[2];
+        let one = add(EffectType::Float, float(1.));
+        let mut sum = zero;
+        for (row, y) in offsets.into_iter().enumerate() {
+            let y = add(EffectType::Float, binary(EffectBinary::Add, v, y));
+            for (column, x) in offsets.into_iter().enumerate() {
+                let x = add(EffectType::Float, binary(EffectBinary::Add, u, x));
+                let uv = add(EffectType::Vec2, EffectOp::Vec2([x, y]));
+                let color = add(EffectType::Vec4, EffectOp::SourceSample { uv });
+                let red = add(
+                    EffectType::Float,
+                    EffectOp::Extract {
+                        value: color,
+                        lane: 0,
+                    },
+                );
+                let weight = add(EffectType::Float, float((1 + row + column) as f32 / 128.));
+                let term = add(
+                    EffectType::Float,
+                    binary(EffectBinary::Multiply, red, weight),
+                );
+                // Swapping the two finite addends leaves the accumulation order
+                // across taps intact while keeping the reference unrolled.
+                let (left, right) = if compact { (sum, term) } else { (term, sum) };
+                sum = add(EffectType::Float, binary(EffectBinary::Add, left, right));
+            }
+        }
+        let output = add(EffectType::Vec4, EffectOp::Vec4([sum, sum, sum, one]));
+        EffectProgram::new(vec![], nodes, output).unwrap()
+    }
+    let mut renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(1),
+            Default::default(),
+        ))
+        .unwrap(),
+    );
+    let mut capture = |compact| {
+        let program = program(compact);
+        let source =
+            crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 32768)
+                .unwrap()
+                .source;
+        assert_eq!(source.contains("array<f32, 25>"), compact);
+        let frame = coverage_program_frame(program, false, false, true, |scene| {
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::BLACK),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(51., 30., 120., 92.)),
+                composite: Default::default(),
+            });
+        });
+        let prepared = renderer.prepare(&frame).unwrap();
+        renderer.readback(prepared).unwrap()
+    };
+    let baseline = capture(false);
+    let compact = capture(true);
+    assert!(baseline.iter().any(|pixel| pixel[0] > 0.25));
+    assert!(
+        baseline
+            .iter()
+            .any(|pixel| pixel[0] < 0.05 && pixel[3] > 0.25)
+    );
+    for (expected, actual) in baseline.iter().zip(&compact) {
+        for (a, b) in expected.iter().zip(actual) {
+            assert!((a - b).abs() <= 0.001, "{expected:?} vs {actual:?}");
         }
     }
 }

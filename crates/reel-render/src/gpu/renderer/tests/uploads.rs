@@ -63,7 +63,8 @@ fn retired_decoded_images_reuse_completed_storage_across_resource_versions() {
 
 #[test]
 fn image_plan_deduplicates_both_transition_inputs_before_admission() {
-    let (frame, _, handles) = image_restore_fixture([4, 4], true);
+    let (frame, _, handles) =
+        image_restore_fixture_with_encoding([4, 4], true, reel_ui::resources::ColorEncoding::Srgb);
     let plan = crate::gpu::image_plan::collect(
         [&frame, &frame].into_iter(),
         4096,
@@ -75,7 +76,7 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
     assert_eq!(plan.images.len(), handles.len());
     for item in &plan.images {
         assert!(handles.contains(&item.source.handle()));
-        assert_eq!(item.resident, 4 * 4 * 8);
+        assert_eq!(item.resident, 4 * 4 * 4);
         assert_eq!(item.staging, 4 * 256);
     }
     assert!(matches!(
@@ -91,6 +92,92 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
 }
 
 #[test]
+#[ignore = "requires actual graphics adapter and pixel readback"]
+fn opaque_srgb_upload_matches_linear_reference_on_a_scaled_dark_gradient() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageBrush, ImageFormat},
+        resources::{ColorEncoding, ResourceRegistry},
+    };
+
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(6, 65536).unwrap();
+    let mut images = Vec::new();
+    let size = [64, 4]; // The opaque rows match WGPU's copy alignment.
+    let bytes = size.into_iter().product::<u32>() as usize * 4;
+    for alpha in [255, 128] {
+        let mut pixels = (0..bytes / 4)
+            .flat_map(|i| {
+                let i = ((i % size[0] as usize + i / size[0] as usize * 8) % 32) as u8;
+                [i * 3, i * 2, i, 255]
+            })
+            .collect::<Vec<_>>();
+        // The translucent texel lies outside the sampled and filtered source window.
+        pixels[bytes - 1] = alpha;
+        let handle = registry
+            .register_image(
+                ResourceVersion {
+                    key: AssetKey(format!("scaled-gradient-{alpha}")),
+                    version: ContentVersion([alpha; 32]),
+                },
+                OwnedBytes::new(pixels, pool.reserve(bytes as u64).unwrap()).unwrap(),
+                size,
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Srgb,
+            )
+            .unwrap();
+        let mut scene = Scene::new();
+        scene.draw(Draw::Fill {
+            transform: Affine::scale(20.),
+            fill_rule: Default::default(),
+            brush: Brush::Image(ImageBrush::new(crate::test_support::image_data(
+                &registry.acquire(handle).unwrap(),
+            ))),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(0., 0., 4., 3.)),
+            composite: Composite::default(),
+        });
+        let frame = frame_from_widget(
+            RecordWidget::new(scene),
+            registry.freeze(&[handle], &pool).unwrap(),
+            &pool,
+        );
+        let mut renderer = renderer(Default::default());
+        let prepared = renderer.prepare(&frame).unwrap();
+        let image = &prepared.images[&handle];
+        let expected = if alpha == 255 {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba16Float
+        };
+        assert_eq!(image.texture.format(), expected);
+        assert_eq!(
+            image.residency.as_ref().unwrap().bytes(),
+            u64::from(size.into_iter().product::<u32>() * expected.block_copy_size(None).unwrap())
+        );
+        images.push(renderer.readback(prepared).unwrap());
+    }
+    let [compact, reference] = images.as_slice() else {
+        unreachable!()
+    };
+    assert!(
+        reference.iter().any(|pixel| pixel[0] > 0.01),
+        "the reference must draw the gradient"
+    );
+    let max_delta = compact
+        .iter()
+        .zip(reference)
+        .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
+        .fold(0., f32::max);
+    eprintln!("aligned opaque image upload max_linear_delta={max_delta}");
+    assert!(max_delta <= 0.002, "linear color error {max_delta}");
+}
+
+#[test]
 #[ignore = "requires actual graphics adapter"]
 fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
     let size = [1920, 1080];
@@ -99,7 +186,7 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
     let mut renderer = renderer(crate::gpu::GpuLimits {
         resource_bytes: 64 << 20,
         // Exercise residency pressure independently of the per-prepare work quota.
-        image_upload_bytes_per_prepare: 2 * resident,
+        image_upload_bytes_per_prepare: 3 * resident,
         ..Default::default()
     });
     assert!(matches!(
@@ -233,7 +320,10 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
                 drop(prepared);
                 break;
             }
-            Err(error) => assert!(error.is_retryable(), "{error:?}"),
+            Err(error) => assert!(
+                matches!(error, GpuError::Preparing | GpuError::Busy),
+                "work slicing must not reclaim caches: {error:?}"
+            ),
         }
         assert!(renderer.has_pending());
         assert!(renderer.has_pending_image_uploads());
@@ -248,6 +338,15 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
     }
     assert_eq!(attempts, 97); // 96 slices followed by the admitted ready frame.
     assert_eq!(renderer.gpu.upload_creations.snapshot(), [3, 1, 96]);
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .geometry_retries
+            .load(Ordering::Relaxed),
+        0,
+        "normal upload progress must not rebuild plans or clear rendering caches"
+    );
     for handle in handles {
         assert!(registry.retire(handle));
     }
@@ -260,7 +359,7 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
     let (candidate, _, _) = image_restore_fixture([64, 64], true);
     assert!(matches!(
         renderer.prepare(&candidate),
-        Err(GpuError::Pressure { .. })
+        Err(GpuError::Preparing)
     ));
     assert!(renderer.usage().resources > 0);
     // Replacing the candidate drops its Partial; submitted staging lives only to completion.
@@ -345,7 +444,7 @@ fn submitted_cached_images_release_and_restore_before_reupload() {
         loop {
             match renderer.prepare(frame) {
                 Ok(prepared) => return prepared,
-                Err(GpuError::Pressure { .. }) => {
+                Err(GpuError::Preparing | GpuError::Pressure { .. }) => {
                     renderer
                         .gpu
                         .device

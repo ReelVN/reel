@@ -3,7 +3,8 @@ use crate::{AudioFormat, ChannelMap, SampleFormat};
 mod sealed {
     pub trait Sealed {}
 }
-/// Device conversion types; integers clamp, nonfinite samples always become zero.
+/// Device conversion types for finite PCM. The output converter replaces
+/// nonfinite source samples with silence before mapping device channels.
 pub trait DeviceSample: sealed::Sealed + Copy {
     const FORMAT: SampleFormat;
     fn from_pcm(value: f32) -> Self;

@@ -91,6 +91,7 @@ impl Fixture {
         let compiled = lowering::compile(
             &module,
             &lowering::Linkage::default(),
+            &[],
             lowering::Options::default(),
         )
         .unwrap();
@@ -173,6 +174,8 @@ impl Fixture {
             });
         }
         support.host_types.push(bc::HostTypeSupport {
+            await_adapter: None,
+            call: None,
             name: "benchmark::Host".into(),
             version: 1,
             bases: Vec::new(),

@@ -2,6 +2,85 @@ use super::*;
 use reel_core::texture::{TextureFormat, TextureHeader};
 
 #[test]
+fn custom_desktop_targets_check_copied_mp4() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("resources")).unwrap();
+    fs::write(root.join("resources/intro.mp4"), b"invalid mp4").unwrap();
+
+    let desktop = ResourceTarget::parse("showcase-interactions").unwrap();
+    let error = prepare_project(root, &desktop).err().unwrap().to_string();
+    assert!(error.contains("intro.mp4"), "{error}");
+    assert!(
+        error.contains("[[targets.showcase-interactions]]"),
+        "{error}"
+    );
+
+    let vita = ResourceTarget::parse("vita").unwrap();
+    let prepared = prepare_project(root, &vita).unwrap();
+    assert_eq!(
+        fs::read(&prepared.files["intro.mp4"]).unwrap(),
+        b"invalid mp4"
+    );
+}
+
+#[test]
+fn webp_packaging_and_texture_fallback_keep_logical_paths() {
+    let (directory, tool, vita) = fixture();
+    let root = directory.path();
+    let desktop = ResourceTarget::parse("desktop").unwrap();
+    let source = root.join("resources/images");
+    let artwork = image::RgbaImage::from_fn(16, 16, |x, y| {
+        image::Rgba([(x * 17) as u8, (y * 17) as u8, 200, ((x ^ y) * 17) as u8])
+    });
+    artwork.save(source.join("artwork.png")).unwrap();
+    artwork.save(source.join("artwork.webp")).unwrap();
+    fs::write(
+        root.join("resources.toml"),
+        r#"
+[[targets.desktop]]
+match = "images/artwork.png"
+convert = "webp"
+
+[[targets.vita]]
+match = "images/{artwork.webp,ui.png}"
+convert = "texture"
+fallback = "source"
+"#,
+    )
+    .unwrap();
+
+    let release = prepare(root, &tool, &desktop, MEMORY_BYTES).unwrap();
+    let webp = &release.files["images/artwork.png"];
+    assert_eq!(webp.extension().unwrap(), "webp");
+    let (decoder, _) = reel_player::artwork::open(webp, MEMORY_BYTES).unwrap();
+    let decoded = image::DynamicImage::from_decoder(decoder)
+        .unwrap()
+        .into_rgba8();
+    assert_eq!(decoded, artwork);
+
+    let release = prepare(root, &tool, &vita, MEMORY_BYTES).unwrap();
+    let fallback = &release.files["images/artwork.webp"];
+    assert_eq!(
+        fs::read(fallback).unwrap(),
+        fs::read(source.join("artwork.webp")).unwrap()
+    );
+    let texture = fs::read(&release.files["images/ui.png"]).unwrap();
+    assert_eq!(
+        TextureHeader::parse(&texture)
+            .unwrap()
+            .0
+            .descriptor()
+            .format,
+        TextureFormat::Bc1Rgb
+    );
+    assert_eq!(
+        prepare(root, &tool, &vita, MEMORY_BYTES).unwrap().files,
+        release.files
+    );
+}
+
+#[test]
 fn ordered_dither_is_validated_and_part_of_the_texture_cache_recipe() {
     let (directory, tool, target) = fixture();
     let root = directory.path();
@@ -342,6 +421,44 @@ fn unconfigured_projects_pass_selected_files_directly_without_cache_writes() {
     assert_eq!(prepared.report.unchanged, 4);
     assert!(prepared.index.is_none());
     assert!(!directory.path().join("build").exists());
+}
+
+#[test]
+fn desktop_overlays_and_rules_apply_below_exact_os_overrides() {
+    let (directory, tool, vita) = fixture();
+    let root = directory.path();
+    let resources = root.join("resources");
+    for variant in ["@desktop", "@windows"] {
+        fs::create_dir_all(resources.join(variant)).unwrap();
+    }
+    let common = fs::read(resources.join("images/room.png")).unwrap();
+    fs::write(resources.join("@desktop/shared.png"), &common).unwrap();
+    fs::write(resources.join("@desktop/exact.png"), &common).unwrap();
+    fs::write(resources.join("@windows/exact.png"), &common).unwrap();
+    fs::write(
+        root.join("resources.toml"),
+        r#"
+        [[targets.desktop]]
+        match = "*.png"
+        convert = "webp"
+        [[targets.windows]]
+        match = "exact.png"
+        convert = "copy"
+    "#,
+    )
+    .unwrap();
+    let windows = ResourceTarget::parse("windows").unwrap();
+    let windows_files = windows.collect(&resources).unwrap();
+    for name in ["shared.png", "exact.png"] {
+        assert_eq!(
+            windows.resolve(&resources, name).unwrap(),
+            windows_files[name]
+        );
+    }
+    let prepared = prepare(root, &tool, &windows, MEMORY_BYTES).unwrap();
+    assert!(prepared.files["exact.png"].ends_with("@windows/exact.png"));
+    assert_eq!(prepared.files["shared.png"].extension().unwrap(), "webp");
+    assert!(!vita.collect(&resources).unwrap().contains_key("shared.png"));
 }
 
 #[test]

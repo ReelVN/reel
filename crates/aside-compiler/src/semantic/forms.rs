@@ -47,6 +47,7 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
         | H::Children
         | H::ImportGroup
         | H::TupleType
+        | H::RecordType
         | H::UnionType
         | H::TuplePattern
         | H::ArrayPattern
@@ -117,9 +118,12 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
         },
         H::NamedType => Form::TypeName,
         H::FunctionType => Form::FunctionType { result: body()? },
-        H::GroupType | H::Group | H::GroupPattern | H::Interpolation => {
-            Form::Single { child: body()? }
-        }
+        H::GroupType
+        | H::StringType
+        | H::RecordFieldType
+        | H::Group
+        | H::GroupPattern
+        | H::Interpolation => Form::Single { child: body()? },
         H::ExpressionStatement => Form::Statement {
             expression: body()?,
             terminated: has(K::Semi),
@@ -141,14 +145,19 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
             value: body()?,
             negative: has(K::Minus),
         },
-        H::ObjectField => Form::Field {
-            key: if let Some(name) = name() {
+        H::ObjectField => {
+            let value = body()?;
+            let key = if let Some(name) = name() {
+                FieldKey::Name(name)
+            } else if tokens.is_empty()
+                && let Form::Name { name } = hir.node(value).form
+            {
                 FieldKey::Name(name)
             } else {
                 FieldKey::Expression(*children.first()?)
-            },
-            value: body()?,
-        },
+            };
+            Form::Field { key, value }
+        }
         H::Spread => Form::Spread { value: body()? },
         H::Prefix => Form::Unary {
             operator: tokens.first().copied()?,
@@ -311,6 +320,8 @@ fn is_type(k: HirKind) -> bool {
     matches!(
         k,
         HirKind::NamedType
+            | HirKind::StringType
+            | HirKind::RecordType
             | HirKind::GroupType
             | HirKind::TupleType
             | HirKind::UnionType

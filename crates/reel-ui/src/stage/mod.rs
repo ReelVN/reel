@@ -101,6 +101,8 @@ pub struct PopupView {
     pub placement: crate::widgets::PopupPlacement,
     pub offset: f64,
     pub listening: bool,
+    /// Tooltip activation from the current anchor, or none for a regular popup.
+    pub hint: Option<bool>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NodeScroll {
@@ -142,7 +144,8 @@ pub struct VirtualRowMeasurement {
     pub node: NodeId,
     pub height: f64,
 }
-/// Latest layout/input demand. Measurements and offsets use list content coordinates.
+/// Latest layout/input demand. Visible ranges and measurements use list content
+/// coordinates; requested/offset/viewport belong to the nearest scroll owner.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeVirtualList {
     pub node: NodeId,
@@ -151,6 +154,10 @@ pub struct NodeVirtualList {
     pub requested: Vec2,
     pub offset: Vec2,
     pub viewport: Size,
+    /// Change in list-local vertical position per positive owner scroll pixel.
+    pub scroll_scale: f64,
+    /// Maximum legal vertical offset of the scroll owner after layout.
+    pub scroll_limit: f64,
     pub width: f64,
     pub visible_start: f64,
     pub visible_end: f64,
@@ -299,6 +306,12 @@ pub enum NodeKind {
         value: f64,
         range: crate::widgets::SliderRange,
         listening: bool,
+        art: SliderArt,
+    },
+    /// A determinate read-only progress display with optional overlay children.
+    ProgressBar {
+        value: f64,
+        max: f64,
     },
     Toggle {
         label: Option<String>,
@@ -312,6 +325,8 @@ pub enum NodeKind {
         group: Option<crate::core::SelectionGroupId>,
         /// Changes only when the option's identity changes, not for hover/value updates.
         revision: u64,
+        /// Tab controls reuse radio value proposals with an independent navigation group.
+        tabs: Option<crate::core::TabNavigation>,
     },
     Image {
         source: ImageSource,
@@ -347,10 +362,14 @@ pub enum NodeKind {
     },
     Scroll {
         axis: crate::widgets::ScrollAxis,
+        overscroll: crate::widgets::ScrollOverscroll,
         follow_end: bool,
         align: crate::widgets::ScrollAlign,
         offset: Vec2,
+        snap_y: Option<f64>,
     },
+    /// Native scrollbar over borrowed scroll metrics; children are visual wrappers.
+    ScrollBar(crate::widgets::ScrollBarView),
     Camera(CameraView),
     Popup(PopupView),
     Row(FlowOptions),
@@ -360,6 +379,14 @@ pub enum NodeKind {
     Stack,
     /// Window-space pointer appearance, owned as an ordinary child subtree.
     Cursor,
+}
+
+/// Scene children that replace the slider's built-in visuals.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SliderArt {
+    pub track: Option<NodeId>,
+    pub thumb: Option<NodeId>,
+    pub thumb_width: f64,
 }
 
 /// Axes filled from the parent's content box after its size has been measured.
@@ -382,8 +409,19 @@ impl Stretch {
     }
 }
 
+/// Accessibility identity supplied by a native composition.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NodeSemantics {
+    #[default]
+    Generic,
+    TabList,
+    Tab,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeProps {
+    /// Semantic role supplied by the owning native composition.
+    pub semantics: NodeSemantics,
     /// Positive weights share the remaining row/column space. Zero keeps intrinsic sizing.
     pub flex: f64,
     pub x: f64,
@@ -401,6 +439,8 @@ pub struct NodeProps {
     /// Blend the completed subtree with its backdrop.
     pub blend: crate::frame::BlendMode,
     pub visible: bool,
+    /// Prepare mounted image/effect sources in spare capacity, including hidden descendants.
+    pub preload: bool,
     /// Include this subtree in stage captures; ordinary presentation is unchanged.
     pub capture_included: bool,
     pub enabled: bool,
@@ -477,6 +517,7 @@ impl Default for NodeProps {
         static FONT: std::sync::LazyLock<Arc<str>> =
             std::sync::LazyLock::new(|| Arc::from("system-ui"));
         Self {
+            semantics: NodeSemantics::Generic,
             flex: 0.,
             x: 0.,
             y: 0.,
@@ -491,6 +532,7 @@ impl Default for NodeProps {
             invert: 0.,
             blend: Default::default(),
             visible: true,
+            preload: false,
             capture_included: true,
             enabled: true,
             modal: false,
@@ -887,6 +929,8 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ProgressBar { .. }
+                | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -935,6 +979,8 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ProgressBar { .. }
+                | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -1026,6 +1072,8 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ProgressBar { .. }
+                | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }

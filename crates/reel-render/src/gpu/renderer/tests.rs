@@ -15,6 +15,7 @@ use reel_ui::{
 use std::time::Instant;
 
 mod atlas;
+mod captures;
 mod effects;
 mod nine_slice;
 mod pipelines;
@@ -92,8 +93,12 @@ fn frame_from_widget(
     while !build.step(step_budget()).unwrap().complete {}
     build.finish().unwrap()
 }
-fn counts(renderer: &Renderer, uploads: usize) {
-    assert_eq!(renderer.gpu.upload_creations.snapshot(), [uploads; 3]);
+fn counts(renderer: &Renderer, textures: usize) {
+    let white = usize::from(renderer.white.lock().unwrap().is_some());
+    assert_eq!(
+        renderer.gpu.upload_creations.snapshot(),
+        [textures, textures - white, textures - white]
+    );
 }
 
 fn moving_triangle_fixture() -> (
@@ -217,9 +222,10 @@ fn empty(renderer: &Renderer) {
     renderer.targets.clear();
     renderer.geometry.clear();
     renderer.images.clear_idle();
-    assert_eq!(usage(renderer), [0; 3]);
+    let white = renderer.white.lock().unwrap().is_some();
+    assert_eq!(usage(renderer), [0, u64::from(white) * 8, 0]);
     assert_eq!(renderer.admission.usage().tickets, 0);
-    assert_eq!(renderer.budgets.resources.usage().tickets, 0);
+    assert_eq!(renderer.budgets.resources.usage().tickets, u32::from(white));
 }
 
 #[test]
@@ -239,25 +245,20 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
     counts(&renderer, 0);
     empty(&renderer);
     for (solids, clips) in [(100, 0), (0, 100), (50, 50)] {
-        let before = renderer.gpu.upload_creations.snapshot()[0];
         let prepared = renderer
             .prepare(&frame(workload(solids, clips, Color::WHITE), &pool))
             .unwrap();
-        counts(&renderer, before + 1);
-        assert_eq!(renderer.usage().resources, 264);
-        assert_eq!(prepared.budget_scope.resources.usage().tickets, 1);
+        counts(&renderer, 1);
+        assert_eq!(renderer.usage().resources, 8);
+        assert_eq!(prepared.budget_scope.resources.usage().bytes, 8);
         drop(prepared);
         empty(&renderer);
-        eprintln!(
-            "solids={solids} clips={clips} actual=[texture,staging,copy]=[1,1,1] resource_bytes=264"
-        );
     }
     let red = frame(workload(50, 50, Color::from_rgb8(255, 0, 0)), &pool);
     let blue = frame(workload(50, 50, Color::from_rgb8(0, 0, 255)), &pool);
-    let before = renderer.gpu.upload_creations.snapshot()[0];
     let prepared = renderer.crossfade(&red, &blue, 0.25).unwrap();
-    counts(&renderer, before + 1);
-    assert_eq!(renderer.usage().resources, 264);
+    counts(&renderer, 1);
+    assert_eq!(renderer.usage().resources, 8);
     let pixels = renderer.readback(prepared).unwrap();
     assert!(pixels.iter().all(|p| {
         p.iter()
@@ -265,7 +266,6 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
             .all(|(a, b)| (*a - b).abs() < 0.006)
     }));
     empty(&renderer);
-    eprintln!("crossfade=200 uses actual=[1,1,1] resource_bytes=264; analytical pixels passed");
 
     use reel_ui::imaging::{
         MaskMode,
@@ -279,10 +279,9 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
     });
     fill(&mut masked, Color::WHITE);
     masked.pop_group();
-    let before = renderer.gpu.upload_creations.snapshot()[0];
     let prepared = renderer.prepare(&frame(masked, &pool)).unwrap();
-    counts(&renderer, before + 1);
-    assert_eq!(renderer.usage().resources, 264);
+    counts(&renderer, 1);
+    assert_eq!(renderer.usage().resources, 8);
     let pixels = renderer.readback(prepared).unwrap();
     assert!(
         pixels
@@ -290,6 +289,127 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
             .all(|p| p.iter().all(|c| (*c - 1.).abs() < 0.006))
     );
     empty(&renderer);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn white_texture_reuses_initialized_source_after_cancellation() {
+    let pool = pool();
+    let mut renderer = renderer(crate::gpu::GpuLimits {
+        resource_bytes: 8,
+        ..Default::default()
+    });
+    let solid = frame(workload(1, 0, Color::WHITE), &pool);
+    let first = renderer.prepare(&solid).unwrap();
+    assert_eq!(first.budget_scope.resources.usage().bytes, 8);
+    drop(first);
+    counts(&renderer, 1);
+    assert_eq!(renderer.usage().resources, 8);
+    assert_eq!(renderer.admission.usage().tickets, 0);
+
+    // The gradient shader reads the initialized texel after the first
+    // preparation is abandoned before its frame commands reach the queue.
+    let mut gradient = Scene::new();
+    gradient.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Gradient(
+            reel_ui::peniko::Gradient::new_linear((0., 0.), (400., 0.))
+                .with_stops([(0., Color::WHITE), (1., Color::WHITE)]),
+        ),
+        brush_transform: None,
+        shape: Geometry::Rect(Rect::new(0., 0., 400., 300.)),
+        composite: Composite::default(),
+    });
+    let prepared = renderer.prepare(&frame(gradient, &pool)).unwrap();
+    assert_eq!(prepared.budget_scope.resources.usage().bytes, 8);
+    assert!(
+        renderer
+            .readback(prepared)
+            .unwrap()
+            .iter()
+            .flatten()
+            .all(|component| (*component - 1.).abs() < 0.006)
+    );
+    counts(&renderer, 1);
+    assert_eq!(renderer.usage().resources, 8);
+    assert_eq!(renderer.budgets.resources.usage().tickets, 1);
+    assert_eq!(renderer.admission.usage().tickets, 0);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn white_texture_releases_residency_under_pressure_after_gpu_completion() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageBrush, ImageFormat},
+        resources::{ColorEncoding, ResourceRegistry},
+    };
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(1, 65264).unwrap();
+    let handle = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("translucent.png".into()),
+                version: ContentVersion([1; 32]),
+            },
+            OwnedBytes::new(vec![255, 0, 0, 128], pool.reserve(4).unwrap()).unwrap(),
+            [1, 1],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let image = crate::test_support::image_data(&registry.acquire(handle).unwrap());
+    let mut picture = Scene::new();
+    picture.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Image(ImageBrush::new(image)),
+        brush_transform: None,
+        shape: Geometry::Rect(Rect::new(0., 0., 400., 300.)),
+        composite: Composite::default(),
+    });
+    let picture = frame_with_snapshot(picture, registry.freeze(&[handle], &pool).unwrap(), &pool);
+    let solid = frame(workload(1, 0, Color::WHITE), &pool);
+    let mut renderer = renderer(crate::gpu::GpuLimits {
+        resource_bytes: 256 + 8,
+        ..Default::default()
+    });
+    let held = renderer.prepare(&solid).unwrap();
+    assert!(matches!(
+        renderer.prepare(&picture),
+        Err(GpuError::Pressure { .. })
+    ));
+    let submitted = renderer.submit(held).unwrap();
+    assert!(matches!(
+        renderer.prepare(&picture),
+        Err(GpuError::Pressure { .. })
+    ));
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert_eq!(renderer.poll().unwrap(), [submitted]);
+
+    let prepared = renderer.prepare(&picture).unwrap();
+    assert!(renderer.white.lock().unwrap().is_none());
+    assert_eq!(renderer.usage().resources, 264);
+    assert_eq!(
+        prepared.images[&handle].residency.as_ref().unwrap().bytes(),
+        8
+    );
+    let pixels = renderer.readback(prepared).unwrap();
+    assert!(pixels.iter().all(|pixel| {
+        pixel
+            .iter()
+            .zip([128. / 255., 0., 0., 128. / 255.])
+            .all(|(actual, expected)| (*actual - expected).abs() < 0.002)
+    }));
 }
 
 #[test]
@@ -352,8 +472,8 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
     renderer.poll().unwrap();
     assert_eq!(renderer.usage().resources, 8);
     let p = renderer.prepare(&mixed).unwrap();
-    counts(&renderer, 2); // The submitted image survives cancellation; white remains private.
-    assert_eq!(renderer.usage().resources, 272);
+    counts(&renderer, 2);
+    assert_eq!(renderer.usage().resources, 16);
     let pixels = renderer.readback(p).unwrap();
     assert!(
         pixels
@@ -361,10 +481,10 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
             .all(|p| p.iter().all(|c| (*c - 1.).abs() < 0.006))
     );
     renderer.targets.clear();
-    assert_eq!(usage(&renderer), [0, 8, 0]);
+    assert_eq!(usage(&renderer), [0, 16, 0]);
     let cached = renderer.prepare(&image_only).unwrap();
     counts(&renderer, 2);
-    assert_eq!(usage(&renderer)[1], 8);
+    assert_eq!(usage(&renderer)[1], 16);
     drop(cached);
     renderer.retire(std::slice::from_ref(lease.version()));
     empty(&renderer);
@@ -376,6 +496,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
     let prepared = limited.prepare(&image_only).unwrap();
     limited.readback(prepared).unwrap();
     let held = limited.prepare(&image_only).unwrap();
+    let other_residency = limited.budgets.resources.reserve(256).unwrap();
     let solid = frame(workload(1, 0, Color::WHITE), &pool);
     assert!(matches!(
         limited.prepare(&solid),
@@ -386,6 +507,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
         .prepare(&solid)
         .expect("unused image residency is evictable for non-image uploads too");
     limited.readback(prepared).unwrap();
+    drop(other_residency);
     empty(&limited);
 }
 
@@ -472,13 +594,29 @@ fn image_restore_fixture(
     reel_ui::resources::ResourceRegistry,
     Vec<reel_ui::resources::ResourceHandle>,
 ) {
+    image_restore_fixture_with_encoding(
+        size,
+        capture_included,
+        reel_ui::resources::ColorEncoding::Linear,
+    )
+}
+
+fn image_restore_fixture_with_encoding(
+    size: [u32; 2],
+    capture_included: bool,
+    encoding: reel_ui::resources::ColorEncoding,
+) -> (
+    RenderFrame,
+    reel_ui::resources::ResourceRegistry,
+    Vec<reel_ui::resources::ResourceHandle>,
+) {
     use reel_core::{
         budget::OwnedBytes,
         identity::{AssetKey, ContentVersion, ResourceVersion},
     };
     use reel_ui::{
         peniko::{ImageAlphaType, ImageBrush, ImageFormat},
-        resources::{ColorEncoding, ResourceRegistry},
+        resources::ResourceRegistry,
     };
     let pool = pool();
     let mut registry = ResourceRegistry::new(3, 65264).unwrap();
@@ -500,7 +638,7 @@ fn image_restore_fixture(
                 size,
                 ImageFormat::Rgba8,
                 ImageAlphaType::Alpha,
-                ColorEncoding::Srgb,
+                encoding,
             )
             .unwrap();
         let lease = registry.acquire(handle).unwrap();
@@ -591,30 +729,19 @@ fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
-fn white_texture_refusal_pressure_and_cancel_do_not_publish_across_transactions() {
+fn white_texture_survives_cancelled_preparations_and_preserves_budget_limits() {
     let pool = pool();
     let good = frame(workload(100, 0, Color::WHITE), &pool);
     let renderer = renderer(crate::gpu::GpuLimits {
-        resource_bytes: 264,
+        resource_bytes: 8,
         ..Default::default()
     });
     let first = renderer.prepare(&good).unwrap();
-    let held = usage(&renderer);
-    assert!(matches!(
-        renderer.prepare(&good),
-        Err(GpuError::Pressure {
-            domain: "resources",
-            requested: 264,
-            available: 0
-        })
-    ));
-    counts(&renderer, 1);
-    assert_eq!(usage(&renderer), held);
-    assert_eq!(renderer.admission.usage().tickets, 1);
-    drop(first); // Never submitted: its upload cannot initialize the next transaction.
-    empty(&renderer);
     let next = renderer.prepare(&good).unwrap();
-    counts(&renderer, 2);
+    counts(&renderer, 1);
+    assert_eq!(renderer.usage().resources, 8);
+    assert_eq!(renderer.admission.usage().tickets, 2);
+    drop(first);
     drop(next);
     empty(&renderer);
     let mut bad = workload(1, 0, Color::WHITE);
@@ -634,27 +761,27 @@ fn white_texture_refusal_pressure_and_cancel_do_not_publish_across_transactions(
         renderer.prepare(&bad),
         Err(GpuError::Unsupported { .. })
     ));
-    counts(&renderer, 3); // Fails after creating white; all partial tickets must release.
+    counts(&renderer, 1);
     empty(&renderer);
     drop(renderer.prepare(&good).unwrap());
-    counts(&renderer, 4);
+    counts(&renderer, 1);
     empty(&renderer);
     assert!(matches!(
         renderer.crossfade(&good, &bad, 0.5),
         Err(GpuError::Unsupported { .. })
     ));
-    counts(&renderer, 5); // Second input fails after the first input initialized the slot.
+    counts(&renderer, 1);
     empty(&renderer);
     let small = self::renderer(crate::gpu::GpuLimits {
-        resource_bytes: 263,
+        resource_bytes: 7,
         ..Default::default()
     });
     assert!(matches!(
         small.prepare(&good),
         Err(GpuError::Budget {
             domain: "resources",
-            requested: 264,
-            available: 263
+            requested: 8,
+            available: 7
         })
     ));
     counts(&small, 0);
@@ -724,6 +851,75 @@ fn white_texture_whole_frame_quality_and_budget_failures_release() {
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
+fn alternating_frame_quality_reuses_targets_and_preserves_pixels() {
+    let pool = pool();
+    let plain = frame(workload(1, 0, Color::WHITE), &pool);
+    let mut nested = workload(1, 0, Color::WHITE);
+    nested.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    fill(&mut nested, Color::WHITE);
+    nested.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    fill(&mut nested, Color::WHITE);
+    fill(&mut nested, Color::WHITE);
+    nested.pop_group();
+    fill(&mut nested, Color::WHITE);
+    nested.pop_group();
+    let nested = frame(nested, &pool);
+    let mut renderer = renderer(crate::gpu::GpuLimits {
+        target_bytes: 2 * 64 * 48 * 40,
+        ..Default::default()
+    });
+    renderer.prepare_viewport([64, 48]).unwrap();
+    let initial = renderer.usage().targets;
+    assert!(
+        initial > 64 * 48 * 40,
+        "viewport prepares another admitted tier"
+    );
+    renderer.prepare_viewport([64, 48]).unwrap();
+    assert_eq!(
+        renderer.usage().targets,
+        initial,
+        "repeated configuration reuses storage"
+    );
+    let mut owners: [Vec<std::sync::Weak<super::super::target_cache::Allocation>>; 2] =
+        Default::default();
+    for iteration in 0..12 {
+        let index = iteration % 2;
+        let prepared = renderer
+            .prepare(if index == 0 { &plain } else { &nested })
+            .unwrap();
+        assert_eq!(prepared.quality().samples, if index == 0 { 4 } else { 1 });
+        if owners[index].is_empty() {
+            owners[index] = prepared.targets.iter().map(Arc::downgrade).collect();
+        } else {
+            assert_eq!(owners[index].len(), prepared.targets.len());
+            for (old, new) in owners[index].iter().zip(&prepared.targets) {
+                assert!(
+                    old.upgrade().is_some_and(|old| Arc::ptr_eq(&old, new)),
+                    "returning quality recreated its target"
+                );
+            }
+        }
+        let pixels = renderer.readback(prepared).unwrap();
+        assert!(pixels.iter().flatten().all(|c| (*c - 1.).abs() < 0.002));
+        assert!(renderer.budgets.targets.usage().bytes <= renderer.gpu.limits.target_bytes);
+    }
+    renderer.gpu.check().unwrap();
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
 fn white_texture_concurrent_contexts_and_delayed_completion_keep_tickets() {
     let pool = pool();
     let frame = frame(workload(50, 25, Color::WHITE), &pool);
@@ -746,9 +942,9 @@ fn white_texture_concurrent_contexts_and_delayed_completion_keep_tickets() {
             .map(|t| t.join().unwrap())
             .collect::<Vec<_>>()
     });
-    counts(&renderer, 8);
-    assert_eq!(renderer.usage().resources, 8 * 264);
-    assert_eq!(renderer.budgets.resources.usage().tickets, 8);
+    counts(&renderer, 1);
+    assert_eq!(renderer.usage().resources, 8);
+    assert_eq!(renderer.budgets.resources.usage().tickets, 1);
     assert!(matches!(renderer.prepare(&frame), Err(GpuError::Busy)));
     let mut ids = Vec::new();
     for p in prepared {
@@ -790,7 +986,7 @@ fn white_texture_device_loss_foreign_submit_and_renderer_drop_release() {
     let _ = old.gpu.device.poll(wgpu::PollType::Poll);
     assert!(matches!(old.submit(p), Err(GpuError::DeviceLost(_))));
     assert!(matches!(old.prepare(&frame), Err(GpuError::DeviceLost(_))));
-    counts(&old, 2);
+    counts(&old, 1);
     empty(&old);
     let p = other.prepare(&frame).unwrap();
     counts(&other, 1);
@@ -818,10 +1014,6 @@ fn white_texture_device_loss_foreign_submit_and_renderer_drop_release() {
 fn white_texture_cpu_measurement() {
     let pool = pool();
     let mut renderer = renderer(Default::default());
-    // Only the measurement test accepts a baseline expectation, allowing the
-    // identical Rust fixture/counters to run on the unchanged baseline draw path.
-    let expected: usize =
-        std::env::var("REEL_R04_EXPECT_UPLOADS").map_or(1, |n| n.parse().unwrap());
     for (solids, clips) in [(128, 0), (64, 64)] {
         let frame = frame(workload(solids, clips, Color::WHITE), &pool);
         let warm = renderer.prepare(&frame).unwrap();
@@ -833,11 +1025,8 @@ fn white_texture_cpu_measurement() {
             let prepared = renderer.prepare(&frame).unwrap();
             samples.push(start.elapsed());
             let after = renderer.gpu.upload_creations.snapshot();
-            assert_eq!(
-                std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
-                [expected; 3]
-            );
-            assert_eq!(renderer.usage().resources, expected as u64 * 264);
+            assert_eq!(after, before);
+            assert_eq!(renderer.usage().resources, 8);
             drop(prepared);
             empty(&renderer);
         }
@@ -852,10 +1041,10 @@ fn white_texture_cpu_measurement() {
         empty(&renderer);
         samples.sort_unstable();
         eprintln!(
-            "adapter={:?}; load={solids} solids+{clips} clips size=64x48 samples=30 quality={:?} uploads={expected} resource_bytes={} p50_us={:.3} p95_us={:.3}",
+            "adapter={:?}; load={solids} solids+{clips} clips size=64x48 samples=30 quality={:?} resource_bytes={} p50_us={:.3} p95_us={:.3}",
             renderer.gpu.adapter.get_info(),
             renderer.gpu.quality([64, 48]).unwrap(),
-            expected * 264,
+            renderer.usage().resources,
             samples[14].as_secs_f64() * 1e6,
             samples[28].as_secs_f64() * 1e6
         );
@@ -1021,7 +1210,7 @@ fn retained_transition_reuploads_retired_images_and_releases_them_after_completi
     drop(frame);
     renderer.poll().unwrap();
     renderer.images.clear_idle();
-    assert_eq!(renderer.usage().resources, 0);
+    assert_eq!(renderer.usage().resources, 8);
     // Retained preparation keeps reusable targets and queue capacity until teardown.
     let budgets = [
         renderer.budgets.targets.clone(),

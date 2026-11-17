@@ -15,8 +15,6 @@ impl Stream<'_> {
                     && group.mask_effect.is_none()
                     && group.delayed.is_none()
                     && !capture
-                    && self.drawing.transitions().is_empty()
-                    && self.drawing.capture_exclusions().is_empty()
             })
             .zip(self.offset)
             .map(

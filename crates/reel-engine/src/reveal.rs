@@ -12,6 +12,13 @@ pub(crate) struct RevealTiming {
 }
 
 impl DialogueLine {
+    pub(crate) fn complete_display(&mut self) {
+        self.revealed_count = self.grapheme_boundaries.len() - 1;
+        self.timing.cue = self.content.styled().cues().len();
+        self.timing.pause = 0.;
+        self.timing.fraction = 0.;
+    }
+
     pub fn playback_complete(&self) -> bool {
         self.revealed_count == self.grapheme_boundaries.len() - 1
             && self.timing.cue == self.content.styled().cues().len()

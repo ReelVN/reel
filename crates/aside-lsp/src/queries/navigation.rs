@@ -359,31 +359,8 @@ impl Workspace {
         let Some(signature) = signature_for(&snapshot, module, source, &self.host, callee) else {
             return Ok(None);
         };
-        let mut active = 0;
-        if let Some(args) = args {
-            // Only separators owned by this argument list advance the parameter.
-            // Commas inside nested calls, tuples and arrays belong to their nodes.
-            active = module
-                .hir()
-                .tokens(args)
-                .filter(|token| {
-                    token.kind == K::Comma && (u32::from(token.span.start()) as usize) < offset
-                })
-                .count();
-            for arg in module.hir().children(args) {
-                if contains(module.hir().node(arg).span, offset)
-                    && let Form::Argument {
-                        name: Some(name), ..
-                    } = module.hir().node(arg).form
-                    && let Some(index) = signature.parameters.iter().position(|(parameter, _)| {
-                        Some(parameter.as_str()) == name.name.map(|name| module.hir().name(name))
-                    })
-                {
-                    active = index;
-                }
-            }
-        }
-        let active = active.min(signature.parameters.len().saturating_sub(1)) as u32;
+        let active = active_parameter(module, args, offset, &signature)
+            .min(signature.parameters.len().saturating_sub(1)) as u32;
         let mut parameter_offset = 4 + signature.name.encode_utf16().count() as u32;
         let parameters = signature
             .parameters

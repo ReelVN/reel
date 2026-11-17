@@ -83,6 +83,18 @@ fn with_source_asb_preserves_identity_presence_and_final_binding_graph() {
     let code = r#"fn opening() {
         let state=model({position:1,other:7});
         let node=text("first",x:bind(state.position),width:80);
+        if node.preload {throw "preload default";}
+        node.with(preload:true);
+        if !node.preload {throw "preload writeback";}
+        let hidden=stack(visible:false,preload:true);
+        if hidden.visible || !hidden.preload {throw "preload constructor";}
+        let viewport=scroll();
+        if viewport.overscroll!="clamp" {throw "overscroll default";}
+        viewport.with(overscroll:"bounce",scroll_y:20);
+        if viewport.overscroll!="bounce" || viewport.scroll_y!=20 {throw "overscroll writeback";}
+        let mut invalid_overscroll=false;
+        try {viewport.overscroll="invalid";} catch error {invalid_overscroll=true;}
+        if !invalid_overscroll || viewport.overscroll!="bounce" {throw "overscroll validation";}
         let result=node.with(value:"second",y:4);
         if result!=node || node.x!=1 || node.y!=4 || node.width!=80 || node.value!="second" {throw "identity/presence";}
         node.with(width:null).with(x:3);
@@ -110,6 +122,32 @@ fn with_source_asb_preserves_identity_presence_and_final_binding_graph() {
         let (work, calls) =
             run_configuration(&mut session, &mut vm, NativeBudget::RetryMinimum(4096));
         eprintln!("with semantics: asb={encoded} calls={calls} work={work}");
+    }
+}
+
+#[test]
+fn scroll_boundary_policy_and_logical_position_survive_snapshot_restore() {
+    use reel_ui::widgets::ScrollOverscroll;
+    let code = r#"fn opening() {
+        stage.replace(scroll(width:200,height:100,overscroll:"bounce",scroll_y:20) {
+            stack(height:1000);
+        });
+        narrator("hold");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let (_, restored) = restore_configuration(&session, &mut vm);
+        let stage = restored.stage();
+        match stage.node(stage.root().unwrap()).unwrap().kind {
+            reel_ui::stage::NodeKind::Scroll {
+                overscroll, offset, ..
+            } => {
+                assert_eq!(overscroll, ScrollOverscroll::Bounce);
+                assert_eq!(offset.y, 20.);
+            }
+            _ => panic!("restored scroll changed kind"),
+        }
     }
 }
 

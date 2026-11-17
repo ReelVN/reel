@@ -312,6 +312,7 @@ impl glyph_plan::Prepare for Glyphs {
         run: &FrameGlyphRun,
         _: f64,
         _: RecordLocation,
+        _: bool,
     ) -> Result<InkBounds, GpuError> {
         self.0 += run.glyphs.len();
         Ok(InkBounds::Unbounded)

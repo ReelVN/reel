@@ -39,6 +39,7 @@ fn fixture() -> Vm {
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();

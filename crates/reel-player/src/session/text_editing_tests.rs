@@ -92,6 +92,7 @@ fn restore(driver: &AsideSessionUi) -> AsideSessionUi {
         "en".into(),
         driver.ui().assets(),
         driver.initializer(),
+        driver.entry_function(),
         driver.catalogs(),
     )
     .unwrap()

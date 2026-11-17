@@ -7,6 +7,7 @@ pub(crate) struct Budget {
     pub limits: Limits,
     pub stats: Stats,
     pub span: TextRange,
+    pub source: Option<aside_vm::bytecode::SourceId>,
 }
 impl Budget {
     pub fn new(limits: Limits) -> Self {
@@ -14,6 +15,7 @@ impl Budget {
             limits,
             stats: Stats::default(),
             span: TextRange::empty(TextSize::from(0)),
+            source: None,
         }
     }
     pub fn error(&self, kind: ErrorKind, detail: impl Into<String>) -> Box<Error> {

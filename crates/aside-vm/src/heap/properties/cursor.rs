@@ -77,6 +77,53 @@ mod tests {
         heap.observe_host_properties(host, 1, 0).unwrap();
         PropertyId { host, field: 0 }
     }
+
+    #[test]
+    fn rebind_publishes_to_the_subscriber_without_writing_the_animation_source() {
+        for path in 0..3 {
+            let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+            let source = host(&mut heap, 7);
+            let target = host(&mut heap, 0);
+            let sibling = host(&mut heap, 0);
+            let reference = heap.alloc_property_ref(source, true).unwrap();
+            heap.bind_host_property(sibling, reference).unwrap();
+            heap.track_host_writes(source.host).unwrap();
+            heap.track_host_writes(target.host).unwrap();
+            heap.track_host_writes(sibling.host).unwrap();
+            let writes = [(target, reference)];
+            match path {
+                0 => heap.write_host_properties(&writes, true).unwrap(),
+                1 => assert!(matches!(
+                    heap.try_write_host_properties(&writes, true, u64::MAX)
+                        .unwrap(),
+                    PropertyBatchProgress::Committed { .. }
+                )),
+                _ => {
+                    let plan = heap.begin_property_batch(true).unwrap();
+                    loop {
+                        if let PropertyBatchProgress::Prepared {
+                            required_commit_work,
+                            ..
+                        } = heap.step_property_batch(plan, &writes, u64::MAX).unwrap()
+                        {
+                            heap.commit_property_batch(plan, &writes, required_commit_work)
+                                .unwrap();
+                            break;
+                        }
+                    }
+                }
+            }
+            assert_eq!(heap.host_write_version(source.host, 0).unwrap(), 0);
+            assert_eq!(heap.host_write_version(sibling.host, 0).unwrap(), 0);
+            assert_eq!(heap.host_write_version(target.host, 0).unwrap(), 1);
+            assert_eq!(heap.host_property(target).unwrap().as_int(), Some(7));
+            heap.write_host_property(source, Value::int(9), false)
+                .unwrap();
+            assert_eq!(heap.host_property(target).unwrap().as_int(), Some(9));
+            assert_eq!(heap.host_property(sibling).unwrap().as_int(), Some(9));
+        }
+    }
+
     #[test]
     fn per_call_plans_interleave_with_unrelated_writes_and_survive_incremental_gc() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
@@ -189,6 +236,27 @@ mod tests {
                 .unwrap()
                 .same_bits(Value::NULL)
         );
+
+        let source = host(&mut heap, 4);
+        let reference = heap.alloc_property_ref(source, true).unwrap();
+        let binding = [(property, reference)];
+        let plan = heap.begin_property_batch(true).unwrap();
+        while !matches!(
+            heap.step_property_batch(plan, &binding, u64::MAX).unwrap(),
+            PropertyBatchProgress::Prepared { .. }
+        ) {}
+        heap.write_host_property(source, Value::int(5), false)
+            .unwrap();
+        assert!(matches!(
+            heap.commit_property_batch(plan, &binding, u64::MAX)
+                .unwrap(),
+            PropertyBatchProgress::Preparing { .. }
+        ));
+        assert!(
+            heap.property_binding(property)
+                .unwrap()
+                .same_bits(Value::NULL)
+        );
     }
 }
 
@@ -232,6 +300,8 @@ enum State {
     Count,
 }
 const FIELDS: u32 = 7;
+const INPUT_FIELDS: u32 = 4;
+const INPUT_VERSION: u32 = 3;
 const HOST: u32 = 0;
 // A field occupies the low 32 bits; private flags share its integer slot.
 const FIELD: u32 = 1;
@@ -260,6 +330,16 @@ impl Heap {
     }
     fn cursor_entries(&self, plan: Value) -> Result<Value, HeapError> {
         self.cursor_state(plan, State::Entries)
+    }
+
+    fn cursor_source(&self, inputs: Value, offset: u32) -> Result<PropertyId, HeapError> {
+        Ok(PropertyId {
+            host: self.sequence_get(inputs, offset)?,
+            field: self
+                .sequence_get(inputs, offset + 1)?
+                .as_int()
+                .ok_or(HeapError::TypeMismatch)? as u32,
+        })
     }
     fn cursor_len(&self, plan: Value) -> Result<u32, HeapError> {
         Ok(self.sequence_len(self.cursor_entries(plan)?)? / FIELDS)
@@ -627,6 +707,7 @@ impl Heap {
                                 source.host,
                                 Value::int(i64::from(source.field)),
                                 Value::bool(writable),
+                                Value::NULL,
                             ] {
                                 self.array_push(resolved, value)?;
                             }
@@ -644,14 +725,7 @@ impl Heap {
                             writes.get(cursor as usize).ok_or(HeapError::OutOfBounds)?;
                         if !self.is_property_ref(value) {
                             let resolved = self.cursor_state(plan, State::Inputs)?;
-                            let source = PropertyId {
-                                host: self.sequence_get(resolved, cursor * 3)?,
-                                field: self
-                                    .sequence_get(resolved, cursor * 3 + 1)?
-                                    .as_int()
-                                    .ok_or(HeapError::TypeMismatch)?
-                                    as u32,
-                            };
+                            let source = self.cursor_source(resolved, cursor * INPUT_FIELDS)?;
                             if !self.cursor_push(
                                 plan,
                                 source,
@@ -673,24 +747,12 @@ impl Heap {
                         let (target, input) =
                             writes.get(cursor as usize).ok_or(HeapError::OutOfBounds)?;
                         let resolved = self.cursor_state(plan, State::Inputs)?;
-                        let source = PropertyId {
-                            host: self.sequence_get(resolved, cursor * 3)?,
-                            field: self
-                                .sequence_get(resolved, cursor * 3 + 1)?
-                                .as_int()
-                                .ok_or(HeapError::TypeMismatch)?
-                                as u32,
-                        };
+                        let offset = cursor * INPUT_FIELDS;
+                        let source = self.cursor_source(resolved, offset)?;
                         let value = self.cursor_property_read(plan, source)?;
                         let writable =
-                            self.sequence_get(resolved, cursor * 3 + 2)?.as_bool() == Some(true);
+                            self.sequence_get(resolved, offset + 2)?.as_bool() == Some(true);
                         if !self.cursor_push(
-                            plan,
-                            source,
-                            value,
-                            false,
-                            self.property_access(source)?,
-                        )? || !self.cursor_push(
                             plan,
                             target,
                             value,
@@ -700,6 +762,14 @@ impl Heap {
                             return Ok(None);
                         }
                         if self.is_property_ref(input) {
+                            let version = self
+                                .info(self.property_fields(source.host)?)?
+                                .content_version;
+                            self.set_field(
+                                resolved,
+                                offset + INPUT_VERSION,
+                                Value::int(version as i64),
+                            )?;
                             let graphs = self.cursor_state(plan, State::Graphs)?;
                             if self.object(self.key(source.host)?)?.derived {
                                 let graph = self.begin_property_cycle(target, source)?;
@@ -860,7 +930,7 @@ impl Heap {
                                 plan,
                                 State::CommitWork,
                                 self.cursor_number(plan, State::CommitWork)?
-                                    + (writes.len() as u64) * 16,
+                                    + (writes.len() as u64) * 32,
                             )?;
                             return Ok(None);
                         }
@@ -1067,6 +1137,27 @@ impl Heap {
         }
         self.property_work_used.set(16);
         let traversal = self.property_traversal_work.get();
+        let inputs = self.cursor_state(plan, State::Inputs)?;
+        for offset in (0..self.sequence_len(inputs)?).step_by(INPUT_FIELDS as usize) {
+            self.property_work_used
+                .set(self.property_work_used.get() + 16);
+            if let Some(version) = self.sequence_get(inputs, offset + INPUT_VERSION)?.as_int() {
+                let source = self.cursor_source(inputs, offset)?;
+                if self
+                    .info(self.property_fields(source.host)?)?
+                    .content_version
+                    != version as u64
+                {
+                    self.reset_property_batch(plan)?;
+                    self.property_work_used
+                        .set(self.property_work_used.get() + PropertyBatch::INITIAL_WORK);
+                    return Ok(PropertyBatchProgress::Preparing {
+                        work: self.property_work_used.get(),
+                        required_work: ITEM_WORK,
+                    });
+                }
+            }
+        }
         let graphs = self.cursor_state(plan, State::Graphs)?;
         for graph in 0..self.sequence_len(graphs)? {
             let graph = self.sequence_get(graphs, graph)?;

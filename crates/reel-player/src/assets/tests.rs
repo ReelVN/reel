@@ -314,6 +314,8 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
         },
         reloadable: false,
         kind: AssetKind::Font,
+        priority: Priority::Visible,
+        prefetch_limit: u64::MAX,
         phase: Phase::Decode,
         input: Some(Arc::new(
             OwnedBytes::new(content, service.input.reserve(128).unwrap()).unwrap(),
@@ -375,6 +377,57 @@ fn small_png_metadata_uses_the_configured_decoder_budget() {
         assert_eq!(assets.temporary_pool().usage().bytes, 0);
         assert_eq!(assets.0.borrow().input.usage().bytes, 0);
         assert_eq!(assets.0.borrow().output.usage().bytes, 0);
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[test]
+fn rgba8_png_requests_decode_from_header_without_a_worker_probe() {
+    use image::ImageEncoder;
+    let pixels = vec![90; 19 * 5 * 4];
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(&pixels, 19, 5, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    let assets = Assets::directory(AssetOptions::default());
+    let id = assets.request_encoded("test".into(), &encoded).unwrap();
+    assets.maintain();
+    {
+        let service = assets.0.borrow();
+        let load = &service.loads[&id];
+        assert!(matches!(load.phase, Phase::Decoding(_)));
+        assert_eq!(load.output, pixels.len() as u64);
+    }
+    let lease = load_until_done(&assets, id).unwrap();
+    assert_eq!(lease.read_pixels().unwrap().bytes(), pixels);
+}
+
+#[test]
+fn static_webp_decodes_by_content_with_reserved_workspace() {
+    let pixels = [1, 23, 45, 128].repeat(19 * 5);
+    let mut encoded = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut encoded)
+        .encode(&pixels, 19, 5, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    for (decode_bytes, succeeds) in [(256 << 10, true), (64 << 10, false)] {
+        let assets = Assets::directory(AssetOptions {
+            decode_bytes,
+            ..Default::default()
+        });
+        let id = assets
+            .request_encoded("logical.png".into(), &encoded)
+            .unwrap();
+        let result = load_until_done(&assets, id);
+        if succeeds {
+            let lease = result.unwrap();
+            let image = crate::test_image::data(&lease);
+            assert_eq!([image.width, image.height], [19, 5]);
+            assert_eq!(image.data.as_ref(), pixels);
+        } else {
+            assert_eq!(result.err().unwrap(), "image decode limit exceeded");
+        }
+        assets.cancel(id);
+        assert_eq!(assets.temporary_pool().usage().bytes, 0);
     }
 }
 

@@ -1,6 +1,6 @@
 //! Deterministic bounded offline atlas preparation for one explicit cohort.
 use super::*;
-use image::{ImageDecoder, ImageReader, Rgba32FImage};
+use image::{DynamicImage, Rgba32FImage};
 use reel_core::{
     prepared_atlas::PreparedAtlasView,
     texture::{
@@ -10,13 +10,17 @@ use reel_core::{
 };
 use std::io::Write;
 
-struct Item {
+struct Source {
     name: String,
-    source: PathBuf,
+    path: PathBuf,
     hash: blake3::Hash,
+    bytes: u64,
+}
+
+struct Item<'a> {
+    source: &'a Source,
     logical: [u32; 2],
     content: [u32; 2],
-    source_bytes: u64,
     origin: [u32; 2],
 }
 
@@ -44,66 +48,68 @@ pub(super) fn prepare(
     hash.update(identity.as_bytes());
     hash.update(target.as_str().as_bytes());
     hash.update(&serde_json::to_vec(recipe).map_err(io::Error::other)?);
-    let mut items = Vec::with_capacity(members.len());
-    let mut max_source = 0u128;
-    for (name, source) in members {
-        let source = source.canonicalize()?;
-        let reader = ImageReader::open(&source)?.with_guessed_format()?;
-        if !matches!(
-            reader.format(),
-            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)
-        ) {
-            return Err(invalid(format!("atlas image {name:?} must be PNG or JPEG")));
-        }
-        let decoder = reader.into_decoder().map_err(invalid)?;
-        let (w, h) = decoder.dimensions();
-        let logical = [w, h];
-        if logical.contains(&0) {
-            return Err(invalid("atlas image dimensions must be positive"));
-        }
-        let content =
-            prepare_texture::scaled_content_size(logical, None, scale).map_err(invalid)?;
-        if content
-            .iter()
-            .zip(page_size)
-            .any(|(&n, page)| n > page.saturating_sub(8))
-        {
-            return Err(invalid(format!(
-                "atlas image {name:?} exceeds page_size including gutter"
-            )));
-        }
-        let source_bytes = fs::metadata(&source)?.len();
-        let source_hash = hash_file(&source)?;
+    let mut sources = Vec::with_capacity(members.len());
+    for (name, path) in members {
+        let path = path.canonicalize()?;
+        let bytes = fs::metadata(&path)?.len();
+        let source_hash = hash_file(&path)?;
         hash.update(&(name.len() as u64).to_le_bytes());
         hash.update(name.as_bytes());
         hash.update(source_hash.as_bytes());
-        max_source =
-            max_source.max(u128::from(w) * u128::from(h) * 48 + u128::from(decoder.total_bytes()));
-        items.push(Item {
+        sources.push(Source {
             name,
-            source,
+            path,
             hash: source_hash,
-            logical,
-            content,
-            source_bytes,
-            origin: [0; 2],
+            bytes,
         });
     }
-    let page_size = pack(&mut items, page_size, target.as_str() == "vita")?;
     let key = hash.finalize().to_hex().to_string();
     let object = root.join("build/resources/objects").join(&key);
     let page = object.join("page.reel-texture");
     let page_name = format!("__reel/atlas/{key}/page.reel-texture");
-    let workspace = u128::from(page_size[0]) * u128::from(page_size[1]) * 80
-        + max_source
-        + (items.len() as u128 * 2048)
-        + (1 << 20);
-    let workspace = u64::try_from(workspace).map_err(|_| invalid("atlas workspace overflow"))?;
     let present = page.is_file()
-        && (0..items.len()).all(|i| object.join(format!("{i}.reel-atlas")).is_file());
+        && (0..sources.len()).all(|i| object.join(format!("{i}.reel-atlas")).is_file());
     if present {
-        prepared.report.reused += items.len();
+        prepared.report.reused += sources.len();
     } else {
+        let mut items = Vec::with_capacity(sources.len());
+        let mut max_source = 0u128;
+        for source in &sources {
+            let (decoder, codec_workspace) = reel_player::artwork::open(&source.path, memory_bytes)
+                .map_err(|error| invalid(format!("atlas image {:?}: {error}", source.name)))?;
+            let (w, h) = decoder.dimensions();
+            let logical = [w, h];
+            let content =
+                prepare_texture::scaled_content_size(logical, None, scale).map_err(invalid)?;
+            if content
+                .iter()
+                .zip(page_size)
+                .any(|(&n, page)| n > page.saturating_sub(8))
+            {
+                return Err(invalid(format!(
+                    "atlas image {:?} exceeds page_size including gutter",
+                    source.name
+                )));
+            }
+            let decoded = u128::from(decoder.total_bytes());
+            max_source = max_source.max(
+                (u128::from(w) * u128::from(h) * 48 + decoded)
+                    .max(decoded + u128::from(codec_workspace)),
+            );
+            items.push(Item {
+                source,
+                logical,
+                content,
+                origin: [0; 2],
+            });
+        }
+        let page_size = pack(&mut items, page_size, target.as_str() == "vita")?;
+        let workspace = u128::from(page_size[0]) * u128::from(page_size[1]) * 80
+            + max_source
+            + (items.len() as u128 * 2048)
+            + (1 << 20);
+        let workspace =
+            u64::try_from(workspace).map_err(|_| invalid("atlas workspace overflow"))?;
         if workspace > memory_bytes {
             return Err(invalid(format!(
                 "atlas needs {workspace} workspace bytes; limit is {memory_bytes}"
@@ -118,11 +124,9 @@ pub(super) fn prepare(
             Rgba32FImage::from_pixel(page_size[0], page_size[1], image::Rgba([0., 0., 0., 1.]));
         let mut opaque = true;
         for item in &items {
-            let mut reader = ImageReader::open(&item.source)?.with_guessed_format()?;
-            let mut limits = image::Limits::no_limits();
-            limits.max_alloc = Some(memory_bytes);
-            reader.limits(limits);
-            let pixels = reader.decode().map_err(invalid)?;
+            let (decoder, _) =
+                reel_player::artwork::open(&item.source.path, memory_bytes).map_err(invalid)?;
+            let pixels = DynamicImage::from_decoder(decoder).map_err(invalid)?;
             let options = prepare_texture::Options {
                 format: prepare_texture::Format::Rgba8,
                 ..Default::default()
@@ -134,7 +138,7 @@ pub(super) fn prepare(
             {
                 return Err(invalid(format!(
                     "atlas image changed during preparation: {}",
-                    item.source.display()
+                    item.source.path.display()
                 )));
             }
             opaque &= linear.pixels().all(|p| p[3] == 1.);
@@ -150,10 +154,10 @@ pub(super) fn prepare(
                     );
                 }
             }
-            if hash_file(&item.source)? != item.hash {
+            if hash_file(&item.source.path)? != item.source.hash {
                 return Err(invalid(format!(
                     "atlas image changed during preparation: {}",
-                    item.source.display()
+                    item.source.path.display()
                 )));
             }
         }
@@ -184,7 +188,9 @@ pub(super) fn prepare(
         let payload = if format.is_compressed() {
             encode_independent_blocks(&atlas, descriptor, &items)?
         } else {
-            prepare_texture::mips::encode(atlas, descriptor, dither).map_err(invalid)?
+            prepare_texture::mips::encode(atlas, descriptor, dither)
+                .map_err(invalid)?
+                .0
         };
         let header = TextureHeader::new(descriptor, TextureCodec::Raw, payload.len() as u64)
             .map_err(invalid)?;
@@ -215,11 +221,11 @@ pub(super) fn prepare(
         prepared.report.converted += items.len();
         prepared.report.workspace_bytes = prepared.report.workspace_bytes.max(workspace);
     }
-    for (i, item) in items.iter().enumerate() {
-        prepared.report.source_bytes += item.source_bytes;
+    for (i, source) in sources.into_iter().enumerate() {
+        prepared.report.source_bytes += source.bytes;
         insert_prepared(
             prepared,
-            item.name.clone(),
+            source.name,
             object.join(format!("{i}.reel-atlas")),
         )?;
     }
@@ -233,7 +239,7 @@ pub(super) fn prepare(
 fn encode_independent_blocks(
     atlas: &Rgba32FImage,
     page: TextureDescriptor,
-    items: &[Item],
+    items: &[Item<'_>],
 ) -> io::Result<Vec<u8>> {
     let size = page.layout.storage_size;
     let block_bytes = page.format.block_bytes() as usize;
@@ -293,7 +299,8 @@ fn encode_independent_blocks(
             },
             ..page
         };
-        let blocks = prepare_texture::quality::encode(&visible, descriptor).map_err(invalid)?;
+        let (blocks, _) =
+            prepare_texture::quality::encode(&visible, descriptor).map_err(invalid)?;
         for y in 0..storage[1] / 4 {
             for x in 0..storage[0] / 4 {
                 let from = ((y * (storage[0] / 4) + x) as usize) * block_bytes;
@@ -312,14 +319,14 @@ fn encode_independent_blocks(
 
 /// Deterministic guillotiere allocation. Every rectangle has a
 /// four-texel edge gutter and starts on a compression-block boundary.
-fn pack(items: &mut [Item], size: [u32; 2], power_of_two: bool) -> io::Result<[u32; 2]> {
+fn pack(items: &mut [Item<'_>], size: [u32; 2], power_of_two: bool) -> io::Result<[u32; 2]> {
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by_key(|&i| {
         let [w, h] = items[i].content.map(|n| n.next_multiple_of(4) + 8);
         (
             std::cmp::Reverse(w.max(h)),
             std::cmp::Reverse(u64::from(w) * u64::from(h)),
-            items[i].name.clone(),
+            items[i].source.name.as_str(),
         )
     });
     let mut allocator =
@@ -331,7 +338,7 @@ fn pack(items: &mut [Item], size: [u32; 2], power_of_two: bool) -> io::Result<[u
             .ok_or_else(|| {
                 invalid(format!(
                     "atlas page cannot fit {:?}; enlarge page_size or split the cohort",
-                    items[i].name
+                    items[i].source.name
                 ))
             })?;
         items[i].origin = [rectangle.min.x as u32 + 4, rectangle.min.y as u32 + 4];

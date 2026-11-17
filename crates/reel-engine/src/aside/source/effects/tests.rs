@@ -29,7 +29,7 @@ fn compile(code: &str) -> Result<CompiledEffect, EffectDiagnostic> {
 #[test]
 fn typed_source_helpers_loops_and_source_sampling_form_one_program() {
     let code = r#"
-use std::math::{sin as wave, atan2, hypot};
+use std::math::{sin as wave, atan2, hypot, min, max};
 fn rotate(x: float, y: float, time: float) -> float {
     wave(atan2(x: x, y: y) + time) * hypot(y: y, x: x)
 }
@@ -39,7 +39,7 @@ fn surface(pixel, time: float, strength: float = 0.2) -> (float, float, float, f
     for i in 0..5 { value += wave(value + time); }
     if value < 0.0 { return (0.0, 0.0, 0.0, 1.0); }
     let (r, g, b, a) = pixel.sample((u, v));
-    (r * (1.0 + value * strength), g, b, a)
+    (min(r * (1.0 + value * strength), 1.0), max(g, 0.25), b, a)
 }
 "#;
     let output = compile(code).unwrap();
@@ -85,6 +85,15 @@ fn surface(pixel, time: float, strength: float = 0.2) -> (float, float, float, f
             .iter()
             .any(|source| &code[aside_compiler::byte_range(source.span)] == "atan2(x: x, y: y)")
     );
+    for expected in [Binary::Min, Binary::Max] {
+        assert!(
+            output
+                .program
+                .nodes()
+                .iter()
+                .any(|node| matches!(node.op, Op::Binary { op, .. } if op == expected))
+        );
+    }
 }
 
 #[test]

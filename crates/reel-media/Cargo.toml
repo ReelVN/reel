@@ -14,7 +14,8 @@ encode = ["decode", "dep:ogg", "dep:rubato"]
 video = []
 vita = ["video", "dep:h264-reader", "vita-native/video"]
 vita-output = ["vita-native/audio"]
-video-software = ["video", "dep:openh264", "dep:symphonia", "symphonia/aac", "dep:mp4", "dep:h264-reader"]
+video-inspect = ["video", "dep:mp4"]
+video-software = ["video-inspect", "dep:openh264", "dep:symphonia", "symphonia/aac", "dep:h264-reader"]
 
 [dependencies]
 reel-core = { path = "../reel-core" }

@@ -1,14 +1,4 @@
-use super::{BTreeMap, Frame, Value, json};
-
-fn stats(mut values: Vec<u64>) -> Value {
-    values.sort_unstable();
-    if values.is_empty() {
-        return json!({"samples":0});
-    }
-    let p = |n: usize| values[(values.len() * n).div_ceil(100) - 1];
-    json!({"samples":values.len(), "total":values.iter().sum::<u64>(),
-        "p50":p(50),"p95":p(95),"p99":p(99),"max":values.last()})
-}
+use super::{BTreeMap, Frame, Value, counter_statistics, json};
 
 pub(super) fn summarize(rows: &[&Frame]) -> Value {
     let observed: Vec<_> = rows
@@ -61,7 +51,10 @@ pub(super) fn summarize(rows: &[&Frame]) -> Value {
             .keys()
             .filter(|k| k.starts_with("wall_") && k.as_str() != "wall_observed")
         {
-            metrics.insert(key, stats(valid.iter().map(|r| r.values[key]).collect()));
+            metrics.insert(
+                key,
+                counter_statistics(valid.iter().map(|r| r.values[key]).collect()),
+            );
         }
     }
     json!({"observed_intervals":observed.len(),"unobserved_intervals":rows.len()-observed.len(),
@@ -83,7 +76,10 @@ pub(super) fn native(rows: &[&Frame]) -> Value {
             .keys()
             .filter(|k| k.starts_with("native_") && k.as_str() != "native_observed")
         {
-            metrics.insert(key, stats(observed.iter().map(|r| r.values[key]).collect()));
+            metrics.insert(
+                key,
+                counter_statistics(observed.iter().map(|r| r.values[key]).collect()),
+            );
         }
     }
     json!({"observed_intervals":observed.len(),"unobserved_intervals":rows.len()-observed.len(),

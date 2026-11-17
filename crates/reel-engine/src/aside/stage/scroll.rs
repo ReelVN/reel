@@ -3,21 +3,48 @@ use super::*;
 use reel_ui::{
     kurbo::Vec2,
     stage::NodeScroll,
-    widgets::{ScrollAlign, ScrollAxis},
+    widgets::{ScrollAlign, ScrollAxis, ScrollOverscroll},
 };
+mod reveal;
+pub(in crate::aside) use reveal::documentation;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ScrollField {
     #[aside(name = "axis", ty = String, default = "vertical", validate = validate_axis)]
     Axis,
+    /// Boundary behavior: `clamp` keeps direct touch panning bounded; `bounce`
+    /// adds a damped edge pull and native return animation. Logical offsets stay
+    /// bounded in both modes. Wheel and programmatic positioning remain clamped.
+    #[aside(name = "overscroll", ty = String, default = "clamp", validate = validate_overscroll)]
+    Overscroll,
     #[aside(name = "follow_end", ty = Bool, default = false)]
     FollowEnd,
     #[aside(name = "content_align", ty = String, default = "start", validate = validate_align)]
     ContentAlign,
+    /// Logical horizontal offset. Layout feedback preserves an owning activity;
+    /// user scrolling or an explicit assignment takes over that activity.
     #[aside(name = "scroll_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     X,
+    /// Logical vertical offset. Layout feedback preserves an owning activity;
+    /// user scrolling or an explicit assignment takes over that activity.
     #[aside(name = "scroll_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Y,
+    /// Vertical spacing between user scroll stops in canvas units.
+    #[aside(name = "snap_y", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, readonly, validate = validate_snap)]
+    SnapY,
+}
+pub(super) fn snap(value: Value) -> Result<Option<f64>, AdapterError> {
+    if value.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    let step = number(value)?;
+    if step <= 0. {
+        return Err(AdapterError::Input("scroll snap_y must be positive"));
+    }
+    Ok(Some(step))
+}
+fn validate_snap(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(snap(value))
 }
 pub(super) const METRICS: [&str; 4] = [
     "viewport_width",
@@ -59,6 +86,22 @@ fn align(heap: &Heap, value: Value) -> Result<ScrollAlign, HeapError> {
 fn validate_axis(heap: &Heap, value: Value) -> Result<(), HeapError> {
     axis(heap, value).map(|_| ())
 }
+pub(in crate::aside) const OVERSCROLL_CHOICES: [(&str, ScrollOverscroll); 2] = [
+    ("clamp", ScrollOverscroll::Clamp),
+    ("bounce", ScrollOverscroll::Bounce),
+];
+
+fn overscroll(heap: &Heap, value: Value) -> Result<ScrollOverscroll, HeapError> {
+    word(heap, value, |word| {
+        OVERSCROLL_CHOICES
+            .into_iter()
+            .find_map(|(name, mode)| (name.as_bytes() == word).then_some(mode))
+            .ok_or(HeapError::TypeMismatch)
+    })
+}
+fn validate_overscroll(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    overscroll(heap, value).map(|_| ())
+}
 fn validate_align(heap: &Heap, value: Value) -> Result<(), HeapError> {
     align(heap, value).map(|_| ())
 }
@@ -67,9 +110,11 @@ pub(super) fn kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError>
         |field: ScrollField| Ok::<_, HeapError>(heap.table_entry(fields, field.index() as u32)?.1);
     Ok(NodeKind::Scroll {
         axis: axis(heap, get(ScrollField::Axis)?)?,
+        overscroll: overscroll(heap, get(ScrollField::Overscroll)?)?,
         follow_end: boolean(get(ScrollField::FollowEnd)?)?,
         align: align(heap, get(ScrollField::ContentAlign)?)?,
         offset: Vec2::new(number(get(ScrollField::X)?)?, number(get(ScrollField::Y)?)?),
+        snap_y: snap(get(ScrollField::SnapY)?)?,
     })
 }
 pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
@@ -113,8 +158,8 @@ impl StageBinding {
                 accepted_y = event.input || current == requested;
             }
             // A newer script write wins over feedback from the previous projection.
-            if (event.input || current == requested) && current != actual {
-                heap.write_host_property(property, Value::float(actual), true)?;
+            if (event.input || current == requested) && (event.input || current != actual) {
+                heap.write_host_property(property, Value::float(actual), event.input)?;
                 changed = true;
             }
         }

@@ -189,44 +189,6 @@ fn planned_and_generic_native_binding_agree() {
     }
 }
 #[test]
-#[ignore = "release differential fixed native binding measurement"]
-fn fixed_native_binding_cost() {
-    for generic in [true, false] {
-        let (mut vm, _) = load(generic, false, 200);
-        let mut work = 0;
-        let mut slots = 0;
-        let start = std::time::Instant::now();
-        for _ in 0..100 {
-            let task = vm
-                .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
-                .unwrap();
-            loop {
-                let result = vm.run_slice(task, SliceBudget::default(), || 0).unwrap();
-                work += vm.last_usage.work;
-                match result {
-                    RunOutcome::HostCall(ticket) => {
-                        let n = vm.ticket(ticket).unwrap();
-                        slots = vm.slots.len(n.args).unwrap() + vm.slots.len(n.bound).unwrap();
-                        vm.respond(ticket, HostResponse::Ready(Value::int(42)))
-                            .unwrap();
-                    }
-                    RunOutcome::BudgetYield(_) => {}
-                    RunOutcome::Returned(delivery) => {
-                        vm.discard_delivery(delivery).unwrap();
-                        break;
-                    }
-                    other => panic!("{other:?}"),
-                }
-            }
-        }
-        eprintln!(
-            "native_binding generic={generic} calls=20000 elapsed_us={} work={work} argument_root_values={slots}",
-            start.elapsed().as_micros()
-        );
-    }
-}
-
-#[test]
 fn planned_binding_type_fault_keeps_the_generic_call_location() {
     let mut observed = Vec::new();
     for generic in [true, false] {

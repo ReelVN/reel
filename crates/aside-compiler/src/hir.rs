@@ -28,6 +28,9 @@ pub enum HirKind {
     Parameters,
     Parameter,
     NamedType,
+    StringType,
+    RecordType,
+    RecordFieldType,
     TupleType,
     UnionType,
     FunctionType,
@@ -183,6 +186,24 @@ pub enum Type {
     Class(NodeId),
     Instance(NodeId),
     Named(NameId),
+    StringLiteral(String),
+    Record(Vec<(NameId, TypeId)>),
+}
+/// A record, optionally wrapped in a nullable annotation, has one closed field set.
+pub fn record_fields(types: &[Type], ty: TypeId) -> Option<&[(NameId, TypeId)]> {
+    match &types[ty.0 as usize] {
+        Type::Record(fields) => Some(fields),
+        Type::Union(members)
+            if members.len() == 2
+                && members.iter().any(|id| types[id.0 as usize] == Type::Null) =>
+        {
+            members.iter().find_map(|id| match &types[id.0 as usize] {
+                Type::Record(fields) => Some(fields.as_slice()),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -356,6 +377,7 @@ impl RuntimeChecks {
     pub const INIT_SAFE: u16 = 256;
     pub const PROPERTY: u16 = 512;
     pub const WRITE_EFFECT: u16 = 1024;
+    pub const RECORD_FIELD: u16 = 2048;
 }
 #[derive(Debug, Clone)]
 pub struct ControlTransfer {
@@ -528,6 +550,17 @@ impl std::fmt::Display for TypeDisplay<'_> {
             Type::Future => f.write_str("Future"),
             Type::Generator => f.write_str("generator"),
             Type::Named(name) => f.write_str(self.module.hir.name(*name)),
+            Type::StringLiteral(text) => write!(f, "{text:?}"),
+            Type::Record(fields) => {
+                f.write_str("{")?;
+                for (i, &(name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}: {}", self.module.hir.name(name), display(ty))?;
+                }
+                f.write_str("}")
+            }
             Type::Tuple(types) => {
                 f.write_str("(")?;
                 for (i, &ty) in types.iter().enumerate() {

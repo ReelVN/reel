@@ -27,6 +27,14 @@ pub struct Gpu {
     pub(super) upload_creations: super::resources::UploadCreations,
 }
 impl Gpu {
+    pub(super) fn submit(&self, encoder: wgpu::CommandEncoder) {
+        let _submit = reel_core::profile::Scope::new(reel_core::profile::Phase::RenderFence);
+        let command = {
+            let _finish = reel_core::profile::Scope::new(reel_core::profile::Phase::CommandFinish);
+            encoder.finish()
+        };
+        self.queue.submit([command]);
+    }
     pub fn generation(&self) -> DeviceGeneration {
         self.generation
     }
@@ -54,13 +62,23 @@ impl Gpu {
             })
             .await
             .map_err(|e| GpuError::Adapter(e.to_string()))?;
+        let memory_hints = if adapter.get_info().backend == wgpu::Backend::Vulkan {
+            // Bound individual driver allocations when scratch targets and
+            // sampled images share the same Vulkan allocator.
+            const BLOCK_BYTES: u64 = 64 << 20;
+            wgpu::MemoryHints::Manual {
+                suballocated_device_memory_block_size: BLOCK_BYTES..BLOCK_BYTES,
+            }
+        } else {
+            wgpu::MemoryHints::Performance
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("reel device"),
                 required_features: adapter.features()
                     & (wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::SHADER_F16),
                 required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                memory_hints,
                 trace: wgpu::Trace::Off,
                 ..Default::default()
             })

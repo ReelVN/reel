@@ -128,17 +128,17 @@ impl RenderBackend for WgpuBackend {
         }
     }
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SurfaceConfigure);
         self.renderer.cancel_preparations();
         self.info = None;
         self.output = None;
         self.config = None;
         validate_surface(info)?;
         let surface = self.surface.as_ref().ok_or(GpuError::InvalidSurface)?;
-        let (config, output, unsynchronized) =
+        let (config, output, unsynchronized, quality) =
             negotiate(self.renderer.gpu(), surface, info.physical_size, self.vsync)?;
-        // First configuration happens before the host exposes its initial view.
-        // Device recovery gets fresh slots; resize only reuses initialized ones.
-        self.renderer.prepare_pipelines()?;
+        self.renderer.prepare_quality(quality)?;
+        self.renderer.prepare_viewport(info.physical_size)?;
         self.vsync = config.present_mode == wgpu::PresentMode::Fifo;
         self.unsynchronized = unsynchronized;
         self.config = Some(config);

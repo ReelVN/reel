@@ -30,7 +30,7 @@ pub(super) fn api() -> &'static Api {
         };
         api.types.push(NamedType::new(
             RANDOM,
-            "An independent mutable random stream. Saving restores its exact stream position.",
+            "An independent mutable random stream. A story checkpoint restores its current position and shared identity.",
             ["int", "float", "pick"]
                 .into_iter()
                 .map(|name| {
@@ -104,6 +104,7 @@ pub(super) fn api() -> &'static Api {
             version: "1".into(),
             exports: math,
         });
+        super::resume::describe(&mut api);
         api
     })
 }

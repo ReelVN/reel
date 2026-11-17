@@ -356,7 +356,7 @@ fn analyze(scope: &str, input: &str) -> Result<Value> {
 }
 
 /// Summarize the latest complete fixed-frame report, including trace integrity.
-pub fn report(scope: &str, input: &Path, output: &Path) -> Result<()> {
+pub fn report(scope: &str, input: &Path, output: &Path) -> Result<Value> {
     let text = fs::read_to_string(input).context("read render probe log")?;
     let mut result = analyze(scope, &text)?;
     result["input"] = json!(input);
@@ -364,7 +364,7 @@ pub fn report(scope: &str, input: &Path, output: &Path) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(output, serde_json::to_vec_pretty(&result)?)?;
-    Ok(())
+    Ok(result)
 }
 
 #[cfg(test)]

@@ -509,7 +509,7 @@ pub fn parameter_cell_default() -> BytecodePackage {
     y.default = Some(ParameterDefault::Function(FunctionId(2)));
     p.signatures = vec![
         signature(vec![], 0, Effects::ALL),
-        signature(vec![x.clone(), y.clone()], 0, Effects::ALL),
+        signature(vec![x.clone(), y], 0, Effects::ALL),
         signature(vec![x], 0, Effects(Effects::ALLOCATE | Effects::WRITE)),
         signature(vec![], 1, Effects(0)),
     ];

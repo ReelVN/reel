@@ -4,7 +4,7 @@ use reel_engine::{Epoch, Session, SessionId, aside::GameSettings};
 use reel_ui::{
     bridge::PresentationBridge,
     core::{Handled, PointerEvent, TextEvent, WidgetId},
-    input::{ActionPhase, Control, GamepadButton, InputEvent, NavigationAction},
+    input::{ActionPhase, Control, GamepadButton, InputEvent, NavigationAction, NavigationEvent},
     stage::{
         InteractionState, NodeEvent, NodeId, NodeKind, Stage, VirtualListNavigation,
         VirtualListView, VirtualRow,
@@ -17,8 +17,9 @@ use std::{
 };
 
 type Error = Box<dyn std::error::Error>;
-const ROW_HEIGHT: f64 = 90.;
-const LIST_HEIGHT: f64 = 355.;
+const ROW_HEIGHT: f64 = 88.;
+const LIST_HEIGHT: f64 = ROW_HEIGHT * 4.;
+const LIST_WIDTH: f64 = 516.;
 const PAGE_ROWS: usize = 4;
 const PREFERENCES_BYTES: u64 = 64 << 10;
 mod catalog;
@@ -131,6 +132,7 @@ pub(crate) struct Launcher {
     page_focus: BTreeMap<Screen, NodeId>,
     buttons: BTreeMap<NodeId, Button>,
     list: Option<List>,
+    game_detail: Option<[NodeId; 2]>,
     pending_focus: Option<NodeId>,
     root_widget: Option<WidgetId>,
     outcome: Option<Outcome>,
@@ -192,6 +194,7 @@ impl Launcher {
             page_focus: BTreeMap::new(),
             buttons: BTreeMap::new(),
             list: None,
+            game_detail: None,
             pending_focus: None,
             root_widget: None,
             outcome: None,
@@ -331,14 +334,39 @@ impl Launcher {
         if self.loading.is_some() {
             return Ok(Handled::Yes);
         }
+        let (event, claimed) = match event {
+            TextEvent::Input(InputEvent::Value {
+                control: Control::Button(button @ (GamepadButton::East | GamepadButton::South)),
+                value,
+                ..
+            }) => (
+                TextEvent::Navigation(NavigationEvent {
+                    action: if button == GamepadButton::East {
+                        NavigationAction::Confirm
+                    } else {
+                        NavigationAction::Back
+                    },
+                    phase: if value > 0.5 {
+                        ActionPhase::Pressed
+                    } else {
+                        ActionPhase::Released
+                    },
+                    value,
+                }),
+                true,
+            ),
+            event => (event, false),
+        };
+        if matches!(
+            &event,
+            TextEvent::Navigation(event) if event.action == NavigationAction::Back
+                && event.phase == ActionPhase::Released
+        ) {
+            self.perform(Action::Back)?;
+            return Ok(Handled::Yes);
+        }
         let shortcut = if self.ui.current_presentation_ready() {
             match &event {
-                TextEvent::Navigation(event)
-                    if event.action == NavigationAction::Back
-                        && event.phase == ActionPhase::Released =>
-                {
-                    Some(Action::Back)
-                }
                 TextEvent::Input(InputEvent::Value {
                     control: Control::Button(button),
                     value,
@@ -368,7 +396,11 @@ impl Launcher {
         }
         let dispatch = self.ui.handle_text(bridge, event)?;
         self.events(dispatch.events)?;
-        Ok(dispatch.handled)
+        Ok(if claimed {
+            Handled::Yes
+        } else {
+            dispatch.handled
+        })
     }
     pub(crate) fn sync(
         &mut self,
@@ -406,6 +438,7 @@ impl Launcher {
     }
     fn events(&mut self, events: Vec<NodeEvent>) -> Result<(), Error> {
         let before = self.stage.revision();
+        let previous = self.selected;
         for event in events {
             match event {
                 NodeEvent::PopupDismiss(_) => self.perform(Action::Back)?,
@@ -458,6 +491,9 @@ impl Launcher {
                 _ => {}
             }
         }
+        if previous != self.selected {
+            self.refresh_selection(previous)?;
+        }
         if before != self.stage.revision() {
             self.ui.set_feedback_stage(&self.stage);
         }
@@ -485,12 +521,14 @@ impl Launcher {
                 self.loading_presented = false;
             }
             Action::Previous | Action::Next if !self.games.is_empty() => {
+                let previous = self.selected;
                 self.selected = if action == Action::Previous {
                     self.selected.saturating_sub(PAGE_ROWS)
                 } else {
                     (self.selected + PAGE_ROWS).min(self.games.len() - 1)
                 };
                 self.scroll_to_selected();
+                self.refresh_selection(previous)?;
                 self.reconcile(&[])?;
                 // Paging changes the intended activation target even when an
                 // overscan row already exists in the accepted list projection.
@@ -613,6 +651,7 @@ impl Launcher {
         let NodeKind::Scroll {
             axis,
             follow_end,
+            snap_y,
             align,
             ..
         } = node.kind
@@ -622,8 +661,10 @@ impl Launcher {
         self.stage.update(
             list.scroll,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis,
                 follow_end,
+                snap_y,
                 align,
                 offset: (0., self.scroll_offset).into(),
             },

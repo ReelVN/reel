@@ -359,7 +359,12 @@ fn main() {
         reel_cli::BuildProfile::Release,
     )
     .unwrap();
-    let package = reel_package::decode(&artifact.bytes, Default::default()).unwrap();
+    let package = reel_package::decode(
+        &artifact.bytes,
+        reel_engine::aside::source::types(),
+        Default::default(),
+    )
+    .unwrap();
     assert!(package.effects().bindings.iter().any(|binding| matches!(
         binding.kind,
         reel_package::EffectBindingKind::MaskTemplate { .. }

@@ -26,6 +26,7 @@ impl crate::common::glyph_plan::Prepare for NoGlyphs {
         _: &reel_ui::frame::FrameGlyphRun,
         _: f64,
         _: reel_ui::frame::RecordLocation,
+        _: bool,
     ) -> Result<InkBounds, GpuError> {
         panic!("geometry-only fixture");
     }

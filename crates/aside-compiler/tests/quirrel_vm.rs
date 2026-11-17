@@ -149,6 +149,7 @@ fn execute(source: &str, tiny: bool) -> Result<(String, usize), String> {
             natives: &links,
             expansions: &[],
         },
+        &[],
         lowering::Options::default(),
     )
     .map_err(|e| format!("lower: {e:?}"))?;

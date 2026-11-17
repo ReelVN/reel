@@ -1,10 +1,11 @@
 //! Pure scalar math delegates to Rust's floating-point implementation.
 use crate::{NativeError, StandardLibrary};
 use aside_host::aside_vm::{
-    Heap, HeapError, Value,
+    Heap, HeapError, Value, ValueTag,
     bytecode::{BuiltinType, Effects, ReadOnlyLeaf},
 };
 use aside_host::{CallContext, FromValue, NativeBinding, native};
+use std::cmp::Ordering;
 
 /// Math accepts the language's two numeric representations at its call boundary.
 /// The SDK's ordinary Rust f64 conversion keeps its strict Float contract.
@@ -138,6 +139,93 @@ fn pow(
     Ok(base.pow(exponent))
 }
 
+/// Return the smaller numeric input, preserving its type and precision.
+/// Equal inputs select a. If one input is NaN, select the other.
+#[native(symbol = "std::math::min", abi = 1, effects = Effects(0),
+    doc_result = aside_host::source::number(),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        extremum(args[0], args[1], Ordering::Greater).ok()
+    } })]
+fn min(
+    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(doc_type = aside_host::source::number())] a: Value,
+    #[aside(doc_type = aside_host::source::number())] b: Value,
+) -> Result<Value, NativeError> {
+    extremum(a, b, Ordering::Greater)
+}
+
+/// Return the larger numeric input, preserving its type and precision.
+/// Equal inputs select a. If one input is NaN, select the other.
+#[native(symbol = "std::math::max", abi = 1, effects = Effects(0),
+    doc_result = aside_host::source::number(),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        extremum(args[0], args[1], Ordering::Less).ok()
+    } })]
+fn max(
+    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(doc_type = aside_host::source::number())] a: Value,
+    #[aside(doc_type = aside_host::source::number())] b: Value,
+) -> Result<Value, NativeError> {
+    extremum(a, b, Ordering::Less)
+}
+
+fn extremum(a: Value, b: Value, replace: Ordering) -> Result<Value, NativeError> {
+    if !matches!(a.tag(), ValueTag::Int | ValueTag::Float)
+        || !matches!(b.tag(), ValueTag::Int | ValueTag::Float)
+    {
+        return Err(NativeError::Input("min and max require numbers"));
+    }
+    Ok(
+        if a.numeric_cmp(b) == Some(replace) || a.as_float().is_some_and(f64::is_nan) {
+            b
+        } else {
+            a
+        },
+    )
+}
+
+/// Limit a number to an inclusive range, preserving the selected input's type.
+/// Reversed or NaN bounds raise Type. A NaN value is returned unchanged.
+///
+/// ```aside
+/// use std::math::clamp;
+/// fn main() {
+///     if clamp(1.25, 0, 1) != 1 { throw "opacity"; }
+/// }
+/// ```
+#[native(symbol = "std::math::clamp", abi = 1, effects = Effects(0),
+    doc_result = aside_host::source::number(),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        clamp_value(args[0], args[1], args[2]).ok()
+    } })]
+fn clamp(
+    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(doc_type = aside_host::source::number())] value: Value,
+    #[aside(doc_type = aside_host::source::number())] minimum: Value,
+    #[aside(doc_type = aside_host::source::number())] maximum: Value,
+) -> Result<Value, NativeError> {
+    clamp_value(value, minimum, maximum)
+}
+
+fn clamp_value(value: Value, minimum: Value, maximum: Value) -> Result<Value, NativeError> {
+    if !matches!(value.tag(), ValueTag::Int | ValueTag::Float) {
+        return Err(NativeError::Input("clamp requires a number"));
+    }
+    if !matches!(
+        minimum.numeric_cmp(maximum),
+        Some(Ordering::Less | Ordering::Equal)
+    ) {
+        return Err(NativeError::Input("clamp requires ordered numeric bounds"));
+    }
+    Ok(if value.numeric_cmp(minimum) == Some(Ordering::Less) {
+        minimum
+    } else if value.numeric_cmp(maximum) == Some(Ordering::Greater) {
+        maximum
+    } else {
+        value
+    })
+}
+
 /// Convert a number to int, truncating fractional values toward zero.
 /// Integer inputs retain all 64 bits. Non-finite or out-of-range floats raise
 /// Type at the call site. The conversion allocates no script data.
@@ -198,6 +286,9 @@ pub(super) fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
         round::binding(),
         radians::binding(),
         degrees::binding(),
+        min::binding(),
+        max::binding(),
+        clamp::binding(),
         to_int::binding(),
     ]
 }

@@ -14,6 +14,8 @@ fn frame_rate_configuration_is_atomic_inherited_and_restored_for_source_and_asb(
         narrator("preserved");
         game.configure(frame_rate:59.94);
         narrator("fractional");
+        game.configure(frame_rate:"uncapped");
+        narrator("uncapped");
         game.configure(frame_rate:0);
         narrator("automatic");
     }"#;
@@ -26,7 +28,7 @@ fn frame_rate_configuration_is_atomic_inherited_and_restored_for_source_and_asb(
         let (_, mut next) = models::prepared("fn opening(){ narrator(\"fresh\"); }", encoded);
         next.inherit_game_settings(vm.game_settings().clone());
         assert_eq!(next.game_settings().frame_rate_millihertz, Some(144_000));
-        for rate in [Some(144_000), Some(59_940), None] {
+        for rate in [Some(144_000), Some(59_940), Some(0), None] {
             let id = session.view().interaction.unwrap().id();
             for _ in 0..2 {
                 session

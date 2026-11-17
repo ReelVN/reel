@@ -14,21 +14,26 @@ use reel_ui::{
 };
 
 #[test]
-fn save_slot_survives_player_restart_restores_callbacks_and_preserves_slot_on_write_failure() {
+fn save_slot_survives_player_restart_rebuilds_callbacks_and_preserves_slot_on_write_failure() {
     use crate::saves::{DirectorySaves, RuntimeSaves, SaveService, SaveStorage};
     use reel_core::{budget::QueueLimits, wake::WakeSignal};
     use std::sync::Arc;
     const SOURCE: &str = r#"
-        let data = model({count: 1});
-        fn main() {
+        use std::resume::{state,root,flow,point};
+        class ButtonState {let mut count:int=1;}
+        state(ButtonState,"buttons");root(main,"button-story");
+        fn story(data:ButtonState){flow("buttons");point("waiting");narrator("saved input");}
+        fn main(data:ButtonState=model(ButtonState())) {
+            game.configure(text_speed:0);
             stage.replace(stack(width: 600, height: 400) {
                 button("Save", x: 0, width: 90, height: 40, on_click: |e| {
-                    await saves.save("slot/一", title: "Chapter One"); data.count += 1;
+                    data.count += 1;await saves.save("slot/一", title: "Chapter One");
                 });
                 button("Load", x: 100, width: 90, height: 40, on_click: |e| { await saves.load("slot/一"); throw "old load callback resumed"; });
                 button("Change", x: 200, width: 90, height: 40, on_click: |e| { data.count += 10; });
                 text(value: derive(|| f"count={data.count}"), y: 100);
             });
+            run_flow(story,data);
         }
     "#;
     let folder = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -122,11 +127,22 @@ fn save_slot_survives_player_restart_restores_callbacks_and_preserves_slot_on_wr
     activate(&mut second, &mut bridge, 240.);
     has_count(&second, "count=12");
 
-    let snapshot = storage.read("slot/一").unwrap();
-    let original = snapshot.encode().unwrap();
+    let checkpoint = storage.read("slot/一").unwrap();
+    let mut original = Vec::new();
+    checkpoint.write_to(&mut original).unwrap();
     let too_small = DirectorySaves::new(&folder, 1);
-    assert!(too_small.write(slots[0].clone(), &snapshot, None).is_err());
-    assert_eq!(storage.read("slot/一").unwrap().encode().unwrap(), original);
+    assert!(
+        too_small
+            .write(slots[0].clone(), &checkpoint, None)
+            .is_err()
+    );
+    let mut after = Vec::new();
+    storage
+        .read("slot/一")
+        .unwrap()
+        .write_to(&mut after)
+        .unwrap();
+    assert_eq!(after, original);
     second.close().unwrap();
     wait(&mut second);
     storage.delete("slot/一").unwrap();
@@ -411,10 +427,14 @@ fn radio_group_snapshot_rebuilds_binding_identity_and_restores_selection_without
         "en".into(),
         live.ui().assets(),
         live.initializer(),
+        live.entry_function(),
         live.catalogs(),
     )
     .unwrap();
-    while !restored.prepare_restored(SliceBudget::default()).unwrap() {}
+    while !restored
+        .prepare_restored(SliceBudget::default(), &mut || 0)
+        .unwrap()
+    {}
     let mut story = StoryRuntime::new(restored);
     drain(&mut story);
     let (mut bridge, root) = mount(story.driver().ui());
@@ -1440,7 +1460,7 @@ fn virtual_images_cannot_settle_new_geometry_or_presentation_waits() {
             let state=model({pending:false,message:"waiting"});
             let values=[];for i in 0..100 {values.append(i);}
             let rows=list(||values,key:|i|i,virtual:true,build:|row|column(height:40){
-                image("withheld.png",width:40,height:40,visible:derive(||state.pending && row.value==4));
+                image("withheld.png",width:40,height:40,visible:derive(||state.pending && row.value==3));
             });
             let viewport=scroll(width:200,height:100){rows};
             stage.replace(stack{
@@ -1502,6 +1522,19 @@ fn virtual_images_cannot_settle_new_geometry_or_presentation_waits() {
             drain(&mut runtime);
             draw(&mut runtime, &mut bridge, &mut serial);
         }
+        // The 25px overscan after this 100px viewport includes row 3 at y=120.
+        // Its missing image must block fresh receipts while visible rows remain drawable.
+        let buffered_row = runtime
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                NodeKind::VirtualList(list) => list.rows.iter().find(|row| row.index == 3).copied(),
+                _ => None,
+            })
+            .expect("the image row is mounted in the virtual buffer");
+        assert!(buffered_row.offset >= 100. && buffered_row.offset < 125.);
         let activate = |runtime: &mut StoryRuntime, bridge: &mut PresentationBridge, x| {
             for kind in ["move", "down", "up"] {
                 runtime

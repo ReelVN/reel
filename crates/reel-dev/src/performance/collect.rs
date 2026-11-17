@@ -61,39 +61,57 @@ pub(super) fn download(vdb: &Vdb<'_>, manifest: &Manifest, directory: &Path) -> 
 
 pub(super) fn report(directory: &Path) -> Result<()> {
     let manifest = Manifest::read(directory)?;
-    let reports = directory.join("reports");
-    let status: serde_json::Value =
-        serde_json::from_slice(&fs::read(reports.join("status.json"))?)?;
-    validate_status(&status, &manifest)?;
+    analyze(directory, &manifest).map(|_| ())
+}
+
+pub(super) fn analyze(directory: &Path, manifest: &Manifest) -> Result<serde_json::Value> {
+    let status = read_status(directory, manifest)?;
     ensure!(
         status["state"] == "complete",
         "performance session {}: {}",
         status["state"],
         status["error"]
     );
+    analyze_frames(directory, manifest)
+}
+
+pub(super) fn read_status(directory: &Path, manifest: &Manifest) -> Result<serde_json::Value> {
+    let status: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("reports/status.json"))?)?;
+    validate_status(&status, manifest)?;
+    Ok(status)
+}
+
+pub(super) fn analyze_frames(directory: &Path, manifest: &Manifest) -> Result<serde_json::Value> {
+    let reports = directory.join("reports");
     let environment = &manifest.environment;
-    crate::frame_cost::report(
+    let input = reports.join("frames.tsv");
+    let raw = fs::read_to_string(&input).context("read probe log")?;
+    validate_frame_request(&raw, &manifest.request)?;
+    let frames = crate::frame_cost::report_text(
         environment,
-        &reports.join("frames.tsv"),
+        &input,
+        &raw,
         &reports.join("frames.json"),
         None,
     )?;
-    if manifest.request.frame.is_some() {
-        crate::render_cost::report(
+    let render = if manifest.request.frame.is_some() {
+        let result = crate::render_cost::report(
             environment,
             &reports.join("frozen.tsv"),
             &reports.join("render.json"),
         )?;
-        let result: serde_json::Value =
-            serde_json::from_slice(&fs::read(reports.join("render.json"))?)?;
         ensure!(
             result["valid"] == true,
             "fixed-frame trace is incomplete; see render.json"
         );
-    }
-    summary::report(&reports)?;
+        Some(result)
+    } else {
+        None
+    };
+    let summary = summary::report(&reports, &frames, render.as_ref(), &raw)?;
     println!("Performance reports: {}", reports.display());
-    Ok(())
+    Ok(summary)
 }
 
 fn validate_status(status: &serde_json::Value, manifest: &Manifest) -> Result<()> {
@@ -101,6 +119,21 @@ fn validate_status(status: &serde_json::Value, manifest: &Manifest) -> Result<()
     ensure!(
         status["request"] == serde_json::to_value(&manifest.request)?,
         "player status belongs to a different measurement request"
+    );
+    Ok(())
+}
+
+fn validate_frame_request(raw: &str, request: &Request) -> Result<()> {
+    let header = raw
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("performance_request\t"))
+        .context("frames.tsv is missing its measurement request")?;
+    let recorded: serde_json::Value =
+        serde_json::from_str(header).context("read frames.tsv measurement request")?;
+    ensure!(
+        recorded == serde_json::to_value(request)?,
+        "frames.tsv belongs to a different measurement request"
     );
     Ok(())
 }
@@ -134,5 +167,29 @@ mod tests {
         assert!(validate_status(&status, &manifest).is_err());
         status["request"] = serde_json::Value::Null;
         assert!(validate_status(&status, &manifest).is_err());
+    }
+
+    #[test]
+    fn frame_report_must_belong_to_its_measurement_request() {
+        let request = Request {
+            version: 1,
+            package: "game.asb".into(),
+            saves: "saves".into(),
+            output: "reports".into(),
+            vm_timing: false,
+            source_atlas: None,
+            frame: None,
+        };
+        let header = |request: &Request| {
+            format!(
+                "performance_request\t{}\r\nperformance_scope\tordinary_session\r\n",
+                serde_json::to_string(request).unwrap()
+            )
+        };
+        validate_frame_request(&header(&request), &request).unwrap();
+        let mut other = request.clone();
+        other.output = "other/reports".into();
+        assert!(validate_frame_request(&header(&other), &request).is_err());
+        assert!(validate_frame_request("performance_scope\tordinary_session\n", &request).is_err());
     }
 }

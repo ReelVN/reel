@@ -2,7 +2,7 @@
 use super::{GpuError, target_plan::Requirements};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 
-/// Shared idle threshold for cold optional target retention in accepted submissions.
+/// Idle threshold for optional effect metadata and uniform storage.
 pub(crate) const MAX_IDLE_SUBMISSIONS: u8 = 32;
 
 struct Slot<T> {
@@ -190,26 +190,18 @@ impl<T> Cache<T> {
         }
     }
 
-    pub(crate) fn prune_cold(&mut self, mut unique: impl FnMut(&T) -> bool) -> bool {
-        let before = self.slots.len();
-        self.slots.retain(|slot| {
-            let retention = 2 + slot
-                .uses
-                .saturating_sub(1)
-                .saturating_mul(2)
-                .min(MAX_IDLE_SUBMISSIONS - 2);
-            slot.age < retention || !unique(&slot.value)
-        });
-        self.slots.len() != before
-    }
-
     /// Required transient work can displace optional cache bookkeeping. Release
     /// its vector capacity only after all remaining cache owners are independent.
     pub(crate) fn release_idle(&mut self, mut unique: impl FnMut(&T) -> bool) {
-        self.slots.retain(|slot| !unique(&slot.value));
+        self.exclude(|value| unique(value));
         if self.slots.is_empty() {
             *self = Self::default();
         }
+    }
+
+    /// Remove cache ownership while retaining reserved slot capacity for reuse.
+    pub(crate) fn exclude(&mut self, mut matches: impl FnMut(&T) -> bool) {
+        self.slots.retain(|slot| !matches(&slot.value));
     }
 
     /// Reclaim one independent owner outside the plan's physical multiplicity.

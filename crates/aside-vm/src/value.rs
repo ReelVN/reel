@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    cmp::Ordering as NumericOrder,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 /// Process-local, never reused. A restored session allocates a new heap identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -92,6 +95,22 @@ impl Value {
             None
         }
     }
+    /// Compare numbers with the same precision as Aside's comparison operators.
+    /// NaN and non-numeric values have no ordering.
+    pub fn numeric_cmp(self, other: Self) -> Option<NumericOrder> {
+        match (
+            self.as_int(),
+            other.as_int(),
+            self.as_float(),
+            other.as_float(),
+        ) {
+            (Some(a), Some(b), _, _) => Some(a.cmp(&b)),
+            (Some(a), _, _, Some(b)) => compare_int_float(a, b),
+            (_, Some(b), Some(a), _) => compare_int_float(b, a).map(NumericOrder::reverse),
+            (_, _, Some(a), Some(b)) => a.partial_cmp(&b),
+            _ => None,
+        }
+    }
     /// Storage comparison only; language equality requires object/numeric semantics.
     pub const fn same_bits(self, other: Self) -> bool {
         self.tag as u32 == other.tag as u32
@@ -112,6 +131,23 @@ impl Value {
         } else {
             None
         }
+    }
+}
+
+// Compare the integer parts before inspecting any fractional tail.
+fn compare_int_float(integer: i64, float: f64) -> Option<NumericOrder> {
+    if float.is_nan() {
+        return None;
+    }
+    if float >= 9223372036854775808.0 {
+        return Some(NumericOrder::Less);
+    }
+    if float < -9223372036854775808.0 {
+        return Some(NumericOrder::Greater);
+    }
+    match integer.cmp(&(float as i64)) {
+        NumericOrder::Equal => (integer as f64).partial_cmp(&float),
+        other => Some(other),
     }
 }
 

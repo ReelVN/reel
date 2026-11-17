@@ -15,7 +15,7 @@ mod tests;
 mod text_pool;
 mod verify;
 
-pub use crate::{HostMethodSupport, HostTypeSupport};
+pub use crate::{HostCallableSupport, HostMethodSupport, HostTypeSupport};
 pub(crate) use code_residency::CodeWindow;
 #[cfg(test)]
 pub(crate) use code_residency::PAGE_WORDS;

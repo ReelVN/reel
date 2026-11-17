@@ -21,7 +21,8 @@ impl Binder<'_> {
     pub(super) fn check_results(&mut self) {
         if self.exhausted
             || !self.diagnostics.is_empty()
-            || !self.external_nodes.values().any(|d| d.must_use_result)
+            || !(self.has_children_spread
+                || self.external_nodes.values().any(|d| d.must_use_result))
         {
             return;
         }
@@ -75,6 +76,25 @@ impl Binder<'_> {
                     self.result_context(parent, node, contexts[parent.0 as usize], module_tail)
                 });
             contexts[i] = context;
+            if let Form::Statement { expression, .. } = self.out.hir.node(node).form
+                && let Form::Spread { value } = self.out.hir.node(expression).form
+            {
+                if !context.collecting {
+                    self.error(
+                        D::InvalidControl,
+                        self.span(expression),
+                        "children spread requires a children block",
+                    );
+                } else if self.falls_through(value)
+                    && !self.spread_type_possible(expression, self.ty(value), false)
+                {
+                    self.error(
+                        D::TypeMismatch,
+                        self.span(expression),
+                        "children spread requires an array or tuple",
+                    );
+                }
+            }
             if !context.used
                 && let Form::Call { callee, .. } = self.out.hir.node(node).form
                 && self.required_result(callee, &aliases)

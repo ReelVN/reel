@@ -384,7 +384,12 @@ fn concurrent_explicit_outputs_publish_exactly_one_complete_artifact() {
             .count(),
         1
     );
-    rp::decode(&case.bytes(), rp::Limits::default()).unwrap();
+    rp::decode(
+        &case.bytes(),
+        reel_engine::aside::source::types(),
+        rp::Limits::default(),
+    )
+    .unwrap();
     case.assert_no_staging();
 }
 
@@ -411,7 +416,12 @@ mod build_profiles {
         let d = decode_story(&debug.bytes).unwrap();
         let r = decode_story(&release.bytes).unwrap();
         assert_eq!(d.program.package(), checked.compilation.program.package());
-        let encoded = reel_package::decode(&debug.bytes, Default::default()).unwrap();
+        let encoded = reel_package::decode(
+            &debug.bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(encoded.metadata().modules, checked.modules);
         assert_eq!(encoded.metadata().game_entry, debug.game_entry);
         let mut expected = checked.compilation.program.package().clone();
@@ -420,7 +430,12 @@ mod build_profiles {
             function.source_map = aside_vm::bytecode::CompactSourceMap::default();
         }
         assert_eq!(r.program.package(), &expected);
-        let encoded = reel_package::decode(&release.bytes, Default::default()).unwrap();
+        let encoded = reel_package::decode(
+            &release.bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         let mut expected_modules = checked.modules.clone();
         for module in &mut expected_modules {
             module.debug = None;

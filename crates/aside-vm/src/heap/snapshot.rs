@@ -340,7 +340,6 @@ pub(crate) fn allocate(
                     Payload::Fault(crate::fault::FaultPayload {
                         data,
                         edges: [Value::NULL; 3],
-                        release_cursor: 0,
                         code: heap
                             .code
                             .as_ref()

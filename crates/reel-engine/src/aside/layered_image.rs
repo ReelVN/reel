@@ -256,7 +256,7 @@ impl SessionVm {
         let mut cost = 1;
         match ticket.continuation.unwrap().stage {
             phase if phase == Phase::Source as u64 => {
-                work.source = self.vm.host_callback_value(ticket)?;
+                work.source = self.vm.host_resume_value(ticket)?;
                 if self.vm.heap().info(work.source)?.kind != ObjectKind::Array {
                     return Err(AdapterError::Input(
                         "layered_image layers must return an array",

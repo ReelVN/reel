@@ -173,6 +173,21 @@ fn touches_boundary(
     ranges.peek().is_some_and(|range| range.start <= at)
 }
 
+/// Transitions replace a span or insert pixels at a gap in the command stream.
+pub(crate) fn intersects_transition(
+    drawing: &reel_ui::frame::FrameDrawing,
+    commands: Range<usize>,
+) -> bool {
+    let transitions = drawing.transitions();
+    let next = transitions.partition_point(|t| {
+        t.commands.end < commands.start
+            || t.commands.end == commands.start && !t.commands.is_empty()
+    });
+    transitions
+        .get(next)
+        .is_some_and(|t| t.commands.start < commands.end)
+}
+
 /// A flat clip can move to ordinary draw geometry when it crosses no retained
 /// transition/capture boundary. Child scopes keep their existing isolation.
 pub(crate) fn flat_clip(
@@ -230,16 +245,9 @@ impl InlineFill {
         let Some(offset) = offset else { return false };
         let start = offset + next;
         let end = start + self.consumed;
-        let retained = drawing.transitions();
-        let transition = retained.partition_point(|t| {
-            t.commands.end < start || t.commands.end == start && !t.commands.is_empty()
-        });
         let exclusions = drawing.capture_exclusions();
         let exclusion = exclusions.partition_point(|range| range.end <= start);
-        transitions
-            && retained
-                .get(transition)
-                .is_some_and(|t| t.commands.start < end)
+        transitions && intersects_transition(drawing, start..end)
             || capture && exclusions.get(exclusion).is_some_and(|r| r.start < end)
     }
 }

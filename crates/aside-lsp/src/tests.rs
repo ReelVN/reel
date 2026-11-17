@@ -16,6 +16,37 @@ mod module_navigation;
 mod source_inference;
 
 #[test]
+fn value_contracts_complete_record_fields_and_finite_arguments() {
+    let source = r#"fn view() -> {node:int, caption:string} {{node:1, caption:"Back"}}
+fn close(result: "back" | "title", fade: bool = true) {}
+fn main() { let v = view(); v.node; close(fade:false, result: "back"); }"#;
+    let mut workspace = Workspace::new(ServerOptions::default());
+    workspace.open(uri(), 1, source.into()).unwrap();
+    let fields = workspace
+        .complete(&uri(), position(source, "v.node", true), Encoding::Utf16)
+        .unwrap();
+    assert!(
+        fields
+            .iter()
+            .any(|item| item.label == "caption" && item.detail.as_deref() == Some("string")),
+        "{fields:?}"
+    );
+    let options = workspace
+        .complete(
+            &uri(),
+            position(source, "close(fade:false, result:", true),
+            Encoding::Utf16,
+        )
+        .unwrap();
+    for label in ["\"back\"", "\"title\""] {
+        assert!(
+            options.iter().any(|item| item.label == label),
+            "{options:?}"
+        );
+    }
+}
+
+#[test]
 fn missing_members_report_utf16_ranges_and_clear_after_editing() {
     let source = "fn main(items:array){let title=\"中文🎮\";items.apend(1);}";
     let mut workspace = Workspace::new(ServerOptions::default());
@@ -1093,7 +1124,7 @@ fn identity_result_parameters_preserve_specific_arguments_through_all_call_forms
     let node = TypeHint::Named("native::Node".into());
     let particles = TypeHint::Named("native::Particles".into());
     let mut add = signature(vec![parameter("child", node.clone(), true)], node.clone());
-    add.result_parameter = Some("child".into());
+    add.result_parameter = Some(ExternalResultParameter::Value("child".into()));
     let context = HostContext {
         globals: vec![
             ExternalSymbol::function("add", add.clone()),

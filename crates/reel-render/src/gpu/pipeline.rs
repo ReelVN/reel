@@ -73,12 +73,16 @@ impl PipelineSlots {
             .expect("pipeline construction poisoned");
         gpu.check()?;
         let result = validated(gpu, || {
-            Arc::new(pipeline(
+            Arc::new(pipeline_module(
                 &gpu.device,
                 quality,
                 &pipelines.paint_layout,
-                include_str!("paint.wgsl"),
-                true,
+                &pipelines.paint_shader,
+                (VertexInput::Mesh, "vertex"),
+                FragmentOutput {
+                    entry: "fragment",
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                },
                 #[cfg(test)]
                 Some(&self.creations),
             ))
@@ -113,14 +117,12 @@ impl PipelineSlots {
             .lock()
             .expect("pipeline construction poisoned");
         gpu.check()?;
-        let pipelines = validated(gpu, || {
-            Arc::new(Pipelines::new(
-                &gpu.device,
-                quality,
-                #[cfg(test)]
-                &self.creations,
-            ))
-        })?;
+        let pipelines = Arc::new(Pipelines::new(
+            gpu,
+            quality,
+            #[cfg(test)]
+            &self.creations,
+        )?);
         *slot = Some(pipelines.clone());
         Ok(pipelines)
     }
@@ -136,6 +138,7 @@ pub(super) struct Creations {
     pub(super) render_pipelines: std::sync::atomic::AtomicUsize,
     pub(super) samplers: std::sync::atomic::AtomicUsize,
     pub(super) invalid_shader: std::sync::atomic::AtomicBool,
+    pub(super) invalid_worker_pipeline: std::sync::atomic::AtomicBool,
 }
 #[cfg(test)]
 impl Creations {
@@ -244,6 +247,8 @@ pub(super) struct CompositeInputs<'a> {
 }
 pub struct Pipelines {
     instances: Mutex<[Option<Arc<wgpu::RenderPipeline>>; 22]>,
+    paint_shader: wgpu::ShaderModule,
+    bounded_shader: Option<wgpu::ShaderModule>,
     pub paint: wgpu::RenderPipeline,
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
@@ -294,317 +299,325 @@ pub(super) fn sampler(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 impl Pipelines {
-    fn new(device: &wgpu::Device, quality: Quality, #[cfg(test)] counts: &Creations) -> Self {
-        #[cfg(test)]
-        counts
-            .bind_layouts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let paint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("paint"),
-            entries: &[
-                texture(0),
-                sampler(1),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        #[cfg(test)]
-        counts
-            .bind_layouts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("composite"),
-            entries: &[
-                texture(0),
-                texture(1),
-                sampler(2),
-                texture(4),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let paint = pipeline(
-            device,
-            quality,
-            &paint_layout,
-            include_str!("paint.wgsl"),
-            true,
+    fn new(gpu: &Gpu, quality: Quality, #[cfg(test)] counts: &Creations) -> Result<Self, GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::PipelineCreate);
+        let device = &gpu.device;
+        let (
+            paint_layout,
+            composite_layout,
+            yuv_layout,
+            paint_shader,
+            bounded_shader,
+            composite_shader,
+            bounded_composite_shader,
+            samplers,
+            nearest_samplers,
+            plain_appearance,
+            block_appearance,
+        ) = validation_scope(gpu, || {
             #[cfg(test)]
-            Some(counts),
-        );
-        let coverage = pipeline_entry(
-            device,
-            quality,
-            &paint_layout,
-            include_str!("paint.wgsl"),
-            true,
-            FragmentOutput {
-                entry: "fragment_coverage",
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-            },
+            counts
+                .bind_layouts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let paint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("paint"),
+                entries: &[
+                    texture(0),
+                    sampler(1),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
             #[cfg(test)]
-            Some(counts),
-        );
-        let direct = [
-            "fragment_direct",
-            "fragment_direct_bc1",
-            "fragment_direct_bc3",
-            "fragment_regional",
-            "fragment_regional_bc1",
-            "fragment_regional_bc3",
-            "fragment_direct_coverage",
-            "fragment_solid",
-        ]
-        .map(|entry| {
-            pipeline_entry(
+            counts
+                .bind_layouts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let composite_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("composite"),
+                    entries: &[
+                        texture(0),
+                        texture(1),
+                        sampler(2),
+                        texture(4),
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+            let paint_shader = shader_module(
                 device,
-                quality,
-                &paint_layout,
-                include_str!("paint.wgsl"),
-                true,
-                FragmentOutput {
-                    entry,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                },
+                concat!(
+                    include_str!("paint.wgsl"),
+                    "\n",
+                    include_str!("instance_vertex.wgsl")
+                ),
                 #[cfg(test)]
                 Some(counts),
+            );
+            let bounded_supported = quality.format == wgpu::TextureFormat::Rgba8Unorm
+                && device.features().contains(wgpu::Features::SHADER_F16);
+            let bounded_shader = bounded_supported.then(|| {
+                shader_module(
+                    device,
+                    concat!(
+                        include_str!("paint_bounded.wgsl"),
+                        "\n",
+                        include_str!("instance_vertex.wgsl")
+                    ),
+                    #[cfg(test)]
+                    Some(counts),
+                )
+            });
+            #[cfg(test)]
+            counts
+                .bind_layouts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let uniform = |binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            };
+            let yuv_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("planar video"),
+                entries: &[
+                    texture(0),
+                    sampler(1),
+                    uniform(2),
+                    texture(3),
+                    texture(4),
+                    uniform(5),
+                ],
+            });
+            let composite_code = include_str!("composite.wgsl");
+            let composite_shader = shader_module(
+                device,
+                composite_code,
+                #[cfg(test)]
+                Some(counts),
+            );
+            let bounded_composite = crate::common::precision::composite_wgsl(
+                composite_code,
+                quality.format == wgpu::TextureFormat::Rgba8Unorm,
+                device.features().contains(wgpu::Features::SHADER_F16),
+            );
+            let bounded_composite_shader = match bounded_composite {
+                std::borrow::Cow::Borrowed(_) => None,
+                std::borrow::Cow::Owned(code) => Some(shader_module(
+                    device,
+                    &code,
+                    #[cfg(test)]
+                    Some(counts),
+                )),
+            };
+            #[cfg(test)]
+            counts
+                .samplers
+                .fetch_add(8, std::sync::atomic::Ordering::Relaxed);
+            let create_samplers = |filter| {
+                std::array::from_fn(|index| {
+                    device.create_sampler(&wgpu::SamplerDescriptor {
+                        label: Some("premultiplied image sampling"),
+                        mag_filter: filter,
+                        min_filter: filter,
+                        mipmap_filter: if filter == wgpu::FilterMode::Nearest {
+                            wgpu::MipmapFilterMode::Nearest
+                        } else {
+                            wgpu::MipmapFilterMode::Linear
+                        },
+                        address_mode_u: if index & 1 != 0 {
+                            wgpu::AddressMode::Repeat
+                        } else {
+                            wgpu::AddressMode::ClampToEdge
+                        },
+                        address_mode_v: if index & 2 != 0 {
+                            wgpu::AddressMode::Repeat
+                        } else {
+                            wgpu::AddressMode::ClampToEdge
+                        },
+                        ..Default::default()
+                    })
+                })
+            };
+            let samplers = create_samplers(wgpu::FilterMode::Linear);
+            let nearest_samplers = create_samplers(wgpu::FilterMode::Nearest);
+            let plain_appearance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("plain image appearance"),
+                contents: &[0u8; 160],
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let block_appearance = std::array::from_fn(|index| {
+                let mut values = [[0f32; 4]; 10];
+                values[8][2] = (index + 1) as f32;
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("fixed block texture appearance"),
+                    contents: bytemuck::cast_slice(&values),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                })
+            });
+            (
+                paint_layout,
+                composite_layout,
+                yuv_layout,
+                paint_shader,
+                bounded_shader,
+                composite_shader,
+                bounded_composite_shader,
+                samplers,
+                nearest_samplers,
+                plain_appearance,
+                block_appearance,
             )
-        });
-        let bounded_supported = quality.format == wgpu::TextureFormat::Rgba8Unorm
-            && device.features().contains(wgpu::Features::SHADER_F16);
-        let bounded_pipeline = |entry, blend| {
-            pipeline_entry(
+        })?;
+
+        let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let paint_pipeline = |shader: &wgpu::ShaderModule, entry, blend| {
+            pipeline_module(
                 device,
                 quality,
                 &paint_layout,
-                include_str!("paint_bounded.wgsl"),
-                true,
+                shader,
+                (VertexInput::Mesh, "vertex"),
                 FragmentOutput { entry, blend },
                 #[cfg(test)]
                 Some(counts),
             )
         };
-        let bounded = bounded_supported.then(|| {
-            [
-                "fragment_direct",
-                "fragment_direct_bc1",
-                "fragment_direct_bc3",
-                "fragment_solid",
-                "fragment_regional",
-                "fragment_regional_bc1",
-                "fragment_regional_bc3",
-            ]
-            .map(|entry| {
-                bounded_pipeline(entry, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING))
-            })
-        });
-        let bounded_opaque = bounded_supported.then(|| {
-            [
-                "fragment_direct_bc1",
-                "fragment_solid",
-                "fragment_regional_bc1",
-            ]
-            .map(|entry| bounded_pipeline(entry, None))
-        });
-        let opaque = [
-            "fragment_direct_bc1",
-            "fragment_regional_bc1",
-            "fragment_solid",
-        ]
-        .map(|entry| {
-            pipeline_entry(
-                device,
-                quality,
-                &paint_layout,
-                include_str!("paint.wgsl"),
-                true,
-                FragmentOutput { entry, blend: None },
-                #[cfg(test)]
-                Some(counts),
-            )
-        });
-        #[cfg(test)]
-        counts
-            .bind_layouts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let uniform = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-        let yuv_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("planar video"),
-            entries: &[
-                texture(0),
-                sampler(1),
-                uniform(2),
-                texture(3),
-                texture(4),
-                uniform(5),
-            ],
-        });
-        let yuv = pipeline_entry(
-            device,
-            quality,
-            &yuv_layout,
-            include_str!("paint.wgsl"),
-            true,
-            FragmentOutput {
-                entry: "fragment_yuv",
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-            },
-            #[cfg(test)]
-            Some(counts),
-        );
-        let composite = pipeline(
-            device,
-            quality,
-            &composite_layout,
-            include_str!("composite.wgsl"),
-            false,
-            #[cfg(test)]
-            Some(counts),
-        );
-        let composite_blend = pipeline_entry(
-            device,
-            quality,
-            &composite_layout,
-            include_str!("composite.wgsl"),
-            false,
-            FragmentOutput {
-                entry: "fragment",
-                blend: None,
-            },
-            #[cfg(test)]
-            Some(counts),
-        );
-        let extended_blend = pipeline_entry(
-            device,
-            quality,
-            &composite_layout,
-            include_str!("composite.wgsl"),
-            false,
-            FragmentOutput {
-                entry: "extended_blend",
-                blend: None,
-            },
-            #[cfg(test)]
-            Some(counts),
-        );
-        let bounded_composite = crate::common::precision::composite_wgsl(
-            include_str!("composite.wgsl"),
-            quality.format == wgpu::TextureFormat::Rgba8Unorm,
-            device.features().contains(wgpu::Features::SHADER_F16),
-        );
-        let effect_resample = [false, true].map(|over| {
-            pipeline_entry(
-                device,
-                quality,
-                &composite_layout,
-                &bounded_composite,
-                false,
-                FragmentOutput {
-                    entry: "effect_resample",
-                    blend: over.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                },
-                #[cfg(test)]
-                Some(counts),
-            )
-        });
-        let source_over = pipeline_entry(
-            device,
-            quality,
-            &composite_layout,
-            &bounded_composite,
-            false,
-            FragmentOutput {
-                entry: "source_over",
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-            },
-            #[cfg(test)]
-            Some(counts),
-        );
-        let alpha_mask = pipeline_entry(
-            device,
-            quality,
-            &composite_layout,
-            &bounded_composite,
-            false,
-            FragmentOutput {
-                entry: "alpha_mask",
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-            },
-            #[cfg(test)]
-            Some(counts),
-        );
-        #[cfg(test)]
-        counts
-            .samplers
-            .fetch_add(8, std::sync::atomic::Ordering::Relaxed);
-        let create_samplers = |filter| {
-            std::array::from_fn(|index| {
-                device.create_sampler(&wgpu::SamplerDescriptor {
-                    label: Some("premultiplied image sampling"),
-                    mag_filter: filter,
-                    min_filter: filter,
-                    mipmap_filter: if filter == wgpu::FilterMode::Nearest {
-                        wgpu::MipmapFilterMode::Nearest
-                    } else {
-                        wgpu::MipmapFilterMode::Linear
-                    },
-                    address_mode_u: if index & 1 != 0 {
-                        wgpu::AddressMode::Repeat
-                    } else {
-                        wgpu::AddressMode::ClampToEdge
-                    },
-                    address_mode_v: if index & 2 != 0 {
-                        wgpu::AddressMode::Repeat
-                    } else {
-                        wgpu::AddressMode::ClampToEdge
-                    },
-                    ..Default::default()
+        // Each worker owns its WGPU error scopes. The tier is published after all joins.
+        let (paint, specialized, yuv, composite) = std::thread::scope(|scope| {
+            let paint = scope.spawn(|| {
+                validation_scope(gpu, || {
+                    ["fragment", "fragment_coverage"]
+                        .map(|entry| paint_pipeline(&paint_shader, entry, over))
                 })
-            })
-        };
-        let samplers = create_samplers(wgpu::FilterMode::Linear);
-        let nearest_samplers = create_samplers(wgpu::FilterMode::Nearest);
-        let plain_appearance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("plain image appearance"),
-            contents: &[0u8; 160],
-            usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let yuv = scope.spawn(|| {
+                validation_scope(gpu, || {
+                    pipeline_module(
+                        device,
+                        quality,
+                        &yuv_layout,
+                        &paint_shader,
+                        (VertexInput::Mesh, "vertex"),
+                        FragmentOutput {
+                            entry: "fragment_yuv",
+                            blend: over,
+                        },
+                        #[cfg(test)]
+                        Some(counts),
+                    )
+                })
+            });
+            let composite = scope.spawn(|| {
+                validation_scope(gpu, || {
+                    let composite_pipeline = |shader: &wgpu::ShaderModule, entry, blend| {
+                        pipeline_module(
+                            device,
+                            quality,
+                            &composite_layout,
+                            shader,
+                            (VertexInput::None, "vertex"),
+                            FragmentOutput { entry, blend },
+                            #[cfg(test)]
+                            Some(counts),
+                        )
+                    };
+                    let resample_shader = bounded_composite_shader
+                        .as_ref()
+                        .unwrap_or(&composite_shader);
+                    let composite = composite_pipeline(&composite_shader, "fragment", over);
+                    let composite_blend = composite_pipeline(&composite_shader, "fragment", None);
+                    let extended_blend =
+                        composite_pipeline(&composite_shader, "extended_blend", None);
+                    let effect_resample = [None, over]
+                        .map(|blend| composite_pipeline(resample_shader, "effect_resample", blend));
+                    let source_over = composite_pipeline(resample_shader, "source_over", over);
+                    let alpha_mask = composite_pipeline(resample_shader, "alpha_mask", over);
+                    (
+                        composite,
+                        composite_blend,
+                        extended_blend,
+                        effect_resample,
+                        source_over,
+                        alpha_mask,
+                    )
+                })
+            });
+            let specialized = validation_scope(gpu, || {
+                let direct = [
+                    "fragment_direct",
+                    "fragment_direct_bc1",
+                    "fragment_direct_bc3",
+                    "fragment_regional",
+                    "fragment_regional_bc1",
+                    "fragment_regional_bc3",
+                    "fragment_direct_coverage",
+                    "fragment_solid",
+                ]
+                .map(|entry| paint_pipeline(&paint_shader, entry, over));
+                let bounded = bounded_shader.as_ref().map(|shader| {
+                    [
+                        "fragment_direct",
+                        "fragment_direct_bc1",
+                        "fragment_direct_bc3",
+                        "fragment_solid",
+                        "fragment_regional",
+                        "fragment_regional_bc1",
+                        "fragment_regional_bc3",
+                    ]
+                    .map(|entry| paint_pipeline(shader, entry, over))
+                });
+                let bounded_opaque = bounded_shader.as_ref().map(|shader| {
+                    [
+                        "fragment_direct_bc1",
+                        "fragment_solid",
+                        "fragment_regional_bc1",
+                    ]
+                    .map(|entry| paint_pipeline(shader, entry, None))
+                });
+                let opaque = [
+                    "fragment_direct_bc1",
+                    "fragment_regional_bc1",
+                    "fragment_solid",
+                ]
+                .map(|entry| paint_pipeline(&paint_shader, entry, None));
+                (direct, bounded, bounded_opaque, opaque)
+            });
+            (
+                paint.join().unwrap(),
+                specialized,
+                yuv.join().unwrap(),
+                composite.join().unwrap(),
+            )
         });
-        let block_appearance = std::array::from_fn(|index| {
-            let mut values = [[0f32; 4]; 10];
-            values[8][2] = (index + 1) as f32;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("fixed block texture appearance"),
-                contents: bytemuck::cast_slice(&values),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-        });
-        Self {
+        let [paint, coverage] = paint?;
+        let (direct, bounded, bounded_opaque, opaque) = specialized?;
+        let (composite, composite_blend, extended_blend, effect_resample, source_over, alpha_mask) =
+            composite?;
+        Ok(Self {
             instances: Default::default(),
+            paint_shader,
+            bounded_shader,
             paint,
             coverage,
             #[cfg(test)]
@@ -617,7 +630,7 @@ impl Pipelines {
             opaque,
             #[cfg(test)]
             opaque_draws: Default::default(),
-            yuv,
+            yuv: yuv?,
             yuv_layout,
             composite,
             source_over,
@@ -633,7 +646,7 @@ impl Pipelines {
             block_appearance,
             masks: super::mask::Cache::default(),
             effects: super::effect::Cache::default(),
-        }
+        })
     }
     fn composite_group(
         &self,
@@ -783,28 +796,6 @@ impl Pipelines {
         }
     }
 }
-pub fn pipeline(
-    device: &wgpu::Device,
-    quality: Quality,
-    layout: &wgpu::BindGroupLayout,
-    code: &str,
-    mesh: bool,
-    #[cfg(test)] counts: Option<&Creations>,
-) -> wgpu::RenderPipeline {
-    pipeline_entry(
-        device,
-        quality,
-        layout,
-        code,
-        mesh,
-        FragmentOutput {
-            entry: "fragment",
-            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        },
-        #[cfg(test)]
-        counts,
-    )
-}
 pub(super) struct FragmentOutput<'a> {
     pub entry: &'a str,
     pub blend: Option<wgpu::BlendState>,
@@ -853,6 +844,29 @@ pub(super) fn pipeline_vertex(
     fragment: FragmentOutput<'_>,
     #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
+    let shader = shader_module(
+        device,
+        code,
+        #[cfg(test)]
+        counts,
+    );
+    pipeline_module(
+        device,
+        quality,
+        layout,
+        &shader,
+        vertex,
+        fragment,
+        #[cfg(test)]
+        counts,
+    )
+}
+
+pub(super) fn shader_module(
+    device: &wgpu::Device,
+    code: &str,
+    #[cfg(test)] counts: Option<&Creations>,
+) -> wgpu::ShaderModule {
     #[cfg(test)]
     let code =
         if counts.is_some_and(|c| c.invalid_shader.load(std::sync::atomic::Ordering::Relaxed)) {
@@ -866,10 +880,21 @@ pub(super) fn pipeline_vertex(
             .shaders
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("reel linear shader"),
         source: wgpu::ShaderSource::Wgsl(code.into()),
-    });
+    })
+}
+
+pub(super) fn pipeline_module(
+    device: &wgpu::Device,
+    quality: Quality,
+    layout: &wgpu::BindGroupLayout,
+    shader: &wgpu::ShaderModule,
+    vertex: (VertexInput, &str),
+    fragment: FragmentOutput<'_>,
+    #[cfg(test)] counts: Option<&Creations>,
+) -> wgpu::RenderPipeline {
     #[cfg(test)]
     if let Some(counts) = counts {
         counts
@@ -881,6 +906,27 @@ pub(super) fn pipeline_vertex(
         bind_group_layouts: &[Some(layout)],
         immediate_size: 0,
     });
+    pipeline_with_layout(
+        device,
+        quality,
+        &pipeline_layout,
+        shader,
+        vertex,
+        fragment,
+        #[cfg(test)]
+        counts,
+    )
+}
+
+pub(super) fn pipeline_with_layout(
+    device: &wgpu::Device,
+    quality: Quality,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    vertex: (VertexInput, &str),
+    fragment: FragmentOutput<'_>,
+    #[cfg(test)] counts: Option<&Creations>,
+) -> wgpu::RenderPipeline {
     let attributes =
         wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4];
     let buffers = [Some(wgpu::VertexBufferLayout {
@@ -908,11 +954,22 @@ pub(super) fn pipeline_vertex(
             .render_pipelines
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+    let entry = fragment.entry;
+    #[cfg(test)]
+    let entry = if entry == "fragment_yuv"
+        && counts.is_some_and(|c| {
+            c.invalid_worker_pipeline
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }) {
+        "missing_worker_fragment"
+    } else {
+        entry
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("reel source over"),
-        layout: Some(&pipeline_layout),
+        layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some(vertex.1),
             compilation_options: Default::default(),
             buffers: match vertex.0 {
@@ -922,8 +979,8 @@ pub(super) fn pipeline_vertex(
             },
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some(fragment.entry),
+            module: shader,
+            entry_point: Some(entry),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: quality.format,
@@ -984,6 +1041,9 @@ pub(super) fn uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 pub(super) fn validated<T>(gpu: &Gpu, create: impl FnOnce() -> T) -> Result<T, GpuError> {
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::PipelineCreate);
+    validation_scope(gpu, create)
+}
+pub(super) fn validation_scope<T>(gpu: &Gpu, create: impl FnOnce() -> T) -> Result<T, GpuError> {
     gpu.check()?;
     let scopes = [
         wgpu::ErrorFilter::Validation,

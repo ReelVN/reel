@@ -4,11 +4,12 @@ pub(crate) fn encode(
     mut linear: image::Rgba32FImage,
     descriptor: TextureDescriptor,
     dither: Dither,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, bool), String> {
     let capacity = descriptor.byte_len().map_err(|e| e.to_string())? as usize;
     let direct = descriptor.mip_count == 1
         && descriptor.storage_layout == reel_core::texture::TextureStorageLayout::Linear;
     let mut bytes = Vec::with_capacity(if direct { 0 } else { capacity });
+    let mut meets_quality = true;
     if descriptor.mip_count > 1 {
         let size = descriptor.layout.storage_size;
         linear = image::Rgba32FImage::from_fn(size[0], size[1], |x, y| {
@@ -36,13 +37,14 @@ pub(crate) fn encode(
             },
             ..descriptor
         };
-        let blocks = match descriptor.format {
-            TextureFormat::Rgba8 => quantized_pixels(&linear, layer, dither).into_raw(),
+        let (blocks, level_meets_quality) = match descriptor.format {
+            TextureFormat::Rgba8 => (quantized_pixels(&linear, layer, dither).into_raw(), true),
             TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => quality::encode(&linear, layer)?,
             _ => unreachable!("offline format"),
         };
+        meets_quality &= level_meets_quality;
         if direct {
-            return Ok(blocks);
+            return Ok((blocks, meets_quality));
         }
         if descriptor.storage_layout == reel_core::texture::TextureStorageLayout::GxmBcMorton {
             let start = bytes.len();
@@ -60,7 +62,7 @@ pub(crate) fn encode(
         }
     }
     debug_assert_eq!(bytes.len(), capacity);
-    Ok(bytes)
+    Ok((bytes, meets_quality))
 }
 
 #[cfg(test)]
@@ -80,7 +82,7 @@ mod tests {
                     ..Default::default()
                 };
                 let (d, linear) = prepare_linear(image, options, 1.).unwrap();
-                let bytes = encode(linear, d, Dither::None).unwrap();
+                let (bytes, _) = encode(linear, d, Dither::None).unwrap();
                 d.validate(bytes.len()).unwrap();
                 assert_eq!(d.layout.logical_size, [13, 7]);
                 assert_eq!(d.layout.content_size, [13, 7]);
@@ -115,7 +117,7 @@ fn transparent_rgb_does_not_bleed_into_coarser_levels() {
         1.,
     )
     .unwrap();
-    let bytes = encode(linear, d, Dither::None).unwrap();
+    let (bytes, _) = encode(linear, d, Dither::None).unwrap();
     assert_eq!(
         &bytes[d.mip_offset(1).unwrap() as usize..],
         &[128, 0, 0, 128]

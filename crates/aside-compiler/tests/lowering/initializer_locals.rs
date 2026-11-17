@@ -725,5 +725,5 @@ fn initializer_slots_and_capture_growth_are_bounded_with_located_failures() {
         },
         ..Default::default()
     };
-    assert!(lowering::compile(&m, &Linkage::default(), opts).is_ok());
+    assert!(lowering::compile(&m, &Linkage::default(), &[], opts).is_ok());
 }

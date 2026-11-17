@@ -435,7 +435,7 @@ fn rest_functions_in_initializer_scopes_preserve_binding_identity() {
     let m = analyzed(
         "let mut x=[];if true{let mut local=[];fn take(a=||local,...mut rest:array){let c=||{rest=[];rest};(a,c)}take(...x);} ",
     );
-    let c = lowering::compile(&m, &Linkage::default(), Options::default()).unwrap();
+    let c = lowering::compile(&m, &Linkage::default(), &[], Options::default()).unwrap();
     super::initializer_locals::assert_local_structure(&m, &c);
     let take = function(c.program.package(), "take");
     assert_eq!(take.captures, [bc::CaptureKind::Cell]);
@@ -471,7 +471,7 @@ fn packed_calls_and_rest_have_exact_budget_and_absolute_depth_boundaries() {
                 ..Default::default()
             };
             if emitted {
-                lowering::compile(&m, &Linkage::default(), options).map(|c| c.stats)
+                lowering::compile(&m, &Linkage::default(), &[], options).map(|c| c.stats)
             } else {
                 lowering::lower(&m, &Linkage::default(), options).map(|ir| ir.stats())
             }
@@ -635,7 +635,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         natives: &links,
         expansions: &[],
     };
-    let c = lowering::compile(&m, &linkage, Options::default()).unwrap();
+    let c = lowering::compile(&m, &linkage, &[], Options::default()).unwrap();
     let p = c.program.package();
     assert_eq!(p.natives, seed.package().natives);
     assert_eq!(p.capabilities, seed.package().capabilities);
@@ -646,6 +646,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         lowering::compile(
             &m,
             &linkage,
+            &[],
             Options {
                 content_version: 77,
                 ..Default::default()
@@ -700,6 +701,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
                 natives: &links,
                 expansions: &[],
             },
+            &[],
             Options::default(),
         )
         .unwrap_err();
@@ -721,6 +723,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
                 natives: &links,
                 expansions: &[],
             },
+            &[],
             Options::default()
         )
         .unwrap_err()
@@ -749,6 +752,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
             natives: &links,
             expansions: &[],
         },
+        &[],
         Options::default(),
     )
     .unwrap();
@@ -793,6 +797,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
                 natives: &links,
                 expansions: &[],
             },
+            &[],
             Options::default(),
         )
         .unwrap();
@@ -806,7 +811,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         let d = descriptor(f, pc);
         assert_eq!(d.target, bc::CallTarget::Native(bc::NativeId(0)));
         assert!(matches!(d.arguments, bc::Arguments::Packed(_)) && d.names.is_empty());
-        let e = lowering::compile(&m, &Linkage::default(), Options::default()).unwrap_err();
+        let e = lowering::compile(&m, &Linkage::default(), &[], Options::default()).unwrap_err();
         assert_eq!(e.kind, lowering::ErrorKind::MissingLink);
         assert_eq!(&source[byte_range(e.span)], "native.run");
     }

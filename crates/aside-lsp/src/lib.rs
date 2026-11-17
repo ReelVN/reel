@@ -3,8 +3,10 @@
 mod host;
 mod position;
 mod queries;
+mod references;
 mod semantic_tokens;
 mod server;
+mod syntax_queries;
 mod workspace;
 pub use server::{run_connection, run_stdio};
 #[cfg(test)]

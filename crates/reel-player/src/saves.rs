@@ -2,15 +2,13 @@
 use crate::aside_session::AsideSessionUi;
 use crate::assets::worker::Worker;
 use reel_core::{budget::QueueLimits, identity::Priority, wake::WakeSignal};
+use reel_engine::aside::saves::{SaveRequestId, SaveSlot};
 use reel_engine::aside::{
-    AdapterError,
+    checkpoint::{
+        CapturedCheckpoint, CheckpointCapture, CheckpointError, CheckpointLoad, CheckpointRecord,
+    },
     data::DataDocument,
     saves::SaveRequest,
-    snapshot::{OwnedSessionRestore, SessionCapture, SnapshotBudget},
-};
-use reel_engine::aside::{
-    saves::{SaveRequestId, SaveSlot},
-    snapshot::SessionSnapshot,
 };
 use std::{
     fs,
@@ -20,42 +18,60 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-type CaptureCursor<'a> = Option<SessionCapture<'a>>;
-self_cell::self_cell! {
-    struct CaptureCell {
-        owner: Box<AsideSessionUi>,
-        #[not_covariant]
-        dependent: CaptureCursor,
-    }
-}
 pub(crate) struct Capture {
-    cell: CaptureCell,
+    driver: Option<Box<AsideSessionUi>>,
+    cursor: Option<Box<CheckpointCapture>>,
     pub bytes: u64,
 }
 impl Capture {
-    // Admission returns the original live driver without an extra allocation.
-    pub fn new(driver: Box<AsideSessionUi>) -> Result<Self, (Box<AsideSessionUi>, AdapterError)> {
-        CaptureCell::try_new_or_recover(driver, |driver| driver.snapshot_begin().map(Some))
-            .map(|cell| Self { cell, bytes: 0 })
+    pub fn new(
+        mut driver: Box<AsideSessionUi>,
+    ) -> Result<Self, (Box<AsideSessionUi>, CheckpointError)> {
+        match driver.checkpoint_begin() {
+            Ok(cursor) => Ok(Self {
+                driver: Some(driver),
+                cursor: Some(Box::new(cursor)),
+                bytes: 0,
+            }),
+            Err(error) => Err((driver, error)),
+        }
     }
     pub fn owner(&self) -> &AsideSessionUi {
-        self.cell.borrow_owner()
+        self.driver.as_ref().unwrap()
     }
-    pub fn cancel(self) -> Box<AsideSessionUi> {
-        self.cell.into_owner()
+    pub fn cancel(mut self) -> Box<AsideSessionUi> {
+        let mut driver = self.driver.take().unwrap();
+        if let Some(cursor) = self.cursor.take() {
+            let _ = cursor.cancel(driver.adapter_mut());
+        }
+        driver
     }
-    pub fn step(&mut self, budget: SnapshotBudget) -> Result<bool, AdapterError> {
-        let progress = self
-            .cell
-            .with_dependent_mut(|_, cursor| cursor.as_mut().unwrap().step(budget))?;
-        self.bytes += progress.bytes;
-        Ok(progress.complete)
+    pub fn step(&mut self, work: u32) -> Result<bool, CheckpointError> {
+        let cursor = self.cursor.as_mut().unwrap();
+        let complete = self
+            .driver
+            .as_mut()
+            .unwrap()
+            .checkpoint_step(cursor, work)?;
+        self.bytes = cursor.retained_bytes();
+        Ok(complete)
     }
-    pub fn finish(mut self) -> Result<(Box<AsideSessionUi>, SessionSnapshot), AdapterError> {
-        let snapshot = self
-            .cell
-            .with_dependent_mut(|_, cursor| cursor.take().unwrap().finish())?;
-        Ok((self.cell.into_owner(), snapshot))
+    pub fn finish(
+        mut self,
+    ) -> (
+        Box<AsideSessionUi>,
+        Result<CapturedCheckpoint, CheckpointError>,
+    ) {
+        let mut driver = self.driver.take().unwrap();
+        let checkpoint = self.cursor.take().unwrap().finish(driver.adapter_mut());
+        (driver, checkpoint)
+    }
+}
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if let (Some(cursor), Some(driver)) = (self.cursor.take(), self.driver.as_mut()) {
+            let _ = cursor.cancel(driver.adapter_mut());
+        }
     }
 }
 
@@ -64,9 +80,11 @@ pub struct RuntimeSaves {
     pub(crate) service: SaveService,
     pub(crate) max_snapshot_bytes: u64,
     pub(crate) pending: Option<SaveRequest>,
-    pub(crate) restore: Option<OwnedSessionRestore>,
+    pub(crate) captured: Option<CapturedCheckpoint>,
+    pub(crate) restore: Option<CheckpointLoad>,
     pub(crate) candidate: Option<Candidate>,
     pub(crate) next_epoch: u64,
+    pub(crate) history: crate::story_runtime::history::HistoryWindow,
 }
 impl RuntimeSaves {
     pub fn new(service: SaveService, max_snapshot_bytes: u64) -> Self {
@@ -74,9 +92,11 @@ impl RuntimeSaves {
             service,
             max_snapshot_bytes,
             pending: None,
+            captured: None,
             restore: None,
             candidate: None,
             next_epoch: 0,
+            history: Default::default(),
         }
     }
     pub fn busy(&self) -> bool {
@@ -144,12 +164,12 @@ pub trait SaveStorage: Send + Sync + 'static {
     fn write(
         &self,
         slot: SaveSlot,
-        snapshot: &SessionSnapshot,
+        checkpoint: &CheckpointRecord,
         thumbnail: Option<&[u8]>,
     ) -> Result<(), StorageError>;
     fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError>;
-    fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError>;
-    /// Copy a committed slot to `destination`, preserving its snapshot, title,
+    fn read(&self, slot: &str) -> Result<CheckpointRecord, StorageError>;
+    /// Copy a committed slot to `destination`, preserving its checkpoint, title,
     /// timestamp and thumbnail. Publish replacements atomically. Equal identifiers
     /// validate the source and succeed without writing; a missing source fails.
     fn copy(&self, source: &str, destination: &str) -> Result<(), StorageError>;
@@ -211,7 +231,7 @@ impl DirectorySaves {
         })
     }
     // An optional indexed attachment follows the gzip stream. Listing only reads
-    // metadata and this fixed-size footer; loading the snapshot never reads PNG data.
+    // metadata and this fixed-size footer; loading the checkpoint never reads PNG data.
     fn thumbnail_range(&self, file: &mut fs::File) -> Result<Option<(u64, u64)>, StorageError> {
         let position = file.stream_position()?;
         let footer = file.seek(SeekFrom::End(-16))?;
@@ -321,7 +341,7 @@ impl SaveStorage for DirectorySaves {
     fn write(
         &self,
         slot: SaveSlot,
-        snapshot: &SessionSnapshot,
+        checkpoint: &CheckpointRecord,
         thumbnail: Option<&[u8]>,
     ) -> Result<(), StorageError> {
         if thumbnail.is_some_and(|bytes| !bytes.starts_with(b"\x89PNG\r\n\x1a\n")) {
@@ -344,7 +364,7 @@ impl SaveStorage for DirectorySaves {
                 inner: BufWriter::new(compressed),
                 remaining: self.max_snapshot_bytes,
             };
-            snapshot.write_to(&mut writer).map_err(io::Error::other)?;
+            checkpoint.write_to(&mut writer).map_err(io::Error::other)?;
             let file = writer
                 .inner
                 .into_inner()
@@ -373,7 +393,7 @@ impl SaveStorage for DirectorySaves {
         file.read_exact(&mut bytes)?;
         Ok(Some(bytes))
     }
-    fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError> {
+    fn read(&self, slot: &str) -> Result<CheckpointRecord, StorageError> {
         let mut file = reel_storage::open(&self.path(slot))?;
         if self.metadata(&mut file)?.id != slot {
             return Err("slot identity mismatch".into());
@@ -383,9 +403,9 @@ impl SaveStorage for DirectorySaves {
             .take(self.max_snapshot_bytes.saturating_add(1))
             .read_to_end(&mut bytes)?;
         if bytes.len() as u64 > self.max_snapshot_bytes {
-            return Err("snapshot exceeds storage budget".into());
+            return Err("checkpoint exceeds storage budget".into());
         }
-        Ok(SessionSnapshot::decode(&bytes)?)
+        Ok(CheckpointRecord::decode(&bytes)?)
     }
     fn delete(&self, slot: &str) -> Result<(), StorageError> {
         match reel_storage::remove(&self.path(slot)) {
@@ -447,7 +467,7 @@ pub enum StorageJob {
         slot: String,
         title: String,
         thumbnail: Option<Arc<DataDocument>>,
-        snapshot: Box<SessionSnapshot>,
+        checkpoint: Arc<CheckpointRecord>,
     },
     Load(String),
     Delete(String),
@@ -459,7 +479,7 @@ pub enum StorageJob {
 }
 pub enum StorageResult {
     Saved,
-    Loaded(Box<SessionSnapshot>),
+    Loaded(Box<CheckpointRecord>),
     Deleted,
     Slots(Vec<SaveSlot>),
     Data(Option<Arc<DataDocument>>),
@@ -488,9 +508,8 @@ impl SaveService {
                             slot,
                             title,
                             thumbnail,
-                            mut snapshot,
+                            checkpoint,
                         } => {
-                            snapshot.commit_save(request)?;
                             let saved_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
                             storage.write(
                                 SaveSlot {
@@ -499,7 +518,7 @@ impl SaveService {
                                     saved_at,
                                     has_thumbnail: thumbnail.is_some(),
                                 },
-                                &snapshot,
+                                &checkpoint,
                                 thumbnail.as_ref().and_then(|data| data.as_bytes()),
                             )?;
                             StorageResult::Saved
@@ -628,10 +647,14 @@ mod tests {
         root
     }
 
-    fn snapshot() -> SessionSnapshot {
+    fn checkpoint() -> CheckpointRecord {
         let mut driver = AsideSessionUi::from_source(
             reel_engine::Session::new(reel_engine::SessionId(1), reel_engine::Epoch(1)).unwrap(),
-            "fn main() { narrator(\"checkpoint\"); }",
+            r#"use std::resume::{state,root,flow,point};
+                class World {let mut score:int=7;}
+                state(World,"world");root(main,"game");
+                fn story(value:World){flow("story");point("line");narrator("checkpoint");value.score}
+                fn main(value:World=model(World())){run_flow(story,value);}"#,
             "main",
             1,
             "main",
@@ -646,20 +669,22 @@ mod tests {
             }
         }
         assert!(driver.ui().session().view().interaction.is_some());
-        let mut capture = driver.snapshot_begin().unwrap();
-        while !capture
-            .step(SnapshotBudget { units: 256 })
-            .unwrap()
-            .complete
-        {}
-        capture.finish().unwrap()
+        let mut capture = driver.checkpoint_begin().unwrap();
+        while !driver.checkpoint_step(&mut capture, 256).unwrap() {}
+        let captured = capture.finish(driver.adapter_mut()).unwrap();
+        CheckpointRecord::decode(&encoded(captured.record())).unwrap()
+    }
+    fn encoded(checkpoint: &CheckpointRecord) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        checkpoint.write_to(&mut bytes).unwrap();
+        bytes
     }
 
     #[test]
-    fn slot_copy_preserves_snapshot_metadata_thumbnail_and_source() {
+    fn slot_copy_preserves_checkpoint_metadata_thumbnail_and_source() {
         let root = temporary();
         let storage = DirectorySaves::new(&root, 16 << 20);
-        let snapshot = snapshot();
+        let checkpoint = checkpoint();
         let png = include_bytes!("../../../examples/assets/panels.png");
         let source = SaveSlot {
             id: "chapter/一".into(),
@@ -667,7 +692,9 @@ mod tests {
             saved_at: 42,
             has_thumbnail: true,
         };
-        storage.write(source.clone(), &snapshot, Some(png)).unwrap();
+        storage
+            .write(source.clone(), &checkpoint, Some(png))
+            .unwrap();
         storage
             .write(
                 SaveSlot {
@@ -676,7 +703,7 @@ mod tests {
                     saved_at: 99,
                     has_thumbnail: false,
                 },
-                &snapshot,
+                &checkpoint,
                 None,
             )
             .unwrap();
@@ -684,8 +711,8 @@ mod tests {
         storage.copy(&source.id, "backup").unwrap();
         assert_eq!(fs::read(storage.path(&source.id)).unwrap(), original);
         assert_eq!(
-            storage.read("backup").unwrap().encode().unwrap(),
-            snapshot.encode().unwrap()
+            encoded(&storage.read("backup").unwrap()),
+            encoded(&checkpoint)
         );
         assert_eq!(
             storage.thumbnail("backup").unwrap().as_deref(),

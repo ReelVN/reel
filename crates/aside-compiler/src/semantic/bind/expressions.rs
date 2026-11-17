@@ -3,6 +3,9 @@ use super::*;
 
 impl Binder<'_> {
     pub(super) fn visit(&mut self, n: NodeId, ctx: &Context) -> TypeId {
+        self.visit_expected(n, ctx, ANY)
+    }
+    pub(super) fn visit_expected(&mut self, n: NodeId, ctx: &Context, expected: TypeId) -> TypeId {
         if !self.budget(n) {
             return ANY;
         }
@@ -10,10 +13,10 @@ impl Binder<'_> {
         let children = self.children(n);
         use HirKind as H;
         let ty = match self.kind(n) {
-            H::Module | H::Block => return self.block(n, ctx, true),
+            H::Module | H::Block => return self.block_expected(n, ctx, true, expected),
             H::ModifiedDeclaration => children.first().map_or(NULL, |&c| self.visit(c, ctx)),
             H::Function => return self.function(n, ctx, Receiver::None),
-            H::Closure => return self.function(n, ctx, Receiver::None),
+            H::Closure => return self.function_expected(n, ctx, Receiver::None, expected),
             H::Let => {
                 let pattern = children.iter().copied().find(|&c| is_pattern(self.kind(c)));
                 let annotation = children
@@ -25,7 +28,9 @@ impl Binder<'_> {
                     .iter()
                     .copied()
                     .find(|&c| !is_pattern(self.kind(c)) && !is_type(self.kind(c)));
-                let value = init.map_or(ANY, |c| self.visit(c, ctx));
+                let value = init.map_or(ANY, |c| {
+                    self.visit_expected(c, ctx, annotation.unwrap_or(ANY))
+                });
                 if let (Some(init), Some(expected)) = (init, annotation) {
                     self.require(init, value, expected, "let initializer");
                 }
@@ -98,7 +103,9 @@ impl Binder<'_> {
                 TABLE
             }
             H::Group => {
-                let t = children.first().map_or(ANY, |&c| self.visit(c, ctx));
+                let t = children
+                    .first()
+                    .map_or(ANY, |&c| self.visit_expected(c, ctx, expected));
                 if let Some(&c) = children.first()
                     && let Some(ext) = self.external_nodes.get(&c)
                 {
@@ -111,9 +118,14 @@ impl Binder<'_> {
             | H::Argument
             | H::NamedArgument
             | H::Spread => {
+                if let Form::Statement { expression, .. } = self.out.hir.node(n).form
+                    && matches!(self.out.hir.node(expression).form, Form::Spread { .. })
+                {
+                    self.has_children_spread = true;
+                }
                 let mut result = NULL;
                 for c in children {
-                    result = self.visit(c, ctx);
+                    result = self.visit_expected(c, ctx, expected);
                 }
                 result
             }
@@ -174,7 +186,13 @@ impl Binder<'_> {
                 NULL
             }
             H::Class => self.class_node(n, &children, ctx),
-            H::NamedType | H::TupleType | H::UnionType | H::FunctionType | H::GroupType => {
+            H::NamedType
+            | H::StringType
+            | H::RecordType
+            | H::TupleType
+            | H::UnionType
+            | H::FunctionType
+            | H::GroupType => {
                 return self.annotation(n, ctx);
             }
             H::Import => NULL,
@@ -286,7 +304,7 @@ impl Binder<'_> {
                 self.check(n, RuntimeChecks::TYPE);
                 ANY
             }
-            Type::String => {
+            Type::String | Type::StringLiteral(_) => {
                 self.error(
                     D::TypeMismatch,
                     self.span(n),
@@ -347,7 +365,7 @@ impl Binder<'_> {
                     self.error(
                         D::TypeMismatch,
                         self.span(n),
-                        "await requires Awaitable, not a primitive value",
+                        "await requires an Awaitable. Use an ordinary call result directly",
                     );
                 }
                 self.check(n, RuntimeChecks::TYPE);
@@ -418,15 +436,7 @@ impl Binder<'_> {
                 }
                 BOOL
             }
-            Some(K::QuestionQuestion) => {
-                if a == NULL {
-                    b
-                } else if self.definitely_nonnull(a) || a == b {
-                    a
-                } else {
-                    ANY
-                }
-            }
+            Some(K::QuestionQuestion) => self.coalesced_type(n, a, b),
             Some(K::Range | K::RangeInclusive) => {
                 for (&c, t) in children.iter().zip([a, b]) {
                     self.require(c, t, INT, "range bound");
@@ -443,7 +453,8 @@ impl Binder<'_> {
             Some(K::Lt | K::Le | K::Gt | K::Ge) => {
                 if is_primitive(&self.out.types[a.0 as usize])
                     && is_primitive(&self.out.types[b.0 as usize])
-                    && !((is_number(a) && is_number(b)) || (a == STRING && b == STRING))
+                    && !((is_number(a) && is_number(b))
+                        || (self.string_like(a) && self.string_like(b)))
                 {
                     self.error(
                         D::TypeMismatch,
@@ -456,7 +467,7 @@ impl Binder<'_> {
             Some(K::Plus | K::Minus | K::Star | K::Slash | K::Percent) => {
                 if is_number(a) && is_number(b) {
                     if a == FLOAT || b == FLOAT { FLOAT } else { INT }
-                } else if op == Some(K::Plus) && a == STRING && b == STRING {
+                } else if op == Some(K::Plus) && self.string_like(a) && self.string_like(b) {
                     STRING
                 } else if is_primitive(&self.out.types[a.0 as usize])
                     && is_primitive(&self.out.types[b.0 as usize])
@@ -482,11 +493,17 @@ impl Binder<'_> {
         };
         self.location(target, ctx);
         let rhs = rest.first().copied();
+        let expected = self
+            .member_write_types
+            .get(&target)
+            .copied()
+            .flatten()
+            .unwrap_or(self.ty(target));
         let value = rhs.map_or(ANY, |c| {
             if self.kind(c) == HirKind::Assignment {
                 self.assignment(c, ctx)
             } else {
-                self.visit(c, ctx)
+                self.visit_expected(c, ctx, expected)
             }
         });
         if is_pattern(self.kind(target)) {
@@ -497,7 +514,15 @@ impl Binder<'_> {
         if let Some(Some(expected)) = self.member_write_types.get(&target).copied()
             && let Some(rhs) = rhs
         {
-            self.require(rhs, value, expected, "host property assignment");
+            self.require(rhs, value, expected, "property assignment");
+        } else if self.kind(target) == HirKind::Name
+            && let Some(symbol) = self.out.facts[target.0 as usize].symbol
+            && let Some(rhs) = rhs
+        {
+            let contract = self.out.symbols[symbol.0 as usize].ty;
+            if self.has_value_contract(contract) {
+                self.require(rhs, value, contract, "assignment");
+            }
         }
         value
     }

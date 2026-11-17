@@ -91,6 +91,7 @@ fn main() {
     let compiled = lowering::compile(
         &analysis.into_module().unwrap(),
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();

@@ -18,6 +18,18 @@ impl_context_method!(
             self.request_render();
         }
 
+        /// Require fresh presented configuration while keeping this widget's existing captures.
+        /// Use for measured changes that preserve the meaning of the ongoing gesture.
+        pub fn refresh_captured_input_configuration(&mut self) {
+            self.invalidate_input_configuration();
+            let state = &mut self.global_state;
+            for pointer in std::iter::once(&mut state.pointer).chain(&mut state.other_pointers) {
+                if pointer.pointer_capture_target == Some(self.widget_state.id) {
+                    pointer.pointer_capture_revision = self.widget_state.input_revision;
+                }
+            }
+        }
+
         /// Update a widget whose content adds or removes interactive regions.
         pub fn set_interactive(&mut self, pointer: bool, focus: bool) {
             let pointer = pointer && !self.widget_state.in_cursor;

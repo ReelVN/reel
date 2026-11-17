@@ -27,7 +27,52 @@ impl SessionVm {
             return Ok(NativeDispatch::Ready { work: 1 });
         }
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
+        if let Some(progress) = self.resume_reading_point(session, ticket, &symbol, budget)? {
+            return Ok(progress);
+        }
         match symbol.as_str() {
+            "reel::run_flow" => self.dispatch_run_flow(session, ticket, budget),
+            "reel::scrollbar" => {
+                if work < 5 {
+                    return Ok(NativeDispatch::BudgetYield {
+                        work: 0,
+                        required_work: 5,
+                    });
+                }
+                let args = self.vm.host_arguments(ticket)?.to_vec();
+                let origin = self.stage_origin(ticket);
+                let value = self.stage.dispatch(
+                    &mut self.vm,
+                    self.root_owner,
+                    &symbol,
+                    &args,
+                    self.read_limit,
+                    origin,
+                )?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 5 })
+            }
+            "reel::scrollbar::scroll_by" | "reel::scrollbar::scroll_to" => {
+                let args = self.vm.host_arguments(ticket)?;
+                let (bar, amount) = (args[0], stage::number(args[1])?);
+                let value = self.stage.scrollbar_offset(
+                    self.vm.heap_mut(),
+                    bar,
+                    amount,
+                    symbol.ends_with("scroll_by"),
+                )?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::page_stack" | "reel::tab_bar" => {
+                self.dispatch_pages(session, ticket, &symbol, budget)
+            }
+            name if name.starts_with("reel::page_stack::") => {
+                self.dispatch_pages(session, ticket, &symbol, budget)
+            }
+            "reel::tab_bar::observe_label" => self.dispatch_pages(session, ticket, &symbol, budget),
             "reel::game::start" => {
                 let value = self.vm.host_arguments(ticket)?[0];
                 let entry = self.vm.unbound_function(value)?;
@@ -62,12 +107,16 @@ impl SessionVm {
                 self.dispatch_asset_read(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::saves::can_capture" => self.dispatch_save_availability(ticket, budget),
+            "reel::saves::can_jump" | "reel::saves::jump" | "reel::saves::track_history" => {
+                self.dispatch_history_save(session, ticket, &symbol)
+            }
             "reel::saves::save"
             | "reel::saves::load"
             | "reel::saves::copy"
             | "reel::saves::delete"
             | "reel::saves::list"
-            | "reel::saves::thumbnail" => self.dispatch_save(ticket, &symbol, work),
+            | "reel::saves::thumbnail" => self.dispatch_save(session, ticket, &symbol, work),
             "reel::persistent::read" | "reel::persistent::write" | "reel::persistent::delete" => {
                 self.dispatch_persistent(ticket, &symbol, work)
             }
@@ -97,6 +146,13 @@ impl SessionVm {
                 self.stage
                     .types
                     .mark(self.vm.heap_mut(), value, "reel::types::Appearance")?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::image_skin" => {
+                let args = self.vm.host_arguments(ticket)?.to_vec();
+                let value = stage::image_skin::create(&self.stage, self.vm.heap_mut(), &args)?;
                 self.vm.respond(ticket, HostResponse::Ready(value))?;
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
@@ -260,6 +316,10 @@ impl SessionVm {
                 self.dispatch_geometry(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::scroll::reveal_child" => {
+                self.dispatch_scroll_reveal(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::list" => self.dispatch_list(ticket, budget),
             "reel::layered_image" => {
                 let work = self.dispatch_layered_image(ticket)?;
@@ -310,6 +370,10 @@ impl SessionVm {
             }
             "reel::scope::finish" => {
                 self.dispatch_scope_exit(ticket, scopes::ScopeExit::Finish)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::scope::wait" => {
+                self.dispatch_scope_wait(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::scope::override" => {
@@ -505,6 +569,7 @@ impl SessionVm {
             | "reel::text_input"
             | "reel::text_area"
             | "reel::slider"
+            | "reel::progress_bar"
             | "reel::toggle"
             | "reel::checkbox"
             | "reel::radio"
@@ -519,6 +584,7 @@ impl SessionVm {
             | "reel::camera"
             | "reel::scroll"
             | "reel::popup"
+            | "reel::tooltip"
             | "reel::stack"
             | "reel::cursor"
             | "reel::stage::replace" => {

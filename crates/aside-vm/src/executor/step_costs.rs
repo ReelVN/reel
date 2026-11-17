@@ -312,7 +312,7 @@ mod enabled {
                         | ScriptPhase::GeneratorCapture { .. }
                         | ScriptPhase::GeneratorStart { .. }
                         | ScriptPhase::GeneratorRestore { .. } => 13,
-                        ScriptPhase::Search(_) => 14,
+                        ScriptPhase::Search(_) | ScriptPhase::Predicate(_) => 14,
                         ScriptPhase::Sort(_) => 15,
                         ScriptPhase::Class(_) => 16,
                         ScriptPhase::Constant(_) | ScriptPhase::DefaultConstant { .. } => 17,
@@ -323,6 +323,7 @@ mod enabled {
                         ScriptPhase::HostMethod { .. } => 20,
                         ScriptPhase::Builtin(_)
                         | ScriptPhase::Bulk(_)
+                        | ScriptPhase::EntryFactory { .. }
                         | ScriptPhase::Sequence { .. } => 21,
                         ScriptPhase::TextBuiltin(_)
                         | ScriptPhase::TextPush { .. }

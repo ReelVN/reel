@@ -19,6 +19,20 @@ pub struct HostTypeSupport {
     /// Complete visible native methods, including inherited declarations.
     /// Own host fields take precedence over these shared methods.
     pub methods: Vec<HostMethodSupport>,
+    /// The native invoked when a value of this nominal type is called directly.
+    /// Its required first parameter receives that same host object.
+    /// Marking a host with this type binds the admitted current native automatically.
+    pub call: Option<HostCallableSupport>,
+    /// The unary native used by the ordinary `await value` operation.
+    /// Marking this type binds its admitted adapter; it requires one `any` parameter and WAIT.
+    pub await_adapter: Option<HostCallableSupport>,
+}
+
+/// One independently registered native callable identity.
+#[derive(Clone, Debug)]
+pub struct HostCallableSupport {
+    pub native: String,
+    pub abi_version: u32,
 }
 
 /// A shared method names its independently admitted native declaration.
@@ -43,6 +57,8 @@ struct Entry {
     name: String,
     accepts: ChargedVec<TypeId>,
     methods: ChargedVec<(SymbolId, FunctionId)>,
+    call: Option<FunctionId>,
+    await_adapter: Option<crate::bytecode::NativeId>,
 }
 pub(crate) struct HostTypes {
     entries: ChargedVec<Entry>,
@@ -119,6 +135,17 @@ impl HostTypes {
                 fingerprint.update(&(method.native.len() as u64).to_le_bytes());
                 fingerprint.update(method.native.as_bytes());
                 fingerprint.update(&method.abi_version.to_le_bytes());
+            }
+            for adapter in [
+                declaration.call.as_ref(),
+                declaration.await_adapter.as_ref(),
+            ] {
+                fingerprint.update(&[u8::from(adapter.is_some())]);
+                if let Some(call) = adapter {
+                    fingerprint.update(&(call.native.len() as u64).to_le_bytes());
+                    fingerprint.update(call.native.as_bytes());
+                    fingerprint.update(&call.abi_version.to_le_bytes());
+                }
             }
         }
         let names = Reservation::new(usage, names_bytes)?;
@@ -200,6 +227,72 @@ impl HostTypes {
                 });
             }
             let declaration = &registrations[order.data[start]];
+            let await_adapter = declaration
+                .await_adapter
+                .as_ref()
+                .map(|call| {
+                    let Some((index, native)) =
+                        package.natives.iter().enumerate().find(|(_, native)| {
+                            package.symbols[native.symbol.index()] == call.native
+                        })
+                    else {
+                        return Ok(None);
+                    };
+                    let signature = &package.signatures[native.signature.index()];
+                    if call.abi_version == 0
+                        || native.abi_version != call.abi_version
+                        || signature.parameters.len() != 1
+                        || signature.rest.is_some()
+                        || signature.parameters[0].default.is_some()
+                        || package.types[signature.parameters[0].ty.index()]
+                            != TypeDef::Builtin(crate::bytecode::BuiltinType::Any)
+                        || signature.effects.0 & crate::bytecode::Effects::WAIT == 0
+                    {
+                        return Err(VmError::Contract(
+                            "host await adapter requires one any parameter and WAIT",
+                        ));
+                    }
+                    Ok(Some(crate::bytecode::NativeId(index as u32)))
+                })
+                .transpose()?
+                .flatten();
+            let call = declaration
+                .call
+                .as_ref()
+                .map(|call| {
+                    let Some((index, native)) =
+                        package.natives.iter().enumerate().find(|(_, native)| {
+                            package.symbols[native.symbol.index()] == call.native
+                        })
+                    else {
+                        return Ok(None);
+                    };
+                    if call.abi_version == 0
+                        || native.abi_version != call.abi_version
+                        || package.signatures[native.signature.index()]
+                            .parameters
+                            .first()
+                            .is_none_or(|parameter| {
+                                parameter.default.is_some()
+                                    || !receiver_types.data[parameter.ty.index()]
+                            })
+                    {
+                        return Err(VmError::Contract(
+                            "host callable requires an admitted native receiver",
+                        ));
+                    }
+                    package
+                        .functions
+                        .iter()
+                        .position(|function| {
+                            function.kind
+                                == FunctionKind::Native(crate::bytecode::NativeId(index as u32))
+                        })
+                        .map(|index| Some(FunctionId(index as u32)))
+                        .ok_or(VmError::Contract("host native callable is missing"))
+                })
+                .transpose()?
+                .flatten();
             let linked_methods = declaration
                 .methods
                 .iter()
@@ -268,6 +361,8 @@ impl HostTypes {
                 name: declaration.name.clone(),
                 accepts,
                 methods,
+                call,
+                await_adapter,
             });
         }
         let work = max_accepts
@@ -365,7 +460,7 @@ impl Heap {
             index,
         })
     }
-    /// Attach the real, immutable nominal identity while constructing a host.
+    /// Attach the real, immutable nominal identity and its registered call/await adapters.
     /// Reapplying the same credential is allowed; changing its type is rejected.
     pub fn set_host_type(&mut self, host: Value, ty: HostTypeId) -> Result<(), HeapError> {
         if ty.heap != self.id {
@@ -384,7 +479,23 @@ impl Heap {
             host,
             1,
             Value::int((i64::from(ty.index.get()) << 1) | (flags & 1)),
-        )
+        )?;
+        let entry = &self
+            .code
+            .as_ref()
+            .ok_or(HeapError::TypeMismatch)?
+            .checks
+            .host_types
+            .entries
+            .data[ty.index.get() as usize - 1];
+        let (call, await_adapter) = (entry.call, entry.await_adapter);
+        if let Some(call) = call {
+            self.set_host_call(host, call)?;
+        }
+        if let Some(adapter) = await_adapter {
+            self.set_host_await(host, adapter)?;
+        }
+        Ok(())
     }
     pub(crate) fn accepts_host_nominal(&self, host: Value, ty: TypeId) -> Result<bool, HeapError> {
         let flags = self
@@ -461,18 +572,24 @@ mod tests {
     fn registration() -> Vec<HostTypeSupport> {
         vec![
             HostTypeSupport {
+                await_adapter: None,
+                call: None,
                 name: "sample::Text".into(),
                 version: 1,
                 bases: vec!["sample::Node".into()],
                 methods: vec![],
             },
             HostTypeSupport {
+                await_adapter: None,
+                call: None,
                 name: "sample::Node".into(),
                 version: 1,
                 bases: vec![],
                 methods: vec![],
             },
             HostTypeSupport {
+                await_adapter: None,
+                call: None,
                 name: "sample::Image".into(),
                 version: 1,
                 bases: vec!["sample::Node".into()],

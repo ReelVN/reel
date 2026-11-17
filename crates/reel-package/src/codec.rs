@@ -3,6 +3,7 @@ use super::{
     distribution::Distribution, require,
 };
 use aside_vm::bytecode as bc;
+use aside_vm::resume::{ResumeLimits, ResumeTable, VerifiedResumeTable};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 pub const MAGIC: &[u8; 8] = b"REELASB\0";
@@ -13,15 +14,19 @@ const B01: u32 = 1;
 const METADATA: u32 = 2;
 const DISTRIBUTION: u32 = 3;
 const EFFECTS: u32 = 4;
+const RESUME: u32 = 5;
 const REQUIRED: u32 = 1;
 
-/// Canonical writer: header, B01, metadata, distribution, effects, index; no padding or timestamps.
+/// Canonical writer: header, B01, metadata, distribution, effects, resume, index.
 /// Reuses the serialization's verified program for metadata validation.
+/// Host registrations validate nominal method targets in continuation metadata.
 pub fn encode(
     encoded: &bc::EncodedProgram,
     metadata: &Metadata,
     distribution: Option<&Distribution>,
     effects: &EffectProducts,
+    resume: &ResumeTable,
+    host_types: &[bc::HostTypeSupport],
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
     let bytecode = encoded.as_bytes();
@@ -33,6 +38,13 @@ pub fn encode(
     )?;
     metadata.validate(encoded.program(), bytecode, limits, &mut budget)?;
     effects.validate(encoded.program(), limits, &mut budget)?;
+    verify_resume(encoded.program(), resume.clone(), host_types, limits)?;
+    let resume_bytes = if resume.is_empty() {
+        Vec::new()
+    } else {
+        json_bytes(resume, limits)?
+    };
+    budget.charge(resume_bytes.len())?;
     let effect_bytes = if effects.is_empty() {
         Vec::new()
     } else {
@@ -50,8 +62,10 @@ pub fn encode(
         .transpose()?;
     let distribution_bytes = distribution.as_deref().unwrap_or_default();
     budget.charge(distribution_bytes.len())?;
-    let section_count =
-        2 + usize::from(distribution.is_some()) + usize::from(!effect_bytes.is_empty());
+    let section_count = 2
+        + usize::from(distribution.is_some())
+        + usize::from(!effect_bytes.is_empty())
+        + usize::from(!resume_bytes.is_empty());
     require(
         limits.max_sections >= section_count,
         ErrorKind::Limit,
@@ -62,6 +76,7 @@ pub fn encode(
         .and_then(|n| n.checked_add(json.len()))
         .and_then(|n| n.checked_add(distribution_bytes.len()))
         .and_then(|n| n.checked_add(effect_bytes.len()))
+        .and_then(|n| n.checked_add(resume_bytes.len()))
         .ok_or_else(|| Error::new(ErrorKind::Limit, "container size overflow"))?;
     let total = index_offset
         .checked_add(section_count * INDEX_ENTRY_LEN)
@@ -80,6 +95,7 @@ pub fn encode(
     out.extend_from_slice(&json);
     out.extend_from_slice(distribution_bytes);
     out.extend_from_slice(&effect_bytes);
+    out.extend_from_slice(&resume_bytes);
     index_entry(&mut out, B01, HEADER_LEN, bytecode);
     index_entry(&mut out, METADATA, HEADER_LEN + bytecode.len(), &json);
     if distribution.is_some() {
@@ -96,6 +112,18 @@ pub fn encode(
             EFFECTS,
             HEADER_LEN + bytecode.len() + json.len() + distribution_bytes.len(),
             &effect_bytes,
+        );
+    }
+    if !resume_bytes.is_empty() {
+        index_entry(
+            &mut out,
+            RESUME,
+            HEADER_LEN
+                + bytecode.len()
+                + json.len()
+                + distribution_bytes.len()
+                + effect_bytes.len(),
+            &resume_bytes,
         );
     }
     out[..8].copy_from_slice(MAGIC);
@@ -130,7 +158,12 @@ fn index_entry(out: &mut Vec<u8>, kind: u32, offset: usize, bytes: &[u8]) {
 
 /// Bounded static validation only. Unknown optional sections are hash-checked
 /// and ignored; they cannot affect entry, linking, or host authorization.
-pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
+/// Verify one package against the host's independent nominal method declarations.
+pub fn decode(
+    input: &[u8],
+    host_types: &[bc::HostTypeSupport],
+    limits: Limits,
+) -> Result<CodePackage, Error> {
     let mut budget = Budget::new(limits);
     budget.charge(input.len())?;
     let index = parse_header(input, input.len(), limits)?;
@@ -152,12 +185,50 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
         .transpose()?
         .unwrap_or_default();
     effects.validate(&program, limits, &mut budget)?;
+    let resume = payload(input, &sections, RESUME)
+        .map(|json| decode_json(json, limits, &mut budget))
+        .transpose()?
+        .unwrap_or_default();
+    let resume = verify_resume(&program, resume, host_types, limits)?;
     Ok(CodePackage {
-        program,
         metadata,
         distribution,
         effects,
+        resume,
     })
+}
+
+fn verify_resume(
+    program: &bc::VerifiedProgram,
+    table: ResumeTable,
+    host_types: &[bc::HostTypeSupport],
+    limits: Limits,
+) -> Result<VerifiedResumeTable, Error> {
+    let records = table.flows.iter().try_fold(
+        table.states.len() + usize::from(table.root.is_some()),
+        |count, flow| {
+            count
+                .checked_add(1)?
+                .checked_add(flow.layouts.len())?
+                .checked_add(flow.points.len())?
+                .checked_add(flow.returns.len())
+        },
+    );
+    require(
+        records.is_some_and(|count| count <= limits.max_metadata_records),
+        ErrorKind::Limit,
+        "resume metadata record budget exceeded",
+    )?;
+    program
+        .verify_resume(
+            table,
+            host_types,
+            ResumeLimits {
+                work: limits.max_work,
+                allocation_bytes: limits.max_metadata_bytes,
+            },
+        )
+        .map_err(|error| Error::new(ErrorKind::Metadata, error.to_string()))
 }
 
 /// Read only the embedded distribution, without decoding bytecode or reading resources.
@@ -272,7 +343,7 @@ fn parse_index(
         let flags = u32_at(entry, 4);
         require(kinds.insert(kind), Encoding, "duplicate section kind")?;
         require(flags & !REQUIRED == 0, Version, "unknown section flags")?;
-        let known = matches!(kind, B01 | METADATA | DISTRIBUTION | EFFECTS);
+        let known = matches!(kind, B01 | METADATA | DISTRIBUTION | EFFECTS | RESUME);
         require(
             known || flags & REQUIRED == 0,
             Version,
@@ -295,7 +366,7 @@ fn parse_index(
                 Limit,
                 "B01 byte budget exceeded",
             )?;
-        } else if matches!(kind, METADATA | DISTRIBUTION | EFFECTS) {
+        } else if matches!(kind, METADATA | DISTRIBUTION | EFFECTS | RESUME) {
             require(
                 section.len() <= limits.max_metadata_bytes,
                 Limit,

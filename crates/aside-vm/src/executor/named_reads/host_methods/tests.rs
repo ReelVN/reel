@@ -66,6 +66,8 @@ fn load_reads(
     support.natives[0].signature.parameters[0].ty = TypeId(0);
     support.natives[0].signature.return_type = TypeId(0);
     support.host_types.push(crate::HostTypeSupport {
+        await_adapter: None,
+        call: None,
         name: "test::Curve".into(),
         version: 1,
         bases: Vec::new(),

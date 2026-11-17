@@ -13,10 +13,12 @@ mod gc;
 mod heap;
 mod host_types;
 mod payload;
+pub mod resume;
 mod root_ranges;
 mod slots;
 pub mod snapshot;
 mod type_checks;
+pub mod typed_data;
 mod value;
 
 pub use cell::{CellContract, CellInfo};
@@ -30,6 +32,8 @@ pub use frame_slots::{
     FrameSlots, FrameSlotsLimits, FrameSlotsStats, RangePosition, RangeReleaseCursor,
     RangeReleaseProgress, RelocationCost, RootRanges,
 };
+#[cfg(feature = "execution-counts")]
+pub use gc::GC_WORK_NAMES;
 pub use gc::{GcBudget, GcPhase, GcProgress};
 pub use heap::{
     ChangeCursor, Heap, HeapError, HeapLimits, HeapStats, HostPropertyValidator, ObjectInfo,
@@ -37,7 +41,7 @@ pub use heap::{
     RootKind, RootOwner, RootToken, TableLookupProgress, TableLookupStatus, TableRead,
     TableStringLookup,
 };
-pub use host_types::{HostMethodSupport, HostTypeId, HostTypeSupport};
+pub use host_types::{HostCallableSupport, HostMethodSupport, HostTypeId, HostTypeSupport};
 pub use payload::{
     BYTE_CHUNK_BYTES, BYTE_CHUNK_LEN, CHUNK_METADATA_BYTES, VALUE_CHUNK_BYTES, VALUE_CHUNK_LEN,
 };

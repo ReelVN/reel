@@ -17,7 +17,63 @@ fn reply(sequence: u64) -> GeometryReply {
             transform: [1., 0., 0., 1., 10., 11.],
             text_end: Some([25., 41.]),
             text_caret: Some([25., 11., 0., 30.]),
+            reveal: None,
         }),
+    }
+}
+
+#[test]
+fn scroll_reveal_commits_accepted_offsets_and_starts_normal_activities() {
+    use crate::aside::RevealProjection;
+    for (duration, newer_offset) in [(0., None), (0., Some(24.)), (0.2, None)] {
+        let expected = newer_offset.unwrap_or(108.);
+        let source = format!(
+            r#"fn opening() {{
+            let target = stack(y: 170, height: 30);
+            let viewport = scroll(width: 80, height: 100) {{ target; }};
+            stage.replace(viewport);
+            let movement = viewport.reveal_child(target, margin_start: 12, margin_end: 8, duration: {duration});
+            if {duration} == 0 {{
+                if movement != null || viewport.scroll_y != {expected} {{ throw "reveal offset"; }}
+            }} else if movement == null {{ throw "missing tween"; }}
+            viewport.add(text("done"));
+        }}"#
+        );
+        let (mut session, mut vm) = prepared(&source, true);
+        drive(&mut vm, &mut session, true);
+        let query = vm.geometry_queries().next().unwrap().unwrap();
+        assert_eq!(query.reveal_margins, Some([12., 8.]));
+        let mut response = reply(query.sequence);
+        response.geometry.as_mut().unwrap().reveal = Some(RevealProjection {
+            requested: [0.; 2],
+            rendered: [0.; 2],
+            target: [0., 108.],
+        });
+        let identity = vm.stage().identity().clone();
+        vm.accept_geometry(&identity, &[response]).unwrap();
+        if let Some(offset) = newer_offset {
+            use crate::aside::stage::scroll::ScrollField;
+            let viewport = vm
+                .stage
+                .value(vm.vm.heap(), query.relative_to.unwrap())
+                .unwrap();
+            vm.vm
+                .heap_mut()
+                .write_host_property(
+                    aside_vm::PropertyId {
+                        host: viewport,
+                        field: ScrollField::Y.index() as u32,
+                    },
+                    Value::float(offset),
+                    true,
+                )
+                .unwrap();
+        }
+        drive(&mut vm, &mut session, true);
+        assert!(!done(&vm));
+        vm.accept_presentation(&session, query.sequence).unwrap();
+        drive(&mut vm, &mut session, true);
+        assert!(done(&vm));
     }
 }
 #[test]

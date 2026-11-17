@@ -95,17 +95,12 @@ impl Vm {
         Ok(())
     }
 
-    pub(in crate::executor) fn sort_argument(
+    pub(super) fn sort_argument(
         &self,
-        frame: FrameId,
+        s: &ScriptFrame,
+        work: SortWork,
         index: u32,
     ) -> Result<(Value, Value), VmError> {
-        let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
-            return Err(VmError::Contract("sort argument frame"));
-        };
-        let ScriptPhase::Sort(work) = s.phase else {
-            return Err(VmError::Contract("sort argument continuation"));
-        };
         let index = work.base + if index == 0 { work.left } else { work.right };
         let value = self.heap.sequence_get(self.value(s.env, 2)?, index)?;
         Ok((Value::int(-1), value))
@@ -242,37 +237,15 @@ impl Vm {
     ) -> Result<bool, VmError> {
         if let Some(function) = work.comparator {
             let callback = self.builtin_argument(s, work.call, 0)?;
-            let bound = self.is_text(callback, ObjectKind::BoundScript);
-            let (initializer_work, bytes) = if bound {
-                self.initializer_cost(callback)?
-            } else {
-                (0, 0)
-            };
-            let (call_work, call_bytes) = self.script_push_cost(function, 2);
-            if !meter.take(0, call_work + initializer_work + 6, bytes + call_bytes) {
-                return Ok(false);
-            }
             work.phase = SortPhase::Callback;
-            s.phase = ScriptPhase::Sort(work);
-            // Argument preparation and native call sites read the published caller.
-            let top = self.index(s.id)?;
-            self.publish_script_frame(top, s);
-            if let Err(error) = self.push_script(
+            return self.push_builtin_callback(
+                s,
                 function,
-                Some(callback),
-                ArgSource::Sort { frame: s.id },
+                callback,
                 2,
-                s.owner,
-                inherit(s.context, Context::NoWait),
-                s.effects,
-                ReturnTo::Sort {
-                    frame: s.id,
-                    call: s.pc,
-                },
-            ) {
-                self.collection_fault(s, vm_fault(error))?;
-            }
-            return Ok(true);
+                ScriptPhase::Sort(work),
+                meter,
+            );
         }
         let buffer = self.value(s.env, 2)?;
         let left = self.heap.sequence_get(buffer, work.base + work.left)?;
@@ -306,7 +279,7 @@ impl Vm {
                 return Ok(true);
             }
         } else {
-            compare(left, right)
+            left.numeric_cmp(right)
         };
         if let Some(order) = order {
             work.ordered(order);

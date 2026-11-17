@@ -310,11 +310,12 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
             };
             events.push(event.event);
         }
+        if events.len() == start {
+            return;
+        }
         let wakes = state.wakes.clone();
         drop(state);
-        if events.len() != start {
-            notify_capacity(&wakes);
-        }
+        notify_capacity(&wakes);
     }
 }
 impl<R, E> Drop for Worker<R, E> {

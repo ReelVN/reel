@@ -23,6 +23,22 @@ impl SceneWidget {
         let tint = color(self.node.props.color);
         let tint = tint.with_alpha(tint.components[3] * if ctx.is_disabled() { 0.4 } else { 1. });
         let stroke = Stroke::new(2.);
+        if self.node.props.semantics == reel_ui::stage::NodeSemantics::Tab {
+            if selected {
+                painter
+                    .fill(
+                        Rect::new(
+                            x,
+                            self.size.height - 2.,
+                            self.size.width - x,
+                            self.size.height,
+                        ),
+                        tint,
+                    )
+                    .draw();
+            }
+            return;
+        }
         match self.node.kind {
             NodeKind::Radio { .. } => {
                 let center = Point::new(x + 12., y);

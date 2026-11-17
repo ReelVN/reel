@@ -1184,62 +1184,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "root-window admission cost for script and native call sizes"]
-    fn root_window_admission_cost() {
-        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
-        let mut slots = FrameSlots::new(
-            &mut heap,
-            FrameSlotsLimits {
-                initial_capacity: 8192,
-                max_capacity: 8192,
-                max_window_len: 4096,
-            },
-        )
-        .unwrap();
-        let prefix = slots
-            .open(&mut heap, RootOwner(1), RootKind::Arguments, 17)
-            .unwrap();
-        for length in [3, 64, 523, 4096] {
-            let started = std::time::Instant::now();
-            for _ in 0..10_000 {
-                let range = slots
-                    .open(
-                        &mut heap,
-                        RootOwner(1),
-                        RootKind::NativeContinuation,
-                        length,
-                    )
-                    .unwrap();
-                slots
-                    .write(
-                        &mut heap,
-                        RangePosition {
-                            range,
-                            index: length - 1,
-                        },
-                        Value::int(42),
-                    )
-                    .unwrap();
-                std::hint::black_box(
-                    slots
-                        .read(RangePosition {
-                            range,
-                            index: length - 1,
-                        })
-                        .unwrap(),
-                );
-                slots.release(&mut heap, range).unwrap();
-            }
-            println!(
-                "root_windows length={length} iterations=10000 elapsed_ns={} charged_bytes={}",
-                started.elapsed().as_nanos(),
-                slots.stats().charged_bytes
-            );
-        }
-        slots.release(&mut heap, prefix).unwrap();
-        slots.close(&mut heap).unwrap();
-    }
-    #[test]
     fn task_admission_compacts_fragmented_free_windows_without_losing_roots() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
         let mut slots = FrameSlots::new(

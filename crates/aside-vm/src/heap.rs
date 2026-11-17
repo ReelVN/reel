@@ -5,6 +5,7 @@ pub use changes::ChangeCursor;
 mod properties;
 mod reactive;
 mod read;
+mod roots;
 pub(crate) use read::ObjectRead;
 pub(crate) mod snapshot;
 mod storage;
@@ -334,8 +335,10 @@ impl Object {
         self.scan = 0;
         self.metadata_scanned = false;
         self.reactive_scanned = false;
-        self.queued = true;
-        true
+        self.queued = !self.model_metadata.same_bits(Value::NULL)
+            || !self.reactive_subscribers.same_bits(Value::NULL)
+            || self.payload.has_edges();
+        self.queued
     }
 }
 pub(crate) struct Root {
@@ -679,6 +682,7 @@ impl Heap {
         } else {
             self.gc.cycle
         };
+        let queued = self.gc.phase == GcPhase::Mark && payload.has_edges();
         let key = self.objects.insert(Object {
             kind,
             host_validator: None,
@@ -712,7 +716,7 @@ impl Heap {
             mark,
             scan: 0,
             metadata_scanned: false,
-            queued: self.gc.phase == GcPhase::Mark,
+            queued,
             dying: false,
             content_version: 0,
             structure_version: 0,
@@ -723,7 +727,7 @@ impl Heap {
         if kind == ObjectKind::WeakRef {
             self.weak_refs.push_back(key);
         }
-        if self.gc.phase == GcPhase::Mark {
+        if queued {
             self.gray.push_back(key);
         }
         Value::object(self.id, key.data().as_ffi())
@@ -1388,85 +1392,6 @@ impl Heap {
         heap_key(handle.key)
             .and_then(|k| self.objects.get(k))
             .is_some_and(|o| !o.dying && o.mark == self.gc.cycle)
-    }
-    pub fn add_root(
-        &mut self,
-        owner: RootOwner,
-        kind: RootKind,
-        value: Value,
-    ) -> Result<RootToken, HeapError> {
-        self.ensure_root_slot()?;
-        self.barrier(value)?;
-        let key = self.roots.insert(Root { value, owner, kind });
-        self.root_index[index(key)] = Some(key);
-        self.root_scan_len = self.root_scan_len.max(index(key) + 1);
-        Ok(RootToken {
-            heap: self.id,
-            epoch: self.epoch,
-            key,
-            _thread: PhantomData,
-        })
-    }
-    fn root_key(&self, token: RootToken) -> Result<RootKey, HeapError> {
-        if token.heap != self.id {
-            return Err(HeapError::WrongHeap);
-        }
-        if token.epoch != self.epoch {
-            return Err(HeapError::WrongEpoch);
-        }
-        self.roots.get(token.key).ok_or(HeapError::InvalidRoot)?;
-        Ok(token.key)
-    }
-    pub fn root_value(&self, token: RootToken) -> Result<Value, HeapError> {
-        Ok(self.roots.get(self.root_key(token)?).unwrap().value)
-    }
-    pub fn root_owner(&self, token: RootToken) -> Result<(RootOwner, RootKind), HeapError> {
-        let r = self.roots.get(self.root_key(token)?).unwrap();
-        Ok((r.owner, r.kind))
-    }
-    pub fn set_root(&mut self, token: RootToken, value: Value) -> Result<(), HeapError> {
-        let key = self.root_key(token)?;
-        self.barrier(value)?;
-        self.roots.get_mut(key).unwrap().value = value;
-        Ok(())
-    }
-    pub fn release_root(&mut self, token: RootToken) -> Result<Value, HeapError> {
-        let key = self.root_key(token)?;
-        self.root_index[index(key)] = None;
-        Ok(self.roots.remove(key).unwrap().value)
-    }
-    /// Bounded owner cancellation; cursor must start at zero and persist until done.
-    /// New roots for a cancelled owner must be prevented by the owning host.
-    pub fn release_owner_step(&mut self, owner: RootOwner, cursor: &mut u32, slots: u32) -> u32 {
-        let mut released = 0;
-        let end = (*cursor as usize)
-            .saturating_add(slots as usize)
-            .min(self.root_scan_len);
-        while (*cursor as usize) < end {
-            let position = *cursor as usize;
-            if let Some(key) = self.root_index[position]
-                && self.roots.get(key).is_some_and(|r| r.owner == owner)
-            {
-                self.roots.remove(key);
-                self.root_index[position] = None;
-                released += 1;
-            }
-            *cursor += 1;
-        }
-        released
-    }
-    /// Descriptor high-water bound, including sentinel and released holes.
-    /// Reserved capacity that has never been used is not a scan position.
-    pub fn root_slots(&self) -> u32 {
-        self.root_scan_len as u32
-    }
-    pub(crate) fn scan_root(&mut self, position: usize) {
-        if let Some(value) = self.root_index[position]
-            .and_then(|k| self.roots.get(k))
-            .map(|r| r.value)
-        {
-            self.shade(value);
-        }
     }
 }
 

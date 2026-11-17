@@ -21,27 +21,27 @@ impl Launcher {
     fn palette(&self) -> Palette {
         if self.preferences.light {
             Palette {
-                background: [244, 245, 247, 255],
+                background: [234, 241, 240, 255],
                 surface: [255, 255, 255, 255],
                 text: [37, 42, 50, 255],
                 muted: [109, 117, 128, 255],
                 separator: [218, 222, 229, 255],
-                highlight: [246, 249, 255, 255],
-                focus: [63, 118, 205, 255],
-                accent: [35, 101, 187, 255],
+                highlight: [213, 237, 231, 255],
+                focus: [27, 119, 108, 255],
+                accent: [20, 103, 92, 255],
                 on_accent: [255, 255, 255, 255],
             }
         } else {
             Palette {
-                background: [31, 35, 43, 255],
-                surface: [48, 54, 65, 255],
-                text: [246, 248, 252, 255],
-                muted: [166, 177, 190, 255],
-                separator: [72, 80, 93, 255],
-                highlight: [53, 64, 83, 255],
-                focus: [104, 165, 241, 255],
-                accent: [111, 169, 245, 255],
-                on_accent: [24, 34, 49, 255],
+                background: [15, 23, 30, 255],
+                surface: [24, 38, 47, 255],
+                text: [237, 248, 246, 255],
+                muted: [166, 189, 191, 255],
+                separator: [49, 70, 79, 255],
+                highlight: [34, 67, 69, 255],
+                focus: [115, 223, 196, 255],
+                accent: [115, 223, 196, 255],
+                on_accent: [15, 37, 37, 255],
             }
         }
     }
@@ -83,6 +83,28 @@ impl Launcher {
                 ..Default::default()
             },
             Vec::new(),
+        )?)
+    }
+    fn panel(
+        &mut self,
+        rect: [f64; 4],
+        color: [u8; 4],
+        radius: f64,
+        children: Vec<NodeId>,
+    ) -> Result<NodeId, Error> {
+        let [x, y, width, height] = rect;
+        Ok(self.stage.create(
+            NodeKind::Stack,
+            NodeProps {
+                x,
+                y,
+                width: Some(width),
+                height: Some(height),
+                background: Some(color),
+                corner_radius: radius,
+                ..Default::default()
+            },
+            children,
         )?)
     }
     fn control(
@@ -215,7 +237,8 @@ impl Launcher {
         let palette = self.palette();
         let view = self.stage.node(node).unwrap();
         let mut props = view.props.clone();
-        props.background = if state.pressed || state.hover || state.focused {
+        let selected = button.action == Action::Launch(self.selected);
+        props.background = if state.pressed || state.hover || state.focused || selected {
             Some(palette.highlight)
         } else if button.primary {
             Some(palette.accent)
@@ -234,27 +257,42 @@ impl Launcher {
         Ok(())
     }
     pub(super) fn game_row(&mut self, index: usize) -> Result<NodeId, Error> {
-        let game = &self.games[index];
-        let title = game.title.clone();
-        let bytes = game.bytes;
-        let size = if bytes >= 1 << 30 {
-            format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
-        } else {
-            format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64)
-        };
-        let text = self.label(title, [16., 27., 654., 38.], 28., false)?;
+        let title = self.games[index].title.clone();
+        let number = self.label(format!("{:02}", index + 1), [18., 29., 48., 29.], 20., true)?;
+        let text = self.label(title, [72., 24., 424., 38.], 28., false)?;
         self.align(text, reel_ui::TextAlign::Start, false)?;
-        let detail = self.label(size, [686., 34., 130., 28.], 17., true)?;
-        self.align(detail, reel_ui::TextAlign::End, false)?;
-        let separator = self.line([16., 89., 800., 1.])?;
+        let separator = self.line([16., ROW_HEIGHT - 1., LIST_WIDTH - 32., 1.])?;
         self.control(
-            [0., 0., 832., ROW_HEIGHT],
-            vec![text, detail, separator],
+            [0., 0., LIST_WIDTH, ROW_HEIGHT],
+            vec![number, text, separator],
             Action::Launch(index),
             true,
             false,
             true,
         )
+    }
+    fn detail_text(&self) -> [String; 2] {
+        let game = &self.games[self.selected];
+        let size = if game.bytes >= 1 << 30 {
+            format!("{:.2} GiB", game.bytes as f64 / (1u64 << 30) as f64)
+        } else {
+            format!("{:.1} MiB", game.bytes as f64 / (1u64 << 20) as f64)
+        };
+        [game.title.clone(), size]
+    }
+    pub(super) fn refresh_selection(&mut self, previous: usize) -> Result<(), Error> {
+        for index in [previous, self.selected] {
+            if let Some(&row) = self.list.as_ref().and_then(|list| list.rows.get(&index)) {
+                self.feedback(row)?;
+            }
+        }
+        if let Some(nodes) = self.game_detail {
+            for (id, text) in nodes.into_iter().zip(self.detail_text()) {
+                let props = self.stage.node(id).unwrap().props.clone();
+                self.stage.update(id, NodeKind::Text(text.into()), props)?;
+            }
+        }
+        Ok(())
     }
     fn align(&mut self, node: NodeId, align: reel_ui::TextAlign, wrap: bool) -> Result<(), Error> {
         let view = self.stage.node(node).unwrap();
@@ -267,6 +305,7 @@ impl Launcher {
     pub(super) fn rebuild(&mut self) -> Result<(), Error> {
         self.buttons.clear();
         self.list = None;
+        self.game_detail = None;
         self.overlay = None;
         self.pages.clear();
         self.page_focus.clear();
@@ -274,21 +313,25 @@ impl Launcher {
         let mut pages = Vec::new();
         for screen in [Screen::Library, Screen::Settings] {
             let mut nodes = Vec::new();
-            let title = if screen == Screen::Library {
-                "Reel"
-            } else {
-                self.text("设置", "Settings", "設定")
-            };
-            nodes.push(self.label(title, [65., 26., 400., 40.], 28., false)?);
+            nodes.push(self.panel([48., 28., 5., 39.], self.palette().accent, 2., vec![])?);
+            nodes.push(self.label("Reel", [65., 19., 105., 52.], 38., false)?);
             if screen == Screen::Library {
                 nodes.push(self.label(
                     format!(
-                        "{} {}",
+                        "{}  /  {} {}",
+                        self.text("作品库", "Library", "ライブラリ"),
                         self.games.len(),
                         self.text("部作品", "games", "作品")
                     ),
-                    [143., 37., 350., 26.],
-                    17.,
+                    [177., 35., 510., 31.],
+                    21.,
+                    true,
+                )?);
+            } else {
+                nodes.push(self.label(
+                    self.text("设置", "Settings", "設定"),
+                    [177., 35., 360., 31.],
+                    21.,
                     true,
                 )?);
             }
@@ -407,28 +450,36 @@ impl Launcher {
                     navigation: None,
                 }),
                 NodeProps {
-                    width: Some(832.),
+                    width: Some(LIST_WIDTH),
                     ..Default::default()
                 },
                 Vec::new(),
             )?;
             let scroll = self.stage.create(
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis: ScrollAxis::Vertical,
                     follow_end: false,
+                    snap_y: None,
                     align: ScrollAlign::Start,
                     offset: (0., self.scroll_offset).into(),
                 },
                 NodeProps {
                     x: 64.,
-                    y: 100.,
-                    width: Some(832.),
+                    y: 108.,
+                    width: Some(LIST_WIDTH),
                     height: Some(LIST_HEIGHT),
                     clip: true,
                     ..Default::default()
                 },
                 vec![node],
             )?;
+            nodes.push(self.panel(
+                [64., 108., LIST_WIDTH, LIST_HEIGHT],
+                self.palette().surface,
+                12.,
+                vec![],
+            )?);
             nodes.push(scroll);
             self.list = Some(List {
                 node,
@@ -437,6 +488,28 @@ impl Launcher {
                 viewport: LIST_HEIGHT,
                 navigation: None,
             });
+            let [title, size] = self.detail_text();
+            let heading = self.label(
+                self.text("当前作品", "SELECTED GAME", "選択中の作品"),
+                [24., 26., 236., 30.],
+                18.,
+                true,
+            )?;
+            let title = self.label(title, [24., 78., 236., 124.], 30., false)?;
+            let size = self.label(size, [24., 209., 236., 32.], 21., true)?;
+            let play = self.button(
+                self.text("○  启动", "○  Play", "○  起動"),
+                [24., 274., 236., 54.],
+                Action::Play,
+                true,
+            )?;
+            nodes.push(self.panel(
+                [612., 108., 284., LIST_HEIGHT],
+                self.palette().surface,
+                12.,
+                vec![heading, title, size, play],
+            )?);
+            self.game_detail = Some([title, size]);
         }
         let settings = self.hint(
             "SELECT",
@@ -470,10 +543,10 @@ impl Launcher {
         if !self.games.is_empty() {
             nodes.push(self.hint(
                 "×",
-                self.text("启动", "Play", "起動"),
+                self.text("退出", "Exit", "終了"),
                 770.,
                 135.,
-                Some(Action::Play),
+                Some(Action::Exit),
                 true,
             )?);
         }
@@ -538,7 +611,7 @@ impl Launcher {
             false,
         )?);
         nodes.push(self.hint(
-            "○",
+            "×",
             self.text("返回", "Back", "戻る"),
             620.,
             130.,
@@ -546,7 +619,7 @@ impl Launcher {
             true,
         )?);
         nodes.push(self.hint(
-            "×",
+            "○",
             self.text("选择", "Select", "選択"),
             770.,
             135.,
@@ -617,6 +690,7 @@ impl Launcher {
                 placement: reel_ui::widgets::PopupPlacement::BottomEnd,
                 offset: 4.,
                 listening: true,
+                hint: None,
             }),
             NodeProps {
                 width: Some(340.),
@@ -696,8 +770,10 @@ impl Launcher {
         self.stage.update(text, node.kind.clone(), props)?;
         let scroll = self.stage.create(
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
+                snap_y: None,
                 align: ScrollAlign::Start,
                 offset: Default::default(),
             },

@@ -50,7 +50,7 @@ pub fn builtin_members(
     let receiver = match &types[ty.0 as usize] {
         Type::Array => ObjectKind::Array,
         Type::Table => ObjectKind::Table,
-        Type::String => ObjectKind::String,
+        Type::String | Type::StringLiteral(_) => ObjectKind::String,
         Type::Tuple(_) => ObjectKind::Tuple,
         Type::Generator => ObjectKind::Generator,
         Type::Named(name) if hir.name(*name) == "Bytes" => ObjectKind::Bytes,

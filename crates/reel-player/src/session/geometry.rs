@@ -20,6 +20,13 @@ pub struct RecordedProjection {
     pub(crate) frame_transitions: Vec<reel_ui::frame::FrameTransition>,
 }
 impl RecordedProjection {
+    pub(crate) fn completed_dialogue(&self) -> Option<reel_engine::InteractionId> {
+        self.stamp
+            .dialogue_complete
+            .then_some(self.stamp.interaction)
+            .flatten()
+    }
+
     pub fn key(&self) -> CandidateKey {
         self.key.clone()
     }
@@ -68,6 +75,7 @@ fn geometry(
         transform: coefficients,
         text_end: None,
         text_caret: None,
+        reveal: None,
     })
 }
 impl SessionUi {
@@ -228,6 +236,14 @@ impl SessionUi {
         };
         let view = source.geometry();
         let mut result = geometry(view, node, relative)?;
+        if let Some(margins) = query.reveal_margins {
+            result.reveal = Some(StageWidget::scroll_reveal(
+                bridge.root(),
+                relative,
+                result.bounds,
+                margins,
+            )?);
+        }
         if let Some((label, caret)) = stage.text_caret(bridge.root(), query.node) {
             let label = visible(view, label)?;
             let reference = visible(view, relative)?;

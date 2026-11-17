@@ -105,6 +105,49 @@ fn source_prefixes_browse_real_files_and_one_directory_level_with_unsaved_childr
 }
 
 #[test]
+fn project_imports_use_one_module_for_short_and_qualified_paths() {
+    let (_project, root) = project_sources();
+    std::fs::create_dir(root.join("ui")).unwrap();
+    let file = root.join("ui/dialogue.aside");
+    std::fs::write(&file, "pub fn greet() {}").unwrap();
+    let main = file_uri(&root.join("main.aside")).unwrap();
+    let declaration = file_uri(&file).unwrap();
+    let source = "use ui::dialogue::{greet}; use game::ui::dialogue as panel; fn main(){greet(); panel.greet();}";
+    let mut workspace = Workspace::new(project_options());
+    workspace.open(main.clone(), 1, source.into()).unwrap();
+    assert!(
+        workspace
+            .diagnostics(&main, Encoding::Utf16)
+            .unwrap()
+            .iter()
+            .all(|document| document.diagnostics.is_empty())
+    );
+    assert_eq!(workspace.snapshot(&main).unwrap().sources.len(), 2);
+    let definitions = workspace
+        .references(
+            &main,
+            position(source, "greet};", false),
+            Encoding::Utf16,
+            true,
+        )
+        .unwrap();
+    assert_eq!(definitions.len(), 4);
+    assert!(
+        definitions
+            .iter()
+            .any(|location| location.uri == declaration)
+    );
+    let items = workspace
+        .complete(
+            &main,
+            position(source, "ui::dialogue::{", true),
+            Encoding::Utf16,
+        )
+        .unwrap();
+    assert!(items.iter().any(|item| item.label == "greet"));
+}
+
+#[test]
 fn blank_and_nested_group_import_completion_discovers_source_exports() {
     let (_project, root) = project_sources();
     std::fs::create_dir_all(root.join("ui")).unwrap();
@@ -118,6 +161,7 @@ fn blank_and_nested_group_import_completion_discovers_source_exports() {
     for (source, expected) in [
         ("use ", vec!["game"]),
         ("use game :: ui :: ", vec!["dialogue"]),
+        ("use ui::dialogue::{ ", vec!["speak", "Actor"]),
         ("use game::ui::dialogue::{ ", vec!["speak", "Actor"]),
         ("use game::{ui::{dialogue::{ ", vec!["speak", "Actor"]),
         (

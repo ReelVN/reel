@@ -2,9 +2,16 @@ use super::*;
 use crate::aside::data::{Capture, DataDocument};
 use crate::aside::saves::{SaveOperation, SaveResult};
 
-fn pending_write(code: &str, encoded: bool) -> (Session, SessionVm, HostTicket, Value) {
-    let (mut session, mut vm) = models::prepared(code, encoded);
-    loop {
+pub(super) fn pending_write(code: &str, encoded: bool) -> (Session, SessionVm, HostTicket, Value) {
+    pending_write_version(code, encoded, 1)
+}
+pub(super) fn pending_write_version(
+    code: &str,
+    encoded: bool,
+    version: u64,
+) -> (Session, SessionVm, HostTicket, Value) {
+    let (mut session, mut vm) = models::prepared_version(code, encoded, version);
+    for _ in 0..20_000 {
         match next(&mut vm, &mut session) {
             RunOutcome::HostCall(ticket) => {
                 let package = vm.vm.program().package();
@@ -14,12 +21,13 @@ fn pending_write(code: &str, encoded: bool) -> (Session, SessionVm, HostTicket, 
                     let value = vm.vm.host_arguments(ticket).unwrap()[1];
                     return (session, vm, ticket, value);
                 }
-                vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                vm.dispatch(&mut session, ticket, "en", NativeBudget::RetryMinimum(1))
                     .unwrap();
             }
             other => panic!("expected persistent.write, got {other:?}"),
         }
     }
+    panic!("persistent.write fixture exhausted its work budget")
 }
 
 #[test]

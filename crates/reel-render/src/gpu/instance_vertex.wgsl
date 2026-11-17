@@ -10,7 +10,7 @@
     var out: VertexOut;
     out.position = vec4<f32>(position, 0.0, 1.0);
     out.uv = uv;
-    out.color = REEL_INSTANCE_COLOR(color);
-    REEL_INSTANCE_WINDOW
+    out.color = PaintVertexColor(color);
+    out.source_window = source_window;
     return out;
 }

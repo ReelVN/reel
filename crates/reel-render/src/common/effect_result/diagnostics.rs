@@ -8,7 +8,7 @@ fn causes(key: Option<&Key>, probe: &Probe<'_>, retained: bool) -> [u64; CACHE_M
         counts[0] = 1;
         return counts;
     };
-    let source_changed = key.source != probe.source;
+    let source_changed = !key.source.same(&probe.source);
     let (recording_identity, recording_pixels) = match (&key.source, &probe.source) {
         (Source::Recording(a), Source::Recording(b)) => (
             a.owner != b.owner || !Arc::ptr_eq(&a.scene, &b.scene) || a.local != b.local,
@@ -22,7 +22,9 @@ fn causes(key: Option<&Key>, probe: &Probe<'_>, retained: bool) -> [u64; CACHE_M
     };
     [
         0,
-        u64::from(source_changed && matches!(&probe.source, Source::Recording(_))),
+        u64::from(
+            source_changed && matches!(&probe.source, Source::Recording(_) | Source::Multiple(_)),
+        ),
         u64::from(source_changed && matches!(&probe.source, Source::Output(_))),
         u64::from(
             key.shader != probe.effect.shader

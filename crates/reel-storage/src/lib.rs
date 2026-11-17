@@ -69,26 +69,20 @@ fn destination(target: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(not(target_os = "vita"))]
-struct Staging {
-    path: PathBuf,
-    directory: Option<tempfile::TempDir>,
-}
+struct Staging(tempfile::TempDir);
 #[cfg(not(target_os = "vita"))]
 impl Staging {
     fn new(parent: &Path) -> io::Result<Self> {
-        let directory = tempfile::Builder::new()
+        tempfile::Builder::new()
             .prefix(".reel-stage-")
-            .tempdir_in(parent)?;
-        Ok(Self {
-            path: directory.path().to_owned(),
-            directory: Some(directory),
-        })
+            .tempdir_in(parent)
+            .map(Self)
     }
-    fn cleanup(&mut self) -> io::Result<()> {
-        self.directory
-            .take()
-            .expect("staging cleanup called once")
-            .close()
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+    fn close(self) -> io::Result<()> {
+        self.0.close()
     }
 }
 
@@ -126,7 +120,10 @@ impl Staging {
             "cannot allocate unique staging directory",
         ))
     }
-    fn cleanup(&mut self) -> io::Result<()> {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+    fn close(mut self) -> io::Result<()> {
         fs::remove_dir_all(&self.path)?;
         self.owned = false;
         Ok(())
@@ -136,7 +133,7 @@ impl Staging {
 impl Drop for Staging {
     fn drop(&mut self) {
         if self.owned {
-            let _ = self.cleanup();
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 }
@@ -159,7 +156,7 @@ mod tests {
     #[test]
     fn failed_write_preserves_old_file_and_cleans_own_staging() {
         let dir = directory();
-        let target = dir.path.join("old.asb");
+        let target = dir.path().join("old.asb");
         publish(&target, false, |file| file.write_all(b"original")).unwrap();
         let result = publish(&target, true, |file| {
             file.write_all(b"partial")?;
@@ -167,24 +164,24 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(read(&target).unwrap(), b"original");
-        assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
     #[test]
     fn target_created_during_write_is_never_overwritten() {
         let dir = directory();
-        let target = dir.path.join("race.asb");
+        let target = dir.path().join("race.asb");
         let result = publish(&target, false, |file| {
             file.write_all(b"candidate")?;
             publish(&target, false, |file| file.write_all(b"other writer")).map(|_| ())
         });
         assert_eq!(result.err().unwrap().kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(read(&target).unwrap(), b"other writer");
-        assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
     #[test]
     fn overwrite_replaces_only_after_complete_write() {
         for dir in [directory(), Staging::new(&std::env::temp_dir()).unwrap()] {
-            let target = dir.path.join("replace.asb");
+            let target = dir.path().join("replace.asb");
             publish(&target, false, |file| file.write_all(b"old")).unwrap();
             let result = publish(&target, true, |file| {
                 file.write_all(b"new")?;
@@ -194,7 +191,7 @@ mod tests {
             .unwrap();
             assert!(result.cleanup_warning.is_none());
             assert_eq!(read(&target).unwrap(), b"new");
-            assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
         }
     }
 }

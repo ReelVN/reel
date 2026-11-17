@@ -364,7 +364,7 @@ impl Vm {
                     self.value(n.roots, 2 + self.limits.max_continuation_values + index)?,
                 ))
             }
-            ArgSource::Sort { frame } => self.sort_argument(frame, index),
+            ArgSource::BuiltinCallback { frame } => self.builtin_callback_argument(frame, index),
             ArgSource::Prefix { frame, .. } => {
                 let range = match self.active.frames.data[self.index(frame)?] {
                     Frame::Script(s) => s.bound,
@@ -653,10 +653,6 @@ impl Vm {
             return Err(VmError::InvalidTicket);
         }
         self.value(n.roots, 0)
-    }
-    /// Compatibility alias for the unified resume-input getter.
-    pub fn host_callback_value(&self, ticket: HostTicket) -> Result<Value, VmError> {
-        self.host_resume_value(ticket)
     }
     pub fn host_callback_fault(&self, ticket: HostTicket) -> Result<Option<FaultInfo>, VmError> {
         let n = self.ticket(ticket)?;

@@ -7,6 +7,8 @@ use reel_ui::stage::{
 use std::sync::Arc;
 mod feedback;
 mod index;
+mod scroll_owners;
+pub(in crate::aside) use scroll_owners::{ScrollGeometry, ScrollOwners};
 mod target;
 mod window;
 use index::*;
@@ -58,6 +60,8 @@ const INDEX_HEIGHTS: u64 = 3;
 const WINDOW: u64 = 4;
 const BUILT: u64 = 5;
 const PREPARE_WINDOW: u64 = 6;
+const OVERSCAN: f64 = 0.25;
+const REFILL: f64 = OVERSCAN * 0.5;
 const SORT: u64 = 7;
 
 fn get(h: &Heap, s: Value, f: S) -> Result<Value, HeapError> {
@@ -117,7 +121,7 @@ pub(in crate::aside) fn project(h: &Heap, host: Value) -> Result<VirtualListView
 // Keep the last committed geometry separate from a source/window continuation.
 // Restoring while a source shrinks or a row factory runs must publish neither
 // its new index nor its detached candidates before reconciliation succeeds.
-fn commit_projection(h: &mut Heap, s: Value) -> Result<(), AdapterError> {
+fn commit_projection(h: &mut Heap, s: Value, new_window: bool) -> Result<(), AdapterError> {
     let header = [
         get(h, s, S::Revision)?,
         Value::float(total(h, s)?),
@@ -136,6 +140,32 @@ fn commit_projection(h: &mut Heap, s: Value) -> Result<(), AdapterError> {
             Value::float(prefix(h, s, index.as_int().unwrap() as u32)?),
         ] {
             h.array_push(projection, value)?;
+        }
+    }
+    if new_window {
+        let old = get(h, s, S::Projection)?;
+        let len = h.sequence_len(projection)?;
+        let mut changed = header[0].as_int() == Some(0)
+            || get(h, s, S::Target)?.tag() != ValueTag::Null
+            || header[3].tag() != ValueTag::Null
+            || h.sequence_len(old)? != len;
+        if !changed {
+            for i in (1..len).filter(|&i| i != 4) {
+                if !h
+                    .sequence_get(old, i)?
+                    .same_bits(h.sequence_get(projection, i)?)
+                {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if changed {
+            let revision = Value::int(header[0].as_int().unwrap() + 1);
+            h.set_field(projection, 0, revision)?;
+            put(h, s, S::Revision, revision)?;
+        } else if header[4].same_bits(h.sequence_get(old, 4)?) {
+            return Ok(());
         }
     }
     put(h, s, S::Projection, projection)?;
@@ -385,7 +415,7 @@ impl SessionVm {
             match t.continuation.unwrap().stage {
                 PREPARE_WINDOW => self.virtual_prepare_window(t, w.state)?,
                 SOURCE => {
-                    w.source = self.vm.host_callback_value(t)?;
+                    w.source = self.vm.host_resume_value(t)?;
                     if self.vm.heap().info(w.source)?.kind != ObjectKind::Array {
                         return Err(AdapterError::Input("list source must return an array"));
                     }
@@ -395,7 +425,7 @@ impl SessionVm {
                 }
                 KEY => {
                     w.check_source(self.vm.heap())?;
-                    let key = self.vm.host_callback_value(t)?;
+                    let key = self.vm.host_resume_value(t)?;
                     let item = self.vm.heap().sequence_get(w.source, w.index)?;
                     let e = self.vm.heap_mut().alloc_array(&[
                         key,

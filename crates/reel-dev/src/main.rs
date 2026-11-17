@@ -25,6 +25,8 @@ enum Action {
     },
     AudioProbe,
     VitaAssets(vita::Assets),
+    /// Open a source project for manual diagnosis and save its logs and frame timings.
+    Debug(performance::DebugOptions),
     Perf(performance::Options),
     FrameCost {
         scope: String,
@@ -85,18 +87,23 @@ fn main() -> Result<()> {
         Action::AudioRegression { release } => audio::regression(release)?,
         Action::AudioProbe => audio::probes()?,
         Action::VitaAssets(options) => vita::assets(options)?,
+        Action::Debug(options) => performance::debug(options)?,
         Action::Perf(options) => performance::execute(options)?,
         Action::FrameCost {
             scope,
             input,
             output,
             budget,
-        } => frame_cost::report(&scope, &input, &output, budget.as_deref())?,
+        } => {
+            frame_cost::report(&scope, &input, &output, budget.as_deref())?;
+        }
         Action::RenderCost {
             scope,
             input,
             output,
-        } => render_cost::report(&scope, &input, &output)?,
+        } => {
+            render_cost::report(&scope, &input, &output)?;
+        }
         Action::RootNegative => maintenance::negative_controls()?,
         Action::CompilerProbe { probe, mode } => {
             maintenance::compiler_probe(&probe, mode.as_deref())?

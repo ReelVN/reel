@@ -2,12 +2,71 @@
 use super::*;
 
 impl Binder<'_> {
+    pub(super) fn coalesced_type(&mut self, node: NodeId, left: TypeId, right: TypeId) -> TypeId {
+        if left == NULL {
+            return right;
+        }
+        if left == right || self.definitely_nonnull(left) {
+            return left;
+        }
+        let mut pending: SmallVec<[(TypeId, bool); 4]> = smallvec![(left, false), (right, true)];
+        let mut alternatives: SmallVec<[TypeId; 4]> = SmallVec::new();
+        while let Some((ty, allow_null)) = pending.pop() {
+            if ty == ANY || !self.budget(node) {
+                return ANY;
+            }
+            match &self.out.types[ty.0 as usize] {
+                Type::Union(members) => pending.extend(members.iter().map(|&ty| (ty, allow_null))),
+                Type::Null if !allow_null => {}
+                _ => alternatives.push(ty),
+            }
+        }
+        alternatives.sort_unstable();
+        alternatives.dedup();
+        match alternatives.as_slice() {
+            [] => NULL,
+            [only] => *only,
+            _ => self.intern_type(Type::Union(alternatives.into_vec())),
+        }
+    }
+
     pub(super) fn annotation(&mut self, n: NodeId, ctx: &Context) -> TypeId {
         if !self.budget(n) {
             return ANY;
         }
         let children = self.children(n);
         let result = match self.kind(n) {
+            HirKind::StringType => {
+                if let Some(&text) = children.first()
+                    && let Some(text) = self.literal_text(text)
+                {
+                    self.intern_type(Type::StringLiteral(text))
+                } else {
+                    self.error(
+                        D::InvalidType,
+                        self.span(n),
+                        "string type must be a literal without interpolation",
+                    );
+                    ANY
+                }
+            }
+            HirKind::RecordType => {
+                let mut fields = Vec::new();
+                let mut seen = HashSet::new();
+                for field in children {
+                    if let (Some(name), Form::Single { child }) =
+                        (self.name(field), self.out.hir.node(field).form)
+                    {
+                        let key = name.name.unwrap();
+                        if !seen.insert(key) {
+                            self.error(D::InvalidType, name.span, "duplicate record field");
+                            continue;
+                        }
+                        fields.push((key, self.annotation(child, ctx)));
+                    }
+                }
+                self.record_type(fields)
+            }
             HirKind::NamedType => {
                 if self
                     .out
@@ -78,9 +137,7 @@ impl Binder<'_> {
                         _ => ts.push(t),
                     }
                 }
-                ts.sort();
-                ts.dedup();
-                self.intern_type(Type::Union(ts))
+                self.union_type(ts)
             }
             HirKind::FunctionType => {
                 let mut ts: Vec<_> = children
@@ -93,6 +150,28 @@ impl Binder<'_> {
             _ => ANY,
         };
         self.set_ty(n, result)
+    }
+
+    pub(super) fn record_type(&mut self, mut fields: Vec<(NameId, TypeId)>) -> TypeId {
+        fields.sort_unstable_by_key(|&(name, _)| name);
+        self.intern_type(Type::Record(fields))
+    }
+
+    pub(super) fn union_type(&mut self, mut types: Vec<TypeId>) -> TypeId {
+        types.sort_unstable();
+        types.dedup();
+        match types.as_slice() {
+            [] => ANY,
+            [only] => *only,
+            _ => self.intern_type(Type::Union(types)),
+        }
+    }
+    pub(super) fn string_like(&self, ty: TypeId) -> bool {
+        match &self.out.types[ty.0 as usize] {
+            Type::String | Type::StringLiteral(_) => true,
+            Type::Union(types) => types.iter().all(|&ty| self.string_like(ty)),
+            _ => false,
+        }
     }
     pub(super) fn qualified_type(&mut self, n: NodeId, ctx: &Context) -> TypeId {
         let names = self
@@ -175,6 +254,14 @@ impl Binder<'_> {
         ) {
             (_, Type::Union(ts)) => ts.iter().any(|&t| self.compatible(actual, t)),
             (Type::Union(ts), _) => ts.iter().any(|&t| self.compatible(t, expected)),
+            (Type::StringLiteral(_), Type::String) | (Type::String, Type::StringLiteral(_)) => true,
+            (Type::Record(_), Type::Table) | (Type::Table, Type::Record(_)) => true,
+            (Type::Record(a), Type::Record(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b)
+                        .all(|(&(ak, a), &(bk, b))| ak == bk && self.compatible(a, b))
+            }
             (Type::Tuple(a), Type::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b).all(|(&a, &b)| self.compatible(a, b))
             }
@@ -237,6 +324,20 @@ impl Binder<'_> {
         }
     }
     pub(super) fn require(&mut self, n: NodeId, actual: TypeId, expected: TypeId, label: &str) {
+        if self.has_value_contract(expected) {
+            self.require_contract(n, actual, expected, label);
+        } else {
+            self.require_type(n, actual, expected, label);
+        }
+    }
+
+    pub(super) fn require_type(
+        &mut self,
+        n: NodeId,
+        actual: TypeId,
+        expected: TypeId,
+        label: &str,
+    ) {
         if expected == ANY {
             return;
         }
@@ -272,6 +373,7 @@ impl Binder<'_> {
             Type::Tuple(types) | Type::Union(types) => {
                 types.iter().any(|&ty| self.incomplete_signature(ty))
             }
+            Type::Record(fields) => fields.iter().any(|&(_, ty)| self.incomplete_signature(ty)),
             Type::Callable(types, result) => {
                 types.iter().any(|&ty| self.incomplete_signature(ty))
                     || self.incomplete_signature(*result)

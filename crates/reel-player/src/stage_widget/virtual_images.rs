@@ -1,5 +1,11 @@
 use super::*;
 
+pub(crate) struct OffscreenImage {
+    pub id: NodeId,
+    pub distance: f64,
+    pub moving_inward: bool,
+}
+
 impl StageView {
     /// Missing textures may participate in layout only when both image dimensions
     /// are known. All missing resources must belong to virtual rows.
@@ -58,8 +64,12 @@ impl StageWidget {
     pub(crate) fn offscreen_images(
         root: &reel_ui::app::RenderRoot,
         root_id: WidgetId,
-    ) -> Vec<NodeId> {
-        fn visit(widget: WidgetRef<'_, dyn Widget>, viewport: Rect, outside: &mut Vec<NodeId>) {
+    ) -> Vec<OffscreenImage> {
+        fn visit(
+            widget: WidgetRef<'_, dyn Widget>,
+            viewport: Rect,
+            outside: &mut Vec<OffscreenImage>,
+        ) {
             if widget.ctx().is_stashed() || widget.is_cursor() {
                 return;
             }
@@ -84,9 +94,23 @@ impl StageWidget {
                         .transform_rect_bbox(widget.ctx().content_box());
                     // Keep one physical pixel for raster edge coverage.
                     let edge = 1. / widget.ctx().scale_factor();
-                    let visible = bounds.inflate(edge, edge).intersect(viewport);
+                    let bounds = bounds.inflate(edge, edge);
+                    let visible = bounds.intersect(viewport);
                     if bounds.is_finite() && (visible.width() <= 0. || visible.height() <= 0.) {
-                        outside.push(scene.node.id);
+                        let distance = if viewport.width() > 0. && viewport.height() > 0. {
+                            (viewport.x0 - bounds.x1)
+                                .max(bounds.x0 - viewport.x1)
+                                .max(viewport.y0 - bounds.y1)
+                                .max(bounds.y0 - viewport.y1)
+                                .max(0.)
+                        } else {
+                            f64::INFINITY
+                        };
+                        outside.push(OffscreenImage {
+                            id: scene.node.id,
+                            distance,
+                            moving_inward: false,
+                        });
                     }
                 }
             }
@@ -101,7 +125,7 @@ impl StageWidget {
             .window_transform()
             .transform_rect_bbox(widget.ctx().content_box());
         visit(widget, viewport, &mut outside);
-        outside.sort_unstable();
+        outside.sort_unstable_by_key(|image| image.id);
         outside
     }
 
@@ -137,24 +161,30 @@ impl StageWidget {
                 let Some(viewport) = &state.feedback else {
                     return false;
                 };
-                let scroll = stage
+                let list = stage
                     .nodes
-                    .get(&viewport.scroll)
+                    .get(&viewport.node)
                     .and_then(|id| geometry.get(*id))
                     .unwrap();
-                let bounds = scroll
-                    .window_transform
-                    .transform_rect_bbox(scroll.size.to_rect());
+                let bounds = list.window_transform.transform_rect_bbox(state.visible);
                 let mut segment: Option<(usize, f64)> = None;
-                let mut covered = view.total_rows == 0;
+                let mut covered =
+                    view.total_rows == 0 || viewport.visible_end <= viewport.visible_start;
+                let mut resources = state.row_resources.borrow_mut();
                 for (index, row) in view.rows.iter().enumerate() {
                     let child = &node.children[state.child_indices[index]];
-                    let ready =
-                        StageView::image_requests_for(Some(child), format).is_ok_and(|requests| {
-                            requests
-                                .required()
-                                .all(|(source, _)| images.contains_key(source))
+                    let ready = if child.image_branch {
+                        let cached = resources.entry(row.node).or_insert_with(|| {
+                            super::resource_index::RowResources::new(child, format)
                         });
+                        if !cached.matches(child, format) {
+                            *cached = super::resource_index::RowResources::new(child, format);
+                        }
+                        cached.ready(images)
+                    } else {
+                        resources.remove(&row.node);
+                        true
+                    };
                     let actual = stage
                         .nodes
                         .get(&row.node)

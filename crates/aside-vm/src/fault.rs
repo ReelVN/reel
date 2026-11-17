@@ -158,7 +158,6 @@ pub(crate) const FAULT_NODE_BYTES: u64 = std::mem::size_of::<FaultPayload>() as 
 pub(crate) struct FaultPayload {
     pub data: FaultData,
     pub edges: [Value; 3],
-    pub release_cursor: u32,
     pub code: Rc<CodeLease>,
 }
 impl Heap {
@@ -181,12 +180,7 @@ impl Heap {
         }
         Ok(self.allocate(
             kind,
-            Payload::Fault(FaultPayload {
-                data,
-                edges,
-                release_cursor: 0,
-                code,
-            }),
+            Payload::Fault(FaultPayload { data, edges, code }),
             None,
             0,
         ))

@@ -208,25 +208,7 @@ pub(in crate::aside) fn tween(
     if duration < 0. {
         return Err(AdapterError::Input("duration must be nonnegative"));
     }
-    let easing = if heap
-        .info(args[2])
-        .is_ok_and(|info| info.kind == aside_vm::ObjectKind::Host)
-    {
-        if aside_std::sample_curve(heap, args[2], 0.)? != 0.
-            || aside_std::sample_curve(heap, args[2], 1.)? != 1.
-        {
-            return Err(AdapterError::Input(
-                "tween curve must sample to 0 at time 0 and 1 at time 1",
-            ));
-        }
-        args[2]
-    } else {
-        Value::int(
-            super::easing::Easing::parse(&super::super::text::read_string(
-                heap, args[2], read_limit,
-            )?)? as i64,
-        )
-    };
+    let easing = tween_easing(heap, args[2], read_limit)?;
     let goals = heap.alloc_array(&[])?;
     for ((index, _), &value) in NodeProperty::PROPERTIES
         .iter()
@@ -317,6 +299,51 @@ pub(in crate::aside) fn tween(
             heap.set_field(goals, (goal * GOAL_LEN + 1) as u32, start)?;
         }
     }
+    tween_description(heap, target, duration, easing, goals)
+}
+
+fn tween_easing(heap: &Heap, value: Value, read_limit: usize) -> Result<Value, AdapterError> {
+    if heap
+        .info(value)
+        .is_ok_and(|info| info.kind == aside_vm::ObjectKind::Host)
+    {
+        if aside_std::sample_curve(heap, value, 0.)? != 0.
+            || aside_std::sample_curve(heap, value, 1.)? != 1.
+        {
+            return Err(AdapterError::Input(
+                "tween curve must sample to 0 at time 0 and 1 at time 1",
+            ));
+        }
+        Ok(value)
+    } else {
+        Ok(Value::int(
+            super::easing::Easing::parse(&super::super::text::read_string(
+                heap, value, read_limit,
+            )?)? as i64,
+        ))
+    }
+}
+
+pub(in crate::aside) fn scroll_tween(
+    heap: &mut Heap,
+    target: Value,
+    duration: f64,
+    easing: Value,
+    goals: &[Value],
+    limit: usize,
+) -> Result<Value, AdapterError> {
+    let easing = tween_easing(heap, easing, limit)?;
+    let goals = heap.alloc_array(goals)?;
+    tween_description(heap, target, duration, easing, goals)
+}
+
+fn tween_description(
+    heap: &mut Heap,
+    target: Value,
+    duration: f64,
+    easing: Value,
+    goals: Value,
+) -> Result<Value, AdapterError> {
     let fields = heap.alloc_table()?;
     Ok(heap.alloc_host(
         fields,

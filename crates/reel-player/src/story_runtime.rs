@@ -2,7 +2,10 @@
 use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
 use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
 #[cfg(test)]
+mod checkpoints;
+#[cfg(test)]
 mod clock_sampling;
+pub(crate) mod history;
 #[cfg(feature = "profiling")]
 mod profile_output;
 #[cfg(test)]
@@ -50,6 +53,8 @@ pub struct StoryRuntime {
     clock_profile: Option<ClockProfile>,
     #[cfg(feature = "profiling")]
     progress_profile: Option<ClockProfile>,
+    #[cfg(feature = "profiling")]
+    trace_progress: bool,
     #[cfg(feature = "profiling")]
     stage_profile: Option<(std::time::Instant, reel_engine::SessionIdentity)>,
     #[cfg(feature = "profiling")]
@@ -99,6 +104,9 @@ impl StoryRuntime {
             #[cfg(feature = "profiling")]
             progress_profile: None,
             #[cfg(feature = "profiling")]
+            trace_progress: cfg!(target_os = "vita")
+                || std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some(),
+            #[cfg(feature = "profiling")]
             stage_profile: None,
             #[cfg(feature = "profiling")]
             stage_batches: 0,
@@ -145,6 +153,7 @@ impl StoryRuntime {
         self.wake_ready();
         self.clock_sample_requested |= (!was_runnable && self.runnable)
             || wait_revision != self.driver().adapter().vm().wait_revision();
+        self.remember_dialogue(receipt);
         Ok(())
     }
     fn logical_time_at(&self, host_ns: u64) -> u64 {
@@ -327,6 +336,24 @@ impl StoryRuntime {
         self.frame_wake_deadline(now, FrameProduction::Ready)
     }
 
+    /// Share the story's next continuous animation sample with native widgets.
+    pub(crate) fn animation_deadline(&self) -> Option<reel_core::clock::MonoTime> {
+        if !self.driver().continuous_time_pending() {
+            return None;
+        }
+        Some(self.sampled_deadline(self.driver().adapter().animation_sample_after()))
+    }
+
+    fn sampled_deadline(&self, delay: std::time::Duration) -> reel_core::clock::MonoTime {
+        let sample = self
+            .logical_ns
+            .saturating_add(self.suspended_ns)
+            .saturating_sub(self.time_offset_ns);
+        reel_core::clock::MonoTime(
+            sample.saturating_add(u64::try_from(delay.as_nanos()).unwrap_or(u64::MAX)),
+        )
+    }
+
     pub(crate) fn frame_wake_deadline(
         &self,
         now: reel_core::clock::MonoTime,
@@ -351,13 +378,9 @@ impl StoryRuntime {
         if self.short_poll() {
             return Some(MonoTime(after(now.0, std::time::Duration::from_millis(1))));
         }
-        let sample = self
-            .logical_ns
-            .saturating_add(self.suspended_ns)
-            .saturating_sub(self.time_offset_ns);
         let story = self
             .frame_time_interval(production)
-            .map(|interval| after(sample, interval));
+            .map(|interval| self.sampled_deadline(interval).0);
         let deadline = story
             .into_iter()
             .chain(self.media_interval().map(|interval| after(now.0, interval)))
@@ -418,7 +441,9 @@ impl StoryRuntime {
         }
         let now_ns = now();
         #[cfg(feature = "profiling")]
-        self.profile_progress();
+        if self.trace_progress {
+            self.profile_progress();
+        }
         if let Some(retiring) = &mut self.retiring {
             retiring.cleanup_step(256, budget, || now_ns)?;
             if !retiring.cleanup_pending() {
@@ -457,7 +482,7 @@ impl StoryRuntime {
         }
         let save_pending = {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::SessionSaves);
-            self.maintain_saves(now_ns, budget)?
+            self.maintain_saves(now_ns, budget, &mut now)?
         };
         if save_pending {
             return Ok(());

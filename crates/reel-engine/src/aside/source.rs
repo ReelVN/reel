@@ -16,6 +16,27 @@ use std::{
 
 mod effects;
 mod translations;
+
+/// Offer the literal values accepted by a native constructor's property validator.
+pub fn literal_argument_choices(module: &str, export: &str, parameter: &str) -> Vec<&'static str> {
+    use super::stage::{property_values, scroll};
+    match (module, export, parameter) {
+        ("reel", "image" | "video", "fit") => property_values::FIT_CHOICES
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
+        ("reel", "image" | "video", "sampling") => property_values::SAMPLING_CHOICES
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
+        ("reel", "scroll", "overscroll") => scroll::OVERSCROLL_CHOICES
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub use effects::{
     CompiledEffect, EffectCompileLimits, EffectDefinition, EffectDefinitionId, EffectDiagnostic,
     EffectFunction, EffectLoadLimits, EffectLocation, EffectOrigin, EffectProductError,
@@ -115,7 +136,11 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
         .filter(|contract| {
             !matches!(
                 contract.symbol.as_str(),
-                "reel::when::evaluate" | super::stage::text_input::filter::SYMBOL
+                "reel::when::evaluate"
+                    | "reel::page_stack::produce"
+                    | "reel::page_stack::commit_selection"
+                    | "reel::tab_bar::observe_label"
+                    | super::stage::text_input::filter::SYMBOL
             )
         })
         .cloned()
@@ -126,15 +151,19 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::narrative::documentation(&contract.symbol))
                 .or_else(|| super::activity::documentation(&contract.symbol))
                 .or_else(|| super::scopes::documentation(&contract.symbol))
+                .or_else(|| super::checkpoint::documentation(&contract.symbol))
                 .or_else(|| super::results::documentation(&contract.symbol))
                 .or_else(|| super::observable::documentation(&contract.symbol))
                 .or_else(|| super::lists::documentation(&contract.symbol))
+                .or_else(|| super::pages::documentation(&contract.symbol))
                 .or_else(|| super::views::documentation(&contract.symbol))
                 .or_else(|| super::layered_image::documentation(&contract.symbol))
                 .or_else(|| super::localization::documentation(&contract.symbol))
                 .or_else(|| super::rich_text::documentation(&contract.symbol))
                 .or_else(|| super::particles::documentation(&contract.symbol))
                 .or_else(|| super::stage::documentation(&contract.symbol))
+                .or_else(|| super::stage::scrollbar::documentation(&contract.symbol))
+                .or_else(|| super::stage::scroll::documentation(&contract.symbol))
                 .or_else(|| super::stage::text_input::documentation(&contract.symbol))
                 .or_else(|| super::stage::configure::documentation(&contract.symbol))
                 .or_else(|| super::game::documentation(&contract.symbol))
@@ -144,6 +173,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::effects::documentation(&contract.symbol))
                 .or_else(|| super::gradients::documentation(&contract.symbol))
                 .or_else(|| super::stage::interaction_appearance::documentation(&contract.symbol))
+                .or_else(|| super::stage::image_skin::documentation(&contract.symbol))
                 .or_else(|| super::media::documentation(&contract.symbol))
                 .or_else(|| super::data::documentation(&contract.symbol))
                 .or_else(|| super::saves::documentation(&contract.symbol))
@@ -179,6 +209,8 @@ pub fn node_property_documentation()
 
 pub struct CompiledStory {
     pub program: bc::VerifiedProgram,
+    /// Stable continuation metadata verified against this compilation.
+    pub resume: aside_vm::resume::VerifiedResumeTable,
     /// Run the real emitted module initializer before the selected story entry.
     pub initializer: bc::FunctionId,
     pub entry: bc::FunctionId,
@@ -239,6 +271,7 @@ pub enum SourceError {
     Analysis(aside_compiler::semantic::AnalysisFailure),
     Lowering(Box<lowering::Error>),
     Format(bc::Error),
+    Resume(aside_vm::resume::ResumeError),
     Entry,
     ProjectAnalysis(aside_compiler::semantic::ProjectAnalysis),
     ProjectLowering(lowering::ProjectError),
@@ -290,6 +323,7 @@ fn build_api() -> Api {
     super::saves::describe(&mut api);
     super::game::describe(&mut api);
     super::scopes::describe(&mut api);
+    super::checkpoint::describe(&mut api);
     super::activity::describe(&mut api);
     super::media::describe(&mut api);
     super::rich_text::describe(&mut api);
@@ -298,6 +332,7 @@ fn build_api() -> Api {
     super::effects::describe(&mut api);
     super::gradients::describe(&mut api);
     super::stage::interaction_appearance::describe(&mut api);
+    super::stage::image_skin::describe(&mut api);
     super::capture::describe(&mut api);
     super::assets::describe(&mut api);
     super::window::describe(&mut api);
@@ -308,6 +343,8 @@ fn build_api() -> Api {
     super::transitions::describe(&mut api);
     super::stage::configure::describe(&mut api);
     super::lists::describe(&mut api);
+    super::pages::describe(&mut api);
+    super::stage::scrollbar::describe(&mut api);
     api.refine(
         "reel::derive",
         aside_host::source::named("Binding"),
@@ -399,6 +436,31 @@ fn build_api() -> Api {
         "bind",
         aside_compiler::semantic::Intrinsic::Bind,
     ));
+    {
+        use aside_compiler::semantic::{
+            CallEffect, ExternalParameter, ExternalSignature, Intrinsic, TypeHint,
+        };
+        let mut value_of = ExternalSymbol::function(
+            "value_of",
+            ExternalSignature {
+                parameters: vec![ExternalParameter {
+                    name: "value".into(),
+                    ty: TypeHint::Any,
+                    mutable: false,
+                    default: false,
+                    rest: false,
+                }],
+                result: TypeHint::Any,
+                result_cases: Vec::new(),
+                result_parameter: None,
+                effect: CallEffect::NoWait,
+                init_safe: Some(true),
+                derived_safe: Some(true),
+            },
+        );
+        value_of.intrinsic = Some(Intrinsic::ValueOf);
+        prelude.push(value_of);
+    }
     let build = Declaration::namespace(
         "reel::build",
         "1",
@@ -663,8 +725,17 @@ pub fn compile_story(
     let entry = compiled.metadata.functions[function_index]
         .output
         .ok_or(SourceError::Entry)?;
+    let resume = compiled
+        .program
+        .verify_resume(
+            compiled.resume,
+            crate::aside::source::types(),
+            Default::default(),
+        )
+        .map_err(SourceError::Resume)?;
     let story = CompiledStory {
         program: compiled.program,
+        resume,
         initializer: compiled.entry,
         entry,
         catalogs,

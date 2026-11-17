@@ -101,11 +101,13 @@ fn validation_and_growth_failure_publish_no_partial_prefix() {
     );
 }
 #[test]
-fn copied_object_is_shaded_when_destination_has_already_been_scanned() {
+fn copied_and_repeated_objects_are_shaded_after_the_destination_is_scanned() {
     let mut heap = heap(8);
     let target = heap.alloc_array(&[Value::NULL; 4]).unwrap();
     let child = heap.alloc_array(&[Value::int(9)]).unwrap();
     let handle = heap.handle(child).unwrap();
+    let repeated = heap.alloc_array(&[Value::int(12)]).unwrap();
+    let repeated_handle = heap.handle(repeated).unwrap();
     heap.add_root(RootOwner(1), RootKind::Work, target).unwrap();
     heap.begin_collection().unwrap();
     let key = heap.key(target).unwrap();
@@ -122,6 +124,7 @@ fn copied_object_is_shaded_when_destination_has_already_been_scanned() {
     assert_eq!(heap.phase(), GcPhase::Mark);
     assert_eq!(heap.objects.get(key).unwrap().scan, 4);
     heap.array_write(target, 0, &[child]).unwrap();
+    assert_eq!(heap.array_append_repeated(target, repeated, 12).unwrap(), 8);
     while heap.phase() != GcPhase::Idle {
         heap.gc_step(GcBudget {
             units: 1,
@@ -131,4 +134,16 @@ fn copied_object_is_shaded_when_destination_has_already_been_scanned() {
     }
     assert!(heap.import_handle(handle).unwrap().same_bits(child));
     assert!(heap.sequence_get(target, 0).unwrap().same_bits(child));
+    assert!(
+        heap.import_handle(repeated_handle)
+            .unwrap()
+            .same_bits(repeated)
+    );
+    for index in 4..12 {
+        assert!(
+            heap.sequence_get(target, index)
+                .unwrap()
+                .same_bits(repeated)
+        );
+    }
 }

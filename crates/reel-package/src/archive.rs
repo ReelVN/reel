@@ -2,7 +2,7 @@
 //! Content digests identify immutable entries, not signatures or access control.
 use std::{
     collections::BTreeMap,
-    io::{self, BufReader, Read, Seek, SeekFrom, Write},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     ops::Range,
 };
 
@@ -94,19 +94,33 @@ pub struct ArchiveIndex {
     kind: ArchiveKind,
     entries: Vec<IndexRecord>,
     paths: String,
+    has_block_entries: bool,
 }
 impl ArchiveIndex {
     pub fn kind(&self) -> ArchiveKind {
         self.kind
     }
+    /// Whether any entry needs a block decoder workspace.
+    pub fn has_block_entries(&self) -> bool {
+        self.has_block_entries
+    }
     /// Find a logical path without allocating or copying path storage.
     #[inline]
     pub fn get(&self, path: &str) -> Option<Entry<'_>> {
+        self.index_of(path).and_then(|index| self.entry_at(index))
+    }
+    /// Find an entry's ordinal for subsequent reads through the same immutable index.
+    #[inline]
+    pub fn index_of(&self, path: &str) -> Option<usize> {
         let paths = self.paths.as_bytes();
         self.entries
             .binary_search_by(|entry| paths[entry.path.clone()].cmp(path.as_bytes()))
             .ok()
-            .map(|index| self.view(&self.entries[index]))
+    }
+    /// Resolve an ordinal returned by [`Self::index_of`] on this index.
+    #[inline]
+    pub fn entry_at(&self, index: usize) -> Option<Entry<'_>> {
+        self.entries.get(index).map(|record| self.view(record))
     }
     /// Iterate sorted borrowed views. The index retains every path allocation.
     #[inline]
@@ -188,6 +202,7 @@ impl ArchiveIndex {
             .map_err(io::Error::other)?;
         paths.resize(path_bytes, 0);
         let mut path_end = 0_usize;
+        let mut has_block_entries = false;
         for _ in 0..count {
             let mut fixed = [0; ENTRY_FIXED_LEN as usize];
             input.read_exact(&mut fixed)?;
@@ -224,6 +239,7 @@ impl ArchiveIndex {
                     {
                         return Err(invalid("archive block directory lies outside payload"));
                     }
+                    has_block_entries = true;
                 }
                 _ => return Err(invalid("invalid archive entry storage")),
             };
@@ -266,6 +282,7 @@ impl ArchiveIndex {
             kind,
             entries,
             paths,
+            has_block_entries,
         };
         admit(index.capacity_bytes())?;
         Ok(index)
@@ -280,6 +297,7 @@ pub struct ArchiveWriter<W> {
     kind: ArchiveKind,
     entries: BTreeMap<String, EntryData>,
     index_bytes: u64,
+    scratch: blocks::WriteScratch,
 }
 impl<W: Write + Seek> ArchiveWriter<W> {
     pub fn new(mut output: W, kind: ArchiveKind) -> io::Result<Self> {
@@ -292,6 +310,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             index_bytes: 0,
             kind,
             entries: BTreeMap::new(),
+            scratch: blocks::WriteScratch::default(),
         })
     }
     pub fn is_empty(&self) -> bool {
@@ -335,8 +354,14 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         }
         let offset = self.output.stream_position()?;
         let mut hash = blake3::Hasher::new();
-        let (length, stored_length, storage) =
-            blocks::write(input, &mut self.output, &mut hash, offset, compress)?;
+        let (length, stored_length, storage) = blocks::write(
+            input,
+            &mut self.output,
+            &mut hash,
+            offset,
+            compress,
+            &mut self.scratch,
+        )?;
         let entry = EntryData {
             offset,
             length,
@@ -354,17 +379,19 @@ impl<W: Write + Seek> ArchiveWriter<W> {
     }
     pub fn finish(mut self) -> io::Result<W> {
         let index_offset = self.output.stream_position()?;
-        for (path, entry) in &self.entries {
-            self.output.write_all(&(path.len() as u32).to_le_bytes())?;
-            self.output.write_all(&entry.offset.to_le_bytes())?;
-            self.output.write_all(&entry.length.to_le_bytes())?;
-            self.output.write_all(&entry.version)?;
-            self.output.write_all(&entry.stored_length.to_le_bytes())?;
-            let storage = u32::from(entry.directory_offset != 0);
-            self.output
-                .write_all(&entry.directory_offset.to_le_bytes())?;
-            self.output.write_all(&storage.to_le_bytes())?;
-            self.output.write_all(path.as_bytes())?;
+        {
+            let mut index = BufWriter::new(&mut self.output);
+            for (path, entry) in &self.entries {
+                index.write_all(&(path.len() as u32).to_le_bytes())?;
+                index.write_all(&entry.offset.to_le_bytes())?;
+                index.write_all(&entry.length.to_le_bytes())?;
+                index.write_all(&entry.version)?;
+                index.write_all(&entry.stored_length.to_le_bytes())?;
+                index.write_all(&entry.directory_offset.to_le_bytes())?;
+                index.write_all(&u32::from(entry.directory_offset != 0).to_le_bytes())?;
+                index.write_all(path.as_bytes())?;
+            }
+            index.flush()?;
         }
         self.output.seek(SeekFrom::Start(0))?;
         self.output.write_all(&MAGIC)?;

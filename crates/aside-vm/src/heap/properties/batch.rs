@@ -977,7 +977,9 @@ impl Heap {
                 if self.object(self.key(source.host)?)?.model && self.model_candidate(value)? {
                     return Ok(false);
                 }
-                self.batch_push(source, value, false)?;
+                if !rebound {
+                    self.batch_push(source, value, false)?;
+                }
                 self.batch_push(target, value, rebound)?;
             }
             let mut cursor = 0;
@@ -1153,7 +1155,9 @@ impl Heap {
                 return Err(HeapError::ReadOnly);
             }
             let value = PropertyRead::proposed(self, writes).read(target)?;
-            self.batch_push(source, value, false)?;
+            if !rebound {
+                self.batch_push(source, value, false)?;
+            }
             self.batch_push(target, value, rebound)?;
         }
         let mut cursor = 0;

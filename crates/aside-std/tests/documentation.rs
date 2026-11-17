@@ -89,10 +89,12 @@ fn generated_declarations_keep_validated_numbers_and_known_table_results_precise
         if symbol.starts_with("std::math::") && !symbol.starts_with("std::math::curve") {
             math_functions += 1;
             let source = declaration.symbol.signature.as_ref().unwrap();
-            let result = if symbol == "std::math::to_int" {
-                TypeHint::Int
-            } else {
-                TypeHint::Float
+            let result = match symbol.as_str() {
+                "std::math::to_int" => TypeHint::Int,
+                "std::math::clamp" | "std::math::min" | "std::math::max" => {
+                    aside_host::source::number()
+                }
+                _ => TypeHint::Float,
             };
             assert_eq!(source.result, result, "{symbol}");
             let runtime = contracts
@@ -119,7 +121,7 @@ fn generated_declarations_keep_validated_numbers_and_known_table_results_precise
             }
         }
     }
-    assert_eq!(math_functions, 21);
+    assert_eq!(math_functions, 24);
     assert_eq!(
         api.native("std::time::parts")
             .symbol

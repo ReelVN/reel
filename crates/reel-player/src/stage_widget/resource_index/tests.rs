@@ -1,6 +1,29 @@
 use super::*;
 use reel_ui::stage::MaskProgram;
 
+#[test]
+fn hidden_preload_is_inherited_without_becoming_visible_demand() {
+    let (mut stage, root, _) = fixture(3);
+    let mut props = stage.node(root).unwrap().props.clone();
+    props.visible = false;
+    props.preload = true;
+    stage.update(root, NodeKind::Stack, props.clone()).unwrap();
+    let view = StageView::capture(&stage);
+    let requests = view.image_requests(EffectShaderFormat::Wgsl).unwrap();
+    assert_eq!(requests.required().count(), 0);
+    assert_eq!(
+        requests.preloaded().collect::<Vec<_>>(),
+        ["picture-0.png", "picture-1.png", "picture-2.png"]
+    );
+    props.preload = false;
+    stage.update(root, NodeKind::Stack, props).unwrap();
+    let changed = StageView::update(&stage, Some(&view));
+    assert!(!same_inputs(view.root.as_ref(), changed.root.as_ref()));
+    let requests = changed.image_requests(EffectShaderFormat::Wgsl).unwrap();
+    assert_eq!(requests.preloaded().count(), 0);
+    assert_eq!(requests.required().count(), 0);
+}
+
 fn image(source: &str) -> NodeKind {
     NodeKind::Image {
         source: source.into(),
@@ -59,7 +82,7 @@ fn viewport_and_animation_share_identities_but_visibility_rebuilds() {
     assert!(layout.deferred_images);
     let outside = vec![nodes[1]];
     let visible = first
-        .viewport_image_requests(outside, EffectShaderFormat::Wgsl)
+        .viewport_image_requests(outside, vec![nodes[1]], EffectShaderFormat::Wgsl)
         .unwrap();
     assert!(Arc::ptr_eq(&layout.index, &visible.index));
     assert_eq!(
@@ -67,6 +90,7 @@ fn viewport_and_animation_share_identities_but_visibility_rebuilds() {
         ["mask.png", "picture-0.png", "picture-2.png"]
     );
     assert!(visible.index.mounted().any(|s| s == "picture-1.png"));
+    assert_eq!(visible.preloaded().collect::<Vec<_>>(), ["picture-1.png"]);
     let mut props = stage.node(root).unwrap().props.clone();
     props.x = 60.;
     props.opacity = 0.4;
@@ -111,7 +135,7 @@ fn shared_source_uses_visible_origin_and_fixed_size_requirement() {
         [("shared.png", Some("auto-size:7"))]
     );
     let request = view
-        .viewport_image_requests(vec![nodes[1]], EffectShaderFormat::Wgsl)
+        .viewport_image_requests(vec![nodes[1]], Vec::new(), EffectShaderFormat::Wgsl)
         .unwrap();
     assert_eq!(
         request.required().collect::<Vec<_>>(),
@@ -148,7 +172,7 @@ fn viewport_resource_collection_cost() {
             for _ in 0..2000 {
                 if indexed {
                     let requests = view
-                        .viewport_image_requests(Vec::new(), EffectShaderFormat::Wgsl)
+                        .viewport_image_requests(Vec::new(), Vec::new(), EffectShaderFormat::Wgsl)
                         .unwrap();
                     counts[1] += std::hint::black_box(
                         requests

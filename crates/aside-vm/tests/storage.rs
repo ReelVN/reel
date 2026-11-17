@@ -152,7 +152,6 @@ fn tiny() -> GcBudget {
         edges: 1,
         weak: 1,
         objects: 1,
-        release_edges: 1,
         bytes: VALUE_CHUNK_BYTES,
         units: 1,
     }
@@ -164,12 +163,7 @@ fn finish(h: &mut Heap, budget: GcBudget) {
         }
         let p = h.gc_step(budget).unwrap();
         assert!(p.units <= budget.units && p.roots <= budget.roots && p.edges <= budget.edges);
-        assert!(
-            p.weak <= budget.weak
-                && p.objects <= budget.objects
-                && p.release_edges <= budget.release_edges
-                && p.bytes <= budget.bytes
-        );
+        assert!(p.weak <= budget.weak && p.objects <= budget.objects && p.bytes <= budget.bytes);
     }
     panic!("collection failed to make bounded progress");
 }
@@ -416,6 +410,38 @@ fn array_swap_alone_preserves_an_unscanned_child_moved_behind_the_cursor() {
 }
 
 #[test]
+fn scalar_cell_skips_gray_queue_and_marks_a_later_object_write() {
+    let mut h = heap(8);
+    let cell = h.alloc_cell(Value::int(0)).unwrap();
+    let child = h.alloc_string("published during marking").unwrap();
+    let _root = root(&mut h, cell);
+    h.begin_collection().unwrap();
+
+    let slots = h.root_slots();
+    h.gc_step(GcBudget {
+        roots: slots,
+        units: slots,
+        ..tiny()
+    })
+    .unwrap();
+    assert_eq!(h.phase(), GcPhase::Mark);
+    assert_eq!(h.stats().gray_len, 0);
+    h.cell_write(cell, child).unwrap();
+    assert_eq!(h.stats().gray_len, 0);
+
+    finish(&mut h, tiny());
+    assert!(h.cell_read(cell).unwrap().same_bits(child));
+    assert!(h.info(child).is_ok());
+
+    #[cfg(feature = "execution-counts")]
+    {
+        let work = h.gc_work_units();
+        assert_eq!(work, [u64::from(slots), 0, 0, 2, 0]);
+        assert_eq!(work.into_iter().sum::<u64>(), h.stats().gc_units);
+    }
+}
+
+#[test]
 fn initial_edges_insertions_and_weak_upgrades_during_marking_are_shaded() {
     let mut h = heap(32);
     let a = h.alloc_array(&[Value::NULL]).unwrap();
@@ -507,7 +533,7 @@ fn weak_stage_new_allocations_do_not_displace_old_sweep_records() {
 }
 
 #[test]
-fn large_container_and_utf8_buffer_release_obey_independent_edge_byte_budgets() {
+fn large_container_and_utf8_buffer_release_obey_chunk_and_byte_budgets() {
     let mut h = heap(8);
     let array = h.alloc_array(&[]).unwrap();
     for n in 0..4096 {
@@ -528,7 +554,6 @@ fn large_container_and_utf8_buffer_release_obey_independent_edge_byte_budgets() 
     let p = h
         .gc_step(GcBudget {
             objects: 1,
-            release_edges: 0,
             bytes: 0,
             units: 1,
             ..tiny()
@@ -538,29 +563,33 @@ fn large_container_and_utf8_buffer_release_obey_independent_edge_byte_budgets() 
     assert_eq!(h.info(array).unwrap_err(), HeapError::InvalidHandle);
     assert_eq!(h.stats().pending_bytes, 512 + 64 * VALUE_CHUNK_BYTES);
     assert_eq!(h.stats().payload_bytes, before);
-    for (edges, bytes) in [(32, 512), (64, VALUE_CHUNK_BYTES)] {
+    for bytes in [512, VALUE_CHUNK_BYTES] {
+        let before = h.stats();
         let p = h
             .gc_step(GcBudget {
                 objects: 0,
                 bytes: bytes - 1,
-                release_edges: edges,
                 units: 128,
                 ..tiny()
             })
             .unwrap();
-        assert_eq!(p.release_edges, edges);
-        assert_eq!(p.bytes, 0);
+        assert_eq!((p.units, p.bytes), (0, 0));
         assert!(p.blocked);
+        let blocked = h.stats();
+        assert_eq!(blocked.pending_bytes, before.pending_bytes);
+        assert_eq!(blocked.charged_bytes, before.charged_bytes);
         let p = h
             .gc_step(GcBudget {
                 objects: 0,
-                release_edges: 0,
                 bytes,
                 units: 1,
                 ..tiny()
             })
             .unwrap();
-        assert_eq!(p.bytes, bytes);
+        assert_eq!((p.units, p.bytes), (1, bytes));
+        let released = h.stats();
+        assert_eq!(released.pending_bytes, before.pending_bytes - bytes);
+        assert_eq!(released.charged_bytes, before.charged_bytes - bytes);
     }
     finish(&mut h, tiny());
     assert_eq!(h.stats().pending_bytes, 0);
@@ -711,7 +740,6 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
     h.gc_step(GcBudget {
         units: 1,
         bytes: 0,
-        release_edges: 0,
         ..GcBudget::default()
     })
     .unwrap();
@@ -727,7 +755,6 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
         edges: 0,
         weak: 0,
         objects: 0,
-        release_edges: 0,
         bytes: 0,
         units: 0,
     };

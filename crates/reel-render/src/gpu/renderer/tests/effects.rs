@@ -1,5 +1,6 @@
 //! Finite real-backend checks for optional result lifetimes and physical tickets.
 use super::*;
+mod composition;
 #[cfg(feature = "profiling")]
 mod raster_scale;
 mod region;
@@ -41,6 +42,32 @@ fn resolution_chain(
     patterned: bool,
     resolution_scale: f64,
 ) -> (RenderFrame, PresentationBridge) {
+    image_composition_chain(size, transform, patterned, resolution_scale, 1)
+}
+fn image_composition_chain(
+    size: [u32; 2],
+    transform: Affine,
+    patterned: bool,
+    resolution_scale: f64,
+    images: usize,
+) -> (RenderFrame, PresentationBridge) {
+    let (frame, bridge, _) =
+        effect_scene(size, transform, patterned, resolution_scale, images, false);
+    (frame, bridge)
+}
+
+fn effect_scene(
+    size: [u32; 2],
+    transform: Affine,
+    patterned: bool,
+    resolution_scale: f64,
+    images: usize,
+    sibling: bool,
+) -> (
+    RenderFrame,
+    PresentationBridge,
+    Option<reel_ui::core::WidgetId>,
+) {
     let pool = r01_fixture::pool();
     let program = EffectProgram::new(
         vec![EffectParameter {
@@ -137,16 +164,18 @@ fn resolution_chain(
         .unwrap();
     let bounds = Rect::new(0., 0., f64::from(size[0]), f64::from(size[1]));
     let mut scene = Scene::new();
-    scene.draw(Draw::Fill {
-        transform: Affine::IDENTITY,
-        fill_rule: Default::default(),
-        brush: Brush::Image(ImageBrush::new(crate::test_support::image_data(
-            &registry.acquire(image).unwrap(),
-        ))),
-        brush_transform: None,
-        shape: Geometry::Rect(bounds),
-        composite: Composite::default(),
-    });
+    for image_index in 0..images {
+        scene.draw(Draw::Fill {
+            transform: Affine::translate((image_index as f64 * 2.25, image_index as f64 * -1.5)),
+            fill_rule: Default::default(),
+            brush: Brush::Image(ImageBrush::new(crate::test_support::image_data(
+                &registry.acquire(image).unwrap(),
+            ))),
+            brush_transform: None,
+            shape: Geometry::Rect(bounds),
+            composite: Composite::default(),
+        });
+    }
     let paint = PaintEffect {
         instance: EffectInstance::new(
             [17; 32],
@@ -179,6 +208,30 @@ fn resolution_chain(
         );
         widget = parent;
     }
+    let mut sibling_id = None;
+    if sibling {
+        let mut overlay = Scene::new();
+        overlay.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(Color::WHITE),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(0., 0., 8., 8.)),
+            composite: Default::default(),
+        });
+        let overlay = r01_fixture::RecordWidget::new(overlay).prepare();
+        sibling_id = Some(overlay.id());
+        let mut root = r01_fixture::RecordWidget::new(Scene::new());
+        root.clip = false;
+        root.inner.add(
+            widget.prepare(),
+            Point::ZERO,
+            Size::new(bounds.width(), bounds.height()),
+        );
+        root.inner
+            .add(overlay, Point::new(16., 16.), Size::new(8., 8.));
+        widget = root;
+    }
     let mut bridge = r01_fixture::widget_bridge(widget, transform);
     let mut build = FrameBuild::new(
         bridge.record(FrameId(1)).unwrap(),
@@ -192,7 +245,7 @@ fn resolution_chain(
     )
     .unwrap();
     while !build.step(r01_fixture::step_budget()).unwrap().complete {}
-    (build.finish().unwrap(), bridge)
+    (build.finish().unwrap(), bridge, sibling_id)
 }
 fn renderer(limit: u64) -> Renderer {
     Renderer::new(
@@ -215,6 +268,67 @@ fn same_pixels(expected: &[[f32; 4]], actual: &[[f32; 4]]) {
             assert!((x - y).abs() <= 0.004);
         }
     }
+}
+
+#[test]
+#[ignore = "actual GPU effect-cache passes and sibling transition pixels"]
+fn independent_transition_keeps_static_effect_source_cached() {
+    use reel_ui::frame::{FrameTransition, RetainBuild};
+    use reel_ui::resources::ResourceSnapshot;
+    let (original, mut bridge, sibling) =
+        effect_scene([64, 48], Affine::IDENTITY, true, 1., 1, true);
+    let pool = r01_fixture::pool();
+    let mut retained = RetainBuild::new(&original, sibling, r01_fixture::limits(), &pool).unwrap();
+    while !retained.step(r01_fixture::step_budget()).unwrap().complete {}
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(2)).unwrap(),
+        ResourceSnapshot::capture(original.resources().leases().iter().cloned().map(Ok), &pool)
+            .unwrap(),
+        original.info(),
+        r01_fixture::limits(),
+        &pool,
+    )
+    .unwrap();
+    build
+        .set_transitions(vec![FrameTransition {
+            root: sibling,
+            previous: retained.finish().unwrap(),
+            progress: 0.5,
+            mask: None,
+        }])
+        .unwrap();
+    while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+    let next = build.finish().unwrap();
+
+    let prepare = |renderer: &mut Renderer| {
+        for _ in 0..32 {
+            match renderer.prepare(&next) {
+                Err(GpuError::Preparing) => {
+                    renderer
+                        .gpu
+                        .device
+                        .poll(wgpu::PollType::wait_indefinitely())
+                        .unwrap();
+                    renderer.poll().unwrap();
+                }
+                result => return result.unwrap(),
+            }
+        }
+        panic!("transition did not prepare");
+    };
+    let mut subject = renderer(64 << 20);
+    let initial = subject.prepare(&original).unwrap();
+    subject.readback(initial).unwrap();
+    let first = prepare(&mut subject);
+    subject.readback(first).unwrap();
+    let warm = prepare(&mut subject);
+    let mut control = renderer(64 << 20);
+    let cold = prepare(&mut control);
+    assert!(!warm.effect_pins.is_empty());
+    same_pixels(
+        &control.readback(cold).unwrap(),
+        &subject.readback(warm).unwrap(),
+    );
 }
 
 #[test]

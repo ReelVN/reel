@@ -1,7 +1,9 @@
 //! Context-owned observable narrative data, independent of its presentation.
 mod contexts;
 mod history;
+mod projection;
 pub(super) use contexts::Contexts;
+pub(in crate::aside) use projection::ReadingProjection;
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
@@ -153,7 +155,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         "reel::reading::set_skip",
         reading.clone(),
         &[
-            ("reading", reading.clone()),
+            ("reading", reading),
             ("enabled", TypeHint::Bool),
             ("unread", TypeHint::Bool),
             ("after_choices", TypeHint::Bool),
@@ -319,6 +321,7 @@ pub(super) struct Narrative {
     interaction: Option<InteractionId>,
     text_revision: u64,
     display_cleared: bool,
+    pub(in crate::aside) page: crate::reading::checkpoint::DisplayPage,
     #[serde(skip)]
     option_ids: Vec<(HeapHandle, ChoiceId)>,
     roots: Value,
@@ -407,6 +410,9 @@ impl Narrative {
         if let Some(id) = &mut self.interaction {
             id.rebase(identity);
         }
+        for line in &mut self.page.lines {
+            line.id.interaction_id.rebase(identity);
+        }
         for (handle, id) in &mut self.option_ids {
             *handle = map.handle(*handle)?;
             id.rebase(identity);
@@ -416,7 +422,7 @@ impl Narrative {
         }
         Ok(())
     }
-    fn new(
+    pub(in crate::aside) fn new(
         vm: &mut Vm,
         owner: RootOwner,
         types: &super::source::HostTypes,
@@ -509,6 +515,7 @@ impl Narrative {
             interaction: None,
             text_revision: 0,
             display_cleared: false,
+            page: Default::default(),
             option_ids: Vec::new(),
             roots,
             root,
@@ -579,6 +586,8 @@ impl Narrative {
             publish(heap, self.dialogue, field as u32, value)?;
         }
         self.display_cleared = true;
+        self.page.lines.clear();
+        self.page.cleared = true;
         Ok(())
     }
 
@@ -597,6 +606,12 @@ impl Narrative {
         let update_text = self.interaction == interaction && self.text_revision != text_revision;
         if interaction != self.interaction {
             if self.interaction.is_some() {
+                for line in &mut self.page.lines {
+                    if Some(line.id.interaction_id) == self.interaction {
+                        line.revealed_count = line.grapheme_boundaries.len() - 1;
+                        line.skip_timing();
+                    }
+                }
                 // Completion can remove the active Session row before its final reveal is projected.
                 let rows = heap.host_payload(self.dialogue, 0)?;
                 for i in 0..heap.sequence_len(rows)? {
@@ -633,6 +648,8 @@ impl Narrative {
             match active {
                 Some(InteractionView::Dialogue(dialogue)) => {
                     self.display_cleared = false;
+                    self.page.cleared = false;
+                    self.page.lines.extend(dialogue.lines().iter().cloned());
                     let rows = heap.alloc_array(&[])?;
                     let ids = array(heap)?;
                     for line in dialogue.lines() {
@@ -756,6 +773,8 @@ impl Narrative {
             ready = true;
             let rows = heap.host_payload(self.dialogue, 0)?;
             if self.display_cleared && update_text {
+                self.page.lines.extend(dialogue.lines().iter().cloned());
+                self.page.cleared = false;
                 let lines = heap.host_property(PropertyId {
                     host: self.dialogue,
                     field: DialogueField::Lines as u32,
@@ -796,7 +815,22 @@ impl Narrative {
                 }
                 self.display_cleared = false;
             }
+            let page_start = self.page.lines.len().saturating_sub(dialogue.lines().len());
             for (i, line) in dialogue.lines().iter().enumerate() {
+                if let Some(saved) = self
+                    .page
+                    .lines
+                    .get_mut(page_start + i)
+                    .filter(|saved| saved.id == line.id)
+                {
+                    saved.revealed_count = line.revealed_count;
+                    saved.advance_requested = line.advance_requested;
+                    saved.timing = line.timing.clone();
+                    if update_text {
+                        saved.content = line.content.clone();
+                        saved.grapheme_boundaries = line.grapheme_boundaries.clone();
+                    }
+                }
                 let complete = line.playback_complete();
                 ready &= complete;
                 let row = heap.sequence_get(rows, i as u32)?;
@@ -876,6 +910,10 @@ impl Narrative {
 }
 
 impl SessionVm {
+    pub(crate) fn checkpoint_display(&self) -> Option<&crate::reading::checkpoint::DisplayPage> {
+        self.narrative.as_ref().map(|model| &model.page)
+    }
+
     pub(super) fn sync_auto_condition(
         &mut self,
         session: &mut Session,

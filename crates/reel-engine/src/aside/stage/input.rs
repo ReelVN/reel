@@ -30,6 +30,10 @@ pub(in crate::aside) enum InputField {
     OnPointer,
     #[aside(name = "on_wheel", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnWheel,
+    /// Handle the release of Escape, PointerSecondary or controller East.
+    /// An explicit `actions.back` supplies its own bindings and handlers.
+    #[aside(name = "on_back", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
+    OnBack,
 }
 fn validate_actions(heap: &Heap, value: Value) -> Result<(), HeapError> {
     validate_actions_view(&aside_vm::PropertyRead::current(heap), value)
@@ -69,6 +73,30 @@ const NODE_SLOT: u32 = 3;
 const CURRENT: u32 = 0;
 const RETIRING: u32 = 1;
 type Row = [Value; 7];
+const BACK_CONTROLS: [&str; 3] = ["Escape", "PointerSecondary", "East"];
+
+#[derive(Clone, Copy)]
+struct Source {
+    actions: Value,
+    back: Value,
+}
+
+impl Source {
+    fn read(heap: &Heap, fields: Value) -> Result<Self, HeapError> {
+        Ok(Self {
+            actions: heap
+                .table_entry(fields, InputField::Actions.index() as u32)?
+                .1,
+            back: heap
+                .table_entry(fields, InputField::OnBack.index() as u32)?
+                .1,
+        })
+    }
+
+    fn changed(self, current: Self) -> bool {
+        !self.actions.same_bits(current.actions) || !self.back.same_bits(current.back)
+    }
+}
 
 pub(super) struct Declaration {
     bindings: InputBindings,
@@ -79,7 +107,7 @@ struct ActionValue {
     value: f32,
 }
 pub(super) struct State {
-    source: Option<HeapHandle>,
+    source: Source,
     values: BTreeMap<Arc<str>, ActionValue>,
     retiring: Option<Retiring>,
 }
@@ -197,25 +225,41 @@ fn read_action(
     Ok(row)
 }
 
-fn read_actions(heap: &Heap, value: Value, capture: bool) -> Result<Declaration, AdapterError> {
+fn read_actions(heap: &Heap, source: Source, capture: bool) -> Result<Declaration, AdapterError> {
     let heap = &aside_vm::PropertyRead::current(heap);
     let mut definitions = Vec::new();
     let mut rows = Vec::new();
-    if value.tag() == ValueTag::Null {
-        return Ok(Declaration {
-            bindings: InputBindings::new(definitions).expect("empty bindings"),
-            rows,
-        });
+    if source.actions.tag() != ValueTag::Null {
+        for i in 0..heap.table_len(source.actions)? {
+            let (key, record) = heap.table_entry(source.actions, i)?;
+            let name: Arc<str> = String::from_value(heap, key)?.into();
+            let row = read_action(heap, key, record)?;
+            definitions.push(ActionDefinition {
+                name,
+                bindings: read_controls(heap, row[1])?,
+            });
+            if capture {
+                rows.push(row);
+            }
+        }
     }
-    for i in 0..heap.table_len(value)? {
-        let (key, record) = heap.table_entry(value, i)?;
-        let name: Arc<str> = String::from_value(heap, key)?.into();
-        let row = read_action(heap, key, record)?;
+    if source.back.tag() != ValueTag::Null && !definitions.iter().any(|a| a.name.as_ref() == "back")
+    {
         definitions.push(ActionDefinition {
-            name,
-            bindings: read_controls(heap, row[1])?,
+            name: "back".into(),
+            bindings: BACK_CONTROLS
+                .into_iter()
+                .map(|name| Binding {
+                    control: name.parse().expect("registered back control"),
+                    scale: 1.,
+                    dead_zone: 0.,
+                    positive_only: false,
+                })
+                .collect(),
         });
         if capture {
+            let mut row = [Value::NULL; 7];
+            row[5] = source.back;
             rows.push(row);
         }
     }
@@ -224,14 +268,25 @@ fn read_actions(heap: &Heap, value: Value, capture: bool) -> Result<Declaration,
     Ok(Declaration { bindings, rows })
 }
 
-pub(super) fn read_bindings(heap: &Heap, value: Value) -> Result<InputBindings, AdapterError> {
-    Ok(read_actions(heap, value, false)?.bindings)
+pub(super) fn read_bindings(heap: &Heap, fields: Value) -> Result<InputBindings, AdapterError> {
+    Ok(read_actions(heap, Source::read(heap, fields)?, false)?.bindings)
 }
 
 fn freeze(heap: &mut Heap, rows: Vec<Row>) -> Result<Value, AdapterError> {
     let snapshot = heap.alloc_array(&[])?;
     for mut row in rows {
         let controls = heap.alloc_array(&[])?;
+        if row[0].tag() == ValueTag::Null {
+            row[0] = heap.alloc_string("back")?;
+            for name in BACK_CONTROLS {
+                let name = heap.alloc_string(name)?;
+                heap.array_push(controls, name)?;
+            }
+            row[1] = controls;
+            let row = heap.alloc_array(&row)?;
+            heap.array_push(snapshot, row)?;
+            continue;
+        }
         for j in 0..heap.sequence_len(row[1])? {
             let item = heap.sequence_get(row[1], j)?;
             let item = if heap
@@ -273,7 +328,7 @@ fn values(bindings: &InputBindings) -> BTreeMap<Arc<str>, ActionValue> {
 }
 
 pub(super) fn prepare(heap: &Heap, fields: Value) -> Result<(NodeKind, Declaration), AdapterError> {
-    let declaration = read_actions(heap, heap.table_entry(fields, 0)?.1, true)?;
+    let declaration = read_actions(heap, Source::read(heap, fields)?, true)?;
     Ok((
         kind(heap, fields, declaration.bindings.clone())?,
         declaration,
@@ -283,14 +338,14 @@ pub(super) fn prepare(heap: &Heap, fields: Value) -> Result<(NodeKind, Declarati
 pub(super) fn initialize(
     heap: &mut Heap,
     node: Value,
-    source: Value,
+    fields: Value,
     declaration: Declaration,
 ) -> Result<Box<State>, AdapterError> {
     let snapshot = freeze(heap, declaration.rows)?;
     let payload = heap.alloc_array(&[snapshot, Value::NULL])?;
     heap.set_host_payload(node, NODE_SLOT, payload)?;
     Ok(Box::new(State {
-        source: source_handle(heap, source)?,
+        source: Source::read(heap, fields)?,
         values: values(&declaration.bindings),
         retiring: None,
     }))
@@ -315,7 +370,7 @@ pub(super) fn restore(
         InputBindings::new(definitions).map_err(|_| AdapterError::Input("saved input bindings"))?;
     heap.set_field(payload, RETIRING, Value::NULL)?;
     let state = Box::new(State {
-        source: source_handle(heap, heap.table_entry(fields, 0)?.1)?,
+        source: Source::read(heap, fields)?,
         values: values(&bindings),
         retiring: None,
     });
@@ -343,12 +398,12 @@ pub(super) fn kind(
 pub(super) fn replace(
     heap: &mut Heap,
     node: Value,
-    source: Value,
+    fields: Value,
     bindings: &InputBindings,
     state: &mut State,
 ) -> Result<InputBindings, AdapterError> {
-    let source_handle = source_handle(heap, source)?;
-    if state.source == source_handle {
+    let source = Source::read(heap, fields)?;
+    if !state.source.changed(source) {
         return Ok(bindings.clone());
     }
     let declaration = read_actions(heap, source, true)?;
@@ -374,7 +429,7 @@ pub(super) fn replace(
         });
     }
     heap.set_field(payload, CURRENT, snapshot)?;
-    state.source = source_handle;
+    state.source = source;
     state.values = values(&declaration.bindings);
     Ok(declaration.bindings)
 }
@@ -499,13 +554,8 @@ impl StageBinding {
             let Some(value) = state.values.get_mut(&action.action) else {
                 return Ok(None);
             };
-            let source = heap
-                .table_entry(
-                    heap.host_fields(target)?,
-                    InputField::Actions.index() as u32,
-                )?
-                .1;
-            let replacing = state.source != source_handle(heap, source)?;
+            let source = Source::read(heap, heap.host_fields(target)?)?;
+            let replacing = state.source.changed(source);
             if replacing && (!terminal || value.value == 0.) {
                 return Ok(None);
             }
@@ -619,17 +669,15 @@ pub(crate) fn value(
     let id = context.host.id(context.vm.heap(), receiver)?;
     // A synchronous read after actions assignment observes the new neutral state.
     let heap = context.vm.heap();
-    let source = heap
-        .table_entry(
-            heap.host_fields(receiver)?,
-            InputField::Actions.index() as u32,
-        )?
-        .1;
+    let source = Source::read(heap, heap.host_fields(receiver)?)?;
     let state = context.host.handles[&id].input.as_ref().unwrap();
-    if state.source != source_handle(heap, source)? {
-        if source.tag() != ValueTag::Null {
-            for index in 0..heap.table_len(source)? {
-                if String::from_value(heap, heap.table_entry(source, index)?.0)? == action {
+    if state.source.changed(source) {
+        if action == "back" && source.back.tag() != ValueTag::Null {
+            return Ok(0.);
+        }
+        if source.actions.tag() != ValueTag::Null {
+            for index in 0..heap.table_len(source.actions)? {
+                if String::from_value(heap, heap.table_entry(source.actions, index)?.0)? == action {
                     return Ok(0.);
                 }
             }
@@ -641,14 +689,6 @@ pub(crate) fn value(
         .get(action.as_str())
         .ok_or(AdapterError::Input("unknown input action"))?;
     Ok(value.value.into())
-}
-
-pub(super) fn source_handle(heap: &Heap, value: Value) -> Result<Option<HeapHandle>, HeapError> {
-    if value.tag() == ValueTag::Null {
-        Ok(None)
-    } else {
-        heap.handle(value).map(Some)
-    }
 }
 
 // Keep the native declarations above as the single source of their English docs.

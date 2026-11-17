@@ -6,6 +6,7 @@ use super::{
     renderer::{Budgets, Reservation, reserve},
     resources::{self, Image},
 };
+use crate::common::resources::CachedImages;
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::resources::{
     ResourceHandle, ResourceLease, ResourcePixels, ResourceVersion, ResourceView,
@@ -20,7 +21,7 @@ use std::{
 
 #[derive(Default)]
 pub(super) struct ImageCache {
-    images: Mutex<HashMap<ResourceHandle, Arc<Image>>>,
+    images: Mutex<CachedImages<Arc<Image>>>,
     uploads: Mutex<Vec<Upload>>,
     partial: Mutex<HashMap<ResourceHandle, Partial>>,
     staging: Mutex<super::upload::Cache>,
@@ -48,13 +49,17 @@ struct Upload {
     buffers: Vec<Box<super::upload::Buffer>>,
 }
 struct Copy {
-    _image: Arc<Image>,
+    image: Arc<Image>,
     source: ResourceLease,
     next_row: Option<u32>,
 }
 
 impl ImageCache {
+    pub(super) fn prepare_staging(&self, gpu: &Gpu, budgets: &Budgets) -> Result<(), GpuError> {
+        self.staging.lock().unwrap().warm(gpu, budgets)
+    }
     pub(super) fn submitted(&self) {
+        self.images.lock().unwrap().submitted();
         self.retired.lock().unwrap().submitted();
     }
     pub(super) fn usage(&self) -> [u64; 3] {
@@ -86,18 +91,6 @@ impl ImageCache {
         retired.clear();
         had_storage
     }
-    fn publish(&self, images: &HashMap<ResourceHandle, Arc<Image>>) {
-        let mut cache = self.images.lock().unwrap();
-        for (&handle, image) in images {
-            if image.backing.is_some() {
-                continue;
-            }
-            if !image.source.as_ref().unwrap().lease.is_released() {
-                cache.insert(handle, image.clone());
-            }
-        }
-    }
-
     pub(super) fn retire(&self, versions: &[ResourceVersion]) {
         let uploads = self.uploads.lock().unwrap();
         for upload in uploads.iter() {
@@ -113,9 +106,7 @@ impl ImageCache {
         });
         let mut cache = self.images.lock().unwrap();
         let mut retired = self.retired.lock().unwrap();
-        for (_, image) in
-            cache.extract_if(|_, image| !image.source.as_ref().unwrap().retained(versions))
-        {
+        for image in cache.retire(|image| !image.source.as_ref().unwrap().retained(versions)) {
             let uses = image.reuse_count;
             retired.put(image, uses);
         }
@@ -141,15 +132,19 @@ impl ImageCache {
         partial.retain(|handle, _| required.iter().any(|item| item.source.handle() == *handle));
         let mut images = HashMap::with_capacity(required.len());
         {
-            let cache = self.images.lock().unwrap();
+            let mut cache = self.images.lock().unwrap();
             for item in required {
-                if let Some(image) = cache.get(&item.source.handle()) {
+                if let Some(image) = cache.touch(&item.source.handle()) {
                     if item.source.pixel_discard_pending() {
                         image.discard_pending.store(true, Ordering::Relaxed);
                     }
                     images.insert(item.source.handle(), image.clone());
                 }
             }
+        }
+        // A resident frame already holds the reservations for every image.
+        if images.len() == required.len() {
+            return Ok(images);
         }
         if let Some(demand) = crate::common::image_plan::missing_pixels(
             required
@@ -179,10 +174,6 @@ impl ImageCache {
             }),
             limit,
         )?;
-        if images.len() == required.len() {
-            return Ok(images);
-        }
-
         let admitted = admission.reserve(0).map_err(|_| GpuError::Busy)?;
         let capacity = required.len() - images.len();
         let storage = reserve(
@@ -219,18 +210,14 @@ impl ImageCache {
             if images.contains_key(&handle) {
                 continue;
             }
-            let row = if let Some(image) = item.source.image_descriptor() {
-                Some(resources::row_bytes(image.width))
+            let row = if item.raster_format.is_some() {
+                Some(item.minimum_staging)
             } else {
                 item.texture.map(resources::texture_row_bytes)
             };
             let staging_limit = if let Some(row) = row {
                 if converted && work_remaining < row {
-                    deferred = Some(GpuError::Pressure {
-                        domain: "image upload slice",
-                        requested: row,
-                        available: work_remaining,
-                    });
+                    deferred = Some(GpuError::Preparing);
                     break;
                 }
                 work_remaining.max(row)
@@ -278,8 +265,12 @@ impl ImageCache {
                 });
                 break;
             }
-            if let Some(source) = item.source.image_descriptor() {
-                let row_bytes = resources::row_bytes(source.width);
+            if let Some(format) = item.raster_format {
+                let source = item
+                    .source
+                    .image_descriptor()
+                    .expect("planned raster image");
+                let row_bytes = item.minimum_staging;
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
                         &budgets.transient,
@@ -293,7 +284,7 @@ impl ImageCache {
                     } else {
                         let residency = reserve_gpu(item.resident)?;
                         let mut image =
-                            resources::create_image(gpu, [source.width, source.height])?;
+                            resources::create_image(gpu, [source.width, source.height], format)?;
                         image.residency = Some(residency);
                         image
                     };
@@ -320,12 +311,13 @@ impl ImageCache {
                 }
                 let pending = &partial[&handle];
                 let count = resources::rows_per_upload(
-                    pending.image.size,
+                    source.height,
                     pending.next_row,
                     limit
                         .saturating_sub(pool.usage().bytes)
                         .max(self.staging.lock().unwrap().capacity())
                         .min(staging_limit),
+                    row_bytes,
                 );
                 if count == 0 {
                     deferred = Some(GpuError::Pressure {
@@ -336,7 +328,7 @@ impl ImageCache {
                     break;
                 }
                 let next_row = pending.next_row + count;
-                let upload_bytes = resources::row_bytes(source.width) * u64::from(count);
+                let upload_bytes = row_bytes * u64::from(count);
                 let upload = match self
                     .staging
                     .lock()
@@ -366,7 +358,7 @@ impl ImageCache {
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
                 converted = true;
                 uploaded.push(Copy {
-                    _image: pending.image.clone(),
+                    image: pending.image.clone(),
                     source: item.source.clone(),
                     next_row: Some(next_row),
                 });
@@ -379,11 +371,7 @@ impl ImageCache {
                 if next_row == source.height {
                     images.insert(handle, pending.image.clone());
                 } else {
-                    deferred = Some(GpuError::Pressure {
-                        domain: "image upload",
-                        requested: item.minimum_staging,
-                        available: limit.saturating_sub(pool.usage().bytes),
-                    });
+                    deferred = Some(GpuError::Preparing);
                     break;
                 }
             } else if let Some(descriptor) = item.source.texture_descriptor() {
@@ -474,7 +462,7 @@ impl ImageCache {
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
                 converted = true;
                 uploaded.push(Copy {
-                    _image: pending.image.clone(),
+                    image: pending.image.clone(),
                     source: item.source.clone(),
                     next_row: Some(next_row),
                 });
@@ -487,11 +475,7 @@ impl ImageCache {
                 if next_row == pending.total_rows {
                     images.insert(handle, pending.image.clone());
                 } else {
-                    deferred = Some(GpuError::Pressure {
-                        domain: "texture upload slice",
-                        requested: row_bytes,
-                        available: limit.saturating_sub(pool.usage().bytes),
-                    });
+                    deferred = Some(GpuError::Preparing);
                     break;
                 }
             } else if let ResourceView::Yuv420(source) = item.source.view() {
@@ -510,7 +494,7 @@ impl ImageCache {
                 let image = Arc::new(image);
                 images.insert(handle, image.clone());
                 uploaded.push(Copy {
-                    _image: image,
+                    image,
                     source: item.source.clone(),
                     next_row: None,
                 });
@@ -519,20 +503,24 @@ impl ImageCache {
         }
         if !uploaded.is_empty() {
             let done = Arc::new(AtomicBool::new(false));
-            gpu.queue.submit([encoder.finish()]);
+            gpu.submit(encoder);
             // Advance source cursors only after submission. Failed encoding
             // retries the same rows; no half-uploaded image enters the cache.
-            for copy in &uploaded {
-                if let Some(next_row) = copy.next_row {
+            {
+                let mut cache = self.images.lock().unwrap();
+                for copy in &uploaded {
                     let handle = copy.source.handle();
-                    if next_row == partial[&handle].total_rows {
+                    if let Some(next_row) = copy.next_row {
+                        let pending = partial.get_mut(&handle).unwrap();
+                        if next_row != pending.total_rows {
+                            pending.next_row = next_row;
+                            continue;
+                        }
                         partial.remove(&handle);
-                    } else {
-                        partial.get_mut(&handle).unwrap().next_row = next_row;
                     }
+                    cache.insert(handle, copy.image.clone());
                 }
             }
-            self.publish(&images);
             let signal = done.clone();
             gpu.queue
                 .on_submitted_work_done(move || signal.store(true, Ordering::Release));
@@ -548,7 +536,9 @@ impl ImageCache {
         }
         match deferred {
             Some(error) => {
-                self.staging.lock().unwrap().clear();
+                if matches!(error, GpuError::Pressure { .. }) {
+                    self.staging.lock().unwrap().clear();
+                }
                 Err(error)
             }
             None => Ok(images),
@@ -593,6 +583,7 @@ impl ImageCache {
                 && if let Some(source) = item.source.image_descriptor() {
                     image.yuv.is_none()
                         && image.texture_format.is_none()
+                        && Some(image.texture.format()) == item.raster_format
                         && image.size == [source.width, source.height]
                 } else if let Some(descriptor) = item.source.texture_descriptor() {
                     image.yuv.is_none()
@@ -638,10 +629,14 @@ impl ImageCache {
         // In-flight and prepared users hold their own Arc. Only unused cache
         // entries can release residency, without waiting for the device here.
         if cost > limit.saturating_sub(pool.usage().bytes) {
-            self.retired.lock().unwrap().clear();
-            self.images.lock().unwrap().retain(|_, image| {
-                cost <= limit.saturating_sub(pool.usage().bytes) || Arc::strong_count(image) > 1
-            });
+            self.retired
+                .lock()
+                .unwrap()
+                .reclaim(pool, cost, limit, reusable);
+            self.images
+                .lock()
+                .unwrap()
+                .reclaim(pool, cost, limit, |image| Arc::strong_count(image) == 1);
         }
     }
 }

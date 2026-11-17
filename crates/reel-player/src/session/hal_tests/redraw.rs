@@ -256,6 +256,120 @@ fn settle_player(player: &mut Player<Backend>, host: &mut Host) {
     panic!("player work did not settle");
 }
 
+#[test]
+fn native_scroll_bounce_uses_player_deadlines_and_sleeps_without_vm_animation_work() {
+    check_native_scroll_bounce(false);
+}
+
+#[test]
+fn native_scroll_bounce_shares_frames_with_authored_animation() {
+    check_native_scroll_bounce(true);
+}
+
+fn check_native_scroll_bounce(animated: bool) {
+    use reel_ui::core::{PointerEvent, PointerType};
+    let code = r##"fn main() {
+            game.configure(fonts:["400.ttf"],frame_rate:60);
+            let background=stack(width:10,height:10);
+            let root=stack(width:640,height:420) {
+                background;
+                scroll(width:200,height:100,overscroll:"bounce") {
+                    stack(width:200,height:1000,background:"#ff0000");
+                }
+            };
+            stage.replace(root);
+            await stage.presented();
+            /* motion */
+            await completion();
+        }"##
+    .replace(
+        "/* motion */",
+        if animated {
+            "run(tween(background,x:100,duration:1),owner:root);"
+        } else {
+            ""
+        },
+    );
+    let (mut player, mut host) = ready_player(&code);
+    accept_frame(&mut player, &mut host);
+    settle_player(&mut player, &mut host);
+    host.now = MonoTime(5_000_000);
+    let touch = |kind, point| {
+        let mut event = mouse(kind, point);
+        match &mut event {
+            PointerEvent::Down(event) | PointerEvent::Up(event) => {
+                event.pointer.pointer_type = PointerType::Touch;
+                event.button = None;
+            }
+            PointerEvent::Move(event) => event.pointer.pointer_type = PointerType::Touch,
+            _ => unreachable!(),
+        }
+        event
+    };
+    player.dispatch_pointer(touch("down", (20., 20.))).unwrap();
+    player.dispatch_pointer(touch("move", (20., 60.))).unwrap();
+    accept_frame(&mut player, &mut host);
+    settle_player(&mut player, &mut host);
+    player.dispatch_pointer(touch("up", (20., 60.))).unwrap();
+    settle_player(&mut player, &mut host);
+    assert!(player.presentation.bridge.root().needs_anim());
+    let before = player.story_mut().unwrap().driver().adapter().vm().stats();
+    let presented = host.presents;
+    let animation_started = host.now;
+    for _ in 0..80 {
+        if player.needs_redraw() {
+            accept_frame(&mut player, &mut host);
+            settle_player(&mut player, &mut host);
+            continue;
+        }
+        if !player.presentation.bridge.root().needs_anim() {
+            break;
+        }
+        let Some(deadline) = player.story_deadline(host.now) else {
+            assert!(
+                !player.presentation.bridge.root().needs_anim(),
+                "animation lost its deadline: model={:?}, ready={}, redraw={}",
+                player.presentation.demand.model,
+                player.session.as_ref().unwrap().frame_ready(),
+                player.needs_redraw()
+            );
+            break;
+        };
+        assert!(deadline > host.now, "native animation busy-looped");
+        host.now = deadline;
+        player.tick(&mut host).unwrap();
+        if player.needs_redraw() {
+            accept_frame(&mut player, &mut host);
+        }
+        settle_player(&mut player, &mut host);
+    }
+    assert!(!player.presentation.bridge.root().needs_anim());
+    assert!(host.presents > presented + 2);
+    let driver = player.story_mut().unwrap().driver();
+    if animated {
+        let background = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|node| node.props.width == Some(10.))
+            .unwrap();
+        assert!(
+            background.props.x > 20.,
+            "native UI animation starved the story animation"
+        );
+        let cadence_frames = (host.now.0 - animation_started.0) / 16_666_666;
+        assert!(
+            host.presents - presented <= cadence_frames as usize + 3,
+            "native animation created a second frame cadence"
+        );
+    } else {
+        let after = driver.adapter().vm().stats();
+        assert_eq!(after.slices, before.slices);
+        assert_eq!(after.native_entries, before.native_entries);
+        assert!(player.story_deadline(host.now).is_none());
+    }
+}
+
 fn animated_x(player: &mut Player<Backend>) -> f64 {
     player
         .story_mut()

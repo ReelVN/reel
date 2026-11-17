@@ -194,6 +194,13 @@ pub(crate) fn editor_analysis(
     }
 }
 
+fn has_resume_points(module: &AnalyzedModule) -> bool {
+    module
+        .facts()
+        .iter()
+        .any(|facts| facts.intrinsic == Some(Intrinsic::ResumePoint))
+}
+
 fn infer_source_types(
     analysis: &mut crate::editor::EditorAnalysis,
     options: &AnalysisOptions,

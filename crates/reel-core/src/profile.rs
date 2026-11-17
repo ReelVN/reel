@@ -109,7 +109,7 @@ pub enum Phase {
     SessionSaves,
     /// Poll localization and script asset reads, nested in SessionMaintenance.
     SessionAssets,
-    /// End the final scene and publish its completion fence; may wait for driver capacity.
+    /// Finish native GPU encoding and submit work; may wait for driver capacity.
     RenderFence,
     /// Native draw call wall time, including driver backpressure.
     DriverDraw,
@@ -172,8 +172,54 @@ pub enum Phase {
     AudioDeviceFormats,
     /// Create, start, suspend or close the native audio stream.
     AudioStreamControl,
+    /// Finish recording a native GPU command buffer before queue submission.
+    CommandFinish,
+    /// Player frame preparation and acceptance, including nested backend work.
+    PlayerRender,
+    /// Publish accepted geometry and presentation completion to the session.
+    FrameAccept,
+    /// Native window callbacks and event-loop maintenance outside nested phases.
+    HostEvent,
+    /// Configure native presentation images after geometry or surface changes.
+    SurfaceConfigure,
+    /// Scale and transform a font outline before rasterization.
+    GlyphOutline,
+    /// Expand a glyph stroke into a fillable path.
+    GlyphStroke,
+    /// Allocate and rasterize the glyph's alpha coverage.
+    GlyphCoverage,
+    /// Desktop preparations that selected RGBA16F with four samples; instantaneous count.
+    RenderTier16f4x,
+    /// Desktop preparations that selected RGBA16F with one sample; instantaneous count.
+    RenderTier16f1x,
+    /// Desktop preparations that selected RGBA8 with one sample; instantaneous count.
+    RenderTier8u1x,
+    /// Create a sampled desktop image's native texture and view.
+    ImageTextureCreate,
+    /// Allocate a sampled desktop image before creating its view.
+    ImageNativeAllocate,
+    /// Create the shader-visible view of a sampled desktop image.
+    ImageNativeView,
+    /// Shape styled text into positioned font runs.
+    UiTextShape,
+    /// Break shaped text into lines.
+    UiTextWrap,
+    /// Index glyph bounds for viewport culling.
+    UiTextPaintBounds,
+    /// Advance and route shared asset IO and decode completions.
+    AssetPump,
+    /// Attach atlas views and publish their resolved backing pages.
+    AssetAtlas,
+    /// Publish audio decoder completions to pending segments.
+    MediaDecoded,
+    /// Advance loaded audio activities and submit ready segments.
+    MediaActivities,
+    /// Reclaim mixer activity state and deliver terminal events.
+    MediaAudioService,
+    /// Measure alpha support and opacity when registering immutable image pixels.
+    ImageCoverage,
 }
-pub const NAMES: [&str; 98] = [
+pub const NAMES: [&str; 121] = [
     "input",
     "tick",
     "session",
@@ -272,6 +318,29 @@ pub const NAMES: [&str; 98] = [
     "audio_device_check",
     "audio_device_formats",
     "audio_stream_control",
+    "command_finish",
+    "player_render",
+    "frame_accept",
+    "host_event",
+    "surface_configure",
+    "glyph_outline",
+    "glyph_stroke",
+    "glyph_coverage",
+    "render_tier_16f_4x",
+    "render_tier_16f_1x",
+    "render_tier_8u_1x",
+    "image_texture_create",
+    "image_native_allocate",
+    "image_native_view",
+    "ui_text_shape",
+    "ui_text_wrap",
+    "ui_text_paint_bounds",
+    "asset_pump",
+    "asset_atlas",
+    "media_decoded",
+    "media_activities",
+    "media_audio_service",
+    "image_coverage",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

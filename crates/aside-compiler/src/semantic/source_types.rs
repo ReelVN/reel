@@ -1,4 +1,4 @@
-//! Source-only value summaries over bound HIR. Runtime contracts remain unchanged.
+//! Value summaries over bound HIR for editor queries and guarded resume points.
 use super::{ExternalSymbol, TypeHint};
 use crate::{
     TextRange,
@@ -44,8 +44,8 @@ pub enum SourceShape {
     },
 }
 
-/// A shared source value summary. `ty` is a normal language type; the optional
-/// shape and call result refine editor queries and exported module metadata.
+/// A shared source value summary. `ty` is a normal language type used by editor
+/// queries, exported module metadata and checked nominal resume operands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceType {
     pub ty: TypeHint,

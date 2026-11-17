@@ -173,8 +173,11 @@ impl SessionUi {
                     let view = source.view(view.unwrap());
                     let stage = NewWidget::new(StageWidget::new_portal(&view));
                     let stage_id = stage.id();
-                    let layer =
-                        NewWidget::new(Popup::new(stage).with_modal(source.properties().modal));
+                    let layer = NewWidget::new(
+                        Popup::new(stage)
+                            .with_modal(source.modal())
+                            .with_hint(source.popup().hint.is_some()),
+                    );
                     let layer_id = layer.id();
                     bridge.edit_widget(content, |mut stack| {
                         LayerStack::add_layer(
@@ -208,7 +211,7 @@ impl SessionUi {
                 }
             }
             let layer = &mut layers[index];
-            let modal_changed = source.properties().modal != layer.source.properties().modal;
+            let modal_changed = source.modal() != layer.source.modal();
             let view = source.view(view.unwrap());
             if !source.same_subtree(&layer.source) {
                 bridge.edit_widget(layer.stage, |mut widget| {
@@ -217,7 +220,7 @@ impl SessionUi {
             }
             if modal_changed {
                 bridge.edit_widget(layer.layer, |mut widget| {
-                    Popup::set_modal(&mut widget.downcast::<Popup>(), source.properties().modal)
+                    Popup::set_modal(&mut widget.downcast::<Popup>(), source.modal())
                 });
             }
             layer.source = source.clone();

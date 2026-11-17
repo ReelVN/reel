@@ -1,6 +1,9 @@
 //! Replay the selected color effect while retaining its original output path.
 use super::*;
-use crate::common::{effect_plan, source_plan};
+use crate::common::{
+    effect_plan,
+    source_plan::{self, SourceFreeOutput, SourceFreeParent},
+};
 use reel_ui::frame::FrameGroup;
 
 impl Context<'_> {
@@ -12,24 +15,21 @@ impl Context<'_> {
     ) -> Result<(), GpuError> {
         self.flush_draws()?;
         let parent = current.scopes.last();
-        let source = source_plan::layout(
+        let (source_size, output_path) = source_plan::source_free(
             group,
-            parent.group,
-            parent.source_effect_transform,
+            SourceFreeParent {
+                group: parent.group,
+                source_transform: parent.source_effect_transform,
+                accepts_forwarded_source: current.groups.is_source_child(current.next - 1)
+                    && parent.isolated,
+                shared_source: parent.shared_source,
+            },
             current.transform,
             self.size,
             self.gpu.capabilities().max_texture_size,
+            1,
             at,
         )?;
-        let forward = current.groups.is_source_child(current.next - 1)
-            && parent.isolated
-            && effect_plan::forwards_source(
-                group,
-                &source,
-                current.transform,
-                self.size,
-                parent.shared_source,
-            );
         let effect = group.effect.as_ref().expect("planned color effect");
         let transform = effect_plan::output_transform(
             group,
@@ -40,14 +40,13 @@ impl Context<'_> {
         let parent_scissor = self.scissor;
         self.scissor = Scissor::group_bounds(group, current.transform, self.size, false)
             .map_or(self.scissor, |bounds| self.scissor.intersect(bounds));
-        let terminal = !forward && effect_plan::terminal_composite(group, 1, false);
         let output = self.effect_draw(
             current.drawing,
             effect,
             transform,
-            effect_plan::Source::unused(source.size),
+            effect_plan::Source::unused(source_size),
             None,
-            terminal.then_some(effect_plan::Terminal {
+            (output_path == SourceFreeOutput::Direct).then_some(effect_plan::Terminal {
                 target: &target,
                 opacity: group.composite.alpha,
                 coverage: None,
@@ -55,7 +54,7 @@ impl Context<'_> {
             None,
             at,
         )?;
-        if forward {
+        if output_path == SourceFreeOutput::Forward {
             let previous = current
                 .scopes
                 .last_mut()
@@ -63,7 +62,7 @@ impl Context<'_> {
                 .replace(output)
                 .expect("source-free parent target");
             self.recycle_target(previous)?;
-        } else if !terminal {
+        } else if output_path == SourceFreeOutput::Composite {
             let processed = output;
             self.combine(
                 &target,

@@ -11,6 +11,37 @@ fn draws(source: &RecordedSource) -> impl Iterator<Item = &Draw> {
 }
 
 #[test]
+fn progress_updates_fill_width_without_changing_layout() {
+    let mut fixture = Fixture::new(None);
+    let props = fixture.stage.node(fixture.red).unwrap().props.clone();
+    let fill = color(props.color);
+    let mut layouts = None;
+    for (value, expected) in [(1., Some(15.)), (3., Some(45.)), (0., None)] {
+        fixture
+            .stage
+            .update(
+                fixture.red,
+                NodeKind::ProgressBar { value, max: 4. },
+                props.clone(),
+            )
+            .unwrap();
+        let frame = fixture.record();
+        fixture.accept(&frame);
+        let baseline = layouts.get_or_insert_with(|| fixture.layouts());
+        assert_eq!(&fixture.layouts(), baseline);
+        let width = draws(&frame).find_map(|draw| match draw {
+            Draw::Fill {
+                shape: Geometry::Rect(rect),
+                brush: reel_ui::peniko::Brush::Solid(color),
+                ..
+            } if *color == fill => Some(rect.width()),
+            _ => None,
+        });
+        assert_eq!(width, expected);
+    }
+}
+
+#[test]
 fn box_styles_reuse_geometry_and_keep_inside_borders_bounded() {
     let mut fixture = Fixture::new(None);
     let first = fixture.record();

@@ -1,5 +1,5 @@
 use super::worker::{Worker, check_completion};
-use image::{DynamicImage, ImageDecoder, ImageReader};
+use image::DynamicImage;
 use reel_core::texture::{TextureCodec, TextureFormat, TextureHeader};
 use reel_core::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
@@ -103,35 +103,27 @@ impl ImageExecutor {
                                 .map_err(|e| e.message)?;
                             return OwnedBytes::new(data, output).map_err(|e| e.reason.message);
                         }
-                        let mut reader = ImageReader::new(Cursor::new(input.as_slice()))
-                            .with_guessed_format()
-                            .map_err(|e| e.to_string())?;
-                        if !matches!(
-                            reader.format(),
-                            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)
-                        ) {
-                            return Err("expected PNG or JPEG image".into());
-                        }
-                        let mut limits = image::Limits::no_limits();
-                        limits.max_alloc = Some(temporary.bytes());
-                        reader.limits(limits);
-                        let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+                        let (decoder, workspace) = crate::artwork::decoder(
+                            Cursor::new(input.as_slice()),
+                            input.as_slice().len() as u64,
+                            temporary.bytes(),
+                        )?;
                         let (width, height) = decoder.dimensions();
                         let rgba = u64::from(width)
                             .checked_mul(u64::from(height))
                             .and_then(|n| n.checked_mul(4))
                             .ok_or("image size overflow")?;
+                        let decoded = decoder.total_bytes() + workspace;
                         let data = if kind == image_probe() {
                             let mut data = Vec::with_capacity(24);
                             data.extend_from_slice(&width.to_le_bytes());
                             data.extend_from_slice(&height.to_le_bytes());
                             data.extend_from_slice(&rgba.to_le_bytes());
-                            data.extend_from_slice(&decoder.total_bytes().to_le_bytes());
+                            data.extend_from_slice(&decoded.to_le_bytes());
                             data
                         } else {
                             if rgba > output.bytes()
-                                || decoder
-                                    .total_bytes()
+                                || decoded
                                     .checked_add(rgba)
                                     .is_none_or(|bytes| bytes > temporary.bytes())
                             {

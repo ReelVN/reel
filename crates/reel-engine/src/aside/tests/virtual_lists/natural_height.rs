@@ -77,6 +77,32 @@ fn total(n: usize) -> f64 {
 }
 
 #[test]
+fn virtual_list_materializes_a_small_buffer_and_covers_large_viewport_jumps() {
+    let (mut session, mut vm) = gallery(1000, true);
+    drive(&mut vm, &mut session);
+    settle_layout(&mut vm, &mut session);
+    for y in [0., 12_345., 50_000.] {
+        frame(&mut vm, &mut session, y, 1313.);
+        settle_layout(&mut vm, &mut session);
+        let list = view(&vm);
+        let start = offset(&vm);
+        let first = list.rows.first().unwrap();
+        let last = list.rows.last().unwrap();
+        let last_height = vm.stage().node(last.node).unwrap().props.height.unwrap();
+        assert!(first.offset <= start, "window omits the viewport start");
+        assert!(
+            last.offset + last_height >= start + 920.,
+            "window omits the viewport end"
+        );
+        assert!(
+            list.rows.len() <= 12,
+            "920px viewport built {} natural-height rows",
+            list.rows.len()
+        );
+    }
+}
+
+#[test]
 fn virtual_list_natural_height_keeps_anchor_on_measurement_resize_and_rejects_old_scroll_feedback()
 {
     let (mut session, mut vm) = prepared(1000);
@@ -103,7 +129,8 @@ fn virtual_list_natural_height_keeps_anchor_on_measurement_resize_and_rejects_ol
         .iter()
         .find(|r| r.node == anchor.node)
         .unwrap();
-    assert_eq!(next.offset - offset(&vm), within);
+    // Fractional height estimates can round when converting the anchor back to viewport coordinates.
+    assert!((next.offset - offset(&vm) - within).abs() < 1e-9);
     let scroll = ids(&vm).1;
     let current = offset(&vm);
     vm.interactions(

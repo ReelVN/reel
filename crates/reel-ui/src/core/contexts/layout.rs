@@ -545,6 +545,18 @@ impl LayoutCtx<'_> {
 }
 
 impl ComposeCtx<'_> {
+    /// Maps a child's content-box coordinates into this widget's content-box
+    /// coordinates using its current layout origin and affine transform.
+    /// Scroll translation is excluded so viewport consumers can supply their
+    /// logical scroll position independently of transient visual overscroll.
+    pub fn child_layout_transform(&self, child: &WidgetPod<impl Widget + ?Sized>) -> Affine {
+        let child = self.get_child_state(child);
+        child
+            .transform
+            .pre_translate(child.border_box_translation())
+            .then_translate(child.origin.to_vec2() - self.widget_state.border_box_translation())
+    }
+
     /// The child's untransformed layout size, for size-dependent composition.
     pub fn child_size(&self, child: &WidgetPod<impl Widget + ?Sized>) -> Size {
         self.get_child_state(child).layout_border_box_size

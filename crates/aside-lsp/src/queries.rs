@@ -113,6 +113,7 @@ fn inferred_builtin_members(ty: &TypeHint) -> Option<&'static BuiltinTypeMembers
     }
     builtin_catalog().types.iter().find(|group| {
         group.receiver == *ty
+            || matches!((ty, &group.receiver), (TypeHint::StringLiteral(_), TypeHint::String))
             || matches!((ty, &group.receiver), (TypeHint::Tuple(_), TypeHint::Named(name)) if name == "tuple")
     })
 }
@@ -123,8 +124,56 @@ struct Signature {
     name: String,
     result: String,
     parameters: Vec<(String, String)>,
+    literal_parameters: Vec<(usize, Vec<String>)>,
     markdown: Option<String>,
     parameter_documentation: std::collections::BTreeMap<String, std::sync::Arc<str>>,
+}
+
+fn hint_literals(ty: &TypeHint) -> Option<Vec<String>> {
+    match ty {
+        TypeHint::StringLiteral(text) => Some(vec![format!("{text:?}")]),
+        TypeHint::Null => Some(vec!["null".into()]),
+        TypeHint::Union(types) => {
+            let mut values = Vec::new();
+            for ty in types {
+                values.extend(hint_literals(ty)?);
+            }
+            Some(values)
+        }
+        _ => None,
+    }
+}
+
+fn source_literals(module: EditorModule<'_>, ty: TypeId) -> Option<Vec<String>> {
+    match &module.types()[ty.0 as usize] {
+        Type::StringLiteral(text) => Some(vec![format!("{text:?}")]),
+        Type::Null => Some(vec!["null".into()]),
+        Type::Union(types) => {
+            let mut values = Vec::new();
+            for &ty in types {
+                values.extend(source_literals(module, ty)?);
+            }
+            Some(values)
+        }
+        _ => None,
+    }
+}
+
+fn literal_parameters(
+    choices: impl Iterator<Item = Option<Vec<String>>>,
+) -> Vec<(usize, Vec<String>)> {
+    choices
+        .enumerate()
+        .filter_map(|(index, values)| {
+            let mut values = values?;
+            if !values.iter().any(|value| value.starts_with('"')) {
+                return None;
+            }
+            values.sort_unstable();
+            values.dedup();
+            Some((index, values))
+        })
+        .collect()
 }
 fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature> {
     let signature = symbol.signature.as_ref()?;
@@ -166,6 +215,12 @@ fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature
         .collect();
     Some(Signature {
         prefix: "fn",
+        literal_parameters: literal_parameters(
+            signature
+                .parameters
+                .iter()
+                .map(|parameter| hint_literals(&parameter.ty)),
+        ),
         parameter_documentation: declaration
             .map(|declaration| declaration.parameter_documentation.clone())
             .unwrap_or_default(),
@@ -232,6 +287,8 @@ fn value_signature(
         }
     }
     if let Type::Callable(parameters, result) = &module.types()[ty.0 as usize] {
+        let literal_parameters =
+            literal_parameters(parameters.iter().map(|&ty| source_literals(module, ty)));
         let parameters: Vec<_> = parameters
             .iter()
             .map(|&ty| (String::new(), type_label(module, ty)))
@@ -239,6 +296,7 @@ fn value_signature(
         let result = type_label(module, *result);
         return Some(Signature {
             prefix: "fn",
+            literal_parameters,
             parameter_documentation: Default::default(),
             label: format!(
                 "fn {name}({}) -> {result}",
@@ -325,6 +383,18 @@ fn function_signature(
         .collect();
     Signature {
         prefix,
+        literal_parameters: literal_parameters(
+            function
+                .parameters
+                .iter()
+                .skip(usize::from(bound))
+                .map(|parameter| {
+                    let ty = parameter
+                        .annotation
+                        .unwrap_or(module.symbols()[parameter.symbol.0 as usize].ty);
+                    source_literals(module, ty)
+                }),
+        ),
         parameter_documentation: Default::default(),
         name: name.into(),
         result: result.clone(),
@@ -519,6 +589,7 @@ fn external_signature(
             })
             .unwrap_or(Signature {
                 prefix: "fn",
+                literal_parameters: Vec::new(),
                 parameter_documentation: Default::default(),
                 label: String::new(),
                 name: symbol.name.clone(),
@@ -855,6 +926,37 @@ fn call_at(module: EditorModule<'_>, offset: usize) -> Option<(NodeId, Option<No
             _ => None,
         })
 }
+fn active_parameter(
+    module: EditorModule<'_>,
+    arguments: Option<NodeId>,
+    offset: usize,
+    signature: &Signature,
+) -> usize {
+    let Some(args) = arguments else {
+        return 0;
+    };
+    // Nested commas belong to their own expression, not this argument list.
+    let positional = module
+        .hir()
+        .tokens(args)
+        .filter(|token| token.kind == K::Comma && (u32::from(token.span.start()) as usize) < offset)
+        .count();
+    for argument in module.hir().children(args) {
+        let node = module.hir().node(argument);
+        if contains(node.span, offset)
+            && let Form::Argument {
+                name: Some(name), ..
+            } = node.form
+            && let Some(index) = signature
+                .parameters
+                .iter()
+                .position(|(parameter, _)| parameter == module.hir().text(name.span))
+        {
+            return index;
+        }
+    }
+    positional
+}
 fn member_base(snapshot: &Snapshot, module: EditorModule<'_>, offset: usize) -> Option<NodeId> {
     let mut token = snapshot
         .source()
@@ -1087,6 +1189,12 @@ fn hover_type(ty: &TypeHint, aliases: &std::collections::BTreeMap<String, String
         TypeHint::Union(types) => {
             TypeHint::Union(types.iter().map(|ty| hover_type(ty, aliases)).collect())
         }
+        TypeHint::Record(fields) => TypeHint::Record(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), hover_type(ty, aliases)))
+                .collect(),
+        ),
         TypeHint::Callable(parameters, result) => TypeHint::Callable(
             parameters
                 .iter()
@@ -1335,7 +1443,12 @@ fn type_completion_context(source: &Source, offset: usize) -> bool {
     if token.parent_ancestors().any(|node| {
         matches!(
             node.kind(),
-            K::TypeName | K::TupleType | K::UnionType | K::FunctionType | K::GroupType
+            K::TypeName
+                | K::RecordFieldType
+                | K::TupleType
+                | K::UnionType
+                | K::FunctionType
+                | K::GroupType
         )
     }) {
         return true;
@@ -1348,9 +1461,12 @@ fn type_completion_context(source: &Source, offset: usize) -> bool {
     }
     token.kind() == K::Arrow
         || (token.kind() == K::Colon
-            && token
-                .parent()
-                .is_some_and(|node| matches!(node.kind(), K::LetDecl | K::Param | K::ClassDecl)))
+            && token.parent().is_some_and(|node| {
+                matches!(
+                    node.kind(),
+                    K::LetDecl | K::Param | K::ClassDecl | K::RecordFieldType
+                )
+            }))
 }
 
 mod keywords;

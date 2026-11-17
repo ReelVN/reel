@@ -5,6 +5,7 @@ use crate::snapshot::{
     SnapshotRegistry, VERSION, VmSnapshot,
 };
 use serde::{Deserialize, Serialize};
+mod object_order;
 
 impl Serialize for TaskId {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -221,6 +222,8 @@ impl Vm {
         })
     }
     /// Builds an unpublished candidate. The caller commits only after host adapters succeed.
+    /// Remapped object handles preserve their numeric relative order, including
+    /// recycled generations, so retained identity indices and native sort cursors stay valid.
     pub fn restore_begin<'a>(
         image: &'a VmSnapshot,
         program: VerifiedProgram,
@@ -248,6 +251,11 @@ impl Vm {
         // Discard the two empty bootstrap descriptors. No initializer or author code ran.
         vm.slots.release(&mut vm.heap, vm.globals)?;
         vm.slots.release(&mut vm.heap, vm.constants)?;
+        if vm.heap.stats().live_objects != 0 {
+            return Err(SnapshotError::Invalid(
+                "restore bootstrap heap is not empty".into(),
+            ));
+        }
         let map = SnapshotMap::new(&vm.heap, image);
         Ok(VmRestore {
             vm,
@@ -264,6 +272,7 @@ impl Vm {
             callback_validation: None,
             generator_validation: None,
             task_index_insert: None,
+            object_order: Some(object_order::ObjectOrder::default()),
             complete: false,
         })
     }
@@ -405,6 +414,7 @@ pub struct VmRestore<'a> {
     callback_validation: Option<CallbackValidation>,
     generator_validation: Option<generators::GeneratorValidation>,
     task_index_insert: Option<TaskIndexInsert>,
+    object_order: Option<object_order::ObjectOrder>,
     complete: bool,
 }
 
@@ -418,6 +428,25 @@ impl VmRestore<'_> {
     pub fn step(&mut self, budget: SnapshotBudget) -> Result<SnapshotProgress, SnapshotError> {
         let mut progress = SnapshotProgress::default();
         while !self.complete && progress.units < budget.units {
+            if let Some(order) = &mut self.object_order {
+                match order.step(&self.vm.heap, &self.image.records)? {
+                    object_order::Step::Allocate(index) => {
+                        let record = &self.image.records[index];
+                        graph::allocate(
+                            &mut self.vm.heap,
+                            &mut self.vm.slots,
+                            &mut self.map,
+                            record,
+                            self.registry,
+                        )?;
+                        progress.bytes += record.data.len() as u64;
+                    }
+                    object_order::Step::Done => self.object_order = None,
+                    object_order::Step::Work => (),
+                }
+                progress.units += 1;
+                continue;
+            }
             if let Some(insert) = &mut self.task_index_insert {
                 // Restored slots need not follow serial order. Move one entry
                 // per unit instead of hiding a whole pooled-task scan in a record.
@@ -478,13 +507,15 @@ impl VmRestore<'_> {
                             ));
                         }
                     }
-                    graph::allocate(
-                        &mut self.vm.heap,
-                        &mut self.vm.slots,
-                        &mut self.map,
-                        record,
-                        self.registry,
-                    )?;
+                    if record.kind != RecordKind::Object {
+                        graph::allocate(
+                            &mut self.vm.heap,
+                            &mut self.vm.slots,
+                            &mut self.map,
+                            record,
+                            self.registry,
+                        )?;
+                    }
                 }
                 1 => graph::connect(&mut self.vm.heap, &mut self.vm.slots, &mut self.map, record)?,
                 2 => self.restore_control(record)?,

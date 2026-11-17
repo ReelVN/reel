@@ -54,6 +54,7 @@ fn font_weight_selects_faces_for_labels_and_input_without_rebuilding_widgets() {
             selected: false,
             group: None,
             revision: 0,
+            tabs: None,
         },
     ] {
         let mut f = Fixture::new(None);

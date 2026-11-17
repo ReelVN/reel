@@ -78,7 +78,12 @@ fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
         let bytes = bc::encode(&p, bc::Limits::default()).unwrap();
         metadata.bytecode_blake3 = rp::digest(&bytes);
         let encoded = assemble(&bytes, &serde_json::to_vec(&metadata).unwrap());
-        let error = rp::decode(&encoded, Limits::default()).unwrap_err();
+        let error = rp::decode(
+            &encoded,
+            reel_engine::aside::source::types(),
+            Limits::default(),
+        )
+        .unwrap_err();
         assert!(error.detail.contains("Ordinary"), "{context:?}: {error}");
         checked.compilation.program = bc::verify(p, bc::Limits::default()).unwrap();
         checked.modules[0].functions[0].declared_context = rp::DeclaredContext {
@@ -113,7 +118,12 @@ fn metadata_only_cannot_redirect_main_to_same_named_nested_function() {
     metadata["game_entry"]["function_id"] = nested;
     let forged = repack(&original, &serde_json::to_vec(&metadata).unwrap());
     assert_eq!(section(&original, 0), section(&forged, 0));
-    let error = rp::decode(&forged, Limits::default()).unwrap_err();
+    let error = rp::decode(
+        &forged,
+        reel_engine::aside::source::types(),
+        Limits::default(),
+    )
+    .unwrap_err();
     assert!(
         error.detail.contains("linked B01 global/function binding"),
         "{error}"
@@ -124,7 +134,12 @@ fn metadata_only_cannot_redirect_main_to_same_named_nested_function() {
 fn project_initializer_and_linked_declarations_reject_forged_control_and_writes() {
     use aside_vm::bytecode as bc;
     let original = artifact("fn main(){1}", Some("main::main")).bytes;
-    let decoded = rp::decode(&original, Limits::default()).unwrap();
+    let decoded = rp::decode(
+        &original,
+        reel_engine::aside::source::types(),
+        Limits::default(),
+    )
+    .unwrap();
     for case in [
         "jump",
         "duplicate",
@@ -173,7 +188,8 @@ fn project_initializer_and_linked_declarations_reject_forged_control_and_writes(
         let b01 = bc::encode(&p, bc::Limits::default()).unwrap();
         metadata.bytecode_blake3 = rp::digest(&b01);
         let bad = assemble(&b01, &serde_json::to_vec(&metadata).unwrap());
-        let error = rp::decode(&bad, Limits::default()).unwrap_err();
+        let error =
+            rp::decode(&bad, reel_engine::aside::source::types(), Limits::default()).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Metadata, "{case}: {error}");
         assert!(
             error.detail.contains("declaration") || error.detail.contains("initializer"),
@@ -200,7 +216,12 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
         "fn helper() { 1 } fn main(a = 1, b = a) { let local = 2; let f = || { local + a }; f() + b }",
         Some("main::main"),
     );
-    let read = rp::decode(&a.bytes, Limits::default()).unwrap();
+    let read = rp::decode(
+        &a.bytes,
+        reel_engine::aside::source::types(),
+        Limits::default(),
+    )
+    .unwrap();
     let m = read.metadata();
     let p = read.program().package();
     let entry = m.game_entry.as_ref().unwrap();
@@ -245,6 +266,8 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
             m,
             None,
             read.effects(),
+            read.resume().table(),
+            reel_engine::aside::source::types(),
             Limits::default()
         )
         .unwrap(),
@@ -255,11 +278,15 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
 #[test]
 fn entry_is_optional_and_only_real_module_functions_can_be_selected() {
     assert!(
-        rp::decode(&artifact("let x = 1;", None).bytes, Limits::default())
-            .unwrap()
-            .metadata()
-            .game_entry
-            .is_none()
+        rp::decode(
+            &artifact("let x = 1;", None).bytes,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap()
+        .metadata()
+        .game_entry
+        .is_none()
     );
     for (source, entry) in [
         ("let main = || { 1 };", "main::main"),
@@ -280,18 +307,37 @@ fn every_truncation_and_payload_bit_corruption_is_rejected() {
     let a = artifact("fn main() { 1 }", Some("main::main"));
     for end in 0..a.bytes.len() {
         assert!(
-            rp::decode(&a.bytes[..end], Limits::default()).is_err(),
+            rp::decode(
+                &a.bytes[..end],
+                reel_engine::aside::source::types(),
+                Limits::default()
+            )
+            .is_err(),
             "accepted length {end}"
         );
     }
     for at in [0, 40, 72, u64_at(&a.bytes, 24) - 1] {
         let mut bytes = a.bytes.clone();
         bytes[at] ^= 1;
-        assert!(rp::decode(&bytes, Limits::default()).is_err());
+        assert!(
+            rp::decode(
+                &bytes,
+                reel_engine::aside::source::types(),
+                Limits::default()
+            )
+            .is_err()
+        );
     }
     let mut appended = a.bytes;
     appended.push(0);
-    assert!(rp::decode(&appended, Limits::default()).is_err());
+    assert!(
+        rp::decode(
+            &appended,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -320,7 +366,12 @@ fn index_rejects_overflow_overlap_duplicates_versions_and_required_extensions() 
         bytes[at..at + value.len()].copy_from_slice(&value);
         repair_index(&mut bytes);
         assert!(
-            rp::decode(&bytes, Limits::default()).is_err(),
+            rp::decode(
+                &bytes,
+                reel_engine::aside::source::types(),
+                Limits::default()
+            )
+            .is_err(),
             "accepted mutation at {at}"
         );
     }
@@ -365,6 +416,7 @@ fn rehashed_metadata_cannot_redirect_entry_or_lie_about_cross_references() {
         assert!(
             rp::decode(
                 &repack(&original, &serde_json::to_vec(&json).unwrap()),
+                reel_engine::aside::source::types(),
                 Limits::default()
             )
             .is_err(),
@@ -380,6 +432,7 @@ fn rehashed_metadata_cannot_redirect_entry_or_lie_about_cross_references() {
     assert!(
         rp::decode(
             &repack(&original, &serde_json::to_vec(&duplicate).unwrap()),
+            reel_engine::aside::source::types(),
             Limits::default()
         )
         .is_err()
@@ -392,15 +445,20 @@ fn json_is_bounded_before_materialization_and_duplicate_fields_are_rejected() {
     let json = std::str::from_utf8(section(&original, 1)).unwrap();
     let duplicate = format!("{{\"schema_version\":1,{}", &json[1..]);
     assert_eq!(
-        rp::decode(&repack(&original, duplicate.as_bytes()), Limits::default())
-            .unwrap_err()
-            .kind,
+        rp::decode(
+            &repack(&original, duplicate.as_bytes()),
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap_err()
+        .kind,
         ErrorKind::Metadata
     );
     let duplicate_nested = json.replace("\"initializer\":{", "\"initializer\":{\"module_id\":0,");
     assert_eq!(
         rp::decode(
             &repack(&original, duplicate_nested.as_bytes()),
+            reel_engine::aside::source::types(),
             Limits::default()
         )
         .unwrap_err()
@@ -412,6 +470,7 @@ fn json_is_bounded_before_materialization_and_duplicate_fields_are_rejected() {
     assert!(
         rp::decode(
             &repack(&original, &serde_json::to_vec(&missing_entry).unwrap()),
+            reel_engine::aside::source::types(),
             Limits::default()
         )
         .is_err()
@@ -421,7 +480,14 @@ fn json_is_bounded_before_materialization_and_duplicate_fields_are_rejected() {
         format!("\"{}\"", "x".repeat(4097)),
         "{\"schema_version\":18446744073709551616}".into(),
     ] {
-        assert!(rp::decode(&repack(&original, bad.as_bytes()), Limits::default()).is_err());
+        assert!(
+            rp::decode(
+                &repack(&original, bad.as_bytes()),
+                reel_engine::aside::source::types(),
+                Limits::default()
+            )
+            .is_err()
+        );
     }
     let limits = Limits::default();
     for restricted in [
@@ -459,7 +525,9 @@ fn json_is_bounded_before_materialization_and_duplicate_fields_are_rejected() {
         },
     ] {
         assert_eq!(
-            rp::decode(&original, restricted).unwrap_err().kind,
+            rp::decode(&original, reel_engine::aside::source::types(), restricted)
+                .unwrap_err()
+                .kind,
             ErrorKind::Limit
         );
     }
@@ -484,17 +552,34 @@ fn optional_sections_are_ignored_but_verified_and_required_unknowns_fail() {
     extended[24..32].copy_from_slice(&(new_index as u64).to_le_bytes());
     extended[32..40].copy_from_slice(&(3u64 * rp::INDEX_ENTRY_LEN as u64).to_le_bytes());
     repair_index(&mut extended);
-    rp::decode(&extended, Limits::default()).unwrap();
+    rp::decode(
+        &extended,
+        reel_engine::aside::source::types(),
+        Limits::default(),
+    )
+    .unwrap();
     let mut corrupted = extended.clone();
     corrupted[index] ^= 1;
     assert_eq!(
-        rp::decode(&corrupted, Limits::default()).unwrap_err().kind,
+        rp::decode(
+            &corrupted,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap_err()
+        .kind,
         ErrorKind::Integrity
     );
     extended[new_index + 2 * rp::INDEX_ENTRY_LEN + 4] = 1;
     repair_index(&mut extended);
     assert_eq!(
-        rp::decode(&extended, Limits::default()).unwrap_err().kind,
+        rp::decode(
+            &extended,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap_err()
+        .kind,
         ErrorKind::Version
     );
 }
@@ -507,7 +592,12 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
         io::{self, Cursor, Read, Seek, SeekFrom},
     };
     let original = artifact("fn main() { 1 }", Some("main::main")).bytes;
-    let package = rp::decode(&original, Limits::default()).unwrap();
+    let package = rp::decode(
+        &original,
+        reel_engine::aside::source::types(),
+        Limits::default(),
+    )
+    .unwrap();
     assert!(package.distribution().is_none());
     assert!(
         rp::read_distribution(&mut Cursor::new(&original), Limits::default())
@@ -525,13 +615,19 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
         package.metadata(),
         Some(&manifest),
         package.effects(),
+        package.resume().table(),
+        reel_engine::aside::source::types(),
         Limits::default(),
     )
     .unwrap();
     assert_eq!(
-        rp::decode(&bytes, Limits::default())
-            .unwrap()
-            .distribution(),
+        rp::decode(
+            &bytes,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap()
+        .distribution(),
         Some(&manifest)
     );
     let index = u64_at(&bytes, 24);
@@ -591,15 +687,25 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
             .contains("digest")
     );
     assert_eq!(
-        rp::decode(&corrupted, Limits::default()).unwrap_err().kind,
+        rp::decode(
+            &corrupted,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap_err()
+        .kind,
         ErrorKind::Integrity
     );
     let mut unsupported = bytes;
     unsupported[8..10].copy_from_slice(&2u16.to_le_bytes());
     assert_eq!(
-        rp::decode(&unsupported, Limits::default())
-            .unwrap_err()
-            .kind,
+        rp::decode(
+            &unsupported,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap_err()
+        .kind,
         ErrorKind::Version
     );
     assert!(
@@ -638,7 +744,13 @@ fn embedded_distribution_rejects_paths_duplicates_and_unknown_fields_at_both_bou
         bytes[32..40].copy_from_slice(&(3 * rp::INDEX_ENTRY_LEN as u64).to_le_bytes());
         repair_index(&mut bytes);
         assert_eq!(
-            rp::decode(&bytes, Limits::default()).unwrap_err().kind,
+            rp::decode(
+                &bytes,
+                reel_engine::aside::source::types(),
+                Limits::default()
+            )
+            .unwrap_err()
+            .kind,
             ErrorKind::Metadata,
             "{json}"
         );
@@ -658,7 +770,13 @@ fn valid_container_hashes_do_not_bypass_b01_validation() {
     bytes[index + 24..index + 56].copy_from_slice(&digest);
     repair_index(&mut bytes);
     assert_eq!(
-        rp::decode(&bytes, Limits::default()).unwrap_err().kind,
+        rp::decode(
+            &bytes,
+            reel_engine::aside::source::types(),
+            Limits::default()
+        )
+        .unwrap_err()
+        .kind,
         ErrorKind::Bytecode
     );
 }
@@ -672,6 +790,7 @@ fn unicode_span_boundaries_and_all_mapping_keys_are_checked() {
     assert!(
         rp::decode(
             &repack(&original, &serde_json::to_vec(&broken_span).unwrap()),
+            reel_engine::aside::source::types(),
             Limits::default()
         )
         .is_err()
@@ -686,6 +805,7 @@ fn unicode_span_boundaries_and_all_mapping_keys_are_checked() {
         assert!(
             rp::decode(
                 &repack(&original, &serde_json::to_vec(&duplicate).unwrap()),
+                reel_engine::aside::source::types(),
                 Limits::default()
             )
             .is_err(),
@@ -701,7 +821,12 @@ fn ordinary_thousand_function_module_fits_default_static_budgets() {
         source.push_str(&format!("fn f{index}() {{ {index} }}\n"));
     }
     let a = artifact(&source, Some("main::f999"));
-    let read = rp::decode(&a.bytes, Limits::default()).unwrap();
+    let read = rp::decode(
+        &a.bytes,
+        reel_engine::aside::source::types(),
+        Limits::default(),
+    )
+    .unwrap();
     assert_eq!(read.metadata().modules[0].declarations.len(), 1000);
     assert!(a.bytes.len() < Limits::default().max_file_bytes);
 }
@@ -715,6 +840,7 @@ fn repeated_source_slots_must_keep_their_b01_binding_contract() {
         json["modules"][0]["bindings"][0]["source"].clone();
     let error = rp::decode(
         &repack(&original, &serde_json::to_vec(&json).unwrap()),
+        reel_engine::aside::source::types(),
         Limits::default(),
     )
     .unwrap_err();

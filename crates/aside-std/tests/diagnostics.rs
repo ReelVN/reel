@@ -3,29 +3,35 @@ use aside_host::{aside_compiler, aside_vm};
 use aside_vm::{RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
 fn drive(vm: &mut Vm, library: &mut aside_std::StandardLibrary, task: TaskId) -> DeliveryId {
-    // Admit the fixture's decoded code page as well as its diagnostic records.
+    // Exercise diagnostic construction with a small allocation allowance.
     const ALLOCATION_SLICE: u64 = 4096;
+    // A literal can need a fresh object slab. Grant it for that retry only.
+    const ALLOCATION_CEILING: u64 = 16 * 1024;
+    let mut allocation_bytes = ALLOCATION_SLICE;
     loop {
-        match vm
+        let outcome = vm
             .run_slice(
                 task,
                 SliceBudget {
                     instructions: 3,
-                    allocation_bytes: ALLOCATION_SLICE,
+                    allocation_bytes,
                     ..Default::default()
                 },
                 || 0,
             )
-            .unwrap()
-        {
+            .unwrap();
+        allocation_bytes = ALLOCATION_SLICE;
+        match outcome {
             RunOutcome::HostCall(ticket) => {
                 library.dispatch(vm, ticket, 32).unwrap().unwrap();
             }
             RunOutcome::BudgetYield(usage) => {
                 assert!(
-                    usage.required_allocation <= ALLOCATION_SLICE,
-                    "diagnostic operation exceeds small allocation slice: {usage:?}"
+                    usage.required_allocation <= ALLOCATION_CEILING,
+                    "diagnostic allocation exceeds the fixture ceiling at {:?}: {usage:?}",
+                    vm.task_location(task).unwrap()
                 );
+                allocation_bytes = allocation_bytes.max(usage.required_allocation);
             }
             RunOutcome::Returned(id) => return id,
             RunOutcome::Fault(id) => panic!(

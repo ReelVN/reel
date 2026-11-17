@@ -240,6 +240,17 @@ impl Inference<'_> {
                     .get(&callee)
                     .cloned()
                     .or_else(|| self.external(m, callee));
+                if let Some(descriptor) = &descriptor
+                    && let (Some(context), Some(signature), Some(arguments)) = (
+                        descriptor.sequence_callbacks,
+                        &descriptor.signature,
+                        arguments,
+                    )
+                {
+                    self.contextualize_callbacks(
+                        m, arguments, context, signature, &supplied, state,
+                    );
+                }
                 let pure = descriptor
                     .as_ref()
                     .and_then(|symbol| symbol.signature.as_ref())
@@ -365,7 +376,7 @@ impl Inference<'_> {
                     .unwrap_or_else(|| Value::plain(self.leaf(TypeHint::Null)));
                 let b = self.snapshot(&b, &mut no);
                 let joined = if kind == HirKind::While {
-                    base.clone()
+                    base
                 } else {
                     match (yes.live, no.live) {
                         (true, true) => self.join(a, b),

@@ -93,6 +93,122 @@ fn values(driver: &AsideSessionUi) -> (f64, bool, f64) {
         .x;
     (value, toggle, changes)
 }
+
+#[test]
+fn children_spread_forwards_components_in_order_and_skips_empty_items() {
+    let source = r#"
+fn panel(children = []) {
+    let state = model({calls: 0});
+    fn get_children() {
+        state.calls += 1;
+        children
+    }
+    let result = column {
+        text("Before");
+        if true { ...get_children(); }
+        ...(null, text("Tuple"));
+        try { ...[1]; } catch error {}
+        text("After");
+    };
+    if state.calls != 1 { throw "children spread evaluated its source again"; }
+    result
+}
+fn main() {
+    let view: Node = panel { text("From caller"); };
+    stage.replace(view);
+    await completion(owner: view);
+}
+"#;
+    for story in stories(source) {
+        let driver = driver(story);
+        let stage = driver.adapter().stage();
+        let root = stage.node(stage.root().unwrap()).unwrap();
+        let labels = root
+            .children
+            .iter()
+            .map(|&id| {
+                let NodeKind::Text(value) = &stage.node(id).unwrap().kind else {
+                    panic!("expected a text child");
+                };
+                value.as_ref()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["Before", "From caller", "Tuple", "After"]);
+    }
+}
+
+#[test]
+fn children_spread_reports_invalid_context_and_non_sequence_sources() {
+    use aside_compiler::DiagnosticCode;
+
+    for (source, code) in [
+        ("fn main(){ ...[]; }", DiagnosticCode::InvalidControl),
+        (
+            "fn main(){ stage.replace(column { let body = || { ...[]; }; }); }",
+            DiagnosticCode::InvalidControl,
+        ),
+        (
+            "fn main(){ stage.replace(column { ...1; }); }",
+            DiagnosticCode::TypeMismatch,
+        ),
+    ] {
+        let report = reel_cli::check(source, "spread.aside")
+            .err()
+            .expect("invalid children spread");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.diagnostic.code == code),
+            "{report:?}"
+        );
+    }
+}
+
+#[test]
+fn source_and_asb_progress_bar_keeps_children_and_tracks_a_read_only_binding() {
+    let source = r#"
+fn main() {
+    let state = model({loaded: 2});
+    let bar = progress_bar(value: derive(|| state.loaded), max: 8, y: 80, width: 160, height: 20) {
+        stack(width: 10, height: 10);
+    };
+    let mut rejected = false;
+    try { bar.max = 0; } catch e { rejected = true; }
+    if !rejected || bar.max != 8 { throw "invalid max changed the bar"; }
+    let root = stack(width: 640, height: 420) {
+        button("Finish", width: 120, height: 40, on_click: || { state.loaded = 10; });
+        bar;
+    };
+    stage.replace(root);
+    await completion(owner: root);
+}
+"#;
+    let measure = |driver: &AsideSessionUi| {
+        let (bar, value) = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find_map(|node| match node.kind {
+                NodeKind::ProgressBar { value, max: 8. } => Some((node, value)),
+                _ => None,
+            })
+            .unwrap();
+        (bar.id, bar.children[0], value)
+    };
+    for story in stories(source) {
+        let mut driver = driver(story);
+        let (mut bridge, root) = bridge(&driver);
+        present(&mut driver, &mut bridge, root, 1);
+        let (id, child, value) = measure(&driver);
+        assert_eq!(value, 2.);
+        click_at(&mut driver, &mut bridge, 40., 20.);
+        settle(&mut driver);
+        present(&mut driver, &mut bridge, root, 2);
+        assert_eq!(measure(&driver), (id, child, 8.));
+    }
+}
+
 fn pointer(kind: PointerType, x: f64, down: Option<bool>) -> PointerEvent {
     let pointer = PointerInfo {
         pointer_id: Some(PointerId::PRIMARY),

@@ -20,6 +20,8 @@ pub enum TypeHint {
     Union(Vec<TypeHint>),
     Callable(Vec<TypeHint>, Box<TypeHint>),
     Named(String),
+    StringLiteral(String),
+    Record(Vec<(String, TypeHint)>),
 }
 impl std::fmt::Display for TypeHint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -36,6 +38,17 @@ impl std::fmt::Display for TypeHint {
             Self::Future => f.write_str("Future"),
             Self::Generator => f.write_str("generator"),
             Self::Named(name) => f.write_str(name),
+            Self::StringLiteral(text) => write!(f, "{text:?}"),
+            Self::Record(fields) => {
+                f.write_str("{")?;
+                for (i, (name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{name}: {ty}")?;
+                }
+                f.write_str("}")
+            }
             Self::Tuple(types) => {
                 f.write_str("(")?;
                 for (i, ty) in types.iter().enumerate() {
@@ -84,6 +97,8 @@ impl std::fmt::Display for TypeHint {
 pub enum CallEffect {
     NoWait,
     MayWait,
+    /// Starts concurrent work and requires a task context that allows waiting.
+    StartsTask,
     Unknown,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -101,12 +116,16 @@ pub struct ExternalSignature {
     /// Refine a call result only when the referenced argument is a known source
     /// constant. Dynamic values and spreads retain `result` unchanged.
     pub result_cases: Vec<ExternalResultCase>,
-    /// The result has the supplied argument's actual type. An omitted argument
-    /// or an unknown spread retains the declared `result` type.
-    pub result_parameter: Option<String>,
+    /// Refine the result from a supplied argument when its type is known.
+    pub result_parameter: Option<ExternalResultParameter>,
     pub effect: CallEffect,
     pub init_safe: Option<bool>,
     pub derived_safe: Option<bool>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalResultParameter {
+    Value(String),
+    Callback(String),
 }
 /// Source typing metadata; this does not change the native calling ABI.
 #[derive(Debug, Clone, PartialEq)]
@@ -117,10 +136,42 @@ pub struct ExternalResultCase {
     /// Derived by the host declaration from the actual parameter default.
     pub when_omitted: bool,
 }
+
+/// Editor context for callbacks that consume the elements of a provider callback.
+#[derive(Debug, Clone, Copy)]
+pub struct SequenceCallbackContext {
+    pub provider: &'static str,
+    pub callbacks: &'static [SequenceCallback],
+}
+
+/// Describe the first argument of an inline callback using the provider's elements.
+#[derive(Debug, Clone, Copy)]
+pub struct SequenceCallback {
+    pub parameter: &'static str,
+    pub argument: SequenceCallbackArgument,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SequenceCallbackArgument {
+    Element,
+    Record {
+        element: &'static str,
+        index: &'static str,
+    },
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
     Bind,
+    ValueOf,
     Derive,
+    /// Declare the stable identity of an ordinary resumable function.
+    ResumeFlow,
+    /// Name the following complete waiting-operation or ordinary flow call.
+    ResumePoint,
+    /// Declare a persistent State contract for one static module class.
+    ResumeState,
+    /// Declare the current bootstrap and its persistent State input.
+    ResumeRoot,
 }
 #[derive(Debug, Clone)]
 pub struct NamespaceRef {
@@ -174,6 +225,7 @@ pub struct ExternalSymbol {
     /// Bound source information shared through module interfaces. This never
     /// replaces the declared native signature or changes runtime admission.
     pub source_type: Option<Arc<super::SourceType>>,
+    pub sequence_callbacks: Option<SequenceCallbackContext>,
     pub name: String,
     pub reference: Option<Arc<SymbolReference>>,
     pub resolved_from: Option<Arc<ResolutionSource>>,
@@ -266,6 +318,7 @@ impl ExternalSymbol {
         Self {
             constant: None,
             source_type: None,
+            sequence_callbacks: None,
             name: name.into(),
             reference: None,
             resolved_from: None,
@@ -282,6 +335,7 @@ impl ExternalSymbol {
         Self {
             constant: None,
             source_type: None,
+            sequence_callbacks: None,
             name: name.into(),
             reference: None,
             resolved_from: None,
@@ -298,6 +352,7 @@ impl ExternalSymbol {
         Self {
             constant: None,
             source_type: None,
+            sequence_callbacks: None,
             name: name.into(),
             reference: None,
             resolved_from: None,
@@ -529,6 +584,7 @@ impl MemoryResolver {
                     bindings: vec![ExternalSymbol {
                         constant: None,
                         source_type: None,
+                        sequence_callbacks: None,
                         name: r.path.last().cloned().unwrap_or_default(),
                         reference: None,
                         resolved_from: None,

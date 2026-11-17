@@ -455,6 +455,16 @@ fn analyze_project_inner(
     }
     // Resolve annotations in the defining module, before consumers see aliases
     // or reexports. The same canonical names feed compiler and editor queries.
+    let prelude_types: BTreeMap<_, _> = options
+        .hosts
+        .iter()
+        .filter_map(|symbol| match &symbol.ty {
+            TypeHint::Named(name) if symbol.type_only => {
+                Some((symbol.name.as_str(), name.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
     let mut type_names = BTreeMap::new();
     for (path, hir) in &projected {
         let mut names = BTreeMap::new();
@@ -516,7 +526,13 @@ fn analyze_project_inner(
                     reference.module.as_str()
                 });
             if let Some(names) = type_names.get(origin) {
-                canonical_symbol(symbol, names);
+                canonical_symbol(
+                    symbol,
+                    &TypeNames {
+                        module: names,
+                        prelude: &prelude_types,
+                    },
+                );
             }
         }
     }
@@ -651,7 +667,7 @@ fn analyze_project_inner(
             });
         }
     }
-    if recover && !exhausted {
+    if !exhausted && (recover || modules.iter().any(super::has_resume_points)) {
         let remaining = options.limits.max_work.saturating_sub(work);
         let result = super::source_types::analyze(
             &mut modules,
@@ -911,26 +927,40 @@ pub(super) fn declarations(hir: &Hir, module: &str, version: &str) -> Vec<Extern
     }
     result
 }
-fn canonical_name(name: &str, names: &BTreeMap<String, String>) -> String {
-    let (head, suffix) = name
-        .split_once("::")
-        .map_or((name, None), |(head, suffix)| (head, Some(suffix)));
-    names.get(head).map_or_else(
-        || name.into(),
-        |canonical| {
-            suffix.map_or_else(
-                || canonical.clone(),
-                |suffix| format!("{canonical}::{suffix}"),
-            )
-        },
-    )
+struct TypeNames<'a> {
+    module: &'a BTreeMap<String, String>,
+    prelude: &'a BTreeMap<&'a str, &'a str>,
 }
-fn canonical_hint(hint: &mut TypeHint, names: &BTreeMap<String, String>) {
+
+impl TypeNames<'_> {
+    fn canonical(&self, name: &str) -> String {
+        let (head, suffix) = name
+            .split_once("::")
+            .map_or((name, None), |(head, suffix)| (head, Some(suffix)));
+        let canonical = self
+            .module
+            .get(head)
+            .map(String::as_str)
+            .or_else(|| self.prelude.get(head).copied());
+        match (canonical, suffix) {
+            (Some(canonical), Some(suffix)) => format!("{canonical}::{suffix}"),
+            (Some(canonical), None) => canonical.into(),
+            (None, _) => name.into(),
+        }
+    }
+}
+
+fn canonical_hint(hint: &mut TypeHint, names: &TypeNames<'_>) {
     match hint {
-        TypeHint::Named(name) => *name = canonical_name(name, names),
+        TypeHint::Named(name) => *name = names.canonical(name),
         TypeHint::Tuple(types) | TypeHint::Union(types) => {
             for hint in types {
                 canonical_hint(hint, names);
+            }
+        }
+        TypeHint::Record(fields) => {
+            for (_, ty) in fields {
+                canonical_hint(ty, names);
             }
         }
         TypeHint::Callable(parameters, result) => {
@@ -942,7 +972,7 @@ fn canonical_hint(hint: &mut TypeHint, names: &BTreeMap<String, String>) {
         _ => {}
     }
 }
-fn canonical_symbol(symbol: &mut ExternalSymbol, names: &BTreeMap<String, String>) {
+fn canonical_symbol(symbol: &mut ExternalSymbol, names: &TypeNames<'_>) {
     canonical_hint(&mut symbol.ty, names);
     if let Some(signature) = &mut symbol.signature {
         canonical_hint(&mut signature.result, names);
@@ -956,7 +986,7 @@ fn canonical_symbol(symbol: &mut ExternalSymbol, names: &BTreeMap<String, String
     if let Some(class) = &mut symbol.class {
         let class = Arc::make_mut(class);
         for base in &mut class.bases {
-            *base = canonical_name(base, names);
+            *base = names.canonical(base);
         }
         for member in class.members.iter_mut().chain(&mut class.static_members) {
             canonical_symbol(&mut member.symbol, names);
@@ -1009,7 +1039,7 @@ impl super::patterns::PatternTypes for ExportPatternTypes<'_> {
             TypeHint::Any | TypeHint::Named(_) | TypeHint::Union(_) => Shape::Unknown,
             TypeHint::Tuple(elements) => Shape::Tuple(elements.clone()),
             TypeHint::Array => Shape::Array,
-            TypeHint::Table => Shape::Table,
+            TypeHint::Table | TypeHint::Record(_) => Shape::Table,
             _ => Shape::Other,
         }
     }

@@ -1,15 +1,8 @@
-//! Engine-independent method-call workloads using the real curve host adapter.
-//! Construction is separate from steady execution; timings include VM dispatch,
-//! native adapter work, delivery release and any explicitly interleaved GC.
+//! Exercise curve host methods across VM slices and garbage collections.
 mod support;
 
 use aside_host::{aside_compiler, aside_vm};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
-use std::{alloc::System, fmt::Write as _, time::Instant};
-
-#[global_allocator]
-static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 const SOURCE: &str = r#"
 use std::math::curve;
@@ -77,22 +70,6 @@ struct Fixture {
     vm: Vm,
     library: aside_std::StandardLibrary,
     values: [Value; 3],
-}
-
-struct Row {
-    value: f64,
-    wall_ns: u128,
-    allocations: usize,
-    reallocations: usize,
-    instructions: u64,
-    work: u64,
-    native_entries: u64,
-    native_hits: u64,
-    native_misses: u64,
-    script_hits: u64,
-    script_misses: u64,
-    objects_before: u32,
-    objects_after: u32,
 }
 
 impl Fixture {
@@ -209,16 +186,14 @@ impl Fixture {
         }
     }
 
-    fn run(&mut self, name: &str, n: i64, sliced: bool) -> Row {
+    fn run(&mut self, name: &str, n: i64, sliced: bool) -> (f64, u64) {
         let function = self.function(name);
         let value = self.values[match name {
             "motion" => 1,
             "authored_motion" => 2,
             _ => 0,
         }];
-        let before = self.vm.stats();
-        let region = Region::new(GLOBAL);
-        let start = Instant::now();
+        let native_entries = self.vm.stats().native_entries;
         let task = self
             .vm
             .start(
@@ -236,24 +211,7 @@ impl Fixture {
             .as_float()
             .unwrap();
         self.vm.discard_delivery(delivery).unwrap();
-        let wall_ns = start.elapsed().as_nanos();
-        let allocated = region.change();
-        let after = self.vm.stats();
-        Row {
-            value,
-            wall_ns,
-            allocations: allocated.allocations,
-            reallocations: allocated.reallocations,
-            instructions: after.cumulative_instructions - before.cumulative_instructions,
-            work: after.cumulative_work - before.cumulative_work,
-            native_entries: after.native_entries - before.native_entries,
-            native_hits: after.native_binding_hits - before.native_binding_hits,
-            native_misses: after.native_binding_misses - before.native_binding_misses,
-            script_hits: after.script_binding_hits - before.script_binding_hits,
-            script_misses: after.script_binding_misses - before.script_binding_misses,
-            objects_before: before.heap.live_objects,
-            objects_after: after.heap.live_objects,
-        }
+        (value, self.vm.stats().native_entries - native_entries)
     }
 }
 
@@ -277,50 +235,14 @@ fn curve_method_workloads_preserve_values_across_slices_and_gc() {
         for sliced in [false, true] {
             for name in ["direct", "retained", "motion", "authored_motion"] {
                 fixture.collect();
-                let row = fixture.run(name, 293, sliced);
+                let (value, native_entries) = fixture.run(name, 293, sliced);
                 assert_eq!(
-                    row.value,
+                    value,
                     oracle(name, 293),
                     "{name} sliced={sliced} leaves={leaves}"
                 );
-                assert_eq!(row.native_entries, if leaves { 0 } else { 293 });
+                assert_eq!(native_entries, if leaves { 0 } else { 293 });
             }
         }
     }
-}
-
-#[test]
-#[ignore = "release host-method benchmark; includes actual curve adapter, wall time"]
-fn measure_curve_method_workloads() {
-    assert!(
-        !std::hint::black_box(cfg!(debug_assertions)),
-        "use --release"
-    );
-    let n: i64 = std::env::var("ASIDE_BENCH_N").map_or(2000, |s| s.parse().unwrap());
-    let samples: usize = std::env::var("ASIDE_BENCH_SAMPLES").map_or(9, |s| s.parse().unwrap());
-    assert!((1..=1_000_000).contains(&n) && (1..=1000).contains(&samples));
-    let mut output = String::from(
-        "# construction/compile and pre-sample collection excluded; task/run/native dispatch/delivery included; warmup=3; allocations are process allocator calls, objects are traced VM objects\ncase\tleaves\tsliced\tsample\tn\twall_ns\tallocations\treallocations\tinstructions\twork\tnative_entries\tnative_hits\tnative_misses\tscript_hits\tscript_misses\tobjects_before\tobjects_after\toracle\n",
-    );
-    for leaves in [false, true] {
-        let mut fixture = Fixture::new(leaves);
-        for name in ["direct", "retained", "motion", "authored_motion"] {
-            for sliced in [false, true] {
-                for _ in 0..3 {
-                    fixture.collect();
-                    assert_eq!(fixture.run(name, n, sliced).value, oracle(name, n));
-                }
-                for sample in 0..samples {
-                    fixture.collect();
-                    let r = fixture.run(name, n, sliced);
-                    assert_eq!(r.value, oracle(name, n));
-                    writeln!(output, "{name}\t{leaves}\t{sliced}\t{sample}\t{n}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", r.wall_ns, r.allocations, r.reallocations, r.instructions, r.work, r.native_entries, r.native_hits, r.native_misses, r.script_hits, r.script_misses, r.objects_before, r.objects_after, r.value).unwrap();
-                }
-            }
-        }
-    }
-    if let Ok(path) = std::env::var("ASIDE_BENCH_OUTPUT") {
-        std::fs::write(path, &output).unwrap();
-    }
-    print!("{output}");
 }

@@ -31,7 +31,6 @@ impl StageBinding {
         read_limit: usize,
     ) -> Result<(), AdapterError> {
         let mut updates = Vec::new();
-        let mut virtuals = Vec::new();
         for id in nodes {
             #[cfg(test)]
             {
@@ -43,9 +42,6 @@ impl StageBinding {
                 .ok_or(AdapterError::Input("retired stage node"))?;
             let binding = self.handles.get_mut(&id).unwrap();
             let value = heap.import_handle(binding.handle)?;
-            if matches!(node.kind, NodeKind::VirtualList(_)) {
-                virtuals.push(id);
-            }
             let fields = heap.host_fields(value)?;
             let version = heap.info(fields)?.content_version;
             let selected = if binding.overrides.is_some() {
@@ -55,6 +51,8 @@ impl StageBinding {
             };
             if version == binding.fields_version
                 && !binding.projection_dirty
+                && binding.image_skin.is_none()
+                && !matches!(node.kind, NodeKind::ScrollBar(_))
                 && !super::super::effects::changed(heap, binding.effect_source)?
                 && !mask_changed(heap, binding.mask_source)?
                 && !binding
@@ -66,7 +64,16 @@ impl StageBinding {
             {
                 continue;
             }
+            let mut projected_image = None;
             let (mut kind, offset) = match &node.kind {
+                _ if binding.shape == snapshot::Shape::PageStack => (
+                    NodeKind::Stack,
+                    super::super::pages::PageField::PROPERTIES.len(),
+                ),
+                _ if binding.shape == snapshot::Shape::TabBar => (
+                    super::super::pages::tab_kind(heap, fields, read_limit)?,
+                    super::super::pages::TabField::PROPERTIES.len(),
+                ),
                 NodeKind::Row(_) | NodeKind::Column(_) => (
                     flow::flow_kind(heap, fields, matches!(node.kind, NodeKind::Row(_)))?,
                     flow::FlowField::PROPERTIES.len(),
@@ -80,9 +87,8 @@ impl StageBinding {
                     0,
                 ),
                 NodeKind::Input { bindings, .. } => {
-                    let source = heap.table_entry(fields, 0)?.1;
                     let state = binding.input.as_mut().unwrap();
-                    let bindings = input::replace(heap, value, source, bindings, state)?;
+                    let bindings = input::replace(heap, value, fields, bindings, state)?;
                     (
                         input::kind(heap, fields, bindings)?,
                         input::InputField::PROPERTIES.len(),
@@ -96,13 +102,21 @@ impl StageBinding {
                     scroll::kind(heap, fields)?,
                     scroll::ScrollField::PROPERTIES.len(),
                 ),
-                NodeKind::Popup(_) => (
-                    popup::kind(heap, fields)?,
-                    popup::PopupField::PROPERTIES.len(),
+                NodeKind::ScrollBar(_) => (
+                    scrollbar::kind(heap, fields)?,
+                    scrollbar::ScrollBarField::PROPERTIES.len(),
+                ),
+                NodeKind::Popup(view) => (
+                    popup::kind(heap, fields, view.hint)?,
+                    binding.shape.prefix(),
                 ),
                 NodeKind::Slider { .. } => (
                     controls::slider_kind(heap, fields)?,
                     controls::SliderField::PROPERTIES.len(),
+                ),
+                NodeKind::ProgressBar { .. } => (
+                    controls::progress_kind(heap, fields)?,
+                    controls::ProgressField::PROPERTIES.len(),
                 ),
                 NodeKind::Toggle { appearance, .. } => (
                     controls::toggle_kind(heap, fields, read_limit, *appearance)?,
@@ -211,14 +225,28 @@ impl StageBinding {
                 }
                 NodeKind::Image { source, origin, .. } => {
                     let table = heap.table_read(fields)?;
+                    let raw_source = table.value(0)?;
+                    let raw_rect = table.value(11)?;
+                    let skin = binding.shape == snapshot::Shape::Image
+                        && image_skin::is_skin(heap, raw_source);
+                    let (asset, rect) = if skin {
+                        image_skin::select(heap, raw_source, raw_rect)?
+                    } else {
+                        (raw_source, raw_rect)
+                    };
+                    let asset_handle = heap.handle(asset)?;
+                    projected_image = Some((
+                        asset_handle,
+                        skin.then(|| heap.handle(raw_source)).transpose()?,
+                    ));
                     (
                         NodeKind::Image {
                             source: if binding.shape == snapshot::Shape::Video
-                                || binding.text_source == Some(heap.handle(table.value(0)?)?)
+                                || binding.text_source == Some(asset_handle)
                             {
                                 source.clone()
                             } else {
-                                read_source(heap, table.value(0)?, read_limit)?
+                                read_source(heap, asset, read_limit)?
                             },
                             fit: read_fit(heap, table.value(1)?)?,
                             slice: read_slice(heap, table.value(2)?)?,
@@ -228,7 +256,7 @@ impl StageBinding {
                             corner_colors: read_corner_colors(heap, table.value(6)?)?,
                             slice_center: boolean(table.value(7)?)?,
                             adjustment: read_image_adjustment(heap, fields)?,
-                            source_rect: read_source_rect(heap, table.value(11)?)?,
+                            source_rect: read_source_rect(heap, rect)?,
                             alpha_layout: read_alpha_layout(heap, table.value(12)?)?,
                             sampling: read_sampling(heap, table.value(13)?)?,
                             origin: origin.clone(),
@@ -257,6 +285,7 @@ impl StageBinding {
                 },
             )?;
             overrides::apply_offsets(heap, value, &mut props)?;
+            super::super::pages::semantics(binding.shape, &kind, &mut props);
             validate_text_props(&kind, &props)?;
             if matches!(kind, NodeKind::VirtualList(_)) {
                 validate_virtual_props(&props)?;
@@ -268,9 +297,17 @@ impl StageBinding {
             } else {
                 version
             };
-            updates.push((id, kind, props, version, mask_source, effect_source));
+            updates.push((
+                id,
+                kind,
+                props,
+                version,
+                mask_source,
+                effect_source,
+                projected_image,
+            ));
         }
-        for (id, kind, props, version, mask_source, effect_source) in updates {
+        for (id, kind, props, version, mask_source, effect_source, projected_image) in updates {
             let mut kind = kind;
             let host = heap.import_handle(self.handles[&id].handle)?;
             text_input::project(heap, host, &mut kind)?;
@@ -285,10 +322,12 @@ impl StageBinding {
                     .1,
                 );
             }
-            if matches!(
-                kind,
-                NodeKind::Text(_) | NodeKind::TextInput { .. } | NodeKind::Image { .. }
-            ) {
+            if let Some((asset, skin)) = projected_image {
+                let binding = self.handles.get_mut(&id).unwrap();
+                binding.text_source = Some(asset);
+                self.projection_index.invalid |= binding.image_skin != skin;
+                binding.image_skin = skin;
+            } else if matches!(kind, NodeKind::Text(_) | NodeKind::TextInput { .. }) {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 let source = heap.table_entry(heap.host_fields(value)?, 0)?.1;
                 self.handles.get_mut(&id).unwrap().text_source = Some(heap.handle(source)?);
@@ -314,36 +353,6 @@ impl StageBinding {
             let selected = overrides::selection(heap, host)?;
             binding.interaction_listening =
                 interaction::listening(heap, fields, binding.interaction_offset, selected)?;
-        }
-        for id in virtuals {
-            if let Some(parent) = self.scene.node(id).unwrap().parent {
-                let parent = self.scene.node(parent).unwrap();
-                if !matches!(
-                    parent.kind,
-                    NodeKind::Scroll {
-                        axis: reel_ui::widgets::ScrollAxis::Vertical,
-                        ..
-                    }
-                ) || parent
-                    .children
-                    .iter()
-                    .filter(|id| {
-                        !self
-                            .scene
-                            .node(**id)
-                            .unwrap()
-                            .props
-                            .stretch
-                            .axis(reel_ui::kurbo::Axis::Vertical)
-                    })
-                    .count()
-                    != 1
-                {
-                    return Err(AdapterError::Input(
-                        "virtual list must be the only flow child of a vertical scroll",
-                    ));
-                }
-            }
         }
         Ok(())
     }

@@ -67,6 +67,25 @@ impl FunctionBuilder<'_, '_> {
         let depth = self.expression_depth(n, depth)?;
         let kind = self.l.m.hir().node(n).kind;
         let form = self.l.m.hir().node(n).form;
+        if kind == H::Call
+            && matches!(
+                self.l.m.facts()[n.0 as usize].intrinsic,
+                Some(
+                    crate::semantic::Intrinsic::ResumeFlow
+                        | crate::semantic::Intrinsic::ResumePoint
+                        | crate::semantic::Intrinsic::ResumeState
+                        | crate::semantic::Intrinsic::ResumeRoot
+                )
+            )
+        {
+            if demand != Demand::Discard {
+                return Err(self.l.b.error(
+                    ErrorKind::Unsupported,
+                    "resume declarations must be standalone statements",
+                ));
+            }
+            return Ok(None);
+        }
         if matches!(kind, H::Name | H::Member)
             && let Some(value) = self.l.external_constant(n)?
         {
@@ -329,6 +348,22 @@ impl FunctionBuilder<'_, '_> {
         depth: usize,
         demand: Demand,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
+        if let Form::Spread { value } = self.l.m.hir().node(expression).form {
+            let collector = self
+                .collector
+                .expect("bound children spread has a collector");
+            if let Some(value) = self.value(value, depth)? {
+                self.op(
+                    bc::Opcode::ChildrenSpread,
+                    collector.0,
+                    value.0,
+                    0,
+                    expression,
+                )?;
+                self.release(value)?;
+            }
+            return Ok(None);
+        }
         let collects = self.collector.is_some() && self.collects(expression);
         let value = self.expr_use(
             expression,
@@ -426,6 +461,9 @@ impl FunctionBuilder<'_, '_> {
         let Some(input) = self.value(value, depth)? else {
             return Ok(None);
         };
+        if opcode == bc::Opcode::Await && self.l.resume_calls[n.0 as usize] {
+            self.resume_nominal_guard(input, value, n)?;
+        }
         let out = self.temp()?;
         self.op(opcode, out.0, input.0, 0, n)?;
         self.release(input)?;

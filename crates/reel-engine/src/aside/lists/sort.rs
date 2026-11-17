@@ -202,7 +202,7 @@ impl Output {
         Ok(())
     }
 }
-pub(super) enum Step {
+pub(in crate::aside) enum Step {
     More { state: Value, work: u32 },
     Ready { result: Value, work: u32 },
     Budget { required_work: u32 },
@@ -265,7 +265,7 @@ fn key_step(
 /// Exact insufficient grants retain the original native ticket; RetryMinimum
 /// admits only the first indivisible step. Both buffers and all cursors are VM
 /// values, so GC, cancellation and snapshots use the existing native roots.
-pub(super) fn advance(
+pub(in crate::aside) fn advance(
     heap: &mut Heap,
     entries: Value,
     mut state: Value,

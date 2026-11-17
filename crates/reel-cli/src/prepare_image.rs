@@ -1,5 +1,5 @@
 //! Offline preparation of original images; runtime reads only individual tiles.
-use image::{ImageDecoder, ImageReader, RgbaImage};
+use image::RgbaImage;
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::prepared_image::{PreparedImage, TileEncoding};
 use reel_ui::peniko::color::{ColorSpace, Srgb};
@@ -68,20 +68,7 @@ pub fn prepare_bounded(
     if output.exists() || Path::new(&directory).exists() {
         return Err("output or tile directory already exists; choose a new output path".into());
     }
-    let mut reader = ImageReader::open(source)
-        .map_err(|e| e.to_string())?
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    if !matches!(
-        reader.format(),
-        Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)
-    ) {
-        return Err("original image must be PNG or JPEG".into());
-    }
-    let mut limits = image::Limits::no_limits();
-    limits.max_alloc = Some(memory_bytes);
-    reader.limits(limits);
-    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (decoder, codec_workspace) = reel_player::artwork::open(source, memory_bytes)?;
     let dimensions = decoder.dimensions();
     let manifest = PreparedImage::new(
         dimensions.0,
@@ -93,7 +80,8 @@ pub fn prepare_bounded(
         },
     )?
     .with_first_level(first_level)?;
-    let workspace = workspace(manifest, decoder.total_bytes(), encoding, texture_options)?;
+    let workspace = workspace(manifest, decoder.total_bytes(), encoding, texture_options)?
+        .max(decoder.total_bytes() + codec_workspace);
     let pool = BudgetPool::new(
         BudgetCategory::Temporary,
         QueueLimits {

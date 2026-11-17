@@ -30,6 +30,19 @@ pub struct StringText<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeError;
 
+/// Decode a literal whose value is known without evaluating a script expression.
+pub(crate) fn static_text(hir: &hir::Hir, node: hir::NodeId) -> Option<String> {
+    let literal = StringLiteral::new(hir, node)?;
+    let mut bytes = Vec::new();
+    for part in literal.parts() {
+        let StringPart::Text(text) = part else {
+            return None;
+        };
+        text.append_to(&mut bytes).ok()?;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 impl<'a> StringLiteral<'a> {
     /// Inspect an analyzed string without allocating or copying its source.
     pub fn new(hir: &'a hir::Hir, node: hir::NodeId) -> Option<Self> {

@@ -1002,7 +1002,7 @@ fn existing_owner_count_does_not_block_choice_projection() {
     assert!(ui.session.is_owner_live(ui.source_owner));
 }
 
-fn transaction_projection_work(nodes: usize) -> (usize, u128) {
+fn premature_transaction_projections(nodes: usize) -> usize {
     let code = format!(
         r#"fn main() {{
         let root=stack(); let nodes=[];
@@ -1025,7 +1025,6 @@ fn transaction_projection_work(nodes: usize) -> (usize, u128) {
     .unwrap();
     let (mut bridge, root) = mount(driver.ui());
     let mut premature = 0;
-    let mut sync_us = 0;
     let mut settled = false;
     for _ in 0..100_000 {
         driver
@@ -1046,9 +1045,7 @@ fn transaction_projection_work(nodes: usize) -> (usize, u128) {
         let blocked =
             !driver.adapter().stage_ready() && !driver.adapter().virtual_feedback_boundary();
         let before = driver.adapter().stage().revision();
-        let started = std::time::Instant::now();
         driver.sync(&mut bridge, root).unwrap();
-        sync_us += started.elapsed().as_micros();
         premature += usize::from(blocked && driver.adapter().stage().revision() != before);
         if driver.adapter().stage_ready() && !driver.has_runnable_tasks() {
             let stage = driver.adapter().stage();
@@ -1068,17 +1065,10 @@ fn transaction_projection_work(nodes: usize) -> (usize, u128) {
         }
     }
     assert!(settled, "complete transaction was not published");
-    (premature, sync_us)
+    premature
 }
 
 #[test]
 fn unfinished_script_transactions_defer_property_projection() {
-    assert_eq!(transaction_projection_work(16).0, 0);
-}
-
-#[test]
-#[ignore = "release CPU measurement of UI synchronization across script budget slices"]
-fn transaction_projection_cost() {
-    let (premature, sync_us) = transaction_projection_work(512);
-    println!("transaction_projection nodes=512 passes=4 premature={premature} sync_us={sync_us}");
+    assert_eq!(premature_transaction_projections(16), 0);
 }

@@ -429,6 +429,15 @@ impl VerifiedProgram {
     /// A dispatcher must check its actual implemented opcodes and native registry.
     /// This includes unreachable code: unsupported instructions are never no-ops.
     pub fn require_runtime(&self, support: &RuntimeSupport) -> Result<(), Error> {
+        self.bind_runtime(support, &support.opcodes, |_, _| Ok(()))
+    }
+
+    pub(crate) fn bind_runtime(
+        &self,
+        support: &RuntimeSupport,
+        opcodes: &[Opcode],
+        mut bind_native: impl FnMut(NativeId, &NativeSupport) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let p = &self.0.package;
         let mut b = Budget::new(self.0.limits, self.execution_capacity_bytes());
         for c in &p.capabilities {
@@ -439,7 +448,7 @@ impl VerifiedProgram {
                 ));
             }
         }
-        for native in &p.natives {
+        for (index, native) in p.natives.iter().enumerate() {
             let name = &p.symbols[native.symbol.index()];
             let mut registered = None;
             for n in &support.natives {
@@ -485,14 +494,15 @@ impl VerifiedProgram {
                     "package omitted a capability required by trusted native registration",
                 )?;
             }
+            bind_native(NativeId(index as u32), registered)?;
         }
         // Typed Opcode entries share the frozen u16 domain. Normalize once;
         // dispatch admission does not rescan the host list per instruction.
         let opcode_slots = INSTRUCTION_SPECS.last().expect("opcode table").opcode as usize + 1;
         let mut supported = b.vec::<bool>(opcode_slots)?;
         supported.resize(opcode_slots, false);
-        b.work(support.opcodes.len() as u64)?;
-        for opcode in &support.opcodes {
+        b.work(opcodes.len() as u64)?;
+        for opcode in opcodes {
             supported[*opcode as usize] = true;
         }
         for used in &self.0.opcode_uses {

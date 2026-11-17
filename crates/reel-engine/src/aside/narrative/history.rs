@@ -62,6 +62,55 @@ pub(super) fn line_id(heap: &mut Heap, id: crate::DialogueLineId) -> Result<Valu
 }
 
 impl History {
+    pub(super) fn begin_projection(&mut self, heap: &mut Heap) -> Result<(), AdapterError> {
+        let empty = heap.alloc_array(&[])?;
+        heap.commit_collection(self.value, empty)?;
+        self.groups = 0;
+        self.first_group = None;
+        Ok(())
+    }
+    pub(super) fn project_group(
+        &mut self,
+        heap: &mut Heap,
+        group: &crate::HistoryGroup,
+        lines: Value,
+        locale: Value,
+    ) -> Result<(), AdapterError> {
+        let (name, text) = if heap.sequence_len(lines)? == 0 {
+            let empty = heap.alloc_string("")?;
+            (empty, empty)
+        } else {
+            let first = heap.sequence_get(lines, 0)?;
+            (
+                heap.host_property(PropertyId {
+                    host: first,
+                    field: HistoryLineField::SpeakerName as u32,
+                })?,
+                heap.host_property(PropertyId {
+                    host: first,
+                    field: HistoryLineField::Text as u32,
+                })?,
+            )
+        };
+        let generation = group.interaction_id().generation();
+        let id = Value::int(generation as i64);
+        let row = self.keys.record(
+            heap,
+            &[
+                ("group_id", id),
+                ("interaction_id", id),
+                ("locale", locale),
+                ("lines", lines),
+                ("speaker_name", name),
+                ("text", text),
+            ],
+            &[],
+        )?;
+        heap.array_push(self.value, row)?;
+        self.first_group.get_or_insert(generation);
+        self.groups += 1;
+        Ok(())
+    }
     pub(super) fn update_dialogue(
         &mut self,
         heap: &mut Heap,
@@ -70,12 +119,10 @@ impl History {
         model: Value,
         chunk: usize,
     ) -> Result<(), AdapterError> {
-        let Ok(index) = session
+        let Some(index) = session
             .view()
             .history
-            .binary_search_by_key(&dialogue.id().generation(), |g| {
-                g.interaction_id().generation()
-            })
+            .find_interaction(dialogue.id().generation())
         else {
             return Ok(());
         };
@@ -185,7 +232,9 @@ impl History {
                 }
             }
         }
-        for group in &session.view().history[self.groups..] {
+        let history = session.view().history;
+        for index in self.groups..history.len() {
+            let group = &history[index];
             let lines = array(heap)?;
             let active = if current == Some(group.interaction_id()) {
                 Some(heap.host_payload(dialogue, 0)?)

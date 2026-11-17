@@ -164,6 +164,15 @@ impl Cache {
                 split,
             });
         }
+        let textures = 3 + program.sources().len();
+        let texture_limit = gpu.device.limits().max_sampled_textures_per_shader_stage as usize;
+        if textures > texture_limit {
+            return Err(GpuError::Budget {
+                domain: "mask texture bindings",
+                requested: textures as u64,
+                available: texture_limit as u64,
+            });
+        }
         // Count formatting bytes before allocating the source. Driver-private compiler
         // storage is owned by wgpu; generated source and cache metadata are charged here.
         let mut count = Counter(0);
@@ -194,7 +203,8 @@ impl Cache {
             }
             state.entries.reserve_exact(1);
         }
-        let compiled = pipeline::validated(gpu, || {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::PipelineCreate);
+        let (layout, shader) = pipeline::validation_scope(gpu, || {
             let mut bindings = Vec::with_capacity(8 + program.sources().len());
             bindings.extend([
                 pipeline::texture(0),
@@ -216,50 +226,50 @@ impl Cache {
                     label: Some("mask expression"),
                     entries: &bindings,
                 });
-            let normal = pipeline::pipeline(
+            let shader = pipeline::shader_module(
                 &gpu.device,
-                quality,
-                &layout,
                 &code,
-                false,
                 #[cfg(test)]
                 None,
             );
-            let blend = pipeline::pipeline_entry(
-                &gpu.device,
-                quality,
-                &layout,
-                &code,
-                false,
-                pipeline::FragmentOutput {
-                    entry: "fragment",
-                    blend: None,
-                },
-                #[cfg(test)]
-                None,
-            );
-            let extended_blend = pipeline::pipeline_entry(
-                &gpu.device,
-                quality,
-                &layout,
-                &code,
-                false,
-                pipeline::FragmentOutput {
-                    entry: "extended_blend",
-                    blend: None,
-                },
-                #[cfg(test)]
-                None,
-            );
-            Compiled {
-                layout,
-                normal,
-                blend,
-                extended_blend,
-                split_plan: split.as_ref().map(|split| split.plan.clone()),
-            }
+            (layout, shader)
         })?;
-        let compiled = Arc::new(compiled);
+        let compile = |entry, blend| {
+            pipeline::validation_scope(gpu, || {
+                pipeline::pipeline_module(
+                    &gpu.device,
+                    quality,
+                    &layout,
+                    &shader,
+                    (pipeline::VertexInput::None, "vertex"),
+                    pipeline::FragmentOutput { entry, blend },
+                    #[cfg(test)]
+                    None,
+                )
+            })
+        };
+        let (normal, blend, extended_blend) = std::thread::scope(|scope| {
+            let normal = scope.spawn(|| {
+                compile(
+                    "fragment",
+                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                )
+            });
+            let extended_blend = scope.spawn(|| compile("extended_blend", None));
+            let blend = compile("fragment", None);
+            (
+                normal.join().unwrap(),
+                blend,
+                extended_blend.join().unwrap(),
+            )
+        });
+        let compiled = Arc::new(Compiled {
+            layout,
+            normal: normal?,
+            blend: blend?,
+            extended_blend: extended_blend?,
+            split_plan: split.as_ref().map(|split| split.plan.clone()),
+        });
         state.entries.push(Entry {
             builtin,
             split: split.is_some(),

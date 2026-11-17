@@ -372,6 +372,12 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     let first = player.backend.inner.last_submission().unwrap();
     assert!(player.backend.inner.complete_render(first));
     player.poll_completions().unwrap();
+    let configurations = player.backend.configurations.len();
+    let metrics = host.metrics;
+    player.resize(&mut host, metrics).unwrap();
+    assert_eq!(player.backend.configurations.len(), configurations);
+    assert_eq!(player.presentation.bridge.accepted_key(), Some(&accepted));
+    assert!(!player.needs_redraw());
     // Unbound analogue input still reaches the shared input path, without
     // rebuilding an unchanged accepted frame on each controller sample.
     for index in 0..120 {
@@ -422,6 +428,9 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     player.render(&mut host).unwrap();
     assert!(player.presentation.is_preparing());
     let preparing = *player.backend.frames.last().unwrap();
+    player.resize(&mut host, metrics).unwrap();
+    assert!(player.presentation.is_preparing());
+    assert!(player.backend.cancelled.is_empty());
     player.suspend(&mut host).unwrap();
     assert_eq!(player.backend.cancelled, [preparing]);
     assert!(!player.presentation.is_preparing());
@@ -434,6 +443,13 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     let metrics = host.metrics;
     player.resize(&mut host, metrics).unwrap();
     assert_eq!(player.backend.configurations.len(), configurations);
+    let suspended_epoch = player.presentation.surface_info().surface_epoch;
+    player.resize(&mut host, metrics).unwrap();
+    assert_eq!(
+        player.presentation.surface_info().surface_epoch,
+        suspended_epoch
+    );
+    assert!(player.presentation.is_suspended());
     player.render(&mut host).unwrap();
     assert_eq!(host.presents, 2);
     assert!(player.presentation.bridge.accepted_key().is_none());

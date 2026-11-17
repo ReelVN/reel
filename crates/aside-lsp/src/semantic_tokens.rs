@@ -548,7 +548,6 @@ mod tests {
         CallEffect, ExternalMember, ExternalSignature, SymbolReference,
     };
     use lsp_types::{Position, TextDocumentContentChangeEvent};
-    use std::time::Instant;
 
     fn uri() -> Uri {
         "untitled:tokens.aside".parse().unwrap()
@@ -950,32 +949,5 @@ mod tests {
             .send(Notification::new("exit".into(), Value::Null).into())
             .unwrap();
         task.join().unwrap();
-    }
-
-    #[test]
-    #[ignore = "reproducible token-query cost measurement"]
-    fn measure_long_line_cached_queries() {
-        for count in [100, 1_000, 10_000] {
-            let source = format!("fn main(){{let value=1; {} }}", "value;".repeat(count));
-            let mut workspace = Workspace::new(ServerOptions::default());
-            workspace.open(uri(), 1, source.clone()).unwrap();
-            workspace.snapshot(&uri()).unwrap();
-            let started = Instant::now();
-            let mut words = 0;
-            for _ in 0..20 {
-                let tokens = workspace.semantic_tokens(&uri(), Encoding::Utf16).unwrap();
-                assert_eq!(tokens.data.len(), count + 2);
-                words = tokens.data.len() * 5;
-            }
-            eprintln!(
-                "semantic tokens: source_bytes={}, names={}, response_u32s={}, queries=20, elapsed_us={}, analyses={}",
-                source.len(),
-                count + 2,
-                words,
-                started.elapsed().as_micros(),
-                workspace.analyses
-            );
-            assert_eq!(workspace.analyses, 1);
-        }
     }
 }

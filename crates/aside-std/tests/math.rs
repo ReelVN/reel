@@ -17,6 +17,8 @@ fn main() {
 fn untyped(value) {value}
 fn invalid() {pow(untyped("wrong"),2)}
 fn convert(value) -> int {to_int(value)}
+fn limit(value, minimum, maximum) {clamp(value, minimum, maximum)}
+fn extrema(a, b) { (min(a, b), max(a, b)) }
 "#;
 
 fn drive(
@@ -105,6 +107,8 @@ fn math_preserves_numeric_contracts_without_allocation_and_reports_source_errors
         let main = function("main");
         let invalid = function("invalid");
         let convert = function("convert");
+        let limit = function("limit");
+        let extrema = function("extrema");
         let mut support =
             aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
         if !leaves {
@@ -164,6 +168,63 @@ fn math_preserves_numeric_contracts_without_allocation_and_reports_source_errors
             );
         }
         vm.discard_delivery(id).unwrap();
+        let precise = Value::int(9_007_199_254_740_993);
+        let rounded = Value::float(9_007_199_254_740_992.);
+        let zero = Value::int(0);
+        let one = Value::int(1);
+        let fraction = Value::float(0.5);
+        let nan = Value::float(f64::NAN);
+        let negative_zero = Value::float(-0.0);
+        for (args, expected) in [
+            ([precise, rounded], [rounded, precise]),
+            ([zero, negative_zero], [zero, zero]),
+            ([negative_zero, zero], [negative_zero, negative_zero]),
+            ([nan, one], [one, one]),
+            ([one, nan], [one, one]),
+        ] {
+            let task = vm
+                .start(extrema, &args, RootOwner(1), bc::Context::Ordinary)
+                .unwrap();
+            let RunOutcome::Returned(id) = drive(&mut vm, &mut library, task, false) else {
+                panic!("extrema: {args:?}")
+            };
+            let values = vm.delivery_value(id).unwrap();
+            for (index, expected) in expected.into_iter().enumerate() {
+                let value = vm.heap().sequence_get(values, index as u32).unwrap();
+                assert!(value.same_bits(expected));
+            }
+            vm.discard_delivery(id).unwrap();
+        }
+        for (args, expected) in [
+            ([fraction, zero, one], Some(fraction)),
+            ([precise, zero, rounded], Some(rounded)),
+            ([rounded, precise, Value::int(i64::MAX)], Some(precise)),
+            ([nan, zero, one], Some(nan)),
+            ([zero, one, zero], None),
+            ([zero, nan, one], None),
+        ] {
+            let task = vm
+                .start(limit, &args, RootOwner(1), bc::Context::Ordinary)
+                .unwrap();
+            let id = match (
+                drive(&mut vm, &mut library, task, expected.is_some()),
+                expected,
+            ) {
+                (RunOutcome::Returned(id), Some(expected)) => {
+                    assert!(vm.delivery_value(id).unwrap().same_bits(expected));
+                    id
+                }
+                (RunOutcome::Fault(id), None) => {
+                    assert_eq!(
+                        vm.delivery_fault(id).unwrap().unwrap().code,
+                        aside_vm::FaultCode::core(FaultKind::Type)
+                    );
+                    id
+                }
+                (outcome, expected) => panic!("clamp {args:?}: {outcome:?}, expected {expected:?}"),
+            };
+            vm.discard_delivery(id).unwrap();
+        }
         for (input, expected) in [
             (Value::int(i64::MIN), Some(i64::MIN)),
             (Value::int(i64::MAX), Some(i64::MAX)),

@@ -1,7 +1,7 @@
 //! Observable presentation hints for the host's current input devices.
 use super::{AdapterError, HostResponse, HostTicket, SessionVm, observable};
-use aside_vm::{RootKind, RootToken};
-use reel_ui::input::InputHints;
+use aside_vm::{Heap, RootKind, RootToken, Value};
+use reel_ui::input::{GamepadLayout, InputHints};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -9,6 +9,35 @@ pub(super) struct State {
     current: InputHints,
 }
 const TYPE: &str = "reel::types::InputInfo";
+const LABELS: &str = "reel::types::GamepadLabels";
+const BUTTONS: [&str; 10] = [
+    "South",
+    "East",
+    "North",
+    "West",
+    "LeftShoulder",
+    "RightShoulder",
+    "LeftTrigger",
+    "RightTrigger",
+    "Select",
+    "Start",
+];
+
+fn buttons(heap: &mut Heap, layout: GamepadLayout) -> Result<Value, AdapterError> {
+    let labels = match layout {
+        GamepadLayout::Xbox => ["A", "B", "Y", "X", "LB", "RB", "LT", "RT", "View", "Menu"],
+        GamepadLayout::PlayStation => [
+            "Cross", "Circle", "Triangle", "Square", "L1", "R1", "L2", "R2", "Select", "Start",
+        ],
+        GamepadLayout::Nintendo => ["B", "A", "X", "Y", "L", "R", "ZL", "ZR", "−", "+"],
+        GamepadLayout::Generic => BUTTONS,
+    };
+    let mut fields = [("", Value::NULL); BUTTONS.len()];
+    for ((field, name), label) in fields.iter_mut().zip(BUTTONS).zip(labels) {
+        *field = (name, heap.alloc_string(label)?);
+    }
+    Ok(observable::record(heap, &fields, &[])?)
+}
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Return shared read-only input hints. Fields are observable, so bind or
@@ -21,7 +50,24 @@ aside_host::native_documentation! {
 pub(super) fn describe(api: &mut aside_host::source::Api) {
     use aside_compiler::semantic::TypeHint;
     use aside_host::source::{Member, NamedType, named};
-    let fields = [
+    api.types.push(NamedType::new(
+        LABELS,
+        "Read-only display labels indexed by logical gamepad button name.",
+        BUTTONS
+            .into_iter()
+            .map(|button| {
+                Member::field(
+                    LABELS,
+                    button,
+                    TypeHint::String,
+                    None,
+                    "Display label for this physical button.",
+                    None,
+                )
+            })
+            .collect(),
+    ));
+    let mut fields: Vec<_> = [
         (
             "source",
             "Last active input: unknown, keyboard, mouse, touch, pen or gamepad. Initially unknown.",
@@ -30,14 +76,18 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             "layout",
             "Recognized gamepad labels: xbox, playstation or nintendo. Generic for unknown controllers and other input sources. The game supplies icons.",
         ),
-    ];
+    ].into_iter()
+        .map(|(name, doc)| Member::field(TYPE, name, TypeHint::String, None, doc, None))
+        .collect();
+    fields.push(Member::field(
+        TYPE, "buttons", named(LABELS), None,
+        "Gamepad display labels for the active layout. Bind through this field to update when the layout changes.",
+        None,
+    ));
     api.types.push(NamedType::new(
         TYPE,
         "Current host input hints; refreshed after loading a save.",
-        fields
-            .into_iter()
-            .map(|(name, doc)| Member::field(TYPE, name, TypeHint::String, None, doc, None))
-            .collect(),
+        fields,
     ));
     api.refine("reel::stage::input", named(TYPE), &[]);
 }
@@ -68,6 +118,11 @@ impl SessionVm {
                     observable::publish(heap, value, index as u32, text)?;
                 }
             }
+            if self.input_hints.current.layout != hints.layout {
+                let labels = buttons(heap, hints.layout)?;
+                self.stage.types.mark(heap, labels, LABELS)?;
+                observable::publish(heap, value, 2, labels)?;
+            }
         }
         self.input_hints.current = hints;
         Ok(true)
@@ -81,6 +136,9 @@ impl SessionVm {
                 let text = heap.alloc_string(text)?;
                 observable::publish(heap, value, field as u32, text)?;
             }
+            let labels = buttons(heap, GamepadLayout::Generic)?;
+            self.stage.types.mark(heap, labels, LABELS)?;
+            observable::publish(heap, value, 2, labels)?;
         }
         self.input_hints.current = InputHints::default();
         Ok(())
@@ -92,7 +150,13 @@ impl SessionVm {
         } else {
             let source = heap.alloc_string(self.input_hints.current.source.as_str())?;
             let layout = heap.alloc_string(self.input_hints.current.layout.as_str())?;
-            let value = observable::record(heap, &[("source", source), ("layout", layout)], &[])?;
+            let labels = buttons(heap, self.input_hints.current.layout)?;
+            self.stage.types.mark(heap, labels, LABELS)?;
+            let value = observable::record(
+                heap,
+                &[("source", source), ("layout", layout), ("buttons", labels)],
+                &[],
+            )?;
             self.stage.types.mark(heap, value, TYPE)?;
             self.input_hints.root = Some(heap.add_root(self.root_owner, RootKind::Host, value)?);
             value

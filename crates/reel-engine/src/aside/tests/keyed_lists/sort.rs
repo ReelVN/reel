@@ -1,5 +1,54 @@
 use super::*;
 use aside_vm::{ValueTag, snapshot::SnapshotBudget};
+
+#[test]
+fn object_key_sort_merge_restores_without_replaying_completed_callbacks() {
+    for virtualized in [false, true] {
+        let code = format!(
+            r#"
+        let mut keys=0;
+        fn opening() {{
+            stage.replace(text("kept"));
+            let original=[];for i in 0..5 {{original.append({{id:i}});}}
+            let items=[original[3],original[0],original[4],original[1],original[2]];
+            let rows=list(||items,key:|item|{{keys+=1;item}},virtual:{virtualized},
+                build:|row|button(f"key {{row.value.id}}",height:40));
+            stage.replace(rows);
+            if keys!=5 {{throw "object key callback replayed";}}
+            narrator("ready");
+        }}"#
+        );
+        let (mut session, mut vm) = models::prepared(&code, true);
+        let ticket = at_sort(&mut vm, &mut session, virtualized, Checkpoint::Merge);
+        let entries = vm.vm.host_continuation(ticket).unwrap()[3];
+        let keys: Vec<_> = (0..vm.vm.heap().sequence_len(entries).unwrap())
+            .map(|i| {
+                let entry = vm.vm.heap().sequence_get(entries, i).unwrap();
+                vm.vm.heap().sequence_get(entry, 0).unwrap()
+            })
+            .collect();
+        super::object_restore::reverse_key_roots(&mut vm, &keys);
+        vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+            .unwrap();
+        collect(&mut vm);
+        let (mut session, mut vm) = super::object_restore::restore(&mut vm, &session);
+        drive(&mut vm, &mut session, true);
+        let index =
+            super::object_restore::index(&vm, super::object_restore::list(&vm, virtualized));
+        let keys: Vec<_> = (0..vm.vm.heap().sequence_len(index).unwrap())
+            .map(|i| {
+                let entry = vm.vm.heap().sequence_get(index, i).unwrap();
+                vm.vm.heap().sequence_get(entry, 0).unwrap()
+            })
+            .collect();
+        assert_eq!(keys.len(), 5);
+        assert!(keys.windows(2).all(|pair| {
+            crate::aside::keys::compare(vm.vm.heap(), pair[0], pair[1], 256)
+                .unwrap()
+                .is_lt()
+        }));
+    }
+}
 fn prepared(virtualized: bool, encoded: bool) -> (Session, SessionVm) {
     let prefix = "共同前缀".repeat(128);
     models::prepared(

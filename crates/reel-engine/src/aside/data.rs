@@ -6,6 +6,12 @@ use aside_vm::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
+mod bindings;
+mod typed;
+pub use typed::{
+    LogicalReference, LogicalReferences, NoReferences, TypedCapture, TypedDataError, TypedDocument,
+    TypedRestore,
+};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 enum Atom {
@@ -78,16 +84,20 @@ impl DataDocument {
         if !tail.is_empty() {
             return Err("trailing system record data".into());
         }
+        document.validate()?;
+        Ok(document)
+    }
+    fn validate(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let check = |atom: Atom| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Atom::Object(id) = atom
-                && id as usize >= document.objects.len()
+                && id as usize >= self.objects.len()
             {
                 return Err("invalid system data reference".into());
             }
             Ok(())
         };
-        check(document.root)?;
-        for object in &document.objects {
+        check(self.root)?;
+        for object in &self.objects {
             match object {
                 Object::String(bytes) => {
                     std::str::from_utf8(bytes)?;
@@ -106,8 +116,8 @@ impl DataDocument {
                 }
             }
         }
-        document.payload_bytes = document.objects.iter().map(Object::bytes).sum();
-        Ok(document)
+        self.payload_bytes = self.objects.iter().map(Object::bytes).sum();
+        Ok(())
     }
 }
 
@@ -122,12 +132,23 @@ pub(super) struct Capture {
     sources: Vec<Source>,
     ids: HashMap<HeapHandle, u32>,
     names: HashMap<SymbolId, u32>,
+    resource_names: HashMap<std::borrow::Cow<'static, str>, u32>,
+    bindings: Vec<usize>,
+    binding_cursor: usize,
     cursor: usize,
     validation: usize,
     charge: HeapReservation,
+    typed: Option<typed::CaptureState>,
 }
 impl Capture {
     pub fn new(heap: &Heap, value: Value) -> Result<Self, AdapterError> {
+        Self::new_inner(heap, value, None)
+    }
+    fn new_inner(
+        heap: &Heap,
+        value: Value,
+        context: Option<&typed::Context<'_>>,
+    ) -> Result<Self, AdapterError> {
         let mut capture = Self {
             document: DataDocument {
                 root: Atom::Null,
@@ -137,14 +158,23 @@ impl Capture {
             sources: Vec::new(),
             ids: HashMap::new(),
             names: HashMap::new(),
+            resource_names: HashMap::new(),
+            bindings: Vec::new(),
+            binding_cursor: 0,
             cursor: 0,
             validation: 0,
             charge: heap.budget_usage().reserve(size_of::<Self>() as u64)?,
+            typed: context.map(|_| typed::CaptureState::default()),
         };
-        capture.document.root = capture.atom(heap, value)?;
+        capture.document.root = capture.atom(heap, value, context)?;
         Ok(capture)
     }
-    fn atom(&mut self, heap: &Heap, value: Value) -> Result<Atom, AdapterError> {
+    fn atom(
+        &mut self,
+        heap: &Heap,
+        value: Value,
+        context: Option<&typed::Context<'_>>,
+    ) -> Result<Atom, AdapterError> {
         Ok(match value.tag() {
             ValueTag::Null => Atom::Null,
             ValueTag::Bool => Atom::Bool(value.as_bool().unwrap()),
@@ -156,19 +186,43 @@ impl Capture {
                     return Ok(Atom::Object(id));
                 }
                 let info = heap.info(value)?;
-                let len = if info.kind == ObjectKind::Instance {
+                let reference = if info.kind == ObjectKind::PropertyRef && context.is_some() {
+                    Some(LogicalReference {
+                        kind: "aside.property".into(),
+                        version: 1,
+                        fields: 1,
+                        payload: Vec::new(),
+                    })
+                } else {
+                    context
+                        .and_then(|c| c.references.capture(heap, value))
+                        .transpose()
+                        .map_err(|e| {
+                            if let Some(context) = context {
+                                context.error.replace(Some(e));
+                            }
+                            AdapterError::Input("logical reference capture failed")
+                        })?
+                };
+                let len = if let Some(reference) = &reference {
+                    reference.fields
+                } else if info.kind == ObjectKind::Instance {
                     heap.instance_field_count(value)?
                 } else {
                     info.len
                 } as usize;
-                let unit = match info.kind {
-                    ObjectKind::String | ObjectKind::Bytes => 1,
-                    ObjectKind::Array | ObjectKind::Tuple => size_of::<Atom>(),
-                    ObjectKind::Table | ObjectKind::Instance => size_of::<(Atom, Atom)>(),
-                    _ => {
-                        return Err(AdapterError::Input(
-                            "persistent data requires data values; convert buffers, executable values and host resources first",
-                        ));
+                let unit = if reference.is_some() {
+                    size_of::<(Atom, Atom)>()
+                } else {
+                    match info.kind {
+                        ObjectKind::String | ObjectKind::Bytes => 1,
+                        ObjectKind::Array | ObjectKind::Tuple => size_of::<Atom>(),
+                        ObjectKind::Table | ObjectKind::Instance => size_of::<(Atom, Atom)>(),
+                        _ => {
+                            return Err(AdapterError::Input(
+                                "persistent data requires data values; convert buffers, executable values and host resources first",
+                            ));
+                        }
                     }
                 };
                 // Include growing descriptor vectors, hash buckets and their old allocations.
@@ -185,16 +239,36 @@ impl Capture {
                         .map_err(|_| AdapterError::Allocation)?;
                     Ok(v)
                 }
-                let object = match info.kind {
-                    ObjectKind::String => Object::String(buffer(len)?),
-                    ObjectKind::Bytes => Object::Bytes(buffer(len)?),
-                    ObjectKind::Array => Object::Array(buffer(len)?),
-                    ObjectKind::Tuple => Object::Tuple(buffer(len)?),
-                    ObjectKind::Table | ObjectKind::Instance => Object::Table(buffer(len)?),
-                    _ => unreachable!(),
+                let object = if reference.is_some() {
+                    Object::Table(buffer(len)?)
+                } else {
+                    match info.kind {
+                        ObjectKind::String => Object::String(buffer(len)?),
+                        ObjectKind::Bytes => Object::Bytes(buffer(len)?),
+                        ObjectKind::Array => Object::Array(buffer(len)?),
+                        ObjectKind::Tuple => Object::Tuple(buffer(len)?),
+                        ObjectKind::Table | ObjectKind::Instance => Object::Table(buffer(len)?),
+                        _ => unreachable!(),
+                    }
                 };
                 let id = u32::try_from(self.document.objects.len())
                     .map_err(|_| AdapterError::Allocation)?;
+                if let (Some(state), Some(context)) = (&mut self.typed, context) {
+                    state
+                        .record(
+                            heap,
+                            context,
+                            value,
+                            info.kind,
+                            id,
+                            reference,
+                            &mut self.charge,
+                        )
+                        .map_err(|e| {
+                            context.error.replace(Some(e.into()));
+                            AdapterError::Input("typed State capture contract failed")
+                        })?;
+                }
                 self.ids
                     .try_reserve(1)
                     .map_err(|_| AdapterError::Allocation)?;
@@ -214,6 +288,9 @@ impl Capture {
                     object: id,
                 });
                 self.ids.insert(handle, id);
+                if info.kind == ObjectKind::Host {
+                    self.watch_cell(heap, heap.host_fields(value)?)?;
+                }
                 Atom::Object(id)
             }
         })
@@ -271,14 +348,52 @@ impl Capture {
         });
         Ok(())
     }
+    fn resource_name(
+        &mut self,
+        name: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Result<Atom, AdapterError> {
+        let name = name.into();
+        if let Some(&id) = self.resource_names.get(name.as_ref()) {
+            return Ok(Atom::Object(id));
+        }
+        self.charge
+            .resize(self.charge.bytes() + (name.len() + 4 * (size_of::<Object>() + 32)) as u64)?;
+        let id =
+            u32::try_from(self.document.objects.len()).map_err(|_| AdapterError::Allocation)?;
+        self.resource_names
+            .try_reserve(1)
+            .map_err(|_| AdapterError::Allocation)?;
+        self.document
+            .objects
+            .try_reserve(1)
+            .map_err(|_| AdapterError::Allocation)?;
+        let bytes = name.as_bytes().to_vec();
+        self.document.payload_bytes += bytes.capacity();
+        self.document.objects.push(Object::String(bytes));
+        self.resource_names.insert(name, id);
+        Ok(Atom::Object(id))
+    }
     pub fn step(
         &mut self,
         heap: &Heap,
         work: u32,
         chunk: usize,
     ) -> Result<(bool, u32), AdapterError> {
+        self.step_inner(heap, work, chunk, None)
+    }
+    fn step_inner(
+        &mut self,
+        heap: &Heap,
+        work: u32,
+        chunk: usize,
+        context: Option<&typed::Context<'_>>,
+    ) -> Result<(bool, u32), AdapterError> {
         for used in 1..=work {
             if self.cursor == self.sources.len() {
+                if self.binding_cursor < self.bindings.len() {
+                    self.capture_binding(heap, context.unwrap())?;
+                    continue;
+                }
                 if self.validation == self.sources.len() {
                     return Ok((true, used));
                 }
@@ -298,6 +413,16 @@ impl Capture {
                 ));
             }
             let object = source.object as usize;
+            if heap.info(source.value)?.kind == ObjectKind::PropertyRef {
+                self.bindings
+                    .try_reserve(1)
+                    .map_err(|_| AdapterError::Allocation)?;
+                self.charge
+                    .resize(self.charge.bytes() + (4 * size_of::<usize>()) as u64)?;
+                self.bindings.push(self.cursor);
+                self.cursor += 1;
+                continue;
+            }
             if source.len == 0 || self.document.objects[object].len() == source.len as usize {
                 self.cursor += 1;
                 continue;
@@ -312,26 +437,67 @@ impl Capture {
                     bytes.extend_from_slice(&buffer[..n]);
                 }
                 Object::Table(_) => {
-                    let (key, value) = if heap.info(value)?.kind == ObjectKind::Instance {
+                    let resource = self
+                        .typed
+                        .as_ref()
+                        .is_some_and(|state| state.has_resource(source.object));
+                    let (key, value) = if resource {
+                        let context = context
+                            .ok_or(AdapterError::Input("logical resource adapter is missing"))?;
+                        let (name, field) = context
+                            .references
+                            .capture_field(heap, value, offset as u32)
+                            .map_err(|e| {
+                                context.error.replace(Some(e));
+                                AdapterError::Input("logical resource field capture failed")
+                            })?;
+                        (self.resource_name(name)?, field)
+                    } else if heap.info(value)?.kind == ObjectKind::Instance {
                         let field = heap.instance_field(value, offset as u32)?;
                         let (key, complete) = self.field_name(&field, chunk)?;
                         if !complete {
                             continue;
                         }
                         self.watch_cell(heap, field.cell)?;
+                        if let (Some(state), Some(context)) = (&mut self.typed, context) {
+                            state
+                                .field(heap, context, value, offset, &mut self.charge)
+                                .map_err(|e| {
+                                    context.error.replace(Some(e.into()));
+                                    AdapterError::Input("typed State field contract failed")
+                                })?;
+                        }
                         (key, heap.cell_read(field.cell)?)
                     } else {
                         let (key, value) = heap.table_entry(value, offset as u32)?;
-                        (self.atom(heap, key)?, value)
+                        (self.atom(heap, key, context)?, value)
                     };
-                    let value = self.atom(heap, value)?;
+                    let value = self.atom(heap, value, context).map_err(|e| {
+                        if let Some(context) = context {
+                            let key_name = match key {
+                                Atom::Object(id) => match &self.document.objects[id as usize] {
+                                    Object::String(v) => String::from_utf8_lossy(v).into_owned(),
+                                    _ => format!("[{offset}]"),
+                                },
+                                _ => format!("[{offset}]"),
+                            };
+                            if context.error.borrow().is_none() {
+                                context.error.replace(Some(typed::TypedDataError::Field {
+                                    path: format!("object[{object}].{key_name}"),
+                                    reason: e.to_string(),
+                                }));
+                            }
+                        }
+                        e
+                    })?;
                     let Object::Table(entries) = &mut self.document.objects[object] else {
                         unreachable!()
                     };
                     entries.push((key, value));
                 }
                 Object::Array(_) | Object::Tuple(_) => {
-                    let value = self.atom(heap, heap.sequence_get(value, offset as u32)?)?;
+                    let value =
+                        self.atom(heap, heap.sequence_get(value, offset as u32)?, context)?;
                     let (Object::Array(values) | Object::Tuple(values)) =
                         &mut self.document.objects[object]
                     else {
@@ -344,16 +510,23 @@ impl Capture {
         Ok((false, work))
     }
     pub fn finish(self) -> Result<(Arc<DataDocument>, HeapReservation), AdapterError> {
+        self.finish_inner(0)
+    }
+    fn finish_inner(
+        self,
+        extra: u64,
+    ) -> Result<(Arc<DataDocument>, HeapReservation), AdapterError> {
         let Self {
             document,
             sources,
             ids,
             names,
+            resource_names,
             mut charge,
             ..
         } = self;
-        drop((sources, ids, names));
-        charge.resize(document.retained_bytes() + (2 * size_of::<usize>()) as u64)?;
+        drop((sources, ids, names, resource_names));
+        charge.resize(document.retained_bytes() + (2 * size_of::<usize>()) as u64 + extra)?;
         Ok((Arc::new(document), charge))
     }
 }
@@ -394,20 +567,49 @@ impl Restore {
         })
     }
     pub fn step(&mut self, heap: &mut Heap, work: u32, chunk: usize) -> Result<bool, AdapterError> {
+        self.step_inner(heap, work, chunk, None)
+    }
+    fn step_inner(
+        &mut self,
+        heap: &mut Heap,
+        work: u32,
+        chunk: usize,
+        mut context: Option<(&mut typed::RestoreState, &typed::Context<'_>)>,
+    ) -> Result<bool, AdapterError> {
         let values = heap.root_value(self.root)?;
         for _ in 0..work {
             let len = heap.sequence_len(values)? as usize;
             if len < self.document.objects.len() {
-                let value = match self.document.objects[len] {
-                    Object::String(_) | Object::Bytes(_) => heap.alloc_byte_buffer(&[])?,
-                    Object::Array(_) | Object::Tuple(_) => heap.alloc_array(&[])?,
-                    Object::Table(_) => heap.alloc_table()?,
+                let special = if let Some((state, context)) = context.as_mut() {
+                    state.allocate(heap, len as u32, context).map_err(|e| {
+                        state.error = Some(e);
+                        AdapterError::Input("typed State allocation failed")
+                    })?
+                } else {
+                    None
+                };
+                let value = if let Some(value) = special {
+                    value
+                } else {
+                    match self.document.objects[len] {
+                        Object::String(_) | Object::Bytes(_) => heap.alloc_byte_buffer(&[])?,
+                        Object::Array(_) | Object::Tuple(_) => heap.alloc_array(&[])?,
+                        Object::Table(_) => heap.alloc_table()?,
+                    }
                 };
                 heap.array_push(values, value)?;
                 continue;
             }
             if self.cursor == len {
                 if self.sealing {
+                    if let Some((state, context)) = context.as_mut()
+                        && !state.complete(heap, values, context).map_err(|e| {
+                            state.error = Some(e);
+                            AdapterError::Input("typed State finalization failed")
+                        })?
+                    {
+                        continue;
+                    }
                     return Ok(true);
                 }
                 self.sealing = true;
@@ -423,7 +625,27 @@ impl Restore {
                     Object::Tuple(_) => heap.seal_tuple(value)?,
                     _ => {}
                 }
+                if let Some((state, _)) = context.as_mut() {
+                    state.seal(heap, values, self.cursor as u32).map_err(|e| {
+                        state.error = Some(e);
+                        AdapterError::Input("typed State sealing failed")
+                    })?;
+                }
                 self.cursor += 1;
+                continue;
+            }
+            if let (Some((state, context)), Object::Table(entries)) = (context.as_mut(), object)
+                && let Some(done) = state
+                    .fill(heap, values, self.cursor as u32, entries, context)
+                    .map_err(|e| {
+                        state.error = Some(e);
+                        AdapterError::Input("typed State field restoration failed")
+                    })?
+            {
+                if done {
+                    self.cursor += 1;
+                    self.offset = 0;
+                }
                 continue;
             }
             if self.offset == object.len() {

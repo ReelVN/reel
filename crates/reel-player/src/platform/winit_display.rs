@@ -5,7 +5,7 @@ use reel_core::window::{
 use std::sync::Arc;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
-    dpi::LogicalSize,
+    dpi::PhysicalSize,
     monitor::MonitorHandle,
     window::{Fullscreen, Window},
 };
@@ -17,15 +17,14 @@ struct Pending {
 pub(super) struct WindowDisplay {
     windowed: WindowSize,
     monitor: Option<MonitorHandle>,
-    scale: f64,
     resolutions: Arc<[WindowSize]>,
     pending: Option<Pending>,
 }
 fn size(window: &Window) -> WindowSize {
-    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+    let size = window.inner_size();
     WindowSize {
-        width: size.width,
-        height: size.height,
+        width: f64::from(size.width),
+        height: f64::from(size.height),
     }
 }
 fn platform() -> WindowPlatform {
@@ -45,16 +44,17 @@ fn platform() -> WindowPlatform {
         WindowPlatform::Unknown
     }
 }
+fn physical_size(desired: WindowSize) -> PhysicalSize<u32> {
+    PhysicalSize::new(desired.width.round() as u32, desired.height.round() as u32)
+}
 fn matches_size(window: &Window, desired: WindowSize) -> bool {
-    window.inner_size()
-        == LogicalSize::new(desired.width, desired.height).to_physical::<u32>(window.scale_factor())
+    window.inner_size() == physical_size(desired)
 }
 impl WindowDisplay {
     pub(super) fn new(window: &Window) -> Self {
         Self {
             windowed: size(window),
             monitor: None,
-            scale: 0.,
             resolutions: Arc::from([]),
             pending: None,
         }
@@ -62,16 +62,16 @@ impl WindowDisplay {
     pub(super) fn info(&mut self, window: &Window) -> WindowInfo {
         let monitor = window.current_monitor();
         let scale = window.scale_factor();
-        if self.monitor != monitor || self.scale != scale {
+        if self.monitor != monitor {
             let mut resolutions: Vec<_> = monitor
                 .as_ref()
                 .into_iter()
                 .flat_map(|monitor| monitor.video_modes())
                 .map(|mode| {
-                    let size = mode.size().to_logical::<f64>(scale);
+                    let size = mode.size();
                     WindowSize {
-                        width: size.width,
-                        height: size.height,
+                        width: f64::from(size.width),
+                        height: f64::from(size.height),
                     }
                 })
                 .collect();
@@ -83,7 +83,6 @@ impl WindowDisplay {
             resolutions.dedup();
             self.resolutions = resolutions.into();
             self.monitor = monitor;
-            self.scale = scale;
         }
         let fullscreen = window.fullscreen().is_some();
         let current = size(window);
@@ -162,19 +161,16 @@ impl WindowDisplay {
         }
         if !fullscreen && (change.width.is_some() || change.height.is_some()) {
             let desired = self.windowed;
-            // Logical dimensions may round to the existing physical size. In
+            // Requested dimensions may round to the existing physical size. In
             // that case the platform need not emit another resize event.
             if matches_size(window, desired) {
                 self.windowed = size(window);
                 return Ok(true);
             }
-            if let Some(actual) =
-                window.request_inner_size(LogicalSize::new(desired.width, desired.height))
-            {
-                let actual = actual.to_logical::<f64>(window.scale_factor());
+            if let Some(actual) = window.request_inner_size(physical_size(desired)) {
                 self.windowed = WindowSize {
-                    width: actual.width,
-                    height: actual.height,
+                    width: f64::from(actual.width),
+                    height: f64::from(actual.height),
                 };
                 return Ok(true);
             }
@@ -204,9 +200,7 @@ impl WindowDisplay {
         }
         if let Some(desired) = pending.resize_after_exit.take()
             && !matches_size(window, desired)
-            && window
-                .request_inner_size(LogicalSize::new(desired.width, desired.height))
-                .is_none()
+            && window.request_inner_size(physical_size(desired)).is_none()
             && !matches_size(window, desired)
         {
             return false;

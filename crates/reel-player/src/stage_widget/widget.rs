@@ -1,5 +1,6 @@
 //! Scene control input, layout, composition and painting.
 use super::*;
+use reel_ui::widgets::ScrollAlign;
 
 impl Widget for SceneWidget {
     type Action = NodeEvent;
@@ -50,7 +51,11 @@ impl Widget for SceneWidget {
         event: &PointerEvent,
     ) {
         if matches!(self.node.kind, NodeKind::Scroll { .. }) {
+            let before = self.scroll.translation(ScrollAlign::Start);
             self.scroll.preview(ctx, event);
+            if before != self.scroll.translation(ScrollAlign::Start) {
+                ctx.request_compose();
+            }
         }
     }
     fn scroll_to_child(
@@ -78,6 +83,19 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
+        if let Some(state) = &mut self.scrollbar {
+            let Some(parts) = self
+                .children
+                .first()
+                .zip(self.children.get(1))
+                .map(|(a, b)| [a.1.id(), b.1.id()])
+            else {
+                return;
+            };
+            let value = state.pointer(ctx, event, parts);
+            self.scrollbar_proposal(ctx, value);
+            return;
+        }
         if matches!(self.node.kind, NodeKind::Scroll { .. }) {
             if self.scroll.pointer(ctx, event) {
                 self.scroll_input = true;
@@ -136,6 +154,11 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
+        if let Some(state) = &mut self.scrollbar {
+            let value = state.text(ctx, event);
+            self.scrollbar_proposal(ctx, value);
+            return;
+        }
         if matches!(event, TextEvent::WindowFocusChange(false)) {
             self.scroll.cancel();
         }
@@ -207,6 +230,11 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &AccessEvent,
     ) {
+        if let Some(state) = &mut self.scrollbar {
+            let value = state.access(ctx, event);
+            self.scrollbar_proposal(ctx, value);
+            return;
+        }
         if self.is_button() && ButtonBehavior::access(event).is_some() {
             ctx.set_handled();
             ctx.submit_action::<Self::Action>(self.activate());
@@ -220,12 +248,13 @@ impl Widget for SceneWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
-        if matches!(self.node.kind, NodeKind::Scroll { .. })
-            && matches!(
-                action.downcast_ref::<NodeEvent>(),
-                Some(NodeEvent::Interaction(_))
-            )
-        {
+        if matches!(
+            self.node.kind,
+            NodeKind::Scroll { .. } | NodeKind::VirtualList(_)
+        ) && matches!(
+            action.downcast_ref::<NodeEvent>(),
+            Some(NodeEvent::Interaction(_))
+        ) {
             ctx.request_compose();
         }
         // Control proposals bubble through the same widget ancestors as their actions.
@@ -250,10 +279,15 @@ impl Widget for SceneWidget {
         }
         if self.slider.as_ref().is_some_and(|pod| pod.id() == source)
             && let Some(change) = action.downcast_ref::<SliderMoved>()
-            && let NodeKind::Slider { range, value, .. } = &mut Arc::make_mut(&mut self.node).kind
+            && let NodeKind::Slider {
+                range, value, art, ..
+            } = &mut Arc::make_mut(&mut self.node).kind
         {
             *value = change.value;
             let range = *range;
+            if art.thumb.is_some() {
+                ctx.request_compose();
+            }
             self.sync_dirty = true;
             ctx.submit_action::<NodeEvent>(NodeEvent::Change(NodeChange {
                 node: self.node.id,
@@ -284,9 +318,27 @@ impl Widget for SceneWidget {
         self.button.update(event);
         if matches!(
             event,
-            Update::DisabledChanged(true) | Update::StashedChanged(true)
+            Update::FocusChanged(false)
+                | Update::WindowFocusChanged(false)
+                | Update::DisabledChanged(true)
+                | Update::StashedChanged(true)
+                | Update::ActiveChanged(false)
         ) {
+            if let Some(state) = &mut self.scrollbar {
+                state.cancel();
+            }
+        }
+        if matches!(
+            event,
+            Update::DisabledChanged(true)
+                | Update::StashedChanged(true)
+                | Update::WindowFocusChanged(false)
+        ) {
+            let before = self.scroll.translation(ScrollAlign::Start);
             self.scroll.cancel();
+            if before != self.scroll.translation(ScrollAlign::Start) {
+                ctx.request_compose();
+            }
         }
         if self.is_button()
             && matches!(
@@ -345,6 +397,19 @@ impl Widget for SceneWidget {
             )
         {
             ctx.submit_action::<NodeEvent>(event);
+        }
+    }
+    fn on_anim_frame(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        elapsed_ns: u64,
+    ) {
+        if self.scroll.advance(elapsed_ns) {
+            ctx.request_compose();
+        }
+        if self.scroll.animating() {
+            ctx.request_anim_frame();
         }
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
@@ -460,14 +525,17 @@ impl Widget for SceneWidget {
                 .compute_length(slider, available, context, axis, cross)
                 .get();
         }
-        if Self::caption(&self.node.kind).is_some()
+        if Self::visual_caption(&self.node).is_some()
             && let Some(label) = &mut self.label
         {
             total = ctx
                 .compute_length(label, available, context, axis, cross)
                 .get();
         }
-        if self.node.props.decorated && self.selection_state().is_some() {
+        if self.node.props.decorated
+            && self.selection_state().is_some()
+            && self.node.props.semantics != reel_ui::stage::NodeSemantics::Tab
+        {
             total = if axis == Axis::Horizontal {
                 total + 32.
             } else {
@@ -522,10 +590,11 @@ impl Widget for SceneWidget {
             ctx.place_child(slider, Point::new(padding, padding));
         }
         if let Some(label) = &mut self.label {
-            let present = Self::caption(&self.node.kind).is_some();
+            let present = Self::visual_caption(&self.node).is_some();
             ctx.set_stashed(label, !present);
             if present {
                 let inset = if self.node.props.decorated
+                    && self.node.props.semantics != reel_ui::stage::NodeSemantics::Tab
                     && matches!(
                         self.node.kind,
                         NodeKind::Toggle { .. } | NodeKind::Radio { .. }
@@ -587,6 +656,13 @@ impl Widget for SceneWidget {
             ctx.run_layout(image, inner);
             ctx.place_child(image, Point::new(padding, padding));
         }
+        if self.scrollbar.is_some() {
+            self.layout_scrollbar(
+                ctx,
+                Rect::from_origin_size(Point::new(padding, padding), inner),
+            );
+            return;
+        }
         if reel_ui::layout::flow::is_flow(&self.node.kind) {
             self.layout_flow(ctx, size);
             return;
@@ -598,6 +674,10 @@ impl Widget for SceneWidget {
             _ => None,
         };
         let mut measurements = Vec::new();
+        let slider_art = match self.node.kind {
+            NodeKind::Slider { art, .. } => art,
+            _ => reel_ui::stage::SliderArt::default(),
+        };
         if let Some(state) = &mut self.virtual_list {
             state.children.clear();
             state.placement_pending = true;
@@ -620,6 +700,11 @@ impl Widget for SceneWidget {
             }
             ctx.set_stashed(child, !node.props.visible);
             if !node.props.visible {
+                continue;
+            }
+            if slider_art.track == Some(node.id) {
+                ctx.run_layout(child, inner);
+                ctx.place_child(child, Point::new(padding, padding));
                 continue;
             }
             if matches!(node.kind, NodeKind::Cursor) {
@@ -669,6 +754,15 @@ impl Widget for SceneWidget {
                     capped(Axis::Vertical, node.props.max_height)
                 },
             );
+            let is_slider_thumb = slider_art.thumb == Some(node.id);
+            let definition = if is_slider_thumb {
+                SizeDef::new(
+                    LenDef::Fixed(Length::px(slider_art.thumb_width.min(inner.width))),
+                    definition.dim(Axis::Vertical),
+                )
+            } else {
+                definition
+            };
             let chosen = ctx.compute_size(child, definition, inner.into());
             let mut offset = if let Some(row) = virtual_row {
                 measurements[row_index.unwrap()].height = chosen.height;
@@ -707,7 +801,7 @@ impl Widget for SceneWidget {
                 NodeKind::Scroll { axis, .. } => (axis.horizontal(), axis.vertical()),
                 _ => (false, false),
             };
-            if !flow_x {
+            if !flow_x && !is_slider_thumb {
                 offset.x += (inner.width - chosen.width).max(0.) * node.props.align_x;
             }
             if !flow_y {
@@ -733,9 +827,15 @@ impl Widget for SceneWidget {
             state.children.sort_unstable_by_key(|row| row.index);
         }
         if let NodeKind::Scroll {
-            axis, follow_end, ..
+            axis,
+            overscroll,
+            follow_end,
+            snap_y,
+            ..
         } = self.node.kind
         {
+            self.scroll.set_overscroll(overscroll);
+            self.scroll.set_snap_y(snap_y);
             self.scroll.layout(inner, extent, axis, follow_end);
             self.scroll_laid_out = true;
         }
@@ -759,72 +859,28 @@ impl Widget for SceneWidget {
             self.scroll.set_offset(offset);
         }
         let translation = if let NodeKind::Scroll { align, .. } = self.node.kind {
-            let metrics = (
-                self.scroll.offset(),
-                self.scroll.viewport(),
-                self.scroll.content(),
-            );
-            if self.scroll_feedback != Some(metrics) || self.scroll_baseline != metrics.0 {
+            let offset = self.scroll.offset();
+            let metrics = (self.scroll.viewport(), self.scroll.content());
+            if self.scroll_input
+                || self.scroll_feedback != Some(metrics)
+                || self.scroll_baseline != offset
+            {
                 ctx.submit_action::<NodeEvent>(NodeEvent::Scroll(reel_ui::stage::NodeScroll {
                     input: std::mem::take(&mut self.scroll_input),
                     node: self.node.id,
                     requested: self.scroll_baseline,
-                    offset: metrics.0,
-                    viewport: metrics.1,
-                    content: metrics.2,
+                    offset,
+                    viewport: metrics.0,
+                    content: metrics.1,
                 }));
                 self.scroll_feedback = Some(metrics);
-                self.scroll_baseline = metrics.0;
+                self.scroll_baseline = offset;
             }
             self.scroll.translation(align)
         } else {
             Vec2::ZERO
         };
-        if matches!(self.node.kind, NodeKind::Scroll { .. }) {
-            for (node, child) in &mut self.children {
-                let NodeKind::VirtualList(view) = &node.kind else {
-                    continue;
-                };
-                let Some((list, mut list_ctx)) = ctx.get_raw_mut(child) else {
-                    continue;
-                };
-                let state = list.virtual_list.as_mut().expect("virtual list child");
-                state.retained.clear();
-                for (row, pod) in &mut list.children {
-                    if let Some((_, row_ctx)) = list_ctx.get_raw(pod)
-                        && (row_ctx.has_focus_target() || row_ctx.has_active())
-                    {
-                        state.retained.push(row.id);
-                    }
-                }
-                let retained = state
-                    .feedback
-                    .as_ref()
-                    .filter(|old| old.retained.as_ref() == state.retained.as_slice())
-                    .map(|old| old.retained.clone())
-                    .unwrap_or_else(|| Arc::from(state.retained.as_slice()));
-                let start = -translation.y - node.props.padding;
-                state.viewport_start = start;
-                let feedback = NodeVirtualList {
-                    node: node.id,
-                    scroll: self.node.id,
-                    revision: view.revision,
-                    requested: self.scroll_baseline,
-                    offset: self.scroll.offset(),
-                    viewport: self.scroll.viewport(),
-                    width: (list.size.width - node.props.padding * 2.).max(0.),
-                    visible_start: start,
-                    visible_end: start + self.scroll.viewport().height,
-                    measurements: state.measurements.clone(),
-                    retained,
-                    navigation: state.navigation,
-                };
-                if state.feedback.as_ref() != Some(&feedback) {
-                    state.feedback = Some(feedback.clone());
-                    list_ctx.submit_action::<NodeEvent>(NodeEvent::VirtualList(feedback));
-                }
-            }
-        }
+        self.publish_virtual_viewport(ctx);
         if let NodeKind::VirtualList(view) = &self.node.kind {
             self.virtual_list
                 .as_mut()
@@ -839,8 +895,30 @@ impl Widget for SceneWidget {
         } else {
             reel_ui::kurbo::Affine::IDENTITY
         };
-        for (node, child) in &mut self.children {
+        let viewport = self.virtual_viewport(ctx);
+        let logical_translation = match self.node.kind {
+            NodeKind::Scroll { align, .. } => self.scroll.logical_translation(align),
+            _ => Vec2::ZERO,
+        };
+        let slider_thumb = match self.node.kind {
+            NodeKind::Slider {
+                art, range, value, ..
+            } => art.thumb.map(|id| {
+                let width = self.size.width - 2. * self.node.props.padding;
+                let travel = (width - art.thumb_width).max(0.);
+                (id, travel * range.progress(value))
+            }),
+            _ => None,
+        };
+        for (part_index, (node, child)) in self.children.iter_mut().enumerate() {
             let transform = view * node.props.transform(ctx.child_size(child));
+            let transform = if let Some((id, offset)) = slider_thumb
+                && id == node.id
+            {
+                transform.then_translate(Vec2::new(offset - node.props.x, 0.))
+            } else {
+                transform
+            };
             ctx.set_child_transform(child, transform);
             let row_offset = self
                 .virtual_list
@@ -851,8 +929,31 @@ impl Widget for SceneWidget {
             // combine. Rounding each layer can move a stationary reading anchor.
             ctx.set_animated_child_scroll_translation(
                 child,
-                translation + Vec2::new(0., row_offset),
+                translation
+                    + Vec2::new(0., row_offset)
+                    + if part_index == 1 {
+                        self.scrollbar
+                            .as_ref()
+                            .map_or(Vec2::ZERO, |s| s.thumb_rect().origin().to_vec2())
+                    } else {
+                        Vec2::ZERO
+                    },
             );
+            if self.projection.children_summary.virtual_list
+                && let Some(viewport) = viewport
+            {
+                let transform = ctx
+                    .child_layout_transform(child)
+                    .then_translate(logical_translation + Vec2::new(0., row_offset));
+                if let Some((child, mut child_ctx)) = ctx.get_raw_mut(child)
+                    && child.projection.virtual_list_branch
+                {
+                    child.set_virtual_viewport(
+                        &mut child_ctx,
+                        viewport.mapped_scrolled(transform, translation - logical_translation),
+                    );
+                }
+            }
         }
     }
     fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {
@@ -936,6 +1037,17 @@ impl Widget for SceneWidget {
                 &radius,
             );
         }
+        if let NodeKind::ProgressBar { value, max } = self.node.kind
+            && value > 0.
+        {
+            let fill = Rect::new(0., 0., bounds.width() * (value / max), bounds.height());
+            paint_background(
+                painter,
+                fill,
+                &Background::Color(color(self.node.props.color)),
+                &radius,
+            );
+        }
         paint_border(
             painter,
             bounds,
@@ -945,8 +1057,9 @@ impl Widget for SceneWidget {
             &border,
             &radius,
         );
-        if self.node.props.decorated
-            && self.is_button()
+        if (self.node.props.decorated
+            || self.node.props.semantics == reel_ui::stage::NodeSemantics::Tab)
+            && (self.is_button() || self.scrollbar.is_some())
             && ctx.is_focus_target()
             && ctx.focus_visible()
             && ctx.is_window_focused()
@@ -977,7 +1090,14 @@ impl Widget for SceneWidget {
         self.paint_selection(ctx, painter);
     }
     fn accessibility_role(&self) -> Role {
+        match self.node.props.semantics {
+            reel_ui::stage::NodeSemantics::TabList => return Role::TabList,
+            reel_ui::stage::NodeSemantics::Tab => return Role::Tab,
+            reel_ui::stage::NodeSemantics::Generic => {}
+        }
         match self.node.kind {
+            NodeKind::ScrollBar(_) => Role::ScrollBar,
+            NodeKind::ProgressBar { .. } => Role::ProgressIndicator,
             NodeKind::Toggle {
                 appearance: reel_ui::stage::ToggleAppearance::Checkbox,
                 ..
@@ -989,17 +1109,34 @@ impl Widget for SceneWidget {
         }
     }
     fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, node: &mut Node) {
+        self.scrollbar_accessibility(node);
+        if let NodeKind::ProgressBar { value, max } = self.node.kind {
+            node.set_min_numeric_value(0.);
+            node.set_max_numeric_value(max);
+            node.set_numeric_value(value);
+        }
+        if self.node.props.semantics == reel_ui::stage::NodeSemantics::TabList {
+            node.set_orientation(if matches!(self.node.kind, NodeKind::Column(_)) {
+                reel_ui::accesskit::Orientation::Vertical
+            } else {
+                reel_ui::accesskit::Orientation::Horizontal
+            });
+        }
         if self.is_button() {
             node.add_action(reel_ui::accesskit::Action::Click);
             if let Some(label) = Self::caption(&self.node.kind) {
                 node.set_label(label);
             }
             if let Some(value) = self.selection_state() {
-                node.set_toggled(if value {
-                    reel_ui::accesskit::Toggled::True
+                if self.node.props.semantics == reel_ui::stage::NodeSemantics::Tab {
+                    node.set_selected(value);
                 } else {
-                    reel_ui::accesskit::Toggled::False
-                });
+                    node.set_toggled(if value {
+                        reel_ui::accesskit::Toggled::True
+                    } else {
+                        reel_ui::accesskit::Toggled::False
+                    });
+                }
             }
         }
     }
@@ -1016,6 +1153,7 @@ impl Widget for SceneWidget {
     fn accepts_pointer_interaction(&self) -> bool {
         self.is_button()
             || self.input.is_some()
+            || self.scrollbar.is_some()
             || matches!(self.node.kind, NodeKind::Scroll { .. })
             || self
                 .children
@@ -1027,6 +1165,7 @@ impl Widget for SceneWidget {
     }
     fn accepts_focus(&self) -> bool {
         match self.node.kind {
+            NodeKind::ScrollBar(view) => view.range().is_some(),
             NodeKind::Button { focusable, .. } => focusable,
             _ => self.is_button() || self.input.as_ref().is_some_and(NodeInput::accepts_focus),
         }
@@ -1036,8 +1175,9 @@ impl Widget for SceneWidget {
             NodeKind::Radio {
                 group: Some(id),
                 selected,
+                tabs,
                 ..
-            } => Some(reel_ui::core::SelectionGroup { id, selected }),
+            } => Some(reel_ui::core::SelectionGroup { id, selected, tabs }),
             _ => None,
         }
     }

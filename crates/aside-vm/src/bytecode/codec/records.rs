@@ -370,6 +370,14 @@ impl Wire for TypeDef {
                 name.put(w)?;
                 version.put(w)?
             }
+            Self::StringLiteral(text) => {
+                5u8.put(w)?;
+                text.put(w)?;
+            }
+            Self::Record(fields) => {
+                6u8.put(w)?;
+                fields.put(w)?;
+            }
         }
         Ok(())
     }
@@ -387,8 +395,23 @@ impl Wire for TypeDef {
                 name: Wire::get(r)?,
                 version: Wire::get(r)?,
             }),
+            5 => Ok(Self::StringLiteral(Wire::get(r)?)),
+            6 => Ok(Self::Record(Wire::get(r)?)),
             _ => Err(r.error(ErrorKind::Encoding, "type tag")),
         }
+    }
+}
+impl Wire for RecordFieldType {
+    const MIN: usize = 8;
+    fn put(&self, w: &mut Writer) -> Result<(), Error> {
+        self.name.put(w)?;
+        self.ty.put(w)
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            name: Wire::get(r)?,
+            ty: Wire::get(r)?,
+        })
     }
 }
 impl Wire for RegWindow {

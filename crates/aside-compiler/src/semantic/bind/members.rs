@@ -7,6 +7,26 @@ impl Binder<'_> {
             .name(n)
             .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
         if let (Some(&base), Some(key)) = (children.first(), key) {
+            if let Some(fields) = crate::hir::record_fields(&self.out.types, object) {
+                let ty = fields
+                    .iter()
+                    .find(|(name, _)| self.out.hir.name(*name) == key)
+                    .map(|&(_, ty)| ty);
+                let Some(ty) = ty else {
+                    self.unknown_member(n, &key);
+                    return ANY;
+                };
+                self.member_write_types.insert(n, Some(ty));
+                self.check(n, RuntimeChecks::RECORD_FIELD);
+                return if matches!(
+                    self.out.hir.node(n).form,
+                    Form::Member { optional: true, .. } | Form::Member { chain: true, .. }
+                ) {
+                    self.nullable_type(ty)
+                } else {
+                    ty
+                };
+            }
             if let Some(group) = super::super::builtin_members(&self.out.hir, &self.out.types, object)
                 // A table's own named entry wins over a builtin method. Its
                 // dynamic shape cannot promise this fallback's call contract.
@@ -260,13 +280,47 @@ impl Binder<'_> {
                 }
             }
         }
+        let bound = matches!(
+            self.out.types[ty.0 as usize],
+            Type::BoundMethod(_) | Type::Class(_)
+        );
+        let constructor = if let Type::Class(class) = self.out.types[ty.0 as usize] {
+            let init = self.intern_name("init");
+            self.find_class_member(class, init, false)
+                .and_then(|n| self.fn_nodes.get(&n).copied())
+        } else {
+            None
+        };
+        let function = match self.out.types[ty.0 as usize] {
+            Type::Function(f) | Type::BoundMethod(f) => Some(f),
+            _ => constructor,
+        };
+        let external = descriptor.clone();
+        let effect = external
+            .as_ref()
+            .and_then(|e| e.signature.as_ref())
+            .map_or(CallEffect::Unknown, |s| s.effect);
+        if ctx.no_wait && effect == CallEffect::StartsTask {
+            self.error(
+                D::NoWait,
+                self.span(n),
+                "task launch requires a normal task context. In a node block, launch after construction and bind the task to its owner",
+            );
+        }
+        let call = CallSite {
+            node: n,
+            caller: ctx.function,
+            callee: function,
+            bound,
+            effect,
+            no_wait: ctx.no_wait,
+            named_callee,
+        };
         let mut actual_ctx = ctx.clone();
         if optional || chain {
             actual_ctx.conditional = true;
         }
-        for c in arguments.into_iter().chain(trailing) {
-            self.visit(c, &actual_ctx);
-        }
+        self.contextual_arguments(&call, ty, &actual_ctx);
         if let Some(arguments) = arguments {
             for arg in self.children(arguments) {
                 if self.kind(arg) == HirKind::Spread {
@@ -308,49 +362,23 @@ impl Binder<'_> {
         if ctx.init {
             self.check(n, RuntimeChecks::INIT_SAFE);
         }
-        if !ctx.conditional
-            && let Some(signature) = descriptor.as_ref().and_then(|d| d.signature.as_ref())
+        if let Some(signature) = descriptor.as_ref().and_then(|d| d.signature.as_ref())
             && ((ctx.derived && signature.derived_safe == Some(false))
-                || (ctx.init && signature.init_safe == Some(false)))
+                || (ctx.init && !ctx.conditional && signature.init_safe == Some(false)))
         {
             self.error(
                 D::InvalidEffect,
                 self.span(n),
-                "host function is not safe in this execution context",
+                if ctx.derived {
+                    "host function cannot run during derived evaluation. Compute its result before derive"
+                } else {
+                    "host function is not safe in this execution context"
+                },
             );
         }
         if ty == NULL && (optional || chain) {
             return NULL;
         }
-        let bound = matches!(
-            self.out.types[ty.0 as usize],
-            Type::BoundMethod(_) | Type::Class(_)
-        );
-        let constructor = if let Type::Class(class) = self.out.types[ty.0 as usize] {
-            let init = self.intern_name("init");
-            self.find_class_member(class, init, false)
-                .and_then(|n| self.fn_nodes.get(&n).copied())
-        } else {
-            None
-        };
-        let function = match self.out.types[ty.0 as usize] {
-            Type::Function(f) | Type::BoundMethod(f) => Some(f),
-            _ => constructor,
-        };
-        let external = descriptor.clone();
-        let effect = external
-            .as_ref()
-            .and_then(|e| e.signature.as_ref())
-            .map_or(CallEffect::Unknown, |s| s.effect);
-        let call = CallSite {
-            node: n,
-            caller: ctx.function,
-            callee: function,
-            bound,
-            effect,
-            no_wait: ctx.no_wait,
-            named_callee,
-        };
         self.calls.push(call.clone());
         self.check(n, RuntimeChecks::CALL);
         if ctx.no_wait {

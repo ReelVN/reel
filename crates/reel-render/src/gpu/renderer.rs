@@ -9,7 +9,7 @@ use reel_ui::frame::RenderFrame;
 use reel_ui::kurbo::Affine;
 use std::collections::HashMap;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -20,9 +20,11 @@ pub struct Prepared {
     pub(super) texture: wgpu::Texture,
     pub(super) quality: Quality,
     pub(super) size: [u32; 2],
+    cache_targets: bool,
     frames: Vec<RenderFrame>,
     tickets: Vec<Reservation>,
     images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
+    white: Option<Arc<super::resources::WhiteTexture>>,
     glyphs: super::glyph_cache::FrameGlyphs,
     effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
@@ -54,6 +56,7 @@ pub(super) struct Inflight {
     _frames: Vec<RenderFrame>,
     _tickets: Vec<Reservation>,
     _images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
+    _white: Option<Arc<super::resources::WhiteTexture>>,
     _glyphs: super::glyph_cache::FrameGlyphs,
     _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
@@ -81,7 +84,7 @@ fn pressure_pool(cause: &GpuError) -> Option<BudgetCategory> {
     };
     match *domain {
         "targets" => Some(BudgetCategory::Offscreen),
-        "image upload" | "texture upload" | "glyph atlas" | "glyph upload" => {
+        "resources" | "image upload" | "texture upload" | "glyph atlas" | "glyph upload" => {
             Some(BudgetCategory::GpuResource)
         }
         "transient"
@@ -108,6 +111,7 @@ pub struct Renderer {
     owner: Arc<()>,
     pipelines: PipelineSlots,
     images: super::image_cache::ImageCache,
+    white: Mutex<Option<Arc<super::resources::WhiteTexture>>>,
     glyphs: super::glyph_cache::GlyphCache,
     targets: super::target_cache::TargetCache,
     coverage_targets: super::target_cache::TargetCache,
@@ -143,6 +147,7 @@ impl Renderer {
             owner: Arc::new(()),
             pipelines: PipelineSlots::default(),
             images: Default::default(),
+            white: Default::default(),
             glyphs: Default::default(),
             targets: Default::default(),
             coverage_targets: Default::default(),
@@ -154,36 +159,77 @@ impl Renderer {
             effect_uniforms: Default::default(),
         }
     }
-    /// Prepare the device's supported quality tiers, coverage and built-in image masks
-    /// before showing the first frame. Repeated calls reuse the same slots.
-    /// This creates no frame targets or decoded image buffers.
-    pub fn prepare_pipelines(&self) -> Result<(), GpuError> {
+    /// Warm the preferred surface quality before showing its first frame.
+    pub(super) fn prepare_quality(&self, quality: Quality) -> Result<(), GpuError> {
         // Start desktop upload workers before the first interactive frame.
         rayon::current_num_threads();
+        let pipelines = self.pipelines.get(&self.gpu, quality)?;
+        if self.gpu.coverage_quality(quality).is_some() {
+            self.pipelines
+                .get_coverage(&self.gpu, quality, &pipelines)?;
+        }
+        pipelines
+            .masks
+            .prepare_builtin(&self.gpu, quality, &self.budgets.resources)
+    }
+    #[cfg(test)]
+    pub(crate) fn prepare_pipelines(&self) -> Result<(), GpuError> {
         for quality in self.gpu.supported_qualities() {
-            let pipelines = self.pipelines.get(&self.gpu, quality)?;
-            if self.gpu.coverage_quality(quality).is_some() {
-                self.pipelines
-                    .get_coverage(&self.gpu, quality, &pipelines)?;
-            }
-            pipelines
-                .masks
-                .prepare_builtin(&self.gpu, quality, &self.budgets.resources)?;
+            self.prepare_quality(quality)?;
         }
         Ok(())
+    }
+    /// Prepare viewport-sized transition scratch at the highest supported tier
+    /// and one allocation at lower tiers, within target and metadata quotas.
+    pub(super) fn prepare_viewport(&self, size: [u32; 2]) -> Result<(), GpuError> {
+        if size.contains(&0) {
+            return Ok(());
+        }
+        for (index, quality) in self.gpu.supported_qualities().enumerate() {
+            let cost = super::targets::target_bytes(size, quality)?;
+            let count = if index == 0 && cost <= self.gpu.limits.target_bytes / 3 {
+                3
+            } else {
+                1
+            };
+            self.targets.warm(
+                &self.gpu,
+                size,
+                quality,
+                count,
+                &self.budgets.targets,
+                &self.budgets.transient,
+            )?;
+        }
+        self.images.prepare_staging(&self.gpu, &self.budgets)?;
+        self.gpu.check()
     }
     pub(super) fn reserve_readback(
         &self,
         prepared: &Prepared,
         bytes: u64,
     ) -> Result<Reservation, GpuError> {
-        reserve(
+        let result = reserve(
             &self.budgets.transient,
             &prepared.budget_scope.transient,
             bytes,
             self.gpu.limits.transient_bytes,
             "readback",
-        )
+        );
+        if matches!(result, Err(GpuError::Pressure { .. })) {
+            self.geometry.clear();
+            self.effect_uniforms.clear();
+            self.effect_results.clear();
+            self.images.clear_idle();
+            return reserve(
+                &self.budgets.transient,
+                &prepared.budget_scope.transient,
+                bytes,
+                self.gpu.limits.transient_bytes,
+                "readback",
+            );
+        }
+        result
     }
     /// Current renderer-owned residency across the shared accounting domains.
     pub fn usage(&self) -> Usage {
@@ -209,10 +255,16 @@ impl Renderer {
             || self.has_pending_image_uploads()
             || !self.retained.pending.lock().unwrap().entries.is_empty()
     }
-    /// Submitted image uploads still own staging and may unblock a preparation
-    /// slice. Hosts can poll these short-lived completions more frequently.
+    /// Submitted texture initialization may release staging or make a resource
+    /// evictable. Hosts can poll these short-lived completions more frequently.
     pub fn has_pending_image_uploads(&self) -> bool {
         self.images.has_pending()
+            || self
+                .white
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|white| white.initialization_pending())
     }
     pub(super) fn poll_completed(
         &mut self,
@@ -229,7 +281,22 @@ impl Renderer {
         if resources_available {
             limit -= 1;
         }
-        for pending in &self.retained.pending.lock().unwrap().entries {
+        if limit != 0
+            && self
+                .white
+                .get_mut()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|white| white.poll_initialization())
+        {
+            resources_available = true;
+            limit -= 1;
+        }
+        for pending in &mut self.retained.pending.lock().unwrap().entries {
+            if limit != 0 && std::mem::take(&mut pending.notify_ready) {
+                resources_available = true;
+                limit -= 1;
+            }
             if pending.flight.done.load(Ordering::Acquire) {
                 for slot in &pending.flight.geometry {
                     slot.storage.ready()?;
@@ -255,7 +322,6 @@ impl Renderer {
                         &mut pending.flight.effect_uniform_slots,
                         &self.budgets.transient,
                     );
-                    self.retained.inputs.complete(pending.token);
                     resources_available = true;
                     limit -= 1;
                     false
@@ -296,8 +362,6 @@ impl Renderer {
         self.images.retire(&[]);
         self.glyphs.retire(&[]);
         self.pipelines.prune_masks();
-        self.targets.prune_cold();
-        self.coverage_targets.prune_cold();
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
@@ -389,7 +453,7 @@ impl Renderer {
         capture: bool,
     ) -> Result<Prepared, GpuError> {
         let mut epoch = self.retained.epoch.lock().unwrap();
-        if *epoch != Some(frame.surface_epoch()) {
+        if !capture && *epoch != Some(frame.surface_epoch()) {
             self.retained.inputs.clear();
             self.effect_results.clear();
             self.effect_uniforms.clear();
@@ -399,14 +463,6 @@ impl Renderer {
         drop(epoch);
         if !capture && self.retained.inputs.pending(&frame.key()) {
             return Err(GpuError::Preparing);
-        }
-        // Capture reserves its output and readback after replay. Keep that
-        // original admission path free of optional reusable staging.
-        if capture {
-            self.geometry.clear();
-            self.images.clear_idle();
-            self.effect_results.clear();
-            self.effect_uniforms.clear();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
         let result = self.prepare_cached(frame, second, size, capture, &policy, None);
@@ -454,6 +510,13 @@ impl Renderer {
                 }
                 Some(BudgetCategory::GpuResource) => {
                     self.images.clear_idle();
+                    let mut white = self.white.lock().unwrap();
+                    if white
+                        .as_ref()
+                        .is_some_and(|white| Arc::strong_count(white) == 1)
+                    {
+                        *white = None;
+                    }
                 }
                 _ => {}
             }
@@ -496,6 +559,26 @@ impl Renderer {
         geometry_policy: &super::geometry::UploadPolicy,
         mut retry: Option<CacheRetry>,
     ) -> Result<Prepared, GpuError> {
+        // Capture owns a separate scratch namespace. A thumbnail must not
+        // reconfigure the live viewport's target pool or publish its output there.
+        let capture_targets = super::target_cache::TargetCache::default();
+        let capture_coverage = super::target_cache::TargetCache::default();
+        let capture_geometry = super::geometry::Cache::default();
+        let target_cache = if capture {
+            &capture_targets
+        } else {
+            &self.targets
+        };
+        let coverage_target_cache = if capture {
+            &capture_coverage
+        } else {
+            &self.coverage_targets
+        };
+        let geometry_cache = if capture {
+            &capture_geometry
+        } else {
+            &self.geometry
+        };
         let effect_results_enabled = retry.is_none();
         loop {
             self.gpu.check()?;
@@ -526,7 +609,9 @@ impl Renderer {
                     Ok(())
                 },
             )?);
-            self.retained.inputs.retain(&selection);
+            if !capture {
+                self.retained.inputs.retain(&selection);
+            }
             let preferred = cached_quality.filter(|_| selection.has_cached());
             let plan = super::image_plan::collect(
                 std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
@@ -636,7 +721,7 @@ impl Renderer {
                     images: &self.images,
                 },
             )?;
-            let groups = self.targets.1.lock().unwrap().get(
+            let groups = target_cache.1.lock().unwrap().get(
                 frame.drawing(),
                 capture,
                 &self.budgets.transient,
@@ -654,7 +739,7 @@ impl Renderer {
                     super::targets::target_bytes(extent, coverage_quality.expect("coverage format"))
                 };
                 let mut resident_tickets = Vec::new();
-                let resident = self.targets.capacities(size, quality, |bytes| {
+                let resident = target_cache.capacities(size, quality, |bytes| {
                     resident_tickets.push(reserve(
                         &self.budgets.transient,
                         &budget_scope.transient,
@@ -772,6 +857,13 @@ impl Renderer {
                     })?
                     .0
             };
+            #[cfg(feature = "profiling")]
+            reel_core::profile::count(match (quality.format, quality.samples) {
+                (wgpu::TextureFormat::Rgba16Float, 4) => reel_core::profile::Phase::RenderTier16f4x,
+                (wgpu::TextureFormat::Rgba16Float, 1) => reel_core::profile::Phase::RenderTier16f1x,
+                (wgpu::TextureFormat::Rgba8Unorm, 1) => reel_core::profile::Phase::RenderTier8u1x,
+                _ => unreachable!("negotiated color target quality"),
+            });
             let pipelines = self.pipelines.get(&self.gpu, quality)?;
             let coverage_pipeline = if offscreen.coverage_requirements().iter().len() != 0 {
                 Some(
@@ -806,12 +898,12 @@ impl Renderer {
             // Upload batches own their own admission. Reserving this earlier would
             // deadlock cold frames on a host configured for one in-flight submission.
             let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
-            self.targets.configure(size, quality);
+            target_cache.configure(size, quality);
             let coverage_quality = self.gpu.coverage_quality(quality);
             if let Some(coverage_quality) = coverage_quality {
-                self.coverage_targets.configure(size, coverage_quality);
+                coverage_target_cache.configure(size, coverage_quality);
             } else {
-                self.coverage_targets.clear();
+                coverage_target_cache.clear();
             }
             let warm = selection
                 .warm
@@ -843,8 +935,9 @@ impl Renderer {
                 offscreen,
                 effects: Vec::new(),
                 white: None,
-                target_cache: &self.targets,
-                coverage_target_cache: &self.coverage_targets,
+                white_cache: &self.white,
+                target_cache,
+                coverage_target_cache,
                 coverage_quality,
                 coverage_pipeline,
                 retained_cache: &self.retained.inputs,
@@ -874,7 +967,7 @@ impl Renderer {
                 #[cfg(test)]
                 sprite_instances_enabled: self.sprite_instances_enabled,
                 geometry_policy,
-                geometry_cache: &self.geometry,
+                geometry_cache,
                 geometry: Vec::new(),
             };
             let transform = Affine::scale_non_uniform(
@@ -946,17 +1039,18 @@ impl Renderer {
                 self.retained.inputs.stage(
                     token,
                     super::retained::Output {
-                        allocation,
+                        allocation: allocation.clone(),
                         target: output.clone(),
                     },
                     super::targets::target_bytes(storage, quality)?,
                 );
-                Some(token)
+                Some((token, allocation))
             } else {
                 None
             };
             let mut prepared = Prepared {
                 capture: None,
+                cache_targets: !capture,
                 encoder: ctx.encoder,
                 output: output.view,
                 texture: output.texture,
@@ -965,6 +1059,7 @@ impl Renderer {
                 frames,
                 tickets: ctx.tickets,
                 images: ctx.images,
+                white: ctx.white,
                 glyphs: ctx.glyphs,
                 effects: ctx.effects,
                 targets: ctx.target_allocations,
@@ -978,12 +1073,12 @@ impl Renderer {
                 generation: self.gpu.generation,
                 owner: self.owner.clone(),
             };
-            if let Some(token) = retained {
+            if let Some((token, retained_output)) = retained {
                 let done = Arc::new(AtomicBool::new(false));
                 for slot in &mut prepared.effect_uniform_slots {
                     slot.upload(&self.gpu);
                 }
-                self.gpu.queue.submit([prepared.encoder.finish()]);
+                self.gpu.submit(prepared.encoder);
                 self.effect_results.submitted();
                 self.effect_uniforms.submitted();
                 self.glyphs.publish(&prepared.glyphs);
@@ -995,15 +1090,36 @@ impl Renderer {
                 self.gpu
                     .queue
                     .on_submitted_work_done(move || signal.store(true, Ordering::Release));
-                self.targets.clear();
-                self.coverage_targets.clear();
+                target_cache.reserve_metadata(
+                    size,
+                    quality,
+                    &prepared.targets,
+                    &self.budgets.transient,
+                    self.gpu.limits.transient_bytes,
+                );
+                target_cache.publish(size, quality, &prepared.targets, Some(&retained_output));
+                if let Some(coverage) = self.gpu.coverage_quality(quality) {
+                    coverage_target_cache.reserve_metadata(
+                        size,
+                        coverage,
+                        &prepared.targets,
+                        &self.budgets.transient,
+                        self.gpu.limits.transient_bytes,
+                    );
+                    coverage_target_cache.publish(
+                        size,
+                        coverage,
+                        &prepared.targets,
+                        Some(&retained_output),
+                    );
+                }
                 self.retained
                     .pending
                     .lock()
                     .unwrap()
                     .entries
                     .push(super::retained::Pending {
-                        token,
+                        notify_ready: true,
                         flight: Inflight {
                             capture: None,
                             id: 0,
@@ -1011,6 +1127,7 @@ impl Renderer {
                             _frames: prepared.frames,
                             _tickets: prepared.tickets,
                             _images: prepared.images,
+                            _white: prepared.white,
                             _glyphs: prepared.glyphs,
                             _effects: prepared.effects,
                             _targets: prepared.targets,
@@ -1021,6 +1138,9 @@ impl Renderer {
                             geometry: prepared.geometry,
                         },
                     });
+                // Subsequent sampling uses this queue, just like effect-result
+                // reuse. The flight keeps every producer lease until completion.
+                self.retained.inputs.complete(token);
                 return Err(GpuError::Preparing);
             }
             return Ok(prepared);
@@ -1046,26 +1166,28 @@ impl Renderer {
         let id = self.next;
         self.next = id.checked_add(1).ok_or(GpuError::IdentityExhausted)?;
         let done = Arc::new(AtomicBool::new(false));
-        self.targets.reserve_metadata(
-            prepared.size,
-            prepared.quality,
-            &prepared.targets,
-            &self.budgets.transient,
-            self.gpu.limits.transient_bytes,
-        );
-        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
-            self.coverage_targets.reserve_metadata(
+        if prepared.cache_targets {
+            self.targets.reserve_metadata(
                 prepared.size,
-                coverage_quality,
+                prepared.quality,
                 &prepared.targets,
                 &self.budgets.transient,
                 self.gpu.limits.transient_bytes,
             );
+            if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+                self.coverage_targets.reserve_metadata(
+                    prepared.size,
+                    coverage_quality,
+                    &prepared.targets,
+                    &self.budgets.transient,
+                    self.gpu.limits.transient_bytes,
+                );
+            }
         }
         for slot in &mut prepared.effect_uniform_slots {
             slot.upload(&self.gpu);
         }
-        self.gpu.queue.submit([prepared.encoder.finish()]);
+        self.gpu.submit(prepared.encoder);
         self.effect_results.submitted();
         self.effect_uniforms.submitted();
         for pending in prepared.effect_pending {
@@ -1077,6 +1199,7 @@ impl Renderer {
         self.gpu
             .queue
             .on_submitted_work_done(move || signal.store(true, Ordering::Release));
+        let cache_targets = prepared.cache_targets;
         self.inflight.push(Inflight {
             capture: prepared.capture,
             id,
@@ -1084,6 +1207,7 @@ impl Renderer {
             _frames: prepared.frames,
             _tickets: prepared.tickets,
             _images: prepared.images,
+            _white: prepared.white,
             _glyphs: prepared.glyphs,
             _effects: prepared.effects,
             _targets: prepared.targets,
@@ -1095,17 +1219,21 @@ impl Renderer {
         });
         self.gpu.check()?;
         self.images.submitted();
-        self.targets.publish(
-            prepared.size,
-            prepared.quality,
-            &self.inflight.last().unwrap()._targets,
-        );
-        if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
-            self.coverage_targets.publish(
+        if cache_targets {
+            self.targets.publish(
                 prepared.size,
-                coverage_quality,
+                prepared.quality,
                 &self.inflight.last().unwrap()._targets,
+                None,
             );
+            if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
+                self.coverage_targets.publish(
+                    prepared.size,
+                    coverage_quality,
+                    &self.inflight.last().unwrap()._targets,
+                    None,
+                );
+            }
         }
         Ok(id)
     }

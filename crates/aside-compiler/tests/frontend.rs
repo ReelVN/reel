@@ -423,7 +423,10 @@ fn recovery_preserves_following_declarations_and_insertion_locations() {
         .find(|d| d.code == D::MissingSemicolon)
         .unwrap();
     assert!(d.range.is_empty());
-    assert_eq!(usize::from(d.range.start()), source.find("let c").unwrap());
+    assert_eq!(
+        usize::from(d.range.start()),
+        source.find("2\n").unwrap() + 1
+    );
     assert_eq!(d.fix.as_ref().unwrap().replacement, ";");
     let span = rejects("/* missing", E::Module, D::UnterminatedComment).diagnostics()[0].range;
     assert_eq!(byte_range(span), 0..10);

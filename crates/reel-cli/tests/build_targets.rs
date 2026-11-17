@@ -46,7 +46,12 @@ fn target_selects_code_closures_translations_and_shader_products() {
         assert_eq!(checked.catalogs.messages[0].source, text);
         assert_eq!(checked.effects.definitions().len(), effects);
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
-        let package = reel_package::decode(&artifact.bytes, Default::default()).unwrap();
+        let package = reel_package::decode(
+            &artifact.bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         let constants = &package.program().package().constants;
         assert!(constants.contains(&Const::Int(kept)));
         assert!(!constants.contains(&Const::Int(removed)));

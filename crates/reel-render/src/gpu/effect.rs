@@ -12,8 +12,19 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 9]>);
 pub(super) struct Compiled {
-    pub(super) layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    shader: Arc<Shader>,
+    _storage: BudgetTicket,
+}
+impl Compiled {
+    pub(super) fn layout(&self) -> &wgpu::BindGroupLayout {
+        &self.shader.layout
+    }
+}
+struct Shader {
+    layout: wgpu::BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout,
+    module: wgpu::ShaderModule,
     _storage: BudgetTicket,
 }
 impl Cache {
@@ -70,12 +81,12 @@ impl Cache {
             });
         }
         let mut caches = self.0.lock().unwrap();
-        let cache = &mut caches[if full_target {
+        let variant = if full_target {
             8
         } else {
             usize::from(padded) + 2 * usize::from(terminal) + 4 * usize::from(masked)
-        }];
-        if let Some(compiled) = cache.get(
+        };
+        if let Some(compiled) = caches[variant].get(
             descriptor.shader_key,
             lease,
             budget,
@@ -83,65 +94,39 @@ impl Cache {
         )? {
             return Ok(compiled);
         }
-        let bytes = if full_target {
-            descriptor.full_target_code(bytes)
+        // The vertex stream and blend state select a pipeline. They do not
+        // change the WGSL module or binding layouts within one shader product.
+        let family = if full_target {
+            8..9
+        } else if masked {
+            4..8
         } else {
-            descriptor.code(bytes, masked)
-        }
-        .ok_or(GpuError::InvalidRecord {
-            at,
-            record: "missing effect variant",
-        })?;
-        let source = std::str::from_utf8(bytes).map_err(|_| GpuError::InvalidRecord {
-            at,
-            record: "effect WGSL encoding",
-        })?;
+            0..4
+        };
+        let existing_shader = caches[family]
+            .iter()
+            .find_map(|cache| cache.peek(descriptor.shader_key))
+            .map(|compiled| compiled.shader.clone());
         let storage = effect_cache::reserve(
             budget,
             size_of::<Compiled>() + 2 * size_of::<usize>(),
             gpu.limits.resource_bytes,
         )?;
-        let entry_capacity = 3
-            + usize::from(descriptor.source_sampler)
-            + usize::from(descriptor.textures != 0)
-            + descriptor.textures as usize
-            + usize::from(masked);
-        let _layout_storage = effect_cache::reserve(
-            budget,
-            entry_capacity * size_of::<wgpu::BindGroupLayoutEntry>(),
-            gpu.limits.resource_bytes,
-        )?;
-        let compiled = pipeline::validated(gpu, || {
-            let mut entries = Vec::with_capacity(entry_capacity);
-            entries.extend([
-                pipeline::sampler(1),
-                wgpu::BindGroupLayoutEntry {
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ..pipeline::uniform(2)
-                },
-                pipeline::uniform(3),
-            ]);
-            if descriptor.source_sampler {
-                entries.push(pipeline::texture(0));
-            }
-            if descriptor.textures != 0 {
-                entries.push(pipeline::uniform(4));
-                entries.extend((0..descriptor.textures).map(|i| pipeline::texture(5 + i)));
-            }
-            if masked {
-                entries.push(pipeline::texture(5 + descriptor.textures));
-            }
-            let layout = gpu
-                .device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("prepared effect"),
-                    entries: &entries,
-                });
-            let pipeline = pipeline::pipeline_vertex(
+        let shader_error = |error| GpuError::Shader {
+            at,
+            asset: lease.version().key.0.clone(),
+            source: Box::new(error),
+        };
+        let (shader, pipeline) = pipeline::validated(gpu, || {
+            let shader = match existing_shader {
+                Some(shader) => shader,
+                None => shader_program(gpu, descriptor, bytes, masked, full_target, budget, at)?,
+            };
+            let pipeline = pipeline::pipeline_with_layout(
                 &gpu.device,
                 quality,
-                &layout,
-                source,
+                &shader.pipeline_layout,
+                &shader.module,
                 (
                     if padded {
                         pipeline::VertexInput::Mesh
@@ -157,18 +142,15 @@ impl Cache {
                 #[cfg(test)]
                 None,
             );
-            Arc::new(Compiled {
-                layout,
-                pipeline,
-                _storage: storage,
-            })
+            Ok::<_, GpuError>((shader, pipeline))
         })
-        .map_err(|error| GpuError::Shader {
-            at,
-            asset: lease.version().key.0.clone(),
-            source: Box::new(error),
-        })?;
-        cache.insert(
+        .map_err(shader_error)??;
+        let compiled = Arc::new(Compiled {
+            pipeline,
+            shader,
+            _storage: storage,
+        });
+        caches[variant].insert(
             descriptor.shader_key,
             lease,
             compiled.clone(),
@@ -177,6 +159,89 @@ impl Cache {
         )?;
         Ok(compiled)
     }
+}
+
+fn shader_program(
+    gpu: &Gpu,
+    descriptor: &reel_ui::resources::EffectShaderDescriptor,
+    bytes: &[u8],
+    masked: bool,
+    full_target: bool,
+    budget: &BudgetPool,
+    at: RecordLocation,
+) -> Result<Arc<Shader>, GpuError> {
+    let bytes = if full_target {
+        descriptor.full_target_code(bytes)
+    } else {
+        descriptor.code(bytes, masked)
+    }
+    .ok_or(GpuError::InvalidRecord {
+        at,
+        record: "missing effect variant",
+    })?;
+    let source = std::str::from_utf8(bytes).map_err(|_| GpuError::InvalidRecord {
+        at,
+        record: "effect WGSL encoding",
+    })?;
+    let storage = effect_cache::reserve(
+        budget,
+        size_of::<Shader>() + 2 * size_of::<usize>(),
+        gpu.limits.resource_bytes,
+    )?;
+    let entry_capacity = 3
+        + usize::from(descriptor.source_sampler)
+        + usize::from(descriptor.textures != 0)
+        + descriptor.textures as usize
+        + usize::from(masked);
+    let _layout_storage = effect_cache::reserve(
+        budget,
+        entry_capacity * size_of::<wgpu::BindGroupLayoutEntry>(),
+        gpu.limits.resource_bytes,
+    )?;
+    let mut entries = Vec::with_capacity(entry_capacity);
+    entries.extend([
+        pipeline::sampler(1),
+        wgpu::BindGroupLayoutEntry {
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ..pipeline::uniform(2)
+        },
+        pipeline::uniform(3),
+    ]);
+    if descriptor.source_sampler {
+        entries.push(pipeline::texture(0));
+    }
+    if descriptor.textures != 0 {
+        entries.push(pipeline::uniform(4));
+        entries.extend((0..descriptor.textures).map(|i| pipeline::texture(5 + i)));
+    }
+    if masked {
+        entries.push(pipeline::texture(5 + descriptor.textures));
+    }
+    let layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("prepared effect"),
+            entries: &entries,
+        });
+    let pipeline_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("prepared effect"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+    let module = pipeline::shader_module(
+        &gpu.device,
+        source,
+        #[cfg(test)]
+        None,
+    );
+    Ok(Arc::new(Shader {
+        layout,
+        pipeline_layout,
+        module,
+        _storage: storage,
+    }))
 }
 impl Context<'_> {
     pub(super) fn effect(

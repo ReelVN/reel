@@ -119,35 +119,3 @@ fn oversize_populations_keep_a_rolling_prefix_and_budget_pressure_uses_direct_sa
     compare(&mut sampler, &node);
     assert!(sampler.0.is_none());
 }
-
-#[test]
-#[ignore = "CPU sampling measurement; run in release mode"]
-fn sampling_cost() {
-    use std::{hint::black_box, time::Instant};
-    let pool = pool(1 << 20);
-    let mut node = node(&pool, &[emission(1, 200, 160.)]);
-    let mut sampler = ParticleSampler::default();
-    for cached in [false, true] {
-        let mut samples = 0_u64;
-        let start = Instant::now();
-        for frame in 0..10_000 {
-            node.time = frame as f64 / 60.;
-            if cached {
-                sampler.for_each(&node, |sprite| {
-                    black_box(sprite);
-                    samples += 1;
-                });
-            } else {
-                for sprite in node.samples() {
-                    black_box(sprite);
-                    samples += 1;
-                }
-            }
-        }
-        eprintln!(
-            "cached={cached} frames=10000 samples={samples} elapsed_us={} cache_bytes={}",
-            start.elapsed().as_micros(),
-            sampler.0.as_ref().map_or(0, |c| c._ticket.bytes())
-        );
-    }
-}

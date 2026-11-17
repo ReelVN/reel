@@ -834,6 +834,7 @@ pub struct SessionUi {
     pending_images_ready: bool,
     image_demand_dirty: bool,
     image_layout_pending: bool,
+    image_motion: image_requests::ImageMotion,
     virtual_images_ready: bool,
     pub(crate) images_waiting_presentation: bool,
     images: crate::images::Images,
@@ -887,6 +888,7 @@ impl SessionUi {
             pending_images_ready: false,
             image_demand_dirty: false,
             image_layout_pending: false,
+            image_motion: Default::default(),
             virtual_images_ready: false,
             images_waiting_presentation: false,
             playback: Default::default(),
@@ -968,6 +970,14 @@ impl SessionUi {
                     .as_ref()
                     .is_none_or(|pending| pending.feedback);
             let scope = view.input_scope();
+            if self
+                .pending_stage
+                .as_ref()
+                .or(self.stage.as_ref())
+                .is_some_and(|previous| !previous.same_stage(&view))
+            {
+                self.image_motion = Default::default();
+            }
             let scope_changed = self
                 .pending_stage
                 .as_ref()

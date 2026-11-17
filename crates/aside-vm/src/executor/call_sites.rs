@@ -167,7 +167,7 @@ mod tests {
                 frame: parent.id,
                 call: Pc(7),
             },
-            ReturnTo::Sort {
+            ReturnTo::BuiltinCallback {
                 frame: parent.id,
                 call: Pc(7),
             },

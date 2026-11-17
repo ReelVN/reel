@@ -7,6 +7,203 @@ use std::{
     time::Duration,
 };
 
+fn preload_stage(source: &str) -> (reel_ui::stage::Stage, reel_ui::stage::NodeId) {
+    use reel_ui::stage::{NodeKind, NodeProps, Stage};
+    let mut stage = Stage::default();
+    let id = stage
+        .create(
+            NodeKind::Image {
+                source: source.into(),
+                origin: None,
+                sampling: Default::default(),
+                source_rect: None,
+                fit: Default::default(),
+                slice: None,
+                slice_scale: 1.,
+                slice_center: true,
+                repeat: [false; 2],
+                tile_scale: 1.,
+                corner_colors: None,
+                alpha_layout: Default::default(),
+                adjustment: Default::default(),
+            },
+            NodeProps {
+                visible: false,
+                preload: true,
+                width: Some(160.),
+                height: Some(90.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    stage.replace(id).unwrap();
+    (stage, id)
+}
+
+#[test]
+fn hidden_prefetch_keeps_presentation_ready_and_reuses_decoded_pixels_on_show() {
+    let (mut images, wake) = loader();
+    let (mut stage, id) = preload_stage("assets/panels.png");
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.poll().unwrap());
+    let pending = images.pending[0].id;
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert_eq!(
+        images.pending[0].id, pending,
+        "unchanged foreground keeps its in-flight prefetch"
+    );
+    while !images.loaded.contains_key("assets/panels.png") {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            images.poll().unwrap(),
+            "hidden preparation must retain foreground readiness"
+        );
+    }
+    images.commit();
+    let handle = images.loaded["assets/panels.png"].handle();
+    let loads = images.loads;
+    let mut node = stage.node(id).unwrap().clone();
+    node.props.visible = true;
+    stage.update(id, node.kind, node.props).unwrap();
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.poll().unwrap());
+    assert_eq!(images.loaded["assets/panels.png"].handle(), handle);
+    assert_eq!(images.loads, loads);
+    images.close();
+    assert_eq!(images.pool.usage().bytes, 0);
+}
+
+#[test]
+fn visible_image_takes_over_in_flight_prefetch() {
+    let (mut images, wake) = configured(160 * 90 * 4, 256 << 20);
+    let source = "assets/panels.png";
+    let (mut stage, id) = preload_stage(source);
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.poll().unwrap());
+    let pending = images.pending[0].id;
+    let loads = images.loads;
+    let mut node = stage.node(id).unwrap().clone();
+    node.props.visible = true;
+    stage.update(id, node.kind, node.props).unwrap();
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert_eq!(images.pending[0].id, pending);
+    assert!(!images.pending[0].optional);
+    ready(&mut images, &wake).unwrap();
+    assert!(images.loaded.contains_key(source));
+    assert_eq!(images.loads, loads);
+}
+
+#[test]
+fn removing_a_preloaded_page_cancels_its_work_without_retaining_pixels() {
+    let (mut images, _) = loader();
+    let (mut stage, _) = preload_stage("assets/panels.png");
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.poll().unwrap());
+    assert_eq!(images.pending.len(), 1);
+    let root = stage
+        .create(reel_ui::stage::NodeKind::Stack, Default::default(), vec![])
+        .unwrap();
+    stage.replace(root).unwrap();
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.pending.is_empty());
+    assert!(images.prefetch.is_empty());
+    assert!(images.loaded.is_empty());
+    assert!(images.poll().unwrap());
+}
+
+#[test]
+fn returning_gpu_image_does_not_cancel_unrelated_prefetch() {
+    let (mut images, wake) = loader();
+    let visible = "assets/panels.png";
+    images.request(wanted(&[visible]));
+    ready(&mut images, &wake).unwrap();
+    assert!(images.loaded[visible].discard_uploaded_pixels());
+    images.commit();
+    images.request(wanted(&[]));
+    images.commit();
+
+    images.prefetch.insert("assets/sun.jpg".into());
+    images.settled = false;
+    assert!(images.poll().unwrap());
+    let queued = images.pending[0].id;
+    images.wanted = wanted(&[visible]);
+    images.mounted.insert(visible.into());
+    images.reconcile_requests();
+    assert!(images.loaded.contains_key(visible));
+    assert_eq!(images.pending[0].id, queued);
+}
+
+#[test]
+fn encoded_hidden_images_use_the_same_bounded_prefetch_path() {
+    use reel_ui::stage::{ImageSource, NodeKind};
+    let (mut images, wake) = loader();
+    let (mut stage, id) = preload_stage("unused.png");
+    let mut node = stage.node(id).unwrap().clone();
+    let NodeKind::Image { source, .. } = &mut node.kind else {
+        unreachable!()
+    };
+    *source = ImageSource::encoded(Arc::<[u8]>::from(
+        &include_bytes!("../../../../examples/assets/panels.png")[..],
+    ));
+    let key = source.key().to_owned();
+    stage.update(id, node.kind, node.props).unwrap();
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.poll().unwrap());
+    while !images.loaded.contains_key(&key) {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(images.poll().unwrap());
+    }
+    assert_eq!(images.loaded[&key].image_size(), Some([160, 90]));
+}
+
+#[test]
+fn prefetch_quota_rejection_is_settled_then_visible_demand_loads_normally() {
+    let (mut images, wake) = configured(160 * 90 * 4, 256 << 20);
+    let (stage, _) = preload_stage("assets/panels.png");
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.poll().unwrap());
+    while !images.skipped.contains("assets/panels.png") {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(images.poll().unwrap());
+    }
+    assert!(images.loaded.is_empty());
+    let loads = images.loads;
+    for _ in 0..8 {
+        assert!(images.poll().unwrap());
+    }
+    assert_eq!(
+        images.loads, loads,
+        "settled prefetch must not retry each frame"
+    );
+    images.request(wanted(&["assets/panels.png"]));
+    ready(&mut images, &wake).unwrap();
+    assert!(images.loaded.contains_key("assets/panels.png"));
+}
+
+#[test]
+fn foreground_residency_does_not_consume_the_hidden_prefetch_share() {
+    const PANEL: u64 = 160 * 90 * 4;
+    let (mut images, wake) = configured(PANEL * 4, 256 << 20);
+    let foreground = images.pool.reserve(PANEL * 2).unwrap();
+    let (stage, _) = preload_stage("assets/panels.png");
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    images.prefetch.insert("assets/sun.jpg".into());
+    assert!(images.poll().unwrap());
+    while !images.skipped.contains("assets/sun.jpg") {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(images.poll().unwrap());
+    }
+    assert!(images.loaded.contains_key("assets/panels.png"));
+    assert!(!images.loaded.contains_key("assets/sun.jpg"));
+    assert_eq!(images.hidden_prefetch_bytes(), PANEL);
+    assert_eq!(images.pool.usage().bytes, PANEL * 3);
+    images.close();
+    assert_eq!(images.pool.usage().bytes, PANEL * 2);
+    drop(foreground);
+    assert_eq!(images.pool.usage().bytes, 0);
+}
+
 fn loader() -> (Images, Receiver<()>) {
     configured(256 << 20, 256 << 20)
 }
@@ -144,6 +341,12 @@ fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
     assert!(!weak.is_released());
     assert_eq!(images.loads, 2);
 
+    images.prefetch.insert("assets/panels.png".to_owned());
+    images.settled = false;
+    assert!(images.poll().unwrap());
+    assert_eq!(images.loaded["assets/panels.png"].handle(), first);
+    assert!(images.pending.is_empty());
+
     images.request(wanted(&["assets/panels.png"]));
     assert!(images.poll().unwrap());
     assert_eq!(images.loaded["assets/panels.png"].handle(), first);
@@ -165,7 +368,7 @@ fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resu
             "author_images/src/main.aside",
             1 << 20,
             1 << 20,
-            "expected PNG or JPEG",
+            "expected PNG, JPEG or static WebP artwork",
         ),
         ("assets/panels.png", 1, 1 << 20, "resident budget"),
         ("assets/panels.png", 1 << 20, 1, "limit"),

@@ -16,7 +16,8 @@ fn immutable_member_receivers_survive_snapshot_at_every_small_slice() {
         .unwrap()
         .into_module()
         .unwrap();
-    let compiled = lowering::compile(&module, &Default::default(), Default::default()).unwrap();
+    let compiled =
+        lowering::compile(&module, &Default::default(), &[], Default::default()).unwrap();
     let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
     let main = bc::FunctionId(
         compiled

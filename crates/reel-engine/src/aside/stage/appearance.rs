@@ -6,7 +6,11 @@ use aside_host::{
 };
 
 fn image_source() -> TypeHint {
-    TypeHint::Union(vec![TypeHint::String, named("Bytes")])
+    TypeHint::Union(vec![
+        TypeHint::String,
+        named("Bytes"),
+        named("reel::types::ImageSkin"),
+    ])
 }
 fn text_source() -> TypeHint {
     TypeHint::Union(vec![TypeHint::String, named("reel::types::RichText")])
@@ -44,7 +48,7 @@ fn rgb() -> TypeHint {
     reason = "The enum variants declare the generated ordered property schema."
 )]
 pub(in crate::aside) enum ImageField {
-    /// An asset path or encoded image bytes.
+    /// An asset path, encoded image bytes, or an interaction source from image_skin.
     #[aside(name="source",ty=Any,doc_type=image_source())]
     Source,
     /// Size the source using contain, cover or stretch.

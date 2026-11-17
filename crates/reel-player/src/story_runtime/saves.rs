@@ -1,9 +1,8 @@
 use super::*;
 use crate::saves::{Candidate, Capture, RuntimeSaves, StorageJob, StorageResult};
 use reel_engine::aside::{
-    AdapterError,
+    checkpoint::{CheckpointError, CheckpointLoad, CheckpointRecord},
     saves::{SaveOperation, SaveResult},
-    snapshot::{OwnedSessionRestore, SnapshotBudget, SnapshotError},
 };
 
 impl StoryRuntime {
@@ -28,6 +27,7 @@ impl StoryRuntime {
         &mut self,
         now_ns: u64,
         budget: SliceBudget,
+        now: &mut impl FnMut() -> u64,
     ) -> Result<bool, Error> {
         let Some(mut saves) = self.saves.take() else {
             if self.starting.is_some() {
@@ -52,21 +52,69 @@ impl StoryRuntime {
             }
             return Ok(false);
         };
-        let result = self.drive_saves(&mut saves, now_ns, budget);
+        let result = self.drive_saves(&mut saves, now_ns, budget, now);
         self.saves = Some(saves);
         result
     }
+    fn start_restore(
+        &self,
+        saves: &mut RuntimeSaves,
+        checkpoint: CheckpointRecord,
+    ) -> Result<(), Error> {
+        let live = self.driver.as_ref().unwrap();
+        let identity = live.ui().session().identity();
+        saves.next_epoch = saves.next_epoch.max(identity.epoch.0) + 1;
+        let session = reel_engine::Session::new_with_read_progress(
+            identity.session_id,
+            reel_engine::Epoch(saves.next_epoch),
+            live.ui().session().read_progress().clone(),
+        )?;
+        let story = reel_engine::aside::source::CompiledStory {
+            program: live.adapter().vm().program().clone(),
+            resume: live.adapter().resume_table().clone(),
+            initializer: live.initializer(),
+            entry: live.entry_function(),
+            catalogs: Default::default(),
+            effects: live.adapter().effect_products(),
+        };
+        let mut candidate = AsideSessionUi::from_compiled(
+            session,
+            story,
+            live.locale(),
+            live.adapter().vm().limits(),
+        )?
+        .with_asset_context(live.ui().assets(), live.catalogs());
+        candidate
+            .adapter_mut()
+            .set_source_catalogs(live.adapter().source_catalogs())?;
+        candidate
+            .adapter_mut()
+            .inherit_game_settings(live.adapter().game_settings().clone());
+        candidate
+            .adapter_mut()
+            .set_window_info(live.adapter().window_info().clone());
+        if let Some(factory) = &self.media_factory {
+            candidate = candidate.with_media(factory())?;
+        }
+        candidate.suspend_media();
+        let restore = CheckpointLoad::new(checkpoint, candidate.adapter())?;
+        saves.candidate = Some(Candidate::new(candidate)?);
+        saves.restore = Some(restore);
+        Ok(())
+    }
+
     fn drive_saves(
         &mut self,
         saves: &mut RuntimeSaves,
         now_ns: u64,
         budget: SliceBudget,
+        now: &mut impl FnMut() -> u64,
     ) -> Result<bool, Error> {
-        let quota = SnapshotBudget { units: 256 };
+        let quota = 256;
         if !self.closing && self.starting.is_none() && self.capture.is_none() {
             let adapter = self.driver.as_mut().unwrap().adapter_mut();
             if adapter.save_results_pending() {
-                adapter.maintain_save_results(quota.units)?;
+                adapter.maintain_save_results(quota)?;
                 self.runnable = true;
                 if adapter.save_results_pending() {
                     return Ok(true);
@@ -77,41 +125,38 @@ impl StoryRuntime {
             saves.restore = None;
             saves.candidate = None;
             saves.pending = None;
+            saves.history.reset();
         }
         let mut events = Vec::new();
         saves.service.drain(&mut events, 8);
         for event in events {
+            saves.captured = None;
             if self.closing || self.starting.is_some() {
                 continue;
             }
             self.clock_sample_requested = true;
+            if let Some(candidate) = &mut saves.candidate
+                && event.request.session == candidate.driver.ui().session().identity()
+            {
+                let result = match event.result {
+                    Ok(StorageResult::Saved | StorageResult::Deleted) => SaveResult::Done,
+                    Ok(StorageResult::Slots(slots)) => SaveResult::Slots(slots),
+                    Ok(StorageResult::Data(data)) => SaveResult::Data(data),
+                    Ok(StorageResult::Loaded(_)) => {
+                        SaveResult::Failed("nested load during Root preparation".into())
+                    }
+                    Err(error) => SaveResult::Failed(error),
+                };
+                candidate
+                    .driver
+                    .adapter_mut()
+                    .complete_save_request(event.request, result)?;
+                continue;
+            }
             let result = match event.result {
-                Ok(StorageResult::Loaded(snapshot)) => {
-                    let driver = self.driver.as_ref().unwrap();
-                    let mut identity = driver.ui().session().identity();
-                    saves.next_epoch = saves.next_epoch.max(identity.epoch.0) + 1;
-                    identity.epoch = reel_engine::Epoch(saves.next_epoch);
-                    let restored = OwnedSessionRestore::new(
-                        *snapshot,
-                        driver.adapter().vm().program().clone(),
-                        driver.adapter().vm().limits(),
-                        identity,
-                        driver.ui().session().read_progress().clone(),
-                        self.media_factory.as_ref().map(|factory| factory()),
-                        Some(driver.catalog_loader()),
-                    )
-                    .and_then(|restore| {
-                        restore
-                            .with_source_catalogs(driver.adapter().source_catalogs())
-                            .and_then(|restore| {
-                                restore.with_effect_products(driver.adapter().effect_products())
-                            })
-                    });
-                    match restored {
-                        Ok(restore) => {
-                            saves.restore = Some(restore);
-                            continue;
-                        }
+                Ok(StorageResult::Loaded(checkpoint)) => {
+                    match self.start_restore(saves, *checkpoint) {
+                        Ok(()) => continue,
                         Err(error) => SaveResult::Failed(error.to_string()),
                     }
                 }
@@ -146,36 +191,65 @@ impl StoryRuntime {
         // Restore in isolation. Candidate resource errors settle the old request.
         let prepared = (|| -> Result<bool, Error> {
             if let Some(restore) = &mut saves.restore {
-                if !restore.step(quota)?.complete {
+                let candidate = saves.candidate.as_mut().unwrap();
+                let complete = candidate
+                    .driver
+                    .load_checkpoint_step(restore, budget, now)?;
+                if saves.service.is_idle()
+                    && let Some(request) = candidate.driver.adapter_mut().take_save_request()
+                {
+                    let job = match &request.operation {
+                        operation @ (SaveOperation::List
+                        | SaveOperation::Thumbnail { .. }
+                        | SaveOperation::ReadData { .. }) => Some(storage_job(operation)),
+                        _ => None,
+                    };
+                    if let Some(job) = job {
+                        if let Err(rejected) =
+                            saves
+                                .service
+                                .submit(request.id, job, saves.max_snapshot_bytes)
+                        {
+                            candidate.driver.adapter_mut().complete_save_request(
+                                request.id,
+                                SaveResult::Failed(format!("save queue: {:?}", rejected.reason)),
+                            )?;
+                        }
+                    } else {
+                        candidate.driver.adapter_mut().complete_save_request(
+                            request.id,
+                            SaveResult::Failed(
+                                "saved Root preparation allows storage reads only".into(),
+                            ),
+                        )?;
+                    }
+                }
+                if !complete {
                     return Ok(false);
                 }
-                let (session, mut vm) = saves.restore.take().unwrap().finish()?;
-                let live = self.driver.as_ref().unwrap();
-                vm.set_window_info(live.adapter().window_info().clone());
-                saves.candidate = Some(Candidate::new(AsideSessionUi::restored(
-                    session,
-                    vm,
-                    live.locale().into(),
-                    live.ui().assets(),
-                    live.initializer(),
-                    live.catalogs(),
-                )?)?);
+                saves.restore = None;
             }
             if let Some(candidate) = &mut saves.candidate {
-                if !candidate.driver.prepare_restored(budget)? {
+                if !candidate.driver.prepare_restored(budget, now)? {
                     return Ok(false);
                 }
                 candidate
                     .driver
-                    .ui_mut()
                     .sync(&mut candidate.bridge, candidate.root)?;
-                return Ok(!candidate.driver.ui().images_pending());
+                return Ok(candidate.driver.adapter().stage_ready()
+                    && !candidate.driver.ui().images_pending());
             }
             Ok(false)
         })();
         match prepared {
             Ok(true) => {
                 let mut candidate = saves.candidate.take().unwrap().driver;
+                match saves.pending.as_ref().map(|request| &request.operation) {
+                    Some(SaveOperation::Jump { group }) => {
+                        saves.history.adopt(&mut candidate, *group)
+                    }
+                    _ => saves.history.reset(),
+                }
                 let mut old = self.driver.take().unwrap();
                 old.cancel()?;
                 self.retiring = Some(old);
@@ -224,9 +298,9 @@ impl StoryRuntime {
         if let Some(capture) = &mut self.capture {
             let progress = capture.step(quota).and_then(|complete| {
                 if capture.bytes > saves.max_snapshot_bytes {
-                    Err(AdapterError::Snapshot(SnapshotError::Invalid(
-                        "snapshot exceeds storage budget".into(),
-                    )))
+                    Err(CheckpointError::Contract(
+                        "checkpoint exceeds storage budget",
+                    ))
                 } else {
                     Ok(complete)
                 }
@@ -235,8 +309,24 @@ impl StoryRuntime {
                 Ok(false) => return Ok(true),
                 Ok(true) => {
                     let retained_bytes = capture.bytes;
-                    let (driver, snapshot) = self.capture.take().unwrap().finish()?;
+                    let (driver, checkpoint) = self.capture.take().unwrap().finish();
                     self.driver = Some(driver);
+                    let checkpoint = match checkpoint {
+                        Ok(checkpoint) => checkpoint,
+                        Err(error) => {
+                            let request = saves.pending.take().unwrap();
+                            self.driver
+                                .as_mut()
+                                .unwrap()
+                                .adapter_mut()
+                                .complete_save_request(
+                                    request.id,
+                                    SaveResult::Failed(error.to_string()),
+                                )?;
+                            self.runnable = true;
+                            return Ok(false);
+                        }
+                    };
                     self.suspended_ns +=
                         now_ns.saturating_sub(self.capture_started.take().unwrap());
                     let request = saves.pending.as_ref().unwrap();
@@ -254,7 +344,7 @@ impl StoryRuntime {
                             slot: slot.clone(),
                             title: title.clone(),
                             thumbnail: thumbnail.clone(),
-                            snapshot: Box::new(snapshot),
+                            checkpoint: checkpoint.shared_record(),
                         },
                         retained_bytes.saturating_add(
                             thumbnail.as_ref().map_or(0, |data| data.retained_bytes()),
@@ -268,6 +358,8 @@ impl StoryRuntime {
                             .complete_save_request(request.id, SaveResult::Failed(error))?;
                         saves.pending = None;
                         self.runnable = true;
+                    } else {
+                        saves.captured = Some(checkpoint);
                     }
                     return Ok(false);
                 }
@@ -299,6 +391,30 @@ impl StoryRuntime {
         if !saves.service.is_idle() {
             return Ok(false);
         }
+        if let SaveOperation::Jump { group } = request.operation {
+            let id = request.id;
+            let record = self
+                .driver()
+                .adapter()
+                .tracks_history()
+                .then(|| saves.history.record(self.driver().ui().session(), group))
+                .flatten();
+            let error = match record {
+                Some(record) => match self.start_restore(saves, record) {
+                    Ok(()) => return Ok(true),
+                    Err(error) => error.to_string(),
+                },
+                None => "history checkpoint is no longer available".into(),
+            };
+            self.driver
+                .as_mut()
+                .unwrap()
+                .adapter_mut()
+                .complete_save_request(id, SaveResult::Failed(error))?;
+            saves.pending = None;
+            self.runnable = true;
+            return Ok(false);
+        }
         if matches!(request.operation, SaveOperation::Save { .. }) {
             if self.suspended_at.is_some()
                 || self.collecting
@@ -316,40 +432,17 @@ impl StoryRuntime {
                 }
                 Err((driver, error)) => {
                     self.driver = Some(driver);
-                    if !matches!(error, AdapterError::Snapshot(SnapshotError::Busy(_))) {
-                        self.driver
-                            .as_mut()
-                            .unwrap()
-                            .adapter_mut()
-                            .complete_save_request(
-                                request.id,
-                                SaveResult::Failed(error.to_string()),
-                            )?;
-                        saves.pending = None;
-                        self.runnable = true;
-                    }
+                    self.driver
+                        .as_mut()
+                        .unwrap()
+                        .adapter_mut()
+                        .complete_save_request(request.id, SaveResult::Failed(error.to_string()))?;
+                    saves.pending = None;
+                    self.runnable = true;
                 }
             }
         } else {
-            let job = match &request.operation {
-                SaveOperation::Load { slot } => StorageJob::Load(slot.clone()),
-                SaveOperation::Copy {
-                    source,
-                    destination,
-                } => StorageJob::Copy {
-                    source: source.clone(),
-                    destination: destination.clone(),
-                },
-                SaveOperation::Delete { slot } => StorageJob::Delete(slot.clone()),
-                SaveOperation::List => StorageJob::List,
-                SaveOperation::Thumbnail { slot } => StorageJob::Thumbnail(slot.clone()),
-                SaveOperation::ReadData { key } => StorageJob::ReadData(key.clone()),
-                SaveOperation::WriteData { key, data } => {
-                    StorageJob::WriteData(key.clone(), data.clone())
-                }
-                SaveOperation::DeleteData { key } => StorageJob::DeleteData(key.clone()),
-                _ => unreachable!(),
-            };
+            let job = storage_job(&request.operation);
             let retained = match &job {
                 StorageJob::WriteData(_, data) => data.retained_bytes(),
                 _ => saves.max_snapshot_bytes,
@@ -368,6 +461,28 @@ impl StoryRuntime {
             }
         }
         Ok(false)
+    }
+}
+
+fn storage_job(operation: &SaveOperation) -> StorageJob {
+    match operation {
+        SaveOperation::Load { slot } => StorageJob::Load(slot.clone()),
+        SaveOperation::Copy {
+            source,
+            destination,
+        } => StorageJob::Copy {
+            source: source.clone(),
+            destination: destination.clone(),
+        },
+        SaveOperation::Delete { slot } => StorageJob::Delete(slot.clone()),
+        SaveOperation::List => StorageJob::List,
+        SaveOperation::Thumbnail { slot } => StorageJob::Thumbnail(slot.clone()),
+        SaveOperation::ReadData { key } => StorageJob::ReadData(key.clone()),
+        SaveOperation::WriteData { key, data } => StorageJob::WriteData(key.clone(), data.clone()),
+        SaveOperation::DeleteData { key } => StorageJob::DeleteData(key.clone()),
+        SaveOperation::Save { .. } | SaveOperation::Jump { .. } => {
+            unreachable!("operation uses an in-process checkpoint")
+        }
     }
 }
 
@@ -448,12 +563,26 @@ mod tests {
             let changes = Rc::new(Cell::new(0));
             let driver = AsideSessionUi::from_source(
                 Session::new(SessionId(83), Epoch(1)).unwrap(),
-                r#"fn main() {
-                    let retained=[]; for i in 0..2000 { retained.append(i); }
+                r#"
+                use std::resume::{state,root,flow,point};
+                class World {
+                    let retained:array=[];
+                    fn init(self){for i in 0..2000{self.retained.append(i);}}
+                }
+                state(World,"world");root(main,"game");
+                fn main(world:World=model(World())) {
                     let music=audio.play("track");
-                    try { await saves.save("slot"); } catch error { }
-                    if retained.len()!=2000 { throw "retained data"; }
-                    narrator("saved");
+                    reading(||{
+                        spawn(||{
+                            await when(||game.dialogue().active);
+                            try {await saves.save("slot");} catch error {}
+                        });
+                        run_flow(story,world)
+                    })
+                }
+                fn story(world:World){
+                    flow("story");point("line");narrator("saved");
+                    if world.retained.len()!=2000{throw "retained data";}
                 }"#,
                 "save_media",
                 1,

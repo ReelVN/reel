@@ -68,6 +68,7 @@ fn dynamic_names_preserve_fault_kinds_and_source_locations() {
         let compiled = lowering::compile(
             &module,
             &lowering::Linkage::default(),
+            &[],
             lowering::Options::default(),
         )
         .unwrap();
@@ -170,6 +171,7 @@ fn dynamic_field_updates_reuse_storage_and_charge_lookup_work() {
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();
@@ -384,6 +386,7 @@ fn model_indices_share_bind_locations_and_replace_derived_dependencies() {
             natives: &links,
             expansions: &[],
         },
+        &[],
         lowering::Options::default(),
     )
     .unwrap();

@@ -12,14 +12,11 @@ impl Vm {
     }
     pub(super) fn load_initial(
         program: VerifiedProgram,
-        mut support: RuntimeSupport,
+        support: RuntimeSupport,
         limits: VmLimits,
         epoch: SessionEpoch,
         initialize: bool,
     ) -> Result<Self, VmError> {
-        support.opcodes = SUPPORTED_OPCODES.to_vec();
-        program.require_runtime(&support)?;
-        program.require_text_pool()?;
         let p = program.package();
         if limits.max_frames == 0
             || limits.max_unwinds == 0
@@ -66,6 +63,21 @@ impl Vm {
         }
         let mut heap = Heap::new(epoch, limits.heap)?;
         let usage = heap.budget_usage();
+        let mut native_parameters = ChargedVec::new(&usage, p.natives.len())?;
+        program.bind_runtime(&support, SUPPORTED_OPCODES, |id, registered| {
+            native_parameters.data.push(NativeParameters {
+                standard_derived_commit: registered.standard_derived_commit,
+                read_only_leaf: registered.read_only_leaf,
+                needs_cells: program.native_parameters_need_cells(id)?,
+                has_defaults: registered
+                    .signature
+                    .parameters
+                    .iter()
+                    .any(|p| p.default.is_some()),
+            });
+            Ok(())
+        })?;
+        program.require_text_pool()?;
         let type_checks = types::TypeChecks::new(p, &usage, &support.host_types)?;
         let program_charge = Reservation::new(
             &usage,
@@ -111,46 +123,6 @@ impl Vm {
             - std::mem::size_of::<Heap>()
             - std::mem::size_of::<FrameSlots>();
         let control_charge = Reservation::new(&usage, control_bytes as u64)?;
-        // Derive immutable binder properties once; calls read charged metadata.
-        let mut native_parameters = ChargedVec::new(&usage, p.natives.len())?;
-        for (index, native) in p.natives.iter().enumerate() {
-            let registered = support
-                .natives
-                .iter()
-                .find(|registered| {
-                    registered.symbol == p.symbols[native.symbol.index()]
-                        && registered.abi_version == native.abi_version
-                        && registered.signature == p.signatures[native.signature.index()]
-                })
-                .expect("runtime admission checked the native registration");
-            native_parameters.data.push(NativeParameters {
-                standard_derived_commit: {
-                    #[cfg(feature = "vm-validation-oracle")]
-                    let disabled = std::env::var_os("ASIDE_VM_LEGACY_DERIVED_COMMIT")
-                        .is_some_and(|value| value == "1");
-                    #[cfg(not(feature = "vm-validation-oracle"))]
-                    let disabled = false;
-                    registered.standard_derived_commit && !disabled
-                },
-                read_only_leaf: {
-                    #[cfg(feature = "vm-validation-oracle")]
-                    let disabled = std::env::var_os("ASIDE_VM_LEGACY_NATIVE_LEAVES")
-                        .is_some_and(|value| value == "1");
-                    #[cfg(not(feature = "vm-validation-oracle"))]
-                    let disabled = false;
-                    if disabled {
-                        None
-                    } else {
-                        registered.read_only_leaf
-                    }
-                },
-                needs_cells: program.native_parameters_need_cells(NativeId(index as u32))?,
-                has_defaults: p.signatures[native.signature.index()]
-                    .parameters
-                    .iter()
-                    .any(|p| p.default.is_some()),
-            });
-        }
         let mut native_values = ChargedVec::new(&usage, native_count)?;
         // Non-owning full-generation handles: reuse live literals without
         // making the entire story a permanent GC root.
@@ -345,37 +317,28 @@ impl Vm {
             step_costs,
             #[cfg(test)]
             work_probe: WorkProbe::default(),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_scalar_suffixes: std::env::var_os("ASIDE_VM_LEGACY_SCALAR_SUFFIXES")
-                .is_some_and(|value| value == "1"),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_scalar_entry: std::env::var_os("ASIDE_VM_LEGACY_SCALAR_ENTRY")
-                .is_some_and(|value| value == "1"),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            value_entries: std::env::var_os("ASIDE_VM_VALUE_ENTRIES")
-                .is_none_or(|value| value != "0"),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_named_read_completion: std::env::var_os("ASIDE_VM_LEGACY_NAMED_READS")
-                .is_some_and(|value| value == "1"),
+            #[cfg(test)]
+            legacy_scalar_suffixes: false,
+            #[cfg(test)]
+            legacy_scalar_entry: false,
+            #[cfg(test)]
+            value_entries: true,
+            #[cfg(test)]
+            legacy_named_read_completion: false,
             #[cfg(any(test, feature = "vm-validation-oracle"))]
             value_entry_transactions: 0,
             #[cfg(any(test, feature = "vm-validation-oracle"))]
             value_entry_receivers: 0,
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_body_dispatch: std::env::var_os("ASIDE_VM_LEGACY_BODY_DISPATCH")
-                .is_some_and(|value| value == "1"),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_body_context: std::env::var_os("ASIDE_VM_LEGACY_BODY_CONTEXT")
-                .is_some_and(|value| value == "1"),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_body_clock: std::env::var_os("ASIDE_VM_LEGACY_BODY_CLOCK")
-                .is_some_and(|value| value == "1"),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_script_execution: std::env::var_os("ASIDE_VM_LEGACY_SCRIPT_EXECUTION")
-                .is_some_and(|value| value == "1"),
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
-            legacy_native_leaf_calls: std::env::var_os("ASIDE_VM_LEGACY_NATIVE_DIRECT")
-                .is_some_and(|value| value == "1"),
+            #[cfg(test)]
+            legacy_body_dispatch: false,
+            #[cfg(test)]
+            legacy_body_context: false,
+            #[cfg(test)]
+            legacy_body_clock: false,
+            #[cfg(test)]
+            legacy_script_execution: false,
+            #[cfg(test)]
+            legacy_native_leaf_calls: false,
         })
     }
 }

@@ -4,6 +4,7 @@
 //! Unicode bidirectional algorithm.
 
 use alloc::vec::Vec;
+use arrayvec::ArrayVec;
 use icu_properties::props::{BidiClass, BidiMirroringGlyph, BidiPairedBracketType};
 
 /// Type alias for a bidirectional level.
@@ -217,12 +218,17 @@ impl BidiResolver {
         let len = self.types.len();
         self.levels.clear();
         self.levels.resize(len, 0);
-        let mut stack = Stack::new();
+        let mut stack = ArrayVec::<Embedding, { MAX_STACK + 1 }>::new();
         let mut overflow_isolates = 0;
         let mut overflow_embedding = 0;
         let mut valid_isolates = 0;
-        stack.push(base, BidiClass::OtherNeutral, false);
+        stack.push(Embedding {
+            level: base,
+            override_status: BidiClass::OtherNeutral,
+            isolate: false,
+        });
         for i in 0..len {
+            let current = *stack.last().unwrap();
             let t = self.types[i];
             let tmask = mask(t);
             if tmask & EXPLICIT_MASK != 0 {
@@ -233,33 +239,32 @@ impl BidiResolver {
                     tmask & RTL_MASK != 0
                 };
                 if is_isolate {
-                    self.levels[i] = stack.embedding_level();
-                    let os = stack.override_status();
-                    if os != BidiClass::OtherNeutral {
-                        self.types[i] = os;
+                    self.levels[i] = current.level;
+                    if current.override_status != BidiClass::OtherNeutral {
+                        self.types[i] = current.override_status;
                     }
                 }
                 let new_level = if is_rtl {
-                    (stack.embedding_level() + 1) | 1
+                    (current.level + 1) | 1
                 } else {
-                    (stack.embedding_level() + 2) & !1
+                    (current.level + 2) & !1
                 };
                 if new_level <= MAX_STACK as u8 && overflow_isolates == 0 && overflow_embedding == 0
                 {
                     if is_isolate {
                         valid_isolates += 1;
                     }
-                    stack.push(
-                        new_level,
-                        if t == BidiClass::LeftToRightOverride {
+                    stack.push(Embedding {
+                        level: new_level,
+                        override_status: if t == BidiClass::LeftToRightOverride {
                             BidiClass::LeftToRight
                         } else if t == BidiClass::RightToLeftOverride {
                             BidiClass::RightToLeft
                         } else {
                             BidiClass::OtherNeutral
                         },
-                        is_isolate,
-                    );
+                        isolate: is_isolate,
+                    });
                 } else if is_isolate {
                     overflow_isolates += 1;
                 } else if overflow_isolates == 0 {
@@ -272,35 +277,36 @@ impl BidiResolver {
                     // empty
                 } else {
                     overflow_embedding = 0;
-                    while !stack.isolate_status() {
+                    while !stack.last().unwrap().isolate {
                         stack.pop();
                     }
                     stack.pop();
                     valid_isolates -= 1;
                 }
-                self.levels[i] = stack.embedding_level();
-                if stack.override_status() != BidiClass::OtherNeutral {
-                    self.types[i] = stack.override_status();
+                let current = stack.last().unwrap();
+                self.levels[i] = current.level;
+                if current.override_status != BidiClass::OtherNeutral {
+                    self.types[i] = current.override_status;
                 }
             } else if t == BidiClass::PopDirectionalFormat {
-                self.levels[i] = stack.embedding_level();
+                self.levels[i] = current.level;
                 if overflow_isolates > 0 {
                     // empty
                 } else if overflow_embedding > 0 {
                     overflow_embedding -= 1;
-                } else if !stack.isolate_status() && stack.depth >= 2 {
+                } else if !current.isolate && stack.len() >= 2 {
                     stack.pop();
                 }
             } else if t == BidiClass::ParagraphSeparator {
-                stack.depth = 1;
+                stack.truncate(1);
                 overflow_isolates = 0;
                 overflow_embedding = 0;
                 valid_isolates = 0;
                 self.levels[i] = base;
             } else if t != BidiClass::BoundaryNeutral {
-                self.levels[i] = stack.embedding_level();
-                if stack.override_status() != BidiClass::OtherNeutral {
-                    self.types[i] = stack.override_status();
+                self.levels[i] = current.level;
+                if current.override_status != BidiClass::OtherNeutral {
+                    self.types[i] = current.override_status;
                 }
             }
         }
@@ -491,7 +497,7 @@ impl BidiResolver {
         // N0
         if !self.brackets.is_empty() {
             let base_brackets = self.bracket_pairs.len();
-            let mut bracket_stack = BracketStack::new();
+            let mut bracket_stack = ArrayVec::<(usize, char), MAX_BRACKET_STACK>::new();
             for i in 0..len {
                 if types[i] != BidiClass::OtherNeutral {
                     continue;
@@ -501,13 +507,21 @@ impl BidiResolver {
                     let (_, ch, bracket) = self.brackets[index];
                     match bracket.paired_bracket_type {
                         BidiPairedBracketType::Open => {
-                            if bracket_stack.depth == MAX_BRACKET_STACK {
+                            if bracket_stack.is_full() {
                                 break;
                             }
-                            bracket_stack.push(i, bracket.mirroring_glyph.unwrap());
+                            bracket_stack.push((i, bracket.mirroring_glyph.unwrap()));
                         }
                         BidiPairedBracketType::Close => {
-                            if let Some(open) = bracket_stack.find_and_pop(ch) {
+                            if let Some(entry) = bracket_stack.iter().rposition(|&(_, closer)| {
+                                closer == ch
+                                    || matches!(
+                                        (closer, ch),
+                                        ('\u{232A}', '\u{3009}') | ('\u{3009}', '\u{232A}')
+                                    )
+                            }) {
+                                let (open, _) = bracket_stack[entry];
+                                bracket_stack.truncate(entry);
                                 self.bracket_pairs.push((open, i));
                             }
                         }
@@ -811,87 +825,14 @@ impl Run {
 
 const MAX_STACK: usize = 125;
 
-struct Stack {
-    embedding_level: [u8; MAX_STACK + 1],
-    override_status: [BidiClass; MAX_STACK + 1],
-    isolate_status: [bool; MAX_STACK + 1],
-    depth: usize,
-}
-
-impl Stack {
-    fn new() -> Self {
-        Self {
-            depth: 0,
-            embedding_level: [0; MAX_STACK + 1],
-            override_status: [BidiClass::OtherNeutral; MAX_STACK + 1],
-            isolate_status: [false; MAX_STACK + 1],
-        }
-    }
-
-    fn push(&mut self, level: u8, override_status: BidiClass, isolate_status: bool) {
-        let d = self.depth;
-        self.embedding_level[d] = level;
-        self.override_status[d] = override_status;
-        self.isolate_status[d] = isolate_status;
-        self.depth += 1;
-    }
-
-    fn pop(&mut self) {
-        if self.depth > 1 {
-            self.depth -= 1;
-        }
-    }
-
-    fn embedding_level(&self) -> u8 {
-        self.embedding_level[self.depth - 1]
-    }
-
-    fn override_status(&self) -> BidiClass {
-        self.override_status[self.depth - 1]
-    }
-
-    fn isolate_status(&self) -> bool {
-        self.isolate_status[self.depth - 1]
-    }
+#[derive(Clone, Copy)]
+struct Embedding {
+    level: u8,
+    override_status: BidiClass,
+    isolate: bool,
 }
 
 const MAX_BRACKET_STACK: usize = 63;
-
-struct BracketStack {
-    openers: [(usize, char); MAX_BRACKET_STACK],
-    depth: usize,
-}
-
-impl BracketStack {
-    fn new() -> Self {
-        Self {
-            openers: [(0, '\0'); MAX_BRACKET_STACK],
-            depth: 0,
-        }
-    }
-
-    fn push(&mut self, offset: usize, closer: char) {
-        self.openers[self.depth] = (offset, closer);
-        self.depth += 1;
-    }
-
-    fn find_and_pop(&mut self, closer: char) -> Option<usize> {
-        if self.depth == 0 {
-            return None;
-        }
-        for i in (0..self.depth).rev() {
-            let c = self.openers[i].1;
-            if c == closer
-                || (c == '\u{232A}' && closer == '\u{3009}')
-                || (c == '\u{3009}' && closer == '\u{232A}')
-            {
-                self.depth = i;
-                return Some(self.openers[i].0);
-            }
-        }
-        None
-    }
-}
 
 const fn mask(t: BidiClass) -> u32 {
     // These are local set-membership bits, independent of ICU's numeric ABI.

@@ -177,6 +177,52 @@ fn scope_end(commands: &[reel_ui::frame::FrameCommand], push: usize) -> Option<u
     None
 }
 
+/// Parent raster and its eligibility to receive a source directly.
+pub(crate) struct SourceFreeParent<'a> {
+    pub group: Option<&'a FrameGroup>,
+    pub source_transform: Option<Affine>,
+    pub accepts_forwarded_source: bool,
+    pub shared_source: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceFreeOutput {
+    Forward,
+    Direct,
+    Composite,
+}
+
+/// Choose the same output path for storage planning and both render backends.
+pub(crate) fn source_free(
+    group: &FrameGroup,
+    parent: SourceFreeParent<'_>,
+    outer: Affine,
+    size: [u32; 2],
+    max_dimension: u32,
+    samples: u32,
+    at: RecordLocation,
+) -> Result<([u32; 2], SourceFreeOutput), GpuError> {
+    let source = layout(
+        group,
+        parent.group,
+        parent.source_transform,
+        outer,
+        size,
+        max_dimension,
+        at,
+    )?;
+    let output = if parent.accepts_forwarded_source
+        && effect_plan::forwards_source(group, &source, outer, size, parent.shared_source)
+    {
+        SourceFreeOutput::Forward
+    } else if effect_plan::terminal_composite(group, samples, false) {
+        SourceFreeOutput::Direct
+    } else {
+        SourceFreeOutput::Composite
+    };
+    Ok((source.size, output))
+}
+
 /// Preserve the existing local source grid even when its pixels have no reader.
 pub(crate) fn layout(
     group: &FrameGroup,

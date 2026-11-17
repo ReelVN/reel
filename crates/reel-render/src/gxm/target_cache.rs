@@ -292,28 +292,6 @@ impl Cache {
             }
         }
     }
-    pub fn prune_cold(&mut self) {
-        self.owners.prune_cold(|target| {
-            let unique = target.cache_only();
-            #[cfg(feature = "profiling")]
-            if unique {
-                target.trace_event(
-                    crate::profiling::TraceKind::TargetCache,
-                    "ordinary-cold-evict",
-                );
-            }
-            unique
-        });
-        self.macrotiles.prune_cold(|set| {
-            let unique = set.cache_only();
-            #[cfg(feature = "profiling")]
-            if unique {
-                set.cells[0]
-                    .trace_event(crate::profiling::TraceKind::TargetCache, "macro-cold-evict");
-            }
-            unique
-        });
-    }
     pub fn release_idle(&mut self) {
         self.owners.release_idle(|target| {
             let unique = target.cache_only();
@@ -335,6 +313,12 @@ impl Cache {
             }
             unique
         });
+    }
+    /// Protect the retained output while preserving queue-ordered scratch reuse.
+    pub fn exclude_retained(&mut self, output: &Target) {
+        self.owners.exclude(|target| target.same_allocation(output));
+        self.macrotiles
+            .exclude(|set| set.cells[0].same_allocation(output));
     }
     pub fn clear(&mut self) {
         #[cfg(feature = "profiling")]

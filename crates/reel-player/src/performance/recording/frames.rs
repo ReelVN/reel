@@ -23,7 +23,14 @@ use std::io::{self, Write};
 const CAPACITY: usize = 512;
 const SLOW_CAPACITY: usize = 64;
 const LABELS: usize = super::SEGMENTS;
-const CALL_PHASES: [Phase; 3] = [Phase::VmSlice, Phase::HostCall, Phase::SessionGc];
+const CALL_PHASES: [Phase; 6] = [
+    Phase::VmSlice,
+    Phase::HostCall,
+    Phase::SessionGc,
+    Phase::RenderTier16f4x,
+    Phase::RenderTier16f1x,
+    Phase::RenderTier8u1x,
+];
 const PHASES: [Phase; 42] = [
     Phase::VmSlice,
     Phase::HostCall,
@@ -345,7 +352,7 @@ impl Frames {
         vm::columns(out)?;
         writeln!(out)?;
         let mut rows: Vec<_> = self.slow.iter().chain(&self.rows).collect();
-        rows.sort_unstable_by_key(|frame| frame.index);
+        rows.sort_unstable_by_key(|frame| (frame.segment, frame.index));
         for frame in rows {
             write!(
                 out,
@@ -365,11 +372,9 @@ impl Frames {
                 frame.update_begin,
                 frame.update_end,
                 frame.work.projection_updates,
-                u8::from(
-                    self.rows
-                        .front()
-                        .is_none_or(|first| frame.index < first.index)
-                )
+                u8::from(self.rows.front().is_none_or(
+                    |first| (frame.segment, frame.index) < (first.segment, first.index)
+                ))
             )?;
             for value in frame.work.micros {
                 write!(out, "\t{value}")?;
@@ -554,6 +559,70 @@ mod tests {
     }
 
     #[test]
+    fn recent_and_slow_samples_keep_segment_order_when_frame_indices_restart() {
+        let mut frames = Frames::default();
+        let mut elapsed = 0;
+        for index in 0..CAPACITY + 32 {
+            elapsed += 16_667;
+            let mut sample = row(elapsed, 0, true);
+            if index == CAPACITY {
+                sample.active = 200_000;
+            }
+            frames.record("old page", &sample);
+        }
+        for _ in 0..CAPACITY + 16 {
+            elapsed += 16_667;
+            frames.record("middle page", &row(elapsed, 0, true));
+        }
+        for _ in 0..4 {
+            elapsed += 16_667;
+            frames.record("current page", &row(elapsed, 0, true));
+        }
+        assert_eq!(frames.rows.front().unwrap().segment, 2);
+        assert!(frames.rows.front().unwrap().index > 0);
+        let mut output = Vec::new();
+        frames.report(&mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let columns: Vec<_> = output
+            .lines()
+            .find(|line| line.starts_with("frame_columns\t"))
+            .unwrap()
+            .split('\t')
+            .collect();
+        let retained = columns
+            .iter()
+            .position(|name| *name == "retained_slow")
+            .unwrap();
+        let samples: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with("frame_sample\t"))
+            .map(|line| {
+                let values: Vec<_> = line.split('\t').collect();
+                (
+                    values[1].parse::<u64>().unwrap(),
+                    values[2].parse::<u64>().unwrap(),
+                    values[retained],
+                )
+            })
+            .collect();
+        assert!(
+            samples
+                .windows(2)
+                .all(|pair| (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1))
+        );
+        assert!(
+            samples.contains(&(1, CAPACITY as u64, "1")),
+            "old slow peak must stay historical"
+        );
+        for index in 0..4 {
+            assert!(
+                samples.contains(&(3, index, "0")),
+                "new page frames remain in the recent ring"
+            );
+        }
+    }
+
+    #[test]
     fn loop_and_projection_sequences_cover_all_maintenance_work() {
         let mut frames = Frames::default();
         let mut first = row(1000, 10, true);
@@ -598,16 +667,19 @@ mod tests {
         let mut sample = observation(counts);
         sample.gc.collections = 2;
         sample.gc.units = 100;
+        sample.gc.work_units = [20, 40, 5, 30, 5];
         frames.observed_vm = Some(sample);
         frames.record("a", &row(1000, 0, true));
         assert_eq!(frames.rows[0].vm_invalid_reason, 1);
         sample.gc.collections = 3;
         sample.gc.units = 145;
+        sample.gc.work_units = [24, 65, 6, 40, 10];
         frames.observed_vm = Some(sample);
         frames.record("a", &row(2000, 20, true));
         assert_eq!(frames.rows[1].vm_invalid_reason, 0);
         let gc = frames.rows[1].vm.unwrap().gc;
         assert_eq!((gc.collections, gc.units), (1, 45));
+        assert_eq!(gc.work_units, [4, 25, 1, 10, 5]);
         sample.counts.epoch = 3;
         frames.observed_vm = Some(sample);
         frames.record("a", &row(3000, 0, true));

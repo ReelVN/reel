@@ -56,6 +56,7 @@ fn props_match(a: &NodeProps, b: &NodeProps) -> bool {
         align_y,
         stretch,
         visible,
+        preload,
         enabled,
         clip,
         decorated,
@@ -80,7 +81,7 @@ fn props_match(a: &NodeProps, b: &NodeProps) -> bool {
         anchor_x,
         anchor_y,
         appearance_origin;
-        opacity, invert, blend, capture_included, modal,
+        semantics, opacity, invert, blend, capture_included, modal,
         reveal, reveal_fade, reveal_fade_from, reveal_fade_step,
         text_outline_color, text_shadow_color, color, text_gradient, background,
         border_width, border_color, corner_radius,

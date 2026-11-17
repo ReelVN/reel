@@ -162,7 +162,7 @@ impl Activities {
         Ok(())
     }
 
-    fn schedule(&mut self, heap: &mut Heap, leaf: Value) -> Result<(), AdapterError> {
+    pub(super) fn schedule(&mut self, heap: &mut Heap, leaf: Value) -> Result<(), AdapterError> {
         let start = get(heap, leaf, Slot::StartedAt)?.as_float().unwrap();
         let action = get(heap, leaf, Slot::Action)?;
         let clock = kind(heap, leaf)? == Kind::Clock;

@@ -49,7 +49,7 @@ impl SessionVm {
             NativeInput::CallbackReturned => {
                 let retained = self.vm.host_continuation(ticket)?;
                 let (output, node) = (retained[0], retained[1]);
-                let child = self.vm.host_callback_value(ticket)?;
+                let child = self.vm.host_resume_value(ticket)?;
                 // Keep the last mounted subtree until both computation and mount admission succeed.
                 let result = self
                     .vm

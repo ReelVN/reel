@@ -27,19 +27,8 @@ pub fn source_footprint(program: &EffectProgram) -> Option<EffectSourceFootprint
             continue;
         }
         let op = &program.nodes()[index].op;
-        if let EffectOp::Select {
-            condition,
-            when_true,
-            when_false,
-        } = *op
-        {
-            for id in [condition, when_true, when_false] {
-                live[id.0 as usize] = true;
-            }
-        } else {
-            for id in dependencies(op) {
-                live[id.0 as usize] = true;
-            }
+        for id in dependencies(op) {
+            live[id.0 as usize] = true;
         }
     }
     let mut values: Vec<Value> = Vec::with_capacity(live.len());

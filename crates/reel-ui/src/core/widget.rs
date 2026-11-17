@@ -65,6 +65,17 @@ pub struct SelectionGroupId(pub u64, pub u32);
 pub struct SelectionGroup {
     pub id: SelectionGroupId,
     pub selected: bool,
+    /// Optional tab navigation; ordinary radio groups use both axes and activate immediately.
+    pub tabs: Option<TabNavigation>,
+}
+
+/// Navigation policy shared by authored tab controls and accepted input geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabNavigation {
+    /// Navigate with vertical arrows instead of horizontal arrows.
+    pub vertical: bool,
+    /// Move focus with arrows and select only on explicit confirmation.
+    pub manual: bool,
 }
 
 impl WidgetId {

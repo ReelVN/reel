@@ -49,44 +49,6 @@ fn fixture(n: i64, sites: usize, legacy: bool) -> Vm {
 }
 
 #[test]
-#[ignore = "release same-binary compiler lifetime-suffix throughput measurement"]
-fn scalar_lifetime_suffix_cost() {
-    let n = std::env::var("ASIDE_BENCH_N")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(200_000);
-    for sites in [1, 32] {
-        for legacy in [true, false, false, true] {
-            let iterations = n / sites as i64;
-            let mut vm = fixture(iterations, sites, legacy);
-            let task = vm
-                .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
-                .unwrap();
-            let start = std::time::Instant::now();
-            loop {
-                match vm.run_slice(task, SliceBudget::default(), || 0).unwrap() {
-                    RunOutcome::BudgetYield(_) => {}
-                    RunOutcome::Returned(delivery) => {
-                        assert_eq!(vm.delivery_value(delivery).unwrap().as_int(), Some(37));
-                        break;
-                    }
-                    other => panic!("{other:?}"),
-                }
-            }
-            eprintln!(
-                "scalar_suffix legacy={legacy} sites={sites} iterations={iterations} elapsed_us={} instructions={} work={} slices={} groups={} dispatches_removed={}",
-                start.elapsed().as_micros(),
-                vm.cumulative_instructions,
-                vm.cumulative_work,
-                vm.slices,
-                vm.work_probe.scalar_suffix_groups.get(),
-                vm.work_probe.scalar_suffix_steps.get()
-            );
-        }
-    }
-}
-
-#[test]
 fn lifetime_suffix_retires_work_without_changing_completed_execution() {
     let mut observed = Vec::new();
     for legacy in [true, false] {

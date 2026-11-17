@@ -32,6 +32,7 @@ struct Reading {
     length: Option<usize>,
     version: Option<ContentVersion>,
     eof: bool,
+    location: Option<pack::Location>,
     cursor: Option<Box<reel_package::archive::ReadCursor>>,
 }
 impl Reading {
@@ -42,6 +43,7 @@ impl Reading {
             length: None,
             version: None,
             eof: false,
+            location: None,
             cursor: None,
         }
     }
@@ -51,7 +53,8 @@ impl Reading {
         cancelled: &AtomicBool,
         read_ahead: bool,
     ) -> Result<bool, IoError> {
-        let mut file = files.open(&self.request.resource, cancelled)?;
+        let mut file = files.open(&self.request.resource, self.location, cancelled)?;
+        self.location = file.location;
         let length = if let Some(length) = self.length {
             length
         } else {
@@ -205,15 +208,18 @@ impl Files {
     fn open(
         &mut self,
         source: &AssetSource,
+        location: Option<pack::Location>,
         cancelled: &AtomicBool,
     ) -> Result<ReadFile<'_>, IoError> {
         if cancelled.load(Ordering::Acquire) {
             return Err(failure("read cancelled"));
         }
-        reel_package::archive::validate_path(&source.key.0).map_err(io_error)?;
+        if location.is_none() {
+            reel_package::archive::validate_path(&source.key.0).map_err(io_error)?;
+        }
         let file = match self {
             Self::Directory(files) => ReadFile::directory(files.open(source)?),
-            Self::Pack(files) => files.entry(source)?,
+            Self::Pack(files) => files.entry(source, location)?,
         };
         if source
             .version
@@ -229,6 +235,7 @@ struct ReadFile<'a> {
     offset: u64,
     length: u64,
     version: ContentVersion,
+    location: Option<pack::Location>,
     compressed: Option<(
         reel_package::archive::Entry<'a>,
         &'a mut reel_package::archive::ReadScratch,
@@ -241,6 +248,7 @@ impl<'a> ReadFile<'a> {
             offset: 0,
             length: file.length,
             version: file.version,
+            location: None,
             compressed: None,
         }
     }
@@ -306,20 +314,19 @@ impl FileIo {
                     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Read);
                     let (scope, completion, result) = match request {
                         Request::Describe(r) => {
-                            let result =
-                                files
-                                    .lock()
-                                    .unwrap()
-                                    .open(&r.resource, cancelled)
-                                    .map(|file| {
-                                        IoPayload::Described(AssetInfo {
-                                            length: Some(file.length),
-                                            range_read: true,
-                                            seekable: true,
-                                            version: Some(file.version),
-                                            media_type: None,
-                                        })
-                                    });
+                            let result = files
+                                .lock()
+                                .unwrap()
+                                .open(&r.resource, None, cancelled)
+                                .map(|file| {
+                                    IoPayload::Described(AssetInfo {
+                                        length: Some(file.length),
+                                        range_read: true,
+                                        seekable: true,
+                                        version: Some(file.version),
+                                        media_type: None,
+                                    })
+                                });
                             (r.scope, r.completion, result)
                         }
                         Request::Read(mut reading) => {

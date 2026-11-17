@@ -59,7 +59,7 @@ impl super::patterns::PatternTypes for Binder<'_> {
             Type::Any | Type::Union(_) | Type::Named(_) | Type::Instance(_) => Shape::Unknown,
             Type::Tuple(elements) => Shape::Tuple(elements.clone()),
             Type::Array => Shape::Array,
-            Type::Table => Shape::Table,
+            Type::Table | Type::Record(_) => Shape::Table,
             _ => Shape::Other,
         }
     }
@@ -178,6 +178,7 @@ struct Binder<'a> {
     maps: Vec<HashMap<NameId, SymbolId>>,
     names: HashTable<NameId>,
     types: HashTable<TypeId>,
+    value_contracts: HashSet<TypeId>,
     initialized: Vec<bool>,
     annotations: HashSet<SymbolId>,
     refinements: HashMap<SymbolId, TypeId>,
@@ -205,13 +206,18 @@ struct Binder<'a> {
     fresh: HashSet<SymbolId>,
     work: usize,
     capture_count: usize,
+    has_children_spread: bool,
 }
 pub(super) fn analyze(
     hir: Hir,
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> Analysis {
-    let result = analyze_editor(hir, options, resolver);
+    let mut result = analyze_editor(hir, options, resolver);
+    if result.diagnostics.is_empty() && result.module.as_ref().is_some_and(super::has_resume_points)
+    {
+        super::infer_source_types(&mut result, options, resolver);
+    }
     Analysis {
         module: if result.diagnostics.is_empty() && !result.exhausted {
             result.module
@@ -320,6 +326,7 @@ pub(super) fn analyze_editor(
         maps: Vec::new(),
         names,
         types: type_map,
+        value_contracts: HashSet::new(),
         initialized: Vec::new(),
         annotations: HashSet::new(),
         refinements: HashMap::new(),
@@ -347,6 +354,7 @@ pub(super) fn analyze_editor(
         fresh: HashSet::new(),
         work: admitted,
         capture_count: 0,
+        has_children_spread: false,
     };
     b.new_scope(None, None, span);
     for host in &options.hosts {
@@ -441,12 +449,14 @@ pub(super) fn analyze_editor(
         exhausted: b.exhausted,
     }
 }
+mod contextual;
 mod control_flow;
 mod declarations;
 mod expressions;
 mod functions;
 mod members;
 mod types;
+mod value_contracts;
 
 impl Binder<'_> {
     fn resolve(&mut self, request: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
@@ -530,6 +540,16 @@ impl Binder<'_> {
             return id;
         }
         let id = TypeId(self.out.types.len() as u32);
+        let value_contract = match &t {
+            Type::Record(_) | Type::StringLiteral(_) => true,
+            Type::Tuple(types) | Type::Union(types) => {
+                types.iter().any(|ty| self.value_contracts.contains(ty))
+            }
+            _ => false,
+        };
+        if value_contract {
+            self.value_contracts.insert(id);
+        }
         self.out.types.push(t);
         self.types
             .insert_unique(hash, id, |id| intern_hash(&self.out.types[id.0 as usize]));
@@ -554,6 +574,14 @@ impl Binder<'_> {
             TypeHint::Int => INT,
             TypeHint::Float => FLOAT,
             TypeHint::String => STRING,
+            TypeHint::StringLiteral(text) => self.intern_type(Type::StringLiteral(text.clone())),
+            TypeHint::Record(fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, ty)| (self.intern_name(name), self.hint(ty)))
+                    .collect();
+                self.record_type(fields)
+            }
             TypeHint::Array => ARRAY,
             TypeHint::Table => TABLE,
             TypeHint::Future => FUTURE,
@@ -563,8 +591,12 @@ impl Binder<'_> {
                 self.intern_type(Type::Tuple(v))
             }
             TypeHint::Union(ts) => {
-                let v = ts.iter().map(|t| self.hint(t)).collect();
-                self.intern_type(Type::Union(v))
+                let members: Vec<_> = ts.iter().map(|t| self.hint(t)).collect();
+                if members.iter().any(|&ty| self.has_value_contract(ty)) {
+                    self.union_type(members)
+                } else {
+                    self.intern_type(Type::Union(members))
+                }
             }
             TypeHint::Callable(ts, r) => {
                 let v = ts.iter().map(|t| self.hint(t)).collect();
@@ -802,6 +834,15 @@ impl Binder<'_> {
         }
     }
     fn block(&mut self, n: NodeId, ctx: &Context, new_scope: bool) -> TypeId {
+        self.block_expected(n, ctx, new_scope, ANY)
+    }
+    fn block_expected(
+        &mut self,
+        n: NodeId,
+        ctx: &Context,
+        new_scope: bool,
+        expected: TypeId,
+    ) -> TypeId {
         if !self.budget(n) {
             return ANY;
         }
@@ -857,12 +898,22 @@ impl Binder<'_> {
             }
         }
         let mut result = NULL;
+        let tail = match self.out.hir.node(n).form {
+            Form::Block { tail } => tail,
+            _ => None,
+        };
+        let refinement_mark = self.refinement_undo.len();
         for &child in &children {
             if self.exhausted {
                 break;
             }
             if self.kind(self.unwrap(child)) != HirKind::Import {
-                result = self.visit(child, ctx);
+                result = self.visit_expected(
+                    child,
+                    ctx,
+                    if tail == Some(child) { expected } else { ANY },
+                );
+                self.refine_after_if(child);
             }
         }
         if let Some(&last) = children.last()
@@ -874,6 +925,7 @@ impl Binder<'_> {
         {
             result = NULL;
         }
+        self.restore_refinements(refinement_mark);
         self.scope = previous;
         self.set_ty(n, result)
     }
@@ -1328,6 +1380,8 @@ fn is_type(k: HirKind) -> bool {
     matches!(
         k,
         HirKind::NamedType
+            | HirKind::StringType
+            | HirKind::RecordType
             | HirKind::TupleType
             | HirKind::UnionType
             | HirKind::FunctionType
@@ -1337,7 +1391,13 @@ fn is_type(k: HirKind) -> bool {
 fn is_primitive(t: &Type) -> bool {
     matches!(
         t,
-        Type::Null | Type::Bool | Type::Int | Type::Float | Type::String | Type::Tuple(_)
+        Type::Null
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::String
+            | Type::StringLiteral(_)
+            | Type::Tuple(_)
     )
 }
 fn is_number(t: TypeId) -> bool {

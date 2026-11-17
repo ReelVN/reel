@@ -3,10 +3,13 @@ mod animation_cost;
 mod cursor;
 mod flow;
 mod input_focus;
+mod native_pages;
+mod native_scrollbar;
 mod prepared_textures;
 mod radio_navigation;
 mod retained;
 mod scroll_alignment;
+mod scroll_bounce;
 mod scroll_restore;
 mod styles;
 mod virtual_images;
@@ -92,8 +95,10 @@ fn virtual_fixture_with_font(
     let scroll = stage
         .create(
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
+                snap_y: None,
                 align: reel_ui::widgets::ScrollAlign::Start,
                 offset: Vec2::ZERO,
             },
@@ -537,9 +542,11 @@ fn stretched_background_follows_content_without_changing_flow_or_scroll_extent()
         .update(
             f.root,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 offset: Vec2::ZERO,
                 follow_end: false,
+                snap_y: None,
                 align: reel_ui::widgets::ScrollAlign::Start,
             },
             props,
@@ -580,6 +587,7 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
                 range,
                 value: 0.,
                 listening: true,
+                art: Default::default(),
             },
             NodeProps {
                 width: Some(220.),
@@ -615,6 +623,7 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
                 label: Some("Radio".into()),
                 selected: false,
                 revision: 0,
+                tabs: None,
             },
             NodeProps {
                 y: 110.,
@@ -647,6 +656,7 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
                     range,
                     value: f64::from(i % 100) / 100.,
                     listening: true,
+                    art: Default::default(),
                 },
                 props,
             )
@@ -672,6 +682,87 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
     eprintln!(
         "2000 slider/checkbox/radio frames with CPU recording/presentation: {:?}; added layouts=0",
         started.elapsed()
+    );
+}
+
+#[test]
+fn custom_slider_thumb_matches_pointer_travel_without_relayout() {
+    let mut f = Fixture::new(None);
+    let mut stage = Stage::default();
+    let track = stage
+        .create(NodeKind::Stack, NodeProps::default(), vec![])
+        .unwrap();
+    let thumb = stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                y: 4.,
+                height: Some(20.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let range = reel_ui::widgets::SliderRange::new(0., 1., None).unwrap();
+    let kind = |value| NodeKind::Slider {
+        range,
+        value,
+        listening: true,
+        art: reel_ui::stage::SliderArt {
+            track: Some(track),
+            thumb: Some(thumb),
+            thumb_width: 40.,
+        },
+    };
+    let props = NodeProps {
+        x: 20.,
+        y: 10.,
+        width: Some(200.),
+        height: Some(30.),
+        ..Default::default()
+    };
+    let slider = stage
+        .create(kind(0.25), props.clone(), vec![track, thumb])
+        .unwrap();
+    let root = stage
+        .create(NodeKind::Stack, NodeProps::default(), vec![slider])
+        .unwrap();
+    stage.replace(root).unwrap();
+    f.stage = stage;
+    f.root = root;
+    let first = f.record();
+    f.accept(&first);
+    let layouts = f.layouts();
+    let track_geometry = first.geometry().get(layouts[&track].0).unwrap();
+    assert_eq!(track_geometry.size, Size::new(200., 30.));
+    let thumb_geometry = first.geometry().get(layouts[&thumb].0).unwrap();
+    assert_eq!(thumb_geometry.size, Size::new(40., 20.));
+    assert_eq!(
+        thumb_geometry.window_transform.translation(),
+        Vec2::new(60., 14.)
+    );
+
+    let event = cursor::pointer(PointerType::Mouse, (200., 20.), Some(true));
+    let result = f.ui.handle_pointer(&mut f.bridge, event).unwrap();
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|event| matches!(event, NodeEvent::Change(NodeChange {
+        node, value: ControlValue::Number(value), ..
+    }) if *node == slider && *value == 1.))
+    );
+    f.stage.update(slider, kind(1.), props).unwrap();
+    let end = f.record();
+    f.accept(&end);
+    assert_eq!(f.layouts(), layouts);
+    assert_eq!(
+        end.geometry()
+            .get(layouts[&thumb].0)
+            .unwrap()
+            .window_transform
+            .translation(),
+        Vec2::new(180., 14.)
     );
 }
 
@@ -706,8 +797,10 @@ fn scroll_retains_layouts_reading_position_and_end_following() {
             .update(
                 f.root,
                 NodeKind::Scroll {
+                    overscroll: Default::default(),
                     axis,
                     follow_end: true,
+                    snap_y: None,
                     align: reel_ui::widgets::ScrollAlign::Start,
                     offset: Vec2::ZERO,
                 },
@@ -805,8 +898,10 @@ fn scroll_retains_layouts_reading_position_and_end_following() {
         .update(
             f.root,
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: true,
+                snap_y: None,
                 align: reel_ui::widgets::ScrollAlign::End,
                 offset: Vec2::ZERO,
             },
@@ -1441,6 +1536,7 @@ mod font_weight;
 mod natural_height;
 mod text_spacing;
 
+mod nested_virtual_list;
 mod text_layout;
 mod virtual_list;
 

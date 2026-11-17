@@ -349,7 +349,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 output: args.output.unwrap_or_else(|| {
                     loaded
                         .project_root
-                        .join("build/export")
+                        .join("dist")
                         .join(&args.resource_target)
                         .join(profile.name())
                 }),

@@ -61,7 +61,7 @@ impl Vm {
     }
     #[inline]
     pub(super) fn script_execution_enabled(&self) -> bool {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_script_execution {
             return false;
         }

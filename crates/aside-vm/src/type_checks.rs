@@ -37,6 +37,22 @@ impl TypeChecks {
                 TypeDef::Builtin(_) => (1, 0usize),
                 TypeDef::Function { .. } => (2, 0usize),
                 TypeDef::Named { .. } => (3 + host_types.work, 0usize),
+                TypeDef::StringLiteral(text) => (1 + text.len() as u64, 0),
+                TypeDef::Record(fields) => {
+                    let mut cost = 3u64;
+                    let mut depth = 0;
+                    for field in fields {
+                        let search = (fields.len() as u64)
+                            .checked_mul(3 + p.symbols[field.name.index()].len() as u64)
+                            .ok_or(VmError::Limit)?;
+                        cost = cost
+                            .checked_add(search)
+                            .and_then(|cost| cost.checked_add(work.data[field.ty.index()]))
+                            .ok_or(VmError::Limit)?;
+                        depth = depth.max(depths.data[field.ty.index()] + 1);
+                    }
+                    (cost, depth)
+                }
                 TypeDef::Tuple(items) | TypeDef::Union(items) => {
                     let mut cost = 3u64;
                     let mut depth = 0;
@@ -183,6 +199,26 @@ impl TypeChecks {
                         TypeDef::Named { .. } => {
                             accepted = crate::class::accepts_nominal(heap, value, ty)?
                         }
+                        TypeDef::StringLiteral(text) => {
+                            accepted = string_equal(heap, value, text)?;
+                        }
+                        TypeDef::Record(fields) => {
+                            if !heap.accepts_builtin(BuiltinType::Table, value)?
+                                || heap.table_len(value)? as usize != fields.len()
+                            {
+                                accepted = false;
+                            } else if fields.is_empty() {
+                                accepted = true;
+                            } else if let Some(field_value) =
+                                record_field(heap, value, 0, &p.symbols[fields[0].name.index()])?
+                            {
+                                stack.data.push(Cursor { ty, value, next: 1 });
+                                current = Some((fields[0].ty, field_value));
+                                continue;
+                            } else {
+                                accepted = false;
+                            }
+                        }
                         TypeDef::Tuple(items) => {
                             if !heap.accepts_builtin(BuiltinType::Tuple, value)?
                                 || heap.sequence_len(value)? as usize != items.len()
@@ -214,6 +250,23 @@ impl TypeChecks {
                     let (items, tuple) = match &p.types[parent.ty.index()] {
                         TypeDef::Tuple(items) => (items, true),
                         TypeDef::Union(items) => (items, false),
+                        TypeDef::Record(fields) => {
+                            if accepted && let Some(field) = fields.get(parent.next) {
+                                if let Some(value) = record_field(
+                                    heap,
+                                    parent.value,
+                                    parent.next,
+                                    &p.symbols[field.name.index()],
+                                )? {
+                                    parent.next += 1;
+                                    stack.data.push(parent);
+                                    current = Some((field.ty, value));
+                                    break;
+                                }
+                                accepted = false;
+                            }
+                            continue;
+                        }
                         _ => unreachable!(),
                     };
                     if accepted == tuple && parent.next < items.len() {
@@ -236,6 +289,44 @@ impl TypeChecks {
         stack.data.clear();
         result
     }
+}
+
+fn string_equal(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
+    if !heap.accepts_builtin(BuiltinType::String, value)?
+        || heap.read_object(value)?.len() as usize != expected.len()
+    {
+        return Ok(false);
+    }
+    let mut remaining = expected.as_bytes();
+    let mut offset = 0;
+    while !remaining.is_empty() {
+        let segment = heap.byte_segment(value, offset)?;
+        if !remaining.starts_with(segment) {
+            return Ok(false);
+        }
+        remaining = &remaining[segment.len()..];
+        offset += segment.len() as u32;
+    }
+    Ok(true)
+}
+
+fn record_field(
+    heap: &Heap,
+    table: Value,
+    preferred: usize,
+    name: &str,
+) -> Result<Option<Value>, HeapError> {
+    let table = heap.table_read(table)?;
+    let preferred = preferred as u32;
+    for index in
+        std::iter::once(preferred).chain((0..table.len()).filter(|&index| index != preferred))
+    {
+        let (key, value) = table.entry(index)?;
+        if string_equal(heap, key, name)? {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

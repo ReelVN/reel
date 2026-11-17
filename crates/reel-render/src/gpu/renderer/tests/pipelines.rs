@@ -57,11 +57,13 @@ fn frame(scene: Scene, size: [u32; 2], pool: &BudgetPool) -> RenderFrame {
 }
 fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
-    let programs =
-        21 * sets + renderer.pipelines.coverage_count() + renderer.pipelines.bounded_count();
+    let coverage = renderer.pipelines.coverage_count();
+    let bounded = renderer.pipelines.bounded_count();
+    let programs = 21 * sets + coverage + bounded;
+    let shaders = 2 * sets + 2 * (bounded / 10);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, programs, programs, programs, 8 * sets]
+        [3 * sets, shaders, programs, programs, 8 * sets]
     );
 }
 
@@ -249,6 +251,9 @@ fn nv12_submit_preserves_producer_and_reuses_only_matching_completed_planes() {
 fn initialization_reuses_builtin_mask_without_holding_program_or_images() {
     use reel_ui::stage::MaskProgram;
     let renderer = renderer(Default::default());
+    let preferred = renderer.gpu.quality([400, 300]).unwrap();
+    renderer.prepare_quality(preferred).unwrap();
+    counts(&renderer, 1);
     renderer.prepare_pipelines().unwrap();
     let sets = renderer.gpu.supported_qualities().count();
     let coverage_sets = renderer
@@ -313,7 +318,7 @@ fn zero_progress_transition_prepares_custom_mask_before_acceptance() {
         frame::{FrameTransition, RetainBuild},
         stage::{MaskOp, MaskProgram},
     };
-    let renderer = renderer(Default::default());
+    let mut renderer = renderer(Default::default());
     let pool = pool();
     let old = frame(scene(Color::BLACK), [400, 300], &pool);
     let mut retain = RetainBuild::new(&old, None, limits(), &pool).unwrap();
@@ -351,8 +356,25 @@ fn zero_progress_transition_prepares_custom_mask_before_acceptance() {
         while !build.step(step_budget()).unwrap().complete {}
         build.finish().unwrap()
     };
+    let prepare = |renderer: &mut Renderer, frame: &RenderFrame| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match renderer.prepare(frame) {
+                Ok(prepared) => break prepared,
+                Err(GpuError::Preparing) if Instant::now() < deadline => {
+                    renderer
+                        .gpu
+                        .device
+                        .poll(wgpu::PollType::wait_indefinitely())
+                        .unwrap();
+                    renderer.poll().unwrap();
+                }
+                Err(error) => panic!("transition preparation failed: {error:?}"),
+            }
+        }
+    };
     let zero = build_transition(0.);
-    let prepared = renderer.prepare(&zero).unwrap();
+    let prepared = prepare(&mut renderer, &zero);
     let quality = prepared.quality();
     drop(prepared);
     let pipelines = renderer.pipelines.get(&renderer.gpu, quality).unwrap();
@@ -372,7 +394,7 @@ fn zero_progress_transition_prepares_custom_mask_before_acceptance() {
         )
         .unwrap();
     let middle = build_transition(0.5);
-    drop(renderer.prepare(&middle).unwrap());
+    drop(prepare(&mut renderer, &middle));
     let second = pipelines
         .masks
         .get(
@@ -845,8 +867,8 @@ fn pipeline_reuse_construction_and_warm_driver_errors() {
     let attempted = cold.pipelines.creations.snapshot();
     assert_eq!(cold.pipelines.initialized_count(), 0);
     assert_eq!(
-        attempted[3], 19,
-        "the failed constructor validates the complete quality-tier pipeline set"
+        attempted[3], 0,
+        "invalid shader modules must stop construction before any worker creates a pipeline"
     );
     assert!(matches!(cold.prepare(&frame), Err(GpuError::Driver(_))));
     assert_eq!(cold.pipelines.creations.snapshot(), attempted);
@@ -913,7 +935,7 @@ fn pipeline_reuse_cold_warm_cpu_distribution() {
         cold.sort_unstable();
         warm.sort_unstable();
         eprintln!(
-            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}; per_renderer_creations=[3,10,10,10,8]",
+            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}",
             frame.info().physical_size,
             quality.unwrap(),
             cold[14].as_secs_f64() * 1e6,
@@ -1016,7 +1038,7 @@ fn pipeline_reuse_outer_scope_cannot_hide_construction_failure() {
         .store(false, Ordering::Relaxed);
     assert_eq!(renderer.pipelines.initialized_count(), 0);
     let attempted = renderer.pipelines.creations.snapshot();
-    assert_eq!(attempted[3], 4);
+    assert_eq!(attempted[3], 0);
     assert!(matches!(renderer.prepare(&frame), Err(GpuError::Driver(_))));
     assert_eq!(renderer.pipelines.creations.snapshot(), attempted);
     // Renderer owns its construction error; the caller's scope stays balanced.
@@ -1071,7 +1093,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
         renderer
             .pipelines
             .creations
-            .invalid_shader
+            .invalid_worker_pipeline
             .store(invalid, Ordering::Relaxed);
         let outer_scope = renderer
             .gpu
@@ -1115,9 +1137,11 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
                     .all(|result| matches!(result, Err(GpuError::Driver(_))))
             );
             assert_eq!(renderer.pipelines.initialized_count(), 0);
-            assert_eq!(
-                renderer.pipelines.creations.snapshot(),
-                [3, 18, 18, 18, 8],
+            assert!(
+                matches!(
+                    renderer.pipelines.creations.snapshot(),
+                    [3, 2 | 4, layouts, programs, 8] if programs > 0 && layouts == programs
+                ),
                 "one failed constructor becomes sticky before another tier constructs"
             );
         } else {
@@ -1644,7 +1668,7 @@ fn mask_expression_math_edges_and_budget_admission() {
         (0..too_many).map(|i| format!("image{i}").into()).collect(),
     )
     .unwrap();
-    assert!(
+    assert!(matches!(
         pipelines
             .masks
             .get(
@@ -1653,9 +1677,13 @@ fn mask_expression_math_edges_and_budget_admission() {
                 &program,
                 [0.; 5],
                 &renderer.budgets.resources
-            )
-            .is_err()
-    );
+            ),
+        Err(GpuError::Budget {
+            domain: "mask texture bindings",
+            requested,
+            available,
+        }) if requested == too_many as u64 + 3 && available == too_many as u64
+    ));
     assert_eq!(pipelines.masks.len(), 0);
     // Admission rejection leaves the renderer usable for the previously accepted content.
     let plain = frame(scene(Color::WHITE), [400, 300], &pool);

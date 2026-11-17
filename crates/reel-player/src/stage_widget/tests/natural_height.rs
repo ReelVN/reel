@@ -109,8 +109,10 @@ fn virtual_list_natural_first_frame_packs_measured_neighbors_and_keeps_actual_hi
     let viewport = stage
         .create(
             NodeKind::Scroll {
+                overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
+                snap_y: None,
                 align: reel_ui::widgets::ScrollAlign::Start,
                 offset: Vec2::new(0., 6645.),
             },
@@ -207,7 +209,10 @@ fn settle(d: &mut AsideSessionUi) {
 
 #[test]
 fn virtual_list_feedback_waits_for_ordinary_properties_then_records_same_committed_rows() {
-    for encoded in [false, true] {
+    for (encoded, delta) in [false, true]
+        .into_iter()
+        .flat_map(|encoded| [30., 100.].into_iter().map(move |delta| (encoded, delta)))
+    {
         let code = r#"fn main(){
             let values=[];for i in 0..80 {values.append(i);}
             let viewport=scroll(width:320,height:120);
@@ -297,7 +302,7 @@ fn virtual_list_feedback_waits_for_ordinary_properties_then_records_same_committ
                     position: PhysicalPosition::new(20., 20.),
                     ..Default::default()
                 },
-                delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0., 100.)),
+                delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0., delta)),
             }),
         )
         .unwrap();
@@ -308,6 +313,7 @@ fn virtual_list_feedback_waits_for_ordinary_properties_then_records_same_committ
             "queued scrollbar derive cannot paint stale props"
         );
         let mut feedback = false;
+        let mut boundaries = 0;
         for _ in 0..100_000 {
             d.tick(
                 SliceBudget {
@@ -319,9 +325,14 @@ fn virtual_list_feedback_waits_for_ordinary_properties_then_records_same_committ
             )
             .unwrap();
             if d.adapter().virtual_feedback_boundary() {
+                boundaries += 1;
                 d.sync(&mut bridge, root).unwrap();
                 if let Some((source, receipt)) = d.record(&mut bridge, root, FrameId(101)).unwrap()
                 {
+                    assert_eq!(
+                        delta, 30.,
+                        "a large jump waits for rows covering its new viewport"
+                    );
                     assert!(!receipt.current);
                     assert!(receipt.geometry.is_none());
                     assert_eq!(d.adapter().stage().node(list).unwrap().children, committed);
@@ -336,12 +347,36 @@ fn virtual_list_feedback_waits_for_ordinary_properties_then_records_same_committ
                     break;
                 }
             }
+            if delta == 100. && d.adapter().stage_ready() {
+                break;
+            }
         }
-        assert!(
+        assert!(boundaries > 0);
+        assert_eq!(
             feedback,
-            "whole-row boundary must resume drawing without another input"
+            delta == 30.,
+            "only an already covered window may draw committed rows while refilling"
         );
         settle(&mut d);
+        if delta == 100. {
+            let mut current = false;
+            for frame in 102..110 {
+                d.sync(&mut bridge, root).unwrap();
+                if let Some((_, receipt)) = d.record(&mut bridge, root, FrameId(frame)).unwrap()
+                    && receipt.current
+                {
+                    assert!(receipt.geometry.is_some());
+                    current = true;
+                    break;
+                }
+                settle(&mut d);
+            }
+            assert!(
+                current,
+                "a large jump presents after its measured rows cover the viewport"
+            );
+            assert_ne!(d.adapter().stage().node(list).unwrap().children, committed);
+        }
     }
 }
 fn actual_rows(

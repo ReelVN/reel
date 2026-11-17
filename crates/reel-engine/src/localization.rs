@@ -134,7 +134,7 @@ pub struct Localization {
     locale: LanguageIdentifier,
     base_locale: LanguageIdentifier,
     catalogs: HashMap<LanguageIdentifier, InstalledCatalog>,
-    templates: HashMap<(LanguageIdentifier, String), Catalog>,
+    templates: HashMap<LanguageIdentifier, HashMap<String, Catalog>>,
     retained: HashMap<LanguageIdentifier, usize>,
 }
 struct InstalledCatalog {
@@ -183,7 +183,7 @@ impl Localization {
                 || locale == &self.base_locale
                 || self.retained.contains_key(locale)
         });
-        self.templates.retain(|(locale, _), _| {
+        self.templates.retain(|locale, _| {
             locale == &self.locale
                 || locale == &self.base_locale
                 || self.catalogs.get(locale).is_some_and(|entry| entry.pinned)
@@ -204,11 +204,6 @@ impl Localization {
         {
             return;
         }
-        let pinned = pinned
-            || self
-                .catalogs
-                .get(&catalog.locale)
-                .is_some_and(|entry| entry.pinned);
         self.catalogs
             .insert(catalog.locale.clone(), InstalledCatalog { catalog, pinned });
     }
@@ -265,31 +260,44 @@ impl Localization {
         fallback: &str,
         args: Option<&FluentArgs<'_>>,
     ) -> Result<String, String> {
-        let base =
-            locale.map(|locale| LanguageIdentifier::from_parts(locale.language, None, None, &[]));
         let selected = locale.unwrap_or(&self.locale);
-        let base = base.as_ref().unwrap_or(&self.base_locale);
         let empty = FluentArgs::new();
         let parameters = args.unwrap_or(&empty);
-        for locale in [selected, base] {
-            if let Some(result) = self
-                .catalogs
+        let lookup = |locale| {
+            self.catalogs
                 .get(locale)
                 .and_then(|entry| entry.catalog.format(id, parameters))
-            {
-                return result;
-            }
+        };
+        if let Some(result) = lookup(selected) {
+            return result;
+        }
+        let base =
+            locale.map(|locale| LanguageIdentifier::from_parts(locale.language, None, None, &[]));
+        let base = base.as_ref().unwrap_or(&self.base_locale);
+        if base != selected
+            && let Some(result) = lookup(base)
+        {
+            return result;
         }
         if args.is_none() {
             return Ok(fallback.into());
         }
-        let key = (selected.clone(), fallback.into());
-        if !self.templates.contains_key(&key) {
+        let catalog = if let Some(catalog) = self
+            .templates
+            .get(selected)
+            .and_then(|templates| templates.get(fallback))
+        {
+            catalog
+        } else {
             let source = format!("fallback = {}", fallback.replace('\n', "\n    "));
             let catalog = Catalog::parse(&selected.to_string(), id, source)?;
-            self.templates.insert(key.clone(), catalog);
-        }
-        self.templates[&key]
+            self.templates
+                .entry(selected.clone())
+                .or_default()
+                .entry(fallback.into())
+                .or_insert(catalog)
+        };
+        catalog
             .format("fallback", parameters)
             .unwrap_or_else(|| Err(format!("{id}: fallback has no message value")))
     }
@@ -330,7 +338,7 @@ mod tests {
         assert!(service.contains(&language_id("de").unwrap()));
         assert_eq!(service.templates.len(), 1);
         assert_eq!(
-            service.templates.keys().next().unwrap().0,
+            *service.templates.keys().next().unwrap(),
             language_id("de").unwrap()
         );
     }

@@ -21,6 +21,7 @@ struct Pending {
     source: String,
     id: LoadId,
     optional: bool,
+    prefetch: bool,
 }
 
 // Keep metadata for recently displayed uploads. Pixel storage is already gone;
@@ -68,6 +69,8 @@ pub(crate) struct Images {
     pub(crate) tiles: BTreeMap<String, TileDemand>,
     skipped: BTreeSet<String>,
     wanted: BTreeMap<String, Option<String>>,
+    prefetch: BTreeSet<String>,
+    approaching: Vec<reel_ui::stage::NodeId>,
     mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
     shader_sources: BTreeSet<String>,
@@ -108,6 +111,8 @@ impl Images {
             tiles: BTreeMap::new(),
             skipped: BTreeSet::new(),
             wanted: BTreeMap::new(),
+            prefetch: BTreeSet::new(),
+            approaching: Vec::new(),
             mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
             shader_sources: BTreeSet::new(),
@@ -165,17 +170,26 @@ impl Images {
                     .request_index
                     .as_ref()
                     .is_some_and(|old| Arc::ptr_eq(old, &requests.index));
+                let same_approach = self.approaching == requests.approaching;
                 if same_index
+                    && same_approach
                     && self.settled
                     && self.failure.is_none()
                     && self.manifests.is_empty()
-                    && self.skipped.is_empty()
+                    && self
+                        .skipped
+                        .iter()
+                        .all(|source| self.prefetch.contains(source))
                     && requests.required().eq(self
                         .wanted
                         .iter()
                         .map(|(source, origin)| (source.as_str(), origin.as_deref())))
                 {
                     return true;
+                }
+                if !same_index || !same_approach {
+                    self.prefetch = requests.preloaded().map(str::to_owned).collect();
+                    self.approaching.clone_from(&requests.approaching);
                 }
                 if !same_index {
                     self.encoded = requests
@@ -232,28 +246,14 @@ impl Images {
         }
         self.request_index = None;
         self.wanted = wanted;
+        self.prefetch.clear();
+        self.approaching.clear();
         self.mounted = mounted;
         self.reconcile_requests();
     }
     fn reconcile_requests(&mut self) {
         self.settled = false;
-        self.pending.retain(|pending| {
-            let retain = self.wanted.contains_key(&pending.source)
-                || self
-                    .tiles
-                    .get(&pending.source)
-                    .is_some_and(|tile| self.wanted.contains_key(&tile.owner));
-            if !retain {
-                self.assets.cancel(pending.id);
-            }
-            retain
-        });
-        self.tiles
-            .retain(|_, tile| self.wanted.contains_key(&tile.owner));
-        self.skipped.clear();
-        self.manifests
-            .retain(|source, _| self.wanted.contains_key(source));
-        self.failure = None;
+        // A returning GPU image already satisfies foreground demand.
         for source in self.wanted.keys() {
             if !self.loaded.contains_key(source)
                 && let Some(lease) = self.recent.take(source)
@@ -262,6 +262,39 @@ impl Images {
                 self.content_revision = self.content_revision.wrapping_add(1);
             }
         }
+        let foreground_ready = self
+            .wanted
+            .keys()
+            .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source));
+        self.pending.retain_mut(|pending| {
+            let wanted = self.wanted.contains_key(&pending.source);
+            if pending.prefetch && wanted && self.assets.promote_prefetch(pending.id) {
+                pending.prefetch = false;
+                pending.optional = false;
+                return true;
+            }
+            let retain = if pending.prefetch {
+                foreground_ready && self.prefetch.contains(&pending.source) && !wanted
+            } else {
+                wanted
+                    || self
+                        .tiles
+                        .get(&pending.source)
+                        .is_some_and(|tile| self.wanted.contains_key(&tile.owner))
+            };
+            if !retain {
+                self.assets.cancel(pending.id);
+            }
+            retain
+        });
+        self.tiles
+            .retain(|_, tile| self.wanted.contains_key(&tile.owner));
+        self.skipped
+            .retain(|source| foreground_ready && self.prefetch.contains(source));
+        self.manifests.retain(|source, _| {
+            self.wanted.contains_key(source) || (foreground_ready && self.prefetch.contains(source))
+        });
+        self.failure = None;
         self.update_metadata_ready();
         let loading = !self.metadata_ready;
         for (source, lease) in self.loaded.extract_if(.., |source, _| {
@@ -385,6 +418,7 @@ impl Images {
                 source,
                 id,
                 optional: false,
+                prefetch: false,
             });
         }
         let ready = if self.metadata_ready() {
@@ -393,6 +427,52 @@ impl Images {
             false
         };
         self.assets.maintain();
+        while ready
+            && !self.pending.iter().any(|pending| pending.prefetch)
+            && self.free_slots() != 0
+        {
+            let Some(source) = self
+                .prefetch
+                .iter()
+                .find(|source| {
+                    !self.wanted.contains_key(*source)
+                        && !self.loaded.contains_key(*source)
+                        && !self.manifests.contains_key(*source)
+                        && !self.skipped.contains(*source)
+                        && !self.is_loading(source)
+                })
+                .cloned()
+            else {
+                break;
+            };
+            if let Some(lease) = self.recent.take(&source) {
+                self.loaded.insert(source, lease);
+                continue;
+            }
+            let kind = if self.shader_sources.contains(&source) {
+                AssetKind::EffectShader
+            } else {
+                AssetKind::Image
+            };
+            let limit = self.assets.prefetch_available(self.hidden_prefetch_bytes());
+            let request = if let Some(bytes) = self.encoded.get(&source) {
+                self.assets.prefetch_encoded(source.clone(), bytes, limit)
+            } else {
+                Ok(self.assets.prefetch(source.clone(), kind, limit))
+            };
+            match request {
+                Ok(id) => self.push_pending(Pending {
+                    source,
+                    id,
+                    optional: true,
+                    prefetch: true,
+                }),
+                Err(_) => {
+                    self.skipped.insert(source);
+                }
+            }
+            self.assets.maintain();
+        }
         // Loaded leases stay owned until demand changes. Optional tiles denied
         // by the resident budget remain unsettled so released capacity is retried.
         self.settled = ready
@@ -405,6 +485,31 @@ impl Images {
     }
     fn is_loading(&self, source: &str) -> bool {
         self.pending.iter().any(|pending| pending.source == source)
+    }
+    fn hidden_prefetch_bytes(&self) -> u64 {
+        use reel_ui::resources::ResourceView;
+        let mut backings = BTreeSet::new();
+        self.loaded
+            .iter()
+            .filter_map(|(source, lease)| {
+                if !self.prefetch.contains(source) || self.wanted.contains_key(source) {
+                    return None;
+                }
+                let backing = lease.image_backing();
+                if !backings.insert(backing.handle()) {
+                    return None;
+                }
+                if backing.pixels_resident() {
+                    let header = u64::from(backing.texture_descriptor().is_some())
+                        * reel_core::texture::TextureHeader::LEN as u64;
+                    Some(backing.pixel_byte_len().unwrap() as u64 + header)
+                } else if let ResourceView::EffectShader { bytes, .. } = backing.view() {
+                    Some(bytes.data().len() as u64)
+                } else {
+                    None
+                }
+            })
+            .sum()
     }
     fn free_slots(&self) -> usize {
         (self.assets.worker_limits().max_requests as usize).saturating_sub(self.pending.len())
@@ -467,8 +572,9 @@ impl Images {
             self.settled = false;
         }
         self.pending.retain(|pending| {
-            let retain =
-                self.wanted.contains_key(&pending.source) || tiles.contains_key(&pending.source);
+            let retain = self.wanted.contains_key(&pending.source)
+                || tiles.contains_key(&pending.source)
+                || (pending.prefetch && self.prefetch.contains(&pending.source));
             if !retain {
                 self.assets.cancel(pending.id);
             }
@@ -508,7 +614,7 @@ impl Images {
             }
         }
         self.skipped
-            .retain(|source| self.tiles.contains_key(source));
+            .retain(|source| self.tiles.contains_key(source) || self.prefetch.contains(source));
         self.retain_loaded();
         changed
     }
@@ -516,7 +622,8 @@ impl Images {
         for (source, lease) in self.loaded.extract_if(.., |source, _| {
             !(self.wanted.contains_key(source)
                 || self.displayed.contains(source)
-                || self.tiles.contains_key(source))
+                || self.tiles.contains_key(source)
+                || (self.metadata_ready && self.prefetch.contains(source)))
         }) {
             self.recent.insert(source, lease);
         }
@@ -564,6 +671,7 @@ impl Images {
                 source,
                 id,
                 optional,
+                prefetch: false,
             });
         }
         !required
@@ -605,6 +713,8 @@ impl Images {
             self.assets.cancel(pending.id);
         }
         self.wanted.clear();
+        self.prefetch.clear();
+        self.approaching.clear();
         self.metadata_ready = true;
         self.mounted.clear();
         self.tiles.clear();

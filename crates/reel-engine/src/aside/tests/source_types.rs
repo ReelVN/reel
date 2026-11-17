@@ -2,6 +2,74 @@ use super::*;
 use aside_compiler::semantic::TypeHint;
 
 #[test]
+fn tab_factories_publish_callable_types_and_check_unannotated_content() {
+    use aside_host::source::{named, nullable};
+    let build = source::api()
+        .native("reel::tab_bar")
+        .symbol
+        .signature
+        .as_ref()
+        .unwrap()
+        .parameters
+        .iter()
+        .find(|p| p.name == "build")
+        .unwrap();
+    assert_eq!(
+        build.ty,
+        nullable(TypeHint::Callable(
+            vec![named("reel::types::TabItem")],
+            Box::new(nullable(named("reel::types::Node")))
+        ))
+    );
+    let code = r#"fn main(){let tabs=tab_bar(items:[{key:0,label:"First"}],build:|item|text(item.label,visible:derive(||item.control.focus_visible||item.selected)));}"#;
+    let compiled = source::compile_module(code, "main", "src/main.aside", 1).unwrap();
+    for (text, ty) in [
+        ("item.selected", "bool"),
+        ("item.control", "reel::types::RadioNode"),
+    ] {
+        let (index, _) = compiled
+            .module
+            .hir()
+            .nodes
+            .iter()
+            .enumerate()
+            .find(|(_, node)| compiled.module.hir().text(node.span) == text)
+            .unwrap();
+        assert_eq!(
+            compiled
+                .module
+                .display_type(compiled.module.facts()[index].ty)
+                .to_string(),
+            ty
+        );
+    }
+    for (body, expected) in [
+        ("|item|item.missing", "missing"),
+        ("|item|item.control.missing", "missing"),
+        ("|item|{item.selected=true;text(\"bad\")}", "item.selected"),
+        ("|item|42", "42"),
+        ("|item|{return 42;}", "42"),
+        ("|item: int|text(\"bad\")", "build:|item: int|text(\"bad\")"),
+        ("||text(\"bad\")", "build:||text(\"bad\")"),
+    ] {
+        let code = format!("fn main(){{let tabs=tab_bar(items:[],build:{body});}}");
+        let error = source::compile_module(&code, "main", "src/main.aside", 1)
+            .err()
+            .expect("invalid factory should fail source checking");
+        let source::SourceError::Analysis(analysis) = error else {
+            panic!("{error}")
+        };
+        assert!(
+            analysis.diagnostics.iter().any(|d| &code
+                [usize::from(d.range.start())..usize::from(d.range.end())]
+                == expected),
+            "{code}: {:?}",
+            analysis.diagnostics
+        );
+    }
+}
+
+#[test]
 fn registered_host_types_reject_missing_members_during_compilation() {
     for code in [
         "fn main(){let label=text(\"Hello\");label.font_szie=24;}",

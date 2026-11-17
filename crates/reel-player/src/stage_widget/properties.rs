@@ -2,6 +2,27 @@
 use super::*;
 
 impl SceneWidget {
+    fn slider_visuals(view: &SceneNode, art: reel_ui::stage::SliderArt) -> ([bool; 2], f64) {
+        let [track, thumb] = [art.track, art.thumb].map(|part| {
+            part.is_some_and(|id| view.children.iter().any(|child| child.node.id == id))
+        });
+        let radius = if thumb {
+            art.thumb_width * 0.5
+        } else if view.node.props.decorated {
+            10.
+        } else {
+            0.
+        };
+        ([!track, !thumb], radius)
+    }
+
+    pub(super) fn visual_caption(node: &SceneProperties) -> Option<&str> {
+        if node.props.semantics == reel_ui::stage::NodeSemantics::Tab && !node.props.decorated {
+            None
+        } else {
+            Self::caption(&node.kind)
+        }
+    }
     pub(super) fn image_widget(view: &SceneNode) -> Option<WidgetPod<Image>> {
         let NodeKind::Image {
             fit,
@@ -46,6 +67,7 @@ impl SceneWidget {
     }
     pub(super) fn content_changed(old: &NodeKind, new: &NodeKind) -> bool {
         match (old, new) {
+            (NodeKind::ScrollBar(a), NodeKind::ScrollBar(b)) => !a.same_geometry(*b),
             (
                 NodeKind::Image {
                     source: a,
@@ -132,7 +154,7 @@ impl SceneWidget {
             })
     }
     pub(super) fn reveal_range(node: &SceneProperties) -> std::ops::Range<usize> {
-        let text = Self::caption(&node.kind).unwrap_or("");
+        let text = Self::visual_caption(node).unwrap_or("");
         let mut end = node.props.reveal.unwrap_or(text.len()).min(text.len());
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -163,7 +185,7 @@ impl SceneWidget {
                     Label::new("")
                         .with_rich_text(match &view.node.kind {
                             NodeKind::Text(text) => text.clone(),
-                            kind => Self::caption(kind).unwrap_or("").into(),
+                            _ => Self::visual_caption(&view.node).unwrap_or("").into(),
                         })
                         .with_visible_bytes(Self::reveal_range(&view.node))
                         .with_reveal_fade(Self::reveal_fade(&view.node))
@@ -265,20 +287,21 @@ impl SceneWidget {
             } else {
                 None
             },
-            slider: if let NodeKind::Slider { range, value, .. } = view.node.kind {
+            slider: if let NodeKind::Slider {
+                range, value, art, ..
+            } = view.node.kind
+            {
+                let ([track, thumb], radius) = Self::slider_visuals(view, art);
                 let mut slider = Slider::new(range.min(), range.max(), value)
-                    .with_decorated(view.node.props.decorated);
+                    .with_decorated(view.node.props.decorated)
+                    .with_paint_parts(track, thumb);
                 if let Some(step) = range.step() {
                     slider = slider.with_step(step);
                 }
                 let tint = color(view.node.props.color);
                 Some(
                     NewWidget::new(slider)
-                        .with_props(ThumbRadius(Length::px(if view.node.props.decorated {
-                            10.
-                        } else {
-                            0.
-                        })))
+                        .with_props(ThumbRadius(Length::px(radius)))
                         .with_props(TrackThickness(Length::px(4.)))
                         .with_props(ThumbColor(tint))
                         .with_props(TrackColor {
@@ -287,6 +310,11 @@ impl SceneWidget {
                         })
                         .to_pod(),
                 )
+            } else {
+                None
+            },
+            scrollbar: if let NodeKind::ScrollBar(config) = view.node.kind {
+                Some(reel_ui::widgets::ScrollBarState::new(config))
             } else {
                 None
             },
@@ -317,6 +345,7 @@ impl SceneWidget {
                 _ => Vec2::ZERO,
             },
             virtual_list: matches!(view.node.kind, NodeKind::VirtualList(_)).then(Default::default),
+            virtual_viewport: None,
             #[cfg(test)]
             layouts: 0,
             #[cfg(test)]
@@ -465,18 +494,35 @@ impl SceneWidget {
             TextInput::set_edit_filter(&mut editor, options.filter_edits);
             TextInput::set_editing(&mut editor, options.pending_edit, options.replay.as_deref());
         }
-        if let (Some(pod), NodeKind::Slider { range, value, .. }) =
-            (&mut this.widget.slider, &view.node.kind)
+        let mut move_slider_thumb = false;
+        if let (
+            Some(pod),
+            NodeKind::Slider {
+                range, value, art, ..
+            },
+        ) = (&mut this.widget.slider, &view.node.kind)
             && let Some(mut slider) = this.ctx.get_mut(pod)
         {
             Slider::configure(&mut slider, *range, *value);
-            if this.widget.node.props.decorated != view.node.props.decorated {
-                Slider::set_decorated(&mut slider, view.node.props.decorated);
-                slider.insert_prop(ThumbRadius(Length::px(if view.node.props.decorated {
-                    10.
-                } else {
-                    0.
-                })));
+            Slider::set_decorated(&mut slider, view.node.props.decorated);
+            let (parts, radius) = Self::slider_visuals(view, *art);
+            if let NodeKind::Slider {
+                range: old_range,
+                value: old_value,
+                art: old_art,
+                ..
+            } = this.widget.node.kind
+            {
+                let (old_parts, old_radius) =
+                    Self::slider_visuals(&this.widget.projection, old_art);
+                if parts != old_parts {
+                    Slider::set_paint_parts(&mut slider, parts[0], parts[1]);
+                }
+                if radius != old_radius {
+                    slider.insert_prop(ThumbRadius(Length::px(radius)));
+                }
+                move_slider_thumb =
+                    art.thumb.is_some() && (*range != old_range || *value != old_value);
             }
             if this.widget.node.props.color != view.node.props.color {
                 let tint = color(view.node.props.color);
@@ -485,6 +531,24 @@ impl SceneWidget {
                     active: tint,
                     inactive: tint.with_alpha(tint.components[3] * 0.3),
                 });
+            }
+        }
+        if move_slider_thumb {
+            this.ctx.request_compose();
+        }
+        if let (Some(state), NodeKind::ScrollBar(config)) =
+            (&mut this.widget.scrollbar, &view.node.kind)
+        {
+            let previous = state.view();
+            if state.configure(*config) {
+                if previous.same_controls(*config) {
+                    this.ctx.refresh_captured_input_configuration();
+                } else {
+                    this.ctx.invalidate_input_configuration();
+                }
+                this.ctx.request_layout();
+            } else if previous != *config {
+                this.ctx.request_compose();
             }
         }
         if let (
@@ -619,7 +683,7 @@ impl SceneWidget {
         }
         let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
             (NodeKind::Text(a), NodeKind::Text(b)) => a != b,
-            _ => Self::caption(&this.widget.node.kind) != Self::caption(&view.node.kind),
+            _ => Self::visual_caption(&this.widget.node) != Self::visual_caption(&view.node),
         };
         if caption_changed {
             this.ctx.request_layout();
@@ -632,7 +696,7 @@ impl SceneWidget {
                     &mut label,
                     match &view.node.kind {
                         NodeKind::Text(text) => text.clone(),
-                        kind => Self::caption(kind).unwrap_or("").into(),
+                        _ => Self::visual_caption(&view.node).unwrap_or("").into(),
                     },
                 );
             }
@@ -775,6 +839,20 @@ impl SceneWidget {
                 (*offset != this.widget.scroll.offset()).then_some(*offset);
             this.ctx.request_compose();
         }
+        if let (
+            NodeKind::Scroll {
+                overscroll: old, ..
+            },
+            NodeKind::Scroll {
+                overscroll: new, ..
+            },
+        ) = (&this.widget.node.kind, &view.node.kind)
+            && old != new
+        {
+            this.widget.scroll.set_overscroll(*new);
+            this.ctx.invalidate_input_configuration();
+            this.ctx.request_compose();
+        }
         if this.widget.node != view.node {
             let old = &this.widget.node.props;
             let new = &view.node.props;
@@ -809,15 +887,17 @@ impl SceneWidget {
                             axis: a,
                             follow_end: b,
                             align: c,
+                            snap_y: g,
                             ..
                         },
                         NodeKind::Scroll {
                             axis: d,
                             follow_end: e,
                             align: f,
+                            snap_y: h,
                             ..
                         },
-                    ) => (a, b, c) != (d, e, f),
+                    ) => (a, b, c, g) != (d, e, f, h),
                     _ => false,
                 }
             {

@@ -17,7 +17,10 @@ use reel_ui::{
     imaging::{Composite, MaskMode, record::Clip},
     kurbo::Affine,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 mod backdrop;
 mod schedule;
 mod source_free;
@@ -47,7 +50,8 @@ pub(super) struct Context<'a> {
     pub(super) effect_inputs: Vec<(crate::common::effect_result::Token, super::retained::Output)>,
     pub(super) effect_uniform_cache: &'a super::effect_uniform::Cache,
     pub(super) effect_uniform_slots: Vec<super::effect_uniform::Storage>,
-    pub(super) white: Option<Arc<resources::Image>>,
+    pub(super) white: Option<Arc<resources::WhiteTexture>>,
+    pub(super) white_cache: &'a Mutex<Option<Arc<resources::WhiteTexture>>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
     pub(super) coverage_target_cache: &'a super::target_cache::TargetCache,
     pub(super) coverage_quality: Option<Quality>,

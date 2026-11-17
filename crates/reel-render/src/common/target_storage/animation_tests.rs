@@ -214,7 +214,6 @@ fn pressured_effect_frames_keep_capacity_through_lifetime_sharing_and_retire_rea
             for (size, owner) in &flight {
                 cache.mark_used(*size, |cached| Arc::ptr_eq(cached, owner));
             }
-            cache.prune_cold(|owner| Arc::strong_count(owner) == 1);
             last_flight = flight;
             assert_eq!(data.usage().bytes, limit);
         }
@@ -300,7 +299,6 @@ fn thin_animated_effect_sources_keep_bounded_axis_capacities() {
             for (size, owner) in &flight {
                 cache.mark_used(*size, |cached| Arc::ptr_eq(cached, owner));
             }
-            cache.prune_cold(|owner| Arc::strong_count(owner) == 1);
             previous_flight = flight;
             assert_eq!(data.usage().bytes, bytes);
         }

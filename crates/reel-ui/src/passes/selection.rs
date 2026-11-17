@@ -125,7 +125,7 @@ pub(super) fn select(root: &mut RenderRoot, id: WidgetId, group: SelectionGroupI
     };
     super::navigation::cancel(root);
     root.global_state.next_focused_widget = Some(id);
-    if !member.selected {
+    if !member.selected && !member.tabs.is_some_and(|tabs| tabs.manual) {
         super::update::run_single_update_pass(root, Some(id), |widget, ctx, props| {
             widget.select_group_member(ctx, props);
         });
@@ -182,6 +182,11 @@ pub(super) fn navigate(root: &mut RenderRoot, direction: NavigationAction) -> bo
     let Some(group) = member(root, anchor) else {
         return false;
     };
+    if let Some(tabs) = group.tabs
+        && tabs.vertical != matches!(direction, NavigationAction::Up | NavigationAction::Down)
+    {
+        return false;
+    }
     let forward = matches!(direction, NavigationAction::Right | NavigationAction::Down);
     let (next, wrap) = next(root, anchor, group.id, forward);
     // A mounted group boundary can still be the middle of a virtual list.

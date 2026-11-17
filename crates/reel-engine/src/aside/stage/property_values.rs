@@ -36,11 +36,20 @@ pub(in crate::aside) fn read_source(
     Ok(source.into())
 }
 
+pub(in crate::aside) const FIT_CHOICES: [(&str, reel_ui::properties::ObjectFit); 3] = [
+    ("contain", reel_ui::properties::ObjectFit::Contain),
+    ("cover", reel_ui::properties::ObjectFit::Cover),
+    ("stretch", reel_ui::properties::ObjectFit::Stretch),
+];
+pub(in crate::aside) const SAMPLING_CHOICES: [(&str, reel_ui::peniko::ImageQuality); 2] = [
+    ("nearest", reel_ui::peniko::ImageQuality::Low),
+    ("linear", reel_ui::peniko::ImageQuality::Medium),
+];
+
 pub(in crate::aside) fn read_fit(
     heap: &Heap,
     value: Value,
 ) -> Result<reel_ui::properties::ObjectFit, AdapterError> {
-    use reel_ui::properties::ObjectFit;
     let info = heap.info(value)?;
     if info.kind != ObjectKind::String || info.len > 7 {
         return Err(AdapterError::Input(
@@ -49,14 +58,12 @@ pub(in crate::aside) fn read_fit(
     }
     let mut bytes = [0; 7];
     text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
-    match &bytes[..info.len as usize] {
-        b"contain" => Ok(ObjectFit::Contain),
-        b"cover" => Ok(ObjectFit::Cover),
-        b"stretch" => Ok(ObjectFit::Stretch),
-        _ => Err(AdapterError::Input(
+    FIT_CHOICES
+        .into_iter()
+        .find_map(|(name, fit)| (name.as_bytes() == &bytes[..info.len as usize]).then_some(fit))
+        .ok_or(AdapterError::Input(
             "image fit requires contain, cover or stretch",
-        )),
-    }
+        ))
 }
 
 pub(in crate::aside) fn read_sampling(
@@ -69,11 +76,12 @@ pub(in crate::aside) fn read_sampling(
     }
     let mut bytes = [0; 7];
     text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
-    match &bytes[..info.len as usize] {
-        b"nearest" => Ok(reel_ui::peniko::ImageQuality::Low),
-        b"linear" => Ok(reel_ui::peniko::ImageQuality::Medium),
-        _ => Err(AdapterError::Input("sampling must be nearest or linear")),
-    }
+    SAMPLING_CHOICES
+        .into_iter()
+        .find_map(|(name, quality)| {
+            (name.as_bytes() == &bytes[..info.len as usize]).then_some(quality)
+        })
+        .ok_or(AdapterError::Input("sampling must be nearest or linear"))
 }
 
 pub(in crate::aside) fn read_alpha_layout(
@@ -904,6 +912,7 @@ pub(super) fn read_props(
         &default_font
     };
     let mut props = NodeProps {
+        semantics: reel_ui::stage::NodeSemantics::Generic,
         effect,
         effect_resolution_scale: effect_resolution_scale(get(
             NodeProperty::EffectResolutionScale,
@@ -923,6 +932,7 @@ pub(super) fn read_props(
         invert: invert(get(NodeProperty::Invert)?)?,
         blend: blend(heap, get(NodeProperty::Blend)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
+        preload: boolean(get(NodeProperty::Preload)?)?,
         capture_included: boolean(get(NodeProperty::CaptureIncluded)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,
         modal: boolean(get(NodeProperty::Modal)?)?,

@@ -53,6 +53,39 @@ fn allocations_during_collection_remain_due_and_have_no_unbounded_gc_work() {
 }
 
 #[test]
+fn array_scan_keeps_references_after_scalar_runs_and_stays_within_budget() {
+    let mut heap = heap();
+    let child = heap.alloc_cell(Value::int(42)).unwrap();
+    let mut values = [Value::int(0); 150];
+    values[79] = child;
+    let array = heap.alloc_array(&values).unwrap();
+    let root = heap.add_root(RootOwner(1), RootKind::Host, array).unwrap();
+    let budget = GcBudget {
+        edges: 6,
+        units: 7,
+        ..Default::default()
+    };
+    let collect = |heap: &mut Heap| {
+        heap.begin_collection().unwrap();
+        loop {
+            let progress = heap.gc_step(budget).unwrap();
+            assert!(progress.edges <= budget.edges);
+            assert!(progress.units <= budget.units);
+            if progress.cycle_complete {
+                break;
+            }
+            assert!(progress.units != 0);
+        }
+    };
+    collect(&mut heap);
+    assert_eq!(heap.cell_read(child).unwrap().as_int(), Some(42));
+    heap.release_root(root).unwrap();
+    collect(&mut heap);
+    assert_eq!(heap.stats().live_objects, 0);
+    assert_eq!(heap.stats().payload_bytes, 0);
+}
+
+#[test]
 fn payload_pressure_triggers_below_the_object_floor() {
     let mut heap = heap();
     let value = "x".repeat(4096);

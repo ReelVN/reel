@@ -1,5 +1,6 @@
 //! Source-free output planning includes authored low-resolution reconstruction.
 use super::*;
+use crate::common::source_plan::{self, SourceFreeOutput, SourceFreeParent};
 impl Input<'_> {
     pub(super) fn source_free(
         &self,
@@ -16,28 +17,23 @@ impl Input<'_> {
                 .end(current.drawing, offset + current.next - 1)
         {
             let parent = current.scopes.last();
-            let source = crate::common::source_plan::layout(
+            let (_, output) = source_plan::source_free(
                 group,
-                parent.and_then(|scope| scope.group),
-                parent.and_then(|scope| scope.source_effect_transform),
+                SourceFreeParent {
+                    group: parent.and_then(|scope| scope.group),
+                    source_transform: parent.and_then(|scope| scope.source_effect_transform),
+                    accepts_forwarded_source: current.groups.is_source_child(current.next - 1)
+                        && parent.is_some_and(|scope| scope.isolated),
+                    shared_source: parent.is_some_and(|scope| scope.shared_source),
+                },
                 current.transform,
                 current.size,
                 self.max_dimension,
+                self.samples,
                 at,
             )?;
-            let forward = current.groups.is_source_child(current.next - 1)
-                && parent.is_some_and(|scope| scope.isolated)
-                && crate::common::effect_plan::forwards_source(
-                    group,
-                    &source,
-                    current.transform,
-                    current.size,
-                    parent.is_some_and(|scope| scope.shared_source),
-                );
             let reduced = scratch.begin_resolution(current.size, group.effect.as_ref(), reserve)?;
-            if forward
-                || !crate::common::effect_plan::terminal_composite(group, self.samples, false)
-            {
+            if output != SourceFreeOutput::Direct {
                 scratch.acquire(current.size, reserve)?;
                 scratch.release(current.size, reserve)?;
             }

@@ -26,16 +26,25 @@ pub(in crate::aside) enum Shape {
     TextArea,
     Grid,
     Popup,
+    PageStack,
+    TabBar,
+    ScrollBar,
+    ProgressBar,
+    Tooltip,
 }
 
 impl Shape {
     pub(super) fn from_symbol(symbol: &str) -> Self {
         match symbol {
+            "reel::page_stack" => Self::PageStack,
+            "reel::tab_bar" => Self::TabBar,
+            "reel::scrollbar" => Self::ScrollBar,
             "reel::text" => Self::Text,
             "reel::text_input" => Self::TextInput,
             "reel::text_area" => Self::TextArea,
             "reel::button" => Self::Button,
             "reel::slider" => Self::Slider,
+            "reel::progress_bar" => Self::ProgressBar,
             "reel::toggle" => Self::Switch,
             "reel::checkbox" => Self::Checkbox,
             "reel::radio" => Self::Radio,
@@ -46,6 +55,7 @@ impl Shape {
             "reel::camera" => Self::Camera,
             "reel::scroll" => Self::Scroll,
             "reel::popup" => Self::Popup,
+            "reel::tooltip" => Self::Tooltip,
             "reel::grid" => Self::Grid,
             "reel::row" => Self::Row,
             "reel::column" => Self::Column,
@@ -54,13 +64,17 @@ impl Shape {
             _ => unreachable!("registered stage constructor"),
         }
     }
-    fn prefix(self) -> usize {
+    pub(super) fn prefix(self) -> usize {
         match self {
+            Self::PageStack => super::super::pages::PageField::PROPERTIES.len(),
+            Self::TabBar => super::super::pages::TabField::PROPERTIES.len(),
+            Self::ScrollBar => scrollbar::ScrollBarField::PROPERTIES.len(),
             Self::Text => 2,
             Self::Button => appearance::ButtonField::PROPERTIES.len(),
             Self::Image | Self::Video => registry::IMAGE_PREFIX.len(),
             Self::TextInput | Self::TextArea => text_input::TextInputField::PROPERTIES.len(),
             Self::Slider => controls::SliderField::PROPERTIES.len(),
+            Self::ProgressBar => controls::ProgressField::PROPERTIES.len(),
             Self::Switch | Self::Checkbox => controls::ToggleField::PROPERTIES.len(),
             Self::Radio => controls::RadioField::PROPERTIES.len(),
             Self::Input => input::InputField::PROPERTIES.len(),
@@ -68,6 +82,7 @@ impl Shape {
             Self::Camera => camera::CameraField::PROPERTIES.len(),
             Self::Scroll => scroll::ScrollField::PROPERTIES.len(),
             Self::Popup => popup::PopupField::PROPERTIES.len(),
+            Self::Tooltip => popup::TOOLTIP_PROPERTIES.len(),
             Self::Row | Self::Column => flow::FlowField::PROPERTIES.len(),
             Self::Grid => flow::GridField::PROPERTIES.len(),
             Self::Stack | Self::VirtualList | Self::Cursor => 0,
@@ -88,6 +103,7 @@ impl Shape {
             }
             Self::Button => button_kind(heap, get(0)?, get(1)?, get(2)?, get(3)?, limit)?,
             Self::Slider => controls::slider_kind(heap, fields)?,
+            Self::ProgressBar => controls::progress_kind(heap, fields)?,
             Self::Switch | Self::Checkbox => controls::toggle_kind(
                 heap,
                 fields,
@@ -99,30 +115,37 @@ impl Shape {
                 },
             )?,
             Self::Radio => controls::radio_kind(heap, fields, 0, limit)?,
-            Self::Input => input::kind(heap, fields, input::read_bindings(heap, get(0)?)?)?,
-            Self::Image | Self::Video => NodeKind::Image {
-                source: if self == Self::Video {
-                    let source = text::read_string(heap, get(0)?, limit)?;
-                    if source.is_empty() {
-                        return Err(AdapterError::Input("video source must not be empty"));
-                    }
-                    reel_ui::stage::ImageSource::empty()
+            Self::Input => input::kind(heap, fields, input::read_bindings(heap, fields)?)?,
+            Self::Image | Self::Video => {
+                let (image_source, source_rect) = if self == Self::Image {
+                    image_skin::select(heap, get(0)?, get(11)?)?
                 } else {
-                    read_source(heap, get(0)?, limit)?
-                },
-                fit: read_fit(heap, get(1)?)?,
-                slice: read_slice(heap, get(2)?)?,
-                slice_scale: nonnegative(get(3)?)?,
-                repeat: read_image_repeat(heap, get(4)?, get(2)?)?,
-                tile_scale: positive(get(5)?)?,
-                corner_colors: read_corner_colors(heap, get(6)?)?,
-                slice_center: boolean(get(7)?)?,
-                adjustment: read_image_adjustment(heap, fields)?,
-                source_rect: read_source_rect(heap, get(11)?)?,
-                alpha_layout: read_alpha_layout(heap, get(12)?)?,
-                sampling: read_sampling(heap, get(13)?)?,
-                origin,
-            },
+                    (get(0)?, get(11)?)
+                };
+                NodeKind::Image {
+                    source: if self == Self::Video {
+                        let source = text::read_string(heap, get(0)?, limit)?;
+                        if source.is_empty() {
+                            return Err(AdapterError::Input("video source must not be empty"));
+                        }
+                        reel_ui::stage::ImageSource::empty()
+                    } else {
+                        read_source(heap, image_source, limit)?
+                    },
+                    fit: read_fit(heap, get(1)?)?,
+                    slice: read_slice(heap, get(2)?)?,
+                    slice_scale: nonnegative(get(3)?)?,
+                    repeat: read_image_repeat(heap, get(4)?, get(2)?)?,
+                    tile_scale: positive(get(5)?)?,
+                    corner_colors: read_corner_colors(heap, get(6)?)?,
+                    slice_center: boolean(get(7)?)?,
+                    adjustment: read_image_adjustment(heap, fields)?,
+                    source_rect: read_source_rect(heap, source_rect)?,
+                    alpha_layout: read_alpha_layout(heap, get(12)?)?,
+                    sampling: read_sampling(heap, get(13)?)?,
+                    origin,
+                }
+            }
             Self::Particles => {
                 let args = (0..self.prefix() as u32)
                     .map(get)
@@ -131,10 +154,14 @@ impl Shape {
             }
             Self::Camera => camera::kind(heap, fields)?,
             Self::Scroll => scroll::kind(heap, fields)?,
-            Self::Popup => popup::kind(heap, fields)?,
+            Self::ScrollBar => scrollbar::kind(heap, fields)?,
+            Self::Popup | Self::Tooltip => {
+                popup::kind(heap, fields, (self == Self::Tooltip).then_some(false))?
+            }
             Self::Row | Self::Column => flow::flow_kind(heap, fields, self == Self::Row)?,
             Self::Grid => flow::grid_kind(heap, fields)?,
-            Self::Stack => NodeKind::Stack,
+            Self::Stack | Self::PageStack => NodeKind::Stack,
+            Self::TabBar => super::super::pages::tab_kind(heap, fields, limit)?,
             Self::Cursor => NodeKind::Cursor,
             Self::VirtualList => unreachable!("virtual list projects its VM-owned state"),
         })
@@ -148,6 +175,12 @@ impl Shape {
             }};
         }
         match self {
+            Self::PageStack => descriptor!("reel.page_stack", |h, _, i, v| {
+                super::super::pages::validate(h, i, v, false)
+            }),
+            Self::TabBar => descriptor!("reel.tab_bar", |h, _, i, v| {
+                super::super::pages::validate(h, i, v, true)
+            }),
             Self::Text => descriptor!("reel.text", |h, _, i, v| validate_text_property(h, i, v)),
             Self::TextInput => descriptor!("reel.text_input", |h, _, i, v| text_input::validate(
                 h, i, v, false
@@ -159,6 +192,12 @@ impl Shape {
                 h, i, v
             )),
             Self::Slider => descriptor!("reel.slider", controls::validate_slider),
+            Self::ProgressBar => descriptor!("reel.progress_bar", |h, _, i, v| {
+                controls::validate_progress(h, i, v)
+            }),
+            Self::ScrollBar => {
+                descriptor!("reel.scrollbar", |h, _, i, v| scrollbar::validate(h, i, v))
+            }
             Self::Switch | Self::Checkbox => {
                 descriptor!("reel.toggle", |h, _, i, v| controls::validate_toggle(
                     h, i, v
@@ -168,7 +207,13 @@ impl Shape {
                 descriptor!("reel.radio", |h, _, i, v| controls::validate_radio(h, i, v))
             }
             Self::Input => descriptor!("reel.input", |h, _, i, v| input::validate(h, i, v)),
-            Self::Image => descriptor!("reel.image", |h, _, i, v| validate_image_property(h, i, v)),
+            Self::Image => descriptor!("reel.image", |h, _, i, v| {
+                if i == 0 && image_skin::is_skin(h, v) {
+                    Ok(())
+                } else {
+                    validate_image_property(h, i, v)
+                }
+            }),
             Self::Video => descriptor!("reel.video", |h, _, i, v| {
                 if i == 0 {
                     Err(HeapError::ReadOnly)
@@ -181,7 +226,10 @@ impl Shape {
             }),
             Self::Camera => descriptor!("reel.camera", |h, _, i, v| camera::validate(h, i, v)),
             Self::Scroll => descriptor!("reel.scroll", |h, _, i, v| scroll::validate(h, i, v)),
-            Self::Popup => descriptor!("reel.popup", |h, _, i, v| popup::validate(h, i, v)),
+            Self::Popup => descriptor!("reel.popup", |h, _, i, v| popup::validate(h, i, v, false)),
+            Self::Tooltip => {
+                descriptor!("reel.tooltip", |h, _, i, v| popup::validate(h, i, v, true))
+            }
             Self::Row | Self::Column => {
                 descriptor!("reel.flow", |h, _, i, v| flow::validate_flow(h, i, v))
             }
@@ -213,6 +261,7 @@ impl StageBinding {
             Shape::TextArea,
             Shape::Button,
             Shape::Slider,
+            Shape::ProgressBar,
             Shape::Switch,
             Shape::Radio,
             Shape::Input,
@@ -222,9 +271,13 @@ impl StageBinding {
             Shape::Camera,
             Shape::Scroll,
             Shape::Popup,
+            Shape::Tooltip,
             Shape::Row,
             Shape::Grid,
             Shape::Stack,
+            Shape::PageStack,
+            Shape::TabBar,
+            Shape::ScrollBar,
         ] {
             registry.register_validator(shape.validator())?;
         }
@@ -310,6 +363,7 @@ impl StageBinding {
             },
         )?;
         overrides::apply_offsets(heap, value, &mut props)?;
+        super::super::pages::semantics(saved.shape, &kind, &mut props);
         let mask_source = mask_handle(heap, fields, saved.shape.prefix(), selected)?;
         let effect_source = effect_stamp(heap, fields, saved.shape.prefix(), selected)?;
         let overrides = if selected.tag() == ValueTag::Null {
@@ -324,6 +378,10 @@ impl StageBinding {
             return Err(AdapterError::Input("saved node identity"));
         }
         self.scene.restore_node(id, kind, props)?;
+        if saved.shape == Shape::PageStack {
+            self.page_stacks.insert(id);
+        }
+        let image_skin = image_skin::binding(heap, saved.shape, fields)?;
         self.handles.insert(
             id,
             NodeBinding {
@@ -343,14 +401,20 @@ impl StageBinding {
                 effect_source,
                 input,
                 text_history: None,
-                text_source: if matches!(
-                    saved.shape,
-                    Shape::Text | Shape::TextInput | Shape::TextArea | Shape::Image | Shape::Video
-                ) {
+                text_source: if image_skin.is_none()
+                    && matches!(
+                        saved.shape,
+                        Shape::Text
+                            | Shape::TextInput
+                            | Shape::TextArea
+                            | Shape::Image
+                            | Shape::Video
+                    ) {
                     Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
                 } else {
                     None
                 },
+                image_skin,
                 text_listening: matches!(saved.shape, Shape::Text)
                     && heap.table_entry(fields, 1)?.1.tag() != ValueTag::Null,
                 radio_option: if matches!(saved.shape, Shape::Radio) {

@@ -9,7 +9,7 @@ impl Vm {
         s: &mut PreparationFrame,
         meter: &mut Meter,
     ) -> bool {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_scalar_entry {
             return false;
         }
@@ -31,7 +31,7 @@ impl Vm {
             return false;
         };
         if !entry.primitive {
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            #[cfg(test)]
             if !self.value_entries {
                 return false;
             }

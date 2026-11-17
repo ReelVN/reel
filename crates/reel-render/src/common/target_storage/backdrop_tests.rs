@@ -251,7 +251,6 @@ impl Residency {
                 .mark_used(*size, |cached| Arc::ptr_eq(cached, owner));
         }
         // Two preparations overlap until the previous frame is retired.
-        self.cache.prune_cold(|owner| Arc::strong_count(owner) == 1);
         self.previous = flight;
     }
 
@@ -480,43 +479,6 @@ fn single_backdrop_threshold_uses_backend_storage_cost() {
     let (physical_cost, _) = choose_cost(&frame, LIMIT, &padded);
     assert_eq!(logical_cost.backdrop_size(source, ROOT), source);
     assert_eq!(physical_cost.backdrop_size(source, ROOT), ROOT);
-}
-
-#[test]
-#[ignore = "release-mode planning cost probe; run explicitly with nocapture"]
-fn animated_blend_planning_cost() {
-    for groups in [1, 3, 24, 64] {
-        let frames: Vec<_> = (264..456)
-            .map(|width| {
-                let mut domains = vec![if groups == 1 {
-                    [width + 280, 472]
-                } else {
-                    [728, 408]
-                }];
-                domains.extend(
-                    (1..groups).map(|index| [width + (index * 7) % 200, 120 + (index * 11) % 192]),
-                );
-                frame_groups(&domains, false)
-            })
-            .collect();
-        for shared in [false, true] {
-            let start = std::time::Instant::now();
-            for _ in 0..20 {
-                for frame in &frames {
-                    if shared {
-                        std::hint::black_box(choose(frame));
-                    } else {
-                        std::hint::black_box(separate(frame));
-                    }
-                }
-            }
-            println!(
-                "blend_planning groups={groups} shared={shared} frames={} ns_per_frame={}",
-                frames.len() * 20,
-                start.elapsed().as_nanos() / (frames.len() * 20) as u128,
-            );
-        }
-    }
 }
 
 #[test]

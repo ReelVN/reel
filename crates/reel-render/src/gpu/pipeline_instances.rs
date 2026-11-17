@@ -11,7 +11,8 @@ impl Pipelines {
         bounded: bool,
         opaque: Option<OpaquePaint>,
     ) -> Result<Arc<wgpu::RenderPipeline>, GpuError> {
-        let bounded = bounded && self.bounded.is_some();
+        let bounded_shader = self.bounded_shader.as_ref().filter(|_| bounded);
+        let bounded = bounded_shader.is_some();
         let direct_entries = [
             "fragment_direct",
             "fragment_direct_bc1",
@@ -77,24 +78,13 @@ impl Pipelines {
         if let Some(pipeline) = &slots[key] {
             return Ok(pipeline.clone());
         }
-        let shader = if bounded {
-            include_str!("paint_bounded.wgsl")
-        } else {
-            include_str!("paint.wgsl")
-        };
-        let vertex = include_str!("instance_vertex.wgsl")
-            .replace(
-                "REEL_INSTANCE_COLOR",
-                if bounded { "vec4<f16>" } else { "vec4<f32>" },
-            )
-            .replace("REEL_INSTANCE_WINDOW", "out.source_window = source_window;");
-        let code = format!("{shader}\n{vertex}");
+        let shader = bounded_shader.unwrap_or(&self.paint_shader);
         let pipeline = validated(gpu, || {
-            Arc::new(pipeline_vertex(
+            Arc::new(pipeline_module(
                 &gpu.device,
                 quality,
                 &self.paint_layout,
-                &code,
+                shader,
                 (VertexInput::Instances, "instance_vertex"),
                 FragmentOutput {
                     entry,

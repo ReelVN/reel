@@ -286,8 +286,16 @@ fn build_inner(
     drop(release);
     let limits = rp::Limits::default();
     let effects = package_effects(&checked.effects, bytecode.program()).map_err(fail)?;
-    let bytes = rp::encode(&bytecode, &metadata, None, &effects, limits)
-        .map_err(|e| fail(e.to_string()))?;
+    let bytes = rp::encode(
+        &bytecode,
+        &metadata,
+        None,
+        &effects,
+        &compiled.resume,
+        reel_engine::aside::source::types(),
+        limits,
+    )
+    .map_err(|e| fail(e.to_string()))?;
     Ok(Artifact {
         blake3: rp::digest(&bytes),
         bytes,

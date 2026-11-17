@@ -9,8 +9,8 @@ use reel_ui::{
     kurbo::{Affine, Rect, Shape},
 };
 
-/// Backend-owned atlas preparation. Returned ink is in the glyph run's local
-/// coordinates, including positioned glyphs, synthesis and raster coverage.
+/// Backend-owned atlas preparation. When requested, returned ink includes
+/// positioned glyphs, synthesis and raster coverage in the run's coordinates.
 pub(crate) trait Prepare {
     fn reserve(&mut self, bytes: u64) -> Result<(), GpuError>;
     fn finish(&mut self) -> Result<(), GpuError>;
@@ -20,6 +20,7 @@ pub(crate) trait Prepare {
         run: &FrameGlyphRun,
         density: f64,
         at: RecordLocation,
+        measure_ink: bool,
     ) -> Result<InkBounds, GpuError>;
 }
 
@@ -271,8 +272,16 @@ impl Plan {
                         let ink = match draw {
                             FrameDraw::GlyphRun(run) => {
                                 let density = glyph::raster_density(outer * run.transform);
-                                let ink =
-                                    prepare.run(stream.drawing, run, density, command.origin.at)?;
+                                let ink = prepare.run(
+                                    stream.drawing,
+                                    run,
+                                    density,
+                                    command.origin.at,
+                                    measure,
+                                )?;
+                                if !measure {
+                                    continue;
+                                }
                                 padding(transformed(ink, run.transform), outer)
                             }
                             FrameDraw::Fill {

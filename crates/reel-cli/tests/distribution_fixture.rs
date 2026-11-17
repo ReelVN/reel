@@ -24,8 +24,14 @@ fn rebuild_code_with_frozen_resource_archives() {
     )
     .unwrap();
     let limits = reel_package::Limits::default();
-    let original = reel_package::decode(&fs::read(&template).unwrap(), limits).unwrap();
-    let package = reel_package::decode(&artifact.bytes, limits).unwrap();
+    let original = reel_package::decode(
+        &fs::read(&template).unwrap(),
+        reel_engine::aside::source::types(),
+        limits,
+    )
+    .unwrap();
+    let package =
+        reel_package::decode(&artifact.bytes, reel_engine::aside::source::types(), limits).unwrap();
     let identities = |effects: &reel_package::EffectProducts| {
         let mut identities = effects
             .definitions
@@ -77,6 +83,8 @@ fn rebuild_code_with_frozen_resource_archives() {
         package.metadata(),
         Some(&manifest),
         package.effects(),
+        package.resume().table(),
+        reel_engine::aside::source::types(),
         limits,
     )
     .unwrap();

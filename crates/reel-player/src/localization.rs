@@ -371,10 +371,14 @@ mod tests {
             "zh-CN".into(),
             live.ui().assets(),
             live.initializer(),
+            live.entry_function(),
             live.catalogs(),
         )
         .unwrap();
-        while !restored.prepare_restored(SliceBudget::default()).unwrap() {}
+        while !restored
+            .prepare_restored(SliceBudget::default(), &mut || 0)
+            .unwrap()
+        {}
         let mut runtime = StoryRuntime::new(restored);
         runtime.wake_input();
         for _ in 0..1000 {

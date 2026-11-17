@@ -57,7 +57,12 @@ fn source_function_bindings_survive_debug_release_and_reencoding() {
         reel_cli::BuildProfile::Release,
     ] {
         let artifact = reel_cli::build_with_profile(&checked, Some("main::main"), profile).unwrap();
-        let package = package::decode(&artifact.bytes, Default::default()).unwrap();
+        let package = package::decode(
+            &artifact.bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(package.effects().bindings.len(), 2);
         let mapping = checked.effects.bindings().collect::<BTreeMap<_, _>>();
         for binding in &package.effects().bindings {
@@ -79,10 +84,17 @@ fn source_function_bindings_survive_debug_release_and_reencoding() {
             package.metadata(),
             Some(&distribution),
             package.effects(),
+            package.resume().table(),
+            reel_engine::aside::source::types(),
             Default::default(),
         )
         .unwrap();
-        let decoded = package::decode(&rebound, Default::default()).unwrap();
+        let decoded = package::decode(
+            &rebound,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(decoded.effects(), package.effects());
         let story = reel_player::distribution::story_from_package(decoded).unwrap();
         assert_eq!(
@@ -150,7 +162,12 @@ fn main() { let a = effect(first); let b = effect(second, {amount: 0.7}); }
 fn package_and_engine_validate_distinct_effect_boundaries() {
     let checked = checked(SHADER, "edge");
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
-    let loaded = package::decode(&artifact.bytes, Default::default()).unwrap();
+    let loaded = package::decode(
+        &artifact.bytes,
+        reel_engine::aside::source::types(),
+        Default::default(),
+    )
+    .unwrap();
     let bytecode = loaded.program().encode(Default::default()).unwrap();
     let encode = |products: &EffectProducts| {
         package::encode(
@@ -158,6 +175,8 @@ fn package_and_engine_validate_distinct_effect_boundaries() {
             loaded.metadata(),
             None,
             products,
+            loaded.resume().table(),
+            reel_engine::aside::source::types(),
             Default::default(),
         )
     };
@@ -180,7 +199,12 @@ fn package_and_engine_validate_distinct_effect_boundaries() {
     products.definitions[0].id =
         std::array::from_fn(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap());
     let bytes = encode(&products).unwrap();
-    let container = package::decode(&bytes, Default::default()).unwrap();
+    let container = package::decode(
+        &bytes,
+        reel_engine::aside::source::types(),
+        Default::default(),
+    )
+    .unwrap();
     assert!(
         reel_player::distribution::story_from_package(container).is_err(),
         "typed admission must reject malformed opaque IR before publication"

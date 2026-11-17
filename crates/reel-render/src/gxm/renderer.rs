@@ -652,8 +652,8 @@ impl Backend {
                         prepared.output.clone(),
                         prepared.output.view.allocated_bytes() as u64,
                     );
-                    self.targets.clear();
-                    self.coverage_targets.clear();
+                    self.targets.exclude_retained(&prepared.output);
+                    self.coverage_targets.exclude_retained(&prepared.output);
                     self.check_native()?;
                     if let Err(error) = self.submit(frame, prepared, None) {
                         self.retained.cancel(&frame.key());
@@ -1028,8 +1028,6 @@ impl RenderBackend for Backend {
         self.glyphs.prune(&[]);
         self.effects.prune();
         self.check_native()?;
-        self.targets.prune_cold();
-        self.coverage_targets.prune_cold();
         self.check_native()?;
         Ok(())
     }

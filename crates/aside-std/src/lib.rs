@@ -7,10 +7,15 @@
 
 mod core;
 mod curve;
-pub use curve::{curve_key, curve_key_count, sample_curve};
+pub use curve::{
+    allocate_curve_resource, connect_curve_resource, curve_key, curve_key_count,
+    curve_resource_fields, sample_curve, validate_curve_resource_step,
+};
 mod math;
 mod number;
 mod random;
+pub use random::{allocate_random_resource, connect_random_resource, random_resource_state};
+mod resume;
 mod source;
 mod time;
 

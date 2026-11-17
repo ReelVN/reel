@@ -3,6 +3,8 @@ use reel_ui::{
     kurbo::{Size, Vec2},
     stage::{NodeEvent, NodeId, NodeKind, NodeScroll, NodeVirtualList, VirtualRowMeasurement},
 };
+mod nested;
+mod scroll_activity;
 
 fn drive(vm: &mut SessionVm, session: &mut Session) {
     for _ in 0..2_000_000 {
@@ -95,6 +97,8 @@ fn event(vm: &SessionVm, y: f64, width: f64, retained: &[NodeId]) -> NodeVirtual
         requested: offset,
         offset: Vec2::new(0., y),
         viewport: Size::new(width, 120.),
+        scroll_scale: 1.,
+        scroll_limit: (view.total_height - 120.).max(0.),
         width,
         visible_start: y,
         visible_end: y + 120.,
@@ -529,6 +533,20 @@ fn virtual_list_failed_factory_restores_outer_capture_and_previous_stage() {
             .nodes()
             .any(|n| matches!(&n.kind,NodeKind::Text(t) if t.as_ref()=="private"))
     );
+}
+
+#[test]
+fn virtual_list_identical_window_keeps_its_geometry_revision() {
+    let (mut session, mut vm) = prepared(5);
+    for _ in 0..3 {
+        feedback(&mut vm, &mut session, 0., 320., &[]);
+    }
+    let committed = event(&vm, 0., 320., &[]);
+    // The fixed-height rows lay out identically at the new width.
+    feedback(&mut vm, &mut session, 0., 300., &[]);
+    let resized = event(&vm, 0., 300., &[]);
+    assert_eq!(resized.revision, committed.revision);
+    assert_eq!(resized.measurements, committed.measurements);
 }
 
 #[test]

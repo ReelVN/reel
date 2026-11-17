@@ -1,6 +1,6 @@
 //! Mounted resource identities shared by layout and viewport demand queries.
 use super::*;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Weak};
 
 #[cfg(test)]
 mod tests;
@@ -20,6 +20,7 @@ struct Entry {
     uses: Vec<Usage>,
     encoded: Option<Arc<[u8]>>,
     shader: bool,
+    preload: bool,
 }
 
 struct Usage {
@@ -36,7 +37,37 @@ enum Selection {
 pub(crate) struct ImageRequests {
     pub index: Arc<ResourceIndex>,
     selection: Selection,
+    pub approaching: Vec<NodeId>,
     pub deferred_images: bool,
+}
+
+pub(super) struct RowResources {
+    projection: Weak<SceneNode>,
+    format: EffectShaderFormat,
+    requests: ImageRequests,
+}
+
+impl RowResources {
+    pub(super) fn new(projection: &Arc<SceneNode>, format: EffectShaderFormat) -> Self {
+        Self {
+            projection: Arc::downgrade(projection),
+            format,
+            requests: ImageRequests::new(
+                Arc::new(ResourceIndex::collect(Some(projection), format)),
+                Selection::All,
+            ),
+        }
+    }
+
+    pub(super) fn matches(&self, projection: &Arc<SceneNode>, format: EffectShaderFormat) -> bool {
+        self.format == format && self.projection.as_ptr() == Arc::as_ptr(projection)
+    }
+
+    pub(super) fn ready(&self, images: &BTreeMap<String, ResourceLease>) -> bool {
+        self.requests
+            .required()
+            .all(|(source, _)| images.contains_key(source))
+    }
 }
 
 impl StageView {
@@ -55,15 +86,6 @@ impl StageView {
             Selection::All,
         ))
     }
-    pub(super) fn image_requests_for(
-        root: Option<&Arc<SceneNode>>,
-        format: EffectShaderFormat,
-    ) -> Result<ImageRequests, String> {
-        Ok(ImageRequests::new(
-            Arc::new(ResourceIndex::collect(root, format)),
-            Selection::All,
-        ))
-    }
     pub(crate) fn layout_image_requests(
         &self,
         format: EffectShaderFormat,
@@ -76,12 +98,13 @@ impl StageView {
     pub(crate) fn viewport_image_requests(
         &self,
         outside: Vec<NodeId>,
+        approaching: Vec<NodeId>,
         format: EffectShaderFormat,
     ) -> Result<ImageRequests, String> {
-        Ok(ImageRequests::new(
-            self.resource_index(format),
-            Selection::Viewport(outside),
-        ))
+        let mut requests =
+            ImageRequests::new(self.resource_index(format), Selection::Viewport(outside));
+        requests.approaching = approaching;
+        Ok(requests)
     }
 }
 
@@ -90,9 +113,11 @@ impl ResourceIndex {
         let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
         let mut pending: Vec<_> = root
             .into_iter()
-            .map(|node| (node, true, true, false, false))
+            .map(|node| (node, true, true, false, false, false))
             .collect();
-        while let Some((node, parent_visible, parent_enabled, has_parent, cursor)) = pending.pop() {
+        while let Some((node, parent_visible, parent_enabled, has_parent, cursor, preload)) =
+            pending.pop()
+        {
             if !node.image_branch {
                 continue;
             }
@@ -101,10 +126,11 @@ impl ResourceIndex {
                 && node.node.props.enabled
                 && !matches!(node.node.kind, NodeKind::Cursor);
             let cursor = cursor || matches!(node.node.kind, NodeKind::Cursor);
+            let preload = preload || node.node.props.preload;
             pending.extend(
                 node.children
                     .iter()
-                    .map(|child| (child, visible, enabled, true, cursor)),
+                    .map(|child| (child, visible, enabled, true, cursor, preload)),
             );
             let mut add =
                 |source: &str, origin: Option<&str>, image, shader, encoded: Option<Arc<[u8]>>| {
@@ -113,16 +139,20 @@ impl ResourceIndex {
                         uses: Vec::new(),
                         encoded: None,
                         shader: false,
+                        preload: false,
                     });
+                    entry.preload |= preload;
+                    if visible || preload {
+                        entry.shader |= shader;
+                        if encoded.is_some() {
+                            entry.encoded = encoded;
+                        }
+                    }
                     if visible {
                         entry.uses.push(Usage {
                             origin: origin.map(str::to_owned),
                             image,
                         });
-                        entry.shader |= shader;
-                        if encoded.is_some() {
-                            entry.encoded = encoded;
-                        }
                     }
                 };
             // Keep appearance dependencies before the image for diagnostic precedence.
@@ -223,8 +253,21 @@ impl ImageRequests {
         Self {
             index,
             selection,
+            approaching: Vec::new(),
             deferred_images,
         }
+    }
+    pub fn preloaded(&self) -> impl Iterator<Item = &str> {
+        self.index.entries.iter().filter_map(|entry| {
+            (entry.preload
+                || (!self.approaching.is_empty()
+                    && entry.uses.iter().any(|usage| {
+                        usage
+                            .image
+                            .is_some_and(|(id, _)| self.approaching.binary_search(&id).is_ok())
+                    })))
+            .then_some(entry.source.as_str())
+        })
     }
     pub fn required(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
         self.index.entries.iter().filter_map(|entry| {
@@ -260,8 +303,8 @@ pub(super) fn same_inputs(a: Option<&Arc<SceneNode>>, b: Option<&Arc<SceneNode>>
         if !Arc::ptr_eq(&a.node, &b.node) {
             let ap = &a.node.props;
             let bp = &b.node.props;
-            if (ap.visible, ap.enabled, a.has_fixed_image_size())
-                != (bp.visible, bp.enabled, b.has_fixed_image_size())
+            if (ap.visible, ap.enabled, ap.preload, a.has_fixed_image_size())
+                != (bp.visible, bp.enabled, bp.preload, b.has_fixed_image_size())
                 || matches!(a.node.kind, NodeKind::Popup(_))
                     != matches!(b.node.kind, NodeKind::Popup(_))
                 || matches!(a.node.kind, NodeKind::Cursor)

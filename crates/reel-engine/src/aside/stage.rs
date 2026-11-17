@@ -58,6 +58,17 @@ aside_host::native_documentation! {
         /// Create a numeric control with min, max and step. Bind value to a writable
         /// property; on_change observes committed value changes.
         "reel::slider";
+        /// Show determinate progress. Bind value or max to track live state. Set the
+        /// track with background and the fill with color. Children overlay the bar.
+        ///
+        /// ```aside
+        /// fn main() {
+        ///     let state = model({loaded: 3});
+        ///     stage.replace(progress_bar(value: bind(state.loaded), max: 8,
+        ///         width: 240, height: 20, color: "#70c9ff"));
+        /// }
+        /// ```
+        "reel::progress_bar";
         /// Create a boolean control with optional label. Bind value to a writable
         /// property, and use on_change for committed changes.
         "reel::toggle" | "reel::checkbox";
@@ -96,6 +107,17 @@ aside_host::native_documentation! {
         /// }
         /// ```
         "reel::popup";
+        /// Float passive children beside their parent while it is hovered or visibly
+        /// focused. Placement flips to fit the viewport. The parent keeps input.
+        ///
+        /// ```aside
+        /// fn main() {
+        ///     stage.replace(button("Music") {
+        ///         tooltip(offset: 6) { text("Listen to the soundtrack"); };
+        ///     });
+        /// }
+        /// ```
+        "reel::tooltip";
         /// Create a clipped camera container. camera_x/y select the viewed world point;
         /// zoom and camera_rotation transform its ordinary children. Drawing and input
         /// use the same transform; the common x/y properties place the viewport.
@@ -110,13 +132,17 @@ pub(super) mod appearance;
 pub(super) mod camera;
 pub(super) mod configure;
 pub(super) mod controls;
+pub(super) mod defaults;
 pub(super) mod flow;
+pub(in crate::aside) mod image_skin;
 pub(super) mod input;
 mod interaction;
 pub(in crate::aside) mod interaction_appearance;
 pub(super) mod overrides;
 pub(super) mod popup;
+pub(super) mod resources;
 pub(super) mod scroll;
+pub(super) mod scrollbar;
 pub(super) mod snapshot;
 pub(super) mod source;
 pub(super) mod text_input;
@@ -182,6 +208,13 @@ pub(super) enum NodeProperty {
     /// Show this subtree and include it in input hit testing.
     #[aside(name = "visible", ty = Bool, default = true)]
     Visible,
+    /// Read and decode this mounted subtree's image and effect sources ahead of an
+    /// explicit reveal or source change. Approaching fixed-size images are prepared
+    /// automatically from their layout motion.
+    /// Prefetch uses spare resource capacity and does not delay the visible frame.
+    /// Layout, glyphs and GPU uploads are prepared when the subtree is drawn.
+    #[aside(name = "preload", ty = Bool, default = false)]
+    Preload,
     /// Allow this subtree to receive input while retaining its presentation.
     #[aside(name = "enabled", ty = Bool, default = true)]
     Enabled,
@@ -369,11 +402,15 @@ pub(super) struct StageBinding {
     projection_index: projection::Index,
     pub(super) types: super::source::HostTypes,
     pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
+    pub(in crate::aside) page_methods: Option<[aside_vm::bytecode::FunctionId; 8]>,
     pub scene: Stage,
     pub(super) effect_products: Arc<super::source::EffectProducts>,
     effect_projection: super::effects::ProjectionCache,
     pub retirement_revision: u64,
+    pub(super) virtual_scrolls: super::lists::virtualized::ScrollOwners,
     handles: BTreeMap<NodeId, NodeBinding>,
+    restoring_resources: resources::Restoring,
+    pub(in crate::aside) page_stacks: std::collections::BTreeSet<NodeId>,
     root: Option<RootToken>,
     // Schema names are immutable and shared by live nodes. Weak handles let
     // unused schemas disappear with their last node and require no save roots.
@@ -391,6 +428,7 @@ struct NodeBinding {
     input: Option<Box<input::State>>,
     text_history: Option<Box<text_input::History>>,
     text_source: Option<HeapHandle>,
+    image_skin: Option<HeapHandle>,
     mask_source: Option<(HeapHandle, u64)>,
     effect_source: Option<(HeapHandle, u64)>,
     text_listening: bool,
@@ -449,11 +487,15 @@ impl StageBinding {
             projection_index: projection::Index::new(heap)?,
             types: super::source::HostTypes::new(heap)?,
             text_filter_function: None,
+            page_methods: None,
             scene: Stage::default(),
             effect_products: Arc::default(),
             effect_projection: Default::default(),
             retirement_revision: 0,
+            virtual_scrolls: Default::default(),
             handles: BTreeMap::new(),
+            restoring_resources: Default::default(),
+            page_stacks: Default::default(),
             root: None,
             property_keys: Default::default(),
             editing_limits: Default::default(),
@@ -523,12 +565,28 @@ impl StageBinding {
                 self.sync_tree(heap, child, read_limit)?;
             }
         }
+        let mut tooltip_added = false;
         for i in 0..heap.sequence_len(references)? {
-            heap.set_host_payload(heap.sequence_get(references, i)?, 2, container)?;
+            let child = heap.sequence_get(references, i)?;
+            if !heap.host_payload(child, 2)?.same_bits(container) {
+                let id = self.id(heap, child)?;
+                match self.handles[&id].shape {
+                    snapshot::Shape::Radio => {
+                        self.handles.get_mut(&id).unwrap().projection_dirty = true;
+                    }
+                    snapshot::Shape::Tooltip => tooltip_added = true,
+                    _ => {}
+                }
+                heap.set_host_payload(child, 2, container)?;
+            }
         }
         heap.set_host_payload(container, 1, references)?;
         let retired = self.scene.reconcile_children(parent, children)?;
-        self.retire(heap, retired)
+        self.retire(heap, retired)?;
+        if tooltip_added {
+            self.sync_tooltips(heap, parent)?;
+        }
+        Ok(())
     }
 
     pub(super) fn id(&self, heap: &Heap, value: Value) -> Result<NodeId, AdapterError> {
@@ -558,6 +616,7 @@ impl StageBinding {
             let value = heap.import_handle(binding.handle)?;
             if heap.info(heap.host_fields(value)?)?.content_version != binding.fields_version
                 || binding.projection_dirty
+                || binding.image_skin.is_some()
                 || super::effects::changed(heap, binding.effect_source)?
                 || mask_changed(heap, binding.mask_source)?
                 || binding
@@ -583,23 +642,7 @@ impl StageBinding {
 
     pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
         let id = self.id(heap, value)?;
-        Ok(match self.scene.node(id).unwrap().kind {
-            NodeKind::Row(_) | NodeKind::Column(_) => flow::FlowField::PROPERTIES.len() as u32,
-            NodeKind::Grid(_) => flow::GridField::PROPERTIES.len() as u32,
-            NodeKind::Camera(_) => camera::CameraField::PROPERTIES.len() as u32,
-            NodeKind::Particles(_) => super::particles::PREFIX.len() as u32,
-            NodeKind::Text(_) => 2,
-            NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
-            NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
-            NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
-            NodeKind::Radio { .. } => controls::RadioField::PROPERTIES.len() as u32,
-            NodeKind::Input { .. } => input::InputField::PROPERTIES.len() as u32,
-            NodeKind::Scroll { .. } => scroll::ScrollField::PROPERTIES.len() as u32,
-            NodeKind::Popup(_) => popup::PopupField::PROPERTIES.len() as u32,
-            NodeKind::Image { .. } => registry::IMAGE_PREFIX.len() as u32,
-            NodeKind::Button { .. } => appearance::ButtonField::PROPERTIES.len() as u32,
-            _ => 0,
-        })
+        Ok(self.handles[&id].shape.prefix() as u32)
     }
 
     pub fn dispatch(
@@ -629,6 +672,10 @@ impl StageBinding {
             }
             self.retire(heap, retired)?;
             return Ok(Value::NULL);
+        }
+
+        if symbol == "reel::scrollbar" {
+            return self.create_scrollbar(vm, owner, args, read_limit, origin);
         }
 
         self.create(
@@ -678,7 +725,7 @@ impl StageBinding {
         } else {
             (shape.project(heap, fields, origin, read_limit)?, None)
         };
-        let props = read_props(
+        let mut props = read_props(
             heap,
             fields,
             prefix.len(),
@@ -691,11 +738,29 @@ impl StageBinding {
                 effect_projection: &mut self.effect_projection,
             },
         )?;
+        let image_skin = image_skin::binding(heap, shape, fields)?;
+        super::pages::semantics(shape, &kind, &mut props);
         validate_text_props(&kind, &props)?;
         let mask_source = mask_handle(heap, fields, prefix.len(), Value::NULL)?;
         let effect_source = effect_stamp(heap, fields, prefix.len(), Value::NULL)?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
+        let slider_art = if let NodeKind::Slider { art, .. } = &kind {
+            for field in [controls::SliderField::Track, controls::SliderField::Thumb] {
+                let part = args[field.index()];
+                if part.tag() != ValueTag::Null {
+                    children.push(self.id(heap, part)?);
+                }
+            }
+            if art.track.is_some() && art.track == art.thumb {
+                return Err(AdapterError::Input(
+                    "slider track and thumb must be distinct nodes",
+                ));
+            }
+            Some(*art)
+        } else {
+            None
+        };
         if matches!(
             kind,
             NodeKind::Camera(_)
@@ -708,6 +773,7 @@ impl StageBinding {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ProgressBar { .. }
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -718,23 +784,25 @@ impl StageBinding {
                     let child = heap.sequence_get(input, index)?;
                     children.push(self.id(heap, child)?);
                 }
+            }
+            if !children.is_empty() {
                 children = self.scene.composition_roots(&children)?;
-                for &child in &children {
-                    heap.array_push(references, self.value(heap, child)?)?;
-                }
+            }
+            if let Some(art) = slider_art
+                && [art.track, art.thumb]
+                    .into_iter()
+                    .flatten()
+                    .any(|part| !children.contains(&part))
+            {
+                return Err(AdapterError::Input(
+                    "slider art must be a direct child of the slider",
+                ));
+            }
+            for &child in &children {
+                heap.array_push(references, self.value(heap, child)?)?;
             }
         }
-        let id = self.scene.next_identity()?;
-        let payload = [
-            Value::int(id.0 as i64),
-            references,
-            Value::NULL,
-            Value::NULL,
-            Value::int(0),
-            Value::NULL,
-        ];
-        let value = heap.alloc_composable_host(fields, &payload, Some(shape.validator()))?;
-        self.types.mark(heap, value, type_name)?;
+        let (id, value) = self.allocate_node_shell(heap, fields, references, shape, type_name)?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;
@@ -820,13 +888,16 @@ impl StageBinding {
             }
         }
         let input = if let Some(declaration) = input_declaration {
-            Some(input::initialize(heap, value, args[0], declaration)?)
+            Some(input::initialize(heap, value, fields, declaration)?)
         } else {
             None
         };
         controls::project_group(heap, value, &mut kind)?;
         text_input::project(heap, value, &mut kind)?;
         self.scene.create(kind, props, children)?;
+        if shape == snapshot::Shape::PageStack {
+            self.page_stacks.insert(id);
+        }
         // Keeping any part of a component keeps its ancestors and siblings
         // alive. Explicit retirement clears both directions of these edges.
         for index in 0..heap.sequence_len(references)? {
@@ -850,18 +921,20 @@ impl StageBinding {
                 overrides: None,
                 input,
                 text_history: None,
-                text_source: if matches!(
-                    symbol,
-                    "reel::text"
-                        | "reel::text_input"
-                        | "reel::text_area"
-                        | "reel::image"
-                        | "reel::video"
-                ) {
+                text_source: if image_skin.is_none()
+                    && matches!(
+                        symbol,
+                        "reel::text"
+                            | "reel::text_input"
+                            | "reel::text_area"
+                            | "reel::image"
+                            | "reel::video"
+                    ) {
                     Some(heap.handle(args[0])?)
                 } else {
                     None
                 },
+                image_skin,
                 text_listening: symbol == "reel::text" && args[1].tag() != ValueTag::Null,
                 mask_source,
                 effect_source,
@@ -902,6 +975,8 @@ impl StageBinding {
             self.retirement_revision = self.retirement_revision.wrapping_add(1);
         }
         for id in nodes {
+            self.page_stacks.remove(&id);
+            self.virtual_scrolls.retire(id);
             if let Some(binding) = self.handles.remove(&id)
                 && let Ok(value) = heap.import_handle(binding.handle)
             {
@@ -1106,11 +1181,12 @@ impl StageBinding {
                 || match &node.kind {
                     NodeKind::Text(_) => self.handles[&id].text_listening,
                     NodeKind::Slider { .. }
+                    | NodeKind::ScrollBar(_)
                     | NodeKind::Toggle { .. }
                     | NodeKind::Radio { .. }
                     | NodeKind::TextInput { .. } => true,
                     NodeKind::Button { listening, .. } => *listening,
-                    NodeKind::Popup(popup) => popup.listening,
+                    NodeKind::Popup(popup) => popup.listening || popup.hint.is_some(),
                     NodeKind::Input {
                         bindings,
                         keyboard,
@@ -1214,6 +1290,10 @@ impl StageBinding {
         self.scene.add(parent_id, child_id, index)?;
         heap.set_host_payload(receiver, 1, next)?;
         heap.set_host_payload(child, 2, receiver)?;
+        if matches!(self.scene.node(child_id).unwrap().kind, NodeKind::Popup(view) if view.hint.is_some())
+        {
+            self.sync_tooltips(heap, parent_id)?;
+        }
         Ok(child)
     }
 }
@@ -1318,7 +1398,7 @@ pub(super) fn clear(
     context.host.retire(heap, retired)
 }
 
-mod property_values;
+pub(super) mod property_values;
 use property_values::read_props;
 pub(super) use property_values::{
     boolean, button_kind, color, effect_stamp, mask_changed, mask_handle, mask_offset, nonnegative,

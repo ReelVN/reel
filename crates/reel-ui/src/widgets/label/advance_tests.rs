@@ -26,6 +26,24 @@ fn contexts() -> (FontContext, LayoutContext<BrushIndex>, String) {
 }
 
 #[test]
+fn overflowing_text_reuses_a_layout_at_the_same_width() {
+    let (mut fonts, mut context, family) = contexts();
+    let mut label = Label::new("W")
+        .with_style(StyleProperty::FontSize(24.))
+        .with_style(StyleProperty::FontFamily(
+            reel_text::FontFamily::from(family.as_str()).into_owned(),
+        ));
+    let width = Some(0.);
+    let first = label.build_and_break(&mut fonts, &mut context, width);
+    assert!(label.layouts[first].layout.width() > 0.);
+    assert_eq!(
+        label.build_and_break(&mut fonts, &mut context, width),
+        first
+    );
+    assert_eq!(label.layouts.len(), 1);
+}
+
+#[test]
 fn trailing_space_caret_survives_visible_alignment_and_wrapping() {
     let (mut fonts, mut context, family) = contexts();
     for source in ["Add ", "  Add   ", "   ", "Add \nA  ", "Add Add Add  "] {
