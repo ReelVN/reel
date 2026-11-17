@@ -126,8 +126,8 @@ pub fn analyze_project(
 }
 
 /// Discover imports from an already parsed, possibly incomplete editor tree.
-/// Empty grouped paths retain their module as a discovery hint for completion;
-/// this does not introduce a bound name or change executable import semantics.
+/// Empty groups and grouped paths ending in `::` retain their module as a
+/// discovery hint for completion. These hints do not introduce bound names.
 pub fn imports(
     parsed: &Parse,
     module: &str,
@@ -140,10 +140,15 @@ pub fn imports(
 mod tests {
     use super::*;
     #[test]
-    fn empty_groups_discover_editor_modules_without_executable_imports() {
+    fn unfinished_grouped_paths_discover_editor_modules() {
         for (source, path) in [
             ("use local::api::{};", vec!["local", "api"]),
             ("use local::{api::{ ", vec!["local", "api"]),
+            ("use local::{api::", vec!["local", "api"]),
+            (
+                "use local::{api:: /* choose an export */ };",
+                vec!["local", "api"],
+            ),
         ] {
             let parsed = crate::parse(source).unwrap();
             let hints = imports(&parsed, "main", AnalysisLimits::default()).unwrap();
@@ -151,6 +156,10 @@ mod tests {
             assert_eq!(hints[0].0.path, path);
             assert_eq!(hints[0].0.kind, ImportKind::NamespaceOrSymbol);
         }
+        let complete = crate::parse("use local::{api::show};").unwrap();
+        let requests = imports(&complete, "main", AnalysisLimits::default()).unwrap();
+        assert_eq!(requests[0].0.path, ["local", "api", "show"]);
+        assert_eq!(requests[0].0.kind, ImportKind::Symbol);
         let source = "use local::api::{}; fn main(){}";
         let strict =
             crate::semantic::discover_imports(source, "main", AnalysisLimits::default()).unwrap();

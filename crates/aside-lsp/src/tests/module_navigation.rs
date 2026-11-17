@@ -151,8 +151,9 @@ fn project_imports_use_one_module_for_short_and_qualified_paths() {
 fn blank_and_nested_group_import_completion_discovers_source_exports() {
     let (_project, root) = project_sources();
     std::fs::create_dir_all(root.join("ui")).unwrap();
+    let dialogue = root.join("ui/dialogue.aside");
     std::fs::write(
-        root.join("ui/dialogue.aside"),
+        &dialogue,
         "pub fn speak(){} pub class Actor{} let private=1;",
     )
     .unwrap();
@@ -164,6 +165,8 @@ fn blank_and_nested_group_import_completion_discovers_source_exports() {
         ("use ui::dialogue::{ ", vec!["speak", "Actor"]),
         ("use game::ui::dialogue::{ ", vec!["speak", "Actor"]),
         ("use game::{ui::{dialogue::{ ", vec!["speak", "Actor"]),
+        ("use ui::{dialogue::", vec!["speak", "Actor"]),
+        ("use game::{ui::{dialogue:: ", vec!["speak", "Actor"]),
         (
             "use game::ui::dialogue::{/* members */ ",
             vec!["speak", "Actor"],
@@ -182,4 +185,27 @@ fn blank_and_nested_group_import_completion_discovers_source_exports() {
         }
         assert!(items.iter().all(|item| item.label != "private"));
     }
+
+    let source = "use ui::{dialogue::";
+    workspace
+        .open(
+            file_uri(&dialogue).unwrap(),
+            1,
+            "pub fn from_unsaved_overlay() {}".into(),
+        )
+        .unwrap();
+    workspace.open(main.clone(), 2, source.into()).unwrap();
+    let at = position(source, "dialogue::", true);
+    let reads = workspace.disk_reads;
+    let items = workspace.complete(&main, at, Encoding::Utf16).unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|item| item.label == "from_unsaved_overlay")
+    );
+    assert!(items.iter().all(|item| item.label != "speak"));
+    assert_eq!(workspace.disk_reads, reads);
+    let analyses = workspace.analyses;
+    workspace.complete(&main, at, Encoding::Utf16).unwrap();
+    assert_eq!(workspace.analyses, analyses);
 }

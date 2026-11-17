@@ -2,7 +2,7 @@
 //! are retained, with initialized-state runtime checks on imported value reads.
 use super::types::type_hint;
 use super::*;
-use crate::hir::{Form, Hir, HirKind as H, NodeId};
+use crate::hir::{Form, Hir, HirElement, HirKind as H, NodeId};
 use crate::{DiagnosticCode as D, SyntaxKind as K, TextRange, TextSize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -1069,7 +1069,7 @@ pub(super) fn import_requests(
     n: NodeId,
     prefix: &[String],
     grouped: bool,
-    discover_empty_groups: bool,
+    editor_discovery: bool,
     from: &str,
     out: &mut Vec<(ImportRequest, Option<String>)>,
 ) {
@@ -1097,7 +1097,7 @@ pub(super) fn import_requests(
         .find(|&n| hir.node(n).kind == H::ImportGroup)
     {
         let mut children = hir.children(group).peekable();
-        if discover_empty_groups && children.peek().is_none() && !path.is_empty() {
+        if editor_discovery && children.peek().is_none() && !path.is_empty() {
             // Editors need the module's real exports before its first grouped
             // name is typed. This hint never creates a binding or runtime edge.
             out.push((
@@ -1110,18 +1110,22 @@ pub(super) fn import_requests(
             ));
         } else {
             for child in children {
-                import_requests(hir, child, &path, true, discover_empty_groups, from, out)
+                import_requests(hir, child, &path, true, editor_discovery, from, out)
             }
         }
         return;
     }
+    // A trailing separator leaves the current module path ready for completion.
+    let unfinished_path = editor_discovery
+        && grouped
+        && matches!(hir.elements(n).last(), Some(HirElement::Token(token)) if token.kind == K::ColonColon);
     out.push((
         ImportRequest {
             from: from.into(),
             path,
             kind: if wildcard {
                 ImportKind::Wildcard
-            } else if grouped {
+            } else if grouped && !unfinished_path {
                 ImportKind::Symbol
             } else {
                 ImportKind::NamespaceOrSymbol
