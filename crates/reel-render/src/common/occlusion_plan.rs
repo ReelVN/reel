@@ -15,6 +15,7 @@ use reel_ui::{
 };
 
 const RECT_LIMIT: usize = 32;
+type OpaqueImage = (ResourceHandle, [u32; 2]);
 const EMPTY: Scissor = Scissor {
     x: 0,
     y: 0,
@@ -171,7 +172,7 @@ fn plan_drawing(
     grow(
         &mut scratch,
         &mut bytes,
-        (leases.len() * size_of::<ResourceHandle>()) as u64,
+        (leases.len() * size_of::<OpaqueImage>()) as u64,
         limit,
     )?;
     let mut opaque_images = Vec::with_capacity(leases.len());
@@ -183,10 +184,13 @@ fn plan_drawing(
                 .texture_descriptor()
                 .is_some_and(|desc| desc.format == TextureFormat::Bc1Rgb)
         {
-            opaque_images.push(lease.handle());
+            opaque_images.push((
+                lease.handle(),
+                lease.image_size().expect("opaque image size"),
+            ));
         }
     }
-    opaque_images.sort_unstable();
+    opaque_images.sort_unstable_by_key(|&(handle, _)| handle);
     let groups = GroupPlan::new(
         commands,
         Some(0),
@@ -320,7 +324,7 @@ fn ordinary(draw: &FrameDraw) -> bool {
         FrameDraw::BlurredRoundedRect(_) => false,
     }
 }
-fn opaque(draw: &FrameDraw, images: &[ResourceHandle]) -> bool {
+fn opaque(draw: &FrameDraw, images: &[OpaqueImage]) -> bool {
     let FrameDraw::Fill {
         composite,
         brush,
@@ -340,7 +344,6 @@ fn opaque(draw: &FrameDraw, images: &[ResourceHandle]) -> bool {
             if brush.image.color[3] != 1.
                 || brush.sampler.alpha != 1.
                 || brush.image.appearance.is_some()
-                || brush.image.source_rect.is_some()
                 || brush.sampler.x_extend != Extend::Pad
                 || brush.sampler.y_extend != Extend::Pad
             {
@@ -356,7 +359,20 @@ fn opaque(draw: &FrameDraw, images: &[ResourceHandle]) -> bool {
             {
                 return false;
             }
-            images.binary_search(&brush.image.resource).is_ok()
+            let Ok(index) =
+                images.binary_search_by_key(&brush.image.resource, |&(handle, _)| handle)
+            else {
+                return false;
+            };
+            let [width, height] = images[index].1.map(f64::from);
+            brush.image.source_rect.is_none_or(|region| {
+                region.x0 >= 0.
+                    && region.y0 >= 0.
+                    && region.x1 <= width
+                    && region.y1 <= height
+                    && region.width() > 0.
+                    && region.height() > 0.
+            })
         }
         _ => false,
     }

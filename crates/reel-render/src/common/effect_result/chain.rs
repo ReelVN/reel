@@ -117,10 +117,7 @@ pub(crate) fn source<'a>(
     storage_size: &dyn Fn([u32; 2]) -> [u32; 2],
     pool: &BudgetPool,
 ) -> Option<SourceProof<'a>> {
-    if !drawing.transitions().is_empty()
-        || !drawing.masks().is_empty()
-        || !drawing.capture_exclusions().is_empty()
-    {
+    if crate::common::scopes::intersects_transition(drawing, commands.clone()) {
         return None;
     }
     let mut range = commands;

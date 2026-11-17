@@ -26,16 +26,28 @@ pub(super) struct GcCounts {
     pub(super) collections: u64,
     pub(super) units: u64,
     pub(super) chunk_allocations: u64,
+    #[cfg(feature = "vm-execution-counts")]
+    pub(super) work_units: [u64; aside_vm::GC_WORK_NAMES.len()],
 }
 
 impl GcCounts {
     fn checked_delta(self, before: Self) -> Option<Self> {
+        #[cfg(feature = "vm-execution-counts")]
+        let work_units = {
+            let mut delta = [0; aside_vm::GC_WORK_NAMES.len()];
+            for (index, units) in delta.iter_mut().enumerate() {
+                *units = self.work_units[index].checked_sub(before.work_units[index])?;
+            }
+            delta
+        };
         Some(Self {
             collections: self.collections.checked_sub(before.collections)?,
             units: self.units.checked_sub(before.units)?,
             chunk_allocations: self
                 .chunk_allocations
                 .checked_sub(before.chunk_allocations)?,
+            #[cfg(feature = "vm-execution-counts")]
+            work_units,
         })
     }
 }
@@ -48,6 +60,8 @@ impl Observation {
                 collections: heap.collections,
                 units: heap.gc_units,
                 chunk_allocations: heap.chunk_allocations,
+                #[cfg(feature = "vm-execution-counts")]
+                work_units: vm.heap().gc_work_units(),
             },
             #[cfg(feature = "vm-execution-counts")]
             counts: vm.execution_counts(),

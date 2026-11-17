@@ -72,11 +72,7 @@ impl Context<'_> {
         crop: Option<crate::common::source_crop::Crop>,
     ) -> Result<crate::common::effect_result::chain::Lookup, GpuError> {
         let mut lookup = crate::common::effect_result::chain::Lookup::default();
-        if !self.effect_admission.enabled()
-            || self.capture
-            || !current.drawing.transitions().is_empty()
-            || !current.drawing.capture_exclusions().is_empty()
-        {
+        if !self.effect_admission.enabled() || self.capture {
             return Ok(lookup);
         }
         let Some(offset) = current.offset else {

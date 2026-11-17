@@ -143,7 +143,7 @@ struct Block<'a> {
     single: bool,
     #[cfg(test)]
     general_clears: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_suffixes: bool,
     #[cfg(any(test, feature = "vm-validation-oracle"))]
     residual: Option<&'a ResidualState>,
@@ -168,7 +168,7 @@ impl Header {
 impl Vm {
     #[inline]
     pub(super) fn body_handoff_enabled(&self) -> bool {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_body_dispatch {
             return false;
         }
@@ -179,7 +179,7 @@ impl Vm {
         true
     }
     fn body_context_enabled(&self) -> bool {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_body_context {
             return false;
         }
@@ -287,7 +287,7 @@ impl Vm {
         meter: &mut Meter,
         mut now: Option<&mut dyn FnMut() -> u64>,
     ) -> Result<Exit, VmError> {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_body_clock {
             now = None;
         }
@@ -399,7 +399,7 @@ impl Vm {
             single: self.work_probe.single_scalar_step,
             #[cfg(test)]
             general_clears: self.work_probe.general_clears,
-            #[cfg(any(test, feature = "vm-validation-oracle"))]
+            #[cfg(test)]
             legacy_suffixes: self.legacy_scalar_suffixes,
             #[cfg(any(test, feature = "vm-validation-oracle"))]
             residual: Some(&self.residual_body),

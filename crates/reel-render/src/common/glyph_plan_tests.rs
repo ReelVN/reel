@@ -35,9 +35,13 @@ impl Prepare for Probe {
         run: &FrameGlyphRun,
         density: f64,
         _: RecordLocation,
+        measure_ink: bool,
     ) -> Result<InkBounds, GpuError> {
         self.glyphs += run.glyphs.len();
         self.densities.push(density);
+        if !measure_ink {
+            return Ok(InkBounds::Empty);
+        }
         Ok(run.glyphs.iter().fold(InkBounds::Empty, |ink, position| {
             union(
                 ink,

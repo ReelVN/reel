@@ -20,6 +20,7 @@ aside_host::native_documentation! {
         /// new page is being constructed. Built pages survive selection and visibility
         /// changes until eviction or node retirement. Page visits, audio and previews
         /// use ordinary explicit scopes. Each page's own `visible` binding is preserved.
+        /// Share a list of `{key, label, build}` records with `tab_bar` when composing both.
         ///
         /// ```aside
         /// fn main() {
@@ -41,15 +42,25 @@ aside_host::native_documentation! {
         /// ensures add no page-readiness gate; factories retain ordinary Task commit
         /// boundaries. Existing cached pages return their settled Task.
         "reel::page_stack::ensure";
+        /// Prepare a page and commit its key to the stack's writable value when ready.
+        /// Returns an owned Task. A newer request supersedes this one, which then
+        /// resolves to null. Selection and ensure share the same page producer.
+        "reel::page_stack::select";
+        /// Await the shared producer and commit the current selection request.
+        "reel::page_stack::commit_selection";
         /// Retire a cached inactive page and return true. Return false if it has not
         /// been built. Evicting the selected key raises a source-located state error.
         "reel::page_stack::evict";
         /// Build one page through the VM's owned no-wait Task continuation.
         "reel::page_stack::produce";
         /// Create independently focusable native tabs over fixed unique `{key,label}`
-        /// records. Share value with any page stack or authored view. Each bar has its
+        /// records. A list of `{key, label, build}` records can also feed `page_stack`.
+        /// Share value with any page stack or authored view. Each bar has its
         /// own focus group. Horizontal/vertical arrows wrap within the bar; automatic
         /// activation selects on arrows, manual activation selects on confirmation.
+        /// With `on_select`, selecting another key calls the handler with that key in
+        /// `event.value`. The selected value stays under the handler's control.
+        /// The handler can await a page and then assign the shared value.
         /// The optional no-wait `build: fn(TabItem) -> (Node | null)` returns custom
         /// content. A direct `|item|` lambda inherits this signature during source
         /// checking, including member access and result validation. Its read-only
@@ -63,58 +74,73 @@ aside_host::native_documentation! {
         /// ```aside
         /// fn main() {
         /// let selected = model({page: "sound"});
-        /// let tabs = tab_bar(value: bind(selected.page), items: [
-        ///     {key: "sound", label: "Sound"},
-        ///     {key: "display", label: "Display"}
-        /// ], build: |item| {
+        /// let items = [
+        ///     {key: "sound", label: "Sound", build: || text("Sound settings")},
+        ///     {key: "display", label: "Display", build: || text("Display settings")}
+        /// ];
+        /// let pages = page_stack(value: bind(selected.page), items: items);
+        /// let tabs = tab_bar(value: bind(selected.page), items: items, build: |item| {
         ///     item.control.appearance = appearance(hover: {opacity: 0.8});
         ///     row(gap: 4) {
         ///         text(bind(item.label), opacity: derive(|| if item.selected { 1 } else { 0.5 }));
         ///         text("Focused", visible: bind(item.control.focus_visible));
         ///     }
         /// });
-        /// stage.replace(tabs);
+        /// stage.replace(column { tabs; pages; });
         /// }
         /// ```
         "reel::tab_bar";
     }
 }
 pub(in crate::aside) fn contracts() -> Vec<NativeContract> {
-    let mut contracts: Vec<_> = ["get", "ensure", "evict", "produce"]
-        .into_iter()
-        .map(|name| NativeContract {
-            symbol: format!("reel::page_stack::{name}"),
-            abi_version: 1,
-            parameters: if name == "produce" {
-                vec![NativeParameter {
-                    name: "request".into(),
+    let mut contracts: Vec<_> = [
+        "get",
+        "ensure",
+        "evict",
+        "produce",
+        "select",
+        "commit_selection",
+    ]
+    .into_iter()
+    .map(|name| NativeContract {
+        symbol: format!("reel::page_stack::{name}"),
+        abi_version: 1,
+        parameters: if matches!(name, "produce" | "commit_selection") {
+            vec![NativeParameter {
+                name: "request".into(),
+                ty: BuiltinType::Any,
+                default: None,
+            }]
+        } else {
+            vec![
+                NativeParameter {
+                    name: "stack".into(),
                     ty: BuiltinType::Any,
                     default: None,
-                }]
-            } else {
-                vec![
-                    NativeParameter {
-                        name: "stack".into(),
-                        ty: BuiltinType::Any,
-                        default: None,
-                    },
-                    NativeParameter {
-                        name: "key".into(),
-                        ty: BuiltinType::Any,
-                        default: None,
-                    },
-                ]
-            },
-            result: BuiltinType::Any,
-            effects: Effects(
-                Effects::ALLOCATE | Effects::HOST | if name == "get" { 0 } else { Effects::WRITE },
-            ),
-            standard_derived_commit: false,
-            read_only_leaf: None,
-            rest: None,
-            required_capabilities: vec!["reel.stage".into()],
-        })
-        .collect();
+                },
+                NativeParameter {
+                    name: "key".into(),
+                    ty: BuiltinType::Any,
+                    default: None,
+                },
+            ]
+        },
+        result: BuiltinType::Any,
+        effects: Effects(
+            Effects::ALLOCATE
+                | Effects::HOST
+                | match name {
+                    "get" => 0,
+                    "commit_selection" => Effects::WRITE | Effects::WAIT,
+                    _ => Effects::WRITE,
+                },
+        ),
+        standard_derived_commit: false,
+        read_only_leaf: None,
+        rest: None,
+        required_capabilities: vec!["reel.stage".into()],
+    })
+    .collect();
     contracts.push(NativeContract {
         symbol: "reel::tab_bar::observe_label".into(),
         abi_version: 1,
@@ -139,6 +165,7 @@ pub(in crate::aside) fn describe(api: &mut aside_host::source::Api) {
     for (method, result) in [
         ("get", nullable(named("reel::types::Node"))),
         ("ensure", named("reel::types::Task")),
+        ("select", named("reel::types::Task")),
         ("evict", TypeHint::Bool),
     ] {
         let symbol = format!("reel::page_stack::{method}");

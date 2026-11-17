@@ -3,7 +3,7 @@
 //! guarantees. Nested phase percentiles must be assessed separately, not summed.
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{borrow::Cow, collections::BTreeMap, fs, path::Path};
 #[path = "frame_cost/vm_steps.rs"]
 mod vm_steps;
 #[path = "frame_cost/wall.rs"]
@@ -27,6 +27,7 @@ fn derive_phases(values: &mut BTreeMap<String, u64>) {
         "host_call_us",
         "session_gc_us",
         "session_activity_us",
+        "session_diagnostics_us",
     ];
     let [
         Some(session),
@@ -35,6 +36,7 @@ fn derive_phases(values: &mut BTreeMap<String, u64>) {
         Some(host),
         Some(gc),
         Some(activity),
+        Some(diagnostics),
     ] = names.map(|key| values.get(key).copied())
     else {
         return;
@@ -46,8 +48,7 @@ fn derive_phases(values: &mut BTreeMap<String, u64>) {
         .checked_add(host)
         .and_then(|n| n.checked_add(gc))
         .and_then(|n| n.checked_add(activity))
-        // Older version-1 traces omit diagnostic-output attribution.
-        .and_then(|n| n.checked_add(values.get("session_diagnostics_us").copied().unwrap_or(0)));
+        .and_then(|n| n.checked_add(diagnostics));
     let residual = known.and_then(|known| session.checked_sub(known));
     values.insert("schedule_non_vm_us".into(), other.unwrap_or(0));
     values.insert("session_unattributed_us".into(), residual.unwrap_or(0));
@@ -57,7 +58,7 @@ fn derive_phases(values: &mut BTreeMap<String, u64>) {
     );
 }
 
-pub(crate) fn normalize(text: &str) -> String {
+pub(crate) fn normalize(text: &str) -> Cow<'_, str> {
     if !text.contains("*** TTY: ") {
         return text.into();
     }
@@ -90,7 +91,7 @@ pub(crate) fn normalize(text: &str) -> String {
             }
         }
     }
-    output
+    output.into()
 }
 fn parse(text: &str) -> Result<Trace> {
     let text = normalize(text);
@@ -173,24 +174,37 @@ fn statistics(mut values: Vec<u64>, limit: Option<u64>) -> Value {
     json!({"samples":values.len(),"p50_us":percentile(50),"p95_us":percentile(95),"p99_us":percentile(99),"max_us":values.last(),"limit_us":limit,"over_limit":limit.map(|limit|values.iter().filter(|&&value|value>limit).count())})
 }
 
+fn opcode_accounting_valid(values: &BTreeMap<String, u64>) -> bool {
+    let mut opcodes = values
+        .iter()
+        .filter(|(name, _)| name.starts_with("vm_opcode_") && name.ends_with("_count"))
+        .peekable();
+    opcodes.peek().is_some()
+        && opcodes.try_fold(0u64, |sum, (_, count)| sum.checked_add(*count))
+            == values.get("vm_instructions_count").copied()
+}
+
+fn counter_statistics(mut values: Vec<u64>) -> Value {
+    values.sort_unstable();
+    if values.is_empty() {
+        return json!({"samples":0});
+    }
+    let percentile = |p: usize| values[(values.len() * p).div_ceil(100) - 1];
+    json!({"samples":values.len(), "total":values.iter().sum::<u64>(),
+        "p50":percentile(50),"p95":percentile(95),"p99":percentile(99),"max":values.last()})
+}
+
 fn quantities(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
-    let counted: Vec<_> = rows
+    let mut counted = 0;
+    let valid: Vec<_> = rows
         .iter()
-        .filter(|row| row.values.get("vm_counts_valid") == Some(&1))
-        .collect();
-    let valid: Vec<_> = counted
-        .iter()
+        .copied()
         .filter(|row| {
-            let opcodes: Vec<_> = row
-                .values
-                .iter()
-                .filter(|(name, _)| name.starts_with("vm_opcode_") && name.ends_with("_count"))
-                .collect();
-            !opcodes.is_empty()
-                && opcodes
-                    .iter()
-                    .try_fold(0u64, |sum, (_, n)| sum.checked_add(**n))
-                    == row.values.get("vm_instructions_count").copied()
+            if row.values.get("vm_counts_valid") != Some(&1) {
+                return false;
+            }
+            counted += 1;
+            opcode_accounting_valid(&row.values)
         })
         .collect();
     let mut metrics = BTreeMap::new();
@@ -200,17 +214,12 @@ fn quantities(rows: &[&Frame], columns: &BTreeMap<String, u64>) -> Value {
             && !name.starts_with("vm_driver_")
             && !name.starts_with("vm_step_")
     }) {
-        let mut values: Vec<u64> = valid.iter().map(|row| row.values[name]).collect();
-        values.sort_unstable();
-        if values.is_empty() {
-            metrics.insert(name, json!({"samples":0}));
-        } else {
-            let percentile = |p: usize| values[(values.len() * p).div_ceil(100) - 1];
-            metrics.insert(name, json!({"samples":values.len(),"total":values.iter().sum::<u64>(),
-                "p50":percentile(50),"p95":percentile(95),"p99":percentile(99),"max":values.last()}));
-        }
+        metrics.insert(
+            name,
+            counter_statistics(valid.iter().map(|row| row.values[name]).collect()),
+        );
     }
-    json!({"valid_intervals":valid.len(),"opcode_accounting_errors":counted.len()-valid.len(),
+    json!({"valid_intervals":valid.len(),"opcode_accounting_errors":counted-valid.len(),
         "scope":"VM work and host frame-slot access; count-enabled diagnostics, not exclusive VmSlice time",
         "metrics":metrics})
 }
@@ -417,12 +426,23 @@ fn summarize(trace: &Trace, scope: &str, limits: &BTreeMap<String, u64>) -> Resu
 /// Summarize an existing probe log and optional JSON map of duration-name to
 /// microsecond limit. The declared environment is retained without verification.
 /// `elapsed_us` is an absolute timestamp and cannot be assigned a phase limit.
-pub fn report(scope: &str, input: &Path, output: &Path, budget: Option<&Path>) -> Result<()> {
+pub fn report(scope: &str, input: &Path, output: &Path, budget: Option<&Path>) -> Result<Value> {
+    let raw = fs::read_to_string(input).context("read probe log")?;
+    report_text(scope, input, &raw, output, budget)
+}
+
+pub(crate) fn report_text(
+    scope: &str,
+    input: &Path,
+    raw: &str,
+    output: &Path,
+    budget: Option<&Path>,
+) -> Result<Value> {
     ensure!(
         matches!(scope, "vita" | "emulator" | "host"),
         "environment must be vita, emulator or host"
     );
-    let trace = parse(&fs::read_to_string(input).context("read probe log")?)?;
+    let trace = parse(raw)?;
     let limits: BTreeMap<String, u64> = match budget {
         Some(path) => serde_json::from_slice(&fs::read(path)?)?,
         None => BTreeMap::new(),
@@ -436,7 +456,7 @@ pub fn report(scope: &str, input: &Path, output: &Path, budget: Option<&Path>) -
         trace.labels.len(),
         output.display()
     );
-    Ok(())
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -479,34 +499,6 @@ mod tests {
         assert_eq!(group["historical_slow_samples"][0]["span_us"], 20_000_000);
     }
     #[test]
-    #[ignore = "offline frame-ledger export; set REEL_FRAME_LOG and REEL_FRAME_ROWS"]
-    fn dump_frame_intervals() {
-        let input = std::env::var_os("REEL_FRAME_LOG").expect("REEL_FRAME_LOG");
-        let output = std::env::var_os("REEL_FRAME_ROWS").expect("REEL_FRAME_ROWS");
-        let trace = parse(&fs::read_to_string(input).unwrap()).unwrap();
-        assert!(
-            !trace.rows.is_empty(),
-            "the log contains no complete frame report"
-        );
-        let rows: Vec<_> = trace
-            .rows
-            .into_iter()
-            .map(|frame| {
-                json!({
-                    "segment": frame.segment, "values": frame.values,
-                })
-            })
-            .collect();
-        fs::write(
-            output,
-            serde_json::to_vec_pretty(&json!({
-                "labels": trace.labels, "rows": rows,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    }
-    #[test]
     fn thread_observations_keep_sampling_and_clock_failures_separate_from_frame_times() {
         let values = BTreeMap::from([
             ("thread_profile_valid".into(), 1),
@@ -546,6 +538,7 @@ mod tests {
             ("host_call_us".into(), 20),
             ("session_gc_us".into(), 5),
             ("session_activity_us".into(), 5),
+            ("session_diagnostics_us".into(), 0),
         ]);
         derive_phases(&mut values);
         assert_eq!(values["schedule_non_vm_us"], 20);

@@ -295,6 +295,7 @@ fn rasterize_resource(
             path.commands(),
             fill.into(),
             &mut context.scratch,
+            None,
             at,
             RasterLimits {
                 available,
@@ -302,7 +303,14 @@ fn rasterize_resource(
             },
         )
     } else {
-        raster_mask(outline.path(), style, &mut context.scratch, at, limits)
+        raster_mask(
+            outline.path(),
+            style,
+            &mut context.scratch,
+            Some(outline.bounds()),
+            at,
+            limits,
+        )
     }
 }
 
@@ -310,6 +318,7 @@ fn raster_mask(
     path: impl zeno::PathData,
     style: zeno::Style<'_>,
     scratch: &mut zeno::Scratch,
+    bounds: Option<zeno::Bounds>,
     at: RecordLocation,
     RasterLimits {
         available,
@@ -319,6 +328,14 @@ fn raster_mask(
 ) -> Result<Option<GlyphBitmap>, GpuError> {
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphCoverage);
     let mut mask = zeno::Mask::with_scratch(path, scratch);
+    // Both Swash and Zeno use the control-point bounds for fill paths.
+    let min = bounds.map(|bounds| {
+        let min = bounds.min.floor();
+        let max = bounds.max.ceil();
+        mask.size((max.x - min.x) as u32, (max.y - min.y) as u32)
+            .render_offset(zeno::Vector::new(-min.x, -min.y));
+        min
+    });
     let mut size = [0; 2];
     mask.format(zeno::Format::Alpha)
         .origin(zeno::Origin::BottomLeft)
@@ -349,9 +366,12 @@ fn raster_mask(
     })?;
     let mut alpha = vec![0; size[0] as usize * size[1] as usize];
     let placement = mask.render_into(&mut alpha, None);
+    let (left, top) = min.map_or((placement.left, placement.top), |min| {
+        (min.x as i32, (min.y + placement.height as f32) as i32)
+    });
     Ok(Some(GlyphBitmap {
-        x: f64::from(placement.left),
-        y: -f64::from(placement.top),
+        x: f64::from(left),
+        y: -f64::from(top),
         size,
         alpha,
         _storage: storage,
@@ -363,6 +383,57 @@ fn cap(cap: kurbo::Cap) -> zeno::Cap {
         kurbo::Cap::Butt => zeno::Cap::Butt,
         kurbo::Cap::Square => zeno::Cap::Square,
         kurbo::Cap::Round => zeno::Cap::Round,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn fill_bounds_preserve_glyph_placement_and_coverage() {
+    use reel_ui::core::Widget;
+
+    let bytes = include_bytes!(
+        "../../../../examples/author_arcade/resources/fonts/AtkinsonHyperlegible-Regular.ttf"
+    );
+    let font = swash::FontRef::from_index(bytes, 0).unwrap();
+    let mut scale = ScaleContext::new();
+    let mut scaler = scale.builder(font).size(29.4).hint(true).build();
+    let mut scratch = zeno::Scratch::new();
+    let limits = RasterLimits {
+        available: 1 << 20,
+        max_dimension: 2048,
+        budget: super::renderer::Budgets::new(Default::default()).transient,
+    };
+    let at = RecordLocation {
+        fragment: 0,
+        command: 0,
+        mask_depth: 0,
+        owner: reel_ui::widgets::Label::new("").prepare().id(),
+    };
+    for glyph in ['A', 'g', 'é', '0', ':'] {
+        let mut outline = scaler.scale_outline(font.charmap().map(glyph)).unwrap();
+        synthesis::embolden(&mut outline, 0.92, 1.2);
+        outline.transform(&zeno::Transform::new(-1., 0.1, -0.13, 0.77, 1.1, -3.53));
+        for fill in [zeno::Fill::NonZero, zeno::Fill::EvenOdd] {
+            let mut render = |bounds| {
+                raster_mask(
+                    outline.path(),
+                    fill.into(),
+                    &mut scratch,
+                    bounds,
+                    at,
+                    limits.clone(),
+                )
+                .unwrap()
+                .unwrap()
+            };
+            let expected = render(None);
+            let actual = render(Some(outline.bounds()));
+            assert_eq!(
+                (actual.x, actual.y, actual.size),
+                (expected.x, expected.y, expected.size)
+            );
+            assert_eq!(actual.alpha, expected.alpha);
+        }
     }
 }
 

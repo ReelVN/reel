@@ -28,11 +28,10 @@ fn literal(count: u32, long: bool) -> BytecodePackage {
     package(constants, code, vec![Descriptor::Table(fields)], result + 1)
 }
 
-fn execute(vm: &mut Vm, count: u32, work: u64, collect: bool) -> (u128, u64) {
+fn execute(vm: &mut Vm, count: u32, work: u64, collect: bool) -> u64 {
     let task = vm
         .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
         .unwrap();
-    let start = std::time::Instant::now();
     let mut total_work = 0;
     let result = loop {
         let out = vm
@@ -56,7 +55,6 @@ fn execute(vm: &mut Vm, count: u32, work: u64, collect: bool) -> (u128, u64) {
             gc(vm);
         }
     };
-    let elapsed = start.elapsed().as_nanos();
     assert_eq!(vm.heap.table_len(result).unwrap(), count);
     for i in 0..count {
         let (_, value) = vm.heap.table_entry(result, i).unwrap();
@@ -65,7 +63,7 @@ fn execute(vm: &mut Vm, count: u32, work: u64, collect: bool) -> (u128, u64) {
             Some(if i == 7 { count as i64 } else { i as i64 })
         );
     }
-    (elapsed, total_work)
+    total_work
 }
 
 #[test]
@@ -92,14 +90,14 @@ fn indexed_literals_keep_subquadratic_work_across_budget_yields() {
     let mut indexed = load(literal(192, false));
     let mut scanned = load(literal(192, false));
     scanned.work_probe.linear_table_scan = true;
-    let indexed_work = execute(&mut indexed, 192, 4096, false).1;
-    let scanned_work = execute(&mut scanned, 192, 4096, false).1;
+    let indexed_work = execute(&mut indexed, 192, 4096, false);
+    let scanned_work = execute(&mut scanned, 192, 4096, false);
     assert!(
         indexed_work * 2 < scanned_work,
         "{indexed_work} vs {scanned_work}"
     );
     let mut larger = load(literal(384, false));
-    let larger_work = execute(&mut larger, 384, 4096, false).1;
+    let larger_work = execute(&mut larger, 384, 4096, false);
     assert!(
         larger_work * 2 < indexed_work * 5,
         "{indexed_work} -> {larger_work}"
@@ -171,24 +169,5 @@ fn partially_indexed_table_restores_and_finishes_with_the_same_order() {
                 i64::from(position)
             })
         );
-    }
-}
-
-#[test]
-#[ignore = "release table literal construction comparison"]
-fn table_literal_construction_cost() {
-    for count in [64, 192, 384] {
-        for enabled in [false, true, true, false] {
-            let mut elapsed = 0;
-            for _ in 0..20 {
-                let mut vm = load(literal(count, false));
-                vm.work_probe.linear_table_scan = !enabled;
-                elapsed += execute(&mut vm, count, 4096, false).0;
-            }
-            eprintln!(
-                "table-literal count={count} indexed={enabled} repeats=20 elapsed_us={}",
-                elapsed / 1000
-            );
-        }
     }
 }

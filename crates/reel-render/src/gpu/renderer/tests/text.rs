@@ -556,10 +556,14 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    let variants = if pipelines.bounded.is_some() { 27 } else { 21 };
+    let (shaders, variants) = if pipelines.bounded.is_some() {
+        (4, 31)
+    } else {
+        (2, 21)
+    };
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3, variants, variants, variants, 8]
+        [3, shaders, variants, variants, 8]
     );
     let resident = renderer.usage().resources;
     assert!(resident > 0 && resident <= 2 * 512 * 512);

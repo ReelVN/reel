@@ -527,6 +527,7 @@ fn cached_old_drawing_requests_no_glyph_raster_or_atlas_work() {
             run: &FrameGlyphRun,
             _: f64,
             _: RecordLocation,
+            _: bool,
         ) -> Result<InkBounds, GpuError> {
             self.0 += run.glyphs.len();
             Ok(InkBounds::Empty)

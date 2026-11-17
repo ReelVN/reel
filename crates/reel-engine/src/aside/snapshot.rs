@@ -107,7 +107,6 @@ pub struct SessionSnapshot {
     vm: VmSnapshot,
     session: Option<Session>,
     records: Vec<Record>,
-    committed_save: Option<saves::SaveRequestId>,
     // Large immutable picture resources are encoded directly by the storage
     // worker, rather than copied into a synchronous adapter Record::bytes.
     pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
@@ -115,7 +114,7 @@ pub struct SessionSnapshot {
 }
 impl SessionSnapshot {
     /// Session wire format, including embedded retained-scene resource descriptors.
-    pub const FORMAT_VERSION: u32 = 3;
+    pub const FORMAT_VERSION: u32 = 1;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -123,19 +122,6 @@ impl SessionSnapshot {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         writer.write_all(b"REELSAV1")?;
         postcard::to_io(self, writer)?;
-        Ok(())
-    }
-    /// The storage service marks only the request whose snapshot it will commit.
-    /// Dropping this image without publishing it leaves the live request untouched.
-    pub fn commit_save(&mut self, request: saves::SaveRequestId) -> Result<(), SnapshotError> {
-        if self
-            .session
-            .as_ref()
-            .is_none_or(|session| session.identity() != request.session)
-        {
-            return Err(SnapshotError::Invalid("foreign save request".into()));
-        }
-        self.committed_save = Some(request);
         Ok(())
     }
     pub fn encode(&self) -> Result<Vec<u8>, SnapshotError> {
@@ -356,7 +342,6 @@ impl SessionVm {
         )?;
         session.restore_identity(identity, progress)?;
         Ok(SessionRestore {
-            committed_save: image.committed_save.map(|id| id.serial),
             vm: Some(vm),
             map: None,
             candidate: None,
@@ -491,7 +476,6 @@ impl SessionCapture<'_> {
             return Err(SnapshotError::Busy("session capture incomplete").into());
         }
         Ok(SessionSnapshot {
-            committed_save: None,
             version: SessionSnapshot::FORMAT_VERSION,
             vm: self.vm.finish()?,
             session: self.saved_session,
@@ -503,7 +487,6 @@ impl SessionCapture<'_> {
 }
 
 pub struct SessionRestore<'a> {
-    committed_save: Option<u64>,
     vm: Option<VmRestore<'a>>,
     map: Option<SnapshotMap>,
     candidate: Option<SessionVm>,
@@ -606,7 +589,7 @@ impl SessionRestore<'_> {
                         runtime.restore_transition_record(record, map, self.pictures)?;
                     }
                     Part::Saves | Part::SaveRequest => {
-                        runtime.restore_save_record(record, map, self.committed_save)?;
+                        runtime.restore_save_record(record, map)?;
                     }
                     Part::AssetRead => {
                         runtime
@@ -658,6 +641,9 @@ impl SessionRestore<'_> {
                             p.interaction.rebase(runtime.identity);
                             p.task = map.task(p.task)?;
                             p.wait = map.wait(p.wait)?;
+                            if let Some(value) = &mut p.return_value {
+                                *value = map.value(*value)?;
+                            }
                             if let Some(keys) = &mut p.keys {
                                 keys.root = map.root(keys.root)?;
                             }

@@ -3,7 +3,12 @@ use super::*;
 
 impl SessionVm {
     pub(super) fn attach_page_methods(&mut self, root: Value) -> Result<(), AdapterError> {
-        for (index, name) in ["get", "ensure", "evict"].into_iter().enumerate() {
+        for (index, name) in [
+            (0, "get"),
+            (1, "ensure"),
+            (2, "evict"),
+            (SELECT_METHOD, "select"),
+        ] {
             let function = self.page_method(index)?;
             let method = self.vm.bind_native(root, function)?;
             let h = self.vm.heap_mut();
@@ -46,6 +51,9 @@ impl SessionVm {
         if symbol == "reel::page_stack::produce" {
             return self.page_produce(t);
         }
+        if symbol == "reel::page_stack::commit_selection" {
+            return self.commit_page_selection(t);
+        }
         let args = self.vm.host_arguments(t)?.to_vec();
         let (root, key) = (args[0], args[1]);
         self.stage.id(self.vm.heap(), root)?;
@@ -64,6 +72,7 @@ impl SessionVm {
         let response = match symbol {
             "reel::page_stack::get" => node,
             "reel::page_stack::ensure" => self.page_task(session, root, e, true)?,
+            "reel::page_stack::select" => self.select_page(session, root, s, e, key)?,
             "reel::page_stack::evict" => {
                 if keys::compare(
                     self.vm.heap(),
@@ -100,6 +109,92 @@ impl SessionVm {
         self.vm.respond(t, HostResponse::Ready(response))?;
         Ok(())
     }
+
+    fn select_page(
+        &mut self,
+        session: &mut Session,
+        root: Value,
+        s: Value,
+        e: Value,
+        key: Value,
+    ) -> Result<Value, AdapterError> {
+        let property = PropertyId {
+            host: root,
+            field: PageField::Value.index() as u32,
+        };
+        if !self.vm.heap().property_source(property)?.1 {
+            return Err(HeapError::ReadOnly.into());
+        }
+        let serial = Value::int(
+            get(self.vm.heap(), s, S::SelectionRequest)?
+                .as_int()
+                .unwrap()
+                .wrapping_add(1),
+        );
+        let producer = self.page_task(session, root, e, true)?;
+        let task = self.results.create_task(&mut self.vm, root)?;
+        let request = self
+            .vm
+            .heap_mut()
+            .alloc_array(&[root, key, serial, producer])?;
+        let commit = self.page_method(COMMIT_SELECTION)?;
+        let closure = self.vm.bind_native(request, commit)?;
+        self.start_owned_task_in_context(
+            session,
+            None,
+            closure,
+            &[],
+            Some(task),
+            Context::Ordinary,
+        )?;
+        put(self.vm.heap_mut(), s, S::SelectionRequest, serial)?;
+        Ok(task)
+    }
+
+    fn commit_page_selection(&mut self, t: HostTicket) -> Result<(), AdapterError> {
+        let request = self.vm.host_arguments(t)?[0];
+        let root = get(self.vm.heap(), request, 0u32)?;
+        let s = state(self.vm.heap(), root)?;
+        let serial = get(self.vm.heap(), request, 2u32)?;
+        if !get(self.vm.heap(), s, S::SelectionRequest)?.same_bits(serial) {
+            self.vm.respond(t, HostResponse::Ready(Value::NULL))?;
+        } else if t.input == NativeInput::Entry {
+            let producer = get(self.vm.heap(), request, 3u32)?;
+            let wait = self.page_method(AWAIT_TASK)?;
+            let closure = self.vm.bind_native(producer, wait)?;
+            self.vm.respond(
+                t,
+                HostResponse::CallScript {
+                    closure,
+                    arguments: &[],
+                    continuation: Continuation {
+                        version: 1,
+                        stage: 0,
+                        values: &[],
+                        faults: FaultRetention::Preserve,
+                    },
+                },
+            )?;
+        } else if t.input == NativeInput::CallbackFault {
+            self.vm.respond(
+                t,
+                HostResponse::ForwardFault(self.vm.host_callback_fault(t)?.unwrap().id),
+            )?;
+        } else {
+            let node = self.vm.host_resume_value(t)?;
+            let key = get(self.vm.heap(), request, 1u32)?;
+            self.vm.heap_mut().write_host_property(
+                PropertyId {
+                    host: root,
+                    field: PageField::Value.index() as u32,
+                },
+                key,
+                true,
+            )?;
+            self.vm.respond(t, HostResponse::Ready(node))?;
+        }
+        Ok(())
+    }
     fn page_produce(&mut self, t: HostTicket) -> Result<(), AdapterError> {
         let request = self.vm.host_arguments(t)?[0];
         let root = get(self.vm.heap(), request, 0u32)?;
@@ -125,7 +220,7 @@ impl SessionVm {
                 HostResponse::ForwardFault(self.vm.host_callback_fault(t)?.unwrap().id),
             )?;
         } else {
-            let node = self.vm.host_callback_value(t)?;
+            let node = self.vm.host_resume_value(t)?;
             let candidate = self.stage.id(self.vm.heap(), node);
             let unattached = candidate.as_ref().is_ok_and(|id| {
                 self.stage

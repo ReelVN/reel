@@ -180,7 +180,7 @@ fn resource_preparation_and_export_share_rules_and_report_content_cache_hits() {
         root,
         &["export", "--resource-target", "vita", "--format", "json"],
     ));
-    let output = fs::read(root.join("build/export/vita/debug/resources/ui/panel.png")).unwrap();
+    let output = fs::read(root.join("dist/vita/debug/resources/ui/panel.png")).unwrap();
     let (header, _) = reel_core::texture::TextureHeader::parse(&output).unwrap();
     assert_eq!(header.descriptor().layout.logical_size, [13, 7]);
     assert_eq!(header.descriptor().layout.content_size, [6, 3]);
@@ -259,10 +259,7 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
     write(root, "resources/images/sample.bin", "original resource");
     write(root, "catalogs/en.ftl", "message = translated");
     success(command(root, &["export", "--format", "json"]));
-    let output = root
-        .join("build/export")
-        .join(std::env::consts::OS)
-        .join("debug");
+    let output = root.join("dist").join(std::env::consts::OS).join("debug");
     assert_eq!(
         fs::read_to_string(output.join("resources/images/sample.bin")).unwrap(),
         "original resource"
@@ -353,7 +350,7 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
         fs::read_to_string(output.join("resources/game.asb")).unwrap(),
         "ordinary resource"
     );
-    let output = root.join("build/export/vita/debug");
+    let output = root.join("dist/vita/debug");
     write(root, "resources/@vita/images/sample.bin", "vita resource");
     write(root, "resources/@vita/target-only.bin", "vita only");
     write(root, "resources/@other/excluded.bin", "other target");
@@ -379,28 +376,41 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
 }
 
 #[test]
-fn cleaning_resources_keeps_exports_source_and_saves() {
+fn cleaning_build_products_keeps_distribution_source_and_saves() {
     let temporary = temporary();
     let root = temporary.path();
-    for path in [
-        "src/main.aside",
-        "resources/font.ttf",
-        "saves/progress",
-        "build/resources/objects/data",
-        "build/export/vita/release/game.asb",
-    ] {
-        write(root, path, "retained content");
-    }
+    let source = "fn main() { 1 }";
+    write(root, "src/main.aside", source);
+    write(root, "resources/image.bin", "resource");
+    write(root, "saves/progress", "saved progress");
+    write(root, "build/resources/objects/data", "cached resource");
+    success(command(root, &["build", "--release", "--format", "json"]));
+    success(command(
+        root,
+        &[
+            "export",
+            "--release",
+            "--data-only",
+            "--resource-target",
+            "vita",
+            "--format",
+            "json",
+        ],
+    ));
+    let exported = root.join("dist/vita/release/game.asb");
     assert!(command(root, &["clean", "--resources"]).status.success());
     assert!(!root.join("build/resources").exists());
-    assert!(root.join("build/export/vita/release/game.asb").is_file());
+    assert!(root.join("build/release/game.asb").is_file());
     assert!(command(root, &["clean"]).status.success());
     assert!(!root.join("build").exists());
-    for path in ["src/main.aside", "resources/font.ttf", "saves/progress"] {
-        assert_eq!(
-            fs::read_to_string(root.join(path)).unwrap(),
-            "retained content"
-        );
+    let distribution = reel_player::distribution::load(&exported, None).unwrap();
+    assert_eq!(distribution.packages.len(), 2);
+    for (path, content) in [
+        ("src/main.aside", source),
+        ("resources/image.bin", "resource"),
+        ("saves/progress", "saved progress"),
+    ] {
+        assert_eq!(fs::read_to_string(root.join(path)).unwrap(), content);
     }
 }
 
@@ -639,7 +649,7 @@ mod projects {
         "library/data.aside",
         "pub use reel::prelude::text as label; use std::random; pub let model={value:0}; pub fn bump(){model.value+=random(seed: 42).int(1,2);}",
     );
-        case.write("main.aside", "use game::library::data as a; use game::library::data as b; use game::main as entry; pub let project={}; fn main(){if entry.project!=project {throw \"entry identity\";}game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
+        case.write("main.aside", "use library::data as a; use game::library::data as b; use game::main as entry; pub let project={}; fn main(){if entry.project!=project {throw \"entry identity\";}game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
         let loaded = reel_cli::project::load(&case.dir)
             .unwrap_or_else(|error| panic!("{:?}", error.failure));
         assert_eq!(loaded.sources.len(), 2);
@@ -661,13 +671,40 @@ mod projects {
         fs::rename(case.dir.join("project.asb"), destination.join("story.asb")).unwrap();
         fs::remove_file(case.dir.join("src/main.aside")).unwrap();
         let bytes = fs::read(destination.join("story.asb")).unwrap();
-        let package = reel_package::decode(&bytes, Default::default()).unwrap();
+        let package = reel_package::decode(
+            &bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(package.metadata().modules.len(), 2);
         let (result, settings) =
             execute(reel_player::distribution::story_from_package(package).unwrap());
         assert!(result);
         assert_eq!(settings.title, "窗边");
         assert_eq!(settings.fonts, ["body.ttf", "cjk.ttf"]);
+    }
+
+    #[test]
+    fn prelude_types_resolve_in_imported_callable_signatures() {
+        let case = Case::new();
+        case.write(
+            "ui.aside",
+            r#"pub class View {
+                fn factory(self) -> fn() -> Node {
+                    || { stack(width: 12) }
+                }
+            }"#,
+        );
+        case.write(
+            "main.aside",
+            "use ui::View; fn main() { let build = View().factory(); build().width == 12 }",
+        );
+        let loaded = reel_cli::project::load(&case.dir)
+            .unwrap_or_else(|error| panic!("{:?}", error.failure));
+        let checked = loaded.check().unwrap();
+        let (result, _) = execute(reel_cli::into_story(checked, reel_cli::project::ENTRY).unwrap());
+        assert!(result);
     }
 
     #[test]
@@ -718,7 +755,12 @@ mod projects {
         assert_eq!(loaded.sources.len(), 4);
         let checked = loaded.check().unwrap();
         let artifact = reel_cli::build(&checked, Some(reel_cli::project::ENTRY)).unwrap();
-        let package = reel_package::decode(&artifact.bytes, Default::default()).unwrap();
+        let package = reel_package::decode(
+            &artifact.bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(package.metadata().modules.len(), 4);
         assert!(package.metadata().game_entry.is_some());
     }

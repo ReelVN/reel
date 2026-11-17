@@ -3,7 +3,8 @@ use crate::{NativeContract, PropertyDocumentation};
 use aside_compiler::{
     TextRange, TextSize,
     semantic::{
-        ExternalMember, ExternalSymbol, ModuleInterface, NamespaceRef, SymbolReference, TypeHint,
+        ExternalMember, ExternalResultParameter, ExternalSymbol, ModuleInterface, NamespaceRef,
+        SymbolReference, TypeHint,
     },
 };
 use std::collections::BTreeMap;
@@ -135,7 +136,8 @@ impl Declaration {
             .expect("bound native signature");
         assert!(!signature.parameters.is_empty(), "bound native receiver");
         let receiver = signature.parameters.remove(0);
-        if signature.result_parameter.as_deref() == Some(&receiver.name) {
+        if matches!(&signature.result_parameter, Some(ExternalResultParameter::Value(name)) if *name == receiver.name)
+        {
             signature.result = receiver.ty;
             signature.result_parameter = None;
         }
@@ -182,7 +184,28 @@ impl Declaration {
                 .any(|parameter| parameter.name == name),
             "result parameter names an actual parameter"
         );
-        signature.result_parameter = Some(name.into());
+        signature.result_parameter = Some(ExternalResultParameter::Value(name.into()));
+    }
+
+    /// Describe a native returning the value produced by its callback.
+    pub fn returns_callback(&mut self, name: &str) {
+        let signature = self.symbol.signature.as_mut().expect("native signature");
+        assert!(
+            signature
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == name)
+        );
+        signature.result_parameter = Some(ExternalResultParameter::Callback(name.into()));
+    }
+
+    /// Describe a native that starts concurrent work in a task context.
+    pub fn starts_task(&mut self) {
+        self.symbol
+            .signature
+            .as_mut()
+            .expect("native signature")
+            .effect = aside_compiler::semantic::CallEffect::StartsTask;
     }
 
     /// Describe optional parameters whose omitted ABI values are ignored by the
@@ -303,6 +326,8 @@ pub struct NamedType {
     pub call: Option<Declaration>,
     /// Result produced by the host value's real await adapter.
     pub await_result: Option<TypeHint>,
+    /// Registered native adapter used by the value's ordinary await operation.
+    pub await_adapter: Option<Declaration>,
 }
 impl NamedType {
     /// The type name can be imported and used in source annotations.
@@ -327,6 +352,7 @@ impl NamedType {
             bases: Vec::new(),
             call: None,
             await_result: None,
+            await_adapter: None,
         }
     }
 
@@ -338,6 +364,9 @@ impl NamedType {
         }
         if self.await_result.is_none() {
             self.await_result = base.await_result.clone();
+        }
+        if self.await_adapter.is_none() {
+            self.await_adapter = base.await_adapter.clone();
         }
         let mut members = base.members.clone();
         for member in self.members {
@@ -356,21 +385,30 @@ impl NamedType {
 
     /// Produce the trusted runtime registration from the same source declaration.
     pub fn registration(&self) -> aside_vm::bytecode::HostTypeSupport {
+        let adapter = |declaration: &Declaration| {
+            let reference = declaration.symbol.reference.as_ref()?;
+            Some(aside_vm::HostCallableSupport {
+                native: format!("{}::{}", reference.module, reference.export.as_deref()?),
+                abi_version: reference.version.parse().expect("native ABI version"),
+            })
+        };
         aside_vm::bytecode::HostTypeSupport {
             name: self.name.clone(),
             version: self.version,
             bases: self.bases.clone(),
+            await_adapter: self.await_adapter.as_ref().and_then(adapter),
+            call: self.call.as_ref().and_then(adapter),
             methods: self
                 .members
                 .iter()
                 .filter_map(|member| {
                     let symbol = &member.declaration.symbol;
                     symbol.signature.as_ref()?;
-                    let reference = symbol.reference.as_ref()?;
+                    let target = adapter(&member.declaration)?;
                     Some(aside_vm::HostMethodSupport {
                         name: symbol.name.clone(),
-                        native: format!("{}::{}", reference.module, reference.export.as_deref()?),
-                        abi_version: reference.version.parse().expect("native ABI version"),
+                        native: target.native,
+                        abi_version: target.abi_version,
                     })
                 })
                 .collect(),

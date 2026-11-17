@@ -194,6 +194,7 @@ instructions! {
     IterAdvance = 0x0068 => [WriteReg, ReadReg, WriteReg], Next, true, None;
     MatchFail = 0x0069 => [Unused, Unused, Unused], Throw, true, None;
     SuperRef = 0x006a => [WriteReg, Unused, Unused], Next, true, None;
+    ChildrenSpread = 0x006b => [ReadReg, ReadReg, Unused], Next, true, None;
     Throw = 0x0070 => [ReadReg, Unused, Unused], Throw, true, None;
     Rethrow = 0x0071 => [Unused, Unused, Unused], Throw, true, None;
     Leave = 0x0072 => [Pc, Unused, Unused], Leave, true, None;
@@ -227,7 +228,8 @@ const fn semantic_rule(op: Opcode) -> SemanticRule {
         Opcode::ArgsSpread
         | Opcode::ArgsNamedSpread
         | Opcode::TableSpread
-        | Opcode::ArraySpread => SemanticRule::SpreadSnapshot,
+        | Opcode::ArraySpread
+        | Opcode::ChildrenSpread => SemanticRule::SpreadSnapshot,
         Opcode::Match => SemanticRule::PatternCommit,
         Opcode::MemberGet => SemanticRule::MemberLookup,
         Opcode::EndFinally => SemanticRule::ActiveFinally,

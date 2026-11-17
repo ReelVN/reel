@@ -92,7 +92,24 @@ pub(super) fn validate_program(
     }
     for (i, t) in p.types.iter().enumerate() {
         match t {
-            TypeDef::Builtin(_) => {}
+            TypeDef::Builtin(_) | TypeDef::StringLiteral(_) => {}
+            TypeDef::Record(fields) => {
+                unique_slice(
+                    fields,
+                    |field| field.name.0,
+                    &mut b,
+                    "duplicate record field",
+                )?;
+                for field in fields {
+                    b.work(1)?;
+                    symbol(p, field.name)?;
+                    check(
+                        field.ty.index() < i,
+                        ErrorKind::Index,
+                        "record field type must refer backwards",
+                    )?;
+                }
+            }
             TypeDef::Tuple(ids) | TypeDef::Union(ids) => {
                 if matches!(t, TypeDef::Union(_)) {
                     check(

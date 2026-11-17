@@ -139,6 +139,9 @@ mod semantic_guides {
         "radio",
         "list",
         "scroll",
+        "scrollbar",
+        "page_stack",
+        "tab_bar",
         "character",
         "narrator",
         "say",
@@ -149,6 +152,7 @@ mod semantic_guides {
         "repeat",
         "tween",
         "run",
+        "run_flow",
         "scope",
         "reading",
         "mask",
@@ -184,6 +188,9 @@ mod semantic_guides {
                     | "checkbox"
                     | "radio"
                     | "scroll"
+                    | "scrollbar"
+                    | "page_stack"
+                    | "tab_bar"
                     | "camera"
                     | "list"
                     | "view"
@@ -202,6 +209,10 @@ mod semantic_guides {
             en.iter().map(|(_, code)| code).collect::<Vec<_>>()
         );
         let mut resolver = MemoryResolver::default();
+        resolver.aliases.extend([
+            ("ui".into(), "game::ui".into()),
+            ("story".into(), "game::story".into()),
+        ]);
         resolver.insert(ModuleInterface {
             canonical_path: "reel::prelude".into(),
             version: "guide-v1".into(),
@@ -239,6 +250,14 @@ mod semantic_guides {
                     ty: TypeHint::Named(format!("reel::types::{name}")),
                     ..ExternalSymbol::dynamic(name)
                 })
+                .collect(),
+        });
+        resolver.insert(ModuleInterface {
+            canonical_path: "std::resume".into(),
+            version: "guide-v1".into(),
+            exports: ["state", "root", "flow", "point"]
+                .into_iter()
+                .map(ExternalSymbol::dynamic)
                 .collect(),
         });
         let mut errors = Vec::new();

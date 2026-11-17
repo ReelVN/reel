@@ -11,7 +11,7 @@ impl Vm {
         symbol: SymbolId,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_named_read_completion {
             return Ok(false);
         }

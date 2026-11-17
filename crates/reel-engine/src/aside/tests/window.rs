@@ -9,7 +9,7 @@ fn input_hints_are_typed_observable_and_refresh_after_restore() {
     let code = r#"use reel::types::InputInfo;
         fn opening() {
             let info: InputInfo = stage.input();
-            stage.replace(text(value: derive(|| info.source + ":" + info.layout)));
+            stage.replace(text(value: derive(|| info.source + ":" + info.layout + ":" + info.buttons.South)));
             narrator("save");
         }"#;
     let shown = |vm: &SessionVm| {
@@ -22,22 +22,22 @@ fn input_hints_are_typed_observable_and_refresh_after_restore() {
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(code, encoded);
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "unknown:generic");
+        assert_eq!(shown(&vm), "unknown:generic:South");
         let hints = InputHints {
             source: InputSource::Gamepad,
             layout: GamepadLayout::PlayStation,
         };
         assert!(vm.set_input_hints(hints).unwrap());
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "gamepad:playstation");
+        assert_eq!(shown(&vm), "gamepad:playstation:Cross");
         assert!(!vm.set_input_hints(hints).unwrap());
         assert!(!vm.has_runnable_tasks());
         (session, vm) = restore_session(&session, &vm);
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "unknown:generic");
+        assert_eq!(shown(&vm), "unknown:generic:South");
         vm.set_input_hints(hints).unwrap();
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "gamepad:playstation");
+        assert_eq!(shown(&vm), "gamepad:playstation:Cross");
     }
 }
 

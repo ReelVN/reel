@@ -3,6 +3,77 @@ use reel_ui::stage::{NodeId, NodeKind};
 mod callback_cost;
 
 #[test]
+fn default_back_dispatches_release_and_explicit_actions_take_precedence() {
+    use reel_ui::{
+        input::{ActionPhase, Control},
+        stage::NodeAction,
+    };
+    let code = r#"fn opening() {
+        let result = text("result");
+        stage.replace(stack {
+            input(on_back: || { result.x += 1; });
+            input(x: 20, on_back: || { throw "default ran"; },
+                actions: {back: {bindings: ["KeyQ"], on_release: || { result.x += 2; }}});
+            result;
+        });
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        pump(&mut vm, &mut session);
+        let inputs: Vec<_> = vm
+            .stage()
+            .nodes()
+            .filter_map(|node| match &node.kind {
+                NodeKind::Input { bindings, .. } => Some((node.id, node.props.x, bindings.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inputs.len(), 2);
+        for (node, x, bindings) in inputs {
+            let expected: &[&str] = if x == 20. {
+                &["KeyQ"]
+            } else {
+                &["Escape", "PointerSecondary", "East"]
+            };
+            let back = bindings
+                .iter()
+                .find(|action| action.name.as_ref() == "back")
+                .unwrap();
+            let controls: Vec<_> = back
+                .bindings
+                .iter()
+                .map(|binding| binding.control)
+                .collect();
+            assert_eq!(
+                controls,
+                expected
+                    .iter()
+                    .map(|name| name.parse::<Control>().unwrap())
+                    .collect::<Vec<_>>()
+            );
+            let mut event = NodeAction {
+                node,
+                action: "back".into(),
+                value: 1.,
+                phase: ActionPhase::Pressed,
+                bindings,
+            };
+            assert!(!vm.input_action(&mut session, &event).unwrap());
+            event.phase = ActionPhase::Released;
+            event.value = 0.;
+            assert!(vm.input_action(&mut session, &event).unwrap());
+            pump(&mut vm, &mut session);
+        }
+        let result = vm
+            .stage()
+            .nodes()
+            .find(|node| node.kind == NodeKind::Text("result".into()))
+            .unwrap();
+        assert_eq!(result.props.x, 3.);
+    }
+}
+
+#[test]
 fn named_actions_validate_declarations_and_skip_unhandled_phase_cost() {
     use reel_ui::{input::ActionPhase, stage::NodeAction};
     let code = r#"fn opening() {

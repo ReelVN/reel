@@ -54,6 +54,7 @@ use native_leaf::NativeParameters;
 mod reactive;
 pub(crate) mod resume;
 pub(crate) mod snapshot;
+mod state;
 mod text;
 use crate::type_checks as types;
 use builtins::Builtin;
@@ -104,7 +105,7 @@ enum ReturnTo {
         call: Pc,
         action: GeneratorAction,
     },
-    Sort {
+    BuiltinCallback {
         frame: FrameId,
         call: Pc,
     },
@@ -142,7 +143,7 @@ impl ReturnTo {
             Self::Register { frame, call, .. }
             | Self::Default { frame, call, .. }
             | Self::Class { frame, call }
-            | Self::Sort { frame, call }
+            | Self::BuiltinCallback { frame, call }
             | Self::ReactiveRead { frame, call } => Some((frame, Some(call))),
             Self::Generator { frame, call, .. } => Some((frame, Some(call))),
             Self::Native { frame } | Self::NativeDefault { frame, .. } => Some((frame, None)),
@@ -151,7 +152,7 @@ impl ReturnTo {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ArgSource {
-    Sort {
+    BuiltinCallback {
         frame: FrameId,
     },
     None,
@@ -281,6 +282,11 @@ enum ScriptPhase {
     },
     Release {
         reason: ExitReason,
+    },
+    Predicate(builtins::PredicateWork),
+    EntryFactory {
+        call: builtins::BuiltinCall,
+        waiting: bool,
     },
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -553,7 +559,7 @@ impl TaskState {
 /// Task selection swaps bounded state owners; all registered windows remain in
 /// the single FrameSlots provider. Field order deallocates before budget refunds.
 pub struct Vm {
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_native_leaf_calls: bool,
     program: Rc<CodeLease>,
     code_window: crate::bytecode::CodeWindow,
@@ -605,21 +611,21 @@ pub struct Vm {
     step_costs: step_costs::State,
     #[cfg(test)]
     work_probe: WorkProbe,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_body_dispatch: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_body_context: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_body_clock: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_script_execution: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_scalar_suffixes: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_scalar_entry: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     value_entries: bool,
-    #[cfg(any(test, feature = "vm-validation-oracle"))]
+    #[cfg(test)]
     legacy_named_read_completion: bool,
     #[cfg(any(test, feature = "vm-validation-oracle"))]
     value_entry_transactions: u64,
@@ -833,7 +839,7 @@ impl Vm {
                 }
                 ReturnTo::Register { frame, call, .. }
                 | ReturnTo::Class { frame, call }
-                | ReturnTo::Sort { frame, call }
+                | ReturnTo::BuiltinCallback { frame, call }
                 | ReturnTo::ReactiveRead { frame, call } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
                         Some(Frame::Script(parent)) if parent.id == frame => {
@@ -1355,40 +1361,13 @@ fn unary(op: Opcode, v: Value) -> Result<Value, FaultKind> {
         _ => return Err(FaultKind::Type),
     })
 }
-// Compare int/float without first rounding the int to float. The cast only runs
-// in the finite i64 domain; a fractional tail is compared after the integer part.
-fn int_float(i: i64, f: f64) -> Option<Ordering> {
-    if f.is_nan() {
-        return None;
-    }
-    if f >= 9223372036854775808.0 {
-        return Some(Ordering::Less);
-    }
-    if f < -9223372036854775808.0 {
-        return Some(Ordering::Greater);
-    }
-    let trunc = f as i64;
-    match i.cmp(&trunc) {
-        Ordering::Equal => (i as f64).partial_cmp(&f),
-        other => Some(other),
-    }
-}
-fn compare(a: Value, b: Value) -> Option<Ordering> {
-    match (a.as_int(), b.as_int(), a.as_float(), b.as_float()) {
-        (Some(x), Some(y), _, _) => Some(x.cmp(&y)),
-        (Some(x), _, _, Some(y)) => int_float(x, y),
-        (_, Some(y), Some(x), _) => int_float(y, x).map(Ordering::reverse),
-        (_, _, Some(x), Some(y)) => x.partial_cmp(&y),
-        _ => None,
-    }
-}
 fn binary(op: Opcode, a: Value, b: Value) -> Result<Value, FaultKind> {
     use Opcode::*;
     if matches!(op, Eq | Ne) {
         let equal = if matches!(a.tag(), ValueTag::Int | ValueTag::Float)
             && matches!(b.tag(), ValueTag::Int | ValueTag::Float)
         {
-            compare(a, b) == Some(Ordering::Equal)
+            a.numeric_cmp(b) == Some(Ordering::Equal)
         } else {
             a.same_bits(b)
         };
@@ -1400,7 +1379,7 @@ fn binary(op: Opcode, a: Value, b: Value) -> Result<Value, FaultKind> {
         {
             return Err(FaultKind::Type);
         }
-        let order = compare(a, b);
+        let order = a.numeric_cmp(b);
         return Ok(Value::bool(match op {
             Lt => order == Some(Ordering::Less),
             Le => matches!(order, Some(Ordering::Less | Ordering::Equal)),

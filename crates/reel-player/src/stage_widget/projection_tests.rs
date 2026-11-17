@@ -46,6 +46,7 @@ fn scroll(offset: f64) -> NodeKind {
         overscroll: Default::default(),
         axis: ScrollAxis::Vertical,
         follow_end: false,
+        snap_y: None,
         align: reel_ui::widgets::ScrollAlign::Start,
         offset: Vec2::new(0., offset),
     }
@@ -233,6 +234,7 @@ fn replacement_stage_with_matching_ids_and_revisions_replaces_widgets_and_button
         range: reel_ui::widgets::SliderRange::new(0., 1., None).unwrap(),
         value: 0.5,
         listening: true,
+        art: Default::default(),
     });
     let c = StageView::update(&third, Some(&b));
     sync(&mut root, widget, &c);

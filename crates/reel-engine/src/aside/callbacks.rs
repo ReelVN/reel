@@ -304,7 +304,7 @@ impl SessionVm {
         })
     }
 
-    /// Commit the user value before scheduling the node-owned callback.
+    /// Apply the user proposal and schedule its node-owned callback.
     pub fn change(
         &mut self,
         session: &mut Session,
@@ -874,11 +874,7 @@ impl SessionVm {
                 RunOutcome::Returned(_) | RunOutcome::Fault(_) | RunOutcome::Waiting(_)
             )
         {
-            self.media
-                .finish_batch(task, !matches!(outcome, RunOutcome::Fault(_)));
-            self.reactive_ready = true;
-            self.sync_narrative(session)?;
-            self.activities.after_script(self.vm.heap())?;
+            self.finish_script_batch(session, task, !matches!(outcome, RunOutcome::Fault(_)))?;
         }
         match outcome {
             RunOutcome::Returned(delivery) | RunOutcome::Fault(delivery)
@@ -929,6 +925,18 @@ impl SessionVm {
 }
 
 impl SessionVm {
+    pub(super) fn finish_script_batch(
+        &mut self,
+        session: &Session,
+        task: TaskId,
+        commit: bool,
+    ) -> Result<(), AdapterError> {
+        self.media.finish_batch(task, commit);
+        self.reactive_ready = true;
+        self.sync_narrative(session)?;
+        self.activities.after_script(self.vm.heap())
+    }
+
     /// Rebuild only derived presentation values; no story/callback task is run.
     pub fn step_reactive(
         &mut self,

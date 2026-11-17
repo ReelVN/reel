@@ -218,6 +218,7 @@ fn radio_group_live_navigation_discovers_a_virtual_list_without_a_mounted_member
                         overscroll: Default::default(),
                         axis: ScrollAxis::Vertical,
                         follow_end: false,
+                        snap_y: None,
                         align: reel_ui::widgets::ScrollAlign::Start,
                         offset: Vec2::ZERO,
                     },

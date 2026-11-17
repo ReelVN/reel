@@ -620,6 +620,24 @@ fn deferred_collection_and_pattern_forms_are_located() {
 }
 
 #[test]
+fn final_record_spread_uses_the_call_window() {
+    let c = compiled("fn f(send, x, y) { send(...{x, y}) }");
+    let f = function(c.program.package(), "f");
+    for op in [
+        bc::Opcode::ArgsNew,
+        bc::Opcode::ArgsSpread,
+        bc::Opcode::MakeTable,
+    ] {
+        assert!(pcs(f, op).is_empty());
+    }
+    assert_eq!(pcs(f, bc::Opcode::Call).len(), 1);
+
+    let duplicate = compiled("fn f(send, x) { send(...{x, x: 1}) }");
+    let f = function(duplicate.program.package(), "f");
+    assert_eq!(pcs(f, bc::Opcode::ArgsSpread).len(), 1);
+}
+
+#[test]
 fn collection_spreads_roundtrip_in_calls_and_optional_chains() {
     for source in [
         "fn f() { [1,...[]] }",

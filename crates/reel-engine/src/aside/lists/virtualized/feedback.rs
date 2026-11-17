@@ -150,70 +150,19 @@ impl SessionVm {
             )?;
             put(self.vm.heap_mut(), s, S::AnchorOffset, Value::float(offset))?;
         }
+        let mut epoch = int(self.vm.heap(), s, S::Epoch)?;
         if num(self.vm.heap(), s, S::Width)? != event.width {
-            let epoch = int(self.vm.heap(), s, S::Epoch)? + 1;
+            epoch += 1;
             put(self.vm.heap_mut(), s, S::Epoch, Value::int(epoch))?;
             put(self.vm.heap_mut(), s, S::Width, Value::float(event.width))?;
             changed = true;
         }
-        let mounted = get(self.vm.heap(), s, S::Mounted)?;
-        let _measurement_storage = self
-            .vm
-            .heap()
-            .budget_usage()
-            .reserve((event.measurements.len() * size_of::<usize>()) as u64)?;
-        let mut measurement_order = Vec::new();
-        measurement_order
-            .try_reserve_exact(event.measurements.len())
-            .map_err(|_| AdapterError::Allocation)?;
-        measurement_order.extend(0..event.measurements.len());
-        measurement_order.sort_unstable_by_key(|&i| (event.measurements[i].node, i));
-        let mut retained = Vec::new();
-        for i in 0..self.vm.heap().sequence_len(mounted)? {
-            let e = self.vm.heap().sequence_get(mounted, i)?;
-            let child = entry(self.vm.heap(), e, Entry::Node)?;
-            let id = NodeId(self.vm.heap().host_payload(child, 0)?.as_int().unwrap() as u64);
-            if event.retained.contains(&id) {
-                retained.push(entry(self.vm.heap(), e, Entry::Key)?);
-            }
-            let found = measurement_order.partition_point(|&i| event.measurements[i].node < id);
-            if let Some(measurement) = measurement_order
-                .get(found)
-                .map(|&i| &event.measurements[i])
-                .filter(|m| m.node == id)
-            {
-                if !measurement.height.is_finite() || measurement.height <= 0. {
-                    put(self.vm.heap_mut(), s, S::Fault, Value::bool(true))?;
-                    changed = true;
-                    continue;
-                }
-                let index = self.vm.heap().sequence_get(e, INDEX)?.as_int().unwrap() as u32;
-                let epoch = int(self.vm.heap(), s, S::Epoch)?;
-                let measured = self.vm.heap().sequence_get(e, EPOCH)?.as_int() == Some(epoch);
-                let old = if measured {
-                    stage::number(self.vm.heap().sequence_get(e, HEIGHT)?)?
-                } else {
-                    0.
-                };
-                if old != measurement.height || !measured {
-                    let tree = get(self.vm.heap(), s, S::Tree)?;
-                    let count = count(self.vm.heap(), s)?;
-                    add(
-                        self.vm.heap_mut(),
-                        tree,
-                        count,
-                        index,
-                        epoch,
-                        i64::from(!measured),
-                        measurement.height - old,
-                    )?;
-                    self.vm
-                        .heap_mut()
-                        .set_field(e, HEIGHT, Value::float(measurement.height))?;
-                    self.vm.heap_mut().set_field(e, EPOCH, Value::int(epoch))?;
-                    changed = true;
-                }
-            }
+        if !self
+            .stage
+            .virtual_scrolls
+            .measurements_applied(event, epoch)
+        {
+            changed |= self.apply_window_measurements(s, event, epoch)?;
         }
         changed |= refresh_estimate(self.vm.heap_mut(), s)?;
         // Refill at half the prepared buffer before unknown rows become visible.
@@ -224,19 +173,6 @@ impl SessionVm {
             && count(self.vm.heap(), s)? > 0
             && (first..=last).any(|index| !view.rows.iter().any(|r| r.index == index as usize))
         {
-            changed = true;
-        }
-        let pins = get(self.vm.heap(), s, S::Pinned)?;
-        let same = self.vm.heap().sequence_len(pins)? as usize == retained.len()
-            && retained.iter().enumerate().all(|(i, v)| {
-                self.vm
-                    .heap()
-                    .sequence_get(pins, i as u32)
-                    .is_ok_and(|x| x.same_bits(*v))
-            });
-        if !same {
-            let pins = self.vm.heap_mut().alloc_array(&retained)?;
-            put(self.vm.heap_mut(), s, S::Pinned, pins)?;
             changed = true;
         }
         put(
@@ -267,5 +203,93 @@ impl SessionVm {
             false
         };
         Ok(changed || armed)
+    }
+
+    fn apply_window_measurements(
+        &mut self,
+        s: Value,
+        event: &NodeVirtualList,
+        epoch: i64,
+    ) -> Result<bool, AdapterError> {
+        let mut changed = false;
+        let mut valid = true;
+        let mounted = get(self.vm.heap(), s, S::Mounted)?;
+        let _measurement_storage = self
+            .vm
+            .heap()
+            .budget_usage()
+            .reserve((event.measurements.len() * size_of::<usize>()) as u64)?;
+        let mut measurement_order = Vec::new();
+        measurement_order
+            .try_reserve_exact(event.measurements.len())
+            .map_err(|_| AdapterError::Allocation)?;
+        measurement_order.extend(0..event.measurements.len());
+        measurement_order.sort_unstable_by_key(|&i| (event.measurements[i].node, i));
+        let mut retained = Vec::new();
+        for i in 0..self.vm.heap().sequence_len(mounted)? {
+            let e = self.vm.heap().sequence_get(mounted, i)?;
+            let child = entry(self.vm.heap(), e, Entry::Node)?;
+            let id = NodeId(self.vm.heap().host_payload(child, 0)?.as_int().unwrap() as u64);
+            if event.retained.contains(&id) {
+                retained.push(entry(self.vm.heap(), e, Entry::Key)?);
+            }
+            let found = measurement_order.partition_point(|&i| event.measurements[i].node < id);
+            if let Some(measurement) = measurement_order
+                .get(found)
+                .map(|&i| &event.measurements[i])
+                .filter(|m| m.node == id)
+            {
+                if !measurement.height.is_finite() || measurement.height <= 0. {
+                    put(self.vm.heap_mut(), s, S::Fault, Value::bool(true))?;
+                    changed = true;
+                    valid = false;
+                    continue;
+                }
+                let index = self.vm.heap().sequence_get(e, INDEX)?.as_int().unwrap() as u32;
+                let measured = self.vm.heap().sequence_get(e, EPOCH)?.as_int() == Some(epoch);
+                let old = if measured {
+                    stage::number(self.vm.heap().sequence_get(e, HEIGHT)?)?
+                } else {
+                    0.
+                };
+                if old != measurement.height || !measured {
+                    let tree = get(self.vm.heap(), s, S::Tree)?;
+                    let count = count(self.vm.heap(), s)?;
+                    add(
+                        self.vm.heap_mut(),
+                        tree,
+                        count,
+                        index,
+                        epoch,
+                        i64::from(!measured),
+                        measurement.height - old,
+                    )?;
+                    self.vm
+                        .heap_mut()
+                        .set_field(e, HEIGHT, Value::float(measurement.height))?;
+                    self.vm.heap_mut().set_field(e, EPOCH, Value::int(epoch))?;
+                    changed = true;
+                }
+            }
+        }
+        let pins = get(self.vm.heap(), s, S::Pinned)?;
+        let same = self.vm.heap().sequence_len(pins)? as usize == retained.len()
+            && retained.iter().enumerate().all(|(i, v)| {
+                self.vm
+                    .heap()
+                    .sequence_get(pins, i as u32)
+                    .is_ok_and(|x| x.same_bits(*v))
+            });
+        if !same {
+            let pins = self.vm.heap_mut().alloc_array(&retained)?;
+            put(self.vm.heap_mut(), s, S::Pinned, pins)?;
+            changed = true;
+        }
+        if valid {
+            self.stage
+                .virtual_scrolls
+                .remember_measurements(event, epoch);
+        }
+        Ok(changed)
     }
 }

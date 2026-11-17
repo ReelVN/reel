@@ -498,6 +498,7 @@ fn transformed_stage_pixels_obey_group_clip_opacity_mirroring_and_zero_scale() {
                 range,
                 value: 0.,
                 listening: false,
+                art: Default::default(),
             },
             NodeProps {
                 width: Some(220.),
@@ -546,6 +547,7 @@ fn transformed_stage_pixels_obey_group_clip_opacity_mirroring_and_zero_scale() {
                 range,
                 value: 1.,
                 listening: false,
+                art: Default::default(),
             },
             props,
         )

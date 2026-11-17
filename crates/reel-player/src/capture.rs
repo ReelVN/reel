@@ -11,7 +11,7 @@ use reel_engine::aside::{
     capture::{CaptureId, CaptureRequest},
 };
 use reel_render::{
-    BackendError, PixelDemand,
+    BackendError, FailureKind, PixelDemand,
     capture::{CaptureBackend, CapturedPixels},
 };
 use reel_ui::frame::RenderFrame;
@@ -259,6 +259,7 @@ impl<C> CaptureService<C> {
                         active.phase = Phase::Reading(capture);
                         Ok(())
                     }
+                    Err(error) if error.kind() == FailureKind::Pressure => Ok(()),
                     Err(error) => match error.into_pixel_demand() {
                         Ok(demand) => {
                             self.pixel_demand =

@@ -1,4 +1,4 @@
-//! Portable window presentation state. Dimensions use client-area logical pixels.
+//! Portable window presentation state. Dimensions use physical client pixels.
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

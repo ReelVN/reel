@@ -84,19 +84,18 @@ impl<P, G> Glyphs<P, G> {
         budgets: &Budgets,
         limit: u64,
     ) {
-        if capture.is_none() {
+        let Some(value) = capture else {
+            return;
+        };
+        let Some(cached) = Mesh::copy(mesh, budgets, limit) else {
+            *capture = None;
+            return;
+        };
+        if grow(&mut value.segments, &mut value._ticket, budgets, limit).is_none() {
+            *capture = None;
             return;
         }
-        if let Some(cached) = Mesh::copy(mesh, budgets, limit) {
-            let value = capture.as_mut().unwrap();
-            if grow(&mut value.segments, &mut value._ticket, budgets, limit).is_none() {
-                *capture = None;
-                return;
-            }
-            value.segments.push((cached, page));
-        } else {
-            *capture = None;
-        }
+        value.segments.push((cached, page));
     }
 }
 fn grow<T>(

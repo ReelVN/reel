@@ -7,6 +7,7 @@ pub(in crate::executor) enum CaptureKind {
     Elements,
     PositionalArguments,
     NamedArguments,
+    Children,
 }
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -40,6 +41,20 @@ pub(in crate::executor) struct TableSpread {
 }
 
 impl Vm {
+    pub(in crate::executor) fn push_child(
+        &mut self,
+        target: Value,
+        child: Value,
+    ) -> Result<(), FaultKind> {
+        if child.same_bits(Value::NULL) {
+            return Ok(());
+        }
+        if !self.heap.is_composable_host(child).map_err(heap_fault)? {
+            return Err(FaultKind::Type);
+        }
+        self.heap.array_push(target, child).map_err(heap_fault)
+    }
+
     pub(in crate::executor) fn spread_step(
         &mut self,
         s: &mut ScriptFrame,
@@ -51,13 +66,21 @@ impl Vm {
         let destination = self.heap.info(target)?;
         let changed = destination.content_version != work.destination_version
             || self.heap.info(source)?.content_version != work.version;
-        let extra = if !changed && work.index < work.len {
+        let current_child =
+            if !changed && work.index < work.len && matches!(work.kind, CaptureKind::Children) {
+                Some(self.heap.sequence_get(source, work.index)?)
+            } else {
+                None
+            };
+        let extra = if !changed
+            && work.index < work.len
+            && !current_child.is_some_and(|child| child.same_bits(Value::NULL))
+        {
             Values::growth_bytes(
                 destination.len.into(),
-                if matches!(work.kind, CaptureKind::Elements) {
-                    1
-                } else {
-                    2
+                match work.kind {
+                    CaptureKind::Elements | CaptureKind::Children => 1,
+                    CaptureKind::PositionalArguments | CaptureKind::NamedArguments => 2,
                 },
             )
         } else {
@@ -81,14 +104,18 @@ impl Vm {
                     return Ok(true);
                 }
                 pair
+            } else if let Some(child) = current_child {
+                (Value::int(-1), child)
             } else {
                 (Value::int(-1), self.heap.sequence_get(source, work.index)?)
             };
             let result = match work.kind {
-                CaptureKind::Elements => self.heap.array_push(target, value),
-                CaptureKind::PositionalArguments | CaptureKind::NamedArguments => {
-                    self.heap.packed_pair_push(target, name, value)
-                }
+                CaptureKind::Elements => self.heap.array_push(target, value).map_err(heap_fault),
+                CaptureKind::PositionalArguments | CaptureKind::NamedArguments => self
+                    .heap
+                    .packed_pair_push(target, name, value)
+                    .map_err(heap_fault),
+                CaptureKind::Children => self.push_child(target, value),
             };
             match result {
                 Ok(()) => {
@@ -100,7 +127,7 @@ impl Vm {
                     }
                     s.phase = ScriptPhase::Spread(work);
                 }
-                Err(error) => self.collection_fault(s, heap_fault(error))?,
+                Err(kind) => self.collection_fault(s, kind)?,
             }
         }
         Ok(true)

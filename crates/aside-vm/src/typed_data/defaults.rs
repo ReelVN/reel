@@ -32,7 +32,8 @@ enum Collect {
         next: usize,
     },
 }
-pub(super) struct Proof {
+pub(crate) struct Proof {
+    program: crate::bytecode::VerifiedProgram,
     function: FunctionId,
     pc: usize,
     registers: BTreeMap<u32, u32>,
@@ -41,18 +42,19 @@ pub(super) struct Proof {
     done: bool,
 }
 impl Proof {
-    pub(super) fn new(heap: &Heap, function: FunctionId) -> Result<Self, SchemaError> {
-        let code = heap
-            .code
-            .as_ref()
-            .ok_or(SchemaError::Contract("State defaults require current code"))?;
-        let f = &code.package().functions[function.index()];
+    pub(crate) fn new(
+        program: &crate::bytecode::VerifiedProgram,
+        usage: &crate::HeapBudgetUsage,
+        function: FunctionId,
+    ) -> Result<Self, SchemaError> {
+        let f = &program.package().functions[function.index()];
         if !f.captures.is_empty() || !f.regions.is_empty() {
             return Err(SchemaError::Contract(
                 "default captures or exception handlers are not pure data",
             ));
         }
         Ok(Self {
+            program: program.clone(),
             function,
             pc: 0,
             registers: BTreeMap::new(),
@@ -61,7 +63,7 @@ impl Proof {
                 checks: Vec::new(),
                 result: 0,
                 bytes: 0,
-                charge: heap.budget_usage().reserve(0)?,
+                charge: usage.reserve(0)?,
             },
             collect: None,
             done: false,
@@ -75,7 +77,7 @@ impl Proof {
                 "default reads self or a non-data input",
             ))
     }
-    pub(super) fn step(&mut self, heap: &Heap) -> Result<bool, SchemaError> {
+    pub(crate) fn step(&mut self) -> Result<bool, SchemaError> {
         fn growth<T>(v: &Vec<T>) -> usize {
             if v.len() == v.capacity() {
                 v.capacity().saturating_mul(2).max(4) * size_of::<T>()
@@ -97,7 +99,7 @@ impl Proof {
             self.plan.charge.bytes()
                 + (growth(&self.plan.nodes) + growth(&self.plan.checks) + container + 256) as u64,
         )?;
-        let result = self.advance(heap);
+        let result = self.advance();
         let retained = self.plan.bytes + self.registers.len().max(1) * 128;
         self.plan.charge.resize(retained as u64)?;
         result
@@ -109,15 +111,12 @@ impl Proof {
         self.plan.bytes += (self.plan.nodes.capacity() - old) * size_of::<Node>();
         id
     }
-    fn advance(&mut self, heap: &Heap) -> Result<bool, SchemaError> {
+    fn advance(&mut self) -> Result<bool, SchemaError> {
         if self.done {
             return Ok(true);
         }
-        let code = heap
-            .code
-            .as_ref()
-            .ok_or(SchemaError::Contract("State defaults require current code"))?;
-        let p = code.package();
+        let program = self.program.clone();
+        let p = program.package();
         let f = &p.functions[self.function.index()];
         if let Some(collect) = self.collect.take() {
             match collect {

@@ -214,7 +214,7 @@ fn invalid() { let method = bind("captured"); method(receiver: "replacement"); }
                         .unwrap();
                     }
                     2 => {
-                        let value = vm.host_callback_value(ticket).unwrap();
+                        let value = vm.host_resume_value(ticket).unwrap();
                         vm.respond(ticket, HostResponse::Ready(value)).unwrap();
                     }
                     _ => unreachable!(),

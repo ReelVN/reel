@@ -30,6 +30,8 @@ fn deep_else_chain_exits_in_a_separate_process() {
         child.status,
         String::from_utf8_lossy(&child.stderr)
     );
+    assert!(String::from_utf8_lossy(&child.stdout).contains("deep_child stdout"));
+    assert!(String::from_utf8_lossy(&child.stderr).contains("deep_child stderr"));
 }
 
 #[cfg(unix)]
@@ -55,6 +57,8 @@ fn deep_child() {
     if std::env::var_os("ASIDE_DEEP_CHILD").is_none() {
         return;
     }
+    println!("deep_child stdout");
+    eprintln!("deep_child stderr");
     std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
         .spawn(|| {

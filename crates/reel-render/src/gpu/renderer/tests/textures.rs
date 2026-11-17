@@ -236,7 +236,7 @@ fn direct_paint_submits_whole_and_regional_alpha_policies() {
     }
     assert_eq!(expected, [2, 3, 2, 2, 2, 2, 0, 0]);
     assert_eq!(opaque, [1, 1, 0]);
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 21, 21, 21, 8]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 2, 21, 21, 8]);
     renderer.images.clear_idle();
     assert_eq!(
         renderer.usage().transient,

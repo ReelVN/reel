@@ -452,7 +452,19 @@ mod tests {
         use std::sync::Arc;
         let driver = AsideSessionUi::from_source(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
-            r#"fn main() { await saves.save("hover"); stage.replace(text("saved")); }"#,
+            r#"use std::resume::{state,root,flow,point};
+                class World{let marker:int=1;}
+                state(World,"hover-world");root(main,"hover");
+                fn story(value:World){flow("hover-story");point("waiting");choose([{key:"done",label:"Done"}]);}
+                fn main(value:World=model(World())) {
+                    let choice=game.choice();
+                    let worker=spawn(||{
+                        await when(||choice.active);
+                        await saves.save("hover");
+                        choice.select(choice.options[0].id);
+                    });
+                    run_flow(story,value);await worker;stage.replace(text("saved"));
+                }"#,
             "hover_save",
             1,
             "main",

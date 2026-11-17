@@ -38,7 +38,7 @@ mod platform;
     feature = "audio-output",
     any(target_os = "windows", target_os = "linux", target_os = "macos")
 ))]
-pub use platform::native;
+pub(crate) use platform::desktop_media;
 
 #[derive(Clone, Debug)]
 pub struct MediaOptions {
@@ -114,7 +114,7 @@ struct Entry {
     initial_batch: Option<u64>,
     started: bool,
     descriptor: BudgetTicket,
-    _queue_storage: BudgetTicket,
+    queue_storage: Option<BudgetTicket>,
 }
 struct Segment {
     io_deadline: Option<reel_core::io::ReadDeadline>,
@@ -314,8 +314,6 @@ impl MediaPlayer {
         wake: WakeSignal,
         create_output: impl FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, String> + 'static,
     ) -> Self {
-        let asset_wake = wake.clone();
-        assets.set_waker(Arc::new(move || asset_wake.wake()));
         let queue = QueueLimits {
             max_requests: u32::try_from(options.mixer.max_sounds).unwrap_or(u32::MAX),
             max_bytes: options.queue_bytes,
@@ -454,7 +452,6 @@ impl MediaPlayer {
             .register_owner(Scope::Process)
             .map_err(|e| e.message)?;
         // Keep the prepared renderer until a source can actually consume PCM.
-        // Configure retains format validation without opening a native stream.
         self.owner = Some(owner);
         self.output = Some(output);
         self.service = Some(service);
@@ -733,10 +730,6 @@ impl MediaBackend for MediaPlayer {
             .descriptors
             .reserve(descriptor_bytes(&request.source))
             .map_err(|error| error.message)?;
-        let queue_storage = self
-            .descriptors
-            .reserve((self.options.mixer.max_sounds * std::mem::size_of::<Segment>()) as u64)
-            .map_err(|error| error.message)?;
         self.next = self.next.checked_add(1).ok_or("audio identity exhausted")?;
         let id = MediaId(self.next);
         self.entries.insert(
@@ -746,14 +739,14 @@ impl MediaBackend for MediaPlayer {
                 request,
                 phase: Phase::Loading,
                 paused,
-                queue: VecDeque::with_capacity(self.options.mixer.max_sounds),
+                queue: VecDeque::new(),
                 item: 0,
                 tail: 0,
                 key: id.0,
                 initial_batch: None,
                 started: false,
                 descriptor,
-                _queue_storage: queue_storage,
+                queue_storage: None,
             },
         );
         Ok(id)
@@ -783,6 +776,20 @@ impl MediaBackend for MediaPlayer {
             .checked_add(1)
             .ok_or("audio segment identity exhausted")?;
         let key = self.next.checked_add(1).ok_or("audio identity exhausted")?;
+        if entry.queue.len() == entry.queue.capacity() {
+            let capacity = (entry.queue.len() * 2)
+                .max(1)
+                .min(self.options.mixer.max_sounds - 1);
+            let storage = self
+                .descriptors
+                .reserve((capacity * std::mem::size_of::<Segment>()) as u64)
+                .map_err(|error| error.message)?;
+            entry
+                .queue
+                .try_reserve_exact(capacity - entry.queue.len())
+                .map_err(|error| error.to_string())?;
+            entry.queue_storage = Some(storage);
+        }
         if let Phase::Playing(media) = entry.phase {
             self.service
                 .as_mut()
@@ -950,6 +957,7 @@ impl MediaBackend for MediaPlayer {
         self.maintain_video(elapsed);
         #[cfg(not(feature = "video"))]
         let _ = elapsed;
+        let decoded = reel_core::profile::Scope::new(reel_core::profile::Phase::MediaDecoded);
         self.worker.drain(&mut self.decoded, 64);
         for event in self.decoded.drain(..) {
             if let Some(entry) = self.entries.get_mut(&event.id) {
@@ -978,6 +986,8 @@ impl MediaBackend for MediaPlayer {
                 }
             }
         }
+        drop(decoded);
+        let activities = reel_core::profile::Scope::new(reel_core::profile::Phase::MediaActivities);
         use std::ops::Bound::{Excluded, Unbounded};
         let mut start = self.cursor.map_or(Unbounded, Excluded);
         if self.entries.range((start, Unbounded)).next().is_none() {
@@ -1124,7 +1134,10 @@ impl MediaBackend for MediaPlayer {
                 entry.phase = Phase::Done(MediaResult::Failed(error));
             }
         }
+        drop(activities);
         if let Some(service) = &mut self.service {
+            let _timing =
+                reel_core::profile::Scope::new(reel_core::profile::Phase::MediaAudioService);
             self.reclaim_pending = service.maintain(64, 64).reclaim.needs_maintenance;
             service.drain(&mut self.events, 64, |id, _, _| {
                 self.playing.contains_key(&id.0)

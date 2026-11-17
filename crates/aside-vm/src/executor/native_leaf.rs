@@ -21,7 +21,7 @@ impl Vm {
         fallback_cost: (u64, u64),
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_native_leaf_calls {
             return Ok(false);
         }

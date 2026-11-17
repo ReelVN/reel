@@ -30,6 +30,7 @@ pub struct Slider {
     range: SliderRange,
     value: f64,
     decorated: bool,
+    paint_parts: [bool; 2],
 }
 impl Slider {
     /// Creates a slider with a finite, increasing range.
@@ -40,6 +41,7 @@ impl Slider {
             range,
             value: value.clamp(min, max),
             decorated: true,
+            paint_parts: [true; 2],
         }
     }
     pub fn with_step(mut self, step: f64) -> Self {
@@ -51,6 +53,17 @@ impl Slider {
     pub fn with_decorated(mut self, decorated: bool) -> Self {
         self.decorated = decorated;
         self
+    }
+    /// Choose which built-in parts to paint when the control is decorated.
+    pub fn with_paint_parts(mut self, track: bool, thumb: bool) -> Self {
+        self.paint_parts = [track, thumb];
+        self
+    }
+    pub fn set_paint_parts(this: &mut WidgetMut<'_, Self>, track: bool, thumb: bool) {
+        if this.widget.paint_parts != [track, thumb] {
+            this.widget.paint_parts = [track, thumb];
+            this.ctx.request_render();
+        }
     }
     pub fn set_decorated(this: &mut WidgetMut<'_, Self>, decorated: bool) {
         if this.widget.decorated != decorated {
@@ -325,7 +338,8 @@ impl Widget for Slider {
         props: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
-        if !self.decorated {
+        let [paint_track, paint_thumb] = self.paint_parts;
+        if !self.decorated || (!paint_track && !paint_thumb) {
             return;
         }
         // Get parameters and resolve colors
@@ -363,31 +377,32 @@ impl Widget for Slider {
         let progress = self.range.progress(self.value);
         let (a, b) = range::endpoints(size.width, thumb_radius);
         let thumb_x = a + progress * (b - a);
-        let track_rect = Rect::new(0., track_y, size.width, track_y + track_thickness)
-            .to_rounded_rect(track_thickness / 2.);
-        // Two clipped solids express the hard color boundary directly, including
-        // translucent colors, without requiring a gradient-capable renderer.
-        for (left, right, color) in [
-            (0., thumb_x, track_color.active),
-            (thumb_x, size.width, track_color.inactive),
-        ] {
-            painter.push_fill_clip(Rect::new(left, 0., right, size.height));
-            painter.fill(track_rect, color).draw();
-            painter.pop_clip();
+        if paint_track {
+            let track_rect = Rect::new(0., track_y, size.width, track_y + track_thickness)
+                .to_rounded_rect(track_thickness / 2.);
+            for (left, right, color) in [
+                (0., thumb_x, track_color.active),
+                (thumb_x, size.width, track_color.inactive),
+            ] {
+                painter.push_fill_clip(Rect::new(left, 0., right, size.height));
+                painter.fill(track_rect, color).draw();
+                painter.pop_clip();
+            }
         }
 
-        // Paint thumb
-        let thumb_y = size.height / 2.;
-        let thumb_circle = Circle::new((thumb_x, thumb_y), thumb_radius - thumb_border_width / 2.);
-
-        painter.fill(thumb_circle, thumb_color).draw();
-        painter
-            .stroke(
-                thumb_circle,
-                &Stroke::new(thumb_border_width),
-                track_color.active,
-            )
-            .draw();
+        if paint_thumb {
+            let thumb_y = size.height / 2.;
+            let thumb_circle =
+                Circle::new((thumb_x, thumb_y), thumb_radius - thumb_border_width / 2.);
+            painter.fill(thumb_circle, thumb_color).draw();
+            painter
+                .stroke(
+                    thumb_circle,
+                    &Stroke::new(thumb_border_width),
+                    track_color.active,
+                )
+                .draw();
+        }
 
         // Pop the semitransparent layer
         if ctx.is_disabled() {

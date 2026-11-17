@@ -58,6 +58,9 @@ fn visit(
     );
     emit("vm_gc_collections_count", gc.collections)?;
     emit("vm_gc_units_count", gc.units)?;
+    for (name, units) in aside_vm::GC_WORK_NAMES.into_iter().zip(gc.work_units) {
+        emit(&format!("vm_gc_{name}_units_count"), units)?;
+    }
     emit("vm_heap_chunk_allocations_count", gc.chunk_allocations)?;
     macro_rules! slots {
         ($($field:ident),* $(,)?) => {$(

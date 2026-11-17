@@ -44,6 +44,7 @@ mod selection;
 #[cfg(test)]
 mod tests;
 mod virtual_images;
+pub(crate) use virtual_images::OffscreenImage;
 mod virtual_list;
 use input::NodeInput;
 use virtual_list::VirtualListState;
@@ -416,6 +417,7 @@ impl StageView {
                 .unwrap_or_default()
                 .iter()
                 .rev()
+                .filter(|popup| popup.popup().hint.is_none())
                 .find_map(|popup| popup.root.modal)
                 .or_else(|| {
                     self.root
@@ -934,6 +936,26 @@ impl StageWidget {
     pub(crate) fn node_widget(&self, node: NodeId) -> Option<WidgetId> {
         self.nodes.get(&node).copied()
     }
+    pub(crate) fn scroll_reveal(
+        root: &reel_ui::app::RenderRoot,
+        viewport: WidgetId,
+        [x, y, width, height]: [f64; 4],
+        margins: [f64; 2],
+    ) -> Option<reel_engine::aside::RevealProjection> {
+        let widget = root.get_widget(viewport)?.downcast::<SceneWidget>()?;
+        let NodeKind::Scroll { offset, .. } = widget.node.kind else {
+            return None;
+        };
+        let bounds =
+            Rect::new(x, y, x + width, y + height) - Vec2::splat(widget.node.props.padding);
+        let rendered = widget.scroll.offset();
+        let target = widget.scroll.reveal_offset(bounds, margins);
+        Some(reel_engine::aside::RevealProjection {
+            requested: [offset.x, offset.y],
+            rendered: [rendered.x, rendered.y],
+            target: [target.x, target.y],
+        })
+    }
     pub(crate) fn text_caret(
         &self,
         root: &reel_ui::app::RenderRoot,
@@ -1095,7 +1117,7 @@ struct SceneWidget {
     scroll: ScrollState,
     scroll_laid_out: bool,
     scroll_request: Option<Vec2>,
-    scroll_feedback: Option<(Vec2, Size, Size)>,
+    scroll_feedback: Option<(Size, Size)>,
     scroll_baseline: Vec2,
     scroll_input: bool,
     virtual_list: Option<Box<VirtualListState>>,
@@ -1154,7 +1176,10 @@ fn decoration_changed(old: &SceneProperties, new: &SceneProperties) -> bool {
         || (props.color != next.color
             && matches!(
                 new.kind,
-                NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
+                NodeKind::Button { .. }
+                    | NodeKind::Toggle { .. }
+                    | NodeKind::Radio { .. }
+                    | NodeKind::ProgressBar { .. }
             ))
     {
         return true;
@@ -1170,6 +1195,9 @@ fn decoration_changed(old: &SceneProperties, new: &SceneProperties) -> bool {
         }
         NodeKind::Radio { selected, .. } => {
             !matches!(&old.kind, NodeKind::Radio { selected: previous, .. } if previous == selected)
+        }
+        NodeKind::ProgressBar { value, max } => {
+            !matches!(&old.kind, NodeKind::ProgressBar { value: previous, max: previous_max } if previous / previous_max == value / max)
         }
         NodeKind::Text(_)
         | NodeKind::TextInput { .. }

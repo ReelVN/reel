@@ -590,7 +590,8 @@ fn reading_context_storage_cost() {
     collect(&mut vm);
     let mounted = vm.vm.heap().stats();
     let parent_capacity = session.parked_readings[0].data.history.capacity();
-    let parent_pointer = session.parked_readings[0].data.history.as_ptr();
+    let parent_pointer =
+        std::ptr::from_ref(session.parked_readings[0].data.history.first().unwrap());
     let stable_capacity = session.storage_usage();
     for _ in 0..120 {
         vm.sync_stage(&session).unwrap();
@@ -618,7 +619,7 @@ fn reading_context_storage_cost() {
         if visit + 1 < pages {
             assert_eq!(session.parked_readings.len(), 1);
             assert_eq!(
-                session.parked_readings[0].data.history.as_ptr(),
+                std::ptr::from_ref(session.parked_readings[0].data.history.first().unwrap()),
                 parent_pointer,
                 "entering a reading page copied parent history"
             );
@@ -636,7 +637,10 @@ fn reading_context_storage_cost() {
     );
     assert!(session.parked_readings.is_empty());
     assert!(vm.narrative_contexts.frames.is_empty());
-    assert_eq!(session.reading_data.history.as_ptr(), parent_pointer);
+    assert_eq!(
+        std::ptr::from_ref(session.reading_data.history.first().unwrap()),
+        parent_pointer
+    );
     assert_eq!(session.reading_data.history.capacity(), parent_capacity);
     assert_eq!(
         session.storage_usage().reserved_history_slots,

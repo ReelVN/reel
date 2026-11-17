@@ -11,7 +11,8 @@ Run these commands from the repository root with the workspace toolchain and loc
 | `root-negative` | Mutation checks for GC root accounting; requires Bash |
 | `compiler-probe frontend/semantic/lowering [MODE]` | Compiler work and allocation measurements; requires GNU time |
 | `measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]` | UI measurements from Cargo JSON; requires GNU time |
-| `perf prepare/run/collect/report/runtime --help` | Build, export and measure ordinary games through the distribution player |
+| `debug PROJECT OUTPUT` | Run project source and record a manually reproduced issue |
+| `perf prepare/run/collect/report/verify/runtime --help` | Build, measure and verify ordinary games through the distribution player |
 | `frame-cost vita/emulator/host INPUT OUTPUT [LIMITS_JSON]` | Per-segment submission intervals and nested phase percentiles from a profiling log |
 | `render-cost vita/emulator/host INPUT OUTPUT` | Fixed-frame repetitions, pass/target events, completion observations and trace integrity |
 
@@ -49,6 +50,49 @@ normally. `--vm-timing` enables sampled VM timing; integer VM work counts are
 included by default. Reports retain observer cost, incomplete intervals and
 capability availability. A player built without `performance`, or started
 without a request, follows its ordinary playback path.
+
+`summary.json` includes wall time and submission counts for retained playback
+segments, even after their detailed frame samples expire. Segment rates include
+idle time. The interval samples provide frame-time percentiles.
+
+### Verify a release
+
+After `perf prepare` and `perf run`, evaluate that run against a project policy.
+Use distinct scene titles for the sections named in the policy.
+
+```sh
+reel-dev perf run path/to/run --policy path/to/release-policy.json
+reel-dev perf verify path/to/run --policy path/to/release-policy.json
+```
+
+Use `verify` by itself to evaluate existing results against a changed policy.
+With `run --policy`, the target, environment and ordinary playback mode must
+match the policy before the player starts. Verification checks that the status
+and frame report belong to the prepared request.
+
+```json
+{
+  "version": 1,
+  "target": "vita",
+  "environment": "vita",
+  "scenes": [
+    {
+      "label": "History scroll",
+      "min_intervals": 120,
+      "max_p95_submit_us": 16667,
+      "max_submit_us": 33334
+    }
+  ]
+}
+```
+
+The environment is `host`, `vita`, or `emulator` as selected at preparation.
+Scene timing uses complete submission intervals, excluding the first presentation
+in each scene. A scene with missing intervals fails verification. The optional
+`max_vm_bytes` and `max_gpu_bytes` fields apply to the observed memory ledgers in
+that scene. Run verification after a failed export or playback to produce the
+same `verification.json` with the failed stage and available logs. Failed checks
+return a nonzero exit status.
 
 Build the Vita development runtime in a configured Linux/VitaSDK shell:
 
@@ -108,6 +152,19 @@ Run crate checks with `cargo test --locked -p <crate>`; `--all-targets` includes
 Rust examples in compile and lint commands. Compiler execution fixtures are
 documented [beside their inputs](../aside-compiler/tests/fixtures/quirrel/README.md).
 Video tests require `cargo test --locked -p reel-media --features video`.
+
+### Inspect a development session
+
+```sh
+reel-dev debug path/to/project path/to/capture
+```
+
+Reproduce the issue in the game window and close it. Open `player.log` for
+compiler and runtime diagnostics, `reports/status.json` for the outcome and
+`reports/summary.json` for scene timings and their main-thread phases. A script
+fault also preserves the frames collected before it. Pass `--vm-timing` for
+sampled interpreter detail or `--save-directory` to reproduce a particular save.
+The default save directory is inside the capture.
 
 Vita packages read fixed assets from `crates/reel-player/runtime/vita/` and
 `crates/reel-dev/runtime/vita/device-checks/`. LiveArea images and the launcher font archive

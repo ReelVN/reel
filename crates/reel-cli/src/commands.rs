@@ -29,7 +29,7 @@ pub enum Command {
     PrepareTexture(PrepareTexture),
     /// Prepare this project's selected resource conversion rules.
     PrepareResources(PrepareResources),
-    /// Remove generated project files from build/.
+    /// Remove local build products and caches, keeping packages in dist/.
     Clean(Clean),
     /// Format every Aside source file in the current project's src directory.
     Fmt(Fmt),
@@ -142,7 +142,7 @@ fn asb_output(value: &str) -> Result<PathBuf, String> {
 pub struct Export {
     #[command(flatten)]
     pub settings: BuildSettings,
-    /// Destination directory; defaults to build/export/TARGET/debug (release with --release).
+    /// Destination directory; defaults to dist/TARGET/debug (release with --release).
     #[arg(long, value_name = "DIRECTORY")]
     pub output: Option<PathBuf>,
     /// Package a resource directory under its logical prefix; use . for the resource root.

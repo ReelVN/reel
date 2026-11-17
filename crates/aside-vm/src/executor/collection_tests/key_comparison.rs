@@ -115,27 +115,6 @@ fn text_key_comparison_preserves_results_work_gc_and_deadline_boundaries() {
 }
 
 #[test]
-#[ignore = "release comparison of dynamic string table construction"]
-fn measure_text_key_comparison() {
-    for general in [true, false, false, true] {
-        let mut vm = load(construction(128));
-        vm.work_probe.general_table_key_comparison = general;
-        vm.work_probe.linear_table_scan = true;
-        let start = std::time::Instant::now();
-        let mut work = 0;
-        for _ in 0..20 {
-            let result = run(&mut vm, 1_000_000, false, true);
-            assert_eq!(result.0, 128);
-            work += result.1;
-        }
-        eprintln!(
-            "text_table general={general} elapsed_us={} work={work}",
-            start.elapsed().as_micros()
-        );
-    }
-}
-
-#[test]
 fn dynamic_table_index_matches_the_scan_under_gc_and_small_budgets() {
     for count in [32, 128] {
         for work in [1, 64, 4096] {
@@ -144,28 +123,6 @@ fn dynamic_table_index_matches_the_scan_under_gc_and_small_budgets() {
                 vm.work_probe.linear_table_scan = linear;
                 assert_eq!(run(&mut vm, work, false, true).0, i64::from(count));
             }
-        }
-    }
-}
-
-#[test]
-#[ignore = "release comparison of table-owned indexing on dynamic insert and overwrite"]
-fn measure_dynamic_table_index() {
-    for count in [32, 128, 512] {
-        for linear in [true, false, false, true] {
-            let mut vm = load(construction(count));
-            vm.work_probe.linear_table_scan = linear;
-            let start = std::time::Instant::now();
-            let mut work = 0;
-            for _ in 0..20 {
-                let result = run(&mut vm, 1_000_000, false, true);
-                assert_eq!(result.0, i64::from(count));
-                work += result.1;
-            }
-            eprintln!(
-                "dynamic-table count={count} linear={linear} elapsed_us={} work={work}",
-                start.elapsed().as_micros()
-            );
         }
     }
 }

@@ -2,10 +2,11 @@
 // Color conversion/interpolation and image multiplication have <=4/4096
 // absolute error; positions, texture coordinates and texture filtering stay f32.
 enable f16;
+alias PaintVertexColor = vec4<f16>;
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f16>,
+    @location(1) color: PaintVertexColor,
     @location(2) @interpolate(flat) source_window: vec4<f32>,
 };
 @vertex fn vertex(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) source_window: vec4<f32>) -> VertexOut {

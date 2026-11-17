@@ -1,5 +1,91 @@
 use super::GpuError;
+#[cfg(any(feature = "wgpu", test))]
+use reel_core::budget::BudgetPool;
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
+#[cfg(any(feature = "wgpu", test))]
+use reel_ui::resources::ResourceHandle;
+#[cfg(any(feature = "wgpu", test))]
+use std::collections::HashMap;
+
+#[cfg(any(feature = "wgpu", test))]
+pub(crate) struct CachedImages<T> {
+    entries: HashMap<ResourceHandle, (u64, T)>,
+    frame: u64,
+}
+
+#[cfg(any(feature = "wgpu", test))]
+impl<T> Default for CachedImages<T> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            frame: 0,
+        }
+    }
+}
+
+#[cfg(any(feature = "wgpu", test))]
+impl<T> CachedImages<T> {
+    pub(crate) fn submitted(&mut self) {
+        self.frame += 1;
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
+        self.entries.values().map(|(_, image)| image)
+    }
+
+    pub(crate) fn get(&self, handle: &ResourceHandle) -> Option<&T> {
+        self.entries.get(handle).map(|(_, image)| image)
+    }
+
+    pub(crate) fn touch(&mut self, handle: &ResourceHandle) -> Option<&T> {
+        let (used, image) = self.entries.get_mut(handle)?;
+        *used = self.frame;
+        Some(image)
+    }
+
+    pub(crate) fn insert(&mut self, handle: ResourceHandle, image: T) {
+        self.entries.insert(handle, (self.frame, image));
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ResourceHandle, &T) -> bool) {
+        self.entries
+            .retain(|handle, (_, image)| keep(handle, image));
+    }
+
+    pub(crate) fn retire(&mut self, mut stale: impl FnMut(&T) -> bool) -> impl Iterator<Item = T> {
+        self.entries
+            .extract_if(move |_, (_, image)| stale(image))
+            .map(|(_, (_, image))| image)
+    }
+
+    pub(crate) fn reclaim(
+        &mut self,
+        pool: &BudgetPool,
+        cost: u64,
+        limit: u64,
+        idle: impl Fn(&T) -> bool,
+    ) {
+        while cost > limit.saturating_sub(pool.usage().bytes) {
+            let Some(oldest) = self
+                .entries
+                .values()
+                .filter(|(_, image)| idle(image))
+                .map(|(used, _)| *used)
+                .min()
+            else {
+                break;
+            };
+            let mut cold = self
+                .entries
+                .extract_if(|_, (used, image)| *used == oldest && idle(image));
+            while cost > limit.saturating_sub(pool.usage().bytes)
+                && let Some((_, image)) = cold.next()
+            {
+                drop(image);
+            }
+        }
+    }
+}
 
 /// Recently retired storage candidates. A slot may still have external readers;
 /// adapters must require released source leases and unique ownership when taking
@@ -59,9 +145,71 @@ impl<T> RetiredImages<T> {
             }
         }
     }
+
+    #[cfg(any(feature = "wgpu", test))]
+    pub(crate) fn reclaim(
+        &mut self,
+        pool: &BudgetPool,
+        cost: u64,
+        limit: u64,
+        idle: impl Fn(&T) -> bool,
+    ) {
+        while cost > limit.saturating_sub(pool.usage().bytes) {
+            let Some((index, _)) = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(|(index, slot)| Some((index, slot.as_ref()?)))
+                .filter(|(_, entry)| idle(&entry.value))
+                .max_by_key(|(_, entry)| (entry.age, std::cmp::Reverse(entry.uses)))
+            else {
+                break;
+            };
+            self.slots[index] = None;
+        }
+    }
     pub(crate) fn clear(&mut self) {
         *self = Self::default();
     }
+}
+
+#[cfg(test)]
+#[test]
+fn reclaim_spends_only_the_deficit_and_keeps_live_and_recent_images() {
+    use reel_core::budget::{BudgetCategory, QueueLimits};
+    use std::rc::Rc;
+
+    let pool = BudgetPool::new(
+        BudgetCategory::GpuResource,
+        QueueLimits {
+            max_requests: 8,
+            max_bytes: 40,
+        },
+    );
+    let mut cached = CachedImages::default();
+    let mut retired = RetiredImages::default();
+    let handle = |slot| ResourceHandle {
+        registry: 1,
+        slot,
+        generation: 1,
+    };
+    let pinned = Rc::new(pool.reserve(10).unwrap());
+    cached.insert(handle(0), pinned.clone());
+    cached.insert(handle(1), Rc::new(pool.reserve(10).unwrap()));
+    cached.submitted();
+    cached.insert(handle(2), Rc::new(pool.reserve(10).unwrap()));
+    retired.put(Rc::new(pool.reserve(10).unwrap()), 0);
+    let idle = |image: &Rc<_>| Rc::strong_count(image) == 1;
+    retired.reclaim(&pool, 10, 40, idle);
+    cached.reclaim(&pool, 10, 40, idle);
+    assert_eq!(pool.usage().bytes, 30);
+    assert!(cached.get(&handle(1)).is_some());
+
+    cached.reclaim(&pool, 20, 40, idle);
+    assert_eq!(pool.usage().bytes, 20);
+    assert!(cached.get(&handle(0)).is_some());
+    assert!(cached.get(&handle(1)).is_none());
+    assert!(cached.get(&handle(2)).is_some());
 }
 
 /// Initialized CPU upload capacity. Native upload APIs finish reading this slice

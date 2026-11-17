@@ -296,6 +296,7 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
         run: &FrameGlyphRun,
         density: f64,
         at: RecordLocation,
+        measure_ink: bool,
     ) -> Result<InkBounds, GpuError> {
         let key = Arc::new(RunKey::new(run, density));
         let raster = glyph::RasterRun::new(frame, run, density, at)?;
@@ -330,7 +331,7 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
                 self.glyph_cache.entries.insert(key, glyph.clone());
                 glyph
             };
-            if let Some(image) = &glyph.image {
+            if measure_ink && let Some(image) = &glyph.image {
                 ink = crate::common::glyph_plan::union(
                     ink,
                     InkBounds::Rect(crate::common::glyph_plan::bitmap_bounds(

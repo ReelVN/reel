@@ -7,6 +7,26 @@ impl Binder<'_> {
             .name(n)
             .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
         if let (Some(&base), Some(key)) = (children.first(), key) {
+            if let Some(fields) = crate::hir::record_fields(&self.out.types, object) {
+                let ty = fields
+                    .iter()
+                    .find(|(name, _)| self.out.hir.name(*name) == key)
+                    .map(|&(_, ty)| ty);
+                let Some(ty) = ty else {
+                    self.unknown_member(n, &key);
+                    return ANY;
+                };
+                self.member_write_types.insert(n, Some(ty));
+                self.check(n, RuntimeChecks::RECORD_FIELD);
+                return if matches!(
+                    self.out.hir.node(n).form,
+                    Form::Member { optional: true, .. } | Form::Member { chain: true, .. }
+                ) {
+                    self.nullable_type(ty)
+                } else {
+                    ty
+                };
+            }
             if let Some(group) = super::super::builtin_members(&self.out.hir, &self.out.types, object)
                 // A table's own named entry wins over a builtin method. Its
                 // dynamic shape cannot promise this fallback's call contract.
@@ -280,6 +300,13 @@ impl Binder<'_> {
             .as_ref()
             .and_then(|e| e.signature.as_ref())
             .map_or(CallEffect::Unknown, |s| s.effect);
+        if ctx.no_wait && effect == CallEffect::StartsTask {
+            self.error(
+                D::NoWait,
+                self.span(n),
+                "task launch requires a normal task context. In a node block, launch after construction and bind the task to its owner",
+            );
+        }
         let call = CallSite {
             node: n,
             caller: ctx.function,
@@ -335,15 +362,18 @@ impl Binder<'_> {
         if ctx.init {
             self.check(n, RuntimeChecks::INIT_SAFE);
         }
-        if !ctx.conditional
-            && let Some(signature) = descriptor.as_ref().and_then(|d| d.signature.as_ref())
+        if let Some(signature) = descriptor.as_ref().and_then(|d| d.signature.as_ref())
             && ((ctx.derived && signature.derived_safe == Some(false))
-                || (ctx.init && signature.init_safe == Some(false)))
+                || (ctx.init && !ctx.conditional && signature.init_safe == Some(false)))
         {
             self.error(
                 D::InvalidEffect,
                 self.span(n),
-                "host function is not safe in this execution context",
+                if ctx.derived {
+                    "host function cannot run during derived evaluation. Compute its result before derive"
+                } else {
+                    "host function is not safe in this execution context"
+                },
             );
         }
         if ty == NULL && (optional || chain) {

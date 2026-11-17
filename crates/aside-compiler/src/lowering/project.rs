@@ -94,6 +94,7 @@ pub fn compile_project(
     modules: Vec<h::AnalyzedModule>,
     plan: &ModulePlan,
     seed: &bc::VerifiedProgram,
+    host_types: &[bc::HostTypeSupport],
     natives: &[Vec<NativeLink<'_>>],
     expansions: &[Vec<CallExpansion>],
     options: Options,
@@ -102,6 +103,7 @@ pub fn compile_project(
         modules,
         plan,
         seed,
+        host_types,
         natives,
         expansions,
         options,
@@ -114,12 +116,14 @@ pub fn compile_project_with_progress(
     modules: Vec<h::AnalyzedModule>,
     plan: &ModulePlan,
     seed: &bc::VerifiedProgram,
+    host_types: &[bc::HostTypeSupport],
     natives: &[Vec<NativeLink<'_>>],
     expansions: &[Vec<CallExpansion>],
     options: Options,
     progress: &mut dyn FnMut(crate::Progress),
 ) -> Result<ProjectCompilation, ProjectError> {
     let mut current = None;
+    let mut resume_source = None;
     let mut index = Vec::new();
     let result = (|| -> Result<ProjectCompilation, Box<Error>> {
         progress(crate::Progress {
@@ -399,7 +403,27 @@ pub fn compile_project_with_progress(
         });
         let program = bc::verify(state.package, limits)
             .map_err(|e| state.budget.error(ErrorKind::Bytecode, e.to_string()))?;
-        let resume = super::resume::build(&program, &results.iter().map(|module| &module.metadata).collect::<Vec<_>>(), &mut state.budget)?;
+        let resume = super::resume::build(
+            &program,
+            &results
+                .iter()
+                .map(|module| &module.metadata)
+                .collect::<Vec<_>>(),
+            host_types,
+            &mut state.budget,
+        )
+        .map_err(|error| {
+            resume_source = state.budget.source.and_then(|source| {
+                results
+                    .iter()
+                    .find(|module| module.source == source)
+                    .map(|module| {
+                        let package = program.package();
+                        package.symbols[package.modules[module.module.index()].path.index()].clone()
+                    })
+            });
+            error
+        })?;
 
         progress(crate::Progress {
             stage: crate::ProgressStage::Verify,
@@ -425,9 +449,13 @@ pub fn compile_project_with_progress(
         })
     })();
     result.map_err(|error| ProjectError {
-        module: current
-            .and_then(|position| index.get(position))
-            .map_or_else(|| "<project>".into(), |entry| entry.path.clone()),
+        module: resume_source
+            .or_else(|| {
+                current
+                    .and_then(|position| index.get(position))
+                    .map(|entry| entry.path.clone())
+            })
+            .unwrap_or_else(|| "<project>".into()),
         error,
     })
 }

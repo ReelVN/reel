@@ -127,7 +127,7 @@ impl SessionVm {
             }
         }
         let content = if returned {
-            self.vm.host_callback_value(t)?
+            self.vm.host_resume_value(t)?
         } else {
             Value::NULL
         };

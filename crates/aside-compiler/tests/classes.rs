@@ -61,6 +61,7 @@ fn run(source: &str) {
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap_or_else(|e| panic!("{source}\n{e:?}"));
@@ -125,6 +126,7 @@ fn cancellation_invalidates_escaped_instance_and_retained_method() {
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();
@@ -240,6 +242,7 @@ fn class_payload_charges_match_real_growth_at_inline_and_inheritance_boundaries(
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();
@@ -321,6 +324,7 @@ fn retained_method_and_typed_field_updates_reuse_storage() {
         let compiled = lowering::compile(
             &module,
             &lowering::Linkage::default(),
+            &[],
             lowering::Options::default(),
         )
         .unwrap();
@@ -389,6 +393,7 @@ fn snapshots_resume_instruction_work_and_exception_cleanup_without_replaying_cod
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();

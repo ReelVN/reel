@@ -39,8 +39,12 @@ fn capture_routes_noop_input_and_preserves_authored_action_thresholds() {
         let driver = AsideSessionUi::from_source(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
             r#"
-            let state = model({events: 0, result: "waiting", name: ""});
-            fn main() {
+            use std::resume::{state,root,flow,point};
+            class InputState {let mut events:int=0;let mut result:string="waiting";let mut name:string="";}
+            state(InputState,"input-state");root(main,"capture-input");
+            fn story(value:InputState){flow("input-story");point("waiting");narrator("capture input");}
+            fn main(state:InputState=model(InputState())) {
+                game.configure(text_speed:0);
                 stage.replace(input(width: 400, height: 200, actions: {
                     horizontal: {bindings: [binding("LeftX", dead_zone: 0.2)],
                         on_action: |event| { state.events += 1; }},
@@ -51,13 +55,16 @@ fn capture_routes_noop_input_and_preserves_authored_action_thresholds() {
                         on_change: |event| { state.events += 1; });
                     text(derive(|| f"{state.result}:{state.events}:{state.name}"));
                 });
-                await run(delay(1));
-                try {
-                    await saves.save("capture");
-                    state.result = "saved";
-                } catch error {
-                    state.result = f"{error}";
-                }
+                spawn(|| {
+                    await run(delay(1));
+                    try {
+                        await saves.save("capture");
+                        state.result = "saved";
+                    } catch error {
+                        state.result = f"{error}";
+                    }
+                });
+                run_flow(story,state);
             }
             "#,
             "capture_input",

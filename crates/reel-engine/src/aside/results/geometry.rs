@@ -21,11 +21,18 @@ aside_host::native_documentation! {
 use crate::aside::observable;
 use reel_ui::stage::{NodeId, StageIdentity};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryQuery {
     pub sequence: u64,
     pub node: NodeId,
     pub relative_to: Option<NodeId>,
+    pub reveal_margins: Option<[f64; 2]>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RevealProjection {
+    pub requested: [f64; 2],
+    pub rendered: [f64; 2],
+    pub target: [f64; 2],
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NodeGeometry {
@@ -39,6 +46,7 @@ pub struct NodeGeometry {
     pub text_end: Option<[f64; 2]>,
     /// Transformed bounds of the complete text's final zero-width insertion caret.
     pub text_caret: Option<[f64; 4]>,
+    pub reveal: Option<RevealProjection>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryReply {
@@ -138,19 +146,39 @@ impl SessionVm {
         if owner.tag() != ValueTag::Null {
             crate::aside::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
         }
+        let result = self.request_geometry(target, relative, owner, None)?;
+        self.vm.respond(ticket, HostResponse::Ready(result))?;
+        self.issued = None;
+        Ok(())
+    }
+
+    pub(in crate::aside) fn request_geometry(
+        &mut self,
+        target: Value,
+        relative: Value,
+        owner: Value,
+        margins: Option<[f64; 2]>,
+    ) -> Result<Value, AdapterError> {
         let ty = self.vm.heap().host_type("reel::types::GeometryRequest")?;
         let result =
             self.results
                 .create_presentation(&mut self.vm, self.root_owner, owner, Some(ty))?;
-        let query = self.vm.heap_mut().alloc_array(&[target, relative])?;
+        let query = if let Some([before, after]) = margins {
+            self.vm.heap_mut().alloc_array(&[
+                target,
+                relative,
+                Value::float(before),
+                Value::float(after),
+            ])?
+        } else {
+            self.vm.heap_mut().alloc_array(&[target, relative])?
+        };
         self.vm
             .heap_mut()
             .set_host_payload(result, Slot::Attachment as u32, query)?;
         self.results
             .arm_presentation(&mut self.vm, result, Value::NULL)?;
-        self.vm.respond(ticket, HostResponse::Ready(result))?;
-        self.issued = None;
-        Ok(())
+        Ok(result)
     }
 
     /// Iterate the single producer queue without copying node or VM roots.
@@ -178,6 +206,14 @@ impl SessionVm {
                         None
                     } else {
                         Some(self.stage.id(heap, relative)?)
+                    },
+                    reveal_margins: if heap.sequence_len(query)? == 4 {
+                        Some([
+                            heap.sequence_get(query, 2)?.as_float().unwrap(),
+                            heap.sequence_get(query, 3)?.as_float().unwrap(),
+                        ])
+                    } else {
+                        None
                     },
                 }))
             })();
@@ -261,12 +297,22 @@ impl SessionVm {
             let reply = &replies[index];
             match reply.geometry {
                 Some(geometry) => {
-                    let value = value(
-                        heap,
-                        &self.stage.types,
-                        &mut self.results.geometry_keys,
-                        geometry,
-                    )?;
+                    let value = if let Some(reveal) = geometry.reveal {
+                        let [request_x, request_y] = reveal.requested;
+                        let [actual_x, actual_y] = reveal.rendered;
+                        let [target_x, target_y] = reveal.target;
+                        heap.alloc_array(
+                            &[request_x, request_y, actual_x, actual_y, target_x, target_y]
+                                .map(Value::float),
+                        )?
+                    } else {
+                        value(
+                            heap,
+                            &self.stage.types,
+                            &mut self.results.geometry_keys,
+                            geometry,
+                        )?
+                    };
                     heap.set_field(barrier, 1, value)?;
                 }
                 None => {

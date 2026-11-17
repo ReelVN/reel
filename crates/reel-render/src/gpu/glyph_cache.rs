@@ -108,6 +108,7 @@ impl crate::common::glyph_plan::Prepare for Preparation<'_> {
         run: &FrameGlyphRun,
         density: f64,
         at: RecordLocation,
+        measure_ink: bool,
     ) -> Result<InkBounds, GpuError> {
         let key = Arc::new(RunKey::new(run, density));
         let raster = glyph::RasterRun::new(drawing, run, density, at)?;
@@ -126,6 +127,9 @@ impl crate::common::glyph_plan::Prepare for Preparation<'_> {
                 }
             }
             self.prepare_missing(&raster, &missing)?;
+            if !measure_ink {
+                continue;
+            }
             for position in positions {
                 let key = Key::new(key.clone(), position.id);
                 let glyph = &self.frame.entries[&key];

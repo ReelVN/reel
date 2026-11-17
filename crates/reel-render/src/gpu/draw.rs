@@ -1,4 +1,4 @@
-use super::{GpuError, mesh, renderer::reserve, replay::Context, resources, targets::Target};
+use super::{GpuError, mesh, replay::Context, resources, targets::Target};
 use reel_ui::frame::{FrameDraw, FrameDrawing, ImageAppearance, RecordLocation};
 use reel_ui::{
     imaging::record::Clip,
@@ -162,41 +162,42 @@ impl Context<'_> {
             None,
         )
     }
-    fn white(&mut self) -> Result<Arc<resources::Image>, GpuError> {
+    fn white(&mut self) -> Result<Arc<resources::WhiteTexture>, GpuError> {
         if let Some(image) = &self.white {
             return Ok(image.clone());
         }
-        // The image never escapes this Context. Its upload is encoded here;
-        // the existing ticket follows Prepared through observed completion.
-        let image = Arc::new(self.upload([1, 1], &[1.; 4])?);
+        let bytes = resources::WhiteTexture::BYTES;
+        let limit = self.gpu.limits.resource_bytes;
+        let local = self
+            .budget_scope
+            .resources
+            .reserve(bytes)
+            .map_err(|_| GpuError::Budget {
+                domain: "resources",
+                requested: bytes,
+                available: limit.saturating_sub(self.budget_scope.resources.usage().bytes),
+            })?;
+        let mut shared = self.white_cache.lock().unwrap();
+        let image = if let Some(image) = shared.as_ref() {
+            image.clone()
+        } else {
+            let pool = &self.budgets.resources;
+            self.image_cache.make_room(pool, bytes, limit);
+            self.glyph_cache.make_room(pool, bytes, limit);
+            let residency = pool.reserve(bytes).map_err(|_| GpuError::Pressure {
+                domain: "resources",
+                requested: bytes,
+                available: limit.saturating_sub(pool.usage().bytes),
+            })?;
+            let image = resources::WhiteTexture::new(self.gpu, residency)?;
+            *shared = Some(image.clone());
+            image
+        };
+        self.tickets.push(crate::common::renderer::Reservation {
+            _shared: None,
+            _local: local,
+        });
         self.white = Some(image.clone());
-        Ok(image)
-    }
-    fn upload(&mut self, size: [u32; 2], pixels: &[f32]) -> Result<resources::Image, GpuError> {
-        let available = self
-            .gpu
-            .limits
-            .resource_bytes
-            .saturating_sub(self.budget_scope.resources.usage().bytes);
-        let cost = resources::upload_cost(size)?;
-        self.image_cache.make_room(
-            &self.budgets.resources,
-            cost,
-            self.gpu.limits.resource_bytes,
-        );
-        self.glyph_cache.make_room(
-            &self.budgets.resources,
-            cost,
-            self.gpu.limits.resource_bytes,
-        );
-        self.tickets.push(reserve(
-            &self.budgets.resources,
-            &self.budget_scope.resources,
-            cost,
-            self.gpu.limits.resource_bytes,
-            "resources",
-        )?);
-        let (image, _) = resources::upload(self.gpu, &mut self.encoder, size, pixels, available)?;
         Ok(image)
     }
     fn draw_sprites(

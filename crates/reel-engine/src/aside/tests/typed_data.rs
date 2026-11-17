@@ -31,9 +31,12 @@ fn field(vm: &SessionVm, value: Value, name: &str) -> Value {
 }
 fn capture(vm: &mut SessionVm, value: Value, registry: &Registry) -> Arc<TypedDocument> {
     let owner = vm.root_owner;
-    let mut capture =
-        TypedCapture::new(vm.vm.heap_mut(), owner, value, registry, &NoReferences).unwrap();
-    while !capture.step(vm.vm.heap(), 1, 1).unwrap().0 {
+    let mut capture = TypedCapture::new(vm.vm.heap_mut(), owner, value).unwrap();
+    while !capture
+        .step(vm.vm.heap(), &registry, &NoReferences, 1, 1)
+        .unwrap()
+        .0
+    {
         collect(vm);
     }
     let (document, charge) = capture.finish(vm.vm.heap_mut()).unwrap();
@@ -116,15 +119,17 @@ fn state_graph_restores_current_renamed_class_fields_defaults_aliases_cycles_and
         );
         let current_registry = registry(&mut current, class, renamed());
         let owner = current.root_owner;
-        let mut restore = TypedRestore::new(
-            current.vm.heap_mut(),
-            owner,
-            document,
-            &current_registry,
-            &NoReferences,
-        )
-        .unwrap();
-        while !restore.step(current.vm.heap_mut(), 1, 1).unwrap() {
+        let mut restore = TypedRestore::new(current.vm.heap_mut(), owner, document).unwrap();
+        while !restore
+            .step(
+                current.vm.heap_mut(),
+                &current_registry,
+                &NoReferences,
+                1,
+                1,
+            )
+            .unwrap()
+        {
             collect(&mut current);
         }
         let root = restore.value_root(current.vm.heap_mut(), owner).unwrap();
@@ -188,25 +193,21 @@ fn state_contract_rejects_changed_types_duplicate_keys_and_impure_new_defaults()
         let (_, mut vm, _, class) = persistent::pending_write(&code, true);
         let registry = registry(&mut vm, class, Identities::default());
         let owner = vm.root_owner;
-        let result = TypedRestore::new(
-            vm.vm.heap_mut(),
-            owner,
-            document.clone(),
-            &registry,
-            &NoReferences,
-        );
-        let error = match result {
-            Err(e) => e,
-            Ok(mut restore) => {
-                let error = loop {
-                    match restore.step(vm.vm.heap_mut(), 1, 1) {
-                        Err(e) => break e,
-                        Ok(false) => collect(&mut vm),
-                        Ok(true) => panic!("incompatible State accepted"),
-                    }
-                };
-                restore.release(vm.vm.heap_mut()).unwrap();
-                error
+        let error = {
+            let result = TypedRestore::new(vm.vm.heap_mut(), owner, document.clone());
+            match result {
+                Err(e) => e,
+                Ok(mut restore) => {
+                    let error = loop {
+                        match restore.step(vm.vm.heap_mut(), &registry, &NoReferences, 1, 1) {
+                            Err(e) => break e,
+                            Ok(false) => collect(&mut vm),
+                            Ok(true) => panic!("incompatible State accepted"),
+                        }
+                    };
+                    restore.release(vm.vm.heap_mut()).unwrap();
+                    error
+                }
             }
         };
         assert!(error.to_string().contains(expected), "{error}");
@@ -250,14 +251,16 @@ fn cancelling_typed_capture_and_restore_releases_roots_and_scratch() {
     let baseline = vm.vm.heap().stats().roots;
     let registry = registry(&mut vm, class, Identities::default());
     let owner = vm.root_owner;
-    let mut capture_state =
-        TypedCapture::new(vm.vm.heap_mut(), owner, value, &registry, &NoReferences).unwrap();
-    capture_state.step(vm.vm.heap(), 1, 1).unwrap();
+    let mut capture_state = TypedCapture::new(vm.vm.heap_mut(), owner, value).unwrap();
+    capture_state
+        .step(vm.vm.heap(), &registry, &NoReferences, 1, 1)
+        .unwrap();
     capture_state.cancel(vm.vm.heap_mut()).unwrap();
     let document = capture(&mut vm, value, &registry);
-    let mut restore =
-        TypedRestore::new(vm.vm.heap_mut(), owner, document, &registry, &NoReferences).unwrap();
-    restore.step(vm.vm.heap_mut(), 1, 1).unwrap();
+    let mut restore = TypedRestore::new(vm.vm.heap_mut(), owner, document).unwrap();
+    restore
+        .step(vm.vm.heap_mut(), &registry, &NoReferences, 1, 1)
+        .unwrap();
     restore.release(vm.vm.heap_mut()).unwrap();
     registry.release(vm.vm.heap_mut()).unwrap();
     collect(&mut vm);
@@ -275,20 +278,47 @@ impl LogicalReferences for References {
     ) -> Option<Result<LogicalReference, TypedDataError>> {
         (heap.handle(value).ok() == self.source).then(|| {
             Ok(LogicalReference {
+                payload: Vec::new(),
                 kind: "test.resource".into(),
-                key: b"stable-asset".to_vec(),
+                version: 1,
+                fields: 0,
             })
         })
     }
-    fn restore(
+    fn capture_field(
+        &self,
+        _: &aside_vm::Heap,
+        _: Value,
+        _: u32,
+    ) -> Result<(std::borrow::Cow<'static, str>, Value), TypedDataError> {
+        unreachable!()
+    }
+    fn allocate(
         &self,
         heap: &mut aside_vm::Heap,
+        _: u32,
         reference: &LogicalReference,
     ) -> Result<Value, TypedDataError> {
         assert_eq!(reference.kind, "test.resource");
-        assert_eq!(reference.key, b"stable-asset");
         let fields = heap.alloc_table()?;
         Ok(heap.alloc_host(fields, &[], None)?)
+    }
+    fn connect(
+        &self,
+        _: &mut aside_vm::Heap,
+        _: Value,
+        _: &str,
+        _: Value,
+    ) -> Result<(), TypedDataError> {
+        unreachable!()
+    }
+    fn finish(
+        &self,
+        _: &mut aside_vm::Heap,
+        _: Value,
+        _: &mut u32,
+    ) -> Result<bool, TypedDataError> {
+        Ok(true)
     }
 }
 
@@ -305,8 +335,8 @@ fn logical_reference_adapter_replaces_native_handles_and_preserves_aliases() {
     let references = References {
         source: Some(original),
     };
-    let mut capture = TypedCapture::new(&mut heap, owner, root, &registry, &references).unwrap();
-    while !capture.step(&heap, 1, 1).unwrap().0 {}
+    let mut capture = TypedCapture::new(&mut heap, owner, root).unwrap();
+    while !capture.step(&heap, &registry, &references, 1, 1).unwrap().0 {}
     let (document, charge) = capture.finish(&mut heap).unwrap();
     registry.release(&mut heap).unwrap();
     let mut bytes = Vec::new();
@@ -316,10 +346,12 @@ fn logical_reference_adapter_replaces_native_handles_and_preserves_aliases() {
     let mut current = aside_vm::Heap::new(SessionEpoch(2), Default::default()).unwrap();
     let registry = Registry::new(&mut current, owner, Identities::default()).unwrap();
     let references = References { source: None };
-    let mut restore =
-        TypedRestore::new(&mut current, owner, document, &registry, &references).unwrap();
+    let mut restore = TypedRestore::new(&mut current, owner, document).unwrap();
     assert!(restore.value_root(&mut current, owner).is_err());
-    while !restore.step(&mut current, 1, 1).unwrap() {}
+    while !restore
+        .step(&mut current, &registry, &references, 1, 1)
+        .unwrap()
+    {}
     let token = restore.value_root(&mut current, owner).unwrap();
     let value = current.root_value(token).unwrap();
     let first = current.sequence_get(value, 0).unwrap();
@@ -356,22 +388,21 @@ fn literal_defaults_are_fresh_per_instance_and_work_slices_remain_bounded() {
     let (_, mut current, _, class) = persistent::pending_write(&code, true);
     let registry = registry(&mut current, class, Identities::default());
     let owner = current.root_owner;
-    let mut restore = TypedRestore::new(
-        current.vm.heap_mut(),
-        owner,
-        document,
-        &registry,
-        &NoReferences,
-    )
-    .unwrap();
+    let mut restore = TypedRestore::new(current.vm.heap_mut(), owner, document).unwrap();
     let before = current.vm.heap().stats().live_objects;
-    assert!(!restore.step(current.vm.heap_mut(), 0, 1).unwrap());
+    assert!(
+        !restore
+            .step(current.vm.heap_mut(), &registry, &NoReferences, 0, 1)
+            .unwrap()
+    );
     assert_eq!(before, current.vm.heap().stats().live_objects);
     let mut units = 0;
     let mut largest = std::time::Duration::ZERO;
     loop {
         let start = std::time::Instant::now();
-        let done = restore.step(current.vm.heap_mut(), 1, 1).unwrap();
+        let done = restore
+            .step(current.vm.heap_mut(), &registry, &NoReferences, 1, 1)
+            .unwrap();
         largest = largest.max(start.elapsed());
         units += 1;
         if done {
@@ -420,15 +451,12 @@ fn large_schema_matching_yields_per_field_and_defers_the_last_field_error() {
     let class = Registry::instance_class(old.vm.heap(), value).unwrap();
     let old_registry = registry(&mut old, class, Identities::default());
     let owner = old.root_owner;
-    let mut capture = TypedCapture::new(
-        old.vm.heap_mut(),
-        owner,
-        value,
-        &old_registry,
-        &NoReferences,
-    )
-    .unwrap();
-    while !capture.step(old.vm.heap(), 64, 64).unwrap().0 {
+    let mut capture = TypedCapture::new(old.vm.heap_mut(), owner, value).unwrap();
+    while !capture
+        .step(old.vm.heap(), &old_registry, &NoReferences, 64, 64)
+        .unwrap()
+        .0
+    {
         collect(&mut old);
     }
     let (document, lease) = capture.finish(old.vm.heap_mut()).unwrap();
@@ -438,21 +466,34 @@ fn large_schema_matching_yields_per_field_and_defers_the_last_field_error() {
     let current_registry = registry(&mut current, class, Identities::default());
     let owner = current.root_owner;
     let constructor = std::time::Instant::now();
-    let mut restore = TypedRestore::new(
-        current.vm.heap_mut(),
-        owner,
-        document.clone(),
-        &current_registry,
-        &NoReferences,
-    )
-    .unwrap();
+    let mut restore = TypedRestore::new(current.vm.heap_mut(), owner, document.clone()).unwrap();
     let constructor = constructor.elapsed();
     let objects = current.vm.heap().stats().live_objects;
-    assert!(!restore.step(current.vm.heap_mut(), 0, 1).unwrap());
+    assert!(
+        !restore
+            .step(
+                current.vm.heap_mut(),
+                &current_registry,
+                &NoReferences,
+                0,
+                1
+            )
+            .unwrap()
+    );
     let mut largest = std::time::Duration::ZERO;
     for _ in 0..=FIELDS {
         let start = std::time::Instant::now();
-        assert!(!restore.step(current.vm.heap_mut(), 1, 1).unwrap());
+        assert!(
+            !restore
+                .step(
+                    current.vm.heap_mut(),
+                    &current_registry,
+                    &NoReferences,
+                    1,
+                    1
+                )
+                .unwrap()
+        );
         largest = largest.max(start.elapsed());
         assert_eq!(
             current.vm.heap().stats().live_objects,
@@ -460,9 +501,29 @@ fn large_schema_matching_yields_per_field_and_defers_the_last_field_error() {
             "schema preparation must yield before allocating the instance graph"
         );
     }
-    assert!(!restore.step(current.vm.heap_mut(), 1, 1).unwrap());
+    assert!(
+        !restore
+            .step(
+                current.vm.heap_mut(),
+                &current_registry,
+                &NoReferences,
+                1,
+                1
+            )
+            .unwrap()
+    );
     assert_eq!(current.vm.heap().stats().live_objects, objects);
-    assert!(!restore.step(current.vm.heap_mut(), 1, 1).unwrap());
+    assert!(
+        !restore
+            .step(
+                current.vm.heap_mut(),
+                &current_registry,
+                &NoReferences,
+                1,
+                1
+            )
+            .unwrap()
+    );
     assert!(current.vm.heap().stats().live_objects > objects);
     restore.release(current.vm.heap_mut()).unwrap();
     current_registry.release(current.vm.heap_mut()).unwrap();
@@ -475,19 +536,31 @@ fn large_schema_matching_yields_per_field_and_defers_the_last_field_error() {
     let (_, mut changed, _, class) = persistent::pending_write_version(&code, true, 2);
     let changed_registry = registry(&mut changed, class, Identities::default());
     let owner = changed.root_owner;
-    let mut restore = TypedRestore::new(
-        changed.vm.heap_mut(),
-        owner,
-        document,
-        &changed_registry,
-        &NoReferences,
-    )
-    .expect("the constructor must not inspect the last field contract");
+    let mut restore = TypedRestore::new(changed.vm.heap_mut(), owner, document)
+        .expect("the constructor must not inspect the last field contract");
     let objects = changed.vm.heap().stats().live_objects;
     for _ in 0..FIELDS {
-        assert!(!restore.step(changed.vm.heap_mut(), 1, 1).unwrap());
+        assert!(
+            !restore
+                .step(
+                    changed.vm.heap_mut(),
+                    &changed_registry,
+                    &NoReferences,
+                    1,
+                    1
+                )
+                .unwrap()
+        );
     }
-    let error = restore.step(changed.vm.heap_mut(), 1, 1).unwrap_err();
+    let error = restore
+        .step(
+            changed.vm.heap_mut(),
+            &changed_registry,
+            &NoReferences,
+            1,
+            1,
+        )
+        .unwrap_err();
     assert!(
         error
             .to_string()

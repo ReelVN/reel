@@ -43,8 +43,14 @@ pub(in crate::aside) fn properties(symbol: &str) -> Vec<PropertyDocumentation> {
         "reel::camera" => schema::<camera::CameraField>(),
         "reel::scroll" => schema::<scroll::ScrollField>(),
         "reel::popup" => schema::<popup::PopupField>(),
+        "reel::tooltip" => {
+            let mut properties = schema::<popup::PopupField>();
+            properties.truncate(popup::TOOLTIP_PROPERTIES.len());
+            properties
+        }
         "reel::input" => schema::<input::InputField>(),
         "reel::slider" => schema::<controls::SliderField>(),
+        "reel::progress_bar" => schema::<controls::ProgressField>(),
         "reel::toggle" | "reel::checkbox" => schema::<controls::ToggleField>(),
         "reel::radio" => schema::<controls::RadioField>(),
         "reel::text_input" | "reel::text_area" => schema::<text_input::TextInputField>(),
@@ -172,6 +178,22 @@ pub(in crate::aside) fn describe(api: &mut Api) {
             ));
         }
         if constructor == "scroll" {
+            api.refine(
+                "reel::scroll::reveal_child",
+                nullable(named("reel::types::Activity")),
+                &[
+                    ("viewport", named(type_name)),
+                    ("node", node.clone()),
+                    ("margin_start", aside_host::source::number()),
+                    ("margin_end", aside_host::source::number()),
+                    ("duration", aside_host::source::number()),
+                ],
+            );
+            members.push(Member::method(
+                api.native("reel::scroll::reveal_child")
+                    .clone()
+                    .bound("reveal_child"),
+            ));
             for name in scroll::METRICS {
                 members.push(Member::field(
                     type_name,

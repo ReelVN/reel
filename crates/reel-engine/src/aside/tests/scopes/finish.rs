@@ -82,6 +82,42 @@ fn scope_finish_returns_original_value_and_retires_nested_work_before_continuing
 }
 
 #[test]
+fn waiting_scope_parks_until_input_finishes_it_after_restore() {
+    let code = r#"fn opening() {
+        let root = stack(); stage.replace(root);
+        let result = scope(body: |page| {
+            page.add(root, button("Close", on_click: || page.finish("closed")));
+            page.wait();
+            throw "parked body resumed";
+        });
+        if result != "closed" { throw "lost scope result"; }
+        root.add(text(result));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        (session, vm) = restored(&mut vm, &session);
+        let button = vm
+            .stage()
+            .nodes()
+            .find(|node| {
+                matches!(&node.kind,
+            NodeKind::Button { label: Some(label), .. } if label == "Close")
+            })
+            .unwrap()
+            .id;
+        assert!(vm.click(&mut session, button).unwrap());
+        drive(&mut vm, &mut session, true);
+        assert!(vm.scopes.live.is_empty());
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("closed".into()))
+        );
+    }
+}
+
+#[test]
 fn scope_finish_from_ui_replaces_a_waiting_dialogue_and_preserves_the_outer_flow() {
     let code = r#"fn opening() {
         let root=stack();stage.replace(root);

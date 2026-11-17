@@ -6,7 +6,7 @@ Express scenes, dialogue, interaction and choreography with Aside functions, nod
 
 Download the tool bundle, add the directory containing `reel`, `reel-lsp` and `reel-game` to `PATH`, and reopen your terminal. Install the Aside VS Code extension for completion, signature help, F12 and formatting on save. `aside.server.path` selects the language server and `aside.reel.path` selects the runtime tool.
 
-Create a `MyGame` directory with `src/main.aside` as its entry and `resources/` for assets. Projects share an installed toolset while keeping their own source, resources and `build/` outputs. Script asset paths are relative to `resources/`.
+Create a `MyGame` directory with `src/main.aside` as its entry and `resources/` for assets. Projects share an installed toolset and keep their own source, resources, local build products in `build/`, and distributable packages in `dist/`. Script asset paths are relative to `resources/`.
 
 ```sh
 cd MyGame
@@ -20,11 +20,15 @@ reel export --release
 
 `dev` stores its compilation cache in `build/dev/` and reuses it while the tool and source contents remain unchanged. Editing source triggers recompilation. After editing assets, restart the game to load them.
 
+Use `reel-dev debug` to open the source project and reproduce a stutter or script fault. Close the window to review the log and scene timings. [Development diagnostics](../../crates/reel-dev/README.md#inspect-a-development-session)
+
 Source commands in an interactive terminal show the current phase, module progress and elapsed time. `dev` reports when it reuses cached code.
 
-`export` produces a development project at `build/export/TARGET/debug/`; `--release` uses `release/` under the same target. For example, a Vita release goes to `build/export/vita/release/`. A release contains the player, code, text package and resource volumes; distribute the whole directory. Default outputs update on repeated runs; explicit `--output` destinations use `--overwrite` to replace existing output. Keep saves separately before replacing an export directory; `--save-directory` selects runtime storage.
+`export` produces a development project at `dist/TARGET/debug/`. Use `--release` for `dist/TARGET/release/`, such as `dist/vita/release/`. Distribute the whole release directory, including the code, text package, resource volumes and any bundled player. Default outputs update on repeated runs. An explicit `--output` destination uses `--overwrite` to replace existing output. Keep saves separately before replacing an export directory. `--save-directory` selects runtime storage.
 
-Place platform assets in `resources/@TARGET/` to override common assets at matching paths. For example, `resources/@vita/bg/room.png` overrides `resources/bg/room.png`; scripts still reference `bg/room.png`. Target-only files are included and other target directories are skipped. Files without overrides use the common version. The resource target defaults to the host OS name, such as `windows`, `linux` or `macos`.
+Use `reel-dev perf verify` before publishing to check key scenes exercised by the distribution player. The policy specifies a target, environment, scene labels and submission interval or memory limits. The resulting `verification.json` records observations and failed checks. [Release verification](../../crates/reel-dev/README.md#verify-a-release)
+
+Place platform assets in `resources/@TARGET/` to override common assets at matching paths. For example, `resources/@vita/bg/room.png` overrides `resources/bg/room.png`; scripts still reference `bg/room.png`. Windows, Linux and macOS select the exact OS overlay first, then `resources/@desktop/`, then common files. Target-only files are included. The resource target defaults to the host OS name.
 
 ```sh
 reel dev --resource-target vita
@@ -59,13 +63,13 @@ reel export --release --resource-target vita --data-only
 
 Copy the exported directory to `ux0:/data/reel/GameName/`. The launcher lists directories containing `game.asb`; each game keeps its progress in its own `saves/` directory. Press SELECT + START during a game to return to the list.
 
-Press SELECT in the launcher to choose its language and theme; preferences are saved in `ux0:/data/reel/launcher.json`. Press START to refresh the list after copying a new game.
+In the launcher, Circle confirms and Cross goes back. Press SELECT to choose the language and theme, and START to refresh the library after copying a new game. Preferences are saved in `ux0:/data/reel/launcher.json`.
 
-Add `resources.toml` at the project root to generate target-specific asset copies:
+During desktop development, `reel dev` reads PNG, JPEG and static WebP directly. Add `resources.toml` at the project root to prepare assets for each release target:
 
 ```toml
 [[targets.vita]]
-match = "images/**/*.{png,jpg,jpeg}"
+match = "images/**/*.{png,jpg,jpeg,webp}"
 convert = "texture"
 scale = 0.5
 format = "auto"
@@ -85,13 +89,28 @@ bitrate = 4000000
 
 The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths. BC textures and tiles choose encoding quality automatically while retaining the selected format's GPU storage size.
 
+Set `fallback = "source"` on a BC texture rule to keep the original image when the chosen encoding exceeds the display-error threshold against the resized image. A Vita export reports the asset if its original exceeds the device's decode budget.
+
+`targets.desktop` supplies shared conversion rules for Windows, Linux and macOS. Rules for the exact OS match first, followed by the shared desktop rules. Use `--resource-target desktop` to preview the shared target on its own. These rules convert 8-bit PNG to lossless WebP and selected audio to Opus. Existing WebP and Opus assets pass through.
+
+```toml
+[[targets.desktop]]
+match = "**/*.png"
+convert = "webp"
+
+[[targets.desktop]]
+match = "**/*.{wav,ogg,mp3,flac}"
+convert = "opus"
+bitrate = 96000
+```
+
 For smooth gradients, place a texture rule with `format = "rgba8"` and `dither = "ordered"` before the general texture rule. Dithering distributes color quantization error and preserves alpha; RGBA8 uses eight times the texture memory of BC1. For a single file, run `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`.
 
 To pack small images used together into an atlas, add this before the general texture rule:
 
 ```toml
 [[targets.vita]]
-match = "images/ui/**/*.{png,jpg,jpeg}"
+match = "images/ui/**/*.{png,jpg,jpeg,webp}"
 convert = "atlas"
 page_size = [1024, 1024]
 format = "auto"
@@ -113,7 +132,7 @@ Video conversion uses `ffmpeg` and `ffprobe` from PATH to produce H.264/AAC MP4,
 
 Fonts use complete files by default. To subset a font, explicitly select `convert = "font"`, use `unicode = ["U+0020-024F", "U+3000-9FFF", "U+FF00-FFEF"]` for character ranges, and add story and translation text with `text = ["src/**/*.aside"]`. Extend ranges for the languages accepted by player input; characters outside the selected coverage will be missing. Font conversion requires Python with FontTools; `REEL_FONT_PYTHON` can select that interpreter. Font families, styles and every face in a collection are preserved.
 
-`reel clean --resources` removes conversion caches while keeping exports; the next preparation converts assets again. `reel clean` removes the entire `build/` directory.
+`reel clean --resources` removes the conversion cache. The next preparation converts assets again. `reel clean` removes the entire `build/` directory and keeps packages in `dist/`.
 
 Run `reel fmt` in the project root to format source or `reel fmt --check` to check formatting. The formatter uses four-space indentation, a 100-character target width and compact argument wrapping. English API documentation is generated from Rust declarations and appears in editor hover and definition navigation.
 
@@ -131,10 +150,10 @@ fn main() {
 }
 ```
 
-As the work grows, split modules by chapter, menu or minigame. The entry configures the work, creates shared state and begins the flow. `game::ui::title` resolves to `src/ui/title.aside`:
+As the work grows, split modules by chapter, menu or minigame. The entry configures the work, creates shared state and begins the flow. Project imports start at `src/`, so `ui::title` refers to `src/ui/title.aside`.
 
 ```aside
-use game::ui::title::title;
+use ui::title::title;
 
 fn main() {
     game.configure(title: "窗边", width: 1920, height: 1080, fonts: ["fonts/body.ttf"]);
@@ -145,7 +164,7 @@ fn main() {
 `src/ui/title.aside` returns an authored title screen. Connect ordinary pages with function calls; use `game.start` to create a new session. The story function for `src/story/opening.aside` appears below.
 
 ```aside
-use game::story::opening::opening;
+use story::opening::opening;
 
 pub fn title() {
     column(x: 760, y: 480, gap: 24) {
@@ -165,6 +184,10 @@ for value in 1..=3 { values.append(value); }
 let latest = values.pop();
 stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
+
+Write a variable's name once when it matches the record field, as in `{width, height, fullscreen: false}`.
+
+Use `progress?.volume ?? 0.8` to read the volume from an optional progress object and provide a default. The default is evaluated only when the left side is `null`, so an existing `0` is preserved. Inside `if progress != null`, the local variable `progress` keeps its concrete type.
 
 Use `gen fn` and `yield` to calculate items on demand. Calling the function creates a generator; each item requested by `for` resumes its body. Leaving the loop early runs the generator's `finally` blocks. This example produces positions without an intermediate array.
 
@@ -220,6 +243,8 @@ stage.replace(stack {
 ```
 
 Use tuples for fixed shapes. `let` and `for` support fixed-length destructuring, with `_` skipping a position. A type or length mismatch raises `PatternMismatch`.
+
+Destructure objects by field name with `let {value: item, index} = row;`. A field without an alias binds its own name.
 
 ```aside
 let settings = {language: "zh-CN", volume: 0.8};
@@ -336,6 +361,10 @@ panel.add(pointer);
 
 Return a node for a simple view. Use a class when a component needs ongoing operations or a defined data shape. Type annotations support checking, completion and navigation.
 
+Reel types such as `Node`, `TextNode` and `Scope` are available in annotations.
+
+Use `-> {node: Node, caption: TextNode}` when a view returns named parts. A return type such as `-> "back" | "title"` limits the values a menu can return.
+
 ```aside
 class PoemWord {
     let text: string;
@@ -370,7 +399,7 @@ caption.with(opacity: 0.5);
 
 Await `stage.presented()` when choreography should start after the current scene is visible. The player retains the previous presented view while resources prepare.
 
-Retain frequently opened pages and switch their `visible` property. Set `preload: true` on a hidden page to read and decode its images and effects in spare resource capacity, then reuse them when shown. Descendants inherit this setting; removing the page releases its requests and resources.
+The player uses layout motion to prepare fixed-size images entering the viewport. Retain pages shown through `visible` and set `preload: true` on the subtree that needs to open immediately. The player reads and decodes its images and effects in spare resource capacity. Descendants inherit this setting; removing the page releases its requests and resources.
 
 ```aside
 let menu = stack(visible: false, preload: true) {
@@ -495,7 +524,7 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 A scene can return its root and the parts controlled by the story. Put this component in `src/ui/room.aside`, then let story functions control its portrait, CG and dialogue area.
 
 ```aside
-use game::ui::dialogue::dialogue_view;
+use ui::dialogue::dialogue_view;
 
 pub fn room_view(dialogue) {
     let portrait = image("assets/mio.png", x: 220, y: 140);
@@ -518,9 +547,10 @@ pub fn room_view(dialogue) {
 A reusable container accepts `children`, leaving content to its caller. The same container can hold dialogue, settings or a minigame.
 
 ```aside
-fn card(children = []) {
+fn card(title, children = []) {
     column(gap: 12, padding: 24) {
-        for child in children { child; }
+        text(title);
+        ...children;
     }
 }
 ```
@@ -557,7 +587,7 @@ say([mio.line("Noise.", history: false), eri.line("Stay.", history: rich("[b]Sta
 `src/story/opening.aside` organizes the story with ordinary control flow. `choose` returns a stable branch key; call the corresponding chapter to build common and character routes.
 
 ```aside
-use game::ui::room::room_view;
+use ui::room::room_view;
 
 let mio = character("Mio");
 
@@ -591,6 +621,8 @@ pub fn nvl_view(model) {
 ```
 
 `scroll` clamps offsets to the content range by default. `overscroll: "bounce"` enables elastic edges for touch panning; scroll positions, scrollbars and virtual lists keep using bounded logical offsets. Native UI drives the rebound.
+
+Use `scroll(snap_y: 48)` to align a fixed-height list to vertical row stops. The mouse wheel, touch release, and linked scrollbar snap to those stops, including the end of the content. Scripted `scroll_y` assignments retain precise offsets.
 
 Place `scrollbar(viewport)` beside the same scroll viewport. Its stable `track` and `thumb` content slots accept backgrounds or images with `stretch: "both"`; omitting `thumb_size` makes the thumb follow the visible-content proportion. External buttons can call `scroll_by` or `scroll_to`. Track clicks, dragging, keyboard and controller input share the target scroll position. See the [scrollbar source API](../../crates/reel-engine/src/aside/stage/scrollbar.rs) for parameters and lifetime behavior.
 
@@ -751,6 +783,8 @@ fn story_page(root) {
 
 `scope` owns temporary nodes and activities and retires them when its body ends. Use it for fullscreen CGs, confirmations and temporary gameplay.
 
+When a button or back action ends a page with `s.finish(result)`, call `s.wait();` at the end of the body to keep the page open.
+
 ```aside
 fn show_cg(view) {
     scope(body: |s| {
@@ -838,6 +872,8 @@ hint.remove();
 
 ## 8 Menus, input and settings
 
+`input(on_back: close)` closes on Escape, right click or the controller's back button. Declare `actions.back` to customize these bindings.
+
 Button callbacks can update state or await choreography. A callback belongs to its button node; retiring the button ends its owned tasks.
 
 ```aside
@@ -899,7 +935,7 @@ fn main() {
 
 Named actions map keyboard, mouse and gamepad controls to one behavior. Update continuous motion from a clock while input callbacks update intent. A focused text editor handles its keyboard and IME events.
 
-Use the read-only observable `source` and `layout` fields of `stage.input()` to select input hints. `source` identifies the last active input method; gamepad `layout` is `xbox`, `playstation`, `nintendo` or `generic`. The game supplies the icons.
+Use the read-only observable `source` and `layout` fields of `stage.input()` to select input hints. `source` identifies the last active input method. Gamepad `layout` is `xbox`, `playstation`, `nintendo` or `generic`. The `buttons` field provides display labels for `South`, `East`, `North`, `West`, `LeftShoulder`, `RightShoulder`, `LeftTrigger`, `RightTrigger`, `Select` and `Start`. Bindings use logical control names, and games can supply their own icons.
 
 For pointer positions, use `input(on_pointer: |event| ...)` to read local `event.x`, `event.y`, and `event.phase`. Hover and drag movement produce `moved`; primary-button and touch gestures produce `pressed`, `released`, and `cancelled`. Custom drag controls use `event.dragging` to check whether the node owns an active drag.
 
@@ -972,29 +1008,32 @@ column(gap: 12) {
 }
 ```
 
-Compose `tab_bar` and `page_stack` through one selected value. Pages are built on first use and retain their controls and edits when switched away. Customize tab content with the interaction feedback and `appearance` on `item.control`. In `manual` mode, arrows move focus and confirmation selects a page; the default `automatic` mode selects with focus.
+Share the selected value and a list of `{key, label, build}` records between `tab_bar` and `page_stack` to declare each page once. Pages are built on first use and retain their controls and edits when switched away. Customize tab content with the interaction feedback and `appearance` on `item.control`. In `manual` mode, arrows move focus and confirmation selects a page. The default `automatic` mode selects with focus.
 
 ```aside
 fn main() {
     game.configure(fonts: ["fonts/body.ttf"]);
     let settings = model({page: "display", volume: 0.8});
-    let pages = page_stack(value: bind(settings.page), width: 600, height: 180, items: [
-        {key: "display", build: || text("Display settings")},
-        {key: "sound", build: || column(gap: 12) {
+    let items = [
+        {key: "display", label: "Display", build: || text("Display settings")},
+        {key: "sound", label: "Sound", build: || column(gap: 12) {
             text("Volume");
             slider(value: bind(settings.volume), min: 0, max: 1, width: 300);
         }}
-    ]);
-    let tabs = tab_bar(value: bind(settings.page), activation: "manual", items: [
-        {key: "display", label: "Display"},
-        {key: "sound", label: "Sound"}
-    ], build: |item| text(item.label,
-        opacity: derive(|| if item.selected || item.control.focus_visible {1} else {0.5})));
+    ];
+    let pages = page_stack(value: bind(settings.page), width: 600, height: 180, items: items);
+    let tabs = tab_bar(value: bind(settings.page), activation: "manual", items: items,
+        build: |item| text(item.label,
+            opacity: derive(|| if item.selected || item.control.focus_visible {1} else {0.5})));
     stage.replace(column(x: 24, y: 24, gap: 16) { tabs; pages; });
 }
 ```
 
 `pages.get(key)` retrieves a built page; `await pages.ensure(key)` builds and retrieves one in advance; `pages.evict(key)` releases an inactive page. Use scopes for each visit's previews, audio and tasks, with control retention and visit work following their respective lifetimes.
+
+Set `on_select: |event| { await pages.select(event.value); }` on the tab bar to update the bound selection after the page is ready. Put `tooltip() { text("Open settings"); }` inside a control to show a hint on hover or visible focus.
+
+Use `progress_bar(value: bind(state.loaded), max: 100, width: 240, height: 16)` to display progress. Set `background` for the track and `color` for the fill. Add a child to overlay a label or icon.
 
 Settings pages can connect directly to reading state. Auto mode waits after text presentation and pauses for choices; skipping follows read and choice policies. Modal UI, pauses and focus loss use the reading state.
 
@@ -1027,9 +1066,9 @@ fn main() {
 }
 ```
 
-Read `window.info().capabilities` before changing settings, then await `window.configure` for the applied state. Window size and logical canvas are configured separately.
+Read `window.info().capabilities` before changing settings, then await `window.configure` for the applied state. Client sizes and monitor resolutions use physical pixels. The canvas in `game.configure` uses logical coordinates.
 
-Tweens, particles and transitions follow the display refresh rate by default, using 60 Hz when the host rate is unknown. Set their target update rate with `game.configure(frame_rate: 144)` and restore automatic selection with `frame_rate: 0`; vertical synchronization remains controlled by `window.configure(vsync: ...)`. Read the current display rate from `window.info().refresh_rate`.
+Tweens, particles and transitions follow the display refresh rate by default, using 60 Hz when the host rate is unknown. Set their target update rate with `game.configure(frame_rate: 144)` and restore automatic selection with `frame_rate: 0`. To measure continuous animation throughput, use `frame_rate: "uncapped"` and disable window vsync separately. Idle pages still draw on demand. Read the current display rate from `window.info().refresh_rate`.
 
 ```aside
 let mut display = window.info();
@@ -1382,7 +1421,46 @@ narrator("A new chapter begins.");
 game.reading().clear_history(keep_last: 37);
 ```
 
-`saves` captures execution position, state and presentation. Input requiring a session change during capture fails that save with `CaptureBusy` and preserves the previous slot. Obtain a thumbnail with `stage.capture` before supplying it to a save request. The save list provides data for an authored slot UI.
+`saves` captures business state, story positions, the current dialogue and history. Declare persistent data with State and build the current interface in Root. `run_flow` enters the story, and `flow` names that part of the story.
+
+```aside
+use std::resume::{state, root, flow};
+
+class GameState {
+    let mut score: int = 0;
+}
+state(GameState, "game.state");
+root(start_story, "game");
+
+fn start_story(state: GameState = model(GameState())) {
+    reading(|| {
+        let dialogue = game.dialogue();
+        stage.replace(stack() {
+            text(value: derive(|| dialogue.text));
+            button("Save", y: 80, on_click: || { await saves.save("slot1"); });
+        });
+        run_flow(chapter_one, state)
+    })
+}
+
+fn chapter_one(state: GameState) {
+    flow("chapter_one");
+    narrator("The train has arrived.");
+    state.score += 1;
+}
+```
+
+A new game evaluates Root's ordinary default argument. Loading supplies the restored State to the current Root, rebuilds its interface and reconnects the saved point. Defaulted State fields may be added, functions moved and story suffixes changed while existing saves resolve stable keys against current code. Preserve a renamed field's original key through the `fields` argument of `state`. Keep published flow, point and Root keys stable.
+
+The compiler generates resume positions for verified dialogue waits, choices and flow calls. Patches that preserve the structure of those waits and calls can reuse their positions. Use `point` to explicitly name key positions that must retain their identity after release.
+
+To offer jumps from history, call `saves.track_history(true)` in Root. Use `saves.can_jump(entry.group_id)` to show a jump button and await `saves.jump(entry.group_id)` to restore that dialogue and its business state. The jump is available while the checkpoint remains in the recent history window.
+
+Root loads current preferences and builds Reading and the interface. Story advancement, counters and branches belong in flows. Keep business data and native resources that must continue in State or live business bindings; the current Root creates view factories and callbacks.
+
+When a flow needs a scene object, use `run_flow(chapter_one, state, context: scene)` with the ordinary two-argument entry `chapter_one(state, scene)`. Loading connects `scene` and its local aliases to the object built by the current Root. Name several services with `context: {scene: scene, selection: selection}`. Loading connects those objects by field name. Keep backgrounds, actor positions, and minigame progress in State so Root can build the interface and its wait results.
+
+Call `saves.can_capture()` when opening a save menu to enable the button at a verified position. Obtain an optional thumbnail with `stage.capture` before supplying it to a save request. The save list provides data for an authored slot UI. Input that changes the session during capture fails the save with `CaptureBusy` and preserves the previous slot.
 
 ```aside
 let menu = model({slots: [], busy: false, error: ""});
@@ -1412,7 +1490,9 @@ let indicator = text("Music", visible: bind(settings.music), color: bind(setting
 settings.palette.accent = "#ffd580";
 ```
 
-Use `persistent` for global preferences and unlocks. Reload and apply current preferences at startup and after restoring story execution. Stored data is independent of the execution snapshot.
+Use `persistent` for global preferences and unlocks. Load and apply current preferences when Root starts. Stored data is independent of story checkpoints.
+
+Call `window.configure` from ordinary startup or a settings menu on a presented view. The Root can read the current window through `window.info()` while preparing a load.
 
 ```aside
 class Preferences {

@@ -4,8 +4,11 @@ use crate::{Heap, HeapError, HeapReservation, RootKind, RootOwner, RootToken, Va
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod automatic;
 mod classes;
 mod defaults;
+pub use automatic::RegistryInitCursor;
+pub(crate) use defaults::Proof;
 pub use defaults::{DefaultBuild, DefaultPlan};
 
 /// A persistent identity, independent of a package's indices and content version.
@@ -27,7 +30,11 @@ pub enum DataType {
     Tuple(Vec<DataType>),
     Union(Vec<DataType>),
     State(TypeKey),
+    /// Public native field type identity. Its resource payload protocol is
+    /// selected independently by the embedding host's graph adapter.
     LogicalRef(String),
+    StringLiteral(String),
+    Record(Vec<(String, DataType)>),
 }
 impl PartialOrd for DataType {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -42,6 +49,8 @@ impl Ord for DataType {
             Self::Union(_) => 2,
             Self::State(_) => 3,
             Self::LogicalRef(_) => 4,
+            Self::StringLiteral(_) => 5,
+            Self::Record(_) => 6,
         };
         tag(self)
             .cmp(&tag(other))
@@ -50,6 +59,8 @@ impl Ord for DataType {
                 (Self::Tuple(a), Self::Tuple(b)) | (Self::Union(a), Self::Union(b)) => a.cmp(b),
                 (Self::State(a), Self::State(b)) => a.cmp(b),
                 (Self::LogicalRef(a), Self::LogicalRef(b)) => a.cmp(b),
+                (Self::StringLiteral(a), Self::StringLiteral(b)) => a.cmp(b),
+                (Self::Record(a), Self::Record(b)) => a.cmp(b),
                 _ => std::cmp::Ordering::Equal,
             })
     }
@@ -63,7 +74,14 @@ impl DataType {
                 v.capacity() * size_of::<Self>() + v.iter().map(Self::retained_bytes).sum::<usize>()
             }
             Self::State(k) => k.module.capacity() + k.name.capacity(),
-            Self::LogicalRef(s) => s.capacity(),
+            Self::LogicalRef(s) | Self::StringLiteral(s) => s.capacity(),
+            Self::Record(fields) => {
+                fields.capacity() * size_of::<(String, Self)>()
+                    + fields
+                        .iter()
+                        .map(|(name, ty)| name.capacity() + ty.retained_bytes())
+                        .sum::<usize>()
+            }
         }
     }
 }
@@ -84,13 +102,15 @@ pub struct StateSchema {
 pub struct Identities {
     pub types: BTreeMap<TypeKey, TypeKey>,
     pub fields: BTreeMap<FieldKey, FieldKey>,
+    /// Native nominal identities; automatic registration derives their values
+    /// from admitted canonical public names, independently of resource kinds.
     pub logical: BTreeMap<TypeKey, String>,
 }
 impl Identities {
-    fn ty(&self, source: &TypeKey) -> TypeKey {
+    pub(crate) fn ty(&self, source: &TypeKey) -> TypeKey {
         self.types.get(source).unwrap_or(source).clone()
     }
-    fn field(&self, source: &FieldKey) -> FieldKey {
+    pub(crate) fn field(&self, source: &FieldKey) -> FieldKey {
         self.fields
             .get(source)
             .cloned()
@@ -99,13 +119,19 @@ impl Identities {
                 name: source.name.clone(),
             })
     }
-    fn remap(&self, ty: DataType) -> DataType {
+    pub(crate) fn remap(&self, ty: DataType) -> DataType {
         match ty {
             DataType::State(source) => self.logical.get(&source).map_or_else(
                 || DataType::State(self.ty(&source)),
                 |kind| DataType::LogicalRef(kind.clone()),
             ),
             DataType::Tuple(v) => DataType::Tuple(v.into_iter().map(|t| self.remap(t)).collect()),
+            DataType::Record(fields) => DataType::Record(
+                fields
+                    .into_iter()
+                    .map(|(name, ty)| (name, self.remap(ty)))
+                    .collect(),
+            ),
             DataType::Union(v) => {
                 let mut v = v.into_iter().map(|t| self.remap(t)).collect::<Vec<_>>();
                 v.sort();
@@ -122,6 +148,7 @@ pub enum SchemaError {
     Heap(HeapError),
     Allocation,
     Contract(&'static str),
+    State { key: TypeKey, reason: &'static str },
     Field { key: FieldKey, reason: &'static str },
 }
 impl From<HeapError> for SchemaError {
@@ -137,6 +164,7 @@ impl std::fmt::Display for SchemaError {
                 "{}::{}.{}: {reason}",
                 key.owner.module, key.owner.name, key.name
             ),
+            Self::State { key, reason } => write!(f, "State {}: {reason}", key.name),
             Self::Heap(e) => write!(f, "{e}"),
             Self::Allocation => f.write_str("typed data allocation failed"),
             Self::Contract(s) => f.write_str(s),
@@ -175,6 +203,20 @@ pub fn data_type<C, S>(p: &BytecodePackage<C, S>, id: TypeId) -> Result<DataType
                     .map(|&t| convert(p, t, depth + 1))
                     .collect::<Result<_, _>>()?,
             ),
+            TypeDef::StringLiteral(text) => DataType::StringLiteral(text.clone()),
+            TypeDef::Record(fields) => {
+                let mut fields = fields
+                    .iter()
+                    .map(|field| {
+                        Ok((
+                            p.symbols[field.name.index()].clone(),
+                            convert(p, field.ty, depth + 1)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, SchemaError>>()?;
+                fields.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                DataType::Record(fields)
+            }
             TypeDef::Union(v) => {
                 let mut v = v
                     .iter()
@@ -273,7 +315,35 @@ impl Registry {
         p: &BytecodePackage<C, S>,
         id: TypeId,
     ) -> Result<DataType, SchemaError> {
-        Ok(self.identities.remap(data_type(p, id)?))
+        fn named(registry: &Registry, ty: &DataType) -> Result<(), SchemaError> {
+            match ty {
+                DataType::State(key)
+                    if !registry.identities.types.contains_key(key)
+                        && !registry.identities.logical.contains_key(key)
+                        && !registry.by_type.contains_key(key) =>
+                {
+                    return Err(SchemaError::State {
+                        key: key.clone(),
+                        reason: "type has no State declaration or admitted native identity",
+                    });
+                }
+                DataType::Tuple(items) | DataType::Union(items) => {
+                    for item in items {
+                        named(registry, item)?;
+                    }
+                }
+                DataType::Record(fields) => {
+                    for (_, ty) in fields {
+                        named(registry, ty)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        let ty = data_type(p, id)?;
+        named(self, &ty)?;
+        Ok(self.identities.remap(ty))
     }
     pub fn schema(&self, class: u32) -> Result<&StateSchema, SchemaError> {
         let c = self

@@ -181,7 +181,7 @@ impl Vm {
             }
             NativeInput::CallbackReturned => {
                 let output = self.host_continuation(ticket)?[0];
-                let value = self.host_callback_value(ticket)?;
+                let value = self.host_resume_value(ticket)?;
                 if let Err(error) = self.heap.commit_derived(output, value) {
                     self.heap.end_derived(output)?;
                     self.respond_language_error(ticket, heap_fault(error), Value::NULL)?;

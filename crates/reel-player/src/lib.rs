@@ -22,6 +22,7 @@ mod test_cost;
 #[cfg(test)]
 mod test_image;
 
+pub mod artwork;
 pub mod aside_session;
 pub mod assets;
 pub mod capture;

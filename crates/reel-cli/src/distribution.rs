@@ -67,7 +67,9 @@ fn update_manifest(
     update: impl FnOnce(&mut Distribution) -> io::Result<()>,
 ) -> io::Result<Vec<u8>> {
     let limits = reel_package::Limits::default();
-    let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
+    let package =
+        reel_package::decode(&artifact.bytes, reel_engine::aside::source::types(), limits)
+            .map_err(io::Error::other)?;
     let mut manifest = package.distribution().cloned().unwrap_or(Distribution {
         text: None,
         resources: Vec::new(),
@@ -85,6 +87,7 @@ fn update_manifest(
         Some(&manifest),
         package.effects(),
         package.resume().table(),
+        reel_engine::aside::source::types(),
         limits,
     )
     .map_err(io::Error::other)
@@ -144,12 +147,13 @@ fn resource_volumes(
     files: &BTreeMap<String, PathBuf>,
     staging: &Path,
     target: u64,
-) -> io::Result<Vec<String>> {
+) -> io::Result<(Vec<String>, u64)> {
     let mut names = vec!["resources.rpk".to_owned()];
     let mut writer = ArchiveWriter::new(
         File::create(staging.join(&names[0]))?,
         ArchiveKind::Resources,
     )?;
+    let mut bytes = 0;
     for (name, path) in files {
         let mut file = File::open(path)?;
         if !writer.is_empty() && writer.encoded_len_after(name, file.metadata()?.len())? > target {
@@ -159,10 +163,10 @@ fn resource_volumes(
                 ArchiveWriter::new(File::create(staging.join(&volume))?, ArchiveKind::Resources)?;
             names.push(volume);
         }
-        writer.add(name, &mut file)?;
+        bytes += writer.add(name, &mut file)?.length;
     }
     writer.finish()?.sync_all()?;
-    Ok(names)
+    Ok((names, bytes))
 }
 
 pub struct Exported {
@@ -366,6 +370,7 @@ pub fn export(
             catalogs: catalogs.catalogs.clone(),
             loose: None,
         };
+        let mut asset_bytes = 0;
         if artifact.profile == BuildProfile::Release {
             let pool = artifact
                 .text_pool
@@ -373,16 +378,18 @@ pub fn export(
                 .ok_or_else(|| io::Error::other("release export requires external text"))?;
             let mut writer =
                 ArchiveWriter::new(File::create(staging.join("game.rtp"))?, ArchiveKind::Text)?;
-            writer.add(TEXT_POOL_ENTRY, &mut pool.as_bytes())?;
+            asset_bytes += writer.add(TEXT_POOL_ENTRY, &mut pool.as_bytes())?.length;
             for (name, file) in &text {
-                writer.add(name, &mut File::open(file)?)?;
+                asset_bytes += writer.add(name, &mut File::open(file)?)?.length;
             }
             for (name, text) in &catalogs.files {
-                writer.add(name, &mut text.as_bytes())?;
+                asset_bytes += writer.add(name, &mut text.as_bytes())?.length;
             }
             writer.finish()?.sync_all()?;
             manifest.text = Some("game.rtp".into());
-            manifest.resources = resource_volumes(&resources, staging, options.pack_bytes.get())?;
+            let (volumes, bytes) = resource_volumes(&resources, staging, options.pack_bytes.get())?;
+            manifest.resources = volumes;
+            asset_bytes += bytes;
         } else {
             fs::create_dir_all(staging.join("resources"))?;
             if !catalogs.files.is_empty() {
@@ -391,20 +398,22 @@ pub fn export(
                     ArchiveKind::Text,
                 )?;
                 for (name, text) in &catalogs.files {
-                    writer.add(name, &mut text.as_bytes())?;
+                    asset_bytes += writer.add(name, &mut text.as_bytes())?.length;
                 }
                 writer.finish()?.sync_all()?;
                 manifest.text = Some("game.rtp".into());
             }
             for (name, file) in resources.iter().chain(text.iter()) {
-                copy(file, &staging.join("resources").join(name))?;
+                asset_bytes += copy(file, &staging.join("resources").join(name))?;
             }
             manifest.loose = Some(LooseResources::Directory("resources".into()));
             sources(loaded, staging)?;
         }
         manifest.validate()?;
         let limits = reel_package::Limits::default();
-        let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
+        let package =
+            reel_package::decode(&artifact.bytes, reel_engine::aside::source::types(), limits)
+                .map_err(io::Error::other)?;
         let bytecode = package
             .program()
             .encode(limits.bytecode)
@@ -415,6 +424,7 @@ pub fn export(
             Some(&manifest),
             package.effects(),
             package.resume().table(),
+            reel_engine::aside::source::types(),
             limits,
         )
         .map_err(io::Error::other)?;
@@ -422,24 +432,9 @@ pub fn export(
         let runtime_bytes = runtime_files.iter().try_fold(0u64, |total, (name, file)| {
             copy(file, &staging.join(name)).map(|bytes| total + bytes)
         })?;
-        let bytes = encoded.len() as u64
-            + runtime_bytes
-            + resources
-                .values()
-                .chain(text.values())
-                .try_fold(0u64, |n, path| fs::metadata(path).map(|m| n + m.len()))?
-            + catalogs
-                .files
-                .values()
-                .map(|text| text.len() as u64)
-                .sum::<u64>()
-            + artifact
-                .text_pool
-                .as_ref()
-                .map_or(0, |p| p.as_bytes().len() as u64);
         Ok(Exported {
             files: resources.len() + text.len() + catalogs.files.len(),
-            bytes,
+            bytes: encoded.len() as u64 + runtime_bytes + asset_bytes,
         })
     })();
     let result = result?;

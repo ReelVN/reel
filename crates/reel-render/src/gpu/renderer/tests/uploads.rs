@@ -63,7 +63,8 @@ fn retired_decoded_images_reuse_completed_storage_across_resource_versions() {
 
 #[test]
 fn image_plan_deduplicates_both_transition_inputs_before_admission() {
-    let (frame, _, handles) = image_restore_fixture([4, 4], true);
+    let (frame, _, handles) =
+        image_restore_fixture_with_encoding([4, 4], true, reel_ui::resources::ColorEncoding::Srgb);
     let plan = crate::gpu::image_plan::collect(
         [&frame, &frame].into_iter(),
         4096,
@@ -75,7 +76,7 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
     assert_eq!(plan.images.len(), handles.len());
     for item in &plan.images {
         assert!(handles.contains(&item.source.handle()));
-        assert_eq!(item.resident, 4 * 4 * 8);
+        assert_eq!(item.resident, 4 * 4 * 4);
         assert_eq!(item.staging, 4 * 256);
     }
     assert!(matches!(
@@ -88,6 +89,92 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
         ),
         Err(GpuError::InvalidSize)
     ));
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter and pixel readback"]
+fn opaque_srgb_upload_matches_linear_reference_on_a_scaled_dark_gradient() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageBrush, ImageFormat},
+        resources::{ColorEncoding, ResourceRegistry},
+    };
+
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(6, 65536).unwrap();
+    let mut images = Vec::new();
+    let size = [64, 4]; // The opaque rows match WGPU's copy alignment.
+    let bytes = size.into_iter().product::<u32>() as usize * 4;
+    for alpha in [255, 128] {
+        let mut pixels = (0..bytes / 4)
+            .flat_map(|i| {
+                let i = ((i % size[0] as usize + i / size[0] as usize * 8) % 32) as u8;
+                [i * 3, i * 2, i, 255]
+            })
+            .collect::<Vec<_>>();
+        // The translucent texel lies outside the sampled and filtered source window.
+        pixels[bytes - 1] = alpha;
+        let handle = registry
+            .register_image(
+                ResourceVersion {
+                    key: AssetKey(format!("scaled-gradient-{alpha}")),
+                    version: ContentVersion([alpha; 32]),
+                },
+                OwnedBytes::new(pixels, pool.reserve(bytes as u64).unwrap()).unwrap(),
+                size,
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Srgb,
+            )
+            .unwrap();
+        let mut scene = Scene::new();
+        scene.draw(Draw::Fill {
+            transform: Affine::scale(20.),
+            fill_rule: Default::default(),
+            brush: Brush::Image(ImageBrush::new(crate::test_support::image_data(
+                &registry.acquire(handle).unwrap(),
+            ))),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(0., 0., 4., 3.)),
+            composite: Composite::default(),
+        });
+        let frame = frame_from_widget(
+            RecordWidget::new(scene),
+            registry.freeze(&[handle], &pool).unwrap(),
+            &pool,
+        );
+        let mut renderer = renderer(Default::default());
+        let prepared = renderer.prepare(&frame).unwrap();
+        let image = &prepared.images[&handle];
+        let expected = if alpha == 255 {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba16Float
+        };
+        assert_eq!(image.texture.format(), expected);
+        assert_eq!(
+            image.residency.as_ref().unwrap().bytes(),
+            u64::from(size.into_iter().product::<u32>() * expected.block_copy_size(None).unwrap())
+        );
+        images.push(renderer.readback(prepared).unwrap());
+    }
+    let [compact, reference] = images.as_slice() else {
+        unreachable!()
+    };
+    assert!(
+        reference.iter().any(|pixel| pixel[0] > 0.01),
+        "the reference must draw the gradient"
+    );
+    let max_delta = compact
+        .iter()
+        .zip(reference)
+        .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
+        .fold(0., f32::max);
+    eprintln!("aligned opaque image upload max_linear_delta={max_delta}");
+    assert!(max_delta <= 0.002, "linear color error {max_delta}");
 }
 
 #[test]

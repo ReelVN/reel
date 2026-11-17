@@ -131,6 +131,14 @@ methods! {
         "Resume this generator and return (done, value). A yielded null has done=false. Completion returns its final value once; later calls return (true, null). Escaped errors close the generator and retain their original source location. Reentry raises InvalidState.";
     GeneratorClose: "close" [Generator] (), None => "null", true,
         "Close this generator and synchronously run finally blocks entered before its last yield. Closing an unstarted or finished generator returns null. Cleanup may yield its execution budget and cannot wait externally.";
+    FirstWhere: "first_where" [Array,Tuple] ("predicate":"fn(any) -> bool"=None), None => "any", false,
+        "Return the first item accepted by the predicate, or null. Visit items in order and stop at the first match. The predicate cannot wait or change the source.";
+    Any: "any" [Array,Tuple] ("predicate":"fn(any) -> bool"=None), None => "bool", false,
+        "Return whether the predicate accepts any item. Visit items in order and stop at the first match. The predicate cannot wait or change the source.";
+    GetOrInsertWith: "get_or_insert_with" [Table] ("key":"any"=None,"factory":"fn() -> any"=None), None => "any", true,
+        "Return the existing value, including null, or insert the result of calling factory(). The factory cannot wait. An entry inserted during the factory takes precedence.";
+    Replace: "replace" [String] ("pattern":"string"=None,"replacement":"string"=None), None => "string", false,
+        "Replace all non-overlapping matches. An empty pattern inserts the replacement at each Unicode scalar boundary.";
 }
 
 impl BuiltinMethod {

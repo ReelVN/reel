@@ -4,7 +4,8 @@ use crate::common::image_plan;
 pub(super) use image_plan::peak;
 use reel_ui::{
     frame::{RecordLocation, RenderFrame},
-    resources::{ResourceLease, ResourceView},
+    peniko::ImageFormat,
+    resources::{ColorEncoding, ResourceLease, ResourceView},
 };
 
 pub(super) struct Required<'a> {
@@ -13,6 +14,7 @@ pub(super) struct Required<'a> {
     pub(super) resident: u64,
     pub(super) staging: u64,
     pub(super) minimum_staging: u64,
+    pub(super) raster_format: Option<wgpu::TextureFormat>,
     pub(super) texture: Option<crate::common::resources::TextureUploadLayout>,
 }
 pub(super) struct Plan<'a> {
@@ -33,17 +35,28 @@ pub(super) fn collect<'a>(
         .images
         .into_iter()
         .map(|item| {
+            let mut raster_format = None;
             let (resident, staging, minimum_staging) = if let Some(upload) = item.texture {
                 let (resident, staging) = resources::texture_costs(upload);
                 (resident, staging, resources::texture_row_bytes(upload))
             } else if let Some(image) = item.source.image_descriptor() {
-                let size = [image.width, image.height];
-                let resident = u64::from(image.width) * u64::from(image.height) * 8;
-                (
-                    resident,
-                    resources::upload_cost(size)? - resident,
-                    resources::row_bytes(size[0]),
-                )
+                let format = if image.format == ImageFormat::Rgba8
+                    && image.encoding == ColorEncoding::Srgb
+                    && item
+                        .source
+                        .image_coverage()
+                        .is_some_and(|coverage| coverage.is_opaque())
+                {
+                    wgpu::TextureFormat::Rgba8UnormSrgb
+                } else {
+                    wgpu::TextureFormat::Rgba16Float
+                };
+                raster_format = Some(format);
+                let resident = u64::from(image.width)
+                    * u64::from(image.height)
+                    * u64::from(format.block_copy_size(None).unwrap());
+                let row = resources::raster_row_bytes(image.width, format);
+                (resident, row * u64::from(image.height), row)
             } else if let ResourceView::Yuv420(image) = item.source.view() {
                 let (resident, staging) = super::video::costs(image);
                 (resident, staging, staging)
@@ -56,6 +69,7 @@ pub(super) fn collect<'a>(
                 resident,
                 staging,
                 minimum_staging,
+                raster_format,
                 texture: item.texture,
             })
         })
@@ -114,14 +128,17 @@ mod tests {
         let mut next = 0;
         let mut converted = 0;
         while next < size[1] {
-            let count = resources::rows_per_upload(size, next, limit - resident);
+            let count = resources::rows_per_upload(size[1], next, limit - resident, row);
             assert_eq!(count, 1);
             next += count;
             converted += u64::from(count) * u64::from(size[0]);
         }
         assert_eq!(converted, u64::from(size[0]) * u64::from(size[1]));
-        assert_eq!(resources::rows_per_upload(size, 0, row - 1), 0);
-        assert_eq!(resources::rows_per_upload(size, size[1] - 1, 4 * row), 1);
+        assert_eq!(resources::rows_per_upload(size[1], 0, row - 1, row), 0);
+        assert_eq!(
+            resources::rows_per_upload(size[1], size[1] - 1, 4 * row, row),
+            1
+        );
         assert!(matches!(
             peak(std::iter::once((resident, row)), limit - 1),
             Err(GpuError::Budget {

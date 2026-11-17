@@ -266,6 +266,16 @@ impl Vm {
                     return Ok(false);
                 }
             }
+            ScriptPhase::Predicate(work) => {
+                if !self.predicate_step(s, work, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::EntryFactory { call, waiting } => {
+                if !self.entry_factory_step(s, call, waiting, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Sort(work) => {
                 if !self.sort_step(s, work, m)? {
                     return Ok(false);

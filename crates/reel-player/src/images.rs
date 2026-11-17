@@ -70,6 +70,7 @@ pub(crate) struct Images {
     skipped: BTreeSet<String>,
     wanted: BTreeMap<String, Option<String>>,
     prefetch: BTreeSet<String>,
+    approaching: Vec<reel_ui::stage::NodeId>,
     mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
     shader_sources: BTreeSet<String>,
@@ -111,6 +112,7 @@ impl Images {
             skipped: BTreeSet::new(),
             wanted: BTreeMap::new(),
             prefetch: BTreeSet::new(),
+            approaching: Vec::new(),
             mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
             shader_sources: BTreeSet::new(),
@@ -168,7 +170,9 @@ impl Images {
                     .request_index
                     .as_ref()
                     .is_some_and(|old| Arc::ptr_eq(old, &requests.index));
+                let same_approach = self.approaching == requests.approaching;
                 if same_index
+                    && same_approach
                     && self.settled
                     && self.failure.is_none()
                     && self.manifests.is_empty()
@@ -183,8 +187,11 @@ impl Images {
                 {
                     return true;
                 }
+                if !same_index || !same_approach {
+                    self.prefetch = requests.preloaded().map(str::to_owned).collect();
+                    self.approaching.clone_from(&requests.approaching);
+                }
                 if !same_index {
-                    self.prefetch = requests.index.preloaded().map(str::to_owned).collect();
                     self.encoded = requests
                         .index
                         .encoded()
@@ -240,22 +247,36 @@ impl Images {
         self.request_index = None;
         self.wanted = wanted;
         self.prefetch.clear();
+        self.approaching.clear();
         self.mounted = mounted;
         self.reconcile_requests();
     }
     fn reconcile_requests(&mut self) {
         self.settled = false;
+        // A returning GPU image already satisfies foreground demand.
+        for source in self.wanted.keys() {
+            if !self.loaded.contains_key(source)
+                && let Some(lease) = self.recent.take(source)
+            {
+                self.loaded.insert(source.clone(), lease);
+                self.content_revision = self.content_revision.wrapping_add(1);
+            }
+        }
         let foreground_ready = self
             .wanted
             .keys()
             .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source));
-        self.pending.retain(|pending| {
+        self.pending.retain_mut(|pending| {
+            let wanted = self.wanted.contains_key(&pending.source);
+            if pending.prefetch && wanted && self.assets.promote_prefetch(pending.id) {
+                pending.prefetch = false;
+                pending.optional = false;
+                return true;
+            }
             let retain = if pending.prefetch {
-                foreground_ready
-                    && self.prefetch.contains(&pending.source)
-                    && !self.wanted.contains_key(&pending.source)
+                foreground_ready && self.prefetch.contains(&pending.source) && !wanted
             } else {
-                self.wanted.contains_key(&pending.source)
+                wanted
                     || self
                         .tiles
                         .get(&pending.source)
@@ -274,14 +295,6 @@ impl Images {
             self.wanted.contains_key(source) || (foreground_ready && self.prefetch.contains(source))
         });
         self.failure = None;
-        for source in self.wanted.keys() {
-            if !self.loaded.contains_key(source)
-                && let Some(lease) = self.recent.take(source)
-            {
-                self.loaded.insert(source.clone(), lease);
-                self.content_revision = self.content_revision.wrapping_add(1);
-            }
-        }
         self.update_metadata_ready();
         let loading = !self.metadata_ready;
         for (source, lease) in self.loaded.extract_if(.., |source, _| {
@@ -432,6 +445,10 @@ impl Images {
             else {
                 break;
             };
+            if let Some(lease) = self.recent.take(&source) {
+                self.loaded.insert(source, lease);
+                continue;
+            }
             let kind = if self.shader_sources.contains(&source) {
                 AssetKind::EffectShader
             } else {
@@ -697,6 +714,7 @@ impl Images {
         }
         self.wanted.clear();
         self.prefetch.clear();
+        self.approaching.clear();
         self.metadata_ready = true;
         self.mounted.clear();
         self.tiles.clear();

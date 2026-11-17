@@ -3,6 +3,7 @@ target/
 /target/reel-artifacts/
 # Project examples keep generated packages beside their source.
 /examples/**/build/
+/examples/**/dist/
 # Private probe packages are supplied by their project owners.
 /crates/reel-dev/runtime/vita/authored/
 /crates/reel-dev/runtime/vita/media/

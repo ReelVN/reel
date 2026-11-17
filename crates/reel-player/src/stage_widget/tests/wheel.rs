@@ -47,6 +47,7 @@ fn check_routes(canvas: Option<[u32; 2]>) {
                 overscroll: Default::default(),
                 axis: reel_ui::widgets::ScrollAxis::Vertical,
                 follow_end: false,
+                snap_y: None,
                 align: reel_ui::widgets::ScrollAlign::Start,
                 offset: Vec2::ZERO,
             },

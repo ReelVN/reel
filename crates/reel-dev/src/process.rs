@@ -62,52 +62,29 @@ impl Capture {
 // regular-file readers for the supported synchronous tool wrappers instead of
 // detaching blocking reader threads. Completion snapshots the byte length; it
 // does not imply that an escaped descendant has closed every inherited handle.
-// This backend/taskkill path has not been verified on Windows.
 #[cfg(windows)]
 struct Capture {
     reader: File,
-    path: std::path::PathBuf,
+    _path: tempfile::TempPath,
     end: Option<u64>,
 }
 
 #[cfg(windows)]
 impl Capture {
     fn new() -> io::Result<(Self, Stdio)> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        loop {
-            let path = std::env::temp_dir().join(format!(
-                "reel-capture-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(writer) => {
-                    let reader = match File::open(&path) {
-                        Ok(reader) => reader,
-                        Err(error) => {
-                            drop(writer);
-                            let _ = std::fs::remove_file(path);
-                            return Err(error);
-                        }
-                    };
-                    return Ok((
-                        Self {
-                            reader,
-                            path,
-                            end: None,
-                        },
-                        Stdio::from(writer),
-                    ));
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
+        let output = tempfile::Builder::new()
+            .prefix("reel-capture-")
+            .tempfile()?;
+        let reader = output.reopen()?;
+        let (writer, path) = output.into_parts();
+        Ok((
+            Self {
+                reader,
+                _path: path,
+                end: None,
+            },
+            Stdio::from(writer),
+        ))
     }
 
     fn read_available(
@@ -116,11 +93,12 @@ impl Capture {
         deadline: Instant,
         child_exited: bool,
     ) -> io::Result<bool> {
-        let end = *self.end.get_or_insert(u64::MAX);
-        if child_exited && end == u64::MAX {
-            self.end = Some(self.reader.metadata()?.len());
-        }
-        let end = self.end.unwrap().min(self.reader.metadata()?.len());
+        let length = self.reader.metadata()?.len();
+        let end = if child_exited {
+            length.min(*self.end.get_or_insert(length))
+        } else {
+            length
+        };
         let mut buffer = [0; 32 * 1024];
         for _ in 0..8 {
             if Instant::now() >= deadline || bytes.len() as u64 >= end {
@@ -135,13 +113,6 @@ impl Capture {
             bytes.extend_from_slice(&buffer[..count]);
         }
         Ok(child_exited && bytes.len() as u64 >= end)
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Capture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 

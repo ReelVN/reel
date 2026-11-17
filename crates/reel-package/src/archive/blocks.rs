@@ -407,6 +407,13 @@ fn read_exact(
     Ok(())
 }
 
+/// Reusable input and compression buffers for one archive writer.
+#[derive(Default)]
+pub(super) struct WriteScratch {
+    raw: Vec<u8>,
+    encoded: Vec<u8>,
+}
+
 /// Packaging retains directory records, never logical file content. Runtime
 /// directory reads use a fixed stack batch and do not retain this list.
 pub(super) fn write(
@@ -415,13 +422,13 @@ pub(super) fn write(
     hash: &mut blake3::Hasher,
     offset: u64,
     compress: bool,
+    scratch: &mut WriteScratch,
 ) -> io::Result<(u64, u64, EntryStorage)> {
-    let mut raw = vec![0; BLOCK_BYTES];
-    let mut encoded = if compress {
-        vec![0; lz4_flex::block::get_maximum_output_size(BLOCK_BYTES)]
-    } else {
-        Vec::new()
-    };
+    let WriteScratch { raw, encoded } = scratch;
+    raw.resize(BLOCK_BYTES, 0);
+    if compress {
+        encoded.resize(lz4_flex::block::get_maximum_output_size(BLOCK_BYTES), 0);
+    }
     let mut records = Vec::new();
     let mut length = 0u64;
     let mut stored_length = 0u64;
@@ -446,7 +453,7 @@ pub(super) fn write(
             .checked_add(size as u64)
             .ok_or_else(|| invalid("archive entry exceeds format width"))?;
         let encoded_length = if compress {
-            lz4_flex::block::compress_into(bytes, &mut encoded).map_err(io::Error::other)?
+            lz4_flex::block::compress_into(bytes, encoded).map_err(io::Error::other)?
         } else {
             size
         };

@@ -19,12 +19,7 @@ pub(super) fn describe(api: &mut Api) {
         (
             "point",
             Intrinsic::ResumePoint,
-            "Name the complete interaction call immediately following this statement. Its presentation argument preparation must be read-only and non-waiting. Keys are unique within the enclosing flow.",
-        ),
-        (
-            "return_point",
-            Intrinsic::ResumeReturn,
-            "Name the static flow call immediately following this statement. A restored parent continues after that call using its current result slot, without repeating the original argument expressions.",
+            "Name the complete recoverable call or await immediately following this statement, including a binding initializer. The compiler recognizes declared flow functions and typed methods, registered native waits, callable host values and await adapters. For example, point(\"media\"); await cue; uses the ordinary await operation. A restored flow call continues after the call without repeating its arguments. A waiting operation rebuilds read-only, non-waiting inputs. Keys are unique within the enclosing flow.",
         ),
     ] {
         let mut declaration = Declaration::namespace("std::resume", "1", documentation);
@@ -57,6 +52,78 @@ pub(super) fn describe(api: &mut Api) {
         exports.push(declaration.symbol.clone());
         api.functions.push(declaration);
     }
+    for (name, intrinsic, third, documentation) in [
+        (
+            "state",
+            Intrinsic::ResumeState,
+            Some("fields"),
+            "Declare a module-level persistent class with an explicit stable key. Field keys default to their names; the literal fields map preserves identity after source renames. Explicit field initializers must be pure data recipes; effectful initialization belongs in ordinary init. Required fields without initializers are allowed. Any, array and table contents are checked when their data graph is captured. The compiler removes this declaration.",
+        ),
+        (
+            "root",
+            Intrinsic::ResumeRoot,
+            None,
+            "Declare the current bootstrap at module scope. Its single parameter directly names a declared State class and has an ordinary default value. New games evaluate that default normally; loading passes the restored State and skips the default. Build current configuration, preferences and views here, and enter business code through run_flow. The compiler infers the State class and removes this declaration.",
+        ),
+    ] {
+        let mut declaration = Declaration::namespace("std::resume", "1", documentation);
+        declaration.symbol =
+            ExternalSymbol::intrinsic(name, intrinsic).with_reference(SymbolReference {
+                module: "std::resume".into(),
+                version: "1".into(),
+                export: Some(name.into()),
+            });
+        declaration.symbol.ty = TypeHint::Closure;
+        let mut parameters = vec![
+            ExternalParameter {
+                name: "target".into(),
+                ty: TypeHint::Any,
+                mutable: false,
+                default: false,
+                rest: false,
+            },
+            ExternalParameter {
+                name: "key".into(),
+                ty: TypeHint::String,
+                mutable: false,
+                default: false,
+                rest: false,
+            },
+        ];
+        if let Some(third) = third {
+            parameters.push(ExternalParameter {
+                name: third.into(),
+                ty: TypeHint::Table,
+                mutable: false,
+                default: true,
+                rest: false,
+            });
+            declaration.parameter_documentation.insert(
+                third.into(),
+                "A literal map from current own field names to stable field keys.".into(),
+            );
+        }
+        declaration.symbol.signature = Some(ExternalSignature {
+            parameters,
+            result: TypeHint::Null,
+            result_cases: Vec::new(),
+            result_parameter: None,
+            effect: CallEffect::NoWait,
+            init_safe: Some(true),
+            derived_safe: Some(false),
+        });
+        declaration.parameter_documentation.insert(
+            "target".into(),
+            "The current static module class or bootstrap function.".into(),
+        );
+        declaration.parameter_documentation.insert(
+            "key".into(),
+            "An explicit stable identity preserved when source declarations move or are renamed."
+                .into(),
+        );
+        exports.push(declaration.symbol.clone());
+        api.functions.push(declaration);
+    }
     api.modules.push(ModuleInterface {
         canonical_path: "std::resume".into(),
         version: "1".into(),
@@ -74,10 +141,24 @@ mod tests {
             .iter()
             .find(|m| m.canonical_path == "std::resume")
             .unwrap();
-        assert_eq!(module.exports.len(), 3);
+        assert_eq!(module.exports.len(), 4);
         for symbol in &module.exports {
             assert!(symbol.intrinsic.is_some());
-            assert_eq!(symbol.signature.as_ref().unwrap().parameters[0].name, "key");
+            let parameters = &symbol.signature.as_ref().unwrap().parameters;
+            assert_eq!(
+                parameters[usize::from(matches!(
+                    symbol.intrinsic,
+                    Some(
+                        aside_host::aside_compiler::semantic::Intrinsic::ResumeState
+                            | aside_host::aside_compiler::semantic::Intrinsic::ResumeRoot
+                    )
+                ))]
+                .name,
+                "key"
+            );
+            if symbol.name == "root" {
+                assert_eq!(parameters.len(), 2);
+            }
             assert!(
                 !crate::contracts()
                     .iter()

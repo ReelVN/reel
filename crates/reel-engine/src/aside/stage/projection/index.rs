@@ -138,6 +138,13 @@ impl Index {
                     self.watch(heap, fields, id)?;
                 }
             }
+            if let Some(handle) = binding.image_skin {
+                let target = image_skin::control(heap, heap.import_handle(handle)?)?;
+                if let Ok(fields) = heap.host_fields(target) {
+                    self.watch(heap, target, id)?;
+                    self.watch(heap, fields, id)?;
+                }
+            }
             for (handle, _) in [binding.mask_source, binding.effect_source]
                 .into_iter()
                 .flatten()

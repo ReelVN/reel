@@ -1,19 +1,28 @@
 //! Stable logical continuations verified against the current program.
 //! Serialized keys never grant permission to inject a function or instruction PC.
 mod analysis;
+mod contracts;
+mod declarations;
+pub use contracts::{RootContract, StateContract, StateContracts};
 mod plan;
 mod targets;
 mod verify;
+pub use declarations::class_locator;
 
-use crate::bytecode::{BindingId, FunctionId, Pc, Reg};
-pub use crate::executor::resume::{
-    CaptureProgress, CapturedBinding, ResumeCapture, ResumeCaptureCursor, ResumeFrameValues,
-    ResumeProgress, ResumeRestore, ResumeRestoreCursor, ResumeValue,
+use crate::bytecode::{
+    BindingId, DescriptorId, FunctionId, GlobalId, ModuleId, Pc, Reg, SymbolId, TypeId,
 };
-pub use analysis::{SiteLayout, analyze_site};
+pub use crate::executor::resume::{
+    CaptureProgress, CapturedBinding, ResumeCapture, ResumeCaptureCursor, ResumeDescriptor,
+    ResumeDescriptorBound, ResumeFrameRef, ResumeFrameValues, ResumeFrames, ResumeProgress,
+    ResumeRestore, ResumeRestoreCursor, ResumeSiteRef, ResumeValue,
+};
+use crate::typed_data::TypeKey;
+pub use analysis::{FlowAnalysis, SiteLayout, analyze_site};
+pub(crate) use plan::{PlannedFrame, PlannedSite};
 pub use plan::{VerifiedResumePlan, VerifiedResumeTable};
 use serde::{Deserialize, Serialize};
-pub use verify::static_call_target;
+pub use verify::{static_call_target, static_global_function};
 
 macro_rules! key {
     ($($name:ident),*) => {$(
@@ -23,7 +32,41 @@ macro_rules! key {
         impl From<&str> for $name { fn from(value: &str) -> Self { Self(value.into()) } }
     )*};
 }
-key!(FlowKey, PointKey, ReturnKey, BindingKey);
+key!(FlowKey, PointKey, ReturnKey, BindingKey, RootKey);
+
+/// Current immutable module binding and class descriptor, never written to a saved graph.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClassLocator {
+    pub module: ModuleId,
+    pub global: GlobalId,
+    pub function: FunctionId,
+    pub descriptor: DescriptorId,
+    pub nominal: TypeId,
+}
+/// An explicit stable identity for one field declared by its owning State class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldKeyOverride {
+    pub field: SymbolId,
+    pub key: String,
+}
+/// A module-level State protocol declaration attached to the current class definition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateDecl {
+    pub key: TypeKey,
+    pub class: ClassLocator,
+    pub fields: Vec<FieldKeyOverride>,
+}
+/// The current bootstrap and its persistent State input contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootDecl {
+    pub key: RootKey,
+    pub function: FunctionId,
+    pub state: TypeKey,
+}
 
 /// Current-code metadata. PCs are compact execution word offsets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,13 +74,23 @@ key!(FlowKey, PointKey, ReturnKey, BindingKey);
 pub struct ResumeTable {
     pub version: u32,
     pub flows: Vec<ResumeFlow>,
+    pub states: Vec<StateDecl>,
+    pub root: Option<RootDecl>,
 }
 impl Default for ResumeTable {
     fn default() -> Self {
         Self {
             version: 1,
             flows: Vec::new(),
+            states: Vec::new(),
+            root: None,
         }
+    }
+}
+impl ResumeTable {
+    /// Whether the project declares no logical continuation, State or Root contracts.
+    pub fn is_empty(&self) -> bool {
+        self.flows.is_empty() && self.states.is_empty() && self.root.is_none()
     }
 }
 /// A plain function participating in logical continuation capture.
@@ -46,6 +99,7 @@ impl Default for ResumeTable {
 pub struct ResumeFlow {
     pub key: FlowKey,
     pub function: FunctionId,
+    pub layouts: Vec<ResumeLayout>,
     pub points: Vec<ResumePoint>,
     pub returns: Vec<ResumeReturn>,
 }
@@ -63,29 +117,68 @@ pub struct ResumeLayout {
     pub bindings: Vec<ResumeBinding>,
     /// Existing lexical cells, including cells whose binding is not initialized yet.
     pub cells: Vec<BindingId>,
+    /// Initialized mutable registers whose old values are dead. Restoration
+    /// preserves the right to assign them without retaining their old contents.
+    pub initialized_dead: Vec<BindingId>,
 }
-/// A complete interaction call whose read-only arguments may be prepared again.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A complete native call or await whose read-only inputs may be prepared again.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResumePoint {
     pub key: PointKey,
     pub prepare: Pc,
+    /// Current word PC of the ordinary Call, CallNoWait or Await instruction.
     pub call: Pc,
     pub after_call: Pc,
     pub result: Reg,
-    pub layout: ResumeLayout,
+    /// Index into the current flow's continuation layouts.
+    pub layout: u32,
 }
 /// A suspended ordinary call; restoration skips its already evaluated arguments.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResumeReturn {
     pub key: ReturnKey,
-    pub callee: FlowKey,
+    /// Current declared function. Saved call chains retain the stable flow key.
+    pub callee: FunctionId,
     pub call: Pc,
     pub after_call: Pc,
     pub result: Reg,
-    pub layout: ResumeLayout,
+    /// Index into the current flow's continuation layouts.
+    pub layout: u32,
 }
+
+// The ASB stores these high-volume records as positional sequences.
+macro_rules! site_wire {
+    ($site:ident { $($field:ident),+ }) => {
+        impl Serialize for $site {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                ($(&self.$field,)+).serialize(serializer)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $site {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let ($($field,)+) = Deserialize::deserialize(deserializer)?;
+                Ok(Self { $($field,)+ })
+            }
+        }
+    };
+}
+site_wire!(ResumePoint {
+    key,
+    prepare,
+    call,
+    after_call,
+    result,
+    layout
+});
+site_wire!(ResumeReturn {
+    key,
+    callee,
+    call,
+    after_call,
+    result,
+    layout
+});
 /// A stable site in one saved activation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResumeSite {

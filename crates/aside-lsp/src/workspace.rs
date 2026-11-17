@@ -16,6 +16,7 @@ use lsp_types::{
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, VecDeque},
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, OnceLock},
@@ -27,7 +28,7 @@ pub(crate) use module_paths::import_path_at;
 pub(crate) type ReferenceKey = (String, String, Option<String>);
 // Bound retained disk inputs across project-root and import-graph changes.
 // Active semantic snapshots retain their own shared sources independently.
-const MAX_CACHED_DISK_SOURCES: usize = 1024;
+const MAX_CACHED_DISK_SOURCES: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 const MAX_CACHED_DISK_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) fn reference_key(reference: &SymbolReference) -> ReferenceKey {
     (
@@ -186,6 +187,7 @@ impl HostIndex {
 }
 struct HostResolver<'a> {
     host: &'a HostIndex,
+    aliases: &'a BTreeMap<String, String>,
 }
 impl ModuleResolver for HostResolver<'_> {
     fn has_closed_members(&self, type_name: &str) -> bool {
@@ -193,6 +195,12 @@ impl ModuleResolver for HostResolver<'_> {
     }
     fn resolve(&mut self, request: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
         self.host.modules.resolve_import(request)
+    }
+    fn canonical_request<'a>(
+        &self,
+        request: &'a ImportRequest,
+    ) -> std::borrow::Cow<'a, ImportRequest> {
+        canonical_import(request, self.aliases)
     }
     fn resolve_type_member(&mut self, type_name: &str, member: &str) -> Option<HostMember> {
         self.host
@@ -333,8 +341,7 @@ pub(crate) struct Workspace {
     project_prefix: Option<String>,
     source_analysis: Option<SourceAnalysis>,
     documents: BTreeMap<String, Document>,
-    disk_sources: BTreeMap<String, Source>,
-    disk_order: VecDeque<String>,
+    disk_sources: lru::LruCache<String, Source>,
     disk_bytes: usize,
     pub analyses: usize,
     pub disk_reads: usize,
@@ -347,8 +354,7 @@ impl Workspace {
             project_prefix: options.project_prefix,
             source_analysis: options.source_analysis,
             documents: BTreeMap::new(),
-            disk_sources: BTreeMap::new(),
-            disk_order: VecDeque::new(),
+            disk_sources: lru::LruCache::new(MAX_CACHED_DISK_SOURCES),
             disk_bytes: 0,
             analyses: 0,
             disk_reads: 0,
@@ -364,7 +370,7 @@ impl Workspace {
             .documents
             .get(&key)
             .map(|document| &document.source)
-            .or_else(|| self.disk_sources.get(&key));
+            .or_else(|| self.disk_sources.peek(&key));
         let unchanged = cached.is_some_and(|source| source.text.as_ref() == text);
         let source = if let Some(cached) = cached.filter(|_| unchanged) {
             Source {
@@ -378,10 +384,10 @@ impl Workspace {
         if unchanged {
             self.refresh_sources(&key, &source);
         } else {
-            self.invalidate(&uri);
+            self.invalidate_key(&key);
         }
         self.documents.insert(
-            source_key(&uri),
+            key,
             Document {
                 source,
                 snapshot: None,
@@ -462,7 +468,7 @@ impl Workspace {
         }
         let source = Source::new(uri.clone(), text.into(), Some(version))?;
         let analysis_size = document.analysis_size;
-        self.invalidate(uri);
+        self.invalidate_key(&key);
         self.documents.insert(
             key,
             Document {
@@ -474,11 +480,11 @@ impl Workspace {
         Ok(true)
     }
     pub fn close(&mut self, uri: &Uri) {
-        self.documents.remove(&source_key(uri));
-        self.invalidate(uri);
+        let key = source_key(uri);
+        self.documents.remove(&key);
+        self.invalidate_key(&key);
         if self.documents.is_empty() {
             self.disk_sources.clear();
-            self.disk_order.clear();
             self.disk_bytes = 0;
         }
     }
@@ -524,11 +530,7 @@ impl Workspace {
         uri: &Uri,
         encoding: Encoding,
     ) -> Result<Vec<lsp_types::TextEdit>, String> {
-        let document = self
-            .documents
-            .get(&source_key(uri))
-            .ok_or("document is not open")?;
-        let source = &document.source;
+        let source = self.open_source(uri)?;
         let Ok(formatted) = aside_compiler::format_parsed(&source.parsed) else {
             return Ok(Vec::new());
         };
@@ -545,45 +547,44 @@ impl Workspace {
             new_text: formatted,
         }])
     }
+    pub(crate) fn open_source(&self, uri: &Uri) -> Result<&Source, String> {
+        self.documents
+            .get(&source_key(uri))
+            .map(|document| &document.source)
+            .ok_or_else(|| "document is not open".into())
+    }
     pub fn invalidate(&mut self, uri: &Uri) {
-        let uri = source_key(uri);
-        if let Some(source) = self.disk_sources.remove(&uri) {
+        self.invalidate_key(&source_key(uri));
+    }
+    fn invalidate_key(&mut self, key: &str) {
+        if let Some(source) = self.disk_sources.pop(key) {
             self.disk_bytes -= source.text.len();
-            self.disk_order.retain(|key| key != &uri);
         }
-        for (key, document) in &mut self.documents {
-            if key == &uri
+        for (document_key, document) in &mut self.documents {
+            if document_key == key
                 || document
                     .snapshot
                     .as_ref()
-                    .is_some_and(|snapshot| snapshot.dependencies.contains(&uri))
+                    .is_some_and(|snapshot| snapshot.dependencies.contains(key))
             {
                 document.snapshot = None;
             }
         }
     }
     fn cached_disk_source(&mut self, key: &str) -> Option<Source> {
-        let source = self.disk_sources.get(key)?.clone();
-        self.disk_order.retain(|candidate| candidate != key);
-        self.disk_order.push_back(key.to_owned());
-        Some(source)
+        self.disk_sources.get(key).cloned()
     }
     fn cache_disk_source(&mut self, key: String, source: Source) {
         self.disk_bytes += source.text.len();
-        self.disk_order.push_back(key.clone());
-        self.disk_sources.insert(key, source);
+        if let Some((_, removed)) = self.disk_sources.push(key, source) {
+            self.disk_bytes -= removed.text.len();
+        }
         // Recent disk parses survive temporary project-root/import changes.
-        while self.disk_sources.len() > MAX_CACHED_DISK_SOURCES
-            || self.disk_bytes > MAX_CACHED_DISK_BYTES
-        {
-            let key = self
-                .disk_order
-                .pop_front()
-                .expect("cached sources have an access order");
-            let source = self
+        while self.disk_bytes > MAX_CACHED_DISK_BYTES {
+            let (_, source) = self
                 .disk_sources
-                .remove(&key)
-                .expect("access order names a cached source");
+                .pop_lru()
+                .expect("disk bytes count retained sources");
             self.disk_bytes -= source.text.len();
         }
     }
@@ -593,6 +594,48 @@ impl Workspace {
         if let Some(snapshot) = &document.snapshot {
             return Ok(snapshot.clone());
         }
+        self.snapshot_from(document.source.clone(), key)
+    }
+    pub(crate) fn reference_project(
+        &mut self,
+        uri: &Uri,
+        current: &Snapshot,
+    ) -> Result<Option<Arc<Snapshot>>, String> {
+        let (roots, _) = self.effective_roots(uri);
+        let Some(root) = roots.first() else {
+            return Ok(None);
+        };
+        let path = root.path.join("main.aside");
+        let entry_uri = file_uri(&path)?;
+        let key = source_key(&entry_uri);
+        if module_path(&entry_uri, &roots).is_some_and(|entry| current.sources.contains_key(&entry))
+        {
+            return Ok(None);
+        }
+        self.file_source(&path, entry_uri, &key)?
+            .map(|source| self.snapshot_from(source, key))
+            .transpose()
+    }
+    fn file_source(&mut self, path: &Path, uri: Uri, key: &str) -> Result<Option<Source>, String> {
+        if let Some(open) = self.documents.get(key) {
+            return Ok(Some(open.source.clone()));
+        }
+        if let Some(cached) = self.cached_disk_source(key) {
+            return Ok(Some(cached));
+        }
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let source = Source::new(uri, text.into(), None)?;
+                self.disk_reads += 1;
+                self.cache_disk_source(key.to_owned(), source.clone());
+                Ok(Some(source))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("cannot read {}: {error}", uri.as_str())),
+        }
+    }
+    fn snapshot_from(&mut self, source: Source, key: String) -> Result<Arc<Snapshot>, String> {
+        let uri = &source.uri;
         let (roots, mut dependencies) = self.effective_roots(uri);
         let entry = module_path(uri, &roots).unwrap_or_else(|| uri.as_str().to_owned());
         if let Some(shared) = self
@@ -600,8 +643,8 @@ impl Workspace {
             .values()
             .filter_map(|document| document.snapshot.as_ref())
             .find(|snapshot| {
-                snapshot.sources.get(&entry).is_some_and(|source| {
-                    source_key(&source.uri) == key && source.text == document.source.text
+                snapshot.sources.get(&entry).is_some_and(|candidate| {
+                    source_key(&candidate.uri) == key && candidate.text == source.text
                 })
             })
         {
@@ -609,14 +652,17 @@ impl Workspace {
                 entry,
                 ..shared.as_ref().clone()
             });
-            let document = self.documents.get_mut(&key).unwrap();
-            document.snapshot = Some(snapshot.clone());
+            if let Some(document) = self.documents.get_mut(&key) {
+                document.snapshot = Some(snapshot.clone());
+            }
             return Ok(snapshot);
         }
-        let mut sources = BTreeMap::from([(entry.clone(), document.source.clone())]);
+        let mut sources = BTreeMap::from([(entry.clone(), source)]);
         dependencies.insert(key.clone());
         let mut queue = VecDeque::from([entry.clone()]);
         let mut visited = BTreeSet::new();
+        let mut aliases = BTreeMap::new();
+        let prefix = roots.last().map_or("", |root| root.prefix.as_str());
         while let Some(module) = queue.pop_front() {
             if !visited.insert(module.clone()) {
                 continue;
@@ -634,16 +680,25 @@ impl Workspace {
                 {
                     continue;
                 }
+                if let Some(first) = request.path.first()
+                    && !aliases.contains_key(first)
+                    && let Some(alias) = self.project_import_name(first, prefix)
+                {
+                    aliases.insert(first.clone(), alias);
+                }
+                let request = canonical_import(request, &aliases);
+                let path = request.path.as_slice();
                 for candidate in [
-                    request.path.join("::"),
-                    request
-                        .path
-                        .split_last()
-                        .map(|(_, prefix)| prefix.join("::"))
-                        .unwrap_or_default(),
-                ] {
+                    (request.kind != ImportKind::Symbol).then_some(path),
+                    (request.kind != ImportKind::Wildcard && path.len() > 1)
+                        .then(|| &path[..path.len() - 1]),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let candidate = candidate.join("::");
                     if sources.contains_key(&candidate) {
-                        break;
+                        continue;
                     }
                     let Some(path) = module_file(&candidate, &roots) else {
                         continue;
@@ -653,31 +708,9 @@ impl Workspace {
                     };
                     let candidate_key = source_key(&candidate_uri);
                     dependencies.insert(candidate_key.clone());
-                    let source = if let Some(open) = self.documents.get(&candidate_key) {
-                        Some(open.source.clone())
-                    } else if let Some(cached) = self.cached_disk_source(&candidate_key) {
-                        Some(cached)
-                    } else {
-                        match std::fs::read_to_string(&path) {
-                            Ok(text) => {
-                                let source = Source::new(candidate_uri, text.into(), None)?;
-                                self.disk_reads += 1;
-                                self.cache_disk_source(candidate_key, source.clone());
-                                Some(source)
-                            }
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                            Err(error) => {
-                                return Err(format!(
-                                    "cannot read {}: {error}",
-                                    candidate_uri.as_str()
-                                ));
-                            }
-                        }
-                    };
-                    if let Some(source) = source {
+                    if let Some(source) = self.file_source(&path, candidate_uri, &candidate_key)? {
                         sources.insert(candidate.clone(), source);
                         queue.push_back(candidate);
-                        break;
                     }
                 }
             }
@@ -701,9 +734,15 @@ impl Workspace {
             hosts: self.host.globals.clone(),
             ..Default::default()
         };
-        let project =
-            editor::analyze_project(&inputs, &options, &mut HostResolver { host: &self.host })
-                .map_err(|error| error.to_string())?;
+        let project = editor::analyze_project(
+            &inputs,
+            &options,
+            &mut HostResolver {
+                host: &self.host,
+                aliases: &aliases,
+            },
+        )
+        .map_err(|error| error.to_string())?;
         let features = self.source_analysis.map_or_else(BTreeMap::new, |_| {
             project
                 .modules()
@@ -784,6 +823,32 @@ impl Workspace {
             });
         }
         (roots, dependencies.into_inner())
+    }
+    fn project_import_name(&self, path: &str, prefix: &str) -> Option<String> {
+        if path.is_empty() || prefix.is_empty() {
+            return None;
+        }
+        let root = path.split("::").next().unwrap();
+        if root == prefix || self.host.modules.modules.contains_key(root) {
+            return None;
+        }
+        let host_prefix = format!("{root}::");
+        if self
+            .host
+            .modules
+            .modules
+            .range(host_prefix.clone()..)
+            .next()
+            .is_some_and(|(module, _)| module.starts_with(&host_prefix))
+        {
+            return None;
+        }
+        Some(format!("{prefix}::{path}"))
+    }
+
+    pub(crate) fn canonical_source_import(&self, uri: &Uri, path: &str) -> Option<String> {
+        let (roots, _) = self.effective_roots(uri);
+        self.project_import_name(path, &roots.last()?.prefix)
     }
 
     /// Discover one import-path level without loading or analyzing its sources.
@@ -1042,6 +1107,24 @@ mod import_tests {
     use super::*;
 
     #[test]
+    fn disk_cache_accounts_for_lru_eviction_and_invalidation() {
+        let mut workspace = Workspace::new(ServerOptions::default());
+        workspace.disk_sources.resize(NonZeroUsize::new(2).unwrap());
+        let uri = Uri::from_str("file:///helper.aside").unwrap();
+        let source = |text: &'static str| Source::new(uri.clone(), text.into(), None).unwrap();
+
+        workspace.cache_disk_source("first".into(), source(" "));
+        workspace.cache_disk_source("second".into(), source("  "));
+        assert!(workspace.cached_disk_source("first").is_some());
+        workspace.cache_disk_source("third".into(), source("   "));
+
+        assert!(workspace.cached_disk_source("second").is_none());
+        assert_eq!(workspace.disk_bytes, 4);
+        workspace.invalidate_key("first");
+        assert_eq!(workspace.disk_bytes, 3);
+    }
+
+    #[test]
     fn host_features_are_lazy_shared_and_diagnostics_complete_the_graph() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -1142,8 +1225,8 @@ mod import_tests {
         assert_eq!(leaf.entry, "game::helper");
         assert_eq!(leaf.source().version, Some(7));
         assert_eq!(caller.sources["game::helper"].version, Some(7));
-        assert_eq!(caller.sources["helper"].version, Some(7));
-        assert_eq!(caller.sources["helper"].uri, helper);
+        assert_eq!(caller.sources["game::helper"].uri, helper);
+        assert_eq!(caller.sources.len(), 2);
         assert_eq!(workspace.analyses, 1);
         workspace
             .change(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{InputOutcome, InteractionView};
+mod logical;
 
 fn prepared(code: &str, mode: usize) -> (Session, SessionVm) {
     let mut session = session();

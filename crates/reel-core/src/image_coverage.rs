@@ -6,6 +6,8 @@ use crate::texture::{TextureDescriptor, TextureFormat};
 /// Maximum horizontal bands retained for one immutable image.
 pub const IMAGE_COVERAGE_BANDS: usize = 16;
 
+const ALPHA_BLOCK: u128 = 0xff00_0000_ff00_0000_ff00_0000_ff00_0000;
+
 /// Conservative nonzero-alpha support in visible texels. Each band retains one
 /// horizontal interval, including a one-texel filter border. The fixed metadata
 /// is computed once from decoded pixels or existing BC blocks; file formats and
@@ -53,6 +55,7 @@ impl ImageCoverage {
     /// hidden RGB at zero alpha is ignored by the decoded-image upload contract.
     /// Invalid extents return `None`, allowing the caller's ordinary path.
     pub fn rgba8(size: [u32; 2], bytes: &[u8]) -> Option<Self> {
+        let _timing = crate::profile::Scope::new(crate::profile::Phase::ImageCoverage);
         Self::uncompressed(
             size,
             usize::try_from(u64::from(size[0]) * 4).ok()?,
@@ -73,23 +76,24 @@ impl ImageCoverage {
         }
         let mut coverage = Self::empty(size);
         coverage.opaque = true;
+        let active_mask = if alpha_only { ALPHA_BLOCK } else { u128::MAX };
         for y in 0..size[1] {
             let start = y as usize * stride;
             let row = &bytes[start..start + size[0] as usize * 4];
-            // Support encloses interior holes. Opacity additionally inspects
-            // every alpha until the first nonopaque texel, once at registration.
-            coverage.opaque =
-                coverage.opaque && row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255);
-            let active = |pixel: &[u8; 4]| {
-                if alpha_only {
-                    pixel[3] != 0
-                } else {
-                    *pixel != [0; 4]
-                }
-            };
-            if let Some(first) = row.as_chunks::<4>().0.iter().position(active) {
-                let last = row.as_chunks::<4>().0.iter().rposition(active)?;
-                coverage.include([first as u32, y, last as u32 + 1, y + 1]);
+            let (blocks, tail) = row.as_chunks::<16>();
+            let tail = tail.as_chunks::<4>().0;
+            if coverage.opaque
+                && blocks
+                    .iter()
+                    .all(|block| u128::from_le_bytes(*block) & ALPHA_BLOCK == ALPHA_BLOCK)
+                && tail.iter().all(|pixel| pixel[3] == 255)
+            {
+                coverage.include([0, y, size[0], y + 1]);
+                continue;
+            }
+            coverage.opaque = false;
+            if let Some([first, end]) = active_span(blocks, tail, active_mask) {
+                coverage.include([first, y, end, y + 1]);
             }
         }
         Some(coverage)
@@ -100,6 +104,7 @@ impl ImageCoverage {
     /// enclosing every possible hardware alpha interpolation. BC1 is opaque;
     /// unsupported storage returns `None` and retains the ordinary geometry.
     pub fn texture(descriptor: TextureDescriptor, bytes: &[u8]) -> Option<Self> {
+        let _timing = crate::profile::Scope::new(crate::profile::Phase::ImageCoverage);
         // Coarse mip filtering can spread alpha beyond the base-level coverage bands.
         if descriptor.mip_count > 1 {
             return None;
@@ -187,6 +192,39 @@ impl ImageCoverage {
     }
 }
 
+fn active_span(blocks: &[[u8; 16]], tail: &[[u8; 4]], mask: u128) -> Option<[u32; 2]> {
+    // Four little-endian pixels share one test. A hit still resolves to the
+    // exact first or last pixel within the block.
+    let active_block = |block: &[u8; 16]| u128::from_le_bytes(*block) & mask;
+    let pixel_mask = mask as u32;
+    let active_pixel = |pixel: &[u8; 4]| u32::from_le_bytes(*pixel) & pixel_mask != 0;
+    let tail_start = blocks.len() as u32 * 4;
+    let first = blocks
+        .iter()
+        .map(active_block)
+        .enumerate()
+        .find(|(_, bits)| *bits != 0)
+        .map(|(block, bits)| block as u32 * 4 + bits.trailing_zeros() / 32)
+        .or_else(|| {
+            tail.iter()
+                .position(active_pixel)
+                .map(|pixel| tail_start + pixel as u32)
+        })?;
+    let end = tail
+        .iter()
+        .rposition(active_pixel)
+        .map(|pixel| tail_start + pixel as u32 + 1)
+        .or_else(|| {
+            blocks
+                .iter()
+                .map(active_block)
+                .enumerate()
+                .rfind(|(_, bits)| *bits != 0)
+                .map(|(block, bits)| block as u32 * 4 + (128 - bits.leading_zeros()).div_ceil(32))
+        })?;
+    Some([first, end])
+}
+
 fn bc3_has_alpha(block: &[u8; 16]) -> bool {
     let [a, b] = [block[0], block[1]];
     let mut codes = u64::from_le_bytes(block[..8].try_into().unwrap()) >> 16;
@@ -238,6 +276,31 @@ mod tests {
     }
 
     #[test]
+    fn uncompressed_blocks_resolve_exact_extents_and_odd_row_tails() {
+        for width in 1u32..=19 {
+            let size = [width, 1];
+            let mut bytes = vec![0; width as usize * 4];
+            for x in 0..width {
+                for channel in [0, 3] {
+                    let position = x as usize * 4 + channel;
+                    bytes[position] = 1;
+                    let outline = [x.saturating_sub(1), 0, (x + 2).min(width), 1];
+                    let raw =
+                        ImageCoverage::uncompressed(size, bytes.len(), &bytes, false).unwrap();
+                    assert_eq!(raw.rectangles().collect::<Vec<_>>(), [outline]);
+                    let decoded = ImageCoverage::rgba8(size, &bytes).unwrap();
+                    if channel == 3 {
+                        assert_eq!(decoded.rectangles().collect::<Vec<_>>(), [outline]);
+                    } else {
+                        assert!(decoded.is_empty());
+                    }
+                    bytes[position] = 0;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn bc3_checks_zero_endpoints_special_selectors_and_excludes_storage_padding() {
         let descriptor = TextureDescriptor {
             storage_layout: crate::texture::TextureStorageLayout::Linear,
@@ -281,67 +344,5 @@ mod tests {
         bytes[block] = 1;
         bytes[block + 2] = 2;
         assert!(bc3_has_alpha(bytes[block..block + 16].try_into().unwrap()));
-    }
-
-    #[test]
-    #[ignore = "explicit CPU cost measurement; run in release with --nocapture"]
-    fn coverage_scan_costs() {
-        use std::{hint::black_box, time::Instant};
-        let size = [1024, 1024];
-        let mut sparse = vec![0; 1024 * 1024 * 4];
-        for y in 64..1024usize {
-            let half = if y < 512 { 100 } else { 100 + (y - 512) / 2 };
-            for x in 512 - half..512 + half {
-                sparse[(y * 1024 + x) * 4 + 3] = 255;
-            }
-        }
-        let opaque = vec![255; sparse.len()];
-        let descriptor = TextureDescriptor {
-            storage_layout: crate::texture::TextureStorageLayout::Linear,
-            mip_count: 1,
-            format: TextureFormat::Bc3Rgba,
-            source_encoding: ColorEncoding::Srgb,
-            layout: TextureLayout::identity(size),
-        };
-        let mut bc3 = vec![0; descriptor.byte_len().unwrap() as usize];
-        for y in 16..256usize {
-            let half = if y < 128 { 25 } else { 25 + (y - 128) / 2 };
-            for x in 128 - half..128 + half {
-                bc3[(y * 256 + x) * 16] = 255;
-            }
-        }
-        for (name, bytes) in [
-            ("rgba8_sparse", &sparse),
-            ("rgba8_opaque", &opaque),
-            ("bc3_sparse", &bc3),
-        ] {
-            let scan = || {
-                if name.starts_with("bc3") {
-                    ImageCoverage::texture(descriptor, black_box(bytes)).unwrap()
-                } else {
-                    ImageCoverage::rgba8(size, black_box(bytes)).unwrap()
-                }
-            };
-            let coverage = scan();
-            let rectangles: Vec<_> = coverage.rectangles().collect();
-            let area: u64 = rectangles
-                .iter()
-                .map(|[x0, y0, x1, y1]| u64::from(x1 - x0) * u64::from(y1 - y0))
-                .sum();
-            let start = Instant::now();
-            for _ in 0..100 {
-                black_box(scan());
-            }
-            eprintln!(
-                "{name}: scan_us={:.2} metadata_bytes={} quads={} vertices={} indices={} covered_texels={area} original_texels={} reduction_percent={:.2}",
-                start.elapsed().as_secs_f64() * 1e4,
-                size_of::<ImageCoverage>(),
-                rectangles.len(),
-                rectangles.len() * 4,
-                rectangles.len() * 6,
-                u64::from(size[0]) * u64::from(size[1]),
-                100. * (1. - area as f64 / (f64::from(size[0]) * f64::from(size[1])))
-            );
-        }
     }
 }

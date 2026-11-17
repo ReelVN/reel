@@ -145,18 +145,19 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 }
 fn cleanup(root: &Path, keep: Commit) -> Option<String> {
     let mut warning = None;
+    let kept_record = record(root, keep.generation);
+    let kept_data = keep.present.then(|| data(root, keep.generation));
     let result = (|| -> io::Result<()> {
         for entry in fs::read_dir(root)? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
             }
-            if entry.path() == record(root, keep.generation)
-                || (keep.present && entry.path() == data(root, keep.generation))
-            {
+            let path = entry.path();
+            if path == kept_record || kept_data.as_ref() == Some(&path) {
                 continue;
             }
-            if let Err(error) = fs::remove_file(entry.path()) {
+            if let Err(error) = fs::remove_file(path) {
                 warning.get_or_insert_with(|| {
                     format!("storage published; retired generation cleanup failed: {error}")
                 });
@@ -178,8 +179,8 @@ pub(super) fn publish(
 ) -> io::Result<Published> {
     let root = store(target)?;
     fs::create_dir_all(&root)?;
-    let mut staging = Staging::new(&root)?;
-    let candidate = staging.path.join("data");
+    let staging = Staging::new(&root)?;
+    let candidate = staging.path().join("data");
     write_synced(&candidate, fill)?;
     // Filling performs no store lock: readers retain the preceding committed
     // version, and another authoring request may publish while this IO runs.
@@ -196,7 +197,7 @@ pub(super) fn publish(
     let generation = next(&root, old)?;
     let payload = data(&root, generation);
     rename_no_replace(&candidate, &payload)?;
-    let commit = staging.path.join("commit");
+    let commit = staging.path().join("commit");
     if let Err(error) = write_synced(&commit, |file| file.write_all(b"P"))
         .and_then(|()| rename_no_replace(&commit, &record(&root, generation)))
     {
@@ -209,7 +210,7 @@ pub(super) fn publish(
     };
     let warning = cleanup(&root, keep).or_else(|| {
         staging
-            .cleanup()
+            .close()
             .err()
             .map(|e| format!("storage published; staging cleanup failed: {e}"))
     });
@@ -236,8 +237,8 @@ pub(super) fn remove(target: &Path) -> io::Result<Published> {
         .filter(|latest| latest.present)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "storage destination is absent"))?;
     let generation = next(&root, Some(old))?;
-    let mut staging = Staging::new(&root)?;
-    let commit = staging.path.join("commit");
+    let staging = Staging::new(&root)?;
+    let commit = staging.path().join("commit");
     write_synced(&commit, |file| file.write_all(b"D"))?;
     rename_no_replace(&commit, &record(&root, generation))?;
     let warning = cleanup(
@@ -249,7 +250,7 @@ pub(super) fn remove(target: &Path) -> io::Result<Published> {
     )
     .or_else(|| {
         staging
-            .cleanup()
+            .close()
             .err()
             .map(|e| format!("storage removed; staging cleanup failed: {e}"))
     });
@@ -307,10 +308,10 @@ mod tests {
     #[test]
     fn missing_store_is_absent_and_a_file_in_its_place_is_an_error() {
         let dir = directory();
-        let target = dir.path.join("new.data");
+        let target = dir.path().join("new.data");
         assert_eq!(open(&target).unwrap_err().kind(), io::ErrorKind::NotFound);
         assert_eq!(
-            entries(&dir.path.join("missing"), |_| true)
+            entries(&dir.path().join("missing"), |_| true)
                 .err()
                 .unwrap()
                 .kind(),
@@ -325,9 +326,9 @@ mod tests {
     #[test]
     fn committed_generations_preserve_reader_ownership_failures_and_tombstones() {
         let dir = directory();
-        let path = dir.path.join("slot.save");
+        let path = dir.path().join("slot.save");
         publish(&path, false, |file| file.write_all(b"old")).unwrap();
-        let mut retained = entries(&dir.path, |path| {
+        let mut retained = entries(dir.path(), |path| {
             path.extension().is_some_and(|e| e == "save")
         })
         .unwrap()
@@ -348,7 +349,7 @@ mod tests {
         retained.read_to_end(&mut old).unwrap();
         assert_eq!(old, b"old");
         assert_eq!(
-            entries(&dir.path, |_| true)
+            entries(dir.path(), |_| true)
                 .unwrap()
                 .map(|entry| entry.map(|(path, _)| path))
                 .collect::<io::Result<Vec<_>>>()
@@ -357,20 +358,20 @@ mod tests {
         );
         remove(&path).unwrap();
         assert_eq!(open(&path).err().unwrap().kind(), io::ErrorKind::NotFound);
-        assert_eq!(entries(&dir.path, |_| true).unwrap().count(), 0);
+        assert_eq!(entries(dir.path(), |_| true).unwrap().count(), 0);
         publish(&path, false, |file| file.write_all(b"again")).unwrap();
         assert_eq!(read(&path), b"again");
     }
     #[test]
     fn selected_entries_report_corruption_without_opening_unselected_files() {
         let dir = directory();
-        let save = dir.path.join("slot.save");
-        let other = dir.path.join("other.data");
+        let save = dir.path().join("slot.save");
+        let other = dir.path().join("other.data");
         publish(&save, false, |file| file.write_all(b"valid")).unwrap();
         publish(&other, false, |file| file.write_all(b"other")).unwrap();
         let other_root = store(&other).unwrap();
         fs::remove_file(data(&other_root, 1)).unwrap();
-        let mut selected = entries(&dir.path, |path| {
+        let mut selected = entries(dir.path(), |path| {
             path.extension().is_some_and(|e| e == "save")
         })
         .unwrap()
@@ -382,7 +383,7 @@ mod tests {
         assert_eq!(bytes, b"valid");
         fs::write(record(&other_root, 1), b"broken").unwrap();
         assert_eq!(
-            entries(&dir.path, |path| path
+            entries(dir.path(), |path| path
                 .extension()
                 .is_some_and(|e| e == "save"))
             .unwrap()
@@ -394,7 +395,7 @@ mod tests {
         fs::write(record(&other_root, 1), b"P").unwrap();
         fs::remove_file(data(&store(&save).unwrap(), 1)).unwrap();
         assert_eq!(
-            entries(&dir.path, |path| path
+            entries(dir.path(), |path| path
                 .extension()
                 .is_some_and(|e| e == "save"))
             .unwrap()
@@ -409,13 +410,13 @@ mod tests {
     fn dropping_enumeration_stops_before_opening_later_entries() {
         let dir = directory();
         for i in 0..3 {
-            publish(&dir.path.join(format!("{i}.save")), false, |file| {
+            publish(&dir.path().join(format!("{i}.save")), false, |file| {
                 file.write_all(b"x")
             })
             .unwrap();
         }
         let visited = std::cell::Cell::new(0);
-        let mut iter = entries(&dir.path, |_| {
+        let mut iter = entries(dir.path(), |_| {
             visited.set(visited.get() + 1);
             true
         })
@@ -427,55 +428,9 @@ mod tests {
         drop(file);
     }
     #[test]
-    #[ignore = "filesystem enumeration cost comparison"]
-    fn list_open_cost_comparison() {
-        use std::time::Instant;
-        let dir = directory();
-        for i in 0..64 {
-            let path = dir.path.join(format!("slot-{i}.save"));
-            publish(&path, false, |file| file.write_all(b"metadata")).unwrap();
-        }
-        let iterations = 10;
-        let before = Instant::now();
-        for _ in 0..iterations {
-            for entry in fs::read_dir(&dir.path).unwrap() {
-                let entry = entry.unwrap();
-                let name = entry.file_name();
-                let Some(logical) = name.to_str().and_then(|name| name.strip_prefix(PREFIX)) else {
-                    continue;
-                };
-                let path = dir.path.join(logical);
-                let commit = {
-                    let _lock = COMMIT.lock().unwrap();
-                    current(&entry.path()).unwrap()
-                };
-                if commit.is_some_and(|commit| commit.present) {
-                    let mut file = open(&path).unwrap();
-                    let mut byte = [0; 1];
-                    file.read_exact(&mut byte).unwrap();
-                }
-            }
-        }
-        let baseline = before.elapsed();
-        let before = Instant::now();
-        for _ in 0..iterations {
-            for entry in entries(&dir.path, |_| true).unwrap() {
-                let (_, mut file) = entry.unwrap();
-                let mut byte = [0; 1];
-                file.read_exact(&mut byte).unwrap();
-            }
-        }
-        let combined = before.elapsed();
-        println!(
-            "slots=64 iterations={iterations} old_generation_resolutions={} new_generation_resolutions={} old={baseline:?} new={combined:?}",
-            64 * iterations * 2,
-            64 * iterations
-        );
-    }
-    #[test]
     fn incomplete_generations_are_invisible_and_create_race_preserves_winner() {
         let dir = directory();
-        let path = dir.path.join("slot.save");
+        let path = dir.path().join("slot.save");
         let root = store(&path).unwrap();
         fs::create_dir_all(&root).unwrap();
         fs::write(data(&root, 1), b"uncommitted").unwrap();

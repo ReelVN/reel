@@ -69,7 +69,7 @@ impl FunctionBuilder<'_, '_> {
                 .error(ErrorKind::Limit, "pattern lowering depth exceeded"));
         }
         match self.l.m.hir().node(node).form {
-            Form::Name { .. } => {
+            Form::Name { .. } | Form::PatternField { pattern: None, .. } => {
                 let symbol = self.l.m.facts()[node.0 as usize]
                     .symbol
                     .expect("analyzed binding");
@@ -110,10 +110,34 @@ impl FunctionBuilder<'_, '_> {
                     self.release(item)?;
                 }
             }
+            Form::Sequence if self.l.m.hir().node(node).kind == H::ObjectPattern => {
+                self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
+                for field in self.l.m.hir().children(node) {
+                    let Form::PatternField {
+                        key,
+                        pattern,
+                        default: None,
+                    } = self.l.m.hir().node(field).form
+                    else {
+                        self.l.b.span = self.span(field);
+                        return Err(self.l.b.error(
+                            ErrorKind::Unsupported,
+                            "object binding defaults are not supported",
+                        ));
+                    };
+                    let name = self.l.b.string(self.l.m.hir().text(key.span))?;
+                    let index = self.constant(bc::Const::Utf8(name), field)?;
+                    let item = self.temp()?;
+                    self.op(bc::Opcode::IndexGet, item.0, value.0, index.0, field)?;
+                    self.release(index)?;
+                    self.prepare_binding(pattern.unwrap_or(field), item, depth + 1, bindings)?;
+                    self.release(item)?;
+                }
+            }
             _ => {
                 return Err(self.l.b.error(
                     ErrorKind::Unsupported,
-                    "binding pattern requires names, wildcards or fixed tuples",
+                    "binding pattern requires names, wildcards, fixed tuples or named fields",
                 ));
             }
         }

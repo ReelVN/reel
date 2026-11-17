@@ -129,7 +129,6 @@ fn one() -> GcBudget {
         edges: 1,
         weak: 1,
         objects: 1,
-        release_edges: 1,
         bytes: VALUE_CHUNK_BYTES,
     }
 }
@@ -140,7 +139,6 @@ fn roots_only(units: u32) -> GcBudget {
         edges: 0,
         weak: 0,
         objects: 0,
-        release_edges: 0,
         bytes: 0,
     }
 }
@@ -152,12 +150,7 @@ fn step(h: &mut Heap, f: &FrameSlots, budget: GcBudget) -> GcProgress {
     assert_eq!(a.count_total, 0, "GC must not allocate");
     let p = result.unwrap();
     assert!(p.units <= budget.units && p.roots <= budget.roots && p.edges <= budget.edges);
-    assert!(
-        p.weak <= budget.weak
-            && p.objects <= budget.objects
-            && p.release_edges <= budget.release_edges
-            && p.bytes <= budget.bytes
-    );
+    assert!(p.weak <= budget.weak && p.objects <= budget.objects && p.bytes <= budget.bytes);
     assert_eq!(
         p.roots,
         p.single_root_slots + p.range_descriptors + p.range_hole_blocks + p.range_values
@@ -181,6 +174,47 @@ fn single_roots(h: &mut Heap, f: &FrameSlots) {
     let slots = h.root_slots();
     assert_eq!(step(h, f, roots_only(slots)).single_root_slots, slots);
     assert_eq!(step(h, f, roots_only(1)).range_holes, 1); // sentinel
+}
+
+#[test]
+fn batch_root_scan_obeys_both_quotas_and_resumes_at_the_next_value() {
+    let mut h = heap();
+    let mut f = pool(&mut h);
+    let range = f
+        .open(&mut h, RootOwner(1), RootKind::TaskFrame, 8)
+        .unwrap();
+    let first = h.alloc_cell(Value::int(1)).unwrap();
+    let last = h.alloc_cell(Value::int(2)).unwrap();
+    f.write(&mut h, at(range, 1), first).unwrap();
+    f.write(&mut h, at(range, 7), last).unwrap();
+    h.begin_collection().unwrap();
+    single_roots(&mut h, &f);
+
+    let p = step(
+        &mut h,
+        &f,
+        GcBudget {
+            roots: 3,
+            ..roots_only(7)
+        },
+    );
+    assert_eq!((p.range_descriptors, p.range_values, p.units), (1, 2, 3));
+    assert!(p.blocked);
+    let p = step(
+        &mut h,
+        &f,
+        GcBudget {
+            units: 4,
+            ..roots_only(7)
+        },
+    );
+    assert_eq!((p.range_descriptors, p.range_values, p.units), (0, 4, 4));
+    let p = step(&mut h, &f, roots_only(2));
+    assert_eq!((p.range_descriptors, p.range_values, p.units), (0, 2, 2));
+
+    finish(&mut h, &f);
+    assert_eq!(h.cell_read(first).unwrap().as_int(), Some(1));
+    assert_eq!(h.cell_read(last).unwrap().as_int(), Some(2));
 }
 
 #[test]

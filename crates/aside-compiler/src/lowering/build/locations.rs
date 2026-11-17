@@ -20,6 +20,101 @@ enum PreparedLocation {
 }
 
 impl FunctionBuilder<'_, '_> {
+    pub(super) fn read_member(
+        &mut self,
+        out: bc::Reg,
+        receiver: bc::Reg,
+        name: bc::SymbolId,
+        node: h::NodeId,
+    ) -> Result<(), Box<Error>> {
+        if let Some(ty) = self.record_member_type(node) {
+            let key = self.l.b.string(&self.l.package.symbols[name.index()])?;
+            let key = self.constant(bc::Const::Utf8(key), node)?;
+            self.op(bc::Opcode::IndexGet, out.0, receiver.0, key.0, node)?;
+            self.release(key)?;
+            self.check_member_value(out, ty, node)
+        } else {
+            self.op(bc::Opcode::MemberGet, out.0, receiver.0, name.0, node)
+        }
+    }
+
+    fn record_member_type(&self, node: h::NodeId) -> Option<h::TypeId> {
+        let m = self.l.m;
+        if m.facts()[node.0 as usize].checks.0 & h::RuntimeChecks::RECORD_FIELD == 0 {
+            return None;
+        }
+        let Form::Member { object, key, .. } = m.hir().node(node).form else {
+            unreachable!("bound record field");
+        };
+        let fields = h::record_fields(m.types(), m.facts()[object.0 as usize].ty)?;
+        let name = key.name?;
+        fields
+            .binary_search_by_key(&name, |&(key, _)| key)
+            .ok()
+            .map(|i| fields[i].1)
+    }
+
+    fn check_member_value(
+        &mut self,
+        value: bc::Reg,
+        ty: h::TypeId,
+        node: h::NodeId,
+    ) -> Result<(), Box<Error>> {
+        if self.l.m.types()[ty.0 as usize] != h::Type::Any {
+            let ty = self.l.ty(ty, 0)?;
+            self.op(bc::Opcode::CheckType, value.0, ty.0, 0, node)?;
+        }
+        Ok(())
+    }
+    pub(super) fn value_of(
+        &mut self,
+        node: h::NodeId,
+        arguments: Option<h::NodeId>,
+        children: Option<h::NodeId>,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let argument = arguments.and_then(|arguments| {
+            let mut arguments = self.l.m.hir().children(arguments);
+            let argument = arguments.next()?;
+            (arguments.next().is_none()).then_some(argument)
+        });
+        let Some(Form::Argument { value, .. }) = argument
+            .map(|id| self.l.m.hir().node(id).form)
+            .filter(|_| children.is_none())
+        else {
+            return Err(self
+                .l
+                .b
+                .error(ErrorKind::Unsupported, "value_of requires one value"));
+        };
+        let Some(value) = self.value(value, depth + 1)? else {
+            return Ok(None);
+        };
+        let out = self.temp()?;
+        self.op(bc::Opcode::Move, out.0, value.0, 0, node)?;
+        let check = self.temp()?;
+        let binding = self.l.builtin(bc::BuiltinType::PropertyRef)?;
+        self.op(bc::Opcode::Is, check.0, value.0, binding.0, node)?;
+        let read = self.block()?;
+        let join = self.block()?;
+        self.terminate(
+            Terminator::BranchBool {
+                value: check,
+                yes: read,
+                no: join,
+            },
+            node,
+        )?;
+        self.release(check)?;
+        self.start(read)?;
+        let name = self.l.name("value")?;
+        self.op(bc::Opcode::MemberGet, out.0, value.0, name.0, node)?;
+        self.terminate(Terminator::Jump(join), node)?;
+        self.start(join)?;
+        self.release(value)?;
+        Ok(Some(out))
+    }
+
     pub(super) fn property_reference(
         &mut self,
         node: h::NodeId,
@@ -185,7 +280,7 @@ impl FunctionBuilder<'_, '_> {
                 self.l.b.span = self.span(node);
                 let out = self.temp()?;
                 // B01 binds class methods only; callable values are not rewritten.
-                self.op(bc::Opcode::MemberGet, out.0, object.0, symbol.0, node)?;
+                self.read_member(out, object, symbol, node)?;
                 Ok(out)
             }
         }
@@ -207,7 +302,12 @@ impl FunctionBuilder<'_, '_> {
                 object,
                 symbol,
                 node,
-            } => self.op(bc::Opcode::MemberSet, object.0, value.0, symbol.0, node),
+            } => {
+                if let Some(ty) = self.record_member_type(node) {
+                    self.check_member_value(value, ty, node)?;
+                }
+                self.op(bc::Opcode::MemberSet, object.0, value.0, symbol.0, node)
+            }
         }
     }
     fn release_location(&mut self, location: PreparedLocation) -> Result<(), Box<Error>> {

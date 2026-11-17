@@ -7,19 +7,24 @@ use reel_engine::{Epoch, Session, SessionId};
 use reel_package as rp;
 
 const SOURCE: &str = r#"
-    use std::resume::{flow, point, return_point};
+    use std::resume::{state, root, flow, point};
+    class Profile { let mut score:int=41; }
+    state(Profile,"profile"); root(main,"game");
     fn child(score:int) {
         flow("chapter.child");
         point("dialogue");
         narrator("Current release text.");
         score + 1
     }
-    fn main() {
+    fn opening(state:Profile) {
         flow("chapter.main");
         let bonus:int = 7;
-        return_point("child-result");
-        let result = child(41);
+        point("child-result");
+        let result = child(state.score);
         bonus + result
+    }
+    fn main(state:Profile=model(Profile())){
+        run_flow(opening,state)
     }
 "#;
 
@@ -50,7 +55,12 @@ fn stable_stack_is_available_after_debug_release_and_external_text_reencoding() 
     for profile in [BuildProfile::Debug, BuildProfile::Release] {
         let artifact = reel_cli::build_export(&checked, "main::main", profile).unwrap();
         let text_pool = artifact.text_pool.clone();
-        let mut package = rp::decode(&artifact.bytes, Default::default()).unwrap();
+        let mut package = rp::decode(
+            &artifact.bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(package.resume().table(), &checked.compilation.resume);
         assert_eq!(package.resume().table().flows.len(), 2);
         if profile == BuildProfile::Release {
@@ -64,10 +74,16 @@ fn stable_stack_is_available_after_debug_release_and_external_text_reencoding() 
             package.distribution(),
             package.effects(),
             package.resume().table(),
+            reel_engine::aside::source::types(),
             Default::default(),
         )
         .unwrap();
-        let mut decoded = rp::decode(&rebound, Default::default()).unwrap();
+        let mut decoded = rp::decode(
+            &rebound,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
         if let Some(pool) = text_pool {
             decoded = decoded.bind_text_pool(pool).unwrap();
         }
@@ -85,14 +101,19 @@ fn stable_stack_is_available_after_debug_release_and_external_text_reencoding() 
         loop {
             match advance(&mut vm, &mut session) {
                 RunOutcome::HostCall(ticket) => {
-                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(64))
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::RetryMinimum(64))
                         .unwrap();
                 }
                 RunOutcome::Waiting(_) => break,
                 outcome => panic!("expected dialogue wait: {outcome:?}"),
             }
         }
-        let mut capture = vm.vm().capture_resume(vm.resume_table(), task).unwrap();
+        let (flow_task, boundary) = vm.flow_boundary().unwrap();
+        assert_eq!(flow_task, task);
+        let mut capture = vm
+            .vm()
+            .capture_resume(vm.resume_table(), task, boundary)
+            .unwrap();
         assert_eq!(capture.descriptor().frames.len(), 2);
         let mut values = Vec::new();
         while let Some(binding) = capture.next_binding().unwrap() {
@@ -107,7 +128,12 @@ fn stable_stack_is_available_after_debug_release_and_external_text_reencoding() 
 fn asb_writer_rejects_a_resume_pc_from_another_layout() {
     let checked = reel_cli::check(SOURCE, "resume.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
-    let package = rp::decode(&artifact.bytes, Default::default()).unwrap();
+    let package = rp::decode(
+        &artifact.bytes,
+        reel_engine::aside::source::types(),
+        Default::default(),
+    )
+    .unwrap();
     let mut invalid = package.resume().table().clone();
     invalid
         .flows
@@ -122,8 +148,59 @@ fn asb_writer_rejects_a_resume_pc_from_another_layout() {
         None,
         package.effects(),
         &invalid,
+        reel_engine::aside::source::types(),
         Default::default(),
     )
     .unwrap_err();
     assert_eq!(error.kind, rp::ErrorKind::Metadata);
+}
+
+#[test]
+fn state_declarations_survive_asb_without_story_flows() {
+    let checked = reel_cli::check(
+        r#"
+            use std::resume::{state, root};
+            class Profile { let score:int=0; }
+            state(Profile,"profile");
+            root(main,"game");
+            fn main(value:Profile=Profile()){value}
+        "#,
+        "state-only.aside",
+    )
+    .unwrap();
+    let table = &checked.compilation.resume;
+    assert!(table.flows.is_empty());
+    assert_eq!(table.states.len(), 1);
+    assert!(table.root.is_some());
+    for profile in [BuildProfile::Debug, BuildProfile::Release] {
+        let artifact = reel_cli::build_export(&checked, "main::main", profile).unwrap();
+        let mut package = rp::decode(
+            &artifact.bytes,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
+        if let Some(pool) = artifact.text_pool {
+            package = package.bind_text_pool(pool).unwrap();
+        }
+        assert_eq!(package.resume().table(), table);
+        assert_eq!(package.resume().table().version, 1);
+        let encoded = rp::encode(
+            &package.program().encode(Default::default()).unwrap(),
+            package.metadata(),
+            package.distribution(),
+            package.effects(),
+            package.resume().table(),
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
+        let decoded = rp::decode(
+            &encoded,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(decoded.resume().table(), table);
+    }
 }

@@ -53,6 +53,7 @@ fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
         timeout,
         std::env::var("REEL_SCENARIO_GPU_CAPTURE").is_ok_and(|value| value == "1"),
         &clicks,
+        false,
     )
     .0
 }
@@ -104,6 +105,7 @@ fn execute_project_with_capture(
     timeout: Duration,
     gpu_capture: bool,
     clicks: &[(u64, [f64; 2])],
+    first_capture_pressure: bool,
 ) -> (Vec<audio::AudioStats>, Vec<scenario_capture::CaptureStats>) {
     // Scale game time and offline PCM together; timeouts and CPU slices retain wall time.
     let time_scale: f64 = std::env::var("REEL_SCENARIO_TIME_SCALE")
@@ -134,6 +136,28 @@ fn execute_project_with_capture(
         let distribution = reel_player::distribution::load(Path::new(&path), None).unwrap();
         let story = reel_player::distribution::story_from_package(distribution.package).unwrap();
         let options = |effects: &reel_engine::aside::source::EffectProducts| {
+            if let Some(resources) = &distribution.loose {
+                let target = std::env::consts::OS;
+                let (root, files) = reel_cli::playback::prepare_story_assets(
+                    &loaded.project_root,
+                    Some(resources.clone()),
+                    target,
+                    effects,
+                )
+                .unwrap();
+                return PlayerOptions {
+                    assets: AssetOptions {
+                        root: root.clone(),
+                        ..Default::default()
+                    },
+                    asset_packages: Some(distribution.packages.clone()),
+                    asset_overlay: Some(root),
+                    resource_target: target.into(),
+                    resource_files: files,
+                    catalogs: distribution.catalogs.clone().into(),
+                    ..Default::default()
+                };
+            }
             let shaders = reel_cli::prepare_effects::prepare(
                 &loaded.project_root,
                 effects,
@@ -234,7 +258,7 @@ fn execute_project_with_capture(
             .with_saves(RuntimeSaves::new(storage, 256 << 20))
             .with_media_factory(media);
         let mut captures = if gpu {
-            scenario_capture::ScenarioCapture::new(kind, gpu_capture)
+            scenario_capture::ScenarioCapture::new(kind, gpu_capture, first_capture_pressure)
         } else {
             scenario_capture::ScenarioCapture::cpu()
         };
@@ -508,6 +532,7 @@ fn project_scenario_pointer_clicks_reach_modal_buttons_after_accepted_frames() {
         Duration::from_secs(30),
         true,
         &[(1, [32., 32.])],
+        false,
     );
     assert_eq!(stats.len(), 2);
     for capture in stats {
@@ -527,25 +552,40 @@ fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size
     std::fs::write(
         &source,
         r##"
-        fn main() {
+        use std::resume::{state,root,flow,point};
+        use reel::types::Completion;
+        class World {let mut png:Bytes|null=null;}
+        state(World,"world");root(main,"game");
+        fn main(w:World=model(World())) {
             game.configure(width: 960, height: 540);
             let ink = particles("blue.png", x: 480, y: 270, seed: 7);
             stage.replace(stack(width: 960, height: 540, background: "#ff0000") {
                 image("blue.png", x: 800, width: 160, height: 540);
                 ink;
             });
-            emit(ink, burst: 1, lifetime: 60, size: 32);
-            await stage.presented();
-            let png = await stage.capture();
-            let checkpoint = saves.save("captured", thumbnail: png);
-            await checkpoint;
-            if !checkpoint.restored {
+            let gate=completion();
+            if await persistent.read("captured") == true {
+                spawn(||{await stage.presented();gate.resolve(null);});
+            }
+            run_flow(story,w,context:{gate:gate,ink:ink})
+        }
+        fn story(w:World,ctx) {
+            flow("capture");
+            emit(ctx.ink, burst:1, lifetime:60, size:32, velocity_y:0,
+                spread_x:0, spread_y:0, opacity_end:1);
+            spawn(||{
+                await stage.presented();
+                w.png=await stage.capture();
+                await saves.save("captured",thumbnail:w.png);
+                await persistent.write("captured",true);
                 await saves.load("captured");
                 throw "capture restore returned to old session";
-            }
+            });
+            let gate:Completion=ctx.gate;
+            point("saved");await gate;
             let thumbnail = await saves.thumbnail("captured");
-            if thumbnail != png { throw "thumbnail bytes differ after restore"; }
-            stage.replace(image(png, width: 960, height: 540));
+            if thumbnail != w.png { throw "thumbnail bytes differ after restore"; }
+            stage.replace(image(w.png, width: 960, height: 540));
             await stage.presented();
             await stage.capture();
         }
@@ -553,7 +593,7 @@ fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size
     )
     .unwrap();
     let (_, stats) =
-        execute_project_with_capture(project.path(), Duration::from_secs(90), true, &[]);
+        execute_project_with_capture(project.path(), Duration::from_secs(90), true, &[], true);
     assert_eq!(stats.len(), 2, "source and actual ASB must both render");
     for captured in stats {
         assert_eq!(captured.count, 2);
@@ -584,24 +624,30 @@ fn project_scenario_copies_saved_state_without_capturing_current_state() {
     std::fs::write(
         project.path().join("src/main.aside"),
         r#"
-        fn main() {
+        use std::resume::{state,root,flow,point};
+        use reel::types::Completion;
+        class World {let mut value:int=1;}
+        state(World,"world");root(main,"game");
+        fn main(w:World=model(World())) {
             stage.replace(stack(width: 320, height: 180));
-            await stage.presented();
-            let state = model({value: 1});
-            let saved = saves.save("source", title: "Original checkpoint");
-            await saved;
-            if saved.restored {
-                if state.value != 1 || await persistent.read("copied") != true {
-                    throw "copy did not retain the original saved continuation";
-                }
-                return;
+            let gate=completion();
+            if await persistent.read("copied") == true {
+                spawn(||{await stage.presented();gate.resolve(null);});
             }
-            state.value = 9;
+            run_flow(story,w,context:gate)
+        }
+        fn copy_and_load(w:World) {
+            await stage.presented();
+            let saved = saves.save("source", title: "Original checkpoint");
+            if await saved != null || saved.status != "succeeded" {
+                throw "save operation result";
+            }
+            w.value = 9;
             let copied = saves.copy(source: "source", destination: "backup");
-            if await copied != null || copied.status != "succeeded" || copied.restored {
+            if await copied != null || copied.status != "succeeded" {
                 throw "copy operation result";
             }
-            if state.value != 9 { throw "copy changed the current session"; }
+            if w.value != 9 { throw "copy changed the current session"; }
             let slots = await saves.list();
             if slots.len() != 2 || slots[0].id != "backup" || slots[1].id != "source"
                 || slots[0].title != "Original checkpoint"
@@ -624,6 +670,14 @@ fn project_scenario_copies_saved_state_without_capturing_current_state() {
             await saves.load("backup");
             throw "load returned to the old session";
         }
+        fn story(w:World,gate:Completion) {
+            flow("copy");
+            spawn(||copy_and_load(w));
+            point("saved");await gate;
+            if w.value != 1 || await persistent.read("copied") != true {
+                throw "copy did not retain the original saved continuation";
+            }
+        }
     "#,
     )
     .unwrap();
@@ -637,17 +691,34 @@ fn project_scenario_executes_assertions_across_save_restore_and_new_session() {
     std::fs::write(
         &source,
         r#"
-        fn main() {
+        use std::resume::{state,root,flow,point};
+        use reel::types::Completion;
+        class World {let marker:int=17;}
+        state(World,"world");root(main,"game");
+        fn main(w:World=model(World())) {
             stage.replace(stack(width: 320, height: 180));
-            await stage.presented();
-            let save = saves.save("checkpoint");
-            await save;
-            if !save.restored {
+            let gate=completion();
+            if await persistent.read("progress") == 42 {
+                spawn(||{await stage.presented();gate.resolve(null);});
+            }
+            run_flow(story,w,context:gate)
+        }
+        fn story(w:World,gate:Completion) {
+            flow("progress");
+            game.record("Chapter one\nAdditional detail");
+            spawn(||{
+                await stage.presented();
+                await saves.save("checkpoint");
+                let slots = await saves.list();
+                if slots[0].title != "Chapter one" { throw "default save title lost the transcript"; }
                 await persistent.write("progress", 42);
                 await saves.load("checkpoint");
                 throw "load returned to the old session";
+            });
+            point("saved");await gate;
+            if w.marker != 17 || await persistent.read("progress") != 42 {
+                throw "persistent rewind";
             }
-            if await persistent.read("progress") != 42 { throw "persistent rewind"; }
             game.start(finish);
             throw "start returned to the old session";
         }
@@ -665,7 +736,7 @@ fn project_scenario_executes_assertions_across_save_restore_and_new_session() {
 }
 
 #[test]
-fn project_scenario_retains_transition_assets_across_playing_save_restore() {
+fn project_scenario_rebuilds_transition_target_from_a_checkpoint_saved_during_playback() {
     let project = scenario_project();
     for (name, color) in [
         ("old.png", [255, 0, 0, 255]),
@@ -680,41 +751,57 @@ fn project_scenario_retains_transition_assets_across_playing_save_restore() {
     std::fs::write(
         &source,
         r##"
-        fn main() {
+        use std::resume::{state,root,flow,point};
+        use reel::types::Completion;
+        class World {let mut calls:int=0;let result:table={value:42};let mut changed:bool=false;}
+        state(World,"world");root(main,"game");
+        fn main(w:World=model(World())) {
             game.configure(width: 320, height: 180);
             let panel = stack(x: 30, width: 200, height: 180) {
-                image("old.png", width: 200, height: 180);
+                image(if w.changed {"new.png"} else {"old.png"}, width: 200, height: 180);
             };
             stage.replace(stack(width: 320, height: 180, background: "#000000") { panel; });
-            let state = {calls: 0, result: {value: 42}};
+            let gate=completion();
+            if await persistent.read("transition") == true {
+                spawn(||{await stage.presented();gate.resolve(null);});
+            }
+            run_flow(story,w,context:{gate:gate,panel:panel})
+        }
+        fn story(w:World,ctx) {
+            flow("transition");
+            let panel=ctx.panel;
             let changed = completion();
             let work = spawn(|| {
                 stage.transition(target: panel, duration: 0.4, mask: "mask.png", change: || {
-                    state.calls += 1;
+                    w.calls += 1;
+                    w.changed = true;
                     panel.clear();
                     panel.add(image("new.png", width: 200, height: 180));
                     changed.resolve(null);
-                    state.result
+                    w.result
                 })
             });
             await changed;
             await stage.presented();
             await run(delay(0.03));
-            let save = saves.save("transition");
-            await save;
-            if !save.restored {
+            spawn(||{
+                await stage.presented();
+                await saves.save("transition");
+                if await work != w.result { throw "transition callback result identity changed"; }
+                if w.calls != 1 { throw "transition callback executed twice"; }
+                await persistent.write("transition",true);
                 await saves.load("transition");
                 throw "load returned to the old transition";
-            }
-            if state.calls != 1 { throw "transition change replayed on restore"; }
-            if await work != state.result { throw "transition callback result identity changed"; }
-            if state.calls != 1 { throw "transition callback executed twice"; }
-            let zero = stage.transition(target: panel, duration: 0, mask: "unused.png", change: || {
-                state.calls += 1;
-                panel.x = 90;
-                state.result
             });
-            if zero != state.result || state.calls != 2 || panel.x != 90 {
+            let gate:Completion=ctx.gate;
+            point("saved");await gate;
+            if w.calls != 1 || !w.changed { throw "transition change replayed on restore"; }
+            let zero = stage.transition(target: panel, duration: 0, mask: "unused.png", change: || {
+                w.calls += 1;
+                panel.x = 90;
+                w.result
+            });
+            if zero != w.result || w.calls != 2 || panel.x != 90 {
                 throw "zero-duration transition did not finish its new frame";
             }
             stage.transition(target: panel, duration: 0.02, change: || {
@@ -728,12 +815,12 @@ fn project_scenario_retains_transition_assets_across_playing_save_restore() {
     "##,
     )
     .unwrap();
-    execute_project_with_capture(project.path(), Duration::from_secs(30), false, &[]);
+    execute_project_with_capture(project.path(), Duration::from_secs(30), false, &[], false);
 }
 
 #[test]
-#[ignore = "requires a GPU adapter for transition pixels and saved drawing restoration"]
-fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawing() {
+#[ignore = "requires a GPU adapter for transition pixels and current Root reconstruction"]
+fn project_scenario_gpu_transition_keeps_ancestor_opacity_after_root_reconstruction() {
     let project = scenario_project();
     for (name, color) in [("old.png", [255, 0, 0, 255]), ("new.png", [0, 0, 255, 255])] {
         image::RgbaImage::from_pixel(16, 16, image::Rgba(color))
@@ -744,7 +831,19 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawi
     std::fs::write(
         &source,
         r##"
-        fn main() {
+        use std::resume::{state,root,flow,point};
+        use reel::types::Completion;
+        class World {let mut calls:int=0;let mut changed:bool=false;}
+        state(World,"world");root(main,"game");
+        fn reveal_new(panel,changed,update) {
+            stage.transition(target:panel,duration:2,change:||{
+                update();
+                panel.clear();
+                panel.add(image("new.png",width:640,height:360));
+                changed.resolve(null);
+            })
+        }
+        fn main(w:World=model(World())) {
             game.configure(width: 960, height: 540);
             let panel = stack(width: 640, height: 360) {
                 image("old.png", width: 640, height: 360);
@@ -754,39 +853,52 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawi
                     panel;
                 }
             });
+            let gate=completion();
+            if await persistent.read("middle") == true {
+                if !w.changed || w.calls!=1 {throw "lost the saved transition stage";}
+                spawn(||{
+                    await stage.presented();
+                    let changed=completion();
+                    let animation=spawn(||reveal_new(panel,changed,||{}));
+                    await changed;
+                    await stage.presented();
+                    await run(delay(0.25));
+                    await stage.capture();
+                    await animation;
+                    gate.resolve(null);
+                });
+            }
+            run_flow(story,w,context:{gate:gate,panel:panel})
+        }
+        fn story(w:World,ctx) {
+            flow("transition");
             await stage.presented();
             await stage.capture();
+            let panel=ctx.panel;
             let changed = completion();
-            let state = {calls: 0};
-            let work = spawn(|| {
-                stage.transition(target: panel, duration: 2, change: || {
-                    state.calls += 1;
-                    panel.clear();
-                    panel.add(image("new.png", width: 640, height: 360));
-                    changed.resolve(null);
-                });
-            });
+            spawn(||reveal_new(panel,changed,||{w.calls+=1;w.changed=true;}));
             await changed;
             await stage.presented();
             await run(delay(0.25));
             await stage.capture();
-            let save = saves.save("middle");
-            await save;
-            if !save.restored {
+            spawn(||{
+                await stage.presented();
+                await saves.save("middle");
+                await persistent.write("middle",true);
                 await saves.load("middle");
                 throw "load returned to old transition";
-            }
+            });
+            let gate:Completion=ctx.gate;
+            point("saved");await gate;
+            if w.calls != 1 { throw "saved transition replayed the business change"; }
             await stage.presented();
-            await stage.capture();
-            await work;
-            if state.calls != 1 { throw "saved transition replayed change"; }
             await stage.capture();
         }
     "##,
     )
     .unwrap();
     let (_, stats) =
-        execute_project_with_capture(project.path(), Duration::from_secs(90), true, &[]);
+        execute_project_with_capture(project.path(), Duration::from_secs(90), true, &[], false);
     assert_eq!(stats.len(), 2);
     for stats in stats {
         assert_eq!(
@@ -827,28 +939,46 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
     )
     .unwrap();
     let source = project.path().join("src/main.aside");
-    std::fs::write(&source, r#"
-        fn main() {
+    std::fs::write(
+        &source,
+        r#"
+        use std::resume::{state,root,flow,point};
+        use reel::types::{Completion,Playback};
+        class World {let mut sound:Playback|null=null;let mut position:float=0.0;}
+        state(World,"world");root(main,"game");
+        fn main(w:World=model(World())) {
             stage.replace(stack(width: 320, height: 180));
+            let gate=completion();
+            if await persistent.read("queued") == true {
+                spawn(||{await stage.presented();gate.resolve(null);});
+            }
+            run_flow(story,w,context:gate)
+        }
+        fn story(w:World,gate:Completion) {
+            flow("audio");
             await stage.presented();
             let sound = audio.play("chime.wav", group: "music", volume: 0.5,
                 looping: true, loop_start: 0.02, loop_end: 0.2);
+            w.sound=sound;
             if !(await audio.at(sound,0.03)) {throw "queue position not reached";}
             pause(sound);
             await run(delay(0.02));
             audio.queue(sound, "chime.wav", start: 0.1);
-            let position = audio.position(sound);
-            if position <= 0 { throw "audio did not consume PCM"; }
-            let save = saves.save("audio");
-            await save;
-            if !save.restored {
+            w.position=audio.position(sound);
+            if w.position <= 0 { throw "audio did not consume PCM"; }
+            spawn(||{
+                await stage.presented();
+                await saves.save("audio");
                 audio.stop(sound);
                 if await sound != "Stopped" { throw "stop did not settle"; }
+                await persistent.write("queued",true);
                 await saves.load("audio");
                 throw "load returned to old audio";
-            }
+            });
+            point("saved");await gate;
             await run(delay(0.02));
-            if audio.position(sound) < position - 0.001 || audio.position(sound) > position + 0.001 {
+            if sound!=w.sound || audio.position(sound) < w.position - 0.001
+                || audio.position(sound) > w.position + 0.001 {
                 throw "restored paused position changed";
             }
             resume(sound);
@@ -864,7 +994,9 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
                 throw "new session lost media backend";
             }
         }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     for mixed in execute_project(project.path(), Duration::from_secs(90)) {
         assert!(mixed.frames > 0, "offline device did not consume frames");
         assert!(
@@ -888,33 +1020,48 @@ fn project_scenario_loads_effects_catalogs_images_and_audio_from_release_archive
     std::fs::write(
         project.path().join("src/main.aside"),
         r#"
+        use std::resume::{state,root,flow,point};
+        use reel::types::Completion;
+        class World {let marker:int=17;}
+        state(World,"world");root(main,"game");
         fn tint(pixel, amount: float = 0.5) -> (float, float, float, float) {
             let (r, g, b, a) = pixel.sample(pixel.uv);
             (r, g, b * amount, a)
         }
-        fn main() {
+        fn main(w:World=model(World())) {
             localization.set_locale("en");
             let caption = tr("原文", {en: "Prepared resources"});
             if caption != "Prepared resources" { throw "packaged translation missing"; }
-            let root = stack(width: 64, height: 64, effect: effect(tint)) {
+            let page = stack(width: 64, height: 64, effect: effect(tint)) {
                 image("tile.png", width: 64, height: 64);
             };
-            stage.replace(root);
-            await stage.presented(owner: root);
-            let checkpoint = saves.save("resources");
-            await checkpoint;
-            if !checkpoint.restored {
+            stage.replace(page);
+            let gate=completion();
+            if await persistent.read("resources") == true {
+                spawn(||{await stage.presented(owner:page);gate.resolve(null);});
+            }
+            run_flow(story,w,context:{gate:gate,page:page})
+        }
+        fn story(w:World,ctx) {
+            flow("resources");
+            let page=ctx.page;
+            spawn(||{
+                await stage.presented(owner:page);
+                await saves.save("resources");
+                await persistent.write("resources",true);
                 await saves.load("resources");
                 throw "resource restore returned to old session";
-            }
-            await stage.presented(owner: root);
-            if tr("再见", {en: "Restored resources"}) != "Restored resources" {
+            });
+            let gate:Completion=ctx.gate;
+            point("saved");await gate;
+            await stage.presented(owner:page);
+            if w.marker!=17 || tr("再见", {en: "Restored resources"}) != "Restored resources" {
                 throw "restored catalog missing";
             }
-            if await audio.play("chime.wav", owner: root) != "Completed" {
+            if await audio.play("chime.wav", owner:page) != "Completed" {
                 throw "packaged audio failed";
             }
-            root.remove();
+            page.remove();
         }
     "#,
     )
@@ -939,12 +1086,25 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
     std::fs::write(
         &source,
         r#"
-        fn main() {
-            let root=stack(width:320,height:180);
-            let sound=audio.play("chime.wav",paused:true);
-            let cursor=derive(||audio.position(sound));
+        use std::resume::{state,root,flow,point};
+        use reel::types::{Completion,Playback};
+        class World {let mut sound:Playback|null=null;}
+        state(World,"world");root(main,"game");
+        fn main(w:World=model(World())) {
+            let cursor=derive(||if w.sound==null{0.0}else{audio.position(w.sound)});
             let marker=stack(width:20,height:20,x:derive(||cursor.value*100));
-            root.add(marker); stage.replace(root);
+            stage.replace(stack(width:320,height:180){marker;});
+            let gate=completion();
+            if await persistent.read("position") == true {
+                spawn(||{await stage.presented();gate.resolve(null);});
+            }
+            run_flow(story,w,context:{gate:gate,marker:marker})
+        }
+        fn story(w:World,ctx) {
+            flow("position");
+            let sound=audio.play("chime.wav",paused:true);
+            w.sound=sound;
+            let marker=ctx.marker;
             await stage.presented();
             if audio.position(sound)!=0 || marker.x!=0 {throw "paused loading advanced";}
             let cue=audio.at(sound,0.125);
@@ -952,9 +1112,15 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
             if audio.position(sound)!=0.05 {throw "seek observation";}
             await stage.presented();
             if marker.x!=5 {throw "seek binding";}
-            let save=saves.save("position");
-            await save;
-            if !save.restored {await saves.load("position"); throw "old session returned";}
+            spawn(||{
+                await stage.presented();
+                await saves.save("position");
+                await persistent.write("position",true);
+                await saves.load("position");
+                throw "old session returned";
+            });
+            let gate:Completion=ctx.gate;
+            point("saved");await gate;
             if audio.position(sound)!=0.05 || marker.x!=5 {throw "restored position";}
             resume(sound);
             if !(await cue) || !(await cue) {throw "restored position wait";}

@@ -138,17 +138,11 @@ pub(super) fn probe<'a>(
     mut grid: Grid,
     uncropped: bool,
 ) -> Option<Probe<'a>> {
-    if !drawing.transitions().is_empty()
-        || !drawing.masks().is_empty()
-        || !drawing.capture_exclusions().is_empty()
-    {
-        return None;
-    }
     let commands = drawing.commands().get(range)?;
     let FrameOp::PushGroup(group) = &commands.first()?.op else {
         return None;
     };
-    if !matches!(commands.last()?.op, FrameOp::PopGroup) {
+    if group.mask.is_some() || !matches!(commands.last()?.op, FrameOp::PopGroup) {
         return None;
     }
     let outer = Affine::new(grid.source_transform.map(f64::from_bits));

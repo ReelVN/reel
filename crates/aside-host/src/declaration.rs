@@ -6,6 +6,7 @@ use aside_vm::bytecode::{
     SymbolId, TypeDef, TypeId,
 };
 pub use aside_vm::{HostMethodSupport, HostTypeSupport};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeclarationError(pub &'static str);
@@ -184,6 +185,7 @@ pub fn lower(
             natives: &links,
             expansions,
         },
+        types,
         options,
     )
     .map_err(BuildError::Lowering)
@@ -274,7 +276,7 @@ pub fn lower_project_with_progress(
         })
         .collect::<Vec<_>>();
     lowering::compile_project_with_progress(
-        modules, plan, &seed, &links, expansions, options, progress,
+        modules, plan, &seed, types, &links, expansions, options, progress,
     )
 }
 
@@ -291,24 +293,28 @@ pub fn runtime_support(
         .require_text_pool()
         .map_err(|_| DeclarationError("native defaults require a bound text pool"))?;
     let package = program.package();
+    let mut package_natives = HashMap::with_capacity(package.natives.len());
+    for native in &package.natives {
+        let name = package.symbols[native.symbol.index()].as_str();
+        package_natives.entry(name).or_insert(native);
+    }
+    let mut trusted_names = HashSet::with_capacity(contracts.len());
     let mut natives = Vec::new();
-    for (index, contract) in contracts.iter().enumerate() {
-        if contracts[..index]
-            .iter()
-            .any(|other| other.symbol == contract.symbol)
-        {
+    for contract in contracts {
+        if !trusted_names.insert(contract.symbol.as_str()) {
             return Err(DeclarationError("duplicate trusted native"));
         }
         // Unused host natives need not have names/types in a smaller package.
-        let Some(native) = package
-            .natives
-            .iter()
-            .find(|native| package.symbols.get(native.symbol.index()) == Some(&contract.symbol))
-        else {
+        let Some(native) = package_natives.get(contract.symbol.as_str()) else {
             continue;
         };
         let declared = &package.signatures[native.signature.index()];
-        let symbol = |name: &str| {
+        let symbol = |name: &str, declared: Option<&Parameter>| {
+            if let Some(parameter) = declared
+                && package.symbols[parameter.name.index()] == name
+            {
+                return Ok(parameter.name);
+            }
             package
                 .symbols
                 .iter()
@@ -330,7 +336,7 @@ pub fn runtime_support(
             .enumerate()
             .map(|(index, parameter)| {
                 Ok(Parameter {
-                    name: symbol(&parameter.name)?,
+                    name: symbol(&parameter.name, declared.parameters.get(index))?,
                     ty: ty(&parameter.ty)?,
                     mutable: false,
                     default: parameter
@@ -353,7 +359,7 @@ pub fn runtime_support(
                     .as_ref()
                     .map(|name| {
                         Ok(Parameter {
-                            name: symbol(name)?,
+                            name: symbol(name, declared.rest.as_ref())?,
                             ty: ty(&BuiltinType::Array)?,
                             mutable: false,
                             default: None,

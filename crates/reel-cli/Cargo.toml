@@ -46,11 +46,11 @@ reel-engine = { path = "../reel-engine" }
 reel-render = { path = "../reel-render" }
 reel-ui = { path = "../reel-ui" }
 reel-core = { path = "../reel-core" }
-image = { workspace = true, features = ["png", "jpeg"] }
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
 rgbcx = { version = "=0.1.2", features = ["parallel"] }
 reel-player = { path = "../reel-player" }
 reel-storage = { path = "../reel-storage" }
-reel-media = { path = "../reel-media", default-features = false, features = ["encode"] }
+reel-media = { path = "../reel-media", default-features = false, features = ["encode", "video-inspect"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.190"

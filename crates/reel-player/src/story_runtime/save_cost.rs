@@ -15,7 +15,7 @@ use reel_core::{
 };
 use reel_engine::{
     Epoch, Session, SessionId,
-    aside::{VmLimits, data::DataDocument, saves::SaveSlot, snapshot::SessionSnapshot},
+    aside::{VmLimits, checkpoint::CheckpointRecord, data::DataDocument, saves::SaveSlot},
 };
 use reel_ui::{
     app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
@@ -76,14 +76,14 @@ impl SaveStorage for MeasuredStorage {
     fn write(
         &self,
         slot: SaveSlot,
-        snapshot: &SessionSnapshot,
+        checkpoint: &CheckpointRecord,
         thumbnail: Option<&[u8]>,
     ) -> Result<(), StorageError> {
         self.measure("encode_compress_publish", || {
-            self.directory.write(slot, snapshot, thumbnail)
+            self.directory.write(slot, checkpoint, thumbnail)
         })
     }
-    fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError> {
+    fn read(&self, slot: &str) -> Result<CheckpointRecord, StorageError> {
         self.measure("read_decompress_decode", || self.directory.read(slot))
     }
     fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError> {
@@ -207,13 +207,13 @@ impl Flow {
     }
 }
 
-struct Screen {
+pub(super) struct Screen {
     bridge: PresentationBridge,
     root: WidgetId,
     frame: u64,
 }
 impl Screen {
-    fn new(runtime: &StoryRuntime) -> Self {
+    pub(super) fn new(runtime: &StoryRuntime) -> Self {
         let widget = runtime.driver().widget().prepare();
         let root = widget.id();
         let tree = RenderRoot::new(
@@ -246,7 +246,7 @@ impl Screen {
             frame: 0,
         }
     }
-    fn present(&mut self, runtime: &mut StoryRuntime) -> bool {
+    pub(super) fn present(&mut self, runtime: &mut StoryRuntime) -> bool {
         runtime
             .driver_mut()
             .unwrap()
@@ -274,10 +274,11 @@ impl Screen {
             .unwrap()
             .presented(&self.bridge, &receipt)
             .unwrap();
+        runtime.remember_dialogue(&receipt);
         runtime.wake_input();
         true
     }
-    fn click(&mut self, runtime: &mut StoryRuntime, x: f64) {
+    pub(super) fn click(&mut self, runtime: &mut StoryRuntime, x: f64) {
         let pointer = PointerInfo {
             pointer_id: Some(PointerId::PRIMARY),
             persistent_device_id: None,
@@ -323,7 +324,7 @@ fn drain(runtime: &mut StoryRuntime, flow: &mut Flow) {
         std::thread::yield_now();
     }
 }
-fn has_text(runtime: &StoryRuntime, expected: &str) {
+pub(super) fn has_text(runtime: &StoryRuntime, expected: &str) {
     assert!(
         runtime
             .driver()
@@ -353,33 +354,47 @@ fn save_flow(rows: usize, report: bool) {
     });
     let source = format!(
         r#"
-        fn main() {{
-            game.configure(width: 800, height: 600);
-            let items = [];
-            for i in 0..{rows} {{
-                items.append({{id: i, name: f"Inventory {{i}}: the observatory map and a brass key.", amount: i + 1}});
-                game.record(f"History {{i}}: We crossed the courtyard and watched the last light leave the windows.");
-            }}
-            let data = model({{items: items, resumes: 0, clicks: 0, restored: false, done: false}});
-            let gate = completion();
-            let worker = spawn(|| {{ await gate; data.done = true; }});
-            stage.replace(stack(width: 800, height: 600) {{
-                button("Save", width: 90, height: 40, on_click: || {{
-                    await persistent.write("proof", {{rows: {rows}}});
-                    let request = saves.save("slot", title: "Cost fixture");
-                    await request;
-                    data.resumes += 1;
-                    data.restored = request.restored;
-                }});
-                button("Load", x: 100, width: 90, height: 40, on_click: || {{ await saves.load("slot"); throw "old load callback resumed"; }});
-                button("Complete", x: 200, width: 90, height: 40, on_click: || {{ data.clicks += 1; gate.resolve(null); }});
-                text(value: derive(|| f"resumes={{data.resumes}} restored={{data.restored}} clicks={{data.clicks}} done={{data.done}}"), y: 50);
-                column(y: 100, gap: 4) {{ for i in 0..12 {{ text(value: derive(|| f"{{data.items[i].name}} x{{data.items[i].amount}}")); }} }};
-            }});
-            await worker;
+        use std::resume::{{state,root,flow,point}};
+        class World {{
+            let mut items:array=[];
+            let mut resumes:int=0;
+            let mut clicks:int=0;
+            let mut restored:bool=false;
+            let mut done:bool=false;
+            let mut bootstraps:int=0;
+        }}
+        state(World,"cost-world");root(main,"save-cost");
+        fn story(data:World) {{
+            flow("cost-story");
+            point("complete");choose([{{key:"complete",label:"Complete"}}]);
+            data.clicks+=1;data.done=true;
             if data.items.len() != {rows} || data.items[{last}].amount != {rows} || game.history().len() != {rows} {{ throw "restored data changed"; }}
             await stage.presented();
             if data.resumes != 1 || data.clicks != 1 {{ throw "continuation repeated"; }}
+        }}
+        fn main(data:World=model(World())) {{
+            game.configure(width: 800, height: 600);
+            if data.bootstraps==0 {{
+                for i in 0..{rows} {{
+                    data.items.append({{id: i, name: f"Inventory {{i}}: the observatory map and a brass key.", amount: i + 1}});
+                    game.record(f"History {{i}}: We crossed the courtyard and watched the last light leave the windows.");
+                }}
+            }}
+            data.restored=data.bootstraps!=0;data.bootstraps+=1;
+            let choice=game.choice();
+            stage.replace(stack(width: 800, height: 600) {{
+                button("Save", width: 90, height: 40, on_click: || {{
+                    if !saves.can_capture() {{ throw "save point unavailable"; }}
+                    await persistent.write("proof", {{rows: {rows}}});
+                    data.resumes += 1;
+                    await saves.save("slot", title: "Cost fixture");
+                }});
+                button("Load", x: 100, width: 90, height: 40, on_click: || {{ await saves.load("slot"); throw "old load callback resumed"; }});
+                button("Complete", x: 200, width: 90, height: 40, on_click: || {{ choice.select(choice.options[0].id); }});
+                text(value: derive(|| f"resumes={{data.resumes}} restored={{data.restored}} clicks={{data.clicks}} done={{data.done}}"), y: 50);
+                column(y: 100, gap: 4) {{ for i in 0..12 {{ text(value: derive(|| f"{{data.items[i].name}} x{{data.items[i].amount}}")); }} }};
+            }});
+            run_flow(story,data);
         }}
     "#,
         last = rows - 1
@@ -437,7 +452,7 @@ fn save_flow(rows: usize, report: bool) {
         load.tick(&mut runtime);
         std::thread::yield_now();
     }
-    has_text(&runtime, "resumes=0 restored=false clicks=0 done=false");
+    has_text(&runtime, "resumes=1 restored=true clicks=0 done=false");
     let first_frame = Instant::now();
     assert!(screen.present(&mut runtime));
     let first_frame_elapsed = first_frame.elapsed();

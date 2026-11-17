@@ -115,11 +115,7 @@ impl Session {
         // Appended combining marks may extend the last visible grapheme. Keep that
         // whole grapheme visible rather than hiding its already displayed base.
         let revealed = boundaries.partition_point(|&b| b < line.reveal().visible_bytes.end);
-        let history_index = self
-            .reading_data
-            .history
-            .binary_search_by_key(&id.generation, |g| g.interaction_id.generation)
-            .ok();
+        let history_index = self.reading_data.history.find_interaction(id.generation);
         let history_text = if let Some(index) = history_index {
             if let Some(previous) = self.reading_data.history[index].lines.first() {
                 match history {
@@ -174,7 +170,9 @@ impl Session {
         line.advance_requested = false;
         d.revision = d.revision.wrapping_add(1);
         if let (Some(index), Some(text)) = (history_index, history_text) {
-            self.reading_data.history[index].lines[0].content.fallback = text;
+            self.reading_data.history.edit(index, |group| {
+                group.lines[0].content.fallback = text;
+            });
         }
         d.text_revision = d.text_revision.wrapping_add(1);
         self.check_skip_boundary();
@@ -243,38 +241,6 @@ mod tests {
         assert_eq!(line.visible_text(), "A\u{301}");
         assert_eq!(line.grapheme_boundaries(), [0, 3, 4]);
         assert!(line.content.styled().style_at(1).unwrap().bold);
-    }
-
-    #[test]
-    #[ignore = "host text append cost comparison"]
-    fn incremental_rich_append_cost() {
-        use std::{hint::black_box, time::Instant};
-        let suffix = Text::parse("[ruby=ほし]星[/ruby][b]中文 e\u{301} 👩🏽‍🚀[/b]").unwrap();
-        for incremental in [false, true] {
-            let start = Instant::now();
-            let mut text = Text::default();
-            let mut offsets = vec![0];
-            for _ in 0..512 {
-                if incremental {
-                    text = text.concat(&suffix).unwrap();
-                    offsets = boundaries(&text, &offsets).unwrap();
-                } else {
-                    let mut source = text.markup().map_or(String::new(), |s| s.to_string());
-                    source.push_str(suffix.markup().unwrap());
-                    text = Text::parse(source).unwrap();
-                    offsets = Vec::with_capacity(text.graphemes(true).count() + 1);
-                    offsets.push(0);
-                    offsets.extend(text.grapheme_indices(true).map(|(i, g)| i + g.len()));
-                }
-                black_box((&text, &offsets));
-            }
-            eprintln!(
-                "rich_append incremental={incremental} bytes={} graphemes={} elapsed_us={}",
-                text.len(),
-                offsets.len() - 1,
-                start.elapsed().as_micros()
-            );
-        }
     }
 
     #[test]

@@ -433,6 +433,10 @@ impl Assets {
             limit,
         )
     }
+    /// Keep admitted work and use visible priority and budgets for its next steps.
+    pub(crate) fn promote_prefetch(&self, id: LoadId) -> bool {
+        self.0.borrow_mut().promote_prefetch(id)
+    }
     fn request_source(
         &self,
         source: AssetSource,
@@ -673,6 +677,7 @@ impl Service {
         {
             return;
         }
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AssetPump);
         #[cfg(test)]
         {
             self.pumps += 1;
@@ -941,6 +946,19 @@ impl Service {
                     load.input = None;
                     load.phase = Phase::ImageManifest(manifest);
                     return Ok(());
+                }
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                if probe
+                    && let Some((size, output)) =
+                        crate::artwork::rgba8_png_shape(load.input.as_ref().unwrap().as_slice())
+                    && let Some(temporary) = output.checked_mul(2)
+                {
+                    // Reserve the same storage as the decoder's full probe.
+                    load.size = size;
+                    load.output = output;
+                    load.temporary = temporary;
+                    load.phase = Phase::Decode;
+                    probe = false;
                 }
                 if probe
                     && load

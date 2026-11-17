@@ -1014,7 +1014,7 @@ pub(crate) fn build_frame(
     .map_err(|e| format!("build: {e:?}"))?;
     if let Some(receipt) = recorded_projection {
         build
-            .set_transitions(receipt.frame_transitions().to_vec())
+            .set_transitions(std::mem::take(&mut receipt.frame_transitions))
             .map_err(|error| format!("transition frame: {error:?}"))?;
     }
     let mut budget = StepBudget {

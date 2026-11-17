@@ -194,8 +194,32 @@ pub enum Phase {
     RenderTier16f1x,
     /// Desktop preparations that selected RGBA8 with one sample; instantaneous count.
     RenderTier8u1x,
+    /// Create a sampled desktop image's native texture and view.
+    ImageTextureCreate,
+    /// Allocate a sampled desktop image before creating its view.
+    ImageNativeAllocate,
+    /// Create the shader-visible view of a sampled desktop image.
+    ImageNativeView,
+    /// Shape styled text into positioned font runs.
+    UiTextShape,
+    /// Break shaped text into lines.
+    UiTextWrap,
+    /// Index glyph bounds for viewport culling.
+    UiTextPaintBounds,
+    /// Advance and route shared asset IO and decode completions.
+    AssetPump,
+    /// Attach atlas views and publish their resolved backing pages.
+    AssetAtlas,
+    /// Publish audio decoder completions to pending segments.
+    MediaDecoded,
+    /// Advance loaded audio activities and submit ready segments.
+    MediaActivities,
+    /// Reclaim mixer activity state and deliver terminal events.
+    MediaAudioService,
+    /// Measure alpha support and opacity when registering immutable image pixels.
+    ImageCoverage,
 }
-pub const NAMES: [&str; 109] = [
+pub const NAMES: [&str; 121] = [
     "input",
     "tick",
     "session",
@@ -305,6 +329,18 @@ pub const NAMES: [&str; 109] = [
     "render_tier_16f_4x",
     "render_tier_16f_1x",
     "render_tier_8u_1x",
+    "image_texture_create",
+    "image_native_allocate",
+    "image_native_view",
+    "ui_text_shape",
+    "ui_text_wrap",
+    "ui_text_paint_bounds",
+    "asset_pump",
+    "asset_atlas",
+    "media_decoded",
+    "media_activities",
+    "media_audio_service",
+    "image_coverage",
 ];
 
 /// Record an instantaneous event in the phase's call count without a duration.

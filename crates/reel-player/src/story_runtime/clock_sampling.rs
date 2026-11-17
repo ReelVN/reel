@@ -8,7 +8,13 @@ fn runtime_control_footprint() {
     assert!(size_of::<StoryRuntime>() < 4096);
     assert!(
         size_of::<
-            Result<crate::saves::Capture, (Box<AsideSessionUi>, reel_engine::aside::AdapterError)>,
+            Result<
+                crate::saves::Capture,
+                (
+                    Box<AsideSessionUi>,
+                    reel_engine::aside::checkpoint::CheckpointError
+                ),
+            >,
         >() < 512
     );
 }
@@ -118,6 +124,23 @@ fn animation_cadence_follows_high_refresh_displays_and_explicit_game_rates() {
             }
         }
     }
+}
+
+#[test]
+fn native_animation_uses_presentation_cadence_during_fast_story_clocks() {
+    use reel_core::clock::MonoTime;
+
+    let mut story = runtime(
+        r#"fn main() {
+            game.configure(frame_rate:60);
+            let timer=clock(interval:0.001);
+            stage.replace(text("clock",x:derive(||timer.elapsed)));
+            narrator("waiting");
+        }"#,
+    );
+    settle(&mut story, 0);
+    assert_eq!(story.wake_deadline(MonoTime(0)), Some(MonoTime(1_000_000)));
+    assert_eq!(story.animation_deadline(), Some(MonoTime(16_666_667)));
 }
 
 #[test]

@@ -19,12 +19,14 @@ const REQUIRED: u32 = 1;
 
 /// Canonical writer: header, B01, metadata, distribution, effects, resume, index.
 /// Reuses the serialization's verified program for metadata validation.
+/// Host registrations validate nominal method targets in continuation metadata.
 pub fn encode(
     encoded: &bc::EncodedProgram,
     metadata: &Metadata,
     distribution: Option<&Distribution>,
     effects: &EffectProducts,
     resume: &ResumeTable,
+    host_types: &[bc::HostTypeSupport],
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
     let bytecode = encoded.as_bytes();
@@ -36,8 +38,8 @@ pub fn encode(
     )?;
     metadata.validate(encoded.program(), bytecode, limits, &mut budget)?;
     effects.validate(encoded.program(), limits, &mut budget)?;
-    verify_resume(encoded.program(), resume.clone(), limits)?;
-    let resume_bytes = if resume.flows.is_empty() {
+    verify_resume(encoded.program(), resume.clone(), host_types, limits)?;
+    let resume_bytes = if resume.is_empty() {
         Vec::new()
     } else {
         json_bytes(resume, limits)?
@@ -156,7 +158,12 @@ fn index_entry(out: &mut Vec<u8>, kind: u32, offset: usize, bytes: &[u8]) {
 
 /// Bounded static validation only. Unknown optional sections are hash-checked
 /// and ignored; they cannot affect entry, linking, or host authorization.
-pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
+/// Verify one package against the host's independent nominal method declarations.
+pub fn decode(
+    input: &[u8],
+    host_types: &[bc::HostTypeSupport],
+    limits: Limits,
+) -> Result<CodePackage, Error> {
     let mut budget = Budget::new(limits);
     budget.charge(input.len())?;
     let index = parse_header(input, input.len(), limits)?;
@@ -182,9 +189,8 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
         .map(|json| decode_json(json, limits, &mut budget))
         .transpose()?
         .unwrap_or_default();
-    let resume = verify_resume(&program, resume, limits)?;
+    let resume = verify_resume(&program, resume, host_types, limits)?;
     Ok(CodePackage {
-        program,
         metadata,
         distribution,
         effects,
@@ -195,11 +201,28 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
 fn verify_resume(
     program: &bc::VerifiedProgram,
     table: ResumeTable,
+    host_types: &[bc::HostTypeSupport],
     limits: Limits,
 ) -> Result<VerifiedResumeTable, Error> {
+    let records = table.flows.iter().try_fold(
+        table.states.len() + usize::from(table.root.is_some()),
+        |count, flow| {
+            count
+                .checked_add(1)?
+                .checked_add(flow.layouts.len())?
+                .checked_add(flow.points.len())?
+                .checked_add(flow.returns.len())
+        },
+    );
+    require(
+        records.is_some_and(|count| count <= limits.max_metadata_records),
+        ErrorKind::Limit,
+        "resume metadata record budget exceeded",
+    )?;
     program
         .verify_resume(
             table,
+            host_types,
             ResumeLimits {
                 work: limits.max_work,
                 allocation_bytes: limits.max_metadata_bytes,

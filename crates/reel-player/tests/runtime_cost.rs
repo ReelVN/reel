@@ -46,9 +46,7 @@ fn distribution_startup_cost() {
 
 fn distribution_startup_cost_inner() {
     eprintln!(
-        "host_options legacy_script={} legacy_body_clock={} renderer={}",
-        std::env::var("ASIDE_VM_LEGACY_SCRIPT_EXECUTION").unwrap_or_else(|_| "0".into()),
-        std::env::var("ASIDE_VM_LEGACY_BODY_CLOCK").unwrap_or_else(|_| "0".into()),
+        "host_options renderer={}",
         std::env::var_os("REEL_PROFILE_RENDERER").is_some()
     );
     let path = std::env::var_os("REEL_PROFILE_PACKAGE").expect("REEL_PROFILE_PACKAGE");

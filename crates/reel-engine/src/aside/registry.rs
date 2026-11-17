@@ -22,12 +22,14 @@ pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
     ("button", "reel::types::ButtonNode"),
     ("input", "reel::types::InputNode"),
     ("slider", "reel::types::SliderNode"),
+    ("progress_bar", "reel::types::ProgressBarNode"),
     ("toggle", "reel::types::ToggleNode"),
     ("checkbox", "reel::types::ToggleNode"),
     ("radio", "reel::types::RadioNode"),
     ("scroll", "reel::types::ScrollNode"),
     ("scrollbar", "reel::types::ScrollBarNode"),
     ("popup", "reel::types::PopupNode"),
+    ("tooltip", "reel::types::TooltipNode"),
     ("camera", "reel::types::CameraNode"),
 ];
 
@@ -57,12 +59,14 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::scroll" => super::stage::scroll::ScrollField::NAMES,
         "reel::scrollbar" => super::stage::scrollbar::ScrollBarField::NAMES,
         "reel::popup" => super::stage::popup::PopupField::NAMES,
+        "reel::tooltip" => super::stage::popup::TOOLTIP_NAMES,
         "reel::text" => super::stage::appearance::TextField::NAMES,
         "reel::text_input" | "reel::text_area" => super::stage::text_input::TextInputField::NAMES,
         "reel::particles" => super::particles::PREFIX,
         "reel::image" | "reel::video" => IMAGE_PREFIX,
         "reel::button" => super::stage::appearance::ButtonField::NAMES,
         "reel::slider" => super::stage::controls::SliderField::NAMES,
+        "reel::progress_bar" => super::stage::controls::ProgressField::NAMES,
         "reel::toggle" | "reel::checkbox" => super::stage::controls::ToggleField::NAMES,
         "reel::radio" => super::stage::controls::RadioField::NAMES,
         "reel::input" => super::stage::input::InputField::NAMES,
@@ -309,12 +313,13 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     .iter()
                     .map(|p| p.parameter()),
             );
-        } else if name == "popup" {
-            parameters.extend(
+        } else if matches!(name, "popup" | "tooltip") {
+            let properties = if name == "tooltip" {
+                super::stage::popup::TOOLTIP_PROPERTIES
+            } else {
                 super::stage::popup::PopupField::PROPERTIES
-                    .iter()
-                    .map(|p| p.parameter()),
-            );
+            };
+            parameters.extend(properties.iter().map(|p| p.parameter()));
         } else if name == "input" {
             parameters.extend(
                 super::stage::input::InputField::PROPERTIES
@@ -330,6 +335,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         } else if name == "slider" {
             parameters.extend(
                 super::stage::controls::SliderField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
+        } else if name == "progress_bar" {
+            parameters.extend(
+                super::stage::controls::ProgressField::PROPERTIES
                     .iter()
                     .map(|p| p.parameter()),
             );
@@ -357,6 +368,13 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             }
         }
         parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
+        if name == "progress_bar" {
+            parameters
+                .iter_mut()
+                .find(|p| p.name == "background")
+                .unwrap()
+                .default = Some(bc::Const::Utf8("#303845".into()));
+        }
         if name == "popup" {
             parameters
                 .iter_mut()
@@ -386,12 +404,14 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 | "cursor"
                 | "button"
                 | "slider"
+                | "progress_bar"
                 | "input"
                 | "toggle"
                 | "checkbox"
                 | "radio"
                 | "scroll"
                 | "popup"
+                | "tooltip"
                 | "camera"
         ) {
             parameters.push(NativeParameter {
@@ -405,7 +425,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             read_only_leaf: None,
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: 1,
+            abi_version: if matches!(name, "page_stack" | "tab_bar" | "input" | "slider") {
+                2
+            } else {
+                1
+            },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -706,6 +730,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             ],
         ),
         ("load", vec![parameter("slot", None)]),
+        ("jump", vec![parameter("group", None)]),
         (
             "copy",
             vec![parameter("source", None), parameter("destination", None)],
@@ -723,6 +748,38 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+            required_capabilities: vec![],
+        });
+    }
+    contracts.push(NativeContract {
+        standard_derived_commit: false,
+        read_only_leaf: None,
+        rest: None,
+        symbol: "reel::saves::can_capture".into(),
+        abi_version: 1,
+        parameters: vec![],
+        result: BuiltinType::Bool,
+        effects: Effects(Effects::HOST),
+        required_capabilities: vec![],
+    });
+    for (name, argument, result, effects) in [
+        ("can_jump", "group", BuiltinType::Bool, Effects::HOST),
+        (
+            "track_history",
+            "enabled",
+            BuiltinType::Null,
+            Effects::HOST | Effects::WRITE,
+        ),
+    ] {
+        contracts.push(NativeContract {
+            standard_derived_commit: false,
+            read_only_leaf: None,
+            rest: None,
+            symbol: format!("reel::saves::{name}"),
+            abi_version: 1,
+            parameters: vec![parameter(argument, None)],
+            result,
+            effects: Effects(effects),
             required_capabilities: vec![],
         });
     }
@@ -1063,6 +1120,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             false,
         ),
         ("scope::cancel", vec![parameter("scope", None)], false),
+        ("scope::wait", vec![parameter("scope", None)], true),
         (
             "scope::finish",
             vec![
@@ -1116,6 +1174,19 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("owner", Some(bc::Const::Null)),
             ],
             false,
+        ),
+        (
+            "scroll::reveal_child",
+            vec![
+                parameter("viewport", None),
+                parameter("node", None),
+                parameter("margin_start", Some(bc::Const::Int(0))),
+                parameter("margin_end", Some(bc::Const::Int(0))),
+                parameter("duration", Some(bc::Const::Int(0))),
+                parameter("easing", Some(bc::Const::Utf8("out".into()))),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            true,
         ),
         (
             "completion",
@@ -1298,8 +1369,10 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.extend(super::effects::contracts());
     contracts.extend(super::gradients::contracts());
     contracts.extend(super::pages::contracts());
+    contracts.extend(super::checkpoint::contracts());
     contracts.extend(super::stage::scrollbar::contracts());
     contracts.extend(super::stage::interaction_appearance::contracts());
+    contracts.push(super::stage::image_skin::contract());
     contracts
 }
 

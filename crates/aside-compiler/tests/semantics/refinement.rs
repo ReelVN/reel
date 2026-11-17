@@ -47,6 +47,49 @@ fn is_guards_refine_stable_names_through_branches_short_circuit_and_closures() {
 }
 
 #[test]
+fn null_comparisons_and_fallbacks_preserve_known_types() {
+    let module = valid(
+        r#"
+        fn positive(value: int) -> bool { value > 0 }
+        fn inspect(value: int | null, mut changing: int | null, fallback: any) {
+            if (null) != (value) && positive(value) { let present = value; }
+            if value == null { let missing = value; }
+            else { let captured = || positive(value); }
+            if value == null || positive(value) {}
+            if changing != null { let mutable_read = changing; }
+            let outside = value;
+            let number = value ?? 0;
+            let mixed = value ?? "missing";
+            let uncertain = value ?? fallback;
+            let ignored_fallback = 1 ?? fallback;
+        }
+        fn after_exit(value: int | null, skip: bool) {
+            if skip || value == null { return; }
+            let retained = value;
+        }
+        "#,
+    );
+    for (name, expected) in [
+        ("present", "int"),
+        ("missing", "null"),
+        ("mutable_read", "null | int"),
+        ("outside", "null | int"),
+        ("number", "int"),
+        ("mixed", "int | string"),
+        ("uncertain", "any"),
+        ("ignored_fallback", "int"),
+        ("retained", "int"),
+    ] {
+        let binding = symbols(&module, name)[0].1;
+        assert_eq!(
+            module.display_type(binding.ty).to_string(),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn guard_facts_do_not_escape_paths_or_follow_rebindable_names() {
     for code in [
         "fn f(value:int|string){if value is int {let bad:string=value;}}",
@@ -168,27 +211,6 @@ fn nested_guard_scopes_restore_prior_facts_and_preserve_stable_captures() {
             module.display_type(binding.ty).to_string(),
             expected,
             "{name}"
-        );
-    }
-}
-
-#[test]
-#[ignore = "reports host compiler cost for distinct-name guard chains"]
-fn measure_distinct_guard_chain_analysis() {
-    for length in [128, 256, 512, 1024] {
-        let source = distinct_guards(length);
-        assert!(analyze_code(&source).is_ok());
-        let mut samples = Vec::new();
-        for _ in 0..21 {
-            let start = std::time::Instant::now();
-            let analysis = analyze_code(std::hint::black_box(&source));
-            samples.push(start.elapsed().as_nanos());
-            assert!(analysis.is_ok(), "{:?}", analysis.diagnostics);
-        }
-        samples.sort_unstable();
-        println!(
-            "guards={length} median_analysis_ns={}",
-            samples[samples.len() / 2]
         );
     }
 }

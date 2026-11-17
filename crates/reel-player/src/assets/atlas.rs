@@ -20,6 +20,24 @@ impl Pages {
     }
 }
 impl Service {
+    pub(super) fn promote_prefetch(&mut self, id: LoadId) -> bool {
+        let load = &self.loads[&id];
+        match &load.phase {
+            Phase::Done(Err(_)) => return false,
+            Phase::AtlasWait(view) => {
+                let page = self.atlas_pages.0[&view.manifest.page].load;
+                let backing = self.loads.get_mut(&page).expect("active atlas page");
+                if matches!(backing.phase, Phase::Done(Err(_))) {
+                    return false;
+                }
+                backing.priority = Priority::Visible;
+            }
+            _ => {}
+        }
+        self.loads.get_mut(&id).unwrap().priority = Priority::Visible;
+        true
+    }
+
     /// Remove one waiter. The shared IO/work request is cancelled only at zero.
     pub(super) fn release_atlas(&mut self, path: &str) {
         let Some(page) = self.atlas_pages.0.get_mut(path) else {
@@ -48,6 +66,7 @@ impl Service {
     }
     /// Advance only the requests present at entry; page requests run next pump.
     pub(super) fn advance_atlases(&mut self) {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::AssetAtlas);
         let limit = self.next;
         let mut after = 0;
         while let Some(id) = self
@@ -250,9 +269,9 @@ mod tests {
                 Box::new(ImageExecutor::new(limits, wake)),
             )
         });
-        let a = assets.request("a.png", AssetKind::Image);
-        let b = assets.request("b.png", AssetKind::Image);
-        let c = assets.request("c.png", AssetKind::Image);
+        let a = assets.prefetch("a.png".into(), AssetKind::Image, 0);
+        let b = assets.prefetch("b.png".into(), AssetKind::Image, 0);
+        let c = assets.prefetch("c.png".into(), AssetKind::Image, 0);
         for _ in 0..20 {
             assets.maintain();
             if assets
@@ -278,6 +297,7 @@ mod tests {
                 .waiters,
             3
         );
+        assert!(assets.promote_prefetch(b));
         assets.cancel(a);
         assert_eq!(
             assets

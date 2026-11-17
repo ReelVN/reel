@@ -21,6 +21,10 @@ pub(super) enum SplitWork {
         end: u32,
         resume: Resume,
     },
+    Insert {
+        offset: u32,
+        resume: Resume,
+    },
 }
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -28,6 +32,23 @@ pub(super) enum Resume {
     Scan(u32),
     Empty(u32),
     Done,
+}
+
+impl Resume {
+    fn next(self) -> Option<SplitWork> {
+        Some(match self {
+            Self::Scan(offset) => SplitWork::Scan {
+                offset,
+                matched: 0,
+                begin: offset,
+            },
+            Self::Empty(offset) => SplitWork::Empty {
+                offset,
+                leading: false,
+            },
+            Self::Done => return None,
+        })
+    }
 }
 
 impl SplitWork {
@@ -67,6 +88,7 @@ impl Vm {
         let source = self.value(s.env, 1).map_err(vm_fault)?;
         let roots = self.value(s.env, 2).map_err(vm_fault)?;
         let separator = self.builtin_argument(s, work.call, 0).map_err(vm_fault)?;
+        let replace = work.call.method == Builtin::Replace;
         let len = self.heap.info(source).map_err(heap_fault)?.len;
         let separator_len = self.heap.info(separator).map_err(heap_fault)?.len;
         let next = match state {
@@ -126,7 +148,9 @@ impl Vm {
                     return Ok(false);
                 }
                 if offset == len {
-                    self.split_fragment(roots)?;
+                    if !replace {
+                        self.split_fragment(roots)?;
+                    }
                     SplitWork::Emit {
                         offset: begin,
                         end: len,
@@ -153,7 +177,9 @@ impl Vm {
                         offset += 1;
                     }
                     if matched == separator_len {
-                        self.split_fragment(roots)?;
+                        if !replace {
+                            self.split_fragment(roots)?;
+                        }
                         SplitWork::Emit {
                             offset: begin,
                             end: offset - separator_len,
@@ -189,7 +215,9 @@ impl Vm {
                     };
                     (offset + width, Resume::Empty(offset + width))
                 };
-                self.split_fragment(roots)?;
+                if !replace {
+                    self.split_fragment(roots)?;
+                }
                 SplitWork::Emit {
                     offset,
                     end,
@@ -201,10 +229,20 @@ impl Vm {
                 end,
                 resume,
             } => {
-                let fragment = self.heap.get_field(roots, FRAGMENT).map_err(heap_fault)?;
+                let result = self.heap.get_field(roots, RESULT).map_err(heap_fault)?;
+                let fragment = if replace {
+                    result
+                } else {
+                    self.heap.get_field(roots, FRAGMENT).map_err(heap_fault)?
+                };
                 if offset != end {
-                    let Some(count) =
-                        self.copy_text_part(fragment, source, offset..end, Builtin::Split, meter)?
+                    let Some(count) = self.copy_text_part(
+                        fragment,
+                        source,
+                        offset..end,
+                        work.call.method,
+                        meter,
+                    )?
                     else {
                         return Ok(false);
                     };
@@ -216,7 +254,20 @@ impl Vm {
                     s.phase = ScriptPhase::TextBuiltin(work);
                     return Ok(true);
                 }
-                let result = self.heap.get_field(roots, RESULT).map_err(heap_fault)?;
+                if replace {
+                    if !meter.take(0, 1, 0) {
+                        return Ok(false);
+                    }
+                    if resume.next().is_none() {
+                        self.heap.seal_string(result).map_err(heap_fault)?;
+                        self.builtin_finish(s, work.call, Ok(result))
+                            .map_err(vm_fault)?;
+                        return Ok(true);
+                    }
+                    work.mode = TextMode::Split(SplitWork::Insert { offset: 0, resume });
+                    s.phase = ScriptPhase::TextBuiltin(work);
+                    return Ok(true);
+                }
                 let extra =
                     Values::growth_bytes(self.heap.info(result).map_err(heap_fault)?.len.into(), 1);
                 if !meter.take(0, 3, extra) {
@@ -227,20 +278,38 @@ impl Vm {
                 self.heap
                     .set_field(roots, FRAGMENT, Value::NULL)
                     .map_err(heap_fault)?;
-                match resume {
-                    Resume::Scan(offset) => SplitWork::Scan {
-                        offset,
-                        matched: 0,
-                        begin: offset,
-                    },
-                    Resume::Empty(offset) => SplitWork::Empty {
-                        offset,
-                        leading: false,
-                    },
-                    Resume::Done => {
-                        self.builtin_finish(s, work.call, Ok(result))
-                            .map_err(vm_fault)?;
-                        return Ok(true);
+                let Some(next) = resume.next() else {
+                    self.builtin_finish(s, work.call, Ok(result))
+                        .map_err(vm_fault)?;
+                    return Ok(true);
+                };
+                next
+            }
+            SplitWork::Insert { offset, resume } => {
+                let replacement = self.builtin_argument(s, work.call, 1).map_err(vm_fault)?;
+                let end = self.heap.info(replacement).map_err(heap_fault)?.len;
+                if offset == end {
+                    if !meter.take(0, 1, 0) {
+                        return Ok(false);
+                    }
+                    resume
+                        .next()
+                        .expect("replacement inserted between fragments")
+                } else {
+                    let result = self.heap.get_field(roots, RESULT).map_err(heap_fault)?;
+                    let Some(count) = self.copy_text_part(
+                        result,
+                        replacement,
+                        offset..end,
+                        Builtin::Replace,
+                        meter,
+                    )?
+                    else {
+                        return Ok(false);
+                    };
+                    SplitWork::Insert {
+                        offset: offset + count,
+                        resume,
                     }
                 }
             }

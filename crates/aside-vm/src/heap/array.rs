@@ -1,6 +1,12 @@
 //! Bounded access for private array builders; normal observable mutations use
 //! the existing per-field/model publication APIs.
 use super::*;
+
+enum ArrayWrite<'a> {
+    Copy { start: u32, values: &'a [Value] },
+    AppendRepeated { value: Value, count: u32 },
+}
+
 impl Heap {
     /// Borrow a bounded suffix of one array storage block for the current step.
     /// Never allocates or traverses other blocks. The borrow excludes mutation
@@ -35,9 +41,35 @@ impl Heap {
         start: u32,
         input: &[Value],
     ) -> Result<usize, HeapError> {
-        let count = input.len().min(self.limits.max_mutation_values as usize);
-        let input = &input[..count];
+        let input = &input[..input.len().min(self.limits.max_mutation_values as usize)];
         self.input_values(input)?;
+        self.write_private_array(
+            array,
+            ArrayWrite::Copy {
+                start,
+                values: input,
+            },
+        )
+    }
+
+    pub(crate) fn array_append_repeated(
+        &mut self,
+        array: Value,
+        value: Value,
+        count: u32,
+    ) -> Result<usize, HeapError> {
+        let count = count.min(self.limits.max_mutation_values);
+        if count != 0 {
+            self.validate_value(value)?;
+        }
+        self.write_private_array(array, ArrayWrite::AppendRepeated { value, count })
+    }
+
+    fn write_private_array(
+        &mut self,
+        array: Value,
+        write: ArrayWrite<'_>,
+    ) -> Result<usize, HeapError> {
         let key = self.key(array)?;
         let object = self.object(key)?;
         if object.kind != ObjectKind::Array
@@ -53,6 +85,12 @@ impl Heap {
             unreachable!()
         };
         let old = values.len;
+        let (start, count, roots) = match &write {
+            ArrayWrite::Copy { start, values } => (*start, values.len(), *values),
+            ArrayWrite::AppendRepeated { value, count } => {
+                (old, *count as usize, std::slice::from_ref(value))
+            }
+        };
         if start > old {
             return Err(HeapError::OutOfBounds);
         }
@@ -66,9 +104,8 @@ impl Heap {
         let chunks = Values::chunks_for_len(u64::from(end.max(old)))
             - Values::chunks_for_len(u64::from(old));
         self.ensure_bytes(extra)?;
-        // input_values already validated the complete accepted prefix. No heap
-        // operation in between can invalidate it; shade each reference once.
-        for &value in input {
+        // The entry points validate the incoming values before reserving storage.
+        for &value in roots {
             self.shade(value);
         }
         self.charge(extra, chunks);
@@ -76,9 +113,14 @@ impl Heap {
         let Payload::Values(values) = &mut object.payload else {
             unreachable!()
         };
-        let existing = count.min((old - start) as usize);
-        values.write_slice(start, &input[..existing]);
-        values.extend_from_slice(&input[existing..]);
+        match write {
+            ArrayWrite::Copy { values: input, .. } => {
+                let existing = count.min((old - start) as usize);
+                values.write_slice(start, &input[..existing]);
+                values.extend_from_slice(&input[existing..count]);
+            }
+            ArrayWrite::AppendRepeated { value, .. } => values.extend_repeated(value, count),
+        }
         object.charged += extra;
         object.content_version = object.content_version.wrapping_add(1);
         if end > old {

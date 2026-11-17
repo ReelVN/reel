@@ -25,41 +25,6 @@ fn fonts(bytes: Vec<u8>) -> (FontContext, StyleSet) {
     (fonts, styles)
 }
 
-#[test]
-#[ignore = "CPU-only history reflow cost; requires REEL_SESSION_FONT"]
-fn history_width_reflow_cost() {
-    let bytes = std::fs::read(std::env::var_os("REEL_SESSION_FONT").unwrap()).unwrap();
-    let (mut fonts, styles) = fonts(bytes);
-    let mut context = LayoutContext::new();
-    let text = "History entry: the train reached the station while the conversation continued. ffi office العربية שלום. ".repeat(32);
-    let started = std::time::Instant::now();
-    let mut line_count = 0;
-    for _ in 0..40 {
-        let mut label = Label::new(text.as_str());
-        label.styles = styles.clone();
-        for width in [
-            None,
-            Some(680.),
-            Some(590.),
-            Some(880.),
-            Some(710.),
-            Some(570.),
-            Some(640.),
-            Some(780.),
-        ] {
-            let index = label.build_scaled(&mut fonts, &mut context, width, 1.);
-            label.active_layout = index;
-            label.layouts[index].align(TextAlign::Justify, width.unwrap_or(1000.));
-            line_count += label.layouts[index].layout.len();
-        }
-    }
-    println!(
-        "history_reflow paragraphs=40 widths=8 bytes={} lines={line_count} elapsed_us={}",
-        text.len(),
-        started.elapsed().as_micros()
-    );
-}
-
 fn assert_paragraph(actual: &Paragraph, expected: &Paragraph) {
     let close = |a: f32, b: f32| assert!((a - b).abs() < 0.002, "{a} != {b}");
     assert_eq!(actual.len(), expected.len());

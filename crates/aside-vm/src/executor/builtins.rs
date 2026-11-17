@@ -6,7 +6,10 @@ mod sort;
 pub(super) use sort::SortWork;
 mod search;
 pub(super) use search::SearchWork;
+mod predicate;
+pub(super) use predicate::PredicateWork;
 mod strings;
+mod table_entry;
 pub(super) use strings::TextWork;
 
 pub(super) use crate::BuiltinMethod as Builtin;
@@ -25,6 +28,59 @@ pub(super) struct BuiltinCall {
 }
 
 impl Vm {
+    fn push_builtin_callback(
+        &mut self,
+        s: &mut ScriptFrame,
+        function: FunctionId,
+        callback: Value,
+        argc: u32,
+        phase: ScriptPhase,
+        meter: &mut Meter,
+    ) -> Result<bool, VmError> {
+        let (initializer_work, bytes) = if self.is_text(callback, ObjectKind::BoundScript) {
+            self.initializer_cost(callback)?
+        } else {
+            (0, 0)
+        };
+        let (call_work, call_bytes) = self.script_push_cost(function, argc);
+        if !meter.take(0, call_work + initializer_work + 6, bytes + call_bytes) {
+            return Ok(false);
+        }
+        s.phase = phase;
+        self.publish_script_frame(self.index(s.id)?, s);
+        if let Err(error) = self.push_script(
+            function,
+            Some(callback),
+            ArgSource::BuiltinCallback { frame: s.id },
+            argc,
+            s.owner,
+            inherit(s.context, Context::NoWait),
+            s.effects,
+            ReturnTo::BuiltinCallback {
+                frame: s.id,
+                call: s.pc,
+            },
+        ) {
+            self.collection_fault(s, vm_fault(error))?;
+        }
+        Ok(true)
+    }
+
+    pub(super) fn builtin_callback_argument(
+        &self,
+        frame: FrameId,
+        index: u32,
+    ) -> Result<(Value, Value), VmError> {
+        let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
+            return Err(VmError::Contract("builtin callback frame"));
+        };
+        match s.phase {
+            ScriptPhase::Sort(work) => self.sort_argument(&s, work, index),
+            ScriptPhase::Predicate(_) => Ok((Value::int(-1), self.value(s.env, 2)?)),
+            _ => Err(VmError::Contract("builtin callback continuation")),
+        }
+    }
+
     pub(super) fn bound_builtin(
         &mut self,
         receiver: Value,
@@ -230,7 +286,7 @@ impl Vm {
             s.phase = ScriptPhase::Builtin(call);
             return Ok(true);
         }
-        let extra = if matches!(call.method, Builtin::Split) {
+        let extra = if matches!(call.method, Builtin::Split | Builtin::Replace) {
             Values::allocation_bytes(4)
         } else if matches!(call.method, Builtin::Append) && call.index < call.count {
             Values::growth_bytes(self.heap.info(receiver)?.len.into(), 1)
@@ -254,6 +310,12 @@ impl Vm {
             }
             Builtin::Find | Builtin::Contains => {
                 self.start_search(s, call)?;
+                return Ok(true);
+            }
+            Builtin::FirstWhere | Builtin::Any => {
+                if let Err(kind) = self.start_predicate(s, call) {
+                    self.collection_fault(s, kind)?;
+                }
                 return Ok(true);
             }
             Builtin::Sort => {
@@ -286,7 +348,7 @@ impl Vm {
                     })
                     .map(|()| receiver)
             }
-            Builtin::HasOwn | Builtin::Get | Builtin::TableRemove => {
+            Builtin::HasOwn | Builtin::Get | Builtin::TableRemove | Builtin::GetOrInsertWith => {
                 let key = self.builtin_argument(s, call, 0)?;
                 let action = if matches!(call.method, Builtin::Get) {
                     TableAction::GetDefault {
@@ -296,6 +358,11 @@ impl Vm {
                     }
                 } else if matches!(call.method, Builtin::TableRemove) {
                     TableAction::Remove(call)
+                } else if matches!(call.method, Builtin::GetOrInsertWith) {
+                    TableAction::EntryOrInsert {
+                        call,
+                        filled: false,
+                    }
                 } else {
                     TableAction::HasOwn(call.dest)
                 };
@@ -327,6 +394,7 @@ impl Vm {
             | Builtin::EndsWith
             | Builtin::Join
             | Builtin::Split
+            | Builtin::Replace
             | Builtin::AsciiLowercase
             | Builtin::AsciiUppercase
             | Builtin::Trim

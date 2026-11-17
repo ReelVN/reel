@@ -8,6 +8,11 @@ use aside_vm::executor::{
     Completion as VmCompletion, Continuation, FaultRetention, HostResponse, HostTicket, NativeInput,
 };
 use aside_vm::{Heap, HeapError, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag};
+mod resources;
+pub(in crate::aside) use resources::{
+    allocate_character_resource, character_resource_field, character_resource_header,
+    connect_character_resource, finish_character_resource,
+};
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
     use aside_compiler::semantic::TypeHint;
@@ -25,7 +30,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     );
     api.refine(
         "reel::character::line",
-        line.clone(),
+        line,
         &[
             ("character", character.clone()),
             ("text", text.clone()),
@@ -47,7 +52,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     api.refine(
         "reel::character::speak",
         nullable(speech.clone()),
-        &[("character", character.clone())],
+        &[("character", character)],
     );
     api.refine(
         "reel::speech::append",
@@ -118,6 +123,77 @@ pub(super) enum SpeechCommand {
     Revealed,
 }
 
+const SPEECH_TAG: i64 = -1103;
+const CHARACTER_TAG: i64 = -1104;
+
+pub(in crate::aside) fn speech_resource_header(
+    heap: &Heap,
+    value: Value,
+) -> Option<super::data::LogicalReference> {
+    (heap.host_payload_len(value).ok() == Some(2)
+        && heap.host_payload(value, 0).ok()?.as_int() == Some(SPEECH_TAG))
+    .then(|| super::data::LogicalReference {
+        payload: Vec::new(),
+        kind: "reel.speech".into(),
+        version: 1,
+        fields: 1,
+    })
+}
+
+pub(in crate::aside) fn speech_resource_field(
+    heap: &Heap,
+    value: Value,
+    index: u32,
+) -> Result<(std::borrow::Cow<'static, str>, Value), super::data::TypedDataError> {
+    if index != 0 {
+        return Err(super::data::TypedDataError::Contract(
+            "invalid Speech field",
+        ));
+    }
+    Ok(("generation".into(), heap.host_payload(value, 1)?))
+}
+
+pub(in crate::aside) fn allocate_speech_resource(
+    heap: &mut Heap,
+) -> Result<Value, super::data::TypedDataError> {
+    let fields = heap.alloc_table()?;
+    let value = heap.alloc_host(
+        fields,
+        &[Value::int(SPEECH_TAG), Value::NULL],
+        Some(&IMMUTABLE),
+    )?;
+    let kind = heap.host_type("reel::types::Speech")?;
+    heap.set_host_type(value, kind)?;
+    Ok(value)
+}
+
+pub(in crate::aside) fn connect_speech_resource(
+    heap: &mut Heap,
+    value: Value,
+    name: &str,
+    field: Value,
+) -> Result<(), super::data::TypedDataError> {
+    if name != "generation" {
+        return Err(super::data::TypedDataError::Contract(
+            "unknown Speech field",
+        ));
+    }
+    heap.set_host_payload(value, 1, field)?;
+    Ok(())
+}
+
+pub(in crate::aside) fn finish_speech_resource(
+    heap: &Heap,
+    value: Value,
+) -> Result<(), super::data::TypedDataError> {
+    if heap.host_payload(value, 1)?.as_int().is_none() {
+        return Err(super::data::TypedDataError::Contract(
+            "Speech generation must be an integer",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) static IMMUTABLE: aside_vm::HostPropertyValidator =
     aside_vm::HostPropertyValidator::new("reel.character", 1, immutable);
 
@@ -131,10 +207,10 @@ pub(super) fn immutable(
 }
 
 fn character_values(heap: &Heap, value: Value) -> Result<[Value; 2], AdapterError> {
-    if heap.host_payload_len(value)? != 2 {
+    if character_resource_header(heap, value).is_none() {
         return Err(AdapterError::Input("expected a character"));
     }
-    Ok([heap.host_payload(value, 0)?, heap.host_payload(value, 1)?])
+    Ok([heap.host_payload(value, 1)?, heap.host_payload(value, 2)?])
 }
 
 pub(super) enum HistoryText {
@@ -169,7 +245,7 @@ impl SessionVm {
         let fields = self.vm.heap_mut().alloc_table()?;
         let value = self.vm.heap_mut().alloc_host(
             fields,
-            &[Value::int(id.generation() as i64)],
+            &[Value::int(SPEECH_TAG), Value::int(id.generation() as i64)],
             Some(&IMMUTABLE),
         )?;
         self.stage
@@ -215,18 +291,17 @@ impl SessionVm {
         };
         let args = self.vm.host_arguments(ticket)?;
         let heap = self.vm.heap();
-        if heap.host_payload_len(args[0])? != 1 {
+        if speech_resource_header(heap, args[0]).is_none() {
             return Err(AdapterError::Input("expected a speech handle"));
         }
         let generation = heap
-            .host_payload(args[0], 0)?
+            .host_payload(args[0], 1)?
             .as_int()
             .ok_or(AdapterError::Input("invalid speech handle"))? as u64;
         let id = crate::InteractionId {
             identity: session.identity(),
             generation,
         };
-        session.open_dialogue(id)?;
         let receiver = args[0];
         if matches!(ticket.input, NativeInput::WaitingReturned) {
             // The original argument remains rooted by this native frame while the
@@ -234,6 +309,29 @@ impl SessionVm {
             self.vm.respond(ticket, HostResponse::Ready(receiver))?;
             self.issued = None;
             return Ok(NativeDispatch::Ready { work: 1 });
+        }
+        session.open_dialogue(id)?;
+        if matches!(ticket.input, NativeInput::Entry) && matches!(command, SpeechCommand::Wait) {
+            if session.reading_data.completion.is_some() {
+                return Err(crate::SessionError::CompletionPending.into());
+            }
+            let wait = ticket.wait_id();
+            self.vm.respond(ticket, HostResponse::Pending(wait))?;
+            session.wait_dialogue(self.owner, id)?;
+            self.pending = Some(super::PendingInteraction {
+                interaction: id,
+                task: ticket.task,
+                wait,
+                keys: None,
+                kind: PendingInteractionKind::Advance,
+                return_value: Some(receiver),
+            });
+            self.feedback_only = false;
+            self.issued = None;
+            return Ok(NativeDispatch::Published {
+                interaction: id,
+                work: 1,
+            });
         }
         if matches!(ticket.input, NativeInput::Entry) {
             let wait = !matches!(command, SpeechCommand::Append)
@@ -301,6 +399,7 @@ impl SessionVm {
             wait,
             keys: None,
             kind,
+            return_value: None,
         });
         self.feedback_only = false;
         self.issued = None;
@@ -425,15 +524,9 @@ impl SessionVm {
         };
         let call = method("reel::character::speak")?;
         let heap = self.vm.heap_mut();
-        let fields = heap.alloc_table()?;
-        for (i, (key, value)) in [("id", id), ("name", name)].into_iter().enumerate() {
-            let key = heap.alloc_string(key)?;
-            heap.table_store(fields, i as u32, key, value)?;
-        }
-        let value = heap.alloc_host(fields, &[id, name], Some(&IMMUTABLE))?;
-        self.stage
-            .types
-            .mark(heap, value, "reel::types::Character")?;
+        let value = allocate_character_resource(heap)?;
+        connect_character_resource(heap, value, "id", id)?;
+        connect_character_resource(heap, value, "name", name)?;
         self.vm.bind_callable(value, call)?;
         self.vm.respond(ticket, HostResponse::Ready(value))?;
         self.issued = None;

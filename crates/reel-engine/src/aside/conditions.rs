@@ -85,7 +85,7 @@ impl SessionVm {
             NativeInput::CallbackReturned => {
                 let saved = self.vm.host_continuation(ticket)?;
                 let (output, result) = (saved[0], saved[1]);
-                let value = self.vm.host_callback_value(ticket)?;
+                let value = self.vm.host_resume_value(ticket)?;
                 let ready = value.as_bool().expect("condition evaluator returns bool");
                 self.vm.heap_mut().commit_derived(output, value)?;
                 self.vm.heap_mut().end_derived(output)?;
@@ -137,7 +137,7 @@ impl SessionVm {
                 )?;
             }
             NativeInput::CallbackReturned => {
-                let value = self.vm.host_callback_value(ticket)?;
+                let value = self.vm.host_resume_value(ticket)?;
                 if value.as_bool().is_none() {
                     let details = self
                         .vm

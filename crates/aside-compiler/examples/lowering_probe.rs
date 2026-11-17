@@ -176,7 +176,7 @@ fn main() {
         std::fs::write(directory.join("ir.txt"), format!("{ir:#?}")).unwrap();
     }
     let time = Instant::now();
-    let result = match ir.emit() {
+    let result = match ir.emit(&[]) {
         Ok(result) => result,
         Err(error) => {
             println!(

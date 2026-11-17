@@ -533,10 +533,10 @@ pub(crate) fn place_widget(child_state: &mut WidgetState, origin: Point) {
 // --- MARK: ROOT
 /// See the [passes documentation](crate::doc::pass_system#layout-pass).
 pub(crate) fn run_layout_pass(root: &mut RenderRoot) {
-    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiLayout);
     if !root.root_state().needs_layout() {
         return;
     }
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiLayout);
 
     let _span = info_span!("layout").entered();
     root.global_state.invalidate_geometry();

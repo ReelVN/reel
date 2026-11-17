@@ -414,7 +414,7 @@ impl Cache {
             }
             slot.group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("reusable effect bindings"),
-                layout: &compiled.layout,
+                layout: compiled.layout(),
                 entries: &entries,
             }));
             #[cfg(test)]
@@ -550,7 +550,7 @@ pub(super) fn fallback(
     }
     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("one-off effect bindings"),
-        layout: &compiled.layout,
+        layout: compiled.layout(),
         entries: &entries,
     })
 }

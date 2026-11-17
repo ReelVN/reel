@@ -37,7 +37,7 @@ impl Metrics {
 pub(crate) fn encode(
     linear: &image::Rgba32FImage,
     descriptor: TextureDescriptor,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, bool), String> {
     let [width, height] = descriptor.layout.storage_size;
     let format = if descriptor.format == TextureFormat::Bc1Rgb {
         rgbcx::Format::Bc1
@@ -57,15 +57,16 @@ pub(crate) fn encode(
     let baseline = candidate(rgbcx::Quality::Balanced)?;
     let baseline_error = assess(&baseline)?;
     if !baseline_error.needs_refinement() {
-        return Ok(baseline);
+        return Ok((baseline, true));
     }
     // High fitting keeps the same format and payload length. Keep the
     // baseline blocks until displayed colors, tails and translucent edges agree.
     let refined = candidate(rgbcx::Quality::High)?;
-    if assess(&refined)?.improves(&baseline_error) {
-        Ok(refined)
+    let refined_error = assess(&refined)?;
+    if refined_error.improves(&baseline_error) {
+        Ok((refined, !refined_error.needs_refinement()))
     } else {
-        Ok(baseline)
+        Ok((baseline, false))
     }
 }
 
@@ -287,7 +288,7 @@ mod tests {
             let pixels = quantized_pixels(&linear, descriptor, Dither::None);
             let baseline =
                 rgbcx::encode(64, 32, pixels.as_raw(), codec, rgbcx::Quality::Balanced).unwrap();
-            let selected = encode(&linear, descriptor).unwrap();
+            let (selected, _) = encode(&linear, descriptor).unwrap();
             assert_eq!(selected.len(), baseline.len());
             let assess = |blocks: &[u8]| {
                 measure(&linear, &rgbcx::decode(64, 32, blocks, codec).unwrap(), 64).finish()

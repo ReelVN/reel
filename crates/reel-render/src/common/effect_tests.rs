@@ -504,10 +504,8 @@ fn deep_graph_and_branch_expansion_respect_source_limit() {
             },
         );
     }
-    assert!(matches!(
-        generate(&g.finish(value), Language::Wgsl, 4096),
-        Err(GenerateError::SourceLimit { limit: 4096 })
-    ));
+    let shared = generate(&g.finish(value), Language::Wgsl, 4096).unwrap();
+    assert!(!shared.function.contains("if ("));
 }
 
 #[test]

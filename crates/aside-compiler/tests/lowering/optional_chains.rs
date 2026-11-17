@@ -730,7 +730,7 @@ fn flattened_chains_charge_only_nested_operands_and_preserve_exact_budgets() {
         assert!(!byte_range(e.span).is_empty());
         assert!(source.is_char_boundary(byte_range(e.span).start));
     }
-    let s = lowering::compile(&m, &Linkage::default(), Options::default())
+    let s = lowering::compile(&m, &Linkage::default(), &[], Options::default())
         .unwrap()
         .stats;
     let exact = lowering::Limits {
@@ -745,6 +745,7 @@ fn flattened_chains_charge_only_nested_operands_and_preserve_exact_budgets() {
     lowering::compile(
         &m,
         &Linkage::default(),
+        &[],
         Options {
             limits: exact,
             ..Default::default()
@@ -768,6 +769,7 @@ fn flattened_chains_charge_only_nested_operands_and_preserve_exact_budgets() {
         let error = lowering::compile(
             &m,
             &Linkage::default(),
+            &[],
             Options {
                 limits,
                 ..Default::default()
@@ -879,6 +881,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                     natives: &[link],
                     expansions: &[],
                 },
+                &[],
                 Options::default(),
             )
             .unwrap();
@@ -956,6 +959,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                 }],
                 expansions: &[],
             },
+            &[],
             Options::default(),
         )
         .unwrap();
@@ -986,6 +990,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                 }],
                 expansions: &[],
             },
+            &[],
             Options::default(),
         )
         .unwrap();

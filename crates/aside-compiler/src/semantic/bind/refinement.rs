@@ -1,7 +1,28 @@
-//! Path-local types for stable values checked by ordinary `is` expressions.
+//! Path-local types for stable values checked by type tests and null comparisons.
 use super::*;
 
 impl Binder<'_> {
+    pub(super) fn refine_after_if(&mut self, statement: NodeId) {
+        let node = match self.out.hir.node(statement).form {
+            Form::Statement { expression, .. } => expression,
+            _ => statement,
+        };
+        if self.kind(node) == HirKind::If
+            && let Form::Condition {
+                pattern: None,
+                condition,
+                body,
+                otherwise,
+            } = self.out.hir.node(node).form
+        {
+            let yes = self.falls_through(body);
+            let no = otherwise.is_none_or(|body| self.falls_through(body));
+            if yes != no {
+                self.refine_condition(condition, yes);
+            }
+        }
+    }
+
     pub(super) fn restore_refinements(&mut self, mark: usize) {
         while self.refinement_undo.len() > mark {
             let (symbol, previous) = self.refinement_undo.pop().unwrap();
@@ -40,54 +61,79 @@ impl Binder<'_> {
                     left,
                     operator,
                     right,
-                } if operator.kind == K::Is => {
-                    let mut name = left;
-                    while let Form::Single { child } = self.out.hir.node(name).form {
-                        if self.kind(name) != HirKind::Group || !self.budget(name) {
-                            break;
-                        }
-                        name = child;
-                    }
-                    if self.kind(name) != HirKind::Name {
-                        continue;
-                    }
-                    let Some(symbol) = self.out.facts[name.0 as usize].symbol else {
-                        continue;
-                    };
-                    let binding = &self.out.symbols[symbol.0 as usize];
-                    if binding.mutable {
-                        continue;
-                    }
-                    let before = self.refinements.get(&symbol).copied().unwrap_or(binding.ty);
-                    let tested = self.ty(right);
-                    let after = if truth {
-                        if self.proven_subtype(before, tested) {
-                            before
-                        } else {
-                            tested
-                        }
-                    } else if let Type::Union(members) = &self.out.types[before.0 as usize] {
-                        let retained: Vec<_> = members
-                            .iter()
-                            .copied()
-                            .filter(|&member| !self.proven_subtype(member, tested))
-                            .collect();
-                        match retained.len() {
-                            0 => before,
-                            1 => retained[0],
-                            count if count == members.len() => before,
-                            _ => self.intern_type(Type::Union(retained)),
-                        }
-                    } else {
-                        before
-                    };
-                    if after != before {
-                        let previous = self.refinements.insert(symbol, after);
-                        self.refinement_undo.push((symbol, previous));
+                } if operator.kind == K::Is => self.refine_name(left, self.ty(right), truth),
+                Form::Binary {
+                    left,
+                    operator,
+                    right,
+                } if matches!(operator.kind, K::EqEq | K::NotEq) => {
+                    let left = self.ungroup_guard(left);
+                    let right = self.ungroup_guard(right);
+                    let equal = truth == (operator.kind == K::EqEq);
+                    if self.is_null_literal(right) {
+                        self.refine_name(left, NULL, equal);
+                    } else if self.is_null_literal(left) {
+                        self.refine_name(right, NULL, equal);
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn ungroup_guard(&mut self, mut node: NodeId) -> NodeId {
+        while self.kind(node) == HirKind::Group
+            && let Form::Single { child } = self.out.hir.node(node).form
+            && self.budget(node)
+        {
+            node = child;
+        }
+        node
+    }
+
+    fn is_null_literal(&self, node: NodeId) -> bool {
+        matches!(self.out.hir.node(node).form, Form::Literal { token } if token.kind == K::Null)
+    }
+
+    fn refine_name(&mut self, node: NodeId, tested: TypeId, truth: bool) {
+        let node = self.ungroup_guard(node);
+        if self.kind(node) != HirKind::Name {
+            return;
+        }
+        let Some(symbol) = self.out.facts[node.0 as usize].symbol else {
+            return;
+        };
+        let binding = &self.out.symbols[symbol.0 as usize];
+        if binding.mutable {
+            return;
+        }
+        let before = self.refinements.get(&symbol).copied().unwrap_or(binding.ty);
+        let after = if truth {
+            if self.proven_subtype(before, tested)
+                || (tested == NULL && self.definitely_nonnull(before))
+            {
+                before
+            } else {
+                tested
+            }
+        } else if let Type::Union(members) = &self.out.types[before.0 as usize] {
+            let retained: Vec<_> = members
+                .iter()
+                .copied()
+                .filter(|&member| !self.proven_subtype(member, tested))
+                .collect();
+            match retained.len() {
+                0 => before,
+                1 => retained[0],
+                count if count == members.len() => before,
+                _ => self.intern_type(Type::Union(retained)),
+            }
+        } else {
+            before
+        };
+        if after != before {
+            let previous = self.refinements.insert(symbol, after);
+            self.refinement_undo.push((symbol, previous));
         }
     }
 

@@ -550,3 +550,43 @@ mod author_scopes {
         }
     }
 }
+#[test]
+fn author_diagnostics_for_transition_task_and_derived_context() {
+    use aside_compiler::DiagnosticCode;
+    for (source, expected, marked) in [
+        (
+            r#"fn main() { let value = stage.transition(change: || { stack(); }); await value; }"#,
+            DiagnosticCode::TypeMismatch,
+            "await value",
+        ),
+        (
+            r#"fn main() { stack() { spawn(|| {}); }; }"#,
+            DiagnosticCode::NoWait,
+            "spawn",
+        ),
+        (
+            r#"use std::time::format;
+            fn main() {
+                let data = model({open: true});
+                text(value: derive(|| if data.open { format(0) } else { "" }));
+            }"#,
+            DiagnosticCode::InvalidEffect,
+            "format(0)",
+        ),
+    ] {
+        let Err(failure) = reel_cli::check(source, "author-diagnostics.aside") else {
+            panic!("compiled {source}");
+        };
+        let diagnostic = failure
+            .diagnostics
+            .iter()
+            .find(|report| report.diagnostic.code == expected)
+            .unwrap_or_else(|| panic!("missing {expected:?}: {:?}", failure.diagnostics));
+        let range: std::ops::Range<usize> = diagnostic.diagnostic.range.into();
+        assert!(
+            source[range].contains(marked),
+            "{:?}",
+            diagnostic.diagnostic
+        );
+    }
+}

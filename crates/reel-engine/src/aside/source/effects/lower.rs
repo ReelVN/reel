@@ -353,15 +353,11 @@ impl Compiler<'_> {
                 };
                 self.component(site, object, index)
             }
-            Form::Sequence if kind == H::Tuple => {
-                let children = hir.children(node).collect::<Vec<_>>();
-                Ok(Value::Tuple(
-                    children
-                        .into_iter()
-                        .map(|child| self.expression(frame, child))
-                        .collect::<Result<_, _>>()?,
-                ))
-            }
+            Form::Sequence if kind == H::Tuple => Ok(Value::Tuple(
+                hir.children(node)
+                    .map(|child| self.expression(frame, child))
+                    .collect::<Result<_, _>>()?,
+            )),
             Form::Unary { operator, value } => {
                 if !matches!(operator.kind, K::Plus | K::Minus | K::Bang) {
                     return Err(self.error(
@@ -989,6 +985,13 @@ impl Compiler<'_> {
                 ))
             };
         }
+        if let [Value::Int(a), Value::Int(b)] = values.as_slice() {
+            match name {
+                "min" => return Ok(Value::Int(*a.min(b))),
+                "max" => return Ok(Value::Int(*a.max(b))),
+                _ => {}
+            }
+        }
         if let Some(n) = numbers {
             let v = n[0];
             let result = match name {
@@ -1002,6 +1005,8 @@ impl Compiler<'_> {
                 "sqrt" => Some(v.sqrt()),
                 "hypot" => Some(v.hypot(n[1])),
                 "pow" => Some(v.powf(n[1])),
+                "min" => Some(v.min(n[1])),
+                "max" => Some(v.max(n[1])),
                 "exp" => Some(v.exp()),
                 "ln" => Some(v.ln()),
                 "log2" => Some(v.log2()),
@@ -1039,17 +1044,18 @@ impl Compiler<'_> {
             return self.unary(site, op, first);
         }
         match name {
-            "pow" | "atan2" => {
+            "pow" | "min" | "max" | "atan2" => {
                 let left = self.node(site, first)?;
                 let right = self.node(site, values[1].clone())?;
                 Ok(Value::Node(self.push(
                     site,
                     Ty::Float,
                     Op::Binary {
-                        op: if name == "pow" {
-                            Binary::Pow
-                        } else {
-                            Binary::Atan2
+                        op: match name {
+                            "pow" => Binary::Pow,
+                            "min" => Binary::Min,
+                            "max" => Binary::Max,
+                            _ => Binary::Atan2,
                         },
                         left,
                         right,

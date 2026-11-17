@@ -245,7 +245,11 @@ pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failur
     let resume = checked
         .compilation
         .program
-        .verify_resume(checked.compilation.resume, Default::default())
+        .verify_resume(
+            checked.compilation.resume,
+            reel_engine::aside::source::types(),
+            Default::default(),
+        )
         .map_err(|failure| source_failure(SourceError::Resume(failure)))?;
     Ok(CompiledStory {
         program: checked.compilation.program,

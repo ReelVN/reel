@@ -2,7 +2,7 @@
 //!
 //! An optional project-root `resources.toml` contains ordered `[[targets.NAME]]`
 //! rules. The first matching logical path selects `convert = "texture"`, `"tiles"`,
-//! `"atlas"`, `"opus"`, `"video"`, or `"copy"`; unmatched resources retain their selected source file.
+//! `"atlas"`, `"webp"`, `"opus"`, `"video"`, or `"copy"`; unmatched resources retain their selected source file.
 //! `match` is a case-sensitive glob with `/` separators (`*` stays within one
 //! component; `**` crosses directories). Source target selection runs first.
 //! Texture `scale` changes texel density while preserving logical coordinates;
@@ -10,6 +10,8 @@
 //! Texture rules with `format = "rgba8"` may select `dither = "ordered"` to spread
 //! linear RGB rounding across a fixed 8x8 pattern; the default is `"none"`.
 //! Texture rules may opt into `mipmaps = true`; the default is a single level.
+//! Texture rules may keep the original bytes when BC fitting exceeds the display
+//! error threshold by setting `fallback = "source"`.
 //! Mips filter the padded linear-premultiplied storage and retain author coordinates.
 //! Tiles own their separate level pyramid and do not accept this option.
 //! Alpha remains undithered. Ordered dithering does not apply to block formats or tiles.
@@ -35,6 +37,7 @@
 //! Payloads remain on disk; hashing uses a fixed 64 KiB buffer. A complete index
 //! is atomically published only after all selected resources are ready.
 mod atlas;
+mod webp;
 use crate::prepare_texture;
 use globset::{GlobBuilder, GlobMatcher};
 use reel_package::resource_target::ResourceTarget;
@@ -97,6 +100,7 @@ struct RuleInput {
     format: Option<prepare_texture::Format>,
     dither: Option<prepare_texture::Dither>,
     mipmaps: Option<bool>,
+    fallback: Option<TextureFallback>,
     power_of_two: Option<bool>,
     page_size: Option<[u32; 2]>,
     bitrate: Option<u32>,
@@ -111,6 +115,7 @@ struct RuleInput {
 #[serde(rename_all = "lowercase")]
 enum Convert {
     Copy,
+    Webp,
     Texture,
     Atlas,
     Tiles,
@@ -119,10 +124,17 @@ enum Convert {
     Font,
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TextureFallback {
+    Source,
+}
+
 #[derive(Serialize)]
 #[serde(tag = "convert", rename_all = "lowercase")]
 enum Recipe {
     Copy,
+    Webp,
     Texture {
         scale: f64,
         size: Option<[u32; 2]>,
@@ -130,6 +142,8 @@ enum Recipe {
         power_of_two: bool,
         dither: prepare_texture::Dither,
         mipmaps: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fallback: Option<TextureFallback>,
     },
     Atlas {
         scale: f64,
@@ -184,6 +198,9 @@ impl RuleInput {
         }
         if self.dither.is_some() && !matches!(self.convert, Convert::Texture | Convert::Atlas) {
             return Err(invalid("dither belongs to texture rules"));
+        }
+        if self.fallback.is_some() && !matches!(self.convert, Convert::Texture) {
+            return Err(invalid("fallback belongs to texture rules"));
         }
         if !matches!(self.convert, Convert::Tiles)
             && (self.tile_size.is_some() || self.first_level.is_some())
@@ -260,16 +277,19 @@ impl RuleInput {
                     power_of_two: self.power_of_two.unwrap_or(false),
                 }
             }
-            Convert::Copy => {
+            Convert::Copy | Convert::Webp => {
                 if self.scale.is_some()
                     || self.size.is_some()
                     || self.format.is_some()
                     || self.power_of_two.is_some()
                     || self.bitrate.is_some()
                 {
-                    return Err(invalid("copy rules only accept match and convert"));
+                    return Err(invalid("copy and webp rules only accept match and convert"));
                 }
-                Recipe::Copy
+                match self.convert {
+                    Convert::Webp => Recipe::Webp,
+                    _ => Recipe::Copy,
+                }
             }
             Convert::Atlas => {
                 if self.size.is_some() || self.power_of_two.is_some() || self.bitrate.is_some() {
@@ -339,6 +359,7 @@ impl RuleInput {
                     format,
                     dither,
                     mipmaps: self.mipmaps.unwrap_or(false),
+                    fallback: self.fallback,
                     power_of_two: self.power_of_two.unwrap_or(false),
                 }
             }
@@ -459,16 +480,16 @@ fn rules(root: &Path, target: &ResourceTarget) -> io::Result<Vec<Rule>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    let config: Configuration =
+    let mut config: Configuration =
         toml::from_str(&text).map_err(|error| invalid(format!("{}: {error}", path.display())))?;
-    let mut selected = Vec::new();
-    for (name, inputs) in config.targets {
-        ResourceTarget::parse(&name)
+    for name in config.targets.keys() {
+        ResourceTarget::parse(name)
             .map_err(|error| invalid(format!("{}: targets.{name}: {error}", path.display())))?;
+    }
+    let mut selected = Vec::new();
+    for name in std::iter::once(target.as_str()).chain(target.fallback()) {
+        let inputs = config.targets.remove(name).unwrap_or_default();
         for (index, input) in inputs.into_iter().enumerate() {
-            if name != target.as_str() {
-                continue;
-            }
             let rule = input.compile(root).map_err(|error| {
                 invalid(format!(
                     "{}: targets.{name}[{}]: {error}",
@@ -476,6 +497,11 @@ fn rules(root: &Path, target: &ResourceTarget) -> io::Result<Vec<Rule>> {
                     index + 1
                 ))
             })?;
+            if name == "vita" && matches!(rule.recipe, Recipe::Webp) {
+                return Err(invalid(
+                    "Vita image rules prepare textures, tiles or atlases instead of WebP",
+                ));
+            }
             selected.push(rule);
         }
     }
@@ -554,6 +580,7 @@ fn converter_identity(recipe: &Recipe) -> &'static str {
     use crate::conversion_identity as identity;
     match recipe {
         Recipe::Copy => unreachable!(),
+        Recipe::Webp => identity::for_kind("webp"),
         Recipe::Texture { .. } => identity::for_kind("texture"),
         Recipe::Atlas { .. } => identity::for_kind("atlas"),
         Recipe::Tiles { .. } => identity::for_kind("tiles"),
@@ -622,9 +649,24 @@ fn prepare_with_rules<'a>(
             .iter()
             .find(|rule| rule.matcher.is_match(&name))
             .map(|rule| &rule.recipe);
+        if matches!(recipe, None | Some(Recipe::Copy))
+            && target.is_desktop()
+            && source
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+        {
+            let file = io::BufReader::new(File::open(&source)?);
+            reel_media::video::validate_desktop_mp4(file, source_bytes).map_err(|error| {
+                invalid(format!(
+                    "resource {name:?} ({}): {error}. Use convert = \"video\" in [[targets.{}]] to prepare it",
+                    source.display(), target.as_str()
+                ))
+            })?;
+        }
         let path = match recipe {
             Some(
                 recipe @ (Recipe::Texture { .. }
+                | Recipe::Webp
                 | Recipe::Tiles { .. }
                 | Recipe::Opus { .. }
                 | Recipe::Video { .. }
@@ -660,6 +702,7 @@ fn prepare_with_rules<'a>(
                 let objects = root.join("build/resources/objects");
                 let object = objects.join(key);
                 let output_name = match recipe {
+                    Recipe::Webp => "resource.webp",
                     Recipe::Texture { .. } => "resource.reel-texture",
                     Recipe::Tiles { .. } => "resource.reel-image",
                     Recipe::Opus { .. } => "resource.opus",
@@ -770,6 +813,7 @@ fn convert(
     gxm_layout: bool,
 ) -> io::Result<u64> {
     match recipe {
+        Recipe::Webp => webp::prepare(source, output, memory_bytes),
         Recipe::Font { characters } => {
             crate::prepare_font::prepare(source, output, characters, memory_bytes)
         }
@@ -817,6 +861,7 @@ fn convert(
             power_of_two,
             dither,
             mipmaps,
+            fallback,
         } => {
             let options = prepare_texture::Options {
                 max_size: *size,
@@ -826,9 +871,16 @@ fn convert(
                 dither: *dither,
                 mipmaps: *mipmaps,
             };
-            prepare_texture::prepare_scaled_bounded(source, output, options, *scale, memory_bytes)
-                .map(|(_, workspace)| workspace)
-                .map_err(io::Error::other)
+            prepare_texture::prepare_scaled_bounded(
+                source,
+                output,
+                options,
+                *scale,
+                memory_bytes,
+                fallback.is_some(),
+            )
+            .map(|(_, workspace)| workspace)
+            .map_err(io::Error::other)
         }
         Recipe::Opus { bitrate } => {
             crate::prepare_audio::prepare(source, output, *bitrate, memory_bytes)

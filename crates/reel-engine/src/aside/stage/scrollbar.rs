@@ -94,6 +94,9 @@ pub(super) fn view(h: &Heap, fields: Value) -> Result<ScrollBarView, AdapterErro
         Err(e) => return Err(e.into()),
     };
     let horizontal = axis == ScrollAxis::Horizontal;
+    if !horizontal {
+        view.snap = scroll::snap(field(h, target_fields, scroll::ScrollField::SnapY.index())?)?;
+    }
     let metrics = scroll::ScrollField::PROPERTIES.len()
         + NodeProperty::PROPERTIES.len()
         + interaction::FIELDS.len();
@@ -104,14 +107,15 @@ pub(super) fn view(h: &Heap, fields: Value) -> Result<ScrollBarView, AdapterErro
         metrics + 2 + usize::from(!horizontal),
     )?)?;
     view.live = true;
-    view.value = view.clamp(number(h.host_property(PropertyId {
+    view.value = number(h.host_property(PropertyId {
         host: viewport,
         field: if horizontal {
             scroll::ScrollField::X.index()
         } else {
             scroll::ScrollField::Y.index()
         } as u32,
-    })?)?);
+    })?)?
+    .clamp(0., view.maximum());
     Ok(view)
 }
 pub(super) fn kind(h: &Heap, fields: Value) -> Result<NodeKind, AdapterError> {
@@ -202,7 +206,7 @@ impl StageBinding {
             return Err(HeapError::RetiredHost.into());
         }
         let offset = view.clamp(if relative {
-            view.value + amount
+            view.shifted(amount)
         } else {
             amount
         });
@@ -331,7 +335,8 @@ aside_host::native_documentation! {
         /// either slot, using stretch: "both" to fill the available rectangle.
         /// Null thumb_size follows viewport/content proportion; a number fixes its
         /// logical length. Insets reserve space at the ends of its travel track.
-        /// Track clicks center the thumb; dragging retains its grab point. Arrows,
+        /// Track clicks center the thumb. Dragging follows accepted measurements as
+        /// virtual rows refine the scroll range. Arrows,
         /// controller navigation, PageUp/PageDown, Home/End and accessibility range
         /// actions use the same target offset. No per-move script callback is started.
         ///
@@ -348,10 +353,10 @@ aside_host::native_documentation! {
         /// ```
         "reel::scrollbar";
         /// Move the linked viewport by delta logical pixels on the bar's axis.
-        /// Clamp to its measured range and return the resulting offset.
+        /// Apply viewport scroll stops, clamp to the range, and return the offset.
         "reel::scrollbar::scroll_by";
-        /// Set the linked viewport's logical offset on this axis, clamp to the
-        /// measured range, and return it. This uses ordinary property ownership.
+        /// Set the linked viewport's offset on this axis, applying its scroll
+        /// stops and measured range. Return the resulting offset.
         "reel::scrollbar::scroll_to";
     }
 }

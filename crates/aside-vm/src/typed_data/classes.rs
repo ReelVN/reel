@@ -88,7 +88,7 @@ impl Registry {
                 return Ok(true);
             }
             if let Some(proof) = &mut self.classes[index as usize].pending {
-                match proof.step(heap) {
+                match proof.step() {
                     Ok(false) => continue,
                     Ok(true) => {
                         let proof = self.classes[index as usize].pending.take().unwrap();
@@ -133,9 +133,14 @@ impl Registry {
             let key = self.identities.field(&source);
             let ty = self
                 .data_type(p, field.ty)
-                .map_err(|_| SchemaError::Field {
+                .map_err(|error| SchemaError::Field {
                     key: key.clone(),
-                    reason: "field type cannot be stored as data",
+                    reason: match error {
+                        SchemaError::State { .. } => {
+                            "field type must name a declared State or admitted native type"
+                        }
+                        _ => "field type cannot be stored as data",
+                    },
                 })?;
             if self.classes[index as usize].keys.contains_key(&key) {
                 return Err(SchemaError::Field {
@@ -184,7 +189,11 @@ impl Registry {
             });
             bound.next += 1;
             if let Some(function) = initializer {
-                match defaults::Proof::new(heap, function) {
+                match defaults::Proof::new(
+                    &heap.code.as_ref().unwrap().program,
+                    &heap.budget_usage(),
+                    function,
+                ) {
                     Ok(proof) => bound.pending = Some(proof),
                     Err(SchemaError::Contract(reason)) => {
                         bound.fields.last_mut().unwrap().default_error = Some(reason)
@@ -199,13 +208,15 @@ impl Registry {
     pub fn class_for_instance(&self, heap: &Heap, instance: Value) -> Result<u32, SchemaError> {
         let (class, _) = heap.instance_data(instance)?;
         heap.root_value(self.root)?;
-        self.by_handle
+        let registered = self
+            .by_handle
             .get(&heap.handle(class)?.key)
             .copied()
-            .filter(|&i| self.classes[i as usize].ready)
-            .ok_or(SchemaError::Contract(
-                "instance class has no persistent State registration",
-            ))
+            .filter(|&i| self.classes[i as usize].ready);
+        registered.ok_or(SchemaError::State {
+            key: source_key(heap, class)?,
+            reason: "class has no state(...) declaration",
+        })
     }
     /// Read the current class of an instance for bootstrap registration.
     pub fn instance_class(heap: &Heap, instance: Value) -> Result<Value, SchemaError> {

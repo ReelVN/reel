@@ -1,6 +1,6 @@
 //! Mounted resource identities shared by layout and viewport demand queries.
 use super::*;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Weak};
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +37,37 @@ enum Selection {
 pub(crate) struct ImageRequests {
     pub index: Arc<ResourceIndex>,
     selection: Selection,
+    pub approaching: Vec<NodeId>,
     pub deferred_images: bool,
+}
+
+pub(super) struct RowResources {
+    projection: Weak<SceneNode>,
+    format: EffectShaderFormat,
+    requests: ImageRequests,
+}
+
+impl RowResources {
+    pub(super) fn new(projection: &Arc<SceneNode>, format: EffectShaderFormat) -> Self {
+        Self {
+            projection: Arc::downgrade(projection),
+            format,
+            requests: ImageRequests::new(
+                Arc::new(ResourceIndex::collect(Some(projection), format)),
+                Selection::All,
+            ),
+        }
+    }
+
+    pub(super) fn matches(&self, projection: &Arc<SceneNode>, format: EffectShaderFormat) -> bool {
+        self.format == format && self.projection.as_ptr() == Arc::as_ptr(projection)
+    }
+
+    pub(super) fn ready(&self, images: &BTreeMap<String, ResourceLease>) -> bool {
+        self.requests
+            .required()
+            .all(|(source, _)| images.contains_key(source))
+    }
 }
 
 impl StageView {
@@ -56,15 +86,6 @@ impl StageView {
             Selection::All,
         ))
     }
-    pub(super) fn image_requests_for(
-        root: Option<&Arc<SceneNode>>,
-        format: EffectShaderFormat,
-    ) -> Result<ImageRequests, String> {
-        Ok(ImageRequests::new(
-            Arc::new(ResourceIndex::collect(root, format)),
-            Selection::All,
-        ))
-    }
     pub(crate) fn layout_image_requests(
         &self,
         format: EffectShaderFormat,
@@ -77,12 +98,13 @@ impl StageView {
     pub(crate) fn viewport_image_requests(
         &self,
         outside: Vec<NodeId>,
+        approaching: Vec<NodeId>,
         format: EffectShaderFormat,
     ) -> Result<ImageRequests, String> {
-        Ok(ImageRequests::new(
-            self.resource_index(format),
-            Selection::Viewport(outside),
-        ))
+        let mut requests =
+            ImageRequests::new(self.resource_index(format), Selection::Viewport(outside));
+        requests.approaching = approaching;
+        Ok(requests)
     }
 }
 
@@ -123,7 +145,7 @@ impl ResourceIndex {
                     if visible || preload {
                         entry.shader |= shader;
                         if encoded.is_some() {
-                            entry.encoded = encoded.clone();
+                            entry.encoded = encoded;
                         }
                     }
                     if visible {
@@ -196,12 +218,6 @@ impl ResourceIndex {
     pub fn mounted(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|entry| entry.source.as_str())
     }
-    pub fn preloaded(&self) -> impl Iterator<Item = &str> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.preload)
-            .map(|entry| entry.source.as_str())
-    }
     pub fn encoded(&self) -> impl Iterator<Item = (&str, &Arc<[u8]>)> {
         self.entries.iter().filter_map(|entry| {
             entry
@@ -237,8 +253,21 @@ impl ImageRequests {
         Self {
             index,
             selection,
+            approaching: Vec::new(),
             deferred_images,
         }
+    }
+    pub fn preloaded(&self) -> impl Iterator<Item = &str> {
+        self.index.entries.iter().filter_map(|entry| {
+            (entry.preload
+                || (!self.approaching.is_empty()
+                    && entry.uses.iter().any(|usage| {
+                        usage
+                            .image
+                            .is_some_and(|(id, _)| self.approaching.binary_search(&id).is_ok())
+                    })))
+            .then_some(entry.source.as_str())
+        })
     }
     pub fn required(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
         self.index.entries.iter().filter_map(|entry| {

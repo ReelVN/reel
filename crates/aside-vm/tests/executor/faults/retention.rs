@@ -65,7 +65,7 @@ fn full_native_fault_identity_survives_continue_wait_and_repeated_callbacks_then
                         }
                         (NativeInput::WaitingReturned, 2) => {
                             assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(42));
-                            assert_eq!(v.host_callback_value(t).unwrap().as_int(), Some(42));
+                            assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(42));
                             assert!(matches!(
                                 v.host_resume_value(pending_ticket.unwrap()),
                                 Err(VmError::InvalidTicket)

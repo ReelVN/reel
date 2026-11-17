@@ -422,20 +422,6 @@ fn assert_snapshot_v1_field_stream(frame: &ScriptFrame) {
 }
 
 #[test]
-#[ignore = "execution working-frame layout measurement"]
-fn execution_working_layout() {
-    println!(
-        "execution-layout frame={} script={} v1_script={} phase={} table={} native={}",
-        size_of::<Frame>(),
-        size_of::<ScriptFrame>(),
-        size_of::<SnapshotV1ScriptFrame>(),
-        size_of::<ScriptPhase>(),
-        size_of::<Option<TableWork>>(),
-        size_of::<NativeFrame>(),
-    );
-}
-
-#[test]
 fn retained_body_reuses_working_frame() {
     let run = |legacy, deadline_ns| {
         let mut vm = load(1, true, legacy);

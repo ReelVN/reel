@@ -180,6 +180,7 @@ pub(super) fn lower_prepared<'a>(
         names,
         project,
         type_cache: Vec::new(),
+        resume_calls: Vec::new(),
         contracts: Vec::new(),
         globals: Vec::new(),
         outputs: Vec::new(),
@@ -196,6 +197,7 @@ pub(super) fn lower_prepared<'a>(
         module: module_id,
     };
     lower.type_cache = lower.b.filled(m.types().len(), None)?;
+    lower.resume_calls = super::resume::call_nodes(m, &mut lower.b)?;
     lower.native_values = lower.b.filled(lower.package.natives.len(), None)?;
     lower.b.work(lower.package.functions.len() as u64)?;
     for (index, function) in lower.package.functions.iter().enumerate() {
@@ -473,6 +475,13 @@ pub(super) fn lower_prepared<'a>(
         }
     }));
     let resume_source = super::resume::collect(m, &function_metadata, lower.source, &mut lower.b)?;
+    let (state_source, root_source) = super::resume::collect_declarations(
+        m,
+        lower.module,
+        &global_identities,
+        lower.project,
+        &mut lower.b,
+    )?;
     let outputs_capacity = lower.outputs.capacity() * std::mem::size_of::<Option<bc::FunctionId>>();
     lower.b.release(lower.outputs);
     let metadata_capacity = lower.b.stats.capacity_bytes - metadata_before
@@ -496,6 +505,8 @@ pub(super) fn lower_prepared<'a>(
         symbol_count: m.symbols().len() as u32,
         source_span: m.hir().node(h::NodeId(0)).span,
         resume_source,
+        state_source,
+        root_source,
         capacity_bytes: metadata_capacity,
     };
     Ok(IrModule {
@@ -564,6 +575,7 @@ struct Lowerer<'a> {
     names: Cow<'a, [(&'a str, bc::SymbolId)]>,
     project: Option<&'a ProjectLinks>,
     type_cache: Vec<Option<bc::TypeId>>,
+    resume_calls: Vec<bool>,
     contracts: Vec<bc::TypeId>,
     globals: Vec<Option<bc::GlobalId>>,
     outputs: Vec<Option<bc::FunctionId>>,
@@ -654,6 +666,17 @@ impl Lowerer<'_> {
                     let ty = self.external_class_type(*name)?;
                     self.type_cache[id.0 as usize] = Some(ty);
                     return Ok(ty);
+                }
+                h::Type::StringLiteral(text) => bc::TypeDef::StringLiteral(self.b.string(text)?),
+                h::Type::Record(fields) => {
+                    let mut compiled = Vec::new();
+                    for &(name, ty) in fields {
+                        let name = self.name(self.m.hir().name(name))?;
+                        let ty = self.ty(ty, depth + 1)?;
+                        self.b
+                            .push(&mut compiled, bc::RecordFieldType { name, ty })?;
+                    }
+                    bc::TypeDef::Record(compiled)
                 }
                 h::Type::Tuple(ids) | h::Type::Union(ids) => {
                     self.b.work(ids.len() as u64)?;

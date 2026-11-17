@@ -16,7 +16,7 @@ Each 56-byte index record contains `kind:u32`, `flags:u32`, `offset:u64`,
 | 2 | UTF-8 JSON code metadata, schema 1 | Required |
 | 3 | UTF-8 JSON `Distribution` | Exported projects |
 | 4 | Effect definitions and linked function bindings | Projects using compiled effects |
-| 5 | UTF-8 JSON logical continuation table, version 1 | Projects declaring stable resume flows |
+| 5 | UTF-8 JSON logical continuation and State table, version 1 | Projects declaring State, Root or stable flows |
 
 Known sections set flags=1 (required when present). Kinds are unique; nonempty
 ranges are disjoint and outside the header/index. Unknown required sections
@@ -64,15 +64,21 @@ bounds table allocations and reconstructs the shared validated EffectProgram.
 These products survive debug stripping and ASB re-encoding. GPU-target artifacts
 are prepared separately from this portable definition identity.
 
-## Logical continuations v1
+## Logical continuations and State v1
 
 Section 5 stores `aside_vm::resume::ResumeTable`. Stable flow and site keys map
-to the current function ids, execution word PCs, result slots and live binding
-layouts. The VM verifies the complete table against the decoded current program
-before the package is admitted. The package retains that verified table; binding
+to the current function ids, execution word PCs and result slots. Each site
+selects a zero-based entry in its flow's shared `layouts` array. Points are JSON
+arrays `[key, prepare, call, after_call, result, layout]` and returns are arrays
+`[key, callee, call, after_call, result, layout]`. A return's `callee` is the
+current function id of a declared flow. Saved frames use that flow's stable key.
+State and Root
+declarations identify current classes and the bootstrap function through stable
+keys. The VM verifies each site's layout against the decoded current program
+before admitting the package. The package retains that verified table; binding
 an external text pool preserves the verification and shares the bound pool with
 the execution program. JSON and resume verification use the package metadata and
-work limits. An absent section denotes an empty version 1 table.
+work limits. An absent section denotes an empty current-version table.
 
 Continuation metadata survives release debug stripping, external text extraction
 and distribution re-encoding. It describes current code; saved logical records

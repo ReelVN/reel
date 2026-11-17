@@ -81,17 +81,56 @@ impl Binder<'_> {
                 _ => {}
             }
         }
-        let parameter = external.result_parameter.as_deref()?;
+        let (parameter, callback) = match external.result_parameter.as_ref()? {
+            ExternalResultParameter::Value(name) => (name, false),
+            ExternalResultParameter::Callback(name) => (name, true),
+        };
         let name = self.intern_name(parameter);
         let index = signature.named.get(&name)?;
-        values.get(index).map(|&value| self.ty(value))
+        let value = *values.get(index)?;
+        let ty = self.ty(value);
+        if !callback {
+            return Some(ty);
+        }
+        match self.out.types[ty.0 as usize] {
+            Type::Function(function) | Type::BoundMethod(function) => {
+                let function = &self.out.functions[function.0 as usize];
+                if function.kind != FunctionKind::Plain {
+                    return None;
+                }
+                let (body, result) = (function.body, function.return_type);
+                if result != ANY {
+                    return Some(result);
+                }
+                if self.kind(value) != HirKind::Closure || !self.falls_through(body) {
+                    return None;
+                }
+                let mut pending = vec![body];
+                while let Some(node) = pending.pop() {
+                    if !self.budget(node) || self.kind(node) == HirKind::Return {
+                        return None;
+                    }
+                    if !matches!(self.kind(node), HirKind::Function | HirKind::Closure) {
+                        pending.extend(self.children(node));
+                    }
+                }
+                Some(self.ty(body))
+            }
+            _ => None,
+        }
     }
-    fn spread_type_possible(&mut self, node: NodeId, ty: TypeId) -> bool {
+    pub(super) fn spread_type_possible(
+        &mut self,
+        node: NodeId,
+        ty: TypeId,
+        allow_table: bool,
+    ) -> bool {
         if !self.budget(node) {
             return true;
         }
         match &self.out.types[ty.0 as usize] {
-            Type::Any | Type::Named(_) | Type::Array | Type::Tuple(_) | Type::Table => true,
+            Type::Any | Type::Named(_) | Type::Array | Type::Tuple(_) => true,
+            Type::Table => allow_table,
             Type::Union(types) => {
                 let count = types.len();
                 if !self.charge_work(node, count) {
@@ -102,7 +141,7 @@ impl Binder<'_> {
                         unreachable!()
                     };
                     let child = types[i];
-                    if self.spread_type_possible(node, child) {
+                    if self.spread_type_possible(node, child, allow_table) {
                         return true;
                     }
                 }
@@ -121,7 +160,7 @@ impl Binder<'_> {
             return;
         }
         let ty = self.ty(node);
-        if !self.spread_type_possible(node, ty) {
+        if !self.spread_type_possible(node, ty, true) {
             self.error(
                 D::TypeMismatch,
                 self.span(node),

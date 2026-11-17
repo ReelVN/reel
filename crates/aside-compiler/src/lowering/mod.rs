@@ -184,6 +184,8 @@ pub struct Metadata {
     pub symbol_count: u32,
     pub source_span: TextRange,
     pub(crate) resume_source: Vec<resume::SourceFlow>,
+    pub(crate) state_source: Vec<resume::SourceState>,
+    pub(crate) root_source: Option<resume::SourceRoot>,
     pub(crate) capacity_bytes: usize,
 }
 #[derive(Debug, Clone, Copy)]
@@ -233,16 +235,19 @@ impl Metadata {
 }
 impl IrModule {
     /// Consumes the IR, relocates block edges/regions and runs the shared verifier.
-    pub fn emit(self) -> Result<Compilation, Box<Error>> {
-        emit::emit(self)
+    /// Host declarations prove nominal method targets at logical resume points.
+    pub fn emit(self, host_types: &[bc::HostTypeSupport]) -> Result<Compilation, Box<Error>> {
+        emit::emit(self, host_types)
     }
 }
+/// Lower and verify one module with the host's independent nominal declarations.
 pub fn compile(
     module: &hir::AnalyzedModule,
     linkage: &Linkage<'_>,
+    host_types: &[bc::HostTypeSupport],
     options: Options,
 ) -> Result<Compilation, Box<Error>> {
-    lower(module, linkage, options)?.emit()
+    lower(module, linkage, options)?.emit(host_types)
 }
 
 /// Source nodes retained after folding pure compile-time conditions.

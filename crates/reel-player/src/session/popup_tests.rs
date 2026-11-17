@@ -231,6 +231,7 @@ fn source_and_asb_inline_text_fragments_preserve_edge_space_advance() {
                             sequence: 1,
                             node: text,
                             relative_to: None,
+                            reveal_margins: None,
                         },
                     )
                     .unwrap()
@@ -431,6 +432,68 @@ fn source_and_asb_nonmodal_hover_popup_preserves_fixed_and_natural_anchors() {
 }
 
 #[test]
+fn tooltip_follows_hover_and_visible_focus_without_capturing_input() {
+    use reel_ui::core::{
+        TextEvent,
+        keyboard::{Key, NamedKey},
+    };
+
+    let source = r#"fn main() {
+        let data=model({clicks:0});
+        stage.replace(stack(width:640,height:420) {
+            button("Help", x:40,y:50,width:120,height:40,on_click:|| {data.clicks+=1;}) {
+                tooltip(offset:-25,width:120,height:40) {
+                    button("Passive",width:120,height:40);
+                };
+            };
+            text(derive(||f"counts:{data.clicks}"),y:180);
+        });
+        narrator("wait");
+    }"#;
+    for encoded in [false, true] {
+        let mut driver = story(source, encoded);
+        drive(&mut driver);
+        let anchor = node(
+            &driver,
+            |kind| matches!(kind, NodeKind::Button { label: Some(label), .. } if label == "Help"),
+        );
+        let hint = node(&driver, |kind| matches!(kind, NodeKind::Popup(_)));
+        let (mut bridge, root) = mount(&driver, false);
+        let first = present(&mut driver, &mut bridge, root, 1);
+        let widget = SessionUi::projected_node(&bridge, root, anchor).unwrap();
+        assert!(SessionUi::projected_node(&bridge, root, hint).is_none());
+        let at = bounds(&first, widget).center();
+        driver
+            .handle_pointer(&mut bridge, mouse("move", (at.x, at.y)))
+            .unwrap();
+        drive(&mut driver);
+        let shown = present(&mut driver, &mut bridge, root, 2);
+        let popup = SessionUi::projected_node(&bridge, root, hint).unwrap();
+        assert!(bounds(&shown, popup).contains(at));
+        assert_eq!(shown.geometry().hit_test(at), Some(widget));
+        for kind in ["down", "up"] {
+            driver
+                .handle_pointer(&mut bridge, mouse(kind, (at.x, at.y)))
+                .unwrap();
+        }
+        drive(&mut driver);
+        assert_eq!(counter(&driver), "counts:1");
+        driver
+            .handle_pointer(&mut bridge, mouse("move", (20., 350.)))
+            .unwrap();
+        drive(&mut driver);
+        present(&mut driver, &mut bridge, root, 3);
+        assert!(SessionUi::projected_node(&bridge, root, hint).is_none());
+        driver
+            .handle_text(&mut bridge, TextEvent::key_down(Key::Named(NamedKey::Tab)))
+            .unwrap();
+        drive(&mut driver);
+        present(&mut driver, &mut bridge, root, 4);
+        assert!(SessionUi::projected_node(&bridge, root, hint).is_some());
+    }
+}
+
+#[test]
 fn source_and_asb_popups_float_outside_parent_clip_and_route_actual_callbacks() {
     const SOURCE: &str = r#"fn main(){
         let data=model({hits:0,closed:0,shift:0});
@@ -487,6 +550,7 @@ fn source_and_asb_popups_float_outside_parent_clip_and_route_actual_callbacks() 
                         sequence: 1,
                         node: caption,
                         relative_to: Some(anchor),
+                        reveal_margins: None,
                     },
                 )
                 .unwrap();
@@ -856,6 +920,7 @@ fn popup_tree(stage: &mut reel_ui::stage::Stage, children: Vec<NodeId>) -> (Node
                 placement: Default::default(),
                 offset: 4.,
                 listening: false,
+                hint: None,
             }),
             NodeProps {
                 width: Some(320.),

@@ -32,14 +32,12 @@ enum ValueStorage {
 pub(crate) struct Values {
     storage: ValueStorage,
     pub len: u32,
-    pub release_cursor: u32,
 }
 impl Default for Values {
     fn default() -> Self {
         Self {
             storage: ValueStorage::Inline([Value::NULL; INLINE_VALUES]),
             len: 0,
-            release_cursor: 0,
         }
     }
 }
@@ -148,18 +146,34 @@ impl Values {
                 input = &input[1..];
                 continue;
             }
-            let available = match &self.storage {
-                ValueStorage::Inline(_) => INLINE_VALUES - self.len as usize,
-                ValueStorage::Small(_) => FIRST_VALUES - self.len as usize,
-                ValueStorage::Chunks { .. } => {
-                    VALUE_CHUNK_LEN - (self.len as usize - FIRST_VALUES) % VALUE_CHUNK_LEN
-                }
-            };
-            let count = input.len().min(available);
+            let count = input.len().min(self.remaining_in_block());
             let start = self.len;
             self.len += count as u32;
             self.write_slice(start, &input[..count]);
             input = &input[count..];
+        }
+    }
+    pub fn extend_repeated(&mut self, value: Value, mut remaining: usize) {
+        while remaining != 0 {
+            if self.needs_chunk() {
+                self.push(value);
+                remaining -= 1;
+                continue;
+            }
+            let count = remaining.min(self.remaining_in_block());
+            let start = self.len;
+            self.len += count as u32;
+            self.segment_mut(start).fill(value);
+            remaining -= count;
+        }
+    }
+    fn remaining_in_block(&self) -> usize {
+        match &self.storage {
+            ValueStorage::Inline(_) => INLINE_VALUES - self.len as usize,
+            ValueStorage::Small(_) => FIRST_VALUES - self.len as usize,
+            ValueStorage::Chunks { .. } => {
+                VALUE_CHUNK_LEN - (self.len as usize - FIRST_VALUES) % VALUE_CHUNK_LEN
+            }
         }
     }
     pub fn set(&mut self, index: u32, value: Value) {
@@ -239,64 +253,28 @@ impl Values {
         }
         Some((value, freed))
     }
-    pub fn first_chunk_len(&self) -> u32 {
-        let ValueStorage::Chunks { first, rest } = &self.storage else {
-            return self.len;
-        };
-        if first.is_some() {
-            return FIRST_VALUES as u32;
-        }
-        let Some((&index, _)) = rest.first_key_value() else {
-            return 0;
-        };
-        (self.len - FIRST_VALUES as u32 - index * VALUE_CHUNK_LEN as u32)
-            .min(VALUE_CHUNK_LEN as u32)
-    }
-    pub fn clear_release_edge(&mut self) {
+    /// Releases one allocated block from a dying object and returns its charge.
+    pub fn release_chunk(&mut self, available_bytes: u64) -> Option<u64> {
         match &mut self.storage {
-            ValueStorage::Inline(values) => values[self.release_cursor as usize] = Value::NULL,
-            ValueStorage::Small(values) => values[self.release_cursor as usize] = Value::NULL,
-            ValueStorage::Chunks {
-                first: Some(values),
-                ..
-            } => values[self.release_cursor as usize] = Value::NULL,
-            ValueStorage::Chunks { first: None, rest } => {
-                rest.first_entry().unwrap().get_mut()[self.release_cursor as usize] = Value::NULL
+            ValueStorage::Small(_) if available_bytes >= FIRST_VALUE_BYTES => {
+                *self = Self::default();
+                Some(FIRST_VALUE_BYTES)
             }
-        }
-        self.release_cursor += 1;
-    }
-    pub fn drop_first_chunk(&mut self) {
-        match &mut self.storage {
-            ValueStorage::Inline(_) => self.len = 0,
-            ValueStorage::Small(_) => *self = Self::default(),
-            ValueStorage::Chunks { first, rest } => {
-                if first.is_some() {
-                    *first = None;
-                } else {
-                    rest.pop_first();
-                }
+            ValueStorage::Chunks {
+                first: first @ Some(_),
+                ..
+            } if available_bytes >= FIRST_VALUE_BYTES => {
+                *first = None;
+                Some(FIRST_VALUE_BYTES)
+            }
+            ValueStorage::Chunks { first: None, rest } if available_bytes >= VALUE_CHUNK_BYTES => {
+                rest.pop_first();
                 if rest.is_empty() {
                     *rest = BTreeMap::new();
                 }
+                Some(VALUE_CHUNK_BYTES)
             }
-        }
-        self.release_cursor = 0;
-    }
-    pub fn empty(&self) -> bool {
-        match &self.storage {
-            ValueStorage::Inline(_) => self.len == 0,
-            ValueStorage::Small(_) => false,
-            ValueStorage::Chunks { first, rest } => first.is_none() && rest.is_empty(),
-        }
-    }
-    pub fn release_bytes(&self) -> u64 {
-        match &self.storage {
-            ValueStorage::Inline(_) => 0,
-            ValueStorage::Small(_) | ValueStorage::Chunks { first: Some(_), .. } => {
-                FIRST_VALUE_BYTES
-            }
-            ValueStorage::Chunks { first: None, .. } => VALUE_CHUNK_BYTES,
+            _ => None,
         }
     }
 }
@@ -486,6 +464,27 @@ pub(crate) enum Payload {
     Empty,
 }
 impl Payload {
+    pub fn has_edges(&self) -> bool {
+        match self {
+            Self::Cell(cell) => cell
+                .value
+                .is_some_and(|value| value.tag() == crate::ValueTag::Object),
+            Self::Values(values) | Self::Table(Table { values, .. }) => values.len != 0,
+            Self::Dependencies(dependencies) => dependencies.values.len != 0,
+            Self::Fault(_) => true,
+            Self::Bytes(_) | Self::Empty => false,
+        }
+    }
+
+    pub fn edge_segment(&self, cursor: u32) -> Option<&[Value]> {
+        let values = match self {
+            Self::Values(values) | Self::Table(Table { values, .. }) => values,
+            Self::Dependencies(dependencies) => &dependencies.values,
+            _ => return None,
+        };
+        (cursor < values.len).then(|| values.segment(cursor))
+    }
+
     pub fn edge(&self, cursor: u32) -> Option<Value> {
         match self {
             Self::Cell(v) if cursor == 0 => v.value,
@@ -585,7 +584,8 @@ mod tests {
             assert_eq!(charged, Values::allocation_bytes(values.len.into()));
         }
         assert_eq!(charged, 0);
-        assert!(values.empty());
+        assert_eq!(values.len, 0);
+        assert_eq!(values.owned_chunks(), 0);
         let cost = allocation_counter::measure(|| {
             for _ in 0..3 {
                 for index in 0..9 {

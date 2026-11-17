@@ -1,9 +1,49 @@
 //! Stateful controls share the stage's property storage and callback ownership.
 use super::*;
 use reel_ui::{
-    stage::{ControlValue, NodeChange, ToggleAppearance},
+    stage::{ControlValue, NodeChange, SliderArt, ToggleAppearance},
     widgets::SliderRange,
 };
+
+#[derive(aside_host::Properties)]
+pub(in crate::aside) enum ProgressField {
+    /// Current progress. The displayed value is clamped to the range from zero to max.
+    #[aside(name = "value", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number)]
+    Value,
+    /// The finite positive value that fills the bar.
+    #[aside(name = "max", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_progress_max)]
+    Max,
+}
+
+pub(super) fn progress_kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError> {
+    let get = |field: ProgressField| {
+        Ok::<_, HeapError>(heap.table_entry(fields, field.index() as u32)?.1)
+    };
+    let max = progress_max(get(ProgressField::Max)?)?;
+    let value = number(get(ProgressField::Value)?)?.clamp(0., max);
+    Ok(NodeKind::ProgressBar { value, max })
+}
+
+fn progress_max(value: Value) -> Result<f64, AdapterError> {
+    let max = number(value)?;
+    if max <= 0. {
+        return Err(AdapterError::Input("progress bar max must be positive"));
+    }
+    Ok(max)
+}
+
+fn validate_progress_max(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(progress_max(value))
+}
+
+pub(super) fn validate_progress(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+    let count = ProgressField::PROPERTIES.len() as u32;
+    if index < count {
+        ProgressField::validate(heap, index, value)
+    } else {
+        validate_layout_property(heap, index - count, value)
+    }
+}
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum SliderField {
@@ -17,6 +57,15 @@ pub(in crate::aside) enum SliderField {
     Step,
     #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
+    /// Optional stage node filling the track. It replaces the built-in track drawing.
+    #[aside(name = "track", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::Node")), default = null, readonly)]
+    Track,
+    /// Optional stage node positioned by the control's value.
+    #[aside(name = "thumb", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::Node")), default = null, readonly)]
+    Thumb,
+    /// Logical width of the custom thumb, used by layout and pointer input.
+    #[aside(name = "thumb_width", ty = Any, doc_type = aside_host::source::number(), default = 20, readonly, validate = validate_thumb_width)]
+    ThumbWidth,
 }
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ToggleField {
@@ -113,6 +162,16 @@ fn validate_step(heap: &Heap, value: Value) -> Result<(), HeapError> {
 fn validate_callback(heap: &Heap, value: Value) -> Result<(), HeapError> {
     validate_button_property(heap, 1, value)
 }
+fn validate_thumb_width(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(thumb_width(value))
+}
+fn thumb_width(value: Value) -> Result<f64, AdapterError> {
+    let width = number(value)?;
+    if width <= 0. {
+        return Err(AdapterError::Input("slider thumb_width must be positive"));
+    }
+    Ok(width)
+}
 fn validate_label(heap: &Heap, value: Value) -> Result<(), HeapError> {
     validate_button_property(heap, 0, value)
 }
@@ -156,10 +215,31 @@ pub(super) fn slider_kind(heap: &Heap, fields: Value) -> Result<NodeKind, Adapte
         .table_entry(fields, SliderField::OnChange.index() as u32)?
         .1;
     validate_callback(heap, callback)?;
+    let part = |field: SliderField| -> Result<Option<NodeId>, AdapterError> {
+        let value = heap.table_entry(fields, field.index() as u32)?.1;
+        if value.tag() == ValueTag::Null {
+            return Ok(None);
+        }
+        if let Err(HeapError::RetiredHost) = heap.host_fields(value) {
+            return Ok(None);
+        }
+        heap.host_payload(value, 0)?
+            .as_int()
+            .map(|id| Some(NodeId(id as u64)))
+            .ok_or(AdapterError::Input("slider art must be a stage node"))
+    };
     Ok(NodeKind::Slider {
         range,
         value,
         listening: callback.tag() != ValueTag::Null,
+        art: SliderArt {
+            track: part(SliderField::Track)?,
+            thumb: part(SliderField::Thumb)?,
+            thumb_width: thumb_width(
+                heap.table_entry(fields, SliderField::ThumbWidth.index() as u32)?
+                    .1,
+            )?,
+        },
     })
 }
 pub(super) fn toggle_kind(
@@ -295,6 +375,16 @@ impl StageBinding {
         };
         if equal {
             return Ok(None);
+        }
+        if matches!(node.kind, NodeKind::Radio { tabs: Some(_), .. }) {
+            let parent = heap.host_payload(target, 2)?;
+            let callback = heap.host_property(PropertyId {
+                host: parent,
+                field: super::super::pages::TabField::OnSelect.index() as u32,
+            })?;
+            if callback.tag() != ValueTag::Null {
+                return Ok(Some((target, callback, value)));
+            }
         }
         match heap.write_host_property(
             PropertyId {

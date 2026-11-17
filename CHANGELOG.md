@@ -6,8 +6,220 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Added
 
+- Capture frame timings and source diagnostics while reproducing an issue in a desktop development session.
+- Verify a target export and its completed playback against required scenes, submission intervals and memory limits.
+
+### Changed
+
+- Reuse one desktop brush texture for solid and gradient drawing across frames.
+
+### Fixed
+
+- Reject unsupported desktop MP4 audio tracks during export instead of discovering them at playback.
+- Keep native widget animations on the presentation cadence while script clocks use their own deadlines.
+- Retry save restoration after collecting unused VM objects and report capacity errors without replacing the running session.
+- Return the shared desktop brush texture to the render budget when GPU work releases it and another resource needs space.
+- Check performance policies before launching playback and associate frame measurements with their original request.
+- Flush queued Windows audio at session changes while reusing the negotiated device format.
+
+## 0.3.12 — 2026-11-17
+
+### Changed
+
+- Mark leaf VM objects without queueing them, and scan adjacent references during one heap lookup.
+- Reuse wrapped text measurements at the same width even when the text overflows.
+- Convert identical source pixels once per block when uploading transparent desktop textures.
+- Report text shaping, wrapping and paint-bound indexing separately in performance captures.
+- Scan image transparency and opacity four pixels at a time during resource registration.
+- Reuse scaled outline bounds when rasterizing filled glyphs.
+- Keep native widget animation on a fixed sampling cadence through late redraws.
+
+## 0.3.11 — 2026-11-17
+
+### Changed
+
+- Scan VM frame roots in contiguous blocks, looking up each register window once per GC slice.
+- Release unreachable VM value blocks directly during garbage collection.
+- Allocate audio segment queues on demand. Sounds played without queued segments use no queue storage.
+- Reuse the initial desktop audio device probe on first configuration, avoiding a second format enumeration during restore.
+- Reuse the desktop audio device and native stream when starting a story or loading a save.
+- Keep isolated effect results reusable across transitions and masks on other subtrees.
+- Reuse the WGPU shader module and layouts across effect variants that differ only in vertex input or blending.
+- Generate smaller desktop shaders by sharing work across uniform branches and keeping large weighted sampling sums in ordered loops.
+- Upload fully opaque desktop sRGB artwork directly as 8-bit textures. Images with transparency retain linear premultiplied storage.
+- Copy aligned opaque images in one block and avoid clearing desktop upload buffers a second time.
+- Skip upload admission for resident desktop images and publish only completed new uploads to the cache.
+- Use 64 MiB Vulkan allocation blocks to reduce large allocation pauses during desktop image creation.
+- Reuse recently uploaded images for prefetch instead of reading and decoding the same source again.
+- Reserve desktop RGBA8 PNG output directly from its header and decode it in one background request.
+- Keep pending preloads when returning foreground images can be reused from the GPU.
+- Prefetch fixed-size images approaching the viewport so animated entrances can reuse decoded art.
+- Compute glyph ink bounds only for render groups that need them.
+- Reclaim idle image storage by demand, starting with retired storage and then the least recently used textures.
+- Reuse image dependency indices for mounted virtual list rows.
+- Reuse the resolved archive entry across read blocks on immutable mounts.
+- Cull draws hidden by a fully opaque, in-bounds image crop.
+
+### Fixed
+
+- Continue in-flight image preloads when the image becomes visible, including shared atlas pages.
+
+## 0.3.10 — 2026-11-11
+
+### Changed
+
+- Set the Vita player version to `00.40` and change its Title ID to `REELVITAP`. Vita installs it as a separate LiveArea bubble and reads the existing library and game saves from `ux0:/data/reel/`.
+
+## 0.3.9 — 2026-11-10
+
+### Added
+
+- Add vertical row stops to scroll viewports and their native scrollbars.
+
+### Changed
+
+- Refresh the Vita launcher with a two-column library, clearer selection and contextual controller hints. Circle confirms and Cross goes back.
+- Keep desktop client sizes in physical pixels at every display scale, independently of the logical canvas.
+- Export distributable projects to `dist/<target>/<profile>/`. Move any existing `build/export/` packages to `dist/` before running `reel clean`.
+- Reuse desktop shader modules across mesh, sprite instance, coverage and mask blend pipelines.
+- Build independent desktop render pipelines in parallel during startup and when a mask is first used.
+
+### Fixed
+
+- Reject desktop masks that exceed the device's texture binding limit before creating their pipelines.
+
+## 0.3.8 — 2026-11-10
+
+### Added
+
+- Allow uncapped animation sampling while preserving event-driven redraw for idle scenes.
+- Share desktop resource overlays and conversion rules across Windows, Linux and macOS, with exact target overrides.
+- Include whole-segment submission counts and memory peaks in playback summaries.
+
+### Changed
+
+- Use the latest transcript line as the default save-slot title.
+
+### Fixed
+
+- Reuse prepared atlas pages without opening source image decoders.
+- Wake the desktop event loop on background resource, save and media completions independently of window redraw.
+- Share WGSL shader modules across desktop paint and composition pipeline variants.
+- Warm the preferred desktop rendering tier at surface setup and prepare fallback pipelines on demand.
+- Run ready save restoration steps within one host time slice.
+- Preserve virtual-list geometry revisions when the committed row window is unchanged.
+
+## 0.3.7 — 2026-11-10
+
+### Added
+
+- Expose gamepad button display labels through `stage.input().buttons`.
+- Add budgeted literal string splitting and replacement with Unicode-aware empty patterns.
+- Check MP4 video profiles during desktop resource preparation and point incompatible files to the video conversion rule.
+
+### Fixed
+
+- Generate save continuations after completed `for` loops.
+- Explain how to annotate a checkpoint method receiver when its nominal type cannot be proved.
+- Report task launches in node blocks, unsafe host calls in derived expressions, and attempts to await known non-awaitable transition results at their source locations.
+
+## 0.3.6 — 2026-11-10
+
+### Added
+
+- Generate save continuation positions for verified waits and calls inside a story flow.
+- Let games enable recent dialogue jumps from their history menu.
+- Add `std::math::min` and `max` for scripts and shaders. Scripts preserve the selected operand's numeric type.
+- Load static WebP artwork on desktop and use it as input for texture, tile and atlas preparation.
+- Convert 8-bit artwork to lossless WebP with a resource target rule.
+- Let texture rules preserve the source image when BC encoding exceeds the display-error threshold.
+
+### Fixed
+
+- Share transcript pages with a save capture to reduce its main-thread work.
+- Keep a frame capture pending while the renderer waits for submission capacity.
+
+## 0.3.5 — 2026-11-09
+
+### Added
+
+- Show module declarations and class members in the editor outline, and offer a quick fix for missing semicolons.
+- Add `progress_bar` for bindable progress displays with custom colors and overlay children.
+- Find references to Aside bindings and exports across the active and entry import graphs.
+- Import project modules from `src/` with paths such as `use ui::dialogue;`.
+- Handle tab selection before committing it with `tab_bar(on_select: ...)`.
+- Add `tooltip` for passive content anchored to a control's hover or visible focus.
+- Splice arrays and tuples into component children with `...items;`.
+- Use shorthand fields such as `{width, height}` in table literals.
+- Add `input(on_back: ...)` for default back controls and `Scope.wait()` for pages ended by callbacks.
+- Add `PageStackNode.select` to commit the latest page selection after construction.
+- Destructure object fields in `let` and `for` bindings.
+- Complete valid image fit, sampling and scroll overscroll values in the editor.
+- Read plain or bound values through `value_of` in component wrappers.
+- Add `first_where` and `any` for short-circuit collection predicates.
+- Complete item and row members inside inline keyed list callbacks using the item source.
+- Compose sliders with custom track and thumb nodes that share the control's input geometry.
+- Select image assets and atlas regions from a control's interaction state with `image_skin`.
+- Reveal mounted nodes in their scroll viewport using presented bounds, optional margins and animation.
+- Initialize missing table entries lazily with `get_or_insert_with`.
+- Annotate named return parts with structural table types such as `{node: Node, caption: TextNode}`.
+- Constrain menu results and other values with string literal types, and complete finite choices in the editor.
+
+### Fixed
+
+- Resolve prelude types such as `Node` in signatures imported from project modules.
+- Preserve known types through null comparisons and `??` fallback expressions.
+- Preserve guard refinements after an early exit from an `if` branch.
+- Pass final static record spreads directly as named arguments.
+
+## 0.3.3 — 2026-11-09
+
+### Changed
+
+- Bind native calls from the same host registration used to validate the package, avoiding a second registry search at startup.
+- Bind and validate external text once for both code execution and continuation recovery.
+- Transfer transition data directly to the frame compiler and reuse localization fallback templates without allocating a cache key on hits.
+- Share inline shader operand lists across generation, branch analysis, and footprint analysis.
+- Build performance summaries from the current capture without rereading the generated reports.
+- Reuse generation paths during save cleanup and give staging directories a single owner.
+- Reuse compression buffers within each archive and report export sizes from the bytes written.
+- Skip the extra device-buffer clear when audio conversion fills the entire callback.
+- Use a bounded LRU for editor disk sources and index native declarations during host binding.
+
+### Removed
+
+- Remove the environment switches for earlier Aside execution experiments and retire three ad hoc VM benchmark tests.
+- Use `host_resume_value` for both callback and wait results, replacing the old `host_callback_value` alias.
+- Remove support for deriving performance counters from older traces missing session diagnostics, interval boundaries, or VM phase buckets.
+
+## 0.3.2 — 2026-11-09
+
+### Added
+
+- Add `std::math::clamp` for inclusive numeric ranges with exact mixed integer and float comparisons.
+
+### Changed
+
+- Fill growing Aside arrays directly in bounded storage blocks and validate each repeated value once per block before publishing the new length.
+- Reuse validated table positions for repeated integer-key lookups.
+- Scan arrays by storage block when attaching them to reactive models, skipping scalar entries and repeated references.
+- Batch garbage collection scans and clearing within storage blocks while honoring edge and work budgets.
+- Reuse virtual list row measurements during scrolling and send scroll feedback when input or layout changes the requested state.
+- Keep periodic script trace writes out of desktop performance captures unless diagnostic tracing is enabled.
+
+## 0.3.1 — 2026-11-09
+
+### Added
+
+- Use one `point` declaration for recoverable interaction and ordinary flow calls, with compiler-generated continuation layouts.
+- Infer a Root's State from its ordinary defaulted parameter, which new games evaluate and loading supplies directly.
+- Load player saves through current Root code and stable story keys, preserving typed state, dialogue reveal, choices and history across code updates.
+- Pass current Root services through `run_flow`'s optional context, reconnecting live aliases to rebuilt views and callbacks on loading.
+- Preserve shared image/stack references, direct property bindings and leaf tween, delay and clock progress in logical state graphs.
 - Add composable native scrollbars with custom track/thumb content, bounded scrolling, pointer capture, keyboard/controller input and accessibility range actions.
 - Retain verified stable continuation metadata through source compilation, ASB release builds, external text binding and distribution re-encoding.
+- Allow stable continuation points at calls to statically resolved script methods, restoring their receiver from the current story context.
+- Expose `saves.can_capture()` so menus can enable saving at supported story positions.
 - Add budgeted typed-state graph and business-continuation capture/restoration APIs for embedding hosts, preserving current class behavior, shared references and defaulted new fields.
 - Add native `page_stack` and `tab_bar` compositions with retained lazy pages, shared construction tasks, customizable tab content, and keyboard/controller navigation.
 - Add opt-in touch overscroll with native rebound animation while preserving bounded logical scroll positions.
@@ -19,6 +231,12 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ### Fixed
 
+- Share continuation analysis across the points in each flow to reduce build time for long chapters.
+- Share identical continuation layouts within each flow to reduce ASB size and retained metadata.
+- Encode checkpoint sites as compact records and reference current callees by function ID. Rebuild ASBs containing earlier development checkpoint tables.
+- Reject window changes during isolated save restoration so a Root can continue preparing its view.
+- Keep active tweens running when a view attaches to their source through a batched property binding.
+- Continue scrollbar drags from the corrected offset when virtual rows refine the measured range.
 - Infer direct lambda parameters and results from expected callable types in calls, typed bindings, assignments and returns, including native page and tab factories.
 - Preserve authored scroll animations through virtual-list anchor feedback and layout clamping while retaining explicit input takeover.
 - Keep recent frame samples separate from historical slow frames across performance-label changes.

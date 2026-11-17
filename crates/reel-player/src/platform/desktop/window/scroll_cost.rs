@@ -10,10 +10,10 @@ use winit::{application::ApplicationHandler, event_loop::EventLoop};
 #[test]
 #[ignore = "requires REEL_SCROLL_ASB, REEL_SCROLL_ASSETS, REEL_SESSION_FONT and a native GPU/window"]
 fn external_gallery_native_frame_cost() {
-    struct Harness;
+    struct Harness(winit::event_loop::EventLoopProxy<()>);
     impl ApplicationHandler for Harness {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-            exercise(event_loop);
+            exercise(event_loop, self.0.clone());
             event_loop.exit();
         }
         fn window_event(
@@ -32,10 +32,11 @@ fn external_gallery_native_frame_cost() {
         .with_any_thread(true)
         .build()
         .unwrap();
-    event_loop.run_app(&mut Harness).unwrap();
+    let proxy = event_loop.create_proxy();
+    event_loop.run_app(&mut Harness(proxy)).unwrap();
 }
 
-fn exercise(event_loop: &ActiveEventLoop) {
+fn exercise(event_loop: &ActiveEventLoop, proxy: winit::event_loop::EventLoopProxy<()>) {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
     let bytes = std::fs::read(std::env::var_os("REEL_SCROLL_ASB").unwrap()).unwrap();
     let compiled = crate::distribution::decode_story(&bytes).unwrap();
@@ -60,7 +61,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
         ),
         ..Default::default()
     };
-    let mut state = State::new_story(event_loop, 1, driver, options).unwrap();
+    let mut state = State::new_story(event_loop, proxy, 1, driver, options).unwrap();
     let start = Instant::now();
     let mut warm = 0;
     while warm < 5 {

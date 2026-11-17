@@ -5,8 +5,12 @@ use crate::resume::{
     VerifiedResumePlan, VerifiedResumeTable,
 };
 mod capture;
+mod descriptor;
 mod restore;
 pub use capture::{CaptureProgress, CapturedBinding, ResumeCapture, ResumeCaptureCursor};
+pub use descriptor::{
+    ResumeDescriptor, ResumeDescriptorBound, ResumeFrameRef, ResumeFrames, ResumeSiteRef,
+};
 pub use restore::{
     ResumeFrameValues, ResumeProgress, ResumeRestore, ResumeRestoreCursor, ResumeValue,
 };

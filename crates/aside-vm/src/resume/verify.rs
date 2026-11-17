@@ -4,15 +4,19 @@ use std::collections::BTreeSet;
 
 impl bc::VerifiedProgram {
     /// Validate current continuation metadata before it can produce executable plans.
+    /// `host_types` comes from the same independent nominal registrations used for
+    /// VM admission. Bound method points resolve through these declarations.
     pub fn verify_resume(
         &self,
         table: ResumeTable,
+        host_types: &[crate::HostTypeSupport],
         limits: ResumeLimits,
     ) -> Result<VerifiedResumeTable, ResumeError> {
         let mut b = Budget::new(limits);
         if table.version != 1 {
             return Err(ResumeError::new("unsupported resume table version"));
         }
+        contracts::normalize(self, &table, None, &mut b)?;
         let mut keys = BTreeSet::new();
         let mut functions = BTreeSet::new();
         for flow in &table.flows {
@@ -22,6 +26,8 @@ impl bc::VerifiedProgram {
             {
                 return Err(ResumeError::new("duplicate or empty resume flow identity"));
             }
+        }
+        for flow in &table.flows {
             let f = self
                 .package()
                 .functions
@@ -29,35 +35,39 @@ impl bc::VerifiedProgram {
                 .ok_or_else(|| ResumeError::new("resume flow function"))?;
             if f.kind != bc::FunctionKind::Plain
                 || !f.captures.is_empty()
-                || !f.regions.is_empty()
                 || f.context != bc::Context::Ordinary
             {
-                return Err(ResumeError::new("resume flow requires an ordinary plain function without captures or exception regions").at(flow.function, Pc(0)));
+                return Err(ResumeError::new(
+                    "resume flow requires an ordinary plain function without captures",
+                )
+                .at(flow.function, Pc(0)));
             }
-            let mut points = BTreeSet::new();
-            let mut returns = BTreeSet::new();
+            if flow.points.is_empty() && flow.returns.is_empty() {
+                continue;
+            }
+            let analysis = analysis::prepare_flow(self, flow.function, &mut b)
+                .map_err(|error| error.at(flow.function, Pc(0)))?;
+            b.bytes(flow.layouts.len())?;
+            let mut checked_layouts = Vec::new();
+            checked_layouts
+                .try_reserve_exact(flow.layouts.len())
+                .map_err(|_| ResumeError::new("resume layout verification allocation"))?;
+            checked_layouts.resize(flow.layouts.len(), false);
+            let mut sites = BTreeSet::new();
             for point in &flow.points {
-                if point.key.0.is_empty() || !points.insert(&point.key) {
+                if point.key.0.is_empty() || !sites.insert(point.key.0.as_str()) {
                     return Err(ResumeError::new("duplicate or empty point key"));
                 }
-                let site = analysis::analyze(
-                    self,
-                    flow.function,
-                    Some(point.prepare),
-                    point.call,
-                    &mut b,
-                )?;
+                let site = analysis.site_in(Some(point.prepare), point.call, host_types, &mut b)?;
                 check_site(
                     self,
-                    flow.function,
+                    flow,
                     &site,
-                    point.after_call,
-                    point.result,
-                    &point.layout,
+                    (point.after_call, point.result),
+                    point.layout,
+                    &mut checked_layouts,
                 )?;
-                let call = call_descriptor(f, point.call)?;
-                let target =
-                    super::targets::static_target(self, f, call.target, Some(point.call), &mut b)?;
+                let target = analysis.target_in(point.call, host_types, &mut b)?;
                 let target = &self.package().functions[target.index()];
                 if !matches!(target.kind, bc::FunctionKind::Native(_))
                     || self.package().signatures[target.signature.index()]
@@ -73,66 +83,69 @@ impl bc::VerifiedProgram {
                 }
             }
             for ret in &flow.returns {
-                if ret.key.0.is_empty() || !returns.insert(&ret.key) {
-                    return Err(ResumeError::new("duplicate or empty return key"));
+                if ret.key.0.is_empty() || !sites.insert(ret.key.0.as_str()) {
+                    return Err(ResumeError::new("duplicate or empty point key"));
                 }
-                let site = analysis::analyze(self, flow.function, None, ret.call, &mut b)?;
+                let site = analysis.site_in(None, ret.call, host_types, &mut b)?;
                 check_site(
                     self,
-                    flow.function,
+                    flow,
                     &site,
-                    ret.after_call,
-                    ret.result,
-                    &ret.layout,
+                    (ret.after_call, ret.result),
+                    ret.layout,
+                    &mut checked_layouts,
                 )?;
-                let target = super::targets::static_target(
-                    self,
-                    f,
-                    call_descriptor(f, ret.call)?.target,
-                    Some(ret.call),
-                    &mut b,
-                )?;
-                let callee = table
-                    .flows
-                    .iter()
-                    .find(|candidate| candidate.key == ret.callee)
-                    .ok_or_else(|| ResumeError::new("return site names an unknown flow"))?;
-                if target != callee.function {
+                let target = analysis.target_in(ret.call, host_types, &mut b)?;
+                b.work(u64::from(functions.len().max(1).ilog2()) + 1)?;
+                if target != ret.callee || !functions.contains(&target) {
                     return Err(ResumeError::new(
                         "return site callee differs from current static call",
                     )
                     .at(flow.function, ret.call));
                 }
             }
+            b.bytes -= analysis.capacity_bytes + flow.layouts.len();
         }
-        Ok(VerifiedResumeTable::new(self.clone(), table))
+        VerifiedResumeTable::new(self.clone(), table, host_types, &mut b)
     }
 }
 fn check_site(
     program: &bc::VerifiedProgram,
-    function: FunctionId,
+    flow: &ResumeFlow,
     derived: &SiteLayout,
-    after: Pc,
-    result: Reg,
-    layout: &ResumeLayout,
+    (after, result): (Pc, Reg),
+    index: u32,
+    checked_layouts: &mut [bool],
 ) -> Result<(), ResumeError> {
-    if derived.after_call != after || derived.result != result || derived.cells != layout.cells {
+    let function = flow.function;
+    let layout = flow
+        .layouts
+        .get(index as usize)
+        .ok_or_else(|| ResumeError::new("resume layout index").at(function, after))?;
+    if derived.after_call != after
+        || derived.result != result
+        || derived.cells != layout.cells
+        || derived.initialized_dead != layout.initialized_dead
+    {
         return Err(ResumeError::new(
             "resume call result, PC or lexical-cell layout differs from current code",
         )
         .at(function, after));
     }
-    if derived.live
-        != layout
-            .bindings
-            .iter()
-            .map(|binding| binding.binding)
-            .collect::<Vec<_>>()
+    if derived
+        .live
+        .iter()
+        .copied()
+        .ne(layout.bindings.iter().map(|binding| binding.binding))
     {
         return Err(
             ResumeError::new("resume live-binding layout differs from current code")
                 .at(function, after),
         );
+    }
+    let checked = &mut checked_layouts[index as usize];
+    if *checked {
+        return Ok(());
     }
     let f = &program.package().functions[function.index()];
     let mut names = BTreeSet::new();
@@ -155,6 +168,7 @@ fn check_site(
                 .at(function, after)
         })?;
     }
+    *checked = true;
     Ok(())
 }
 pub(crate) fn call_descriptor(
@@ -177,23 +191,73 @@ pub(crate) fn call_descriptor(
         _ => Err(ResumeError::new("resume call descriptor")),
     }
 }
-/// Resolve the statically proved target of one current call instruction.
+/// Resolve the statically proved native or script target of a current call or await.
 /// This query produces metadata only; execution still requires a verified plan.
+/// Host member calls require a typed receiver and an independently registered method.
 pub fn static_call_target(
     program: &bc::VerifiedProgram,
     function: FunctionId,
     pc: Pc,
+    host_types: &[crate::HostTypeSupport],
+) -> Result<FunctionId, ResumeError> {
+    current_target(
+        program,
+        function,
+        pc,
+        host_types,
+        &mut Budget::new(ResumeLimits::default()),
+        None,
+    )
+}
+pub(crate) fn current_target(
+    program: &bc::VerifiedProgram,
+    function: FunctionId,
+    pc: Pc,
+    host_types: &[crate::HostTypeSupport],
+    b: &mut Budget,
+    block_entry: Option<usize>,
 ) -> Result<FunctionId, ResumeError> {
     let f = program
         .package()
         .functions
         .get(function.index())
         .ok_or_else(|| ResumeError::new("resume function index"))?;
+    let instruction = f
+        .code
+        .instruction(pc.index())
+        .map_err(|e| ResumeError::new(e.to_string()))?
+        .ok_or_else(|| ResumeError::new("resume point PC"))?;
+    if instruction.opcode == bc::Opcode::Await as u16 {
+        return super::targets::await_target(
+            program,
+            f,
+            Reg(instruction.operands[1]),
+            pc,
+            host_types,
+            b,
+        );
+    }
     super::targets::static_target(
         program,
         f,
         call_descriptor(f, pc)?.target,
-        Some(pc),
+        pc,
+        block_entry,
+        host_types,
+        b,
+    )
+}
+/// Resolve an immutable module function through the shared current-code proof.
+pub fn static_global_function(
+    program: &bc::VerifiedProgram,
+    module: ModuleId,
+    global: GlobalId,
+) -> Result<FunctionId, ResumeError> {
+    super::targets::global_target(
+        program,
+        module,
+        global,
+        &[],
         &mut Budget::new(ResumeLimits::default()),
     )
 }

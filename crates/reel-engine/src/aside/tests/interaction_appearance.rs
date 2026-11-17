@@ -25,6 +25,63 @@ fn advance(vm: &mut SessionVm, session: &mut Session) {
 }
 
 #[test]
+fn image_skin_projects_asset_and_atlas_region_from_control_state() {
+    let code = r#"fn opening() {
+        let control = button("Start", width: 100, height: 100);
+        let art = image(image_skin(control, "base.png",
+            hover: {source: "atlas.png", source_rect: (20, 0, 20, 20)},
+            pressed: {source: "atlas.png", source_rect: (40, 0, 20, 20)}),
+            source_rect: (0, 0, 20, 20));
+        control.add(art);
+        stage.replace(control);
+        narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        box_style::drive(&mut vm, &mut session);
+        let id = control(&vm);
+        let art = vm.stage().node(id).unwrap().children[0];
+        let check = |vm: &SessionVm, key, crop| {
+            let NodeKind::Image {
+                source,
+                source_rect,
+                ..
+            } = &vm.stage().node(art).unwrap().kind
+            else {
+                panic!("expected image");
+            };
+            assert_eq!(source.key(), key);
+            assert_eq!(source_rect.unwrap().x0, crop);
+        };
+        check(&vm, "base.png", 0.);
+        state(
+            &mut vm,
+            &session,
+            id,
+            InteractionState {
+                hover: true,
+                ..Default::default()
+            },
+        );
+        check(&vm, "atlas.png", 20.);
+        state(
+            &mut vm,
+            &session,
+            id,
+            InteractionState {
+                hover: true,
+                pressed: true,
+                ..Default::default()
+            },
+        );
+        check(&vm, "atlas.png", 40.);
+        (session, vm) = scopes::restored(&mut vm, &session);
+        vm.sync_stage(&session).unwrap();
+        check(&vm, "base.png", 0.);
+    }
+}
+
+#[test]
 fn appearance_selects_paint_preserves_base_bindings_and_resets_input_on_restore() {
     let code = r##"fn opening() {
         let data = model({background: "#102030"});

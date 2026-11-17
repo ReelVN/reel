@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn value_of_and_collection_predicates_refresh_in_derived_views() {
+    let code = r#"fn opening() {
+        let data = model({amount: 1});
+        let amount = derive(|| data.amount + value_of(1));
+        let found = derive(|| [data.amount, 0].any(|item| item > 1));
+        stage.replace(column {
+            text(value: derive(|| f"{value_of(amount)}:{value_of(found)}"));
+            button("change", on_click: || { data.amount = 3; });
+        });
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("2:false".into()))
+        );
+        let button = vm
+            .stage()
+            .nodes()
+            .find(|node| {
+                matches!(&node.kind,
+            NodeKind::Button { label: Some(label), .. } if label == "change")
+            })
+            .unwrap()
+            .id;
+        assert!(vm.click(&mut session, button).unwrap());
+        models::drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("4:true".into()))
+        );
+    }
+}
+
+#[test]
 fn derived_method_and_inherited_fields_refresh_after_nested_dependencies_change() {
     let code = r#"
     class Base {let mut amount:int=2;}

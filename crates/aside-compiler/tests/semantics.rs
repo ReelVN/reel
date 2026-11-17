@@ -29,6 +29,35 @@ fn rejects(source: &str, code: DiagnosticCode) {
 }
 
 #[test]
+fn value_contracts_diagnose_wrong_literals_and_record_fields() {
+    for source in [
+        r#"fn menu() -> "back" | "title" { "tile" }"#,
+        r#"fn menu(flag:bool) -> "back" | "title" { if flag { "back" } else { "tile" } }"#,
+        r#"fn menu() { let mut result: "back" | "title" = "back"; result = "tile"; }"#,
+        r#"fn close(result: "back" | "title") {} fn run() { close(result: "tile"); }"#,
+        r#"fn view() -> {node:int, caption:string} { {node:1} }"#,
+        r#"fn view() -> {node:int, caption:"title"} { {caption:"tile", node:1} }"#,
+        r#"fn view() -> {node:int} { {node:1, extra:2} }"#,
+        r#"fn view(v:{node:int}) { v.node = "wrong"; }"#,
+    ] {
+        rejects(source, DiagnosticCode::TypeMismatch);
+    }
+    rejects(
+        "fn view(v:{node:int}) { v.nod; }",
+        DiagnosticCode::UnknownMember,
+    );
+    rejects(
+        "fn view(v:{node:int,node:string}) {}",
+        DiagnosticCode::InvalidType,
+    );
+    rejects(
+        r#"fn menu() -> f"{value}" { "back" }"#,
+        DiagnosticCode::InvalidType,
+    );
+    valid(r#"fn view() -> {node:int, caption:"title"} { {caption:"tit\u{6c}e", node:1} }"#);
+}
+
+#[test]
 fn closed_class_members_include_inheritance_and_guards() {
     valid(
         "class Base{let value=1;} class Child:Base{fn read(self){self.value}} fn main(){let item=Child(); item.read(); item.value;}",
@@ -947,6 +976,7 @@ mod builtin_methods {
         let compiled = lowering::compile(
             &analysis.into_module().unwrap(),
             &lowering::Linkage::default(),
+            &[],
             lowering::Options::default(),
         )
         .unwrap();

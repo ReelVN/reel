@@ -239,6 +239,9 @@ impl<'a> Probe<'a> {
         grid: Grid,
         uncropped: bool,
     ) -> Option<Self> {
+        if super::scopes::intersects_transition(drawing, commands.clone()) {
+            return None;
+        }
         Self::single(drawing, commands.clone(), effect, grid, uncropped)
             .or_else(|| multiple::probe(drawing, commands, effect, grid, uncropped))
     }
@@ -249,14 +252,11 @@ impl<'a> Probe<'a> {
         mut grid: Grid,
         uncropped: bool,
     ) -> Option<Self> {
-        if !drawing.transitions().is_empty() || !drawing.masks().is_empty() {
-            return None;
-        }
         let commands = drawing.commands().get(commands)?;
         let FrameOp::PushGroup(group) = &commands.first()?.op else {
             return None;
         };
-        if !matches!(commands.last()?.op, FrameOp::PopGroup) {
+        if group.mask.is_some() || !matches!(commands.last()?.op, FrameOp::PopGroup) {
             return None;
         }
         let owner = group.owner.to_raw();

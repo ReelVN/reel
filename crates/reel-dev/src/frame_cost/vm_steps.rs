@@ -1,6 +1,6 @@
 //! Keep eligibility and loss next to stage samples; correlated slice selection
 //! cannot be extrapolated to a frame's CPU cost or added across nested stages.
-use super::{BTreeMap, Frame, Value, json};
+use super::{BTreeMap, Frame, Value, json, opcode_accounting_valid};
 
 /// Normalize complete presentation intervals using their own VM counter deltas.
 /// Live-thread phase windows and asynchronously published VM_STATE are excluded.
@@ -26,14 +26,7 @@ pub(super) fn execution(rows: &[&Frame]) -> Value {
             }
             Some("counter_interval_invalid")
         } else {
-            let opcodes: Vec<_> = v
-                .iter()
-                .filter(|(name, _)| name.starts_with("vm_opcode_") && name.ends_with("_count"))
-                .collect();
-            let opcode_sum = opcodes
-                .iter()
-                .try_fold(0u64, |sum, (_, n)| sum.checked_add(**n));
-            if opcodes.is_empty() || opcode_sum != v.get("vm_instructions_count").copied() {
+            if !opcode_accounting_valid(v) {
                 Some("opcode_accounting_error")
             } else if !interval_sequences_valid(v) {
                 Some("interval_sequence_error")
@@ -93,7 +86,6 @@ pub(super) fn execution(rows: &[&Frame]) -> Value {
         "update_kind":"projection_published",
         "clock_update_counts":"unavailable",
         "derived_time":"included in vm_slice; not separately measured by these counters",
-        "boundary_sequences_recorded":first.values.contains_key("loop_begin"),
         "slice_call_mismatch_intervals":slice_call_mismatches,
         "totals":{
             "vm_wall_us":vm_us,"instructions":instructions,"work":work,
@@ -128,14 +120,8 @@ fn interval_sequences_valid(v: &BTreeMap<String, u64>) -> bool {
             "projection_updates_count",
         ),
     ] {
-        match (v.get(begin), v.get(end)) {
-            // Earlier version-1 frame counters already used the presentation
-            // boundary, but did not retain its explicit loop/update identities.
-            (None, None) => {}
-            (Some(begin), Some(end)) => match (end.checked_sub(*begin), v.get(count)) {
-                (Some(delta), Some(count)) if delta == *count => {}
-                _ => return false,
-            },
+        match (v.get(begin), v.get(end), v.get(count)) {
+            (Some(begin), Some(end), Some(count)) if end.checked_sub(*begin) == Some(*count) => {}
             _ => return false,
         }
     }
@@ -150,22 +136,15 @@ const GAPS: [&str; 4] = [
 ];
 const OUTER_PHASES: [&str; 4] = ["scalar", "script", "native", "loop"];
 
-fn unattributed_outer_closed(v: &BTreeMap<String, u64>) -> Option<bool> {
-    let fields = OUTER_PHASES.map(|phase| format!("vm_driver_parts_unattributed_{phase}_ns"));
-    if !fields.iter().any(|field| v.contains_key(field)) {
-        return None;
-    }
-    let sum = fields
-        .iter()
-        .zip(OUTER_PHASES)
-        .try_fold(0u64, |sum, (field, phase)| {
-            let value = *v.get(field)?;
-            if value > *v.get(&format!("vm_driver_{phase}_ns"))? {
-                return None;
-            }
-            sum.checked_add(value)
-        });
-    Some(sum.is_some() && sum == v.get("vm_driver_parts_unattributed_ns").copied())
+fn unattributed_outer_closed(v: &BTreeMap<String, u64>) -> bool {
+    let sum = OUTER_PHASES.iter().try_fold(0u64, |sum, phase| {
+        let value = *v.get(&format!("vm_driver_parts_unattributed_{phase}_ns"))?;
+        if value > *v.get(&format!("vm_driver_{phase}_ns"))? {
+            return None;
+        }
+        sum.checked_add(value)
+    });
+    sum.is_some() && sum == v.get("vm_driver_parts_unattributed_ns").copied()
 }
 
 pub(super) fn parts_closed(v: &BTreeMap<String, u64>) -> Option<bool> {
@@ -190,7 +169,7 @@ pub(super) fn parts_closed(v: &BTreeMap<String, u64>) -> Option<bool> {
             && sum == Some(run)
             && v.get("vm_driver_run_ns") == Some(&run)
             && v.get("vm_driver_parts_errors_count") == Some(&0)
-            && unattributed_outer_closed(v).unwrap_or(true),
+            && unattributed_outer_closed(v),
     )
 }
 
@@ -213,12 +192,6 @@ pub(super) fn lifecycle(rows: &[&Frame]) -> Value {
 }
 
 fn unattributed_outer(rows: &[&Frame]) -> Value {
-    if !rows
-        .iter()
-        .any(|row| unattributed_outer_closed(&row.values).is_some())
-    {
-        return json!({"status":"unavailable","reason":"outer_unattributed_not_recorded"});
-    }
     let observed: Vec<_> = rows
         .iter()
         .filter(|row| {
@@ -229,10 +202,7 @@ fn unattributed_outer(rows: &[&Frame]) -> Value {
         .collect();
     let valid: Vec<_> = observed
         .iter()
-        .filter(|row| {
-            unattributed_outer_closed(&row.values) == Some(true)
-                && parts_closed(&row.values) == Some(true)
-        })
+        .filter(|row| parts_closed(&row.values) == Some(true))
         .collect();
     let total: u64 = valid
         .iter()
@@ -241,10 +211,8 @@ fn unattributed_outer(rows: &[&Frame]) -> Value {
     let mut totals = BTreeMap::new();
     let mut fractions = BTreeMap::new();
     for phase in OUTER_PHASES {
-        let ns: u64 = valid
-            .iter()
-            .map(|row| row.values[&format!("vm_driver_parts_unattributed_{phase}_ns")])
-            .sum();
+        let field = format!("vm_driver_parts_unattributed_{phase}_ns");
+        let ns: u64 = valid.iter().map(|row| row.values[&field]).sum();
         totals.insert(format!("{phase}_ns"), ns);
         fractions.insert(phase, (total != 0).then(|| ns as f64 / total as f64));
     }
@@ -447,17 +415,6 @@ mod tests {
             assert_eq!(result["rejected_intervals"][reason], 1);
         }
         assert_eq!(result["counter_invalid_reasons"]["4"], 1);
-        let mut legacy = execution_frame(100, 10, 20);
-        for name in [
-            "loop_begin",
-            "loop_end",
-            "projection_update_begin",
-            "projection_update_end",
-        ] {
-            legacy.values.remove(name);
-        }
-        assert_eq!(execution(&[&legacy])["valid_intervals"], 1);
-        assert_eq!(execution(&[&legacy])["boundary_sequences_recorded"], false);
     }
     #[test]
     fn lifecycle_requires_disjoint_complete_buckets_and_raw_observer_time() {
@@ -470,6 +427,14 @@ mod tests {
             ("vm_driver_part_class_final_field_ns".into(), 40),
             ("vm_driver_part_class_final_field_calls_count".into(), 2),
             ("vm_driver_parts_unattributed_ns".into(), 20),
+            ("vm_driver_scalar_ns".into(), 80),
+            ("vm_driver_script_ns".into(), 20),
+            ("vm_driver_native_ns".into(), 0),
+            ("vm_driver_loop_ns".into(), 0),
+            ("vm_driver_parts_unattributed_scalar_ns".into(), 20),
+            ("vm_driver_parts_unattributed_script_ns".into(), 0),
+            ("vm_driver_parts_unattributed_native_ns".into(), 0),
+            ("vm_driver_parts_unattributed_loop_ns".into(), 0),
             ("vm_driver_parts_observer_ns".into(), 10),
             ("vm_driver_parts_errors_count".into(), 0),
         ]);
@@ -484,7 +449,7 @@ mod tests {
         assert_eq!(parts_closed(&v), Some(false));
     }
     #[test]
-    fn outer_unattributed_requires_all_buckets_and_preserves_legacy_absence() {
+    fn outer_unattributed_requires_all_buckets() {
         let mut v = BTreeMap::from([
             ("vm_driver_samples_count".into(), 1),
             ("vm_driver_run_ns".into(), 100),
@@ -499,15 +464,16 @@ mod tests {
             ("vm_driver_parts_observer_ns".into(), 10),
             ("vm_driver_parts_errors_count".into(), 0),
         ]);
-        assert_eq!(unattributed_outer_closed(&v), None);
-        let legacy = Frame {
+        let missing = Frame {
             segment: 1,
             values: v.clone(),
         };
-        let result = lifecycle(&[&legacy]);
-        assert_eq!(result["accounting_errors"], 0);
-        assert_eq!(result["unattributed_by_outer"]["status"], "unavailable");
-        assert!(result["unattributed_by_outer"].get("totals").is_none());
+        let result = lifecycle(&[&missing]);
+        assert_eq!(result["accounting_errors"], 1);
+        assert_eq!(
+            result["unattributed_by_outer"]["status"],
+            "rejected_observations"
+        );
         for (phase, ns) in OUTER_PHASES.into_iter().zip([5, 7, 3, 5]) {
             v.insert(format!("vm_driver_parts_unattributed_{phase}_ns"), ns);
         }
@@ -532,9 +498,9 @@ mod tests {
         assert_eq!(parts_closed(&v), Some(false));
         v.insert("vm_driver_parts_unattributed_scalar_ns".into(), 10);
         v.insert("vm_driver_scalar_ns".into(), 9);
-        assert_eq!(unattributed_outer_closed(&v), Some(false));
+        assert!(!unattributed_outer_closed(&v));
         v.remove("vm_driver_parts_unattributed_loop_ns");
-        assert_eq!(unattributed_outer_closed(&v), Some(false));
+        assert!(!unattributed_outer_closed(&v));
         let invalid = Frame {
             segment: 1,
             values: v,

@@ -120,6 +120,7 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
         Some(&invalid),
         before.package.effects(),
         before.package.resume().table(),
+        reel_engine::aside::source::types(),
         Default::default(),
     )
     .unwrap();

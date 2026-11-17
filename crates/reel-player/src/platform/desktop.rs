@@ -83,40 +83,18 @@ fn run_mode_recorded(
     mode: Mode,
     #[cfg(feature = "performance")] mut capture: Option<performance::Capture>,
 ) -> Result<(), Error> {
-    let prepared = (|| {
-        let event_loop = EventLoop::new()?;
-        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        let mode = match mode {
-            Mode::Story(story) => {
-                let (driver, options) = *story;
-                let proxy = event_loop.create_proxy();
-                let wake = reel_core::wake::WakeSignal::new(move || {
-                    let _ = proxy.send_event(());
-                });
-                let assets = driver.ui().assets();
-                let driver = driver.with_media(Box::new(crate::media::native(
-                    assets,
-                    options.media.clone(),
-                    wake,
-                )))?;
-                Mode::Story(Box::new((driver, options)))
-            }
-            mode => mode,
-        };
-
-        Ok::<_, Error>((event_loop, mode))
-    })();
-    let (event_loop, mode) = match prepared {
-        Ok(prepared) => prepared,
+    let event_loop = match EventLoop::new() {
+        Ok(event_loop) => event_loop,
         Err(error) => {
             #[cfg(feature = "performance")]
             if let Some(capture) = &mut capture {
                 capture.finish(&error.to_string())?;
             }
-            return Err(error);
+            return Err(error.into());
         }
     };
     let mut app = App {
+        proxy: event_loop.create_proxy(),
         state: None,
         error: None,
         next_generation: 1,
@@ -152,6 +130,7 @@ fn run_mode_recorded(
     Ok(())
 }
 struct App {
+    proxy: winit::event_loop::EventLoopProxy<()>,
     state: Option<State>,
     error: Option<String>,
     next_generation: u64,
@@ -230,7 +209,13 @@ impl ApplicationHandler for App {
             Mode::Diagnostic => State::new(event_loop, self.next_generation),
             Mode::Story(story) => {
                 let (driver, options) = *story;
-                State::new_story(event_loop, self.next_generation, driver, options)
+                State::new_story(
+                    event_loop,
+                    self.proxy.clone(),
+                    self.next_generation,
+                    driver,
+                    options,
+                )
             }
         };
         match created {
@@ -292,7 +277,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => state.resize(size),
             WindowEvent::Moved(_) => state.monitor_changed(),
-            WindowEvent::ScaleFactorChanged { .. } => state.resize(state.window.inner_size()),
+            WindowEvent::ScaleFactorChanged {
+                mut inner_size_writer,
+                ..
+            } => {
+                let size = state.window.inner_size();
+                if state.window.fullscreen().is_none() {
+                    let _ = inner_size_writer.request_inner_size(size);
+                }
+                state.resize(size)
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 state.modifiers = modifiers.state();
                 Ok(())

@@ -18,6 +18,7 @@ use std::{
 pub fn decode_story(bytes: &[u8]) -> Result<CompiledStory, reel_package::Error> {
     story_from_package(reel_package::decode(
         bytes,
+        reel_engine::aside::source::types(),
         reel_package::Limits::default(),
     )?)
 }
@@ -147,7 +148,12 @@ pub fn load(path: &Path, project_resources: Option<&Path>) -> io::Result<LoadedD
     bytes.try_reserve_exact(length).map_err(io::Error::other)?;
     file.read_to_end(&mut bytes)?;
     drop(file);
-    let mut package = reel_package::decode(&bytes, Default::default()).map_err(io::Error::other)?;
+    let mut package = reel_package::decode(
+        &bytes,
+        reel_engine::aside::source::types(),
+        Default::default(),
+    )
+    .map_err(io::Error::other)?;
     // The decoded package owns its fields; release the ASB before loading text.
     drop(bytes);
     let manifest = package

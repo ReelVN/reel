@@ -90,7 +90,6 @@ pub(crate) fn require(ok: bool, kind: ErrorKind, detail: &str) -> Result<(), Err
 /// Constructed only after B01 verification and metadata cross-validation.
 #[derive(Debug)]
 pub struct CodePackage {
-    program: bc::VerifiedProgram,
     metadata: Metadata,
     distribution: Option<distribution::Distribution>,
     effects: EffectProducts,
@@ -99,15 +98,11 @@ pub struct CodePackage {
 impl CodePackage {
     /// Bind the external immutable text storage before runtime admission.
     pub fn bind_text_pool(mut self, pool: bc::TextPool) -> Result<Self, Error> {
-        self.resume = self.resume.bind_text_pool(pool.clone())?;
-        self.program = self
-            .program
-            .bind_text_pool(pool)
-            .map_err(|error| Error::new(ErrorKind::Bytecode, error.to_string()))?;
+        self.resume = self.resume.bind_text_pool(pool)?;
         Ok(self)
     }
     pub fn program(&self) -> &bc::VerifiedProgram {
-        &self.program
+        self.resume.program()
     }
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
@@ -132,7 +127,12 @@ impl CodePackage {
         EffectProducts,
         aside_vm::resume::VerifiedResumeTable,
     ) {
-        (self.program, self.metadata, self.effects, self.resume)
+        (
+            self.resume.program().clone(),
+            self.metadata,
+            self.effects,
+            self.resume,
+        )
     }
 }
 pub fn digest(bytes: &[u8]) -> String {

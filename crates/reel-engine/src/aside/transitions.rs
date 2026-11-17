@@ -26,6 +26,8 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             ("mask_y", number()),
         ],
     );
+    api.native_mut("reel::stage::transition")
+        .returns_callback("change");
 }
 
 aside_host::native_documentation! {
@@ -668,7 +670,7 @@ impl SessionVm {
                     self.vm.respond(ticket, HostResponse::ForwardFault(fault))?;
                 }
                 NativeInput::CallbackReturned => {
-                    let result = self.vm.host_callback_value(ticket)?;
+                    let result = self.vm.host_resume_value(ticket)?;
                     let state = self
                         .vm
                         .heap()

@@ -5,6 +5,8 @@ use reel_ui::{
     stage::NodeScroll,
     widgets::{ScrollAlign, ScrollAxis, ScrollOverscroll},
 };
+mod reveal;
+pub(in crate::aside) use reveal::documentation;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ScrollField {
@@ -27,6 +29,22 @@ pub(in crate::aside) enum ScrollField {
     /// user scrolling or an explicit assignment takes over that activity.
     #[aside(name = "scroll_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Y,
+    /// Vertical spacing between user scroll stops in canvas units.
+    #[aside(name = "snap_y", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, readonly, validate = validate_snap)]
+    SnapY,
+}
+pub(super) fn snap(value: Value) -> Result<Option<f64>, AdapterError> {
+    if value.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    let step = number(value)?;
+    if step <= 0. {
+        return Err(AdapterError::Input("scroll snap_y must be positive"));
+    }
+    Ok(Some(step))
+}
+fn validate_snap(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(snap(value))
 }
 pub(super) const METRICS: [&str; 4] = [
     "viewport_width",
@@ -68,11 +86,17 @@ fn align(heap: &Heap, value: Value) -> Result<ScrollAlign, HeapError> {
 fn validate_axis(heap: &Heap, value: Value) -> Result<(), HeapError> {
     axis(heap, value).map(|_| ())
 }
+pub(in crate::aside) const OVERSCROLL_CHOICES: [(&str, ScrollOverscroll); 2] = [
+    ("clamp", ScrollOverscroll::Clamp),
+    ("bounce", ScrollOverscroll::Bounce),
+];
+
 fn overscroll(heap: &Heap, value: Value) -> Result<ScrollOverscroll, HeapError> {
-    word(heap, value, |word| match word {
-        b"clamp" => Ok(ScrollOverscroll::Clamp),
-        b"bounce" => Ok(ScrollOverscroll::Bounce),
-        _ => Err(HeapError::TypeMismatch),
+    word(heap, value, |word| {
+        OVERSCROLL_CHOICES
+            .into_iter()
+            .find_map(|(name, mode)| (name.as_bytes() == word).then_some(mode))
+            .ok_or(HeapError::TypeMismatch)
     })
 }
 fn validate_overscroll(heap: &Heap, value: Value) -> Result<(), HeapError> {
@@ -90,6 +114,7 @@ pub(super) fn kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError>
         follow_end: boolean(get(ScrollField::FollowEnd)?)?,
         align: align(heap, get(ScrollField::ContentAlign)?)?,
         offset: Vec2::new(number(get(ScrollField::X)?)?, number(get(ScrollField::Y)?)?),
+        snap_y: snap(get(ScrollField::SnapY)?)?,
     })
 }
 pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {

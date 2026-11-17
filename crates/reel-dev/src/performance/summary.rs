@@ -10,27 +10,93 @@ use std::{
 const LIMIT: usize = 3;
 
 /// Write a concise summary beside the existing reports, after their validation.
-pub(super) fn report(directory: &Path) -> Result<()> {
-    let read = |name| -> Result<Value> {
-        let path = directory.join(name);
-        serde_json::from_slice(
-            &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
-        )
-        .with_context(|| format!("parse {}", path.display()))
-    };
-    let frames = read("frames.json")?;
-    let render = directory
-        .join("render.json")
-        .is_file()
-        .then(|| read("render.json"))
-        .transpose()?;
-    let summary = summarize(&frames, render.as_ref())?;
+pub(super) fn report(
+    directory: &Path,
+    frames: &Value,
+    render: Option<&Value>,
+    raw: &str,
+) -> Result<Value> {
+    let mut summary = summarize(frames, render)?;
+    if render.is_none() {
+        summary["playback_segments"] = playback_segments(raw)?;
+    }
     fs::write(
         directory.join("summary.json"),
         serde_json::to_vec_pretty(&summary)?,
     )?;
     print(&summary);
-    Ok(())
+    Ok(summary)
+}
+
+fn playback_segments(raw: &str) -> Result<Value> {
+    let Some((_, raw)) = raw.rsplit_once("[reel-probe-report] begin") else {
+        return Ok(Value::Null);
+    };
+    let (raw, _) = raw
+        .split_once("[reel-probe-report] end")
+        .context("incomplete playback totals")?;
+    let mut lines = raw.lines();
+    let header: Vec<_> = lines
+        .find(|line| line.starts_with("kind\tlabel\t"))
+        .context("playback totals header missing")?
+        .split('\t')
+        .collect();
+    let [elapsed, loops, presents, gap, loop_max, vm, gpu] = [
+        "elapsed_us",
+        "loops",
+        "present_calls",
+        "max_present_gap_us",
+        "max_loop_us",
+        "vm_peak_bytes",
+        "gpu_peak_bytes",
+    ]
+    .map(|name| header.iter().position(|column| *column == name));
+    let mut total_loops = 0;
+    let mut segments = Vec::new();
+    for line in lines {
+        let fields: Vec<_> = line.split('\t').collect();
+        let read = |column: Option<usize>| -> Result<u64> {
+            Ok(fields
+                .get(column.context("playback totals column missing")?)
+                .context("playback totals row is incomplete")?
+                .parse()?)
+        };
+        match fields[0] {
+            "total" => total_loops = read(loops)?,
+            "segment" => segments.push((
+                *fields.get(1).context("playback segment label missing")?,
+                read(elapsed)?,
+                read(loops)?,
+                read(presents)?,
+                read(gap)?,
+                read(loop_max)?,
+                read(vm)?,
+                read(gpu)?,
+            )),
+            _ => {}
+        }
+    }
+    let omitted_loops = total_loops.saturating_sub(segments.iter().map(|row| row.2).sum());
+    let mut previous_end = (omitted_loops == 0).then_some(0u64);
+    let segments: Vec<_> = segments
+        .into_iter()
+        .map(|(label, end, _, presents, gap, loop_max, vm, gpu)| {
+            let duration = previous_end
+                .replace(end)
+                .and_then(|start| end.checked_sub(start));
+            let rate = duration
+                .filter(|span| *span != 0)
+                .map(|span| 1_000_000. * presents as f64 / span as f64);
+            json!({"label":label,"end_us":end,"duration_us":duration,"present_calls":presents,
+                "submissions_per_second":rate,"max_present_gap_us":gap,"max_host_loop_us":loop_max,
+                "vm_peak_bytes":vm,"gpu_peak_bytes":gpu})
+        })
+        .collect();
+    Ok(json!({
+        "measurement":"presentation submissions over segment wall time including idle time",
+        "omitted_loops":omitted_loops,
+        "segments":segments
+    }))
 }
 
 fn number(value: &Value) -> Option<u64> {
@@ -52,14 +118,6 @@ fn duration(metric: &Value) -> Value {
     }
     json!({"samples":metric["samples"],"p50_us":metric["p50_us"],
         "p95_us":metric["p95_us"],"max_us":metric["max_us"]})
-}
-
-fn submission_fps(group: &Value) -> Option<f64> {
-    let totals = &group["submission_interval_totals"];
-    let span = totals["span_us"].as_u64()?;
-    let count = totals["present_calls"].as_u64()?;
-    (span != 0 && count != 0 && Some(count) == group["eligible_intervals"].as_u64())
-        .then_some(1_000_000. * count as f64 / span as f64)
 }
 
 fn main_thread_wall(group: &Value) -> Value {
@@ -127,12 +185,12 @@ fn sampled_cpu(group: &Value) -> Value {
         "phases":phases})
 }
 
-fn scene(group: &Value, setup: bool) -> Value {
+fn scene(group: &Value, setup: bool, fps: Option<f64>) -> Value {
     json!({"label":group["label"],"segment":group["segment"],
         "scope":if setup {"capture_setup"} else {"normal_playback"},
         "eligible_intervals":group["eligible_intervals"],"sample_size":group["sample_size"],
         "excluded_boundary_intervals":group["partial_or_multi_present"],
-        "observed_submission_fps":if setup {None} else {submission_fps(group)},
+        "observed_submission_fps":fps,
         "submission_intervals_us":duration(&group["metrics"]["span_us"]),
         "main_thread_wall":main_thread_wall(group),"sampled_cpu_execution":sampled_cpu(group),
         "targets":{"created_pixel_owners":null,"pool_lookup_hits":null,
@@ -175,18 +233,24 @@ fn summarize(frames: &Value, render: Option<&Value>) -> Result<Value> {
             gaps.insert(format!("{description}={count}"));
         }
     }
-    let mut scenes: Vec<_> = groups
-        .iter()
-        .filter(|group| group["eligible_intervals"].as_u64().unwrap_or(0) != 0)
-        .map(|group| scene(group, render.is_some()))
-        .collect();
+    let mut scenes = Vec::new();
     for group in groups {
         if group["eligible_intervals"].as_u64().unwrap_or(0) == 0 {
             continue;
         }
-        if render.is_none() && submission_fps(group).is_none() {
-            gaps.insert("submission_fps_unavailable_without_interval_totals".into());
-        }
+        let fps = if render.is_none() {
+            let fps = group
+                .get("observed_submission_fps")
+                .context("frame report missing observed_submission_fps")?
+                .as_f64();
+            if fps.is_none() {
+                gaps.insert("submission_fps_unavailable_without_elapsed_time".into());
+            }
+            fps
+        } else {
+            None
+        };
+        scenes.push(scene(group, render.is_some(), fps));
         let ledger = &group["exclusive_wall"];
         if ["closure_errors", "stack_errors", "lost_ns"]
             .iter()
@@ -530,7 +594,7 @@ mod tests {
     fn frames() -> Value {
         json!({"schema":1,"declared_environment":"host","measurement":"present_submission_intervals_and_nested_wall_time", "trace_metadata":"frame_metadata\tversion=1\tdropped=0",
             "groups":[{"label":"scene","segment":1,"eligible_intervals":3,"partial_or_multi_present":1,
-                "submission_interval_totals":{"span_us":1_000_000,"present_calls":3},
+                "observed_submission_fps":3.0,
                 "metrics":{"span_us":{"samples":3,"p50_us":10_000,"p95_us":980_000,"max_us":980_000},
                     "active_us":{"samples":3,"p50_us":1,"p95_us":1}, "session_us":{"samples":3,"p50_us":900,"p95_us":900}, "vm_slice_us":{"samples":3,"p50_us":800,"p95_us":800}},
                 "exclusive_wall":{"valid_intervals":3,"closure_errors":0,"stack_errors":0,"lost_ns":0,
@@ -552,22 +616,33 @@ mod tests {
     }
 
     #[test]
-    fn submission_fps_uses_accumulated_intervals_and_keeps_stalls_visible() {
+    fn summary_retains_measured_fps_and_stalls() {
         let summary = summarize(&frames(), None).unwrap();
         let scene = &summary["scenes"][0];
         assert_eq!(scene["observed_submission_fps"], 3.0);
         assert_eq!(scene["submission_intervals_us"]["p95_us"], 980_000);
-        let mut legacy = frames();
-        legacy["groups"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("submission_interval_totals");
-        let old = summarize(&legacy, None).unwrap();
-        assert!(old["scenes"][0]["observed_submission_fps"].is_null());
-        assert_eq!(
-            old["scenes"][0]["submission_intervals_us"]["p50_us"],
-            10_000
+    }
+
+    #[test]
+    fn playback_totals_keep_early_scenes_and_use_wall_time() {
+        let raw = concat!(
+            "[reel-probe-report] begin\n",
+            "kind\tlabel\telapsed_us\tactive_us\tloops\tmax_loop_us\tmax_present_gap_us\tvm_peak_bytes\tgpu_peak_bytes\tpresent_calls\n",
+            "total\t\t3000000\t10000\t10\t400\t500\t20\t60\t95\n",
+            "segment\tTitle\t1000000\t10000\t4\t400\t500\t20\t60\t60\n",
+            "segment\tHistory\t3000000\t5000\t6\t100\t300\t10\t30\t35\n",
+            "[reel-probe-report] end\n",
         );
+        let playback = playback_segments(raw).unwrap();
+        assert_eq!(playback["segments"][0]["submissions_per_second"], 60.0);
+        assert_eq!(playback["segments"][1]["duration_us"], 2_000_000);
+        assert_eq!(playback["segments"][1]["submissions_per_second"], 17.5);
+
+        let partial = raw.replace("3000000\t10000\t10", "3000000\t10000\t12");
+        let playback = playback_segments(&partial).unwrap();
+        assert_eq!(playback["omitted_loops"], 2);
+        assert!(playback["segments"][0]["duration_us"].is_null());
+        assert_eq!(playback["segments"][1]["duration_us"], 2_000_000);
     }
 
     #[test]

@@ -256,7 +256,7 @@ impl Reduction {
         }
         let end = integers.last()?.checked_add(step)?;
         scale.reverse();
-        let (invariant, dependent) = invariants(program, sample, constant);
+        let (invariant, dependent) = invariants(program, sample, &[constant]);
         Some(Self {
             initial: lanes,
             sample,
@@ -277,7 +277,7 @@ impl Reduction {
 /// Match typed operations and edge positions, recording only changed float
 /// literals. Shared IDs are already the same expression; no algebraic matching
 /// or commutation can change the source operation order.
-fn differences(
+pub(super) fn differences(
     program: &EffectProgram,
     template: EffectNodeId,
     candidate: EffectNodeId,
@@ -336,41 +336,34 @@ fn differences(
         if !matched {
             return None;
         }
-        pending.extend(edges(&a_node.op).into_iter().zip(edges(&b_node.op)));
+        pending.extend(
+            dependencies(&a_node.op)
+                .into_iter()
+                .zip(dependencies(&b_node.op)),
+        );
     }
     changed.retain(|id, bits| !matches!(program.nodes()[*id as usize].op, EffectOp::Constant(EffectValue::Float(original)) if original == *bits));
     Some(changed)
 }
 
-fn edges(op: &EffectOp) -> Vec<EffectNodeId> {
-    match *op {
-        EffectOp::Select {
-            condition,
-            when_true,
-            when_false,
-        } => vec![condition, when_true, when_false],
-        _ => dependencies(op),
-    }
-}
-
 /// Hoist only unconditional invariant inputs. Branch-local source reads and
 /// undefined arithmetic keep their selected scope inside the loop body.
-fn invariants(
+pub(super) fn invariants(
     program: &EffectProgram,
     sample: EffectNodeId,
-    constant: EffectNodeId,
+    literals: &[EffectNodeId],
 ) -> (Vec<EffectNodeId>, BTreeSet<u32>) {
     let mut reachable = BTreeSet::new();
     let mut pending = vec![sample];
     while let Some(id) = pending.pop() {
         if reachable.insert(id.0) {
-            pending.extend(edges(&program.nodes()[id.0 as usize].op));
+            pending.extend(dependencies(&program.nodes()[id.0 as usize].op));
         }
     }
     let mut dependent = BTreeSet::new();
     for id in reachable {
-        if id == constant.0
-            || edges(&program.nodes()[id as usize].op)
+        if literals.contains(&EffectNodeId(id))
+            || dependencies(&program.nodes()[id as usize].op)
                 .iter()
                 .any(|input| dependent.contains(&input.0))
         {
@@ -381,7 +374,7 @@ fn invariants(
     let mut visited = BTreeSet::new();
     let mut pending = vec![sample];
     while let Some(id) = pending.pop() {
-        if id == constant || !visited.insert(id.0) {
+        if literals.contains(&id) || !visited.insert(id.0) {
             continue;
         }
         if !dependent.contains(&id.0) {

@@ -80,7 +80,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         &[("clock", named("reel::types::Clock"))],
     );
     let producer = TypeHint::Union(vec![
-        activity.clone(),
+        activity,
         named("reel::types::Playback"),
         named("reel::types::ParticleActivity"),
     ]);
@@ -112,6 +112,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         Vec::new(),
     );
     base.await_result = Some(TypeHint::String);
+    base.await_adapter = Some(api.native("reel::activity::await").clone());
     api.types.push(base.clone());
     api.types.push(
         NamedType::new(
@@ -220,6 +221,7 @@ aside_host::native_documentation! {
 }
 pub(super) mod easing;
 mod graph;
+pub(in crate::aside) mod resources;
 mod runner;
 mod service;
 use super::{
@@ -371,6 +373,8 @@ struct NativeWork {
 type EventKey = (u64, u64, u32);
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Activities {
+    #[serde(skip)]
+    logical: resources::Restoring,
     skipping: bool,
     head: Option<RootToken>,
     jobs: Option<RootToken>,

@@ -37,6 +37,14 @@ pub(super) enum TabField {
     /// Automatic selects on arrows; manual moves focus and selects on confirmation.
     #[aside(name="activation", ty=String, default="automatic", readonly)]
     Activation,
+    /// Receives a requested key in event.value. The callback decides when to
+    /// assign the selected value and can await page preparation first.
+    #[aside(name="on_select", ty=Any, doc_type=aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default=null, validate=validate_tab_selection)]
+    OnSelect,
+}
+
+fn validate_tab_selection(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    stage::validate_button_property(heap, 1, value)
 }
 const PAGE: i64 = -1501;
 const TAB: i64 = -1502;
@@ -51,6 +59,7 @@ enum S {
     Initialized,
     Items,
     SourceVersion,
+    SelectionRequest,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -70,6 +79,9 @@ const TAB_BUILD: u64 = 3;
 const TAB_BUILT: u64 = 4;
 const TAB_ABORT: u64 = 5;
 const TAB_ABORT_ERROR: u64 = 100;
+const SELECT_METHOD: usize = 5;
+const COMMIT_SELECTION: usize = 6;
+const AWAIT_TASK: usize = 7;
 
 fn get(h: &Heap, a: Value, i: impl Into<u32>) -> Result<Value, HeapError> {
     h.sequence_get(a, i.into())
@@ -224,8 +236,11 @@ impl SessionVm {
                 "reel::page_stack::evict",
                 "reel::page_stack::produce",
                 "reel::tab_bar::observe_label",
+                "reel::page_stack::select",
+                "reel::page_stack::commit_selection",
+                "reel::completion::await",
             ];
-            let mut methods = [None; 5];
+            let mut methods = [None; 8];
             let p = self.vm.program().package();
             for (i, f) in p.functions.iter().enumerate() {
                 if let aside_vm::bytecode::FunctionKind::Native(n) = f.kind
@@ -242,11 +257,15 @@ impl SessionVm {
                 Some(evict),
                 Some(produce),
                 Some(label),
+                Some(select),
+                Some(commit),
+                Some(wait),
             ] = methods
             else {
                 return Err(AdapterError::Input("native page adapter missing"));
             };
-            self.stage.page_methods = Some([get, ensure, evict, produce, label]);
+            self.stage.page_methods =
+                Some([get, ensure, evict, produce, label, select, commit, wait]);
         }
         Ok(self.stage.page_methods.unwrap()[index])
     }
@@ -330,6 +349,7 @@ impl SessionVm {
                     Value::bool(false),
                     items,
                     Value::int(version as i64),
+                    Value::int(0),
                 ])?;
                 self.vm.heap_mut().set_derived_state(output, s)?;
                 self.vm.heap_mut().set_host_payload(root, 3, output)?;

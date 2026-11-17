@@ -101,6 +101,8 @@ pub struct PopupView {
     pub placement: crate::widgets::PopupPlacement,
     pub offset: f64,
     pub listening: bool,
+    /// Tooltip activation from the current anchor, or none for a regular popup.
+    pub hint: Option<bool>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NodeScroll {
@@ -304,6 +306,12 @@ pub enum NodeKind {
         value: f64,
         range: crate::widgets::SliderRange,
         listening: bool,
+        art: SliderArt,
+    },
+    /// A determinate read-only progress display with optional overlay children.
+    ProgressBar {
+        value: f64,
+        max: f64,
     },
     Toggle {
         label: Option<String>,
@@ -358,6 +366,7 @@ pub enum NodeKind {
         follow_end: bool,
         align: crate::widgets::ScrollAlign,
         offset: Vec2,
+        snap_y: Option<f64>,
     },
     /// Native scrollbar over borrowed scroll metrics; children are visual wrappers.
     ScrollBar(crate::widgets::ScrollBarView),
@@ -370,6 +379,14 @@ pub enum NodeKind {
     Stack,
     /// Window-space pointer appearance, owned as an ordinary child subtree.
     Cursor,
+}
+
+/// Scene children that replace the slider's built-in visuals.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SliderArt {
+    pub track: Option<NodeId>,
+    pub thumb: Option<NodeId>,
+    pub thumb_width: f64,
 }
 
 /// Axes filled from the parent's content box after its size has been measured.
@@ -912,6 +929,7 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ProgressBar { .. }
                 | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
@@ -961,6 +979,7 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ProgressBar { .. }
                 | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
@@ -1053,6 +1072,7 @@ impl Stage {
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
+                | NodeKind::ProgressBar { .. }
                 | NodeKind::ScrollBar(_)
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }

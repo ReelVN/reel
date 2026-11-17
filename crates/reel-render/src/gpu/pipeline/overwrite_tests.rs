@@ -27,7 +27,7 @@ fn replacement_overwrites_old_pixels_and_preserves_partial_initialization() {
             samples,
             degraded: false,
         };
-        let pipelines = Pipelines::new(&gpu.device, quality, &Creations::default());
+        let pipelines = Pipelines::new(&gpu, quality, &Creations::default()).unwrap();
         let source = Target::new(
             &gpu.device,
             [65, 11],

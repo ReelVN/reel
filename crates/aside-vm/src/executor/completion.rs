@@ -575,7 +575,7 @@ impl Vm {
             ReturnTo::Register { frame, call, .. }
             | ReturnTo::Default { frame, call, .. }
             | ReturnTo::Class { frame, call }
-            | ReturnTo::Sort { frame, call }
+            | ReturnTo::BuiltinCallback { frame, call }
             | ReturnTo::ReactiveRead { frame, call } => {
                 let i = self.index(frame)?;
                 let Frame::Script(mut parent) = self.active.frames.data[i] else {
@@ -603,7 +603,7 @@ impl Vm {
                     match ret {
                         ReturnTo::Register { reg, .. } => self.put(parent.regs, reg.0, value)?,
                         ReturnTo::Class { .. } => self.put(parent.env, 2, value)?,
-                        ReturnTo::Sort { .. } => self.put(parent.env, 3, value)?,
+                        ReturnTo::BuiltinCallback { .. } => self.put(parent.env, 3, value)?,
                         ReturnTo::ReactiveRead { .. } => {}
                         ReturnTo::Default { parameter, .. } => {
                             self.put(parent.bound, parameter, value)?;

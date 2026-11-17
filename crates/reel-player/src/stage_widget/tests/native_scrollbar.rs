@@ -167,6 +167,31 @@ fn scrollbar_invalidated_geometry_and_disabled_capture_stop_without_value_writes
         pointer(&mut f, (50., 130.), Some(false));
     }
 }
+
+#[test]
+fn scrollbar_continues_from_the_corrected_offset_after_virtual_extent_changes() {
+    let (mut f, bar) = fixture(false);
+    pointer(&mut f, (50., 45.), Some(true));
+    assert_eq!(changed(&pointer(&mut f, (50., 85.), None), bar), vec![100.]);
+
+    let node = f.stage.node(bar).unwrap();
+    let NodeKind::ScrollBar(mut view) = node.kind else {
+        panic!()
+    };
+    view.value = 120.;
+    view.content = 800.;
+    f.stage
+        .update(bar, NodeKind::ScrollBar(view), node.props.clone())
+        .unwrap();
+    let frame = f.record();
+    assert!(changed(&pointer(&mut f, (50., 95.), None), bar).is_empty());
+    f.accept(&frame);
+    assert_eq!(
+        changed(&pointer(&mut f, (50., 125.), None), bar),
+        vec![280.]
+    );
+    pointer(&mut f, (50., 125.), Some(false));
+}
 #[test]
 fn horizontal_scrollbar_shares_controller_and_accessibility_range_actions() {
     let (mut f, bar) = fixture(true);

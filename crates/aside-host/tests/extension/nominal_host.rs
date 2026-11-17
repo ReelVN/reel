@@ -1,6 +1,6 @@
 use aside_compiler::{
     AnalysisOptions, analyze_module,
-    semantic::{MemoryResolver, ModuleInterface, TypeHint},
+    semantic::{ExternalResultParameter, MemoryResolver, ModuleInterface, TypeHint},
 };
 use aside_host::{
     CallContext, Error, NativeContract, native,
@@ -197,7 +197,7 @@ fn trusted_source_signature_checks_every_result_case_and_retains_exact_native_ab
             2 => signature.result_cases[0].result = named("sample::types::Image"),
             3 => signature.result_cases[0].when_omitted = false,
             4 => signature.result_cases.clear(),
-            5 => signature.result_parameter = Some("text".into()),
+            5 => signature.result_parameter = Some(ExternalResultParameter::Value("text".into())),
             _ => changed.functions[0].symbol.signature = None,
         }
         let module = analyzed("fn main() { make() }", &changed);

@@ -1,6 +1,6 @@
 use crate::payload::{Payload, Table, VALUE_CHUNK_BYTES};
 use crate::slots::RangeKey;
-use crate::{Heap, HeapError, RootRangeToken, RootRanges};
+use crate::{Heap, HeapError, RootRangeToken, RootRanges, ValueTag};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum GcPhase {
@@ -21,8 +21,8 @@ pub struct GcBudget {
     pub edges: u32,
     pub weak: u32,
     pub objects: u32,
-    pub release_edges: u32,
     pub bytes: u64,
+    /// Total work, including one unit per released value block.
     pub units: u32,
 }
 impl Default for GcBudget {
@@ -32,7 +32,6 @@ impl Default for GcBudget {
             edges: 256,
             weak: 256,
             objects: 256,
-            release_edges: 256,
             bytes: 16_384,
             units: 256,
         }
@@ -52,7 +51,6 @@ pub struct GcProgress {
     pub edges: u32,
     pub weak: u32,
     pub objects: u32,
-    pub release_edges: u32,
     pub bytes: u64,
     pub units: u32,
     pub invalidated_objects: u32,
@@ -61,11 +59,17 @@ pub struct GcProgress {
     pub cycle_complete: bool,
 }
 
+/// Categories of charged GC work in collection order.
+#[cfg(feature = "execution-counts")]
+pub const GC_WORK_NAMES: [&str; 5] = ["roots", "mark", "weak", "sweep", "release"];
+
 #[derive(Default)]
 pub(crate) struct Collector {
     pub phase: GcPhase,
     pub cycle: u64,
     pub units: u64,
+    #[cfg(feature = "execution-counts")]
+    work_units: [u64; GC_WORK_NAMES.len()],
     pub allocated_objects: u64,
     pub allocated_bytes: u64,
     live_objects: u32,
@@ -86,6 +90,12 @@ impl Collector {
 }
 
 impl Heap {
+    /// Cumulative work units for each category in [GC_WORK_NAMES].
+    #[cfg(feature = "execution-counts")]
+    pub fn gc_work_units(&self) -> [u64; GC_WORK_NAMES.len()] {
+        self.gc.work_units
+    }
+
     /// Whether allocation since the last cycle warrants another incremental cycle.
     /// This is a host scheduling hint; explicit collection always starts immediately.
     pub fn collection_due(&self) -> bool {
@@ -160,6 +170,8 @@ impl Heap {
             return Err(HeapError::MissingRootProvider);
         }
         let mut p = GcProgress::default();
+        #[cfg(feature = "execution-counts")]
+        let mut completed_marks = 0;
         while p.units < budget.units {
             match self.gc.phase {
                 GcPhase::Idle => break,
@@ -179,9 +191,10 @@ impl Heap {
                             p.blocked = true;
                             break;
                         }
-                        self.scan_range_unit(roots, &mut p)?;
-                        p.roots += 1;
-                        p.units += 1;
+                        let remaining = (budget.roots - p.roots).min(budget.units - p.units);
+                        let scanned = self.scan_range(roots, &mut p, remaining)?;
+                        p.roots += scanned;
+                        p.units += scanned;
                     } else if let Some(&key) = self.gray.front() {
                         // Empty-object completion is also a charged work unit.
                         if p.edges == budget.edges {
@@ -206,6 +219,32 @@ impl Heap {
                             let metadata = obj.reactive_subscribers;
                             self.shade(metadata);
                             p.edges += 1;
+                        } else if let Some(values) = obj.payload.edge_segment(obj.scan) {
+                            let remaining = (budget.edges - p.edges).min(budget.units - p.units);
+                            let values = &values[..values.len().min(remaining as usize)];
+                            // Copy a bounded group of references before releasing the
+                            // object borrow. Each value still spends one edge unit.
+                            let mut children = [crate::Value::NULL; 8];
+                            let mut count = 0;
+                            let mut scanned = 0;
+                            for &value in values {
+                                scanned += 1;
+                                if value.tag() == ValueTag::Object {
+                                    children[count] = value;
+                                    count += 1;
+                                    if count == children.len() {
+                                        break;
+                                    }
+                                }
+                            }
+                            obj.metadata_scanned = true;
+                            obj.scan += scanned;
+                            for &child in &children[..count] {
+                                self.shade(child);
+                            }
+                            p.edges += scanned;
+                            p.units += scanned;
+                            continue;
                         } else if let Some(value) = obj.payload.edge(obj.scan) {
                             obj.metadata_scanned = true;
                             obj.scan += 1;
@@ -214,6 +253,10 @@ impl Heap {
                         } else {
                             obj.queued = false;
                             self.gray.pop_front();
+                            #[cfg(feature = "execution-counts")]
+                            {
+                                completed_marks += 1;
+                            }
                         }
                         p.units += 1;
                     } else {
@@ -300,14 +343,28 @@ impl Heap {
         }
         p.phase = self.gc.phase;
         self.gc.units = self.gc.units.saturating_add(u64::from(p.units));
+        #[cfg(feature = "execution-counts")]
+        {
+            let marked = p.edges + completed_marks;
+            let release = p.units - p.roots - marked - p.weak - p.objects;
+            for (total, units) in self
+                .gc
+                .work_units
+                .iter_mut()
+                .zip([p.roots, marked, p.weak, p.objects, release])
+            {
+                *total = total.saturating_add(u64::from(units));
+            }
+        }
         Ok(p)
     }
 
-    fn scan_range_unit(
+    fn scan_range(
         &mut self,
         roots: Option<RootRanges<'_>>,
         p: &mut GcProgress,
-    ) -> Result<(), HeapError> {
+        remaining: u32,
+    ) -> Result<u32, HeapError> {
         let Some(key) = self.range_index[self.gc.range_slot] else {
             self.gc.range_key = None;
             self.gc.range_offset = 0;
@@ -321,7 +378,7 @@ impl Heap {
             p.range_holes += (next - self.gc.range_slot) as u32;
             p.range_hole_blocks += 1;
             self.gc.range_slot = next;
-            return Ok(());
+            return Ok(1);
         };
         let token = RootRangeToken::new(self, key);
         let d = self.range_descriptor(token)?;
@@ -334,7 +391,7 @@ impl Heap {
                 actual: values.len() as u32,
             });
         }
-        if self.gc.range_key != Some(key) {
+        let descriptor_work = if self.gc.range_key != Some(key) {
             // A different full generation never inherits the previous element cursor.
             self.gc.range_key = Some(key);
             self.gc.range_offset = 0;
@@ -342,19 +399,30 @@ impl Heap {
             if d.len == 0 {
                 self.gc.range_slot += 1;
                 self.gc.range_key = None;
+                return Ok(1);
             }
+            1
         } else {
-            let value = values[self.gc.range_offset as usize];
-            self.shade(value);
-            self.gc.range_offset += 1;
-            p.range_values += 1;
-            if self.gc.range_offset == d.len {
-                self.gc.range_slot += 1;
-                self.gc.range_key = None;
-                self.gc.range_offset = 0;
+            0
+        };
+        let start = self.gc.range_offset;
+        let scanned = (remaining - descriptor_work).min(d.len - start);
+        let end = start + scanned;
+        // The provider is borrowed for the step. Resolve the window once and
+        // charge each slot while scanning its contiguous values in order.
+        for &value in &values[start as usize..end as usize] {
+            if value.tag() == ValueTag::Object {
+                self.shade(value);
             }
         }
-        Ok(())
+        p.range_values += scanned;
+        self.gc.range_offset = end;
+        if end == d.len {
+            self.gc.range_slot += 1;
+            self.gc.range_key = None;
+            self.gc.range_offset = 0;
+        }
+        Ok(descriptor_work + scanned)
     }
 
     fn release_step(&mut self, budget: &GcBudget, p: &mut GcProgress) -> bool {
@@ -365,26 +433,8 @@ impl Heap {
             .objects
             .get_mut(key)
             .expect("release record owns a dying slot");
+        let available_bytes = budget.bytes - p.bytes;
         let bytes = match &mut obj.payload {
-            Payload::Fault(value) if value.release_cursor < 3 => {
-                if p.release_edges == budget.release_edges {
-                    return false;
-                }
-                value.edges[value.release_cursor as usize] = crate::Value::NULL;
-                value.release_cursor += 1;
-                p.release_edges += 1;
-                p.units += 1;
-                return true;
-            }
-            Payload::Cell(value) if value.value.is_some() => {
-                if p.release_edges == budget.release_edges {
-                    return false;
-                }
-                value.value = None;
-                p.release_edges += 1;
-                p.units += 1;
-                return true;
-            }
             Payload::Dependencies(d) if d.ancestors.capacity() != 0 => {
                 drop(std::mem::take(&mut d.ancestors));
                 p.units += 1;
@@ -394,7 +444,7 @@ impl Heap {
                 let released = d
                     .ancestor_reserved
                     .min(VALUE_CHUNK_BYTES)
-                    .min(budget.bytes.saturating_sub(p.bytes));
+                    .min(available_bytes);
                 if released == 0 {
                     return false;
                 }
@@ -410,38 +460,22 @@ impl Heap {
                 return true;
             }
             Payload::Dependencies(d) if d.index_reserved != 0 => {
-                let released = d
-                    .index_reserved
-                    .min(VALUE_CHUNK_BYTES)
-                    .min(budget.bytes.saturating_sub(p.bytes));
+                let released = d.index_reserved.min(VALUE_CHUNK_BYTES).min(available_bytes);
                 if released == 0 {
                     return false;
                 }
                 d.index_reserved -= released;
                 released
             }
-            Payload::Dependencies(d) if !d.values.empty() => {
-                let values = &mut d.values;
-                let remaining = values.first_chunk_len() - values.release_cursor;
-                if remaining != 0 {
-                    if p.release_edges == budget.release_edges {
-                        return false;
-                    }
-                    values.clear_release_edge();
-                    p.release_edges += 1;
-                    p.units += 1;
-                    return true;
-                }
-                let released = values.release_bytes();
-                if budget.bytes.saturating_sub(p.bytes) < released {
+            Payload::Dependencies(d) if d.values.owned_chunks() != 0 => {
+                let Some(released) = d.values.release_chunk(available_bytes) else {
                     return false;
-                }
-                values.drop_first_chunk();
+                };
                 released
             }
             Payload::Dependencies(_) => {
                 let released = crate::dependencies::BASE_BYTES;
-                if budget.bytes.saturating_sub(p.bytes) < released {
+                if available_bytes < released {
                     return false;
                 }
                 obj.payload = Payload::Empty;
@@ -460,10 +494,7 @@ impl Heap {
             Payload::Table(Table {
                 index: Some(index), ..
             }) if index.reserved != 0 => {
-                let released = index
-                    .reserved
-                    .min(VALUE_CHUNK_BYTES)
-                    .min(budget.bytes.saturating_sub(p.bytes));
+                let released = index.reserved.min(VALUE_CHUNK_BYTES).min(available_bytes);
                 if released == 0 {
                     return false;
                 }
@@ -472,41 +503,30 @@ impl Heap {
             }
             Payload::Table(table) if table.index.is_some() => {
                 let released = crate::payload::table::INDEX_BASE_BYTES;
-                if budget.bytes.saturating_sub(p.bytes) < released {
+                if available_bytes < released {
                     return false;
                 }
                 table.index = None;
                 released
             }
-            Payload::Values(values) | Payload::Table(Table { values, .. }) if !values.empty() => {
-                let remaining = values.first_chunk_len() - values.release_cursor;
-                if remaining != 0 {
-                    if p.release_edges == budget.release_edges {
-                        return false;
-                    }
-                    // Values contain integer handles: clearing an edge cannot recurse.
-                    values.clear_release_edge();
-                    p.release_edges += 1;
-                    p.units += 1;
-                    return true;
-                }
-                let released = values.release_bytes();
-                if budget.bytes.saturating_sub(p.bytes) < released {
+            Payload::Values(values) | Payload::Table(Table { values, .. })
+                if values.owned_chunks() != 0 =>
+            {
+                let Some(released) = values.release_chunk(available_bytes) else {
                     return false;
-                }
-                values.drop_first_chunk();
+                };
                 released
             }
             Payload::Bytes(bytes) if !bytes.empty() => {
                 let released = bytes.release_bytes();
-                if budget.bytes.saturating_sub(p.bytes) < released {
+                if available_bytes < released {
                     return false;
                 }
                 bytes.drop_first_chunk();
                 released
             }
             _ => {
-                // Empty payload before remove guarantees no recursive/unbounded drop.
+                // Inline edges are Copy handles and retire with the slot.
                 assert_eq!(obj.charged, 0);
                 self.remove_object(key);
                 self.release.pop_front();

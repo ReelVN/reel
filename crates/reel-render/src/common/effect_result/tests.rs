@@ -16,8 +16,10 @@ fn early_lookup_requires_complete_ordered_image_sources() {
     use crate::test_support::r01_fixture;
     use reel_core::{budget::OwnedBytes, identity::*};
     use reel_ui::{
-        frame::FrameBuild,
+        core::Widget,
+        frame::{FrameBuild, FrameTransition, RetainBuild},
         imaging::record::{Draw, Geometry, Group},
+        kurbo::{Point, Size},
         peniko::{ImageAlphaType, ImageFormat},
         resources::{ColorEncoding, ResourceRegistry},
     };
@@ -61,20 +63,53 @@ fn early_lookup_requires_complete_ordered_image_sources() {
         scene.pop_group();
         let mut widget = r01_fixture::RecordWidget::new(scene);
         widget.clip = false;
-        let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
-        let mut build = FrameBuild::new(
-            bridge.record(FrameId(1)).unwrap(),
-            registry.freeze(&[image], &pool).unwrap(),
-            reel_ui::frame::FrameInfo {
-                logical_size: [32.; 2],
-                physical_size: [32; 2],
-            },
-            r01_fixture::limits(),
-            &pool,
-        )
-        .unwrap();
-        while !build.step(r01_fixture::step_budget()).unwrap().complete {}
-        let frame = build.finish().unwrap();
+        let sibling = r01_fixture::RecordWidget::new(Scene::new()).prepare();
+        let target = sibling.id();
+        let mut root = r01_fixture::RecordWidget::new(Scene::new());
+        root.inner
+            .add(widget.prepare(), Point::ZERO, Size::new(32., 32.));
+        root.inner
+            .add(sibling, Point::new(32., 0.), Size::new(32., 32.));
+        let mut bridge = r01_fixture::widget_bridge(root, Affine::IDENTITY);
+        let mut build = |id, transitions| {
+            let mut build = FrameBuild::new(
+                bridge.record(FrameId(id)).unwrap(),
+                registry.freeze(&[image], &pool).unwrap(),
+                reel_ui::frame::FrameInfo {
+                    logical_size: [64., 32.],
+                    physical_size: [64, 32],
+                },
+                r01_fixture::limits(),
+                &pool,
+            )
+            .unwrap();
+            build.set_transitions(transitions).unwrap();
+            while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+            build.finish().unwrap()
+        };
+        let previous = build(1, vec![]);
+        let mut retain =
+            RetainBuild::new(&previous, Some(target), r01_fixture::limits(), &pool).unwrap();
+        while !retain.step(r01_fixture::step_budget()).unwrap().complete {}
+        let previous = retain.finish().unwrap();
+        let frame = build(
+            2,
+            vec![FrameTransition {
+                root: Some(target),
+                previous: previous.clone(),
+                progress: 0.5,
+                mask: None,
+            }],
+        );
+        let overlapping = build(
+            3,
+            vec![FrameTransition {
+                root: None,
+                previous,
+                progress: 0.5,
+                mask: None,
+            }],
+        );
         let drawing = frame.drawing();
         let mut stack = Vec::new();
         let mut hits = 0;
@@ -89,6 +124,10 @@ fn early_lookup_requires_complete_ordered_image_sources() {
                     if probe.is_some() {
                         hits += 1;
                         assert!(Probe::new(drawing, start..index, &effect, grid(), true).is_none());
+                        assert!(
+                            Probe::new(overlapping.drawing(), range, &effect, grid(), true)
+                                .is_none()
+                        );
                     }
                     if drawing.commands()[start + 1..index]
                         .iter()

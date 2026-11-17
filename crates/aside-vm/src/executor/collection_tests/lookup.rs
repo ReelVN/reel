@@ -228,50 +228,57 @@ fn absent_builtin_members_reuse_the_scan_and_recheck_shadowing_and_receivers() {
 }
 
 #[test]
-fn dynamic_string_queries_reuse_positions_and_observe_value_and_shape_changes() {
-    let mut vm = load(point_lookup_package(true, false));
-    let table = vm.heap_mut().alloc_table().unwrap();
-    let root = vm
-        .heap_mut()
-        .add_root(RootOwner(7), RootKind::Host, table)
-        .unwrap();
-    for i in 0..64 {
-        let name = if i == 63 {
-            "position".to_owned()
-        } else {
-            format!("field{i}")
-        };
-        let key = vm.heap_mut().alloc_string(&name).unwrap();
-        vm.heap_mut()
-            .table_store(table, i, key, Value::int(42))
+fn dynamic_queries_reuse_positions_and_observe_value_and_shape_changes() {
+    for integer in [false, true] {
+        let mut package = point_lookup_package(true, false);
+        if integer {
+            package.constants[0] = Const::Int(i64::MAX);
+        }
+        let mut vm = load(package);
+        let table = vm.heap_mut().alloc_table().unwrap();
+        let root = vm
+            .heap_mut()
+            .add_root(RootOwner(7), RootKind::Host, table)
             .unwrap();
-    }
-    let before = vm.stats().cumulative_work;
-    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(42));
-    let cold = vm.stats().cumulative_work - before;
-    let before = vm.stats().cumulative_work;
-    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(42));
-    let warm = vm.stats().cumulative_work - before;
-    assert!(warm * 2 < cold, "cold={cold}, warm={warm}");
-    let key = vm.heap().table_key(table, 63).unwrap();
-    vm.heap_mut()
-        .table_store(table, 63, key, Value::int(84))
-        .unwrap();
-    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(84));
-    vm.heap_mut().clear_collection(table).unwrap();
-    for i in 0..64 {
-        let name = if i == 0 {
-            "position".to_owned()
-        } else {
-            format!("field{i}")
+        let populate = |vm: &mut Vm, position: u32, value: i64| {
+            for index in 0..64 {
+                let key = if integer {
+                    Value::int(if index == position {
+                        i64::MAX
+                    } else {
+                        i64::from(index)
+                    })
+                } else {
+                    let name = if index == position {
+                        "position".to_owned()
+                    } else {
+                        format!("field{index}")
+                    };
+                    vm.heap_mut().alloc_string(&name).unwrap()
+                };
+                vm.heap_mut()
+                    .table_store(table, index, key, Value::int(value))
+                    .unwrap();
+            }
         };
-        let key = vm.heap_mut().alloc_string(&name).unwrap();
+        populate(&mut vm, 63, 42);
+        let before = vm.stats().cumulative_work;
+        assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(42));
+        let cold = vm.stats().cumulative_work - before;
+        let before = vm.stats().cumulative_work;
+        assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(42));
+        let warm = vm.stats().cumulative_work - before;
+        assert!(warm * 2 < cold, "cold={cold}, warm={warm}");
+        let key = vm.heap().table_key(table, 63).unwrap();
         vm.heap_mut()
-            .table_store(table, i, key, Value::int(126))
+            .table_store(table, 63, key, Value::int(84))
             .unwrap();
+        assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(84));
+        vm.heap_mut().clear_collection(table).unwrap();
+        populate(&mut vm, 0, 126);
+        assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(126));
+        vm.heap_mut().release_root(root).unwrap();
     }
-    assert_eq!(warm_point_lookup(&mut vm, table).as_int(), Some(126));
-    vm.heap_mut().release_root(root).unwrap();
 }
 
 #[test]

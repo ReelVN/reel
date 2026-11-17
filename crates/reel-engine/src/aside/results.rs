@@ -10,6 +10,9 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         named("reel::types::Task"),
         &[("work", TypeHint::Closure)],
     );
+    for symbol in ["reel::spawn", "reel::scope::spawn"] {
+        api.native_mut(symbol).starts_task();
+    }
     api.refine(
         "reel::stage::presented",
         named("reel::types::Presentation"),
@@ -66,6 +69,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             "ParticleActivity" => TypeHint::String,
             _ => TypeHint::Any,
         });
+        descriptor.await_adapter = Some(api.native("reel::completion::await").clone());
         api.types.push(descriptor);
     }
     let base = api

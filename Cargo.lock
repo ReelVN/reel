@@ -256,10 +256,11 @@ dependencies = [
 
 [[package]]
 name = "aside-compiler"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "aside-syntax",
  "aside-vm",
+ "blake3",
  "codespan-reporting",
  "hashbrown 0.17.1",
  "line-index",
@@ -267,12 +268,13 @@ dependencies = [
  "serde_json",
  "smallvec",
  "stats_alloc",
+ "tempfile",
  "unicode-ident",
 ]
 
 [[package]]
 name = "aside-host"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "aside-compiler",
  "aside-host-macros",
@@ -281,16 +283,17 @@ dependencies = [
 
 [[package]]
 name = "aside-host-macros"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "moxy",
 ]
 
 [[package]]
 name = "aside-lsp"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "aside-compiler",
+ "lru",
  "lsp-server",
  "lsp-types",
  "serde",
@@ -301,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "aside-std"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "aside-host",
  "fastrand",
@@ -311,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "aside-syntax"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "countme",
  "hashbrown 0.17.1",
@@ -323,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "aside-vm"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -1690,11 +1693,22 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
  "zune-core",
  "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]
@@ -3258,6 +3272,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3412,7 +3432,7 @@ dependencies = [
 
 [[package]]
 name = "reel-audio"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "approx",
  "atomic-arena",
@@ -3427,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "reel-cli"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "aside-compiler",
  "aside-host",
@@ -3462,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "reel-core"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "hashbrown 0.17.1",
  "serde",
@@ -3470,7 +3490,7 @@ dependencies = [
 
 [[package]]
 name = "reel-dev"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "clap",
@@ -3481,13 +3501,14 @@ dependencies = [
  "reel-ui",
  "serde",
  "serde_json",
+ "tempfile",
  "vita-native",
  "walkdir",
 ]
 
 [[package]]
 name = "reel-engine"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "aside-compiler",
  "aside-host",
@@ -3509,7 +3530,7 @@ dependencies = [
 
 [[package]]
 name = "reel-media"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "atomic_refcell",
  "cpal",
@@ -3530,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "reel-package"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "allocation-counter",
  "aside-vm",
@@ -3544,7 +3565,7 @@ dependencies = [
 
 [[package]]
 name = "reel-player"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "allocation-counter",
  "arboard",
@@ -3557,6 +3578,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "image",
  "lru",
+ "png",
  "pollster",
  "postcard",
  "reel-core",
@@ -3578,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "reel-render"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -3600,7 +3622,7 @@ dependencies = [
 
 [[package]]
 name = "reel-storage"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "atomic-write-file",
  "tempfile",
@@ -3609,9 +3631,10 @@ dependencies = [
 
 [[package]]
 name = "reel-text"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "accesskit",
+ "arrayvec",
  "core_maths",
  "fontique",
  "harfrust",
@@ -3627,7 +3650,7 @@ dependencies = [
 
 [[package]]
 name = "reel-ui"
-version = "0.3.1"
+version = "0.3.13"
 dependencies = [
  "accesskit",
  "anymap3",

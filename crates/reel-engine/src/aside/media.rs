@@ -7,6 +7,8 @@ use aside_vm::executor::{Completion, HostResponse, TaskId, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
 use reel_ui::stage::NodeId;
 use std::{collections::VecDeque, time::Duration};
+mod protocol;
+pub(in crate::aside) use protocol::MediaCapture;
 
 const TAG: i64 = -1003;
 const CUE_TAG: i64 = -1009;
@@ -34,6 +36,7 @@ struct Live {
 }
 #[derive(Default)]
 pub(super) struct Media {
+    logical: protocol::Restoring,
     backend: Option<Box<dyn MediaBackend>>,
     live: Vec<Live>,
     waits: VecDeque<(WaitId, Value)>,
@@ -281,7 +284,7 @@ pub(super) fn is_media(heap: &Heap, value: Value) -> bool {
         .and_then(Value::as_int)
         == Some(TAG)
 }
-fn is_cue(heap: &Heap, value: Value) -> bool {
+pub(super) fn is_cue(heap: &Heap, value: Value) -> bool {
     heap.host_payload(value, Slot::Tag as u32)
         .ok()
         .and_then(Value::as_int)
@@ -1115,6 +1118,7 @@ impl Media {
         self.backend.as_ref().is_some_and(|b| b.cleanup_pending())
     }
     pub fn close(&mut self) {
+        self.logical = protocol::Restoring::default();
         self.posters.clear();
         self.waits = VecDeque::new();
         self.wait_charge = None;
@@ -1257,6 +1261,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         Vec::new(),
     );
     playback.await_result = Some(TypeHint::String);
+    playback.await_adapter = Some(api.native("reel::audio::await").clone());
     api.types.push(playback);
     for prefix in ["reel::audio::", "reel::video::"] {
         let symbols = api
@@ -1295,5 +1300,6 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         Vec::new(),
     );
     cue.await_result = Some(TypeHint::Bool);
+    cue.await_adapter = Some(api.native("reel::audio::await").clone());
     api.types.push(cue);
 }

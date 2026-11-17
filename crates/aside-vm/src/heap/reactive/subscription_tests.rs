@@ -20,33 +20,6 @@ fn shared(heap: &mut Heap, count: usize) -> (Value, Vec<Value>) {
 }
 
 #[test]
-#[ignore = "isolated shared-source dependency maintenance measurement"]
-fn stable_subscription_cost() {
-    for count in [16, 64, 256] {
-        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
-        let (source, outputs) = shared(&mut heap, count);
-        let before = heap.property_traversal_work.get();
-        let memory_before = heap.stats();
-        let started = std::time::Instant::now();
-        for _ in 0..16 {
-            for &output in &outputs {
-                heap.begin_derived(output).unwrap();
-                heap.observe_read(source, Some(0)).unwrap();
-                heap.commit_derived(output, Value::int(1)).unwrap();
-            }
-        }
-        println!(
-            "subscriptions,count={count},rounds=16,elapsed_ns={},traversal_work={},objects={},charged_bytes={},chunk_allocations={}",
-            started.elapsed().as_nanos(),
-            heap.property_traversal_work.get() - before,
-            heap.stats().live_objects - memory_before.live_objects,
-            heap.stats().charged_bytes - memory_before.charged_bytes,
-            heap.stats().chunk_allocations - memory_before.chunk_allocations
-        );
-    }
-}
-
-#[test]
 fn stable_captures_notify_once_and_replaced_inputs_disconnect_the_original_source() {
     let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
     let (source, outputs) = shared(&mut heap, 64);
@@ -186,38 +159,4 @@ fn exhausted_large_index_admission_keeps_committed_dependencies_and_reusable_sma
         .host_payload(output, DerivedSlot::Candidate as u32)
         .unwrap();
     assert_eq!(heap.sequence_len(scratch).unwrap(), 0);
-}
-
-#[test]
-#[ignore = "release stable dependency-chain commit measurement"]
-fn stable_derived_chain_commit_cost() {
-    for depth in [32, 128, 256] {
-        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
-        let (source, _) = shared(&mut heap, 0);
-        let mut upstream = source;
-        let mut edges = Vec::new();
-        for _ in 0..depth {
-            let output = heap.alloc_derived(Value::NULL).unwrap();
-            heap.begin_derived(output).unwrap();
-            heap.observe_read(upstream, Some(0)).unwrap();
-            heap.commit_derived(output, Value::int(1)).unwrap();
-            edges.push((output, upstream));
-            upstream = output;
-        }
-        let before = heap.stats();
-        let start = std::time::Instant::now();
-        for _ in 0..32 {
-            for &(output, source) in &edges {
-                heap.begin_derived(output).unwrap();
-                heap.observe_read(source, Some(0)).unwrap();
-                heap.commit_derived(output, Value::int(1)).unwrap();
-            }
-        }
-        eprintln!(
-            "stable_chain depth={depth} rounds=32 elapsed_us={} added_bytes={} added_chunks={}",
-            start.elapsed().as_micros(),
-            heap.stats().charged_bytes - before.charged_bytes,
-            heap.stats().chunk_allocations - before.chunk_allocations
-        );
-    }
 }

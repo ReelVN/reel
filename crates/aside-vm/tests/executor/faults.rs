@@ -371,7 +371,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                                     NativeInput::CallbackReturned
                                 }
                             );
-                            assert_eq!(v.host_callback_value(t).unwrap().as_int(), Some(41));
+                            assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(41));
                             rounds += 1;
                             if rounds < 5 {
                                 v.respond(
@@ -559,7 +559,7 @@ fn caught_errors_inside_finally_preserve_pending_return_and_throw() {
                             );
                             let info = v.host_callback_fault(t).unwrap().unwrap();
                             assert_eq!(info.location.code.function, FunctionId(3));
-                            let _value = v.host_callback_value(t).unwrap();
+                            let _value = v.host_resume_value(t).unwrap();
                             v.respond(
                                 t,
                                 HostResponse::ForwardFault(
@@ -738,7 +738,7 @@ fn resource_failures_during_default_and_callback_preparation_are_consumed_faults
     let fault = v.host_callback_fault(resume).unwrap().unwrap();
     assert_eq!(fault.kind, FaultKind::Resource);
     assert_eq!(fault.location, ticket.location);
-    let _value = v.host_callback_value(resume).unwrap();
+    let _value = v.host_resume_value(resume).unwrap();
     v.respond(
         resume,
         HostResponse::ForwardFault(v.host_callback_fault(resume).unwrap().unwrap().id),

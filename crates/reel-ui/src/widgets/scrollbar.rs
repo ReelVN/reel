@@ -1,7 +1,7 @@
 // Copyright 2026 the Reel Authors
 // SPDX-License-Identifier: Apache-2.0
 //! Scrollbar geometry and input share one continuous logical scroll range.
-use super::{ScrollAxis, SliderRange, wheel_delta_pixels};
+use super::{ScrollAxis, SliderRange, scroll_offset_by, snap_scroll_offset, wheel_delta_pixels};
 use crate::{
     accesskit::{Action, ActionData},
     core::{
@@ -23,6 +23,7 @@ pub struct ScrollBarView {
     pub min_thumb_size: f64,
     pub thumb_size: Option<f64>,
     pub step: f64,
+    pub snap: Option<f64>,
     pub inset_start: f64,
     pub inset_end: f64,
     pub live: bool,
@@ -37,6 +38,7 @@ impl Default for ScrollBarView {
             min_thumb_size: 16.,
             thumb_size: None,
             step: 40.,
+            snap: None,
             inset_start: 0.,
             inset_end: 0.,
             live: false,
@@ -53,12 +55,24 @@ impl ScrollBarView {
             .flatten()
     }
     pub fn clamp(self, value: f64) -> f64 {
-        value.clamp(0., self.maximum())
+        snap_scroll_offset(value, self.maximum(), self.snap)
     }
-    /// Position updates preserve capture; geometry/configuration changes revoke it.
+    pub fn shifted(self, delta: f64) -> f64 {
+        scroll_offset_by(self.value, delta, self.maximum(), self.snap)
+    }
+    /// Equality of the accepted configuration, excluding the logical offset.
     pub fn same_geometry(self, mut other: Self) -> bool {
         other.value = self.value;
         self == other
+    }
+    /// Whether the drag may continue across changes to the measured range and offset.
+    pub fn same_controls(self, other: Self) -> bool {
+        Self {
+            viewport: other.viewport,
+            content: other.content,
+            ..self
+        }
+        .same_geometry(other)
     }
     pub fn major(self, point: Point) -> f64 {
         if self.axis == ScrollAxis::Horizontal {
@@ -82,7 +96,7 @@ impl ScrollBarView {
             .unwrap_or(proportional.max(self.min_thumb_size))
             .clamp(0., length);
         let position = if self.maximum() > 0. {
-            self.clamp(self.value) / self.maximum() * (length - thumb)
+            self.value.clamp(0., self.maximum()) / self.maximum() * (length - thumb)
         } else {
             0.
         };
@@ -105,9 +119,11 @@ pub struct ScrollBarState {
 #[derive(Clone, Copy)]
 struct ScrollBarGrab {
     offset: f64,
+    last_coordinate: f64,
     track: Rect,
     thumb_size: f64,
     window: Affine,
+    rebased: bool,
 }
 impl ScrollBarState {
     pub fn new(view: ScrollBarView) -> Self {
@@ -121,8 +137,12 @@ impl ScrollBarState {
     }
     pub fn configure(&mut self, view: ScrollBarView) -> bool {
         let changed = !self.view.same_geometry(view);
-        if changed || self.view.value != view.value {
+        if !self.view.same_controls(view) {
             self.cancel();
+        } else if self.view != view
+            && let Some(grab) = &mut self.grab
+        {
+            grab.rebased = true;
         }
         self.view = view;
         changed
@@ -173,18 +193,23 @@ impl ScrollBarState {
         )
     }
     fn map_pointer(&mut self, coordinate: f64, grab: f64, track: Rect, thumb: f64) -> Option<f64> {
-        let coordinate = coordinate - self.view.major(track.origin());
+        let (start, travel) = self.travel(track, thumb);
+        if travel == 0. {
+            return None;
+        }
+        self.change(((coordinate - start - grab) / travel).clamp(0., 1.) * self.view.maximum())
+    }
+    fn travel(&self, track: Rect, thumb: f64) -> (f64, f64) {
         let extent = if self.view.axis == ScrollAxis::Horizontal {
             track.width()
         } else {
             track.height()
         };
         let start = self.view.inset_start.min(extent);
-        let travel = (extent - start - self.view.inset_end - thumb).max(0.);
-        if travel == 0. {
-            return None;
-        }
-        self.change(((coordinate - start - grab) / travel).clamp(0., 1.) * self.view.maximum())
+        (
+            self.view.major(track.origin()) + start,
+            (extent - start - self.view.inset_end - thumb).max(0.),
+        )
     }
     fn pointer_geometry(
         &self,
@@ -213,7 +238,7 @@ impl ScrollBarState {
         if !delta.is_finite() {
             return None;
         }
-        self.change((self.view.value + delta).clamp(0., self.view.maximum()))
+        self.change(self.view.shifted(delta))
     }
     pub fn pointer(
         &mut self,
@@ -251,9 +276,11 @@ impl ScrollBarState {
                 };
                 self.grab = Some(ScrollBarGrab {
                     offset: grab,
+                    last_coordinate: coordinate,
                     track,
                     thumb_size: length,
                     window,
+                    rebased: false,
                 });
                 ctx.request_focus();
                 ctx.capture_pointer();
@@ -266,11 +293,9 @@ impl ScrollBarState {
             }
             PointerEvent::Move(event) if ctx.is_active() => {
                 if !ctx.input_configuration_is_current() {
-                    self.cancel();
-                    ctx.release_pointer();
                     return None;
                 }
-                let Some(grab) = self.grab else {
+                let Some(mut grab) = self.grab else {
                     ctx.release_pointer();
                     return None;
                 };
@@ -288,19 +313,37 @@ impl ScrollBarState {
                     .zip([grab.track.x0, grab.track.y0, grab.track.x1, grab.track.y1])
                     .all(|(a, b)| near(a, b))
                     || window != grab.window
-                    || !near(length, grab.thumb_size)
                 {
                     self.cancel();
                     ctx.release_pointer();
                     return None;
                 }
                 ctx.set_handled();
-                self.map_pointer(
-                    self.view.major(ctx.local_position(event.current.position)),
-                    grab.offset,
-                    grab.track,
-                    grab.thumb_size,
-                )
+                let coordinate = self.view.major(ctx.local_position(event.current.position));
+                let delta = coordinate - grab.last_coordinate;
+                grab.last_coordinate = coordinate;
+                grab.rebased |= !near(length, grab.thumb_size);
+                self.grab = Some(grab);
+                if !grab.rebased {
+                    return self.map_pointer(coordinate, grab.offset, track, length);
+                }
+                let (start, travel) = self.travel(track, length);
+                if delta == 0. || travel == 0. {
+                    return None;
+                }
+                let offset = if grab.thumb_size > 0. {
+                    length * grab.offset / grab.thumb_size
+                } else {
+                    0.
+                };
+                let position = coordinate - start - offset;
+                if position <= 0. {
+                    self.change(0.)
+                } else if position >= travel {
+                    self.change(self.view.maximum())
+                } else {
+                    self.shift(delta * self.view.maximum() / travel)
+                }
             }
             PointerEvent::Up(_) | PointerEvent::Cancel(_) => {
                 if self.grab.take().is_some() {
@@ -369,8 +412,8 @@ impl ScrollBarState {
             return None;
         }
         let value = match event.action {
-            Action::Increment => (self.view.value + self.view.step).min(self.view.maximum()),
-            Action::Decrement => (self.view.value - self.view.step).max(0.),
+            Action::Increment => self.view.shifted(self.view.step),
+            Action::Decrement => self.view.shifted(-self.view.step),
             Action::SetValue => match &event.data {
                 Some(ActionData::NumericValue(v)) => *v,
                 Some(ActionData::Value(v)) => v.parse().ok()?,

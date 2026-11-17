@@ -1,5 +1,87 @@
 //! Visible image and tile resource requests.
 use super::*;
+use crate::stage_widget::OffscreenImage;
+use reel_ui::stage::NodeId;
+use std::time::{Duration, Instant};
+
+const IMAGE_LOOKAHEAD: Duration = Duration::from_millis(120);
+
+#[derive(Default)]
+pub(super) struct ImageMotion {
+    previous: Option<(Instant, Vec<OffscreenImage>)>,
+}
+
+impl ImageMotion {
+    fn observe(
+        &mut self,
+        now: Instant,
+        mut outside: Vec<OffscreenImage>,
+    ) -> (Vec<NodeId>, Vec<NodeId>) {
+        let mut approaching = Vec::new();
+        if let Some((sample, previous)) = &self.previous {
+            let elapsed = now.saturating_duration_since(*sample);
+            if !elapsed.is_zero() && elapsed <= IMAGE_LOOKAHEAD {
+                let lead = IMAGE_LOOKAHEAD.as_secs_f64() / elapsed.as_secs_f64();
+                for image in &mut outside {
+                    if let Ok(index) = previous.binary_search_by_key(&image.id, |old| old.id) {
+                        let old = &previous[index];
+                        image.moving_inward =
+                            old.distance.is_finite() && image.distance < old.distance;
+                        if old.moving_inward
+                            && image.moving_inward
+                            && image.distance <= (old.distance - image.distance) * lead
+                        {
+                            approaching.push(image.id);
+                        }
+                    }
+                }
+            }
+        }
+        let ids = outside.iter().map(|image| image.id).collect();
+        self.previous = (!outside.is_empty()).then_some((now, outside));
+        (ids, approaching)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_images_approaching_the_viewport_are_prefetched() {
+        let mut motion = ImageMotion::default();
+        let now = Instant::now();
+        let sample = |distances: [f64; 5]| {
+            distances
+                .into_iter()
+                .enumerate()
+                .map(|(id, distance)| OffscreenImage {
+                    id: NodeId(id as u64 + 1),
+                    distance,
+                    moving_inward: false,
+                })
+                .collect()
+        };
+        assert!(
+            motion
+                .observe(now, sample([100., 100., 100., f64::INFINITY, 1000.]))
+                .1
+                .is_empty()
+        );
+        let next = now + Duration::from_millis(20);
+        assert!(
+            motion
+                .observe(next, sample([70., 100., 130., 2., 970.]))
+                .1
+                .is_empty()
+        );
+        let (_, approaching) = motion.observe(
+            next + Duration::from_millis(20),
+            sample([40., 100., 160., 1., 940.]),
+        );
+        assert_eq!(approaching, [NodeId(1)]);
+    }
+}
 
 impl SessionUi {
     /// Fixed image dimensions let the existing candidate layout decide raster
@@ -42,9 +124,14 @@ impl SessionUi {
         });
         self.sync_popup_view(bridge, root_id, Some(&layout));
         let outside = StageWidget::offscreen_images(bridge.root(), root_id);
-        self.pending_images_ready = self.images.request_stage_images(
-            candidate.viewport_image_requests(outside, self.images.shader_format),
-        );
+        let (outside, approaching) = self.image_motion.observe(Instant::now(), outside);
+        self.pending_images_ready =
+            self.images
+                .request_stage_images(candidate.viewport_image_requests(
+                    outside,
+                    approaching,
+                    self.images.shader_format,
+                ));
         if self.pending_stage.is_none() {
             self.pending_stage = Some(layout);
         }

@@ -59,7 +59,14 @@ pub(super) fn source_signature_matches(
         return Ok(false);
     }
     if !match (&a.result_parameter, &b.result_parameter) {
-        (Some(a), Some(b)) => budget.compare(a, b)?.is_eq(),
+        (
+            Some(crate::semantic::ExternalResultParameter::Value(a)),
+            Some(crate::semantic::ExternalResultParameter::Value(b)),
+        )
+        | (
+            Some(crate::semantic::ExternalResultParameter::Callback(a)),
+            Some(crate::semantic::ExternalResultParameter::Callback(b)),
+        ) => budget.compare(a, b)?.is_eq(),
         (None, None) => true,
         _ => false,
     } {
@@ -237,10 +244,7 @@ pub(super) fn preflight(
     b.work(m.hir().nodes.len() as u64)?;
     for (i, node) in m.hir().nodes.iter().enumerate() {
         b.span = node.span;
-        if matches!(
-            node.kind,
-            H::ArrayPattern | H::ObjectPattern | H::PatternField | H::RestPattern
-        ) {
+        if matches!(node.kind, H::ArrayPattern | H::RestPattern) {
             return Err(b.error(
                 ErrorKind::Unsupported,
                 format!("{:?} is outside L04 lowering support", node.kind),
@@ -250,7 +254,7 @@ pub(super) fn preflight(
             && node.parent.is_none_or(|parent| {
                 !matches!(
                     m.hir().node(parent).kind,
-                    H::Arguments | H::Array | H::Object
+                    H::Arguments | H::Array | H::Object | H::ExpressionStatement
                 )
             })
         {

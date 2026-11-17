@@ -3,15 +3,25 @@ use std::time::Instant;
 
 pub(super) fn execute(options: Run) -> Result<()> {
     let directory = fs::canonicalize(&options.directory)?;
-    let manifest = Manifest::read(&directory)?;
     ensure!(
         !directory.join("reports/status.json").exists(),
         "this run already has a result; prepare a new run directory"
     );
+    if let Some(policy) = &options.policy {
+        return verify::evaluate(&directory, policy, |manifest| {
+            play(&options, &directory, manifest)
+        });
+    }
+    let manifest = Manifest::read(&directory)?;
+    play(&options, &directory, &manifest)?;
+    collect::analyze(&directory, &manifest).map(|_| ())
+}
+
+fn play(options: &Run, directory: &Path, manifest: &Manifest) -> Result<()> {
     if manifest.environment == "emulator" {
-        emulator::run(&options, &directory, &manifest)?;
+        emulator::run(options, directory, manifest)
     } else if manifest.target == "vita" {
-        device(&options, &directory, &manifest)?;
+        device(options, directory, manifest)
     } else {
         ensure!(
             options.address.is_none() && options.emulator.is_none(),
@@ -22,7 +32,7 @@ pub(super) fn execute(options: Run) -> Result<()> {
         } else {
             "reel-game"
         });
-        let result = checked(
+        checked(
             Command::new(executable)
                 .current_dir(directory.join("game"))
                 .arg("--save-directory")
@@ -30,10 +40,9 @@ pub(super) fn execute(options: Run) -> Result<()> {
                 .env("REEL_PERFORMANCE_CONFIG", directory.join("request.json")),
             &directory.join("player.log"),
             Duration::from_secs(options.timeout_seconds),
-        );
-        result?;
+        )?;
+        Ok(())
     }
-    collect::report(&directory)
 }
 
 fn device(options: &Run, directory: &Path, manifest: &Manifest) -> Result<()> {
@@ -57,22 +66,22 @@ fn device(options: &Run, directory: &Path, manifest: &Manifest) -> Result<()> {
             "runtime requires eboot.bin"
         );
         // The official player must already be registered by installing its VPK.
-        vdb.call(&["stat".as_ref(), "ux0:/app/REELP0001/eboot.bin".as_ref()])
+        let app = format!("ux0:/app/{VITA_PLAYER_TITLE_ID}");
+        let eboot = format!("{app}/eboot.bin");
+        vdb.call(&["stat".as_ref(), eboot.as_ref()])
             .context("install the official reel-vita VPK once before deploying a runtime")?;
-        vdb.push(
-            &runtime.join("eboot.bin"),
-            Path::new("ux0:/app/REELP0001/eboot.bin"),
-        )?;
+        vdb.push(&runtime.join("eboot.bin"), Path::new(&eboot))?;
         for name in ["launcher.rpk", "sce_sys", "licenses", "module"] {
             let path = runtime.join(name);
+            let remote = format!("{app}/{name}");
             if path.is_dir() {
                 vdb.call(&[
                     "push-dir".as_ref(),
                     path.as_os_str(),
-                    Path::new(&format!("ux0:/app/REELP0001/{name}")).as_os_str(),
+                    Path::new(&remote).as_os_str(),
                 ])?;
             } else if path.is_file() {
-                vdb.push(&path, Path::new(&format!("ux0:/app/REELP0001/{name}")))?;
+                vdb.push(&path, Path::new(&remote))?;
             }
         }
     }
@@ -102,7 +111,7 @@ fn device(options: &Run, directory: &Path, manifest: &Manifest) -> Result<()> {
             .stderr(Stdio::from(stderr))
             .spawn()?,
     );
-    vdb.call(&["launch".as_ref(), "REELP0001".as_ref()])?;
+    vdb.call(&["launch".as_ref(), VITA_PLAYER_TITLE_ID.as_ref()])?;
     let started = Instant::now();
     let mut next_progress = Duration::from_secs(20);
     loop {
@@ -120,7 +129,7 @@ fn device(options: &Run, directory: &Path, manifest: &Manifest) -> Result<()> {
             next_progress += Duration::from_secs(20);
         }
         if started.elapsed() >= Duration::from_secs(options.timeout_seconds) {
-            let _ = vdb.call(&["quit".as_ref(), "REELP0001".as_ref()]);
+            let _ = vdb.call(&["quit".as_ref(), VITA_PLAYER_TITLE_ID.as_ref()]);
             bail!("player timed out; reports can be retrieved with perf collect");
         }
     }

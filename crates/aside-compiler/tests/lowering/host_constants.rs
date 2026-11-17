@@ -16,6 +16,7 @@ fn target(source: &str, target: &str) -> lowering::Compilation {
     lowering::compile(
         &analysis.into_module().unwrap(),
         &Linkage::default(),
+        &[],
         Options::default(),
     )
     .unwrap()

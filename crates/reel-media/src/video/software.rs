@@ -3,7 +3,7 @@ use super::{
     AudioFrames, DecodeDemand, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory,
     VideoFrame, VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
 };
-use mp4::{Mp4Reader, Mp4Track, TrackType};
+use mp4::{Mp4Reader, Mp4Track};
 use openh264::{decoder::Decoder, formats::YUVSource};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use std::{
@@ -225,15 +225,7 @@ impl MovieDecoder {
             .resize(reader.capacity() as u64)
             .map_err(|e| e.message)?;
         let format = Mp4Reader::read_header(reader, size).map_err(error)?;
-        if format.is_fragmented() {
-            return Err("this MP4 decoder requires a non-fragmented movie".into());
-        }
-        let track = format
-            .tracks()
-            .values()
-            .filter(|t| t.track_type().ok() == Some(TrackType::Video))
-            .min_by_key(|t| t.track_id())
-            .ok_or("media has no video track")?;
+        let track = super::desktop_mp4::baseline_track(&format)?;
         let avc = &track
             .trak
             .mdia
@@ -244,18 +236,12 @@ impl MovieDecoder {
             .as_ref()
             .ok_or("this decoder supports MP4 H.264 Baseline video")?
             .avcc;
-        if avc.avc_profile_indication != 66 {
-            return Err("this decoder requires H.264 Baseline (profile 66)".into());
-        }
         let mut headers = WorkspaceBytes::new(&budget)?;
         for nal in avc
             .sequence_parameter_sets
             .iter()
             .chain(&avc.picture_parameter_sets)
         {
-            if nal.bytes.first().is_some_and(|b| b & 31 == 7) && nal.bytes.get(1) != Some(&66) {
-                return Err("H.264 sequence requires an unsupported profile".into());
-            }
             headers.extend_from_slice(&[0, 0, 0, 1])?;
             headers.extend_from_slice(&nal.bytes)?;
         }
@@ -271,41 +257,13 @@ impl MovieDecoder {
         };
         let cursor = TrackCursor::new(track, format.timescale())?;
         let (width, height) = (u32::from(track.width()), u32::from(track.height()));
-        let audio = format
-            .tracks()
-            .values()
-            .filter(|t| t.track_type().ok() == Some(TrackType::Audio))
-            .min_by_key(|t| t.track_id())
-            .map(|track| -> Result<_, String> {
-                let desc = &track
-                    .trak
-                    .mdia
-                    .minf
-                    .stbl
-                    .stsd
-                    .mp4a
-                    .as_ref()
-                    .and_then(|a| a.esds.as_ref())
-                    .ok_or("this MP4 decoder supports AAC-LC audio")?
-                    .es_desc
-                    .dec_config
-                    .dec_specific;
-                if desc.profile != 2 || !(1..=2).contains(&desc.chan_conf) || desc.freq_index >= 13
-                {
-                    return Err("this MP4 decoder supports mono/stereo AAC-LC audio".into());
-                }
-                let rate = track.sample_freq_index().map_err(error)?.freq();
+        let audio = super::desktop_mp4::aac_lc_track(&format)?
+            .map(|(track, rate, config)| -> Result<_, String> {
                 let _parameters_storage = budget.reserve(2).map_err(|e| e.message)?;
                 let params = AudioCodecParameters {
                     codec: CODEC_ID_AAC,
                     sample_rate: Some(rate),
-                    extra_data: Some(
-                        vec![
-                            (desc.profile << 3) | (desc.freq_index >> 1),
-                            (desc.freq_index << 7) | (desc.chan_conf << 3),
-                        ]
-                        .into_boxed_slice(),
-                    ),
+                    extra_data: Some(Box::new(config)),
                     ..Default::default()
                 };
                 Ok(AudioTrack {

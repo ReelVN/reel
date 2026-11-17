@@ -76,15 +76,8 @@ impl Cache {
             if allocating && bytes > budgets.resources.available_bytes() {
                 break;
             }
+            // WGPU initializes a fresh mapping when it creates the buffer.
             *slot = self.acquire(gpu, budgets, bytes)?;
-            if allocating && let Some(buffer) = slot {
-                let mut mapped = buffer
-                    .buffer
-                    .slice(..)
-                    .get_mapped_range_mut()
-                    .map_err(|e| GpuError::Readback(e.to_string()))?;
-                mapped.slice(..).fill(0);
-            }
         }
         for buffer in buffers.into_iter().flatten() {
             self.put(buffer);

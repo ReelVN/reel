@@ -279,7 +279,7 @@ fn callback_pending_suspends_same_stack_and_inherits_nowait_dynamically() {
                             );
                         } else {
                             assert_eq!(t.input, NativeInput::CallbackReturned);
-                            assert_eq!(v.host_callback_value(t).unwrap().as_int(), Some(42));
+                            assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(42));
                         }
                         v.respond(t, HostResponse::Ready(Value::int(42))).unwrap();
                     }

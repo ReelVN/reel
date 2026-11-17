@@ -6,7 +6,11 @@ use reel_ui::stage::{NodeKind, NodeSemantics};
 
 #[test]
 fn native_page_workers_are_registered_without_author_exports() {
-    for symbol in ["reel::page_stack::produce", "reel::tab_bar::observe_label"] {
+    for symbol in [
+        "reel::page_stack::produce",
+        "reel::page_stack::commit_selection",
+        "reel::tab_bar::observe_label",
+    ] {
         assert!(
             source::contracts()
                 .iter()
@@ -59,6 +63,32 @@ fn text_id(vm: &SessionVm, label: &str) -> reel_ui::stage::NodeId {
         .find(|n| n.kind == NodeKind::Text(label.into()))
         .unwrap()
         .id
+}
+
+#[test]
+fn latest_page_selection_commits_after_shared_construction() {
+    let code = r#"fn opening() {
+        let settings = model({page: "one"});
+        let pages = page_stack(value: bind(settings.page), items: [
+            {key: "one", build: || text("One")},
+            {key: "two", build: || text("Two")},
+            {key: "three", build: || text("Three")}
+        ]);
+        stage.replace(pages);
+        let first = pages.select("two");
+        let shared = pages.ensure("three");
+        let newest = pages.select("three");
+        let current = await newest;
+        if current != await shared || settings.page != "three" { throw "selection not committed"; }
+        await first;
+        if settings.page != "three" { throw "stale selection replaced the current page"; }
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        assert!(vm.task().is_none());
+        text_id(&vm, "Three");
+    }
 }
 
 #[test]
@@ -216,6 +246,66 @@ fn tabs_have_independent_groups_and_observable_custom_content() {
                 .count(),
             2
         );
+    }
+}
+
+#[test]
+fn tab_selection_callback_can_prepare_a_page_before_committing_the_key() {
+    use reel_ui::stage::{ControlValue, NodeChange};
+
+    let code = r#"fn opening() {
+        let data=model({key:"one"});
+        let ready=completion();
+        let pages=page_stack(value:bind(data.key),items:[
+            {key:"one",build:|| text("First page")}, {key:"two",build:|| text("Second page")}
+        ]);
+        let bar=tab_bar(value:bind(data.key),items:[{key:"one",label:"One"},{key:"two",label:"Two"}],
+            on_select:|event| {
+                if data.key != "one" { throw "selection committed before callback"; }
+                await ready;
+                await pages.ensure(event.value);
+                data.key=event.value;
+            });
+        stage.replace(column {bar;pages;button("ready",on_click:|| ready.resolve());});
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        let (node, revision) = vm
+            .stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                NodeKind::Radio {
+                    label: Some(label),
+                    revision,
+                    ..
+                } if label == "Two" => Some((node.id, *revision)),
+                _ => None,
+            })
+            .unwrap();
+        vm.change(
+            &mut session,
+            &NodeChange {
+                node,
+                value: ControlValue::Selection(revision),
+                range: None,
+            },
+        )
+        .unwrap();
+        drive(&mut vm, &mut session, true);
+        assert!(matches!(
+            vm.stage().node(node).unwrap().kind,
+            NodeKind::Radio {
+                selected: false,
+                ..
+            }
+        ));
+        click(&mut vm, &mut session, "ready");
+        assert!(matches!(
+            vm.stage().node(node).unwrap().kind,
+            NodeKind::Radio { selected: true, .. }
+        ));
+        text_id(&vm, "Second page");
     }
 }
 

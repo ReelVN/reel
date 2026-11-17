@@ -13,7 +13,7 @@ mod translations;
 pub fn options() -> ServerOptions {
     ServerOptions {
         host: host_context(reel_engine::aside::source::api()),
-        source_analysis: Some(translations::analyze),
+        source_analysis: Some(analyze_source),
         project_prefix: Some("game".into()),
         source_root: Some(|directory, exists| {
             crate::project::locate_with(directory, exists)
@@ -21,6 +21,74 @@ pub fn options() -> ServerOptions {
                 .map(|project| project.root.join("src"))
         }),
     }
+}
+
+fn analyze_source(module: aside_compiler::editor::EditorModule<'_>) -> aside_lsp::SourceFeatures {
+    use aside_compiler::{
+        SyntaxKind, TextRange, TextSize,
+        hir::{Form, NodeId},
+    };
+    use lsp_types::{CompletionItem, CompletionItemKind};
+
+    let mut features = translations::analyze(module);
+    let hir = module.hir();
+    let source = hir.text(hir.node(NodeId(0)).span);
+    for node in &hir.nodes {
+        let Form::Call {
+            callee,
+            arguments: Some(arguments),
+            ..
+        } = node.form
+        else {
+            continue;
+        };
+        let Some(reference) = module.canonical_reference(callee) else {
+            continue;
+        };
+        let Some(export) = reference.export.as_deref() else {
+            continue;
+        };
+        for arg in hir.children(arguments) {
+            let mut tokens = hir.tokens(arg);
+            let Some(name) = tokens
+                .next()
+                .filter(|token| token.kind == SyntaxKind::Ident)
+            else {
+                continue;
+            };
+            let Some(colon) = tokens
+                .next()
+                .filter(|token| token.kind == SyntaxKind::Colon)
+            else {
+                continue;
+            };
+            let choices = reel_engine::aside::source::literal_argument_choices(
+                &reference.module,
+                export,
+                hir.text(name.span),
+            );
+            if choices.is_empty() {
+                continue;
+            }
+            let start = colon.span.end();
+            let whitespace = source[u32::from(start) as usize..]
+                .bytes()
+                .take_while(u8::is_ascii_whitespace)
+                .count();
+            features.completions.push(aside_lsp::SourceCompletions {
+                range: TextRange::new(start, start + TextSize::from(whitespace as u32)),
+                items: choices
+                    .into_iter()
+                    .map(|value| CompletionItem {
+                        label: format!("\"{value}\""),
+                        kind: Some(CompletionItemKind::VALUE),
+                        ..Default::default()
+                    })
+                    .collect(),
+            });
+        }
+    }
+    features
 }
 
 /// Project one host API into transport metadata and generated declaration views.

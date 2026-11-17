@@ -280,12 +280,16 @@ pub fn load_with_progress(
             });
         }
         for (request, span) in discovery.requests {
-            if request
-                .path
-                .first()
-                .is_some_and(|root| matches!(root.as_str(), "reel" | "std"))
-            {
+            let Some(first) = request.path.first() else {
                 continue;
+            };
+            if matches!(first.as_str(), "reel" | "std") {
+                continue;
+            }
+            if !matches!(first.as_str(), "main" | "game") {
+                aliases
+                    .entry(first.clone())
+                    .or_insert_with(|| format!("game::{first}"));
             }
             let requested = canonical(&request.path, &aliases);
             let mut found = false;

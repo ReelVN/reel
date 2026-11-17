@@ -536,6 +536,20 @@ fn virtual_list_failed_factory_restores_outer_capture_and_previous_stage() {
 }
 
 #[test]
+fn virtual_list_identical_window_keeps_its_geometry_revision() {
+    let (mut session, mut vm) = prepared(5);
+    for _ in 0..3 {
+        feedback(&mut vm, &mut session, 0., 320., &[]);
+    }
+    let committed = event(&vm, 0., 320., &[]);
+    // The fixed-height rows lay out identically at the new width.
+    feedback(&mut vm, &mut session, 0., 300., &[]);
+    let resized = event(&vm, 0., 300., &[]);
+    assert_eq!(resized.revision, committed.revision);
+    assert_eq!(resized.measurements, committed.measurements);
+}
+
+#[test]
 fn virtual_list_old_feedback_does_not_override_a_new_script_scroll() {
     let (mut session, mut vm) = prepared(1000);
     feedback(&mut vm, &mut session, 0., 320., &[]);

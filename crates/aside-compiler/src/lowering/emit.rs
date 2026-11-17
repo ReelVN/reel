@@ -258,7 +258,10 @@ fn pack_clears(function: &mut Function, b: &mut super::budget::Budget) -> Result
     Ok(())
 }
 
-pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
+pub(super) fn emit(
+    mut ir: IrModule,
+    host_types: &[bc::HostTypeSupport],
+) -> Result<Compilation, Box<Error>> {
     write(&mut ir)?;
     super::constants::intern(&mut ir.package, &mut ir.budget)?;
     super::signatures::intern(&mut ir.package, &mut ir.budget)?;
@@ -279,7 +282,7 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
         }
         error
     })?;
-    let resume = super::resume::build(&program, &[&ir.metadata], b)?;
+    let resume = super::resume::build(&program, &[&ir.metadata], host_types, b)?;
     let stats = program.stats();
     // The shared verifier reports the final package and derived cache capacities.
     // Replace conservative seed-clone admission with actual retained allocation;

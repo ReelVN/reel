@@ -16,10 +16,13 @@ pub struct ResumeCapture<'a> {
 pub struct ResumeCaptureCursor {
     task: TaskId,
     wait: WaitId,
+    boundary: FrameId,
+    base: usize,
     frames: Vec<FrameId>,
     plan: VerifiedResumePlan,
     frame: usize,
     binding: usize,
+    _charge: HeapReservation,
 }
 /// One bounded step through saved business bindings.
 pub enum CaptureProgress<'a> {
@@ -28,16 +31,17 @@ pub enum CaptureProgress<'a> {
     Complete,
 }
 impl Vm {
-    /// Match the actual waiting stack against registered stable points and returns.
+    /// Match business frames above a current native callback boundary.
     /// The immutable borrow keeps values and their aliasing fixed for graph capture.
     pub fn capture_resume<'a>(
         &'a self,
         table: &VerifiedResumeTable,
         task: TaskId,
+        boundary: FrameId,
     ) -> Result<ResumeCapture<'a>, ResumeError> {
         Ok(ResumeCapture {
             vm: self,
-            cursor: self.capture_resume_cursor(table, task)?,
+            cursor: self.capture_resume_cursor(table, task, boundary)?,
         })
     }
     /// Match the stack once and return a detached cursor. Every later step checks
@@ -46,120 +50,76 @@ impl Vm {
         &self,
         table: &VerifiedResumeTable,
         task: TaskId,
+        boundary: FrameId,
     ) -> Result<ResumeCaptureCursor, ResumeError> {
-        if self.program.snapshot_identity() != table.program.snapshot_identity() {
-            return Err(ResumeError::new(
-                "resume table belongs to another current program",
-            ));
-        }
-        let state = self.task(task).map_err(error)?;
-        if !state.unwinds.data.is_empty()
-            || !state.caught.data.is_empty()
-            || state.fault_build.is_some()
-            || state.cancelling
-            || state.terminal.is_some()
-        {
-            return Err(ResumeError::new("task is not at a stable ordinary wait"));
-        }
-        let Some(Frame::Native(native)) = state.frames.data.last() else {
-            return Err(ResumeError::new(
-                "resume capture requires a native waiting operation",
-            ));
-        };
-        let NativePhase::Waiting(wait) = native.phase else {
-            return Err(ResumeError::new(
-                "native callbacks and intermediate native phases are not logical points",
-            ));
-        };
-        if native.continuation_active {
-            return Err(ResumeError::new(
-                "native callback continuation is not a logical point",
-            ));
-        }
-        let scripts = &state.frames.data[..state.frames.data.len() - 1];
+        let (proof, wait) = super::descriptor::waiting(self, table, task, boundary)?;
+        let count = proof.frame_count();
+        let bytes = count
+            .checked_mul(
+                size_of::<FrameId>()
+                    + size_of::<crate::resume::PlannedFrame>()
+                    + size_of::<FrameDescriptor>(),
+            )
+            .and_then(|v| v.checked_add(size_of::<ResumeCaptureCursor>()))
+            .and_then(|v| v.checked_add(usize::try_from(proof.key_bytes()).ok()?))
+            .ok_or_else(|| ResumeError::new("resume capture metadata size"))?;
+        let mut charge = self
+            .heap
+            .budget_usage()
+            .reserve(bytes as u64)
+            .map_err(error)?;
+        let mut frames = Vec::new();
+        let mut planned = Vec::new();
         let mut descriptor = ContinuationDescriptor::default();
-        for (index, frame) in scripts.iter().enumerate() {
-            let Frame::Script(script) = frame else {
-                return Err(ResumeError::new(
-                    "native bridge inside a resumable business call chain",
-                ));
-            };
-            if !matches!(script.phase, ScriptPhase::Body)
-                || script.table_work.is_some()
-                || script.derived_bridge.is_some()
-            {
-                return Err(
-                    ResumeError::new("script is not at its ordinary call boundary")
-                        .at(script.code.function, script.pc),
-                );
-            }
-            let flow = table
-                .table()
-                .flows
-                .iter()
-                .find(|flow| flow.function == script.code.function)
-                .ok_or_else(|| {
-                    ResumeError::new("active script function has no stable flow identity")
-                        .at(script.code.function, script.pc)
-                })?;
-            let child = if index + 1 < scripts.len() {
-                match scripts[index + 1] {
-                    Frame::Script(child) => child.ret,
-                    Frame::Native(_) => {
-                        return Err(ResumeError::new("native bridge inside resumable flow"));
-                    }
-                }
-            } else {
-                native.ret
-            };
-            let ReturnTo::Register { frame, reg, call } = child else {
-                return Err(ResumeError::new(
-                    "resume child does not return through an ordinary result register",
-                ));
-            };
-            if frame != script.id {
-                return Err(ResumeError::new(
-                    "resume return ownership differs from the active stack",
-                ));
-            }
-            let site = if index + 1 == scripts.len() {
-                let point = flow
-                    .points
-                    .iter()
-                    .find(|point| {
-                        point.call == call && point.after_call == script.pc && point.result == reg
-                    })
-                    .ok_or_else(|| {
-                        ResumeError::new("active native wait has no declared point")
-                            .at(flow.function, call)
-                    })?;
-                ResumeSite::Point(point.key.clone())
-            } else {
-                let ret = flow
-                    .returns
-                    .iter()
-                    .find(|ret| {
-                        ret.call == call && ret.after_call == script.pc && ret.result == reg
-                    })
-                    .ok_or_else(|| {
-                        ResumeError::new("active ordinary call has no declared return point")
-                            .at(flow.function, call)
-                    })?;
-                ResumeSite::Return(ret.key.clone())
+        frames.try_reserve_exact(count).map_err(error)?;
+        planned.try_reserve_exact(count).map_err(error)?;
+        descriptor.frames.try_reserve_exact(count).map_err(error)?;
+        let actual = frames.capacity() * size_of::<FrameId>()
+            + planned.capacity() * size_of::<crate::resume::PlannedFrame>()
+            + descriptor.frames.capacity() * size_of::<FrameDescriptor>();
+        let inline = count
+            * (size_of::<FrameId>()
+                + size_of::<crate::resume::PlannedFrame>()
+                + size_of::<FrameDescriptor>());
+        charge
+            .resize(charge.bytes() + (actual - inline) as u64)
+            .map_err(error)?;
+        for (index, keys) in proof.frames().enumerate() {
+            frames.push(proof.scripts[index].id());
+            planned.push(proof.planned_frame(index));
+            let site = match keys.site {
+                ResumeSiteRef::Point(key) => ResumeSite::Point(key.clone()),
+                ResumeSiteRef::Return(key) => ResumeSite::Return(key.clone()),
             };
             descriptor.frames.push(FrameDescriptor {
-                flow: flow.key.clone(),
+                flow: keys.flow.clone(),
                 site,
             });
         }
-        let plan = table.verify_plan(&descriptor)?;
+        let key_capacity: usize = descriptor
+            .frames
+            .iter()
+            .map(|frame| {
+                frame.flow.0.capacity()
+                    + match &frame.site {
+                        ResumeSite::Point(key) => key.0.capacity(),
+                        ResumeSite::Return(key) => key.0.capacity(),
+                    }
+            })
+            .sum();
+        charge
+            .resize(charge.bytes() + (key_capacity as u64 - proof.key_bytes()))
+            .map_err(error)?;
         Ok(ResumeCaptureCursor {
             task,
             wait,
-            frames: scripts.iter().map(|frame| frame.id()).collect(),
-            plan,
+            boundary,
+            base: proof.base,
+            frames,
+            plan: VerifiedResumePlan::from_matching_stack(table.clone(), planned, descriptor),
             frame: 0,
             binding: 0,
+            _charge: charge,
         })
     }
 }
@@ -198,7 +158,11 @@ impl ResumeCaptureCursor {
             ));
         }
         let state = vm.task(self.task).map_err(error)?;
-        if !matches!(state.frames.data.last(), Some(Frame::Native(native)) if matches!(native.phase, NativePhase::Waiting(wait) if wait == self.wait))
+        if state.cancelling
+            || state.frames.data.len() != self.base + self.plan.frame_count() + 1
+            || !matches!(state.frames.data.get(self.base - 1), Some(Frame::Native(native))
+                if native.id == self.boundary && native.continuation_active)
+            || !matches!(state.frames.data.last(), Some(Frame::Native(native)) if matches!(native.phase, NativePhase::Waiting(wait) if wait == self.wait))
         {
             return Err(ResumeError::new(
                 "capture cursor's original wait has advanced",
@@ -216,7 +180,7 @@ impl ResumeCaptureCursor {
                 continue;
             }
             let binding = &site.layout.bindings[self.binding];
-            let Some(Frame::Script(script)) = state.frames.data.get(self.frame) else {
+            let Some(Frame::Script(script)) = state.frames.data.get(self.base + self.frame) else {
                 return Err(ResumeError::new("capture activation disappeared"));
             };
             if script.id != self.frames[self.frame] {

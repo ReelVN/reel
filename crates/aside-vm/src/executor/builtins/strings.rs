@@ -56,15 +56,27 @@ impl Vm {
         let len = self.heap.info(receiver).map_err(heap_fault)?.len;
         let argument = || self.builtin_argument(s, call, 0).map_err(vm_fault);
         let mode = match call.method {
-            Builtin::Split => {
+            Builtin::Split | Builtin::Replace => {
                 let separator = argument()?;
                 if !self.is_text(separator, ObjectKind::String) {
+                    return Err(FaultKind::Type);
+                }
+                if call.method == Builtin::Replace
+                    && !self.is_text(
+                        self.builtin_argument(s, call, 1).map_err(vm_fault)?,
+                        ObjectKind::String,
+                    )
+                {
                     return Err(FaultKind::Type);
                 }
                 if s.effects.0 & Effects::ALLOCATE == 0 {
                     return Err(FaultKind::Effect);
                 }
-                let result = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+                let result = if call.method == Builtin::Split {
+                    self.heap.alloc_array(&[]).map_err(heap_fault)?
+                } else {
+                    self.heap.alloc_byte_buffer(&[]).map_err(heap_fault)?
+                };
                 let prefix = self.heap.alloc_array(&[]).map_err(heap_fault)?;
                 let roots = self
                     .heap

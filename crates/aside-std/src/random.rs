@@ -22,8 +22,8 @@ pub(super) fn readonly(
 }
 
 /// Create an independent random stream. Supplying an integer seed makes its
-/// sequence repeatable; omitting the seed chooses a new sequence. Saving and
-/// restoring the VM preserves each stream's position.
+/// sequence repeatable. Omitting the seed chooses a new sequence. A story
+/// checkpoint preserves the stream's current position and shared identity.
 ///
 /// ```aside
 /// fn main() {
@@ -38,35 +38,60 @@ pub(super) fn random(
     #[aside(default = null)] seed: Option<i64>,
 ) -> Result<Value, NativeError> {
     let state = seed.unwrap_or_else(|| fastrand::Rng::new().get_seed() as i64);
-    let vm = &mut context.vm;
-    let fields = vm.heap_mut().alloc_table()?;
-    let object = vm.heap_mut().alloc_host(
+    Ok(allocate(context.vm.heap_mut(), state)?)
+}
+
+fn allocate(heap: &mut Heap, state: i64) -> Result<Value, HeapError> {
+    let ty = heap.host_type(crate::source::RANDOM)?;
+    let fields = heap.alloc_table()?;
+    let object = heap.alloc_host(
         fields,
         &[Value::int(TAG), Value::int(state)],
         Some(&READONLY),
     )?;
-    let ty = vm.heap().host_type(crate::source::RANDOM)?;
-    vm.heap_mut().set_host_type(object, ty)?;
+    heap.set_host_type(object, ty)?;
     Ok(object)
 }
 
-fn generator(heap: &Heap, receiver: Value) -> Result<fastrand::Rng, NativeError> {
-    if heap.host_payload(receiver, Slot::Tag as u32)?.as_int() != Some(TAG) {
-        return Err(NativeError::Input("expected a random stream"));
+/// Read the current position of a standard random stream as an opaque integer.
+pub fn random_resource_state(heap: &Heap, stream: Value) -> Result<i64, HeapError> {
+    if heap.host_payload(stream, Slot::Tag as u32)?.as_int() != Some(TAG) {
+        return Err(HeapError::TypeMismatch);
     }
-    let state = heap
-        .host_payload(receiver, Slot::State as u32)?
+    heap.host_payload(stream, Slot::State as u32)?
         .as_int()
-        .ok_or(HeapError::TypeMismatch)?;
+        .ok_or(HeapError::TypeMismatch)
+}
+
+/// Allocate a random stream for logical restore using the current host type and methods.
+pub fn allocate_random_resource(heap: &mut Heap) -> Result<Value, HeapError> {
+    allocate(heap, 0)
+}
+
+/// Connect a saved stream position to a random stream allocated for logical restore.
+pub fn connect_random_resource(
+    heap: &mut Heap,
+    stream: Value,
+    state: i64,
+) -> Result<(), HeapError> {
+    random_resource_state(heap, stream)?;
+    set_state(heap, stream, state)
+}
+
+fn generator(heap: &Heap, receiver: Value) -> Result<fastrand::Rng, NativeError> {
+    let state = random_resource_state(heap, receiver).map_err(|error| match error {
+        HeapError::TypeMismatch => NativeError::Input("expected a random stream"),
+        error => error.into(),
+    })?;
     Ok(fastrand::Rng::with_seed(state as u64))
 }
 
+fn set_state(heap: &mut Heap, stream: Value, state: i64) -> Result<(), HeapError> {
+    heap.set_host_payload(stream, Slot::State as u32, Value::int(state))
+}
+
 fn commit(heap: &mut Heap, receiver: Value, generator: fastrand::Rng) -> Result<(), NativeError> {
-    heap.set_host_payload(
-        receiver,
-        Slot::State as u32,
-        Value::int(generator.get_seed() as i64),
-    )?;
+    set_state(heap, receiver, generator.get_seed() as i64)?;
     Ok(())
 }
 

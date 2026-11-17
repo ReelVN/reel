@@ -75,6 +75,26 @@ fn hidden_prefetch_keeps_presentation_ready_and_reuses_decoded_pixels_on_show() 
 }
 
 #[test]
+fn visible_image_takes_over_in_flight_prefetch() {
+    let (mut images, wake) = configured(160 * 90 * 4, 256 << 20);
+    let source = "assets/panels.png";
+    let (mut stage, id) = preload_stage(source);
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert!(images.poll().unwrap());
+    let pending = images.pending[0].id;
+    let loads = images.loads;
+    let mut node = stage.node(id).unwrap().clone();
+    node.props.visible = true;
+    stage.update(id, node.kind, node.props).unwrap();
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert_eq!(images.pending[0].id, pending);
+    assert!(!images.pending[0].optional);
+    ready(&mut images, &wake).unwrap();
+    assert!(images.loaded.contains_key(source));
+    assert_eq!(images.loads, loads);
+}
+
+#[test]
 fn removing_a_preloaded_page_cancels_its_work_without_retaining_pixels() {
     let (mut images, _) = loader();
     let (mut stage, _) = preload_stage("assets/panels.png");
@@ -90,6 +110,28 @@ fn removing_a_preloaded_page_cancels_its_work_without_retaining_pixels() {
     assert!(images.prefetch.is_empty());
     assert!(images.loaded.is_empty());
     assert!(images.poll().unwrap());
+}
+
+#[test]
+fn returning_gpu_image_does_not_cancel_unrelated_prefetch() {
+    let (mut images, wake) = loader();
+    let visible = "assets/panels.png";
+    images.request(wanted(&[visible]));
+    ready(&mut images, &wake).unwrap();
+    assert!(images.loaded[visible].discard_uploaded_pixels());
+    images.commit();
+    images.request(wanted(&[]));
+    images.commit();
+
+    images.prefetch.insert("assets/sun.jpg".into());
+    images.settled = false;
+    assert!(images.poll().unwrap());
+    let queued = images.pending[0].id;
+    images.wanted = wanted(&[visible]);
+    images.mounted.insert(visible.into());
+    images.reconcile_requests();
+    assert!(images.loaded.contains_key(visible));
+    assert_eq!(images.pending[0].id, queued);
 }
 
 #[test]
@@ -299,6 +341,12 @@ fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
     assert!(!weak.is_released());
     assert_eq!(images.loads, 2);
 
+    images.prefetch.insert("assets/panels.png".to_owned());
+    images.settled = false;
+    assert!(images.poll().unwrap());
+    assert_eq!(images.loaded["assets/panels.png"].handle(), first);
+    assert!(images.pending.is_empty());
+
     images.request(wanted(&["assets/panels.png"]));
     assert!(images.poll().unwrap());
     assert_eq!(images.loaded["assets/panels.png"].handle(), first);
@@ -320,7 +368,7 @@ fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resu
             "author_images/src/main.aside",
             1 << 20,
             1 << 20,
-            "expected PNG or JPEG",
+            "expected PNG, JPEG or static WebP artwork",
         ),
         ("assets/panels.png", 1, 1 << 20, "resident budget"),
         ("assets/panels.png", 1 << 20, 1, "limit"),

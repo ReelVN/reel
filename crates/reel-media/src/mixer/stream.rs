@@ -119,10 +119,8 @@ impl Window {
                 seeking_to = Some(wanted);
                 next = usize::try_from(match decoder.seek(wanted as u64) {
                     Ok(index) => index,
-                    Err(_) if self.status.len() == usize::MAX => {
-                        decoder.seek(0).map_err(|e| e.to_string())?
-                    }
-                    Err(error) => return Err(error.to_string()),
+                    Err(_) if self.status.len() == usize::MAX => decoder.seek(0)?,
+                    Err(error) => return Err(error),
                 })
                 .map_err(|_| "audio seek exceeds address space")?;
                 if let Some(block) = &mut filling {

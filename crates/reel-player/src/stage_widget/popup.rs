@@ -22,6 +22,9 @@ impl PopupSource {
         };
         popup
     }
+    pub fn modal(&self) -> bool {
+        self.popup().hint.is_none() && self.properties().modal
+    }
     pub fn view(&self, parent: &StageView) -> StageView {
         StageView {
             revision: parent.revision,
@@ -63,7 +66,10 @@ pub(super) fn sources(
         {
             return;
         }
-        if matches!(node.node.kind, NodeKind::Popup(_)) {
+        if let NodeKind::Popup(view) = node.node.kind {
+            if view.hint == Some(false) {
+                return;
+            }
             let Some(anchor) = parent else {
                 return;
             };
@@ -71,6 +77,9 @@ pub(super) fn sources(
                 anchor,
                 root: node.clone(),
             });
+            if view.hint.is_some() {
+                return;
+            }
         }
         for child in node.children.iter() {
             collect(child, Some(node.node.id), output);

@@ -71,7 +71,10 @@ pub trait MediaBackend {
     fn maintain(&mut self, elapsed: Duration);
     fn take_result(&mut self, id: MediaId) -> Option<MediaCompletion>;
     fn poll_after(&self) -> Option<Duration>;
+    /// Gate all output, including activities created or restored while suspended.
+    /// Transport preparation and commands remain available behind this gate.
     fn suspend(&mut self);
+    /// Release the output gate for the current activities after host adoption.
     fn resume(&mut self);
     fn close(&mut self);
     fn cleanup_pending(&self) -> bool;

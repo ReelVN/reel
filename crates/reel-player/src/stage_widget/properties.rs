@@ -2,6 +2,20 @@
 use super::*;
 
 impl SceneWidget {
+    fn slider_visuals(view: &SceneNode, art: reel_ui::stage::SliderArt) -> ([bool; 2], f64) {
+        let [track, thumb] = [art.track, art.thumb].map(|part| {
+            part.is_some_and(|id| view.children.iter().any(|child| child.node.id == id))
+        });
+        let radius = if thumb {
+            art.thumb_width * 0.5
+        } else if view.node.props.decorated {
+            10.
+        } else {
+            0.
+        };
+        ([!track, !thumb], radius)
+    }
+
     pub(super) fn visual_caption(node: &SceneProperties) -> Option<&str> {
         if node.props.semantics == reel_ui::stage::NodeSemantics::Tab && !node.props.decorated {
             None
@@ -273,20 +287,21 @@ impl SceneWidget {
             } else {
                 None
             },
-            slider: if let NodeKind::Slider { range, value, .. } = view.node.kind {
+            slider: if let NodeKind::Slider {
+                range, value, art, ..
+            } = view.node.kind
+            {
+                let ([track, thumb], radius) = Self::slider_visuals(view, art);
                 let mut slider = Slider::new(range.min(), range.max(), value)
-                    .with_decorated(view.node.props.decorated);
+                    .with_decorated(view.node.props.decorated)
+                    .with_paint_parts(track, thumb);
                 if let Some(step) = range.step() {
                     slider = slider.with_step(step);
                 }
                 let tint = color(view.node.props.color);
                 Some(
                     NewWidget::new(slider)
-                        .with_props(ThumbRadius(Length::px(if view.node.props.decorated {
-                            10.
-                        } else {
-                            0.
-                        })))
+                        .with_props(ThumbRadius(Length::px(radius)))
                         .with_props(TrackThickness(Length::px(4.)))
                         .with_props(ThumbColor(tint))
                         .with_props(TrackColor {
@@ -479,18 +494,35 @@ impl SceneWidget {
             TextInput::set_edit_filter(&mut editor, options.filter_edits);
             TextInput::set_editing(&mut editor, options.pending_edit, options.replay.as_deref());
         }
-        if let (Some(pod), NodeKind::Slider { range, value, .. }) =
-            (&mut this.widget.slider, &view.node.kind)
+        let mut move_slider_thumb = false;
+        if let (
+            Some(pod),
+            NodeKind::Slider {
+                range, value, art, ..
+            },
+        ) = (&mut this.widget.slider, &view.node.kind)
             && let Some(mut slider) = this.ctx.get_mut(pod)
         {
             Slider::configure(&mut slider, *range, *value);
-            if this.widget.node.props.decorated != view.node.props.decorated {
-                Slider::set_decorated(&mut slider, view.node.props.decorated);
-                slider.insert_prop(ThumbRadius(Length::px(if view.node.props.decorated {
-                    10.
-                } else {
-                    0.
-                })));
+            Slider::set_decorated(&mut slider, view.node.props.decorated);
+            let (parts, radius) = Self::slider_visuals(view, *art);
+            if let NodeKind::Slider {
+                range: old_range,
+                value: old_value,
+                art: old_art,
+                ..
+            } = this.widget.node.kind
+            {
+                let (old_parts, old_radius) =
+                    Self::slider_visuals(&this.widget.projection, old_art);
+                if parts != old_parts {
+                    Slider::set_paint_parts(&mut slider, parts[0], parts[1]);
+                }
+                if radius != old_radius {
+                    slider.insert_prop(ThumbRadius(Length::px(radius)));
+                }
+                move_slider_thumb =
+                    art.thumb.is_some() && (*range != old_range || *value != old_value);
             }
             if this.widget.node.props.color != view.node.props.color {
                 let tint = color(view.node.props.color);
@@ -501,12 +533,19 @@ impl SceneWidget {
                 });
             }
         }
+        if move_slider_thumb {
+            this.ctx.request_compose();
+        }
         if let (Some(state), NodeKind::ScrollBar(config)) =
             (&mut this.widget.scrollbar, &view.node.kind)
         {
             let previous = state.view();
             if state.configure(*config) {
-                this.ctx.invalidate_input_configuration();
+                if previous.same_controls(*config) {
+                    this.ctx.refresh_captured_input_configuration();
+                } else {
+                    this.ctx.invalidate_input_configuration();
+                }
                 this.ctx.request_layout();
             } else if previous != *config {
                 this.ctx.request_compose();
@@ -848,15 +887,17 @@ impl SceneWidget {
                             axis: a,
                             follow_end: b,
                             align: c,
+                            snap_y: g,
                             ..
                         },
                         NodeKind::Scroll {
                             axis: d,
                             follow_end: e,
                             align: f,
+                            snap_y: h,
                             ..
                         },
-                    ) => (a, b, c) != (d, e, f),
+                    ) => (a, b, c, g) != (d, e, f, h),
                     _ => false,
                 }
             {

@@ -231,6 +231,66 @@ fn unused_prepared_stream_retires_on_reconfigure_stop_and_drop() {
     assert_eq!(closes.load(Ordering::Relaxed), 4);
 }
 
+#[cfg(all(
+    feature = "cpal-output",
+    any(target_os = "linux", target_os = "windows", target_os = "macos")
+))]
+#[test]
+fn parked_stream_transfers_pcm_supply_without_reopening_device() {
+    let mut output = output();
+    let old_calls = Arc::new(AtomicUsize::new(0));
+    let old_drops = Arc::new(AtomicUsize::new(0));
+    let new_calls = Arc::new(AtomicUsize::new(0));
+    let new_drops = Arc::new(AtomicUsize::new(0));
+    assert!(
+        output
+            .start(counted_fill(old_calls.clone(), old_drops.clone()))
+            .is_ok()
+    );
+    output.park().unwrap();
+    assert_eq!(old_drops.load(Ordering::Relaxed), 1);
+    let mut data = [42.0f32; 6];
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert_eq!(data, [0.0; 6]);
+
+    assert!(
+        output
+            .start_parked(counted_fill(new_calls.clone(), new_drops.clone()))
+            .is_ok()
+    );
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert_eq!(data, [0.25; 6]);
+    assert_eq!(old_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(new_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(output.driver.builds, 1);
+    assert_eq!(output.driver.closes.load(Ordering::Relaxed), 0);
+    output.park().unwrap();
+    assert_eq!(new_drops.load(Ordering::Relaxed), 1);
+    output.driver.verify_fail = true;
+    let Err((error, fill)) =
+        output.start_parked(counted_fill(new_calls.clone(), new_drops.clone()))
+    else {
+        panic!("the changed route accepted a new fill");
+    };
+    assert_eq!(error.kind, AudioErrorKind::ReconfigureRequired);
+    assert_eq!(new_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(new_drops.load(Ordering::Relaxed), 1);
+    drop(fill);
+    assert_eq!(new_drops.load(Ordering::Relaxed), 2);
+    assert!(output.stop().is_err());
+    assert_eq!(output.driver.closes.load(Ordering::Relaxed), 1);
+}
+
 #[test]
 fn prepared_stream_play_rejection_returns_the_uncalled_fill() {
     let mut driver = SyncDriver::new();

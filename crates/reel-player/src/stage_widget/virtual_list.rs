@@ -1,5 +1,6 @@
 //! Window-local identity, measurement and placement shared by layout and feedback.
 use super::*;
+use std::cell::RefCell;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct VirtualScrollOwner {
@@ -171,6 +172,7 @@ pub(super) struct VirtualListState {
     pub(super) placement: Vec<f64>,
     row_index: Vec<(NodeId, usize)>,
     pub(super) child_indices: Vec<usize>,
+    pub(super) row_resources: RefCell<BTreeMap<NodeId, super::resource_index::RowResources>>,
 }
 impl VirtualListState {
     pub(super) fn index_rows(&mut self, view: &reel_ui::stage::VirtualListView) {
@@ -179,6 +181,11 @@ impl VirtualListState {
             .extend(view.rows.iter().enumerate().map(|(i, row)| (row.node, i)));
         self.row_index.sort_unstable_by_key(|&(node, _)| node);
         self.child_indices.resize(view.rows.len(), 0);
+        self.row_resources.get_mut().retain(|node, _| {
+            self.row_index
+                .binary_search_by_key(node, |&(id, _)| id)
+                .is_ok()
+        });
     }
     pub(super) fn row(&self, node: NodeId) -> Option<usize> {
         self.row_index

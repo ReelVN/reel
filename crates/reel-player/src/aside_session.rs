@@ -82,6 +82,7 @@ pub struct AsideSessionUi {
     vm: SessionVm,
     entry: Option<source::StoryFunction>,
     initializer: source::StoryFunction,
+    entry_function: source::StoryFunction,
     awaiting_stage: bool,
     locale: String,
     catalogs: crate::localization::CatalogIndex,
@@ -89,9 +90,99 @@ pub struct AsideSessionUi {
     host_failure: Option<HostFailure>,
     transitions: crate::transitions::Transitions,
     authored_stage_revision: u64,
+    restore_retried_collection: bool,
 }
 
 impl AsideSessionUi {
+    pub(crate) fn checkpoint_begin(
+        &mut self,
+    ) -> Result<
+        reel_engine::aside::checkpoint::CheckpointCapture,
+        reel_engine::aside::checkpoint::CheckpointError,
+    > {
+        self.vm.capture_checkpoint_begin(self.ui.session())
+    }
+    pub(crate) fn checkpoint_step(
+        &mut self,
+        capture: &mut reel_engine::aside::checkpoint::CheckpointCapture,
+        work: u32,
+    ) -> Result<bool, reel_engine::aside::checkpoint::CheckpointError> {
+        capture.step(
+            &mut self.vm,
+            self.ui.session(),
+            reel_engine::aside::NativeBudget::RetryMinimum(work),
+            2048,
+        )
+    }
+
+    pub(crate) fn capture_history(
+        &mut self,
+    ) -> Option<reel_engine::aside::checkpoint::CapturedCheckpoint> {
+        const SLICE_WORK: u32 = 256;
+        const MAX_WORK: u32 = 2048;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_micros(750);
+        let mut capture = self.vm.capture_history_begin(self.ui.session()).ok()?;
+        let mut remaining = MAX_WORK;
+        while remaining != 0 && std::time::Instant::now() < deadline {
+            let minimum = capture.required_work();
+            if minimum > remaining {
+                break;
+            }
+            let work = minimum.max(SLICE_WORK).min(remaining);
+            remaining -= work;
+            match capture.step(
+                &mut self.vm,
+                self.ui.session(),
+                reel_engine::aside::NativeBudget::Exact(work),
+                1024,
+            ) {
+                Ok(true) => return capture.finish(&mut self.vm).ok(),
+                Ok(false) => {}
+                Err(_) => break,
+            }
+        }
+        let _ = capture.cancel(&mut self.vm);
+        None
+    }
+    pub(crate) fn load_checkpoint_step(
+        &mut self,
+        load: &mut reel_engine::aside::checkpoint::CheckpointLoad,
+        budget: SliceBudget,
+        now: &mut impl FnMut() -> u64,
+    ) -> Result<bool, Error> {
+        self.vm.maintain_media()?;
+        self.vm.maintain_localization()?;
+        self.vm.maintain_asset_reads(64)?;
+        self.vm.maintain_save_results(256)?;
+        let complete = loop {
+            let complete = load.step(
+                &mut self.vm,
+                self.ui.session_mut(),
+                &self.locale,
+                reel_engine::aside::NativeBudget::RetryMinimum(256),
+                2048,
+                budget,
+                &mut *now,
+            )?;
+            if complete
+                || budget.deadline_ns.is_none_or(|deadline| now() >= deadline)
+                || !load.ready(&self.vm)
+            {
+                break complete;
+            }
+        };
+        if let Some(request) = self.vm.take_window_request(false)? {
+            self.vm.complete_window_request(
+                request.id,
+                Err("window commands require an active session".into()),
+            )?;
+        }
+        if complete {
+            self.entry = None;
+        }
+        Ok(complete)
+    }
+    #[cfg(test)]
     pub(crate) fn snapshot_begin(
         &self,
     ) -> Result<reel_engine::aside::snapshot::SessionCapture<'_>, reel_engine::aside::AdapterError>
@@ -101,12 +192,14 @@ impl AsideSessionUi {
     pub(crate) fn adapter_mut(&mut self) -> &mut SessionVm {
         &mut self.vm
     }
+    #[cfg(test)]
     pub(crate) fn restored(
         session: Session,
         mut vm: SessionVm,
         locale: String,
         assets: crate::assets::Assets,
         initializer: source::StoryFunction,
+        entry_function: source::StoryFunction,
         catalogs: crate::localization::CatalogIndex,
     ) -> Result<Self, Error> {
         let mut ui = SessionUi::new(session)?.with_assets(assets);
@@ -117,6 +210,7 @@ impl AsideSessionUi {
             vm,
             entry: None,
             initializer,
+            entry_function,
             awaiting_stage: false,
             locale,
             catalogs,
@@ -124,6 +218,7 @@ impl AsideSessionUi {
             host_failure: None,
             transitions: Default::default(),
             authored_stage_revision: 0,
+            restore_retried_collection: false,
         })
     }
     pub(crate) fn locale(&self) -> &str {
@@ -134,6 +229,7 @@ impl AsideSessionUi {
         self.catalogs.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn catalog_loader(&self) -> Box<dyn reel_engine::localization::CatalogLoader> {
         Box::new(crate::localization::AssetCatalogLoader::new(
             self.ui.assets(),
@@ -144,11 +240,22 @@ impl AsideSessionUi {
     pub(crate) fn initializer(&self) -> source::StoryFunction {
         self.initializer
     }
+    pub(crate) fn entry_function(&self) -> source::StoryFunction {
+        self.entry_function
+    }
 
     pub(crate) fn await_initial_stage(&mut self) {
         self.awaiting_stage = true;
     }
-    pub(crate) fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
+    pub(crate) fn prepare_restored(
+        &mut self,
+        budget: SliceBudget,
+        now: &mut impl FnMut() -> u64,
+    ) -> Result<bool, Error> {
+        if self.vm.vm().heap().phase() != aside_vm::GcPhase::Idle {
+            self.vm.gc_step(GcBudget::default())?;
+            return Ok(false);
+        }
         self.transitions.maintain(&mut self.vm, &self.ui.assets())?;
         if !self.transitions.ready() {
             return Ok(false);
@@ -159,29 +266,61 @@ impl AsideSessionUi {
         if self.vm.localization_pending() {
             return Ok(false);
         }
-        match self
-            .vm
-            .step_reactive(self.ui.session(), SessionBudget::RetryMinimum(budget), || 0)?
+        if self.vm.activities_pending()
+            && self
+                .vm
+                .advance_time(self.ui.session(), self.vm.logical_time(), 64)?
+                .pending
         {
-            Some(reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket))) => {
-                self.vm.dispatch(
-                    self.ui.session_mut(),
-                    ticket,
-                    &self.locale,
-                    reel_engine::aside::NativeBudget::RetryMinimum(64),
-                )?;
+            return Ok(false);
+        }
+        loop {
+            use reel_engine::aside::SessionStep;
+            match self.vm.step_reactive(
+                self.ui.session(),
+                SessionBudget::RetryMinimum(budget),
+                &mut *now,
+            )? {
+                Some(SessionStep::Vm(RunOutcome::HostCall(ticket))) => {
+                    self.restore_retried_collection = false;
+                    self.vm.dispatch(
+                        self.ui.session_mut(),
+                        ticket,
+                        &self.locale,
+                        reel_engine::aside::NativeBudget::RetryMinimum(64),
+                    )?;
+                }
+                Some(SessionStep::Vm(RunOutcome::Fault(_))) => {
+                    return Err("restored derived expression failed".into());
+                }
+                Some(SessionStep::Vm(RunOutcome::ResourceBlocked(blocked))) => {
+                    if self.restore_retried_collection {
+                        return Err(
+                            reel_engine::aside::checkpoint::CheckpointError::ResourceBlocked(
+                                blocked,
+                            )
+                            .into(),
+                        );
+                    }
+                    self.vm.begin_collection()?;
+                    self.restore_retried_collection = true;
+                    return Ok(false);
+                }
+                Some(SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))) => {
+                    return Ok(false);
+                }
+                Some(_) => {}
+                None => {
+                    self.restore_retried_collection = false;
+                    self.vm.sync_stage(self.ui.session())?;
+                    self.ui.set_stage(self.vm.stage());
+                    return Ok(true);
+                }
             }
-            Some(reel_engine::aside::SessionStep::Vm(RunOutcome::Fault(_))) => {
-                return Err("restored derived expression failed".into());
-            }
-            Some(_) => {}
-            None => {
-                self.vm.sync_stage(self.ui.session())?;
-                self.ui.set_stage(self.vm.stage());
-                return Ok(true);
+            if budget.deadline_ns.is_none_or(|deadline| now() >= deadline) {
+                return Ok(false);
             }
         }
-        Ok(false)
     }
     pub fn from_source(
         session: Session,
@@ -225,6 +364,7 @@ impl AsideSessionUi {
             vm,
             entry: Some(entry),
             initializer,
+            entry_function: entry,
             awaiting_stage: false,
             locale: locale.into(),
             catalogs,
@@ -232,6 +372,7 @@ impl AsideSessionUi {
             host_failure: None,
             transitions: Default::default(),
             authored_stage_revision: 0,
+            restore_retried_collection: false,
         })
     }
     pub fn with_media(

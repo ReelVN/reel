@@ -1,10 +1,7 @@
 use super::*;
 
 pub(super) fn game(options: Prepare) -> Result<()> {
-    ensure!(
-        ["vita", "windows", "linux", "macos"].contains(&options.target.as_str()),
-        "unsupported resource target"
-    );
+    reel_package::resource_target::ResourceTarget::parse(&options.target)?;
     let environment = options.environment.unwrap_or_else(|| {
         if options.target == "vita" {
             "vita"
@@ -22,8 +19,9 @@ pub(super) fn game(options: Prepare) -> Result<()> {
         "--serial requires --frame"
     );
     ensure!(
-        options.target == "vita" || options.target == std::env::consts::OS,
-        "desktop preparation uses the current host's player and resource target"
+        !["windows", "linux", "macos"].contains(&options.target.as_str())
+            || options.target == std::env::consts::OS,
+        "a desktop run requires the current host's player"
     );
     ensure!(
         !options.output.exists(),
@@ -52,24 +50,9 @@ pub(super) fn game(options: Prepare) -> Result<()> {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
         "run directory name uses letters, digits, '-' or '_'"
     );
-    let mut build = Command::new("cargo");
-    build.current_dir(crate::root()).args([
-        "build",
-        "--release",
-        "--locked",
-        "-p",
-        "reel-cli",
-        "--bin",
-        "reel",
-        "--message-format=json-render-diagnostics",
-    ]);
+    let mut build = reel_build(options.target != "vita");
     if options.target != "vita" {
-        build.args([
-            "--features",
-            "window,reel-player/performance",
-            "--bin",
-            "reel-game",
-        ]);
+        build.args(["--bin", "reel-game"]);
     }
     println!("Building the current exporter and player");
     let messages = checked(
@@ -136,9 +119,7 @@ pub(super) fn game(options: Prepare) -> Result<()> {
             save_frame: options.save_frame,
         }),
     };
-    request
-        .validate()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    request.validate().map_err(anyhow::Error::msg)?;
     save(&directory.join("request.json"), &request)?;
     save(
         &directory.join("run.json"),
@@ -155,7 +136,25 @@ pub(super) fn game(options: Prepare) -> Result<()> {
     Ok(())
 }
 
-fn artifact(messages: &[u8], name: &str) -> Result<PathBuf> {
+pub(super) fn reel_build(desktop: bool) -> Command {
+    let mut build = Command::new("cargo");
+    build.current_dir(crate::root()).args([
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        "reel-cli",
+        "--bin",
+        "reel",
+        "--message-format=json-render-diagnostics",
+    ]);
+    if desktop {
+        build.args(["--features", "window,reel-player/performance"]);
+    }
+    build
+}
+
+pub(super) fn artifact(messages: &[u8], name: &str) -> Result<PathBuf> {
     String::from_utf8_lossy(messages)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())

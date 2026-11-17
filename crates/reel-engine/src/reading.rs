@@ -1,14 +1,17 @@
 //! Session reading policy and portable read-content progress.
-use crate::{Completion, HistoryGroup, Interaction, SessionError};
+use crate::{Completion, Interaction, SessionError};
 use std::{collections::HashSet, time::Duration};
+pub(crate) mod checkpoint;
 mod context;
+mod history;
 pub(crate) use context::{ParkedReading, ReadingId};
+pub use history::HistoryLog;
 
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReadingData {
     pub active: Option<Interaction>,
     pub completion: Option<Completion>,
-    pub history: Vec<HistoryGroup>,
+    pub history: HistoryLog,
     pub control: ReadingControl,
 }
 

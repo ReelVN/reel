@@ -7,6 +7,11 @@ use aside_host::aside_vm::{
     executor::{Continuation, FaultRetention, HostResponse, HostTicket, NativeInput, Vm},
 };
 use aside_host::{CallContext, NativeBinding, NativeContract, NativeParameter, native};
+mod resources;
+pub use resources::{
+    allocate_curve_resource, connect_curve_resource, curve_resource_fields,
+    validate_curve_resource_step,
+};
 
 const TAG: i64 = 0x4355525645;
 // A key fits the VM's inline payload: time, value, mode, a/b/c, left/right.

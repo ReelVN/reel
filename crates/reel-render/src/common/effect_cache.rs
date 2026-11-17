@@ -63,6 +63,13 @@ fn grow<T>(values: &mut Vec<T>, pool: &BudgetPool, limit: u64) -> Result<BudgetT
     Ok(storage)
 }
 impl<T: Clone> Cache<T> {
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn peek(&self, key: [u8; 32]) -> Option<&T> {
+        self.entries
+            .find(hash(&key), |entry| entry.key == key)
+            .map(|entry| &entry.compiled)
+    }
+
     pub(crate) fn prune(&mut self) {
         self.entries.retain(|entry| {
             entry.owners.retain(|(_, owner)| !owner.is_released());

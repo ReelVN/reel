@@ -11,8 +11,8 @@ pub(super) fn publish(
     fill: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<Published> {
     let target = destination(target)?;
-    let mut staging = Staging::new(target.parent().unwrap())?;
-    let candidate = staging.path.join("candidate");
+    let staging = Staging::new(target.parent().unwrap())?;
+    let candidate = staging.path().join("candidate");
     let mut file = AtomicWriteFile::open(&candidate)?;
     fill(&mut file)?;
     // Directory sync can fail after the dependency's rename. Its commit stays
@@ -23,10 +23,10 @@ pub(super) fn publish(
     } else {
         fs::hard_link(&candidate, &target)?;
     }
-    let cleanup_warning = staging.cleanup().err().map(|error| {
+    let cleanup_warning = staging.close().err().map(|error| {
         format!(
             "artifact published; staging cleanup failed at {}: {error}",
-            staging.path.display()
+            candidate.parent().unwrap().display()
         )
     });
     Ok(Published { cleanup_warning })

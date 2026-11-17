@@ -6,11 +6,15 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use reel_core::{clock::MonoTime, result::Rejected, wake::WakeSignal};
 use std::time::{Duration, Instant};
 
+mod session;
+pub use session::DesktopAudio;
+
 struct CpalDriver {
     device: cpal::Device,
     device_id: cpal::DeviceId,
     capabilities: AudioCaps,
     default_signature: (u16, u32, cpal::SampleFormat),
+    first_configure: bool,
     mono_origin: MonoTime,
     instant_origin: Instant,
 }
@@ -162,6 +166,9 @@ impl Driver for CpalDriver {
         self.capabilities.clone()
     }
     fn configure(&mut self, request: &AudioRequest) -> Result<AudioFormat, AudioError> {
+        if std::mem::take(&mut self.first_configure) {
+            return negotiate(&self.capabilities, request);
+        }
         // Reacquire default device only on the explicit stopped configure path.
         let device = cpal::default_host()
             .default_output_device()
@@ -245,6 +252,7 @@ impl CpalOutput {
             device_id: device.id().map_err(error)?,
             capabilities: capabilities(&device)?,
             default_signature: signature(&device)?,
+            first_configure: true,
             device,
             mono_origin,
             instant_origin,

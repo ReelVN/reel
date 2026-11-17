@@ -11,6 +11,188 @@ fn server() -> Server {
 }
 
 #[test]
+fn real_stdio_finds_references_through_closed_callers_and_open_overlays() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let helper = "pub fn 旁白() {}";
+    let bridge = "pub use helper::旁白 as tell;";
+    let main = concat!(
+        "use helper::旁白 as speak; use helper as lib; use bridge::tell;\n",
+        "fn main() { speak(); lib.旁白(); tell(); { let speak = || {}; speak(); } }"
+    );
+    for (file, text) in [("helper", helper), ("bridge", bridge), ("main", main)] {
+        std::fs::write(root.join(format!("{file}.aside")), text).unwrap();
+    }
+    let uri = |name| url::Url::from_file_path(root.join(format!("{name}.aside"))).unwrap();
+    let helper_uri = uri("helper");
+    let main_uri = uri("main");
+    let mut server = server();
+    let initialized = server.request(1, "initialize", json!({"capabilities":{}}));
+    assert_eq!(initialized["capabilities"]["referencesProvider"], true);
+    server.notify("initialized", json!({}));
+    let open = |server: &mut Server, uri: &url::Url, text: &str| {
+        server.notify(
+            "textDocument/didOpen",
+            json!({"textDocument":{
+                "uri":uri.as_str(),"languageId":"aside","version":1,"text":text
+            }}),
+        );
+    };
+    open(&mut server, &helper_uri, helper);
+    let request = |server: &mut Server, id, uri: &url::Url, line, column, include| {
+        server.request(
+            id,
+            "textDocument/references",
+            json!({
+                "textDocument":{"uri":uri.as_str()},
+                "position":{"line":line,"character":column},
+                "context":{"includeDeclaration":include}
+            }),
+        )
+    };
+    let references = request(&mut server, 2, &helper_uri, 0, 7, true);
+    let locations = references.as_array().unwrap();
+    let mut matches = Vec::new();
+    for location in locations {
+        let parsed_uri = url::Url::parse(location["uri"].as_str().unwrap()).unwrap();
+        let path = parsed_uri.to_file_path().unwrap();
+        let file = path.file_stem().unwrap().to_str().unwrap();
+        let source = match file {
+            "helper" => helper,
+            "bridge" => bridge,
+            "main" => main,
+            _ => panic!("unexpected reference {location}"),
+        };
+        let range = &location["range"];
+        let line = source
+            .lines()
+            .nth(range["start"]["line"].as_u64().unwrap() as usize)
+            .unwrap();
+        let start = range["start"]["character"].as_u64().unwrap() as usize;
+        let end = range["end"]["character"].as_u64().unwrap() as usize;
+        let name =
+            String::from_utf16(&line.encode_utf16().collect::<Vec<_>>()[start..end]).unwrap();
+        matches.push((file.to_owned(), name));
+    }
+    matches.sort();
+    assert_eq!(
+        matches
+            .iter()
+            .map(|(file, name)| (file.as_str(), name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("bridge", "tell"),
+            ("bridge", "旁白"),
+            ("helper", "旁白"),
+            ("main", "speak"),
+            ("main", "speak"),
+            ("main", "tell"),
+            ("main", "tell"),
+            ("main", "旁白"),
+            ("main", "旁白"),
+        ]
+    );
+    open(
+        &mut server,
+        &main_uri,
+        "use helper as lib; fn main() { lib.旁白(); }",
+    );
+    let overlay = request(&mut server, 3, &helper_uri, 0, 7, false);
+    assert_eq!(overlay.as_array().unwrap().len(), 1, "{overlay}");
+    assert_eq!(overlay[0]["uri"], main_uri.as_str());
+    server.stop();
+}
+
+#[test]
+fn real_stdio_outlines_unsaved_declarations_and_fixes_before_line_comments() {
+    let source = "pub class 菜单 { let 字 = \"😀\"; fn 打开(self) {} }\r\n\
+                  pub let 标题 = \"😀\" // keep this comment\r\nfn main() {}";
+    let uri = "untitled:menus.aside";
+    for encoding in ["utf-8", "utf-16"] {
+        let mut server = server();
+        let initialized = server.request(
+            1,
+            "initialize",
+            json!({"capabilities":{
+                "general":{"positionEncodings":[encoding]},
+                "workspace":{"workspaceEdit":{"documentChanges":true}},
+                "textDocument":{
+                    "documentSymbol":{"hierarchicalDocumentSymbolSupport":true},
+                    "codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix"]}}}
+                }
+            }}),
+        );
+        assert_eq!(initialized["capabilities"]["documentSymbolProvider"], true);
+        assert_eq!(
+            initialized["capabilities"]["codeActionProvider"]["codeActionKinds"],
+            json!(["quickfix"])
+        );
+        server.notify("initialized", json!({}));
+        server.notify(
+            "textDocument/didOpen",
+            json!({"textDocument":{
+                "uri":uri,"languageId":"aside","version":7,"text":source
+            }}),
+        );
+        let text_document = json!({"uri":uri});
+        let symbols = server.request(
+            2,
+            "textDocument/documentSymbol",
+            json!({"textDocument":text_document}),
+        );
+        let symbols = symbols.as_array().unwrap();
+        assert_eq!(symbols.len(), 3, "{symbols:?}");
+        assert_eq!(symbols[0]["name"], "菜单");
+        assert_eq!(symbols[0]["children"][0]["name"], "字");
+        let method = &symbols[0]["children"][1];
+        assert_eq!(method["name"], "打开");
+        let column = |prefix: &str| {
+            if encoding == "utf-8" {
+                prefix.len()
+            } else {
+                prefix.encode_utf16().count()
+            }
+        };
+        let method_column = column(&source[..source.find("打开").unwrap()]);
+        assert_eq!(
+            method["selectionRange"]["start"],
+            json!({"line":0,"character":method_column})
+        );
+        assert_eq!(symbols[1]["name"], "标题");
+        assert_eq!(symbols[2]["name"], "main");
+
+        let end = json!({"line":1,"character":column("pub let 标题 = \"😀\"")});
+        let range = json!({"start":end,"end":end});
+        let actions = server.request(
+            3,
+            "textDocument/codeAction",
+            json!({"textDocument":text_document,"range":range,"context":{"diagnostics":[],"only":["quickfix"]}}),
+        );
+        assert_eq!(
+            actions[0]["edit"]["documentChanges"],
+            json!([{"textDocument":{"uri":uri,"version":7},"edits":[{"range":range,"newText":";"}]}])
+        );
+        let fixed = source.replace(" // keep this comment", "; // keep this comment");
+        server.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument":{"uri":uri,"version":8},"contentChanges":[{"text":fixed}]
+            }),
+        );
+        assert_eq!(server.diagnostics(uri, 8), json!([]));
+        assert_eq!(
+            server.request(
+                4,
+                "textDocument/codeAction",
+                json!({"textDocument":text_document,"range":range,"context":{"diagnostics":[]}}),
+            ),
+            json!([])
+        );
+        server.stop();
+    }
+}
+
+#[test]
 fn real_stdio_colors_names_and_completes_unfinished_declarations() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(

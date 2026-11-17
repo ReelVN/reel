@@ -2,7 +2,6 @@ use super::*;
 
 #[cfg(feature = "performance")]
 mod lifecycle;
-mod symbols;
 
 #[test]
 fn vm_snapshot_reports_selected_task_execution_and_collection_progress() {

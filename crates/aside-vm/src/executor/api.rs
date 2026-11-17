@@ -451,6 +451,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::CallNoWait,
     Opcode::Await,
     Opcode::ChildrenPush,
+    Opcode::ChildrenSpread,
     Opcode::ArrayPush,
     Opcode::ArraySpread,
     Opcode::TableSpread,

@@ -10,7 +10,7 @@ impl Block<'_> {
         remaining: u8,
         step: &mut u8,
     ) -> Option<Exit> {
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        #[cfg(test)]
         if self.legacy_suffixes {
             return None;
         }

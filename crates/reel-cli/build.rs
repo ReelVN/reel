@@ -15,10 +15,12 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-env-changed=HOST");
     println!("cargo:rerun-if-env-changed=TARGET");
 
+    let artwork = "crates/reel-player/src/artwork.rs";
     let texture = [
         "crates/reel-cli/src/prepare_texture.rs",
         "crates/reel-cli/src/prepare_texture",
         "crates/reel-core/src/texture.rs",
+        artwork,
     ];
     let mut atlas = texture.to_vec();
     atlas.extend([
@@ -46,6 +48,7 @@ fn main() -> io::Result<()> {
         "crates/reel-cli/src/prepare_media.rs",
     ];
     let font = ["crates/reel-cli/src/prepare_font.rs"];
+    let webp = ["crates/reel-cli/src/resource_conversion/webp.rs", artwork];
     let effects = [
         "crates/reel-cli/src/prepare_effects.rs",
         "crates/reel-render/src/common/effect.rs",
@@ -61,6 +64,7 @@ fn main() -> io::Result<()> {
     watched.insert(lock_path);
     let dependencies = locked_dependencies::LockedDependencies::parse(&lock)?;
     for (kind, sources, dependency_roots) in [
+        ("WEBP", webp.as_slice(), ["image"].as_slice()),
         ("TEXTURE", texture.as_slice(), ["image", "rgbcx"].as_slice()),
         ("ATLAS", atlas.as_slice(), ["image", "rgbcx"].as_slice()),
         ("TILES", tiles.as_slice(), ["image", "rgbcx"].as_slice()),

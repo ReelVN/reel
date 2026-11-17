@@ -15,7 +15,7 @@ pub(super) fn run(options: &Run, directory: &Path, manifest: &Manifest) -> Resul
             .context("emulator run requires --storage")?,
     )?;
     let configuration = configuration(options, directory, &executable, &storage)?;
-    let app = storage.join("ux0/app/REELP0001");
+    let app = storage.join("ux0/app").join(VITA_PLAYER_TITLE_ID);
     ensure!(
         app.join("eboot.bin").is_file(),
         "install the official reel-vita VPK into Vita3K first"
@@ -53,7 +53,7 @@ pub(super) fn run(options: &Run, directory: &Path, manifest: &Manifest) -> Resul
     let mut command = Command::new(&executable);
     command
         .current_dir(executable.parent().context("emulator directory")?)
-        .args(["-r", "REELP0001", "--log-level", "2"])
+        .args(["-r", VITA_PLAYER_TITLE_ID, "--log-level", "2"])
         .args(["--load-config", "--keep-config", "--config-location"])
         .arg(configuration)
         .stdout(log.try_clone()?)

@@ -80,9 +80,7 @@ impl Paragraph {
     /// Reuse shaping and ruby when only the paragraph's line constraint changes.
     pub fn reflow(&self, width: Option<f32>) -> Self {
         let mut out = self.clone();
-        out.layout.break_all_lines(width);
-        out.paint_lines.clear();
-        out.index_paint_lines();
+        out.wrap(width);
         out
     }
 
@@ -300,13 +298,25 @@ impl Paragraph {
                 baseline: Some(item.baseline),
             });
         }
-        builder.build_into(&mut out.layout, &out.text);
-        out.layout.break_all_lines(width);
-        out.index_paint_lines();
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiTextShape);
+            builder.build_into(&mut out.layout, &out.text);
+        }
+        out.wrap(width);
         out
     }
 
+    fn wrap(&mut self, width: Option<f32>) {
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiTextWrap);
+            self.layout.break_all_lines(width);
+        }
+        self.index_paint_lines();
+    }
+
     fn index_paint_lines(&mut self) {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiTextPaintBounds);
+        self.paint_lines.clear();
         let mut last_font = None;
         let mut font_bounds = None;
         self.paint_inline = (0., f64::from(self.layout.width()));

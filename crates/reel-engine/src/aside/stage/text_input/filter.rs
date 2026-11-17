@@ -291,7 +291,7 @@ pub(super) fn dispatch(
         return Ok((NativeDispatch::Ready { work: 1 }, None));
     }
     let (phase, mut roots) = if matches!(ticket.input, NativeInput::CallbackReturned) {
-        let result = vm.host_callback_value(ticket)?;
+        let result = vm.host_resume_value(ticket)?;
         if result.tag() == ValueTag::Null {
             stage.finish_text_operation(vm.heap_mut(), id, ticket.task, None)?;
             vm.respond(ticket, HostResponse::Ready(receiver))?;

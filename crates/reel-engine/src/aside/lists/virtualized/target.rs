@@ -456,7 +456,7 @@ impl SessionVm {
         if result.tag() == ValueTag::Null {
             let nav = get(self.vm.heap(), s, S::Navigation)?;
             self.vm.heap_mut().set_field(nav, 4, Value::bool(true))?;
-            commit_projection(self.vm.heap_mut(), s)?;
+            commit_projection(self.vm.heap_mut(), s, false)?;
             let host = node(self.vm.heap(), s)?;
             self.stage.publish_virtual(self.vm.heap(), host)?;
         } else {

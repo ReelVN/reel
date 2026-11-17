@@ -80,7 +80,7 @@ fn flat_boolean_branches_keep_iterative_lowering_and_work_admission() {
         },
         ..Default::default()
     };
-    let compiled = lowering::compile(&module, &Linkage::default(), options).unwrap();
+    let compiled = lowering::compile(&module, &Linkage::default(), &[], options).unwrap();
     assert_eq!(
         opcodes(
             function(compiled.program.package(), "scan"),
@@ -96,6 +96,7 @@ fn flat_boolean_branches_keep_iterative_lowering_and_work_admission() {
     let error = lowering::compile(
         &module,
         &Linkage::default(),
+        &[],
         Options {
             limits,
             ..Default::default()

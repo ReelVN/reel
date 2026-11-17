@@ -522,6 +522,8 @@ fn queue_capacity_rejection_keeps_original_and_missing_successor_fails_it_once()
         },
     );
     let id = player.play_audio(request(true), false).unwrap();
+    assert_eq!(player.entries[&id].queue.capacity(), 0);
+    assert_eq!(player.descriptors.usage().tickets, 1);
     player.commit_audio(id);
     let missing = AudioQueueItem {
         source: "assets/missing.wav".into(),
@@ -530,6 +532,14 @@ fn queue_capacity_rejection_keeps_original_and_missing_successor_fails_it_once()
         loop_region: None,
     };
     player.queue_audio(id, missing.clone()).unwrap();
+    let entry = &player.entries[&id];
+    assert_eq!(entry.queue.capacity(), 1);
+    assert_eq!(
+        player.descriptors.usage().bytes,
+        entry.descriptor.bytes()
+            + entry.queue[0].descriptor.bytes()
+            + std::mem::size_of::<Segment>() as u64,
+    );
     assert!(
         player
             .queue_audio(id, missing)
@@ -921,10 +931,14 @@ fn bounded_audio_source_and_asb_restore_real_transport_and_queue_endpoints() {
             "en".into(),
             live.ui().assets(),
             live.initializer(),
+            live.entry_function(),
             live.catalogs(),
         )
         .unwrap();
-        while !restored.prepare_restored(SliceBudget::default()).unwrap() {}
+        while !restored
+            .prepare_restored(SliceBudget::default(), &mut || 0)
+            .unwrap()
+        {}
         restored.resume_media();
         original.close().unwrap();
         until(|| {

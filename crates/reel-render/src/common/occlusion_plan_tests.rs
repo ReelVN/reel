@@ -481,6 +481,34 @@ fn recorded_rgba_widgets_remove_upload_demand_and_eager_batches_stop_before_hidd
 }
 
 #[test]
+fn plain_crop_of_an_opaque_image_can_occlude() {
+    let frame = image_frame(255, false);
+    let FrameOp::Draw(mut draw) = frame
+        .commands()
+        .iter()
+        .rev()
+        .find(|c| matches!(c.op, FrameOp::Draw(_)))
+        .unwrap()
+        .op
+        .clone()
+    else {
+        unreachable!()
+    };
+    let FrameDraw::Fill {
+        brush: Brush::Image(brush),
+        ..
+    } = &mut draw
+    else {
+        unreachable!()
+    };
+    brush.image.source_rect = Some(Rect::new(0.25, 0.25, 3.75, 3.75));
+    let handle = brush.image.resource;
+    assert!(opaque(&draw, &[(handle, [4, 4])]));
+    assert!(!opaque(&draw, &[(handle, [3, 3])]));
+    assert!(!opaque(&draw, &[]));
+}
+
+#[test]
 fn capture_and_zero_metadata_budget_preserve_all_draws_without_charges() {
     let frame = image_frame(255, false);
     let limits = super::super::GpuLimits {
@@ -528,6 +556,7 @@ impl glyph_plan::Prepare for Glyphs {
         run: &reel_ui::frame::FrameGlyphRun,
         _: f64,
         _: reel_ui::frame::RecordLocation,
+        _: bool,
     ) -> Result<reel_ui::frame::InkBounds, GpuError> {
         self.0 += run.glyphs.len();
         Ok(reel_ui::frame::InkBounds::Unbounded)

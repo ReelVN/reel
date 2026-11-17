@@ -42,10 +42,14 @@ impl FunctionBuilder<'_, '_> {
                     chain: false,
                     ..
                 } => {
-                    if self.l.m.facts()[base.0 as usize].intrinsic
-                        == Some(crate::semantic::Intrinsic::Bind)
-                    {
-                        break self.property_reference(base, arguments, children, depth)?;
+                    match self.l.m.facts()[base.0 as usize].intrinsic {
+                        Some(crate::semantic::Intrinsic::Bind) => {
+                            break self.property_reference(base, arguments, children, depth)?;
+                        }
+                        Some(crate::semantic::Intrinsic::ValueOf) => {
+                            break self.value_of(base, arguments, children, depth)?;
+                        }
+                        _ => {}
                     }
                     if let Some(native) = self.l.native(callee)? {
                         break self.call_with_target(
@@ -73,12 +77,15 @@ impl FunctionBuilder<'_, '_> {
                 Form::Binary {
                     operator, right, ..
                 } => self.binary_value(node, value, operator, right, depth)?,
-                Form::Member { key, .. } => {
+                Form::Member { object, key, .. } => {
+                    if self.l.resume_calls[root.0 as usize] {
+                        self.resume_nominal_guard(value, object, node)?;
+                    }
                     let name = self
                         .l
                         .name(self.l.m.hir().name(key.name.expect("member name")))?;
                     let out = self.temp()?;
-                    self.op(bc::Opcode::MemberGet, out.0, value.0, name.0, node)?;
+                    self.read_member(out, value, name, node)?;
                     self.release(value)?;
                     Some(out)
                 }
@@ -197,7 +204,7 @@ impl FunctionBuilder<'_, '_> {
                     })?;
                     let symbol = self.l.name(self.l.m.hir().name(name))?;
                     let next = self.temp()?;
-                    self.op(bc::Opcode::MemberGet, next.0, receiver.0, symbol.0, node)?;
+                    self.read_member(next, receiver, symbol, node)?;
                     Some(next)
                 }
                 Form::Index { index, .. } => {

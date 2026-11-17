@@ -1,12 +1,15 @@
 use super::*;
 use crate::bytecode::VerifiedProgram;
 use std::sync::Arc;
+mod index;
+use index::ResumeIndex;
 
 /// Metadata proved against one immutable current program.
 #[derive(Clone, Debug)]
 pub struct VerifiedResumeTable {
     pub(crate) program: VerifiedProgram,
     table: Arc<ResumeTable>,
+    index: Arc<ResumeIndex>,
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PlannedSite {
@@ -32,15 +35,42 @@ pub struct VerifiedResumePlan {
     descriptor: ContinuationDescriptor,
 }
 impl VerifiedResumeTable {
-    pub(crate) fn new(program: VerifiedProgram, table: ResumeTable) -> Self {
-        Self {
+    pub(crate) fn new(
+        program: VerifiedProgram,
+        table: ResumeTable,
+        host_types: &[crate::HostTypeSupport],
+        budget: &mut Budget,
+    ) -> Result<Self, ResumeError> {
+        let index = Arc::new(ResumeIndex::new(&program, &table, host_types, budget)?);
+        Ok(Self {
             program,
             table: Arc::new(table),
-        }
+            index,
+        })
+    }
+    pub(crate) fn current_site(
+        &self,
+        function: FunctionId,
+        call: Pc,
+    ) -> Option<(PlannedFrame, Option<FunctionId>)> {
+        self.index.current_site(function, call)
+    }
+    pub(crate) fn current_bounds(&self) -> (u64, u64) {
+        (self.index.lookup_work, self.index.key_bytes)
+    }
+    /// Check whether this call is declared as a point. Capturing or hashing a
+    /// resumable path still requires proving the actual active call chain.
+    pub fn has_point_at(&self, function: FunctionId, call: Pc) -> bool {
+        self.current_site(function, call)
+            .is_some_and(|(frame, _)| matches!(frame.site, PlannedSite::Point(_)))
     }
     /// The validated current source contract.
     pub fn table(&self) -> &ResumeTable {
         &self.table
+    }
+    /// The verified program whose functions and continuation sites this table describes.
+    pub fn program(&self) -> &VerifiedProgram {
+        &self.program
     }
     /// Bind the same immutable text pool as the current program without revalidating
     /// the already checked continuation table.
@@ -60,48 +90,32 @@ impl VerifiedResumeTable {
             return Err(ResumeError::new("empty resume call chain"));
         }
         let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(descriptor.frames.len())
+            .map_err(|_| ResumeError::new("resume plan allocation"))?;
+        let mut expected_function = None;
         for (index, frame) in descriptor.frames.iter().enumerate() {
-            let flow = self
-                .table
-                .flows
-                .iter()
-                .position(|flow| flow.key == frame.flow)
-                .ok_or_else(|| ResumeError::new("saved flow key is absent from current code"))?;
-            let definition = &self.table.flows[flow];
-            let site = match &frame.site {
-                ResumeSite::Point(key) if index + 1 == descriptor.frames.len() => {
-                    PlannedSite::Point(
-                        definition
-                            .points
-                            .iter()
-                            .position(|site| site.key == *key)
-                            .ok_or_else(|| {
-                                ResumeError::new("saved point key is absent from current code")
-                            })?,
-                    )
-                }
-                ResumeSite::Return(key) if index + 1 < descriptor.frames.len() => {
-                    let site = definition
-                        .returns
-                        .iter()
-                        .position(|site| site.key == *key)
-                        .ok_or_else(|| {
-                            ResumeError::new("saved return key is absent from current code")
-                        })?;
-                    if definition.returns[site].callee != descriptor.frames[index + 1].flow {
-                        return Err(ResumeError::new(
-                            "saved call chain differs from the current return contract",
-                        ));
-                    }
-                    PlannedSite::Return(site)
+            let current = self.index.stable_site(&self.table, frame).ok_or_else(|| {
+                ResumeError::new("saved flow or site key is absent from current code")
+            })?;
+            let definition = &self.table.flows[current.flow];
+            if expected_function.is_some_and(|callee| callee != definition.function) {
+                return Err(ResumeError::new(
+                    "saved call chain differs from the current return contract",
+                ));
+            }
+            match current.site {
+                PlannedSite::Point(_) if index + 1 == descriptor.frames.len() => {}
+                PlannedSite::Return(site) if index + 1 < descriptor.frames.len() => {
+                    expected_function = Some(definition.returns[site].callee);
                 }
                 _ => {
                     return Err(ResumeError::new(
                         "resume chain requires return sites followed by one leaf point",
                     ));
                 }
-            };
-            frames.push(PlannedFrame { flow, site });
+            }
+            frames.push(current);
         }
         Ok(VerifiedResumePlan {
             verified: self.clone(),
@@ -111,6 +125,17 @@ impl VerifiedResumeTable {
     }
 }
 impl VerifiedResumePlan {
+    pub(crate) fn from_matching_stack(
+        verified: VerifiedResumeTable,
+        frames: Vec<PlannedFrame>,
+        descriptor: ContinuationDescriptor,
+    ) -> Self {
+        Self {
+            verified,
+            frames,
+            descriptor,
+        }
+    }
     /// Stable source identities selected by this verified plan.
     pub fn descriptor(&self) -> &ContinuationDescriptor {
         &self.descriptor
@@ -118,6 +143,10 @@ impl VerifiedResumePlan {
     /// Number of ordinary business activations to rebuild.
     pub fn frame_count(&self) -> usize {
         self.frames.len()
+    }
+    /// Current plain entry function whose frames return to the live native callback.
+    pub fn entry_function(&self) -> FunctionId {
+        self.frame(0).0.function
     }
     pub(crate) fn frame(&self, index: usize) -> (&ResumeFlow, Site<'_>) {
         let frame = self.frames[index];
@@ -129,7 +158,7 @@ impl VerifiedResumePlan {
                     entry: p.prepare,
                     call: p.call,
                     result: p.result,
-                    layout: &p.layout,
+                    layout: &flow.layouts[p.layout as usize],
                 }
             }
             PlannedSite::Return(index) => {
@@ -138,7 +167,7 @@ impl VerifiedResumePlan {
                     entry: r.after_call,
                     call: r.call,
                     result: r.result,
-                    layout: &r.layout,
+                    layout: &flow.layouts[r.layout as usize],
                 }
             }
         };

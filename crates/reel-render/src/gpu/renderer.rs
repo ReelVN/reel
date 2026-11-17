@@ -9,7 +9,7 @@ use reel_ui::frame::RenderFrame;
 use reel_ui::kurbo::Affine;
 use std::collections::HashMap;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -24,6 +24,7 @@ pub struct Prepared {
     frames: Vec<RenderFrame>,
     tickets: Vec<Reservation>,
     images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
+    white: Option<Arc<super::resources::WhiteTexture>>,
     glyphs: super::glyph_cache::FrameGlyphs,
     effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
@@ -55,6 +56,7 @@ pub(super) struct Inflight {
     _frames: Vec<RenderFrame>,
     _tickets: Vec<Reservation>,
     _images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
+    _white: Option<Arc<super::resources::WhiteTexture>>,
     _glyphs: super::glyph_cache::FrameGlyphs,
     _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
@@ -82,7 +84,7 @@ fn pressure_pool(cause: &GpuError) -> Option<BudgetCategory> {
     };
     match *domain {
         "targets" => Some(BudgetCategory::Offscreen),
-        "image upload" | "texture upload" | "glyph atlas" | "glyph upload" => {
+        "resources" | "image upload" | "texture upload" | "glyph atlas" | "glyph upload" => {
             Some(BudgetCategory::GpuResource)
         }
         "transient"
@@ -109,6 +111,7 @@ pub struct Renderer {
     owner: Arc<()>,
     pipelines: PipelineSlots,
     images: super::image_cache::ImageCache,
+    white: Mutex<Option<Arc<super::resources::WhiteTexture>>>,
     glyphs: super::glyph_cache::GlyphCache,
     targets: super::target_cache::TargetCache,
     coverage_targets: super::target_cache::TargetCache,
@@ -144,6 +147,7 @@ impl Renderer {
             owner: Arc::new(()),
             pipelines: PipelineSlots::default(),
             images: Default::default(),
+            white: Default::default(),
             glyphs: Default::default(),
             targets: Default::default(),
             coverage_targets: Default::default(),
@@ -155,21 +159,23 @@ impl Renderer {
             effect_uniforms: Default::default(),
         }
     }
-    /// Prepare the device's supported quality tiers, coverage and built-in image masks
-    /// before showing the first frame. Repeated calls reuse the same slots.
-    /// This creates no frame targets or decoded image buffers.
-    pub fn prepare_pipelines(&self) -> Result<(), GpuError> {
+    /// Warm the preferred surface quality before showing its first frame.
+    pub(super) fn prepare_quality(&self, quality: Quality) -> Result<(), GpuError> {
         // Start desktop upload workers before the first interactive frame.
         rayon::current_num_threads();
+        let pipelines = self.pipelines.get(&self.gpu, quality)?;
+        if self.gpu.coverage_quality(quality).is_some() {
+            self.pipelines
+                .get_coverage(&self.gpu, quality, &pipelines)?;
+        }
+        pipelines
+            .masks
+            .prepare_builtin(&self.gpu, quality, &self.budgets.resources)
+    }
+    #[cfg(test)]
+    pub(crate) fn prepare_pipelines(&self) -> Result<(), GpuError> {
         for quality in self.gpu.supported_qualities() {
-            let pipelines = self.pipelines.get(&self.gpu, quality)?;
-            if self.gpu.coverage_quality(quality).is_some() {
-                self.pipelines
-                    .get_coverage(&self.gpu, quality, &pipelines)?;
-            }
-            pipelines
-                .masks
-                .prepare_builtin(&self.gpu, quality, &self.budgets.resources)?;
+            self.prepare_quality(quality)?;
         }
         Ok(())
     }
@@ -249,10 +255,16 @@ impl Renderer {
             || self.has_pending_image_uploads()
             || !self.retained.pending.lock().unwrap().entries.is_empty()
     }
-    /// Submitted image uploads still own staging and may unblock a preparation
-    /// slice. Hosts can poll these short-lived completions more frequently.
+    /// Submitted texture initialization may release staging or make a resource
+    /// evictable. Hosts can poll these short-lived completions more frequently.
     pub fn has_pending_image_uploads(&self) -> bool {
         self.images.has_pending()
+            || self
+                .white
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|white| white.initialization_pending())
     }
     pub(super) fn poll_completed(
         &mut self,
@@ -267,6 +279,17 @@ impl Renderer {
         result.map_err(|e| GpuError::Device(e.to_string()))?;
         let mut resources_available = limit != 0 && self.images.poll();
         if resources_available {
+            limit -= 1;
+        }
+        if limit != 0
+            && self
+                .white
+                .get_mut()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|white| white.poll_initialization())
+        {
+            resources_available = true;
             limit -= 1;
         }
         for pending in &mut self.retained.pending.lock().unwrap().entries {
@@ -487,6 +510,13 @@ impl Renderer {
                 }
                 Some(BudgetCategory::GpuResource) => {
                     self.images.clear_idle();
+                    let mut white = self.white.lock().unwrap();
+                    if white
+                        .as_ref()
+                        .is_some_and(|white| Arc::strong_count(white) == 1)
+                    {
+                        *white = None;
+                    }
                 }
                 _ => {}
             }
@@ -905,6 +935,7 @@ impl Renderer {
                 offscreen,
                 effects: Vec::new(),
                 white: None,
+                white_cache: &self.white,
                 target_cache,
                 coverage_target_cache,
                 coverage_quality,
@@ -1028,6 +1059,7 @@ impl Renderer {
                 frames,
                 tickets: ctx.tickets,
                 images: ctx.images,
+                white: ctx.white,
                 glyphs: ctx.glyphs,
                 effects: ctx.effects,
                 targets: ctx.target_allocations,
@@ -1095,6 +1127,7 @@ impl Renderer {
                             _frames: prepared.frames,
                             _tickets: prepared.tickets,
                             _images: prepared.images,
+                            _white: prepared.white,
                             _glyphs: prepared.glyphs,
                             _effects: prepared.effects,
                             _targets: prepared.targets,
@@ -1174,6 +1207,7 @@ impl Renderer {
             _frames: prepared.frames,
             _tickets: prepared.tickets,
             _images: prepared.images,
+            _white: prepared.white,
             _glyphs: prepared.glyphs,
             _effects: prepared.effects,
             _targets: prepared.targets,

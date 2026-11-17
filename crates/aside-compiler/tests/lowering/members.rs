@@ -690,7 +690,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             natives: &native_links,
             expansions: &[],
         };
-        let c = lowering::compile(&m, &linkage, Options::default()).unwrap();
+        let c = lowering::compile(&m, &linkage, &[], Options::default()).unwrap();
         let p = c.program.package();
         assert_eq!(p.natives[0], seed.package().natives[0]);
         assert_eq!(p.functions[0], seed.package().functions[0]);
@@ -720,7 +720,8 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             assert_eq!(call.names[0].offset, 0);
             assert_eq!(p.symbols[call.names[0].name.index()], "a");
         }
-        let error = lowering::compile(&m, &Linkage::default(), Options::default()).unwrap_err();
+        let error =
+            lowering::compile(&m, &Linkage::default(), &[], Options::default()).unwrap_err();
         assert_eq!(error.kind, lowering::ErrorKind::MissingLink);
         assert_eq!(&source[byte_range(error.span)], "native.run");
         assert_eq!(error.stats.capacity_bytes, 0);
@@ -739,6 +740,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
                 }],
                 expansions: &[],
             },
+            &[],
             Options::default(),
         )
         .unwrap_err();
@@ -875,6 +877,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
                 natives: &[link],
                 expansions: &[],
             },
+            &[],
             Options::default(),
         );
         if expression.contains('=') && !expression.starts_with("let ") {

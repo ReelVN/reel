@@ -5,8 +5,9 @@ use super::keys::compare;
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Create a keyed list from `items()`, `key(item)` and `build(row)`.
-        /// The builder receives observable row fields `value` and `index`. Keys must be
-        /// unique: scalars preserve their type, strings compare by content, and other
+        /// The builder receives observable row fields `value` and `index`. The editor
+        /// infers inline callback parameter types from known `items()` elements.
+        /// Keys must be unique: scalars preserve their type, strings compare by content, and other
         /// objects compare by identity. Stable keys retain mounted rows through reordering.
         /// With `virtual: true`, mount the nearest enclosing scroll's visible window and
         /// navigation targets through ordinary containers, accounting for their layout,
@@ -36,7 +37,9 @@ pub(in crate::aside) mod sort;
 pub(super) mod virtualized;
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
-    use aside_compiler::semantic::TypeHint;
+    use aside_compiler::semantic::{
+        SequenceCallback, SequenceCallbackArgument, SequenceCallbackContext, TypeHint,
+    };
     use aside_host::source::{Member, NamedType, named};
     let type_name = "reel::types::VirtualListNode";
     api.refine(
@@ -60,7 +63,24 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     )
     .extends(base);
     api.types.push(descriptor);
-    api.native_mut("reel::list").result_cases(&[
+    let declaration = api.native_mut("reel::list");
+    declaration.symbol.sequence_callbacks = Some(SequenceCallbackContext {
+        provider: "items",
+        callbacks: &[
+            SequenceCallback {
+                parameter: "key",
+                argument: SequenceCallbackArgument::Element,
+            },
+            SequenceCallback {
+                parameter: "build",
+                argument: SequenceCallbackArgument::Record {
+                    element: "value",
+                    index: "index",
+                },
+            },
+        ],
+    });
+    declaration.result_cases(&[
         (
             "virtual",
             aside_vm::bytecode::Const::Bool(true),
@@ -362,7 +382,7 @@ impl SessionVm {
             }
             match ticket.continuation.unwrap().stage {
                 stage if stage == Phase::Source as u64 => {
-                    work.source = self.vm.host_callback_value(ticket)?;
+                    work.source = self.vm.host_resume_value(ticket)?;
                     if self.vm.heap().info(work.source)?.kind != ObjectKind::Array {
                         return Err(AdapterError::Input("list source must return an array"));
                     }
@@ -372,7 +392,7 @@ impl SessionVm {
                 }
                 stage if stage == Phase::Key as u64 => {
                     work.check_source(self.vm.heap())?;
-                    let key = self.vm.host_callback_value(ticket)?;
+                    let key = self.vm.host_resume_value(ticket)?;
                     let item = self.vm.heap().sequence_get(work.source, work.index)?;
                     let candidate =
                         self.vm
@@ -420,7 +440,7 @@ impl SessionVm {
                     }
                 }
                 stage if stage == Phase::Built as u64 => {
-                    let child = self.vm.host_callback_value(ticket)?;
+                    let child = self.vm.host_resume_value(ticket)?;
                     self.list_built(ticket, work, child)?;
                 }
                 stage if stage == Phase::Publish as u64 => {

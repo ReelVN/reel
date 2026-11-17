@@ -430,7 +430,7 @@ mod audio {
 }
 
 #[test]
-fn persisted_save_resumes_its_wait_once_and_interrupts_other_external_operations() {
+fn exact_snapshot_interrupts_pending_storage_requests_without_replaying_writes() {
     let code = r#"
     let mut calls = 0;
     fn opening() {
@@ -439,10 +439,9 @@ fn persisted_save_resumes_its_wait_once_and_interrupts_other_external_operations
         let request = saves.save("chapter/一", title: "第一章");
         let label = text(value: bind(request.status));
         stage.replace(label);
-        await request;
-        if request.status != "succeeded" || request.error != null || !request.restored || calls != 1 {
-            throw "save replay or result lost";
-        }
+        let mut save_interrupted = false;
+        try { await request; } catch error { save_interrupted = error == "OperationInterrupted"; }
+        if !save_interrupted || request.status != "failed" || calls != 1 { throw "save write replayed"; }
         let mut interrupted = false;
         try { await other; } catch error { interrupted = error == "OperationInterrupted"; }
         if !interrupted || other.status != "failed" { throw "other write replayed"; }
@@ -461,8 +460,7 @@ fn persisted_save_resumes_its_wait_once_and_interrupts_other_external_operations
     let program = runtime.vm.program().clone();
     let mut capture = runtime.snapshot_begin(&session).unwrap();
     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
-    let mut image = capture.finish().unwrap();
-    image.commit_save(save.id).unwrap();
+    let image = capture.finish().unwrap();
     let bytes = image.encode().unwrap();
     let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
     let mut restore = SessionVm::restore_begin(
@@ -505,7 +503,7 @@ fn persisted_save_resumes_its_wait_once_and_interrupts_other_external_operations
     assert!(
         matches!(restored_session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "restored once")
     );
-    // Persisted-copy normalization never completes the real pending write.
+    // Restoring an isolated snapshot leaves the source session's write pending.
     assert!(
         matches!(runtime.stage().nodes().find(|n| matches!(&n.kind, NodeKind::Text(_))).map(|n| &n.kind),
         Some(NodeKind::Text(text)) if text.as_ref() == "pending")

@@ -16,6 +16,9 @@ pub(in crate::aside) enum PopupField {
     #[aside(name = "on_dismiss", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnDismiss,
 }
+pub(in crate::aside) const TOOLTIP_PROPERTIES: &[aside_host::Property] =
+    PopupField::PROPERTIES.split_at(2).0;
+pub(in crate::aside) const TOOLTIP_NAMES: &[&str] = PopupField::NAMES.split_at(2).0;
 
 fn placement(heap: &Heap, value: Value) -> Result<PopupPlacement, HeapError> {
     let info = heap.info(value)?;
@@ -41,26 +44,85 @@ fn placement(heap: &Heap, value: Value) -> Result<PopupPlacement, HeapError> {
 fn validate_placement(heap: &Heap, value: Value) -> Result<(), HeapError> {
     placement(heap, value).map(|_| ())
 }
-pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
-    let prefix = PopupField::PROPERTIES.len() as u32;
+pub(super) fn validate(
+    heap: &Heap,
+    index: u32,
+    value: Value,
+    tooltip: bool,
+) -> Result<(), HeapError> {
+    let prefix = if tooltip {
+        TOOLTIP_PROPERTIES.len()
+    } else {
+        PopupField::PROPERTIES.len()
+    } as u32;
     if index < prefix {
         PopupField::validate(heap, index, value)
     } else {
         validate_layout_property(heap, index - prefix, value)
     }
 }
-pub(super) fn kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError> {
+pub(super) fn kind(
+    heap: &Heap,
+    fields: Value,
+    hint: Option<bool>,
+) -> Result<NodeKind, AdapterError> {
     let get = |field: PopupField| heap.table_entry(fields, field.index() as u32).map(|p| p.1);
-    let handler = get(PopupField::OnDismiss)?;
-    validate_callback(heap, handler)?;
+    let listening = if hint.is_none() {
+        let handler = get(PopupField::OnDismiss)?;
+        validate_callback(heap, handler)?;
+        handler.tag() != ValueTag::Null
+    } else {
+        false
+    };
     Ok(NodeKind::Popup(PopupView {
         placement: placement(heap, get(PopupField::Placement)?)?,
         offset: number(get(PopupField::Offset)?)?,
-        listening: handler.tag() != ValueTag::Null,
+        listening,
+        hint,
     }))
 }
 
 impl StageBinding {
+    pub(super) fn sync_tooltips(
+        &mut self,
+        heap: &Heap,
+        anchor: NodeId,
+    ) -> Result<(), AdapterError> {
+        if !self.scene.has_popups() {
+            return Ok(());
+        }
+        let count = self.scene.node(anchor).unwrap().children.len();
+        let mut active = None;
+        for index in 0..count {
+            let child = self.scene.node(anchor).unwrap().children[index];
+            let node = self.scene.node(child).unwrap();
+            let NodeKind::Popup(mut view) = node.kind else {
+                continue;
+            };
+            let Some(previous) = view.hint else {
+                continue;
+            };
+            let visible = if let Some(visible) = active {
+                visible
+            } else {
+                let fields = heap.host_fields(self.value(heap, anchor)?)?;
+                let offset = self.handles[&anchor].interaction_offset;
+                let state = |index| -> Result<bool, HeapError> {
+                    Ok(heap.table_entry(fields, offset + index)?.1.as_bool() == Some(true))
+                };
+                let visible = !state(3)? && (state(0)? || state(4)?);
+                active = Some(visible);
+                visible
+            };
+            if visible != previous {
+                view.hint = Some(visible);
+                self.scene
+                    .update(child, NodeKind::Popup(view), node.props.clone())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Floating layers paint after the base scene; nested layers follow DFS order.
     pub(super) fn popup_modal_scope(&self, heap: &Heap) -> Result<Option<NodeId>, AdapterError> {
         let mut pending: Vec<_> = self
@@ -90,7 +152,10 @@ impl StageBinding {
                 continue;
             }
             let enabled = ancestors_enabled && flag(NodeProperty::Enabled)?;
-            if matches!(node.kind, NodeKind::Popup(_)) {
+            if let NodeKind::Popup(view) = node.kind {
+                if view.hint.is_some() {
+                    continue;
+                }
                 if node.parent.is_none() || !enabled {
                     continue;
                 }
@@ -121,7 +186,7 @@ impl StageBinding {
         let Some(node) = self.scene.node(id) else {
             return Ok(None);
         };
-        if !matches!(node.kind, NodeKind::Popup(_)) {
+        if !matches!(node.kind, NodeKind::Popup(view) if view.hint.is_none()) {
             return Ok(None);
         }
         let target = self.value(heap, id)?;

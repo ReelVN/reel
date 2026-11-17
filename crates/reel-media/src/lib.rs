@@ -49,4 +49,4 @@ mod desktop;
     feature = "cpal-output",
     any(target_os = "linux", target_os = "windows", target_os = "macos")
 ))]
-pub use desktop::CpalOutput;
+pub use desktop::{CpalOutput, DesktopAudio};

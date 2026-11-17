@@ -36,7 +36,9 @@ mod registry;
 mod results;
 mod scopes;
 pub mod transitions;
-pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
+pub use results::geometry::{
+    GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry, RevealProjection,
+};
 mod conditions;
 mod effects;
 mod gradients;
@@ -80,6 +82,22 @@ pub enum AdapterError {
     Allocation,
     Stage(reel_ui::stage::StageError),
     Snapshot(aside_vm::snapshot::SnapshotError),
+    State(aside_vm::typed_data::SchemaError),
+    Resume(aside_vm::resume::ResumeError),
+}
+impl From<aside_vm::resume::ResumeError> for AdapterError {
+    fn from(error: aside_vm::resume::ResumeError) -> Self {
+        Self::Resume(error)
+    }
+}
+impl From<aside_vm::typed_data::SchemaError> for AdapterError {
+    fn from(error: aside_vm::typed_data::SchemaError) -> Self {
+        match error {
+            aside_vm::typed_data::SchemaError::Heap(error) => Self::Heap(error),
+            aside_vm::typed_data::SchemaError::Allocation => Self::Allocation,
+            error => Self::State(error),
+        }
+    }
 }
 impl From<aside_vm::snapshot::SnapshotError> for AdapterError {
     fn from(error: aside_vm::snapshot::SnapshotError) -> Self {
@@ -129,6 +147,8 @@ impl std::fmt::Display for AdapterError {
             Self::Input(message) => f.write_str(message),
             Self::Asset(message) => f.write_str(message),
             Self::Snapshot(error) => write!(f, "{error}"),
+            Self::State(error) => write!(f, "{error}"),
+            Self::Resume(error) => write!(f, "{error}"),
             _ => write!(f, "{self:?}"),
         }
     }
@@ -142,7 +162,7 @@ impl AdapterError {
             Self::Vm(VmError::Effect) => Some(FaultKind::Effect),
             Self::Vm(VmError::Limit) => Some(FaultKind::Resource),
             Self::InputQueue(_) => Some(FaultKind::Resource),
-            Self::Input(_) | Self::Markup(_) => Some(FaultKind::Type),
+            Self::Input(_) | Self::Markup(_) | Self::State(_) => Some(FaultKind::Type),
             Self::Stage(_) => Some(FaultKind::Type),
             Self::Allocation | Self::Session(SessionError::AllocationFailed) => {
                 Some(FaultKind::Resource)
@@ -198,6 +218,7 @@ struct PendingInteraction {
     task: TaskId,
     wait: WaitId,
     keys: Option<RetainedKeys>,
+    return_value: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,6 +254,8 @@ pub enum SessionStep {
 pub struct SessionVm {
     vm: Vm,
     resume: aside_vm::resume::VerifiedResumeTable,
+    flow: checkpoint::FlowRuntime,
+    reading_resume: Option<checkpoint::ReadingResume>,
     identity: SessionIdentity,
     owner: OwnerHandle,
     root_owner: RootOwner,
@@ -351,11 +374,19 @@ impl SessionVm {
         let owner = session.root_owner();
         let stage = stage::StageBinding::new(vm.heap())?;
         let standard = aside_std::StandardLibrary::new(vm.program());
-        let resume = vm.program().verify_resume(Default::default(), Default::default())
+        let resume = vm
+            .program()
+            .verify_resume(
+                Default::default(),
+                crate::aside::source::types(),
+                Default::default(),
+            )
             .expect("the empty continuation table is valid for every verified program");
         Ok(Self {
             vm,
             resume,
+            flow: checkpoint::FlowRuntime::default(),
+            reading_resume: None,
             identity,
             owner,
             root_owner: RootOwner(owner.owner_id().0),
@@ -640,20 +671,22 @@ impl SessionVm {
                 || self.transitions.needs_time())
     }
 
+    /// Delay from the latest logical sample to the next presentation cadence sample.
+    pub fn animation_sample_after(&self) -> std::time::Duration {
+        let rate = self
+            .game
+            .animation_rate(self.window_info().refresh_rate_millihertz);
+        rate.map_or(std::time::Duration::ZERO, |rate| {
+            cadence::poll_after(self.activities.time(), rate)
+        })
+    }
+
     /// Delay from the latest logical sample to the next producer deadline.
-    /// Continuous animations use the configured logical-clock phase, skipping
-    /// elapsed sampling points after a late wake instead of accumulating drift.
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         if self.revoked {
             return None;
         }
-        let rate = self
-            .game
-            .frame_rate_millihertz
-            .or(self.window_info().refresh_rate_millihertz)
-            .filter(|rate| (1_000..=1_000_000).contains(rate))
-            .unwrap_or(60_000);
-        let sampling = cadence::poll_after(self.activities.time(), rate);
+        let sampling = self.animation_sample_after();
         let particles =
             (self.particles.needs_time() || self.transitions.needs_time()).then_some(sampling);
         match (self.activities.poll_after(sampling), particles) {
@@ -941,6 +974,7 @@ impl SessionVm {
             task: ticket.task,
             wait,
             keys,
+            return_value: None,
         });
         self.feedback_only = false;
         publication.commit(session);
@@ -984,7 +1018,9 @@ impl SessionVm {
             return Err(AdapterError::Input("cleanup-only completion"));
         }
         let value = match completion.outcome() {
-            CompletionOutcome::Advanced if pending.keys.is_none() => Value::NULL,
+            CompletionOutcome::Advanced if pending.keys.is_none() => {
+                pending.return_value.unwrap_or(Value::NULL)
+            }
             CompletionOutcome::Selected(selected) => {
                 let key = pending
                     .keys
@@ -1085,6 +1121,7 @@ impl SessionVm {
         for index in 0..self.tasks.len() {
             self.cancel_callback(session, index)?;
         }
+        self.flow.clear(self.vm.heap_mut())?;
         if let Some(task) = self.task {
             self.cancel_task_transitions(task, None)?;
             self.cancel_task_scopes(session, task)?;
@@ -1123,6 +1160,7 @@ impl SessionVm {
         self.issued = None;
         // Tokens are invalidated by the owner scan; never release them twice.
         self.pending = None;
+        self.reading_resume = None;
         self.choice_reader = None;
         self.dialogue_reader = None;
         self.claimed = None;

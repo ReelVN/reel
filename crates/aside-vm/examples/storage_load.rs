@@ -18,7 +18,7 @@ struct Report {
     chunks: u64,
     final_live: u32,
     freed_bytes: u64,
-    released_edges: u64,
+    work_units: u64,
     max_drop_heap_ns: u64,
 }
 fn timed<T>(report: &mut Report, op: impl FnOnce() -> T) -> T {
@@ -66,7 +66,6 @@ fn cycle(h: &mut Heap, report: &mut Report, samples: &mut [u64; 16384], allowanc
             GcPhase::Idle => unreachable!(),
         }
         report.freed_bytes += progress.bytes;
-        report.released_edges += progress.release_edges as u64;
         report.peak_pending = h.stats().peak_pending_bytes;
     }
 }
@@ -108,6 +107,7 @@ fn run_budget(
         report.peak_charged = stats.peak_charged_bytes;
         report.reserved = stats.reserved_bytes;
         report.chunks = stats.chunk_allocations;
+        report.work_units = stats.gc_units;
         let start = Instant::now();
         drop(h);
         report.max_drop_heap_ns = start.elapsed().as_nanos() as u64;
@@ -120,10 +120,11 @@ fn run_budget(
         total.bytes_max <= report.peak_charged,
         "conservative accounting must cover allocator peak"
     );
+    let gc_total_ns = samples[..report.steps].iter().sum::<u64>();
     samples[..report.steps].sort_unstable();
     let quantile = |percent: usize| samples[(report.steps - 1) * percent / 100];
     println!(
-        "{name},gc_units={},operations={},max_mutation_ns={},gc_steps={},gc_p50_ns={},gc_p95_ns={},gc_p99_ns={},gc_max_ns={},mark_max_ns={},weak_max_ns={},sweep_max_ns={},gc_allocations={},allocation_count={},allocated_bytes={},actual_peak_bytes={},peak_charged_bytes={},reserved_bytes={},peak_pending_bytes={},chunk_allocations={},released_edges={},freed_charged_bytes={},final_live={},heap_drop_ns={}",
+        "{name},gc_units={},operations={},max_mutation_ns={},gc_steps={},gc_total_ns={gc_total_ns},gc_p50_ns={},gc_p95_ns={},gc_p99_ns={},gc_max_ns={},mark_max_ns={},weak_max_ns={},sweep_max_ns={},gc_allocations={},allocation_count={},allocated_bytes={},actual_peak_bytes={},peak_charged_bytes={},reserved_bytes={},peak_pending_bytes={},chunk_allocations={},gc_work_units={},freed_charged_bytes={},final_live={},heap_drop_ns={}",
         budget.units,
         report.operations,
         report.max_mutation_ns,
@@ -143,7 +144,7 @@ fn run_budget(
         report.reserved,
         report.peak_pending,
         report.chunks,
-        report.released_edges,
+        report.work_units,
         report.freed_bytes,
         report.final_live,
         report.max_drop_heap_ns

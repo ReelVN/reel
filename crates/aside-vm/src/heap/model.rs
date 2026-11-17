@@ -158,6 +158,11 @@ impl Heap {
         let mut cursor = 0;
         while cursor < self.model_work.len() {
             let current = self.model_work[cursor];
+            if self.object(self.key(current)?)?.kind == ObjectKind::Array {
+                self.adopt_array_edges(current)?;
+                cursor += 1;
+                continue;
+            }
             let mut edge = 0;
             while let Some(value) = self.model_data_edge(current, edge)? {
                 self.model_enqueue(value)?;
@@ -172,6 +177,30 @@ impl Heap {
         }
         self.model_work.clear();
         Ok(())
+    }
+
+    fn adopt_array_edges(&mut self, array: Value) -> Result<(), HeapError> {
+        let mut offset = 0;
+        let mut previous = Value::NULL;
+        let mut children = [Value::NULL; crate::payload::VALUE_CHUNK_LEN];
+        loop {
+            let segment = self.array_segment(array, offset)?;
+            if segment.is_empty() {
+                return Ok(());
+            }
+            offset += segment.len() as u32;
+            let mut count = 0;
+            for &value in segment {
+                if value.tag() == crate::ValueTag::Object && !value.same_bits(previous) {
+                    children[count] = value;
+                    count += 1;
+                    previous = value;
+                }
+            }
+            for &child in &children[..count] {
+                self.model_enqueue(child)?;
+            }
+        }
     }
 
     pub(super) fn model_candidate(&self, value: Value) -> Result<bool, HeapError> {
@@ -248,6 +277,25 @@ impl Heap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopting_an_array_reaches_nested_objects_across_storage_blocks() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let owner = heap.alloc_array(&[]).unwrap();
+        heap.observe_model_object(owner).unwrap();
+        let child = heap.alloc_table().unwrap();
+        let nested = heap.alloc_array(&[child]).unwrap();
+        let array = heap.alloc_array(&[Value::int(0); 140]).unwrap();
+        heap.set_field(array, 31, nested).unwrap();
+        heap.set_field(array, 32, nested).unwrap();
+        heap.set_field(array, 100, array).unwrap();
+        heap.set_field(array, 139, child).unwrap();
+        heap.array_push(owner, array).unwrap();
+        for value in [array, nested, child] {
+            assert!(heap.object(heap.key(value).unwrap()).unwrap().model);
+        }
+        assert!(heap.sequence_get(array, 100).unwrap().same_bits(array));
+    }
 
     #[test]
     fn model_updates_reuse_the_property_graph_without_allocating() {

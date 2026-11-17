@@ -112,6 +112,7 @@ fn virtual_list_natural_first_frame_packs_measured_neighbors_and_keeps_actual_hi
                 overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
+                snap_y: None,
                 align: reel_ui::widgets::ScrollAlign::Start,
                 offset: Vec2::new(0., 6645.),
             },

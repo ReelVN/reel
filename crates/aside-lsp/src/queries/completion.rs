@@ -40,6 +40,8 @@ impl Workspace {
             };
             let prefix_refs: Vec<_> = prefix.iter().map(String::as_str).collect();
             let path = prefix.join("::");
+            let source_path = self.canonical_source_import(uri, &path);
+            let source_path = source_path.as_deref().unwrap_or(&path);
             let mut items = std::collections::BTreeMap::new();
             for name in self.import_modules(uri, &prefix_refs) {
                 items.insert(
@@ -84,8 +86,8 @@ impl Workspace {
             if let Some(module) = snapshot
                 .project
                 .modules()
-                .find(|module| module.canonical_path() == path)
-                && let Some(source) = snapshot.sources.get(&path)
+                .find(|module| module.canonical_path() == source_path)
+                && let Some(source) = snapshot.sources.get(source_path)
             {
                 for &id in module.exports() {
                     let item = source_completion(module, source, id, &snapshot, &self.host);
@@ -176,6 +178,20 @@ impl Workspace {
             return Ok(items.into_values().collect());
         }
         if let Some(base) = member_base(&snapshot, module, offset) {
+            if let Some(fields) = aside_compiler::hir::record_fields(
+                module.types(),
+                module.facts()[base.0 as usize].ty,
+            ) {
+                return Ok(fields
+                    .iter()
+                    .map(|&(name, ty)| CompletionItem {
+                        label: module.hir().name(name).into(),
+                        kind: Some(CompletionItemKind::FIELD),
+                        detail: Some(type_label(module, ty)),
+                        ..Default::default()
+                    })
+                    .collect());
+            }
             if let Some(class) =
                 external(module, Some(base), module.facts()[base.0 as usize].symbol)
                     .and_then(|symbol| symbol.class.as_ref())
@@ -316,6 +332,21 @@ impl Workspace {
         if let Some((callee, arguments)) = call_at(module, offset)
             && let Some(signature) = signature_for(&snapshot, module, source, &self.host, callee)
         {
+            if !signature.literal_parameters.is_empty() {
+                let active = active_parameter(module, arguments, offset, &signature);
+                if let Some((_, values)) = signature
+                    .literal_parameters
+                    .iter()
+                    .find(|(index, _)| *index == active)
+                {
+                    items.extend(values.iter().map(|value| CompletionItem {
+                        label: value.clone(),
+                        kind: Some(CompletionItemKind::VALUE),
+                        sort_text: Some(format!("0{value}")),
+                        ..Default::default()
+                    }));
+                }
+            }
             let mut supplied = BTreeSet::new();
             let mut positional = 0;
             for arg in arguments

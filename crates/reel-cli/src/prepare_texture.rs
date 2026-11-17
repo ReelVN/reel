@@ -1,12 +1,10 @@
 //! Offline image conversion into portable linear-premultiplied texture blocks.
-use image::{
-    ColorType, DynamicImage, ImageDecoder, ImageReader, RgbaImage, imageops, metadata::Cicp,
-};
+use image::{ColorType, DynamicImage, RgbaImage, imageops, metadata::Cicp};
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::texture::{
     ColorEncoding, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
-use std::path::Path;
+use std::{fs, path::Path};
 pub(crate) mod mips;
 pub(crate) mod quality;
 
@@ -75,7 +73,7 @@ impl Options {
     }
 }
 
-/// Prepare PNG/JPEG artwork and atomically publish a new `.reel-texture` file.
+/// Prepare PNG, JPEG or static WebP and atomically publish a new texture file.
 /// Filtering uses linear-premultiplied colors; padding repeats the content edge.
 /// Pixel and BC payloads are stored ready for upload. Release archives compress
 /// these bytes in independently readable blocks. Existing output files are preserved.
@@ -101,7 +99,12 @@ pub fn prepare_bounded(
     options: Options,
     memory_bytes: u64,
 ) -> Result<(TextureHeader, u64), String> {
-    prepare_scaled_bounded(source, output, options, 1., memory_bytes)
+    let (header, workspace) =
+        prepare_scaled_bounded(source, output, options, 1., memory_bytes, false)?;
+    Ok((
+        header.expect("standalone texture preparation always publishes a texture"),
+        workspace,
+    ))
 }
 
 pub(crate) fn prepare_scaled_bounded(
@@ -110,7 +113,8 @@ pub(crate) fn prepare_scaled_bounded(
     options: Options,
     scale: f64,
     memory_bytes: u64,
-) -> Result<(TextureHeader, u64), String> {
+    fallback_to_source: bool,
+) -> Result<(Option<TextureHeader>, u64), String> {
     options.validate()?;
     if output
         .extension()
@@ -121,20 +125,7 @@ pub(crate) fn prepare_scaled_bounded(
     if output.exists() {
         return Err("output already exists; choose a new output path".into());
     }
-    let mut reader = ImageReader::open(source)
-        .map_err(|e| e.to_string())?
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    if !matches!(
-        reader.format(),
-        Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)
-    ) {
-        return Err("original image must be PNG or JPEG".into());
-    }
-    let mut limits = image::Limits::no_limits();
-    limits.max_alloc = Some(memory_bytes);
-    reader.limits(limits);
-    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (decoder, codec_workspace) = reel_player::artwork::open(source, memory_bytes)?;
     let dimensions = decoder.dimensions();
     let logical = [dimensions.0, dimensions.1];
     let content = scaled_content_size(logical, options.max_size, scale)?;
@@ -183,7 +174,8 @@ pub(crate) fn prepare_scaled_bounded(
         0
     };
     let workspace = u64::try_from(
-        cast.max(resize)
+        cast.max(u128::from(decoder.total_bytes()) + u128::from(codec_workspace))
+            .max(resize)
             .max(quantize)
             .max(encode)
             .max(mip_workspace)
@@ -203,8 +195,30 @@ pub(crate) fn prepare_scaled_bounded(
             error.message
         )
     })?;
+    let raw_decode_bytes =
+        u128::from(decoder.total_bytes()) + u128::from(codec_workspace) + original_pixels * 4;
     let pixels = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
-    prepare_decoded_scaled(pixels, output, options, scale).map(|result| (result, workspace))
+    let (descriptor, linear) = prepare_linear(pixels, options, scale)?;
+    let (blocks, meets_quality) = mips::encode(linear, descriptor, options.dither)?;
+    if fallback_to_source && !meets_quality {
+        if options.gxm_layout {
+            let limit = reel_player::artwork::VITA_DECODE_BYTES
+                - reel_package::archive::SCRATCH_BYTES as u64;
+            let length = fs::metadata(source)
+                .map_err(|error| error.to_string())?
+                .len();
+            if raw_decode_bytes > u128::from(limit)
+                || length > reel_player::artwork::VITA_INPUT_BYTES
+            {
+                return Err(format!(
+                    "texture exceeds the quality threshold and its original exceeds the Vita decode budget ({raw_decode_bytes} workspace bytes, {limit} available)"
+                ));
+            }
+        }
+        fs::copy(source, output).map_err(|error| error.to_string())?;
+        return Ok((None, workspace));
+    }
+    publish_texture(output, descriptor, &blocks).map(|header| (Some(header), workspace))
 }
 
 /// Peak BC fitting, quality measurement and envelope storage after source decode.
@@ -221,17 +235,16 @@ pub(crate) fn prepare_decoded(
     output: &Path,
     options: Options,
 ) -> Result<TextureHeader, String> {
-    prepare_decoded_scaled(pixels, output, options, 1.)
+    let (descriptor, linear) = prepare_linear(pixels, options, 1.)?;
+    let (blocks, _) = mips::encode(linear, descriptor, options.dither)?;
+    publish_texture(output, descriptor, &blocks)
 }
 
-fn prepare_decoded_scaled(
-    pixels: DynamicImage,
+fn publish_texture(
     output: &Path,
-    options: Options,
-    scale: f64,
+    descriptor: TextureDescriptor,
+    blocks: &[u8],
 ) -> Result<TextureHeader, String> {
-    let (descriptor, linear) = prepare_linear(pixels, options, scale)?;
-    let blocks = mips::encode(linear, descriptor, options.dither)?;
     let header = TextureHeader::new(descriptor, TextureCodec::Raw, blocks.len() as u64)
         .map_err(|e| e.to_string())?;
     let parent = output
@@ -241,7 +254,7 @@ fn prepare_decoded_scaled(
     let target = parent.join(output.file_name().ok_or("output filename is missing")?);
     let published = reel_storage::publish(&target, false, |file| {
         file.write_all(&header.encode())?;
-        file.write_all(&blocks)
+        file.write_all(blocks)
     })
     .map_err(|e| e.to_string())?;
     if let Some(warning) = published.cleanup_warning {

@@ -340,8 +340,8 @@ fn run_package_on(
     // Font payloads move from input to resident ownership without copying. Keep
     // complete Unicode fonts viable alongside images and dynamic player input.
     options.assets.resident_bytes = 64 << 20;
-    options.assets.input_bytes = 24 << 20;
-    options.assets.decode_bytes = 12 << 20;
+    options.assets.input_bytes = crate::artwork::VITA_INPUT_BYTES;
+    options.assets.decode_bytes = crate::artwork::VITA_DECODE_BYTES;
     options.asset_packages = Some(loaded.packages);
     options.asset_overlay = loaded.loose;
     options.resource_target = "vita".into();

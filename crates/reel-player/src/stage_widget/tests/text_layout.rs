@@ -382,6 +382,7 @@ fn authored_text_width_controls_scroll_extent_independently_of_parent_width() {
                 overscroll: Default::default(),
                 axis: ScrollAxis::Vertical,
                 follow_end: true,
+                snap_y: None,
                 align: reel_ui::widgets::ScrollAlign::End,
                 offset: Vec2::ZERO,
             },

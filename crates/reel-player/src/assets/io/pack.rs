@@ -23,6 +23,12 @@ pub(super) struct Files {
     workspace: Option<Box<Workspace>>,
     _storage: BudgetTicket,
 }
+
+#[derive(Clone, Copy)]
+pub(super) struct Location {
+    archive: usize,
+    entry: usize,
+}
 impl Files {
     #[cfg(test)]
     pub(super) fn seek_calls(&self) -> usize {
@@ -87,8 +93,7 @@ impl Files {
         }
         let workspace = if archives
             .iter()
-            .flat_map(|archive| archive.index.entries())
-            .any(|e| matches!(e.storage, EntryStorage::Blocks { .. }))
+            .any(|archive| archive.index.has_block_entries())
         {
             let ticket = temporary
                 .reserve(archive::SCRATCH_BYTES as u64)
@@ -116,7 +121,12 @@ impl Files {
             _storage: storage,
         })
     }
-    pub(super) fn entry(&mut self, source: &AssetSource) -> Result<ReadFile<'_>, IoError> {
+    pub(super) fn entry(
+        &mut self,
+        source: &AssetSource,
+        location: Option<Location>,
+    ) -> Result<ReadFile<'_>, IoError> {
+        let immutable = self.overlay.is_none();
         if let Some(overlay) = &mut self.overlay {
             match overlay.open(source) {
                 Ok(file) => return Ok(ReadFile::directory(file)),
@@ -124,37 +134,45 @@ impl Files {
                 Err(error) => return Err(error),
             }
         }
-        let (source_index, file, descriptor) = self
-            .archives
-            .iter_mut()
-            .enumerate()
-            .rev()
-            .find_map(|(source_index, archive)| {
-                archive
-                    .index
-                    .get(&source.key.0)
-                    .map(|entry| (source_index, &mut archive.file, entry))
+        let location = location
+            .or_else(|| {
+                self.archives
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(archive, mount)| {
+                        mount
+                            .index
+                            .index_of(&source.key.0)
+                            .map(|entry| Location { archive, entry })
+                    })
             })
             .ok_or_else(|| IoError {
                 code: IoErrorCode::NotFound,
                 message: format!("asset not found in mounted archives: {}", source.key.0),
             })?;
+        let archive = &mut self.archives[location.archive];
+        let descriptor = archive
+            .index
+            .entry_at(location.entry)
+            .expect("resolved archive entry");
         let compressed = match descriptor.storage {
             EntryStorage::Raw => None,
             EntryStorage::Blocks { .. } => {
                 let workspace = self.workspace.as_mut().unwrap();
-                if workspace.source != Some(source_index) {
+                if workspace.source != Some(location.archive) {
                     workspace.scratch.clear_encoded();
-                    workspace.source = Some(source_index);
+                    workspace.source = Some(location.archive);
                 }
                 Some((descriptor, &mut workspace.scratch))
             }
         };
         Ok(ReadFile {
-            file,
+            file: &mut archive.file,
             offset: descriptor.offset,
             length: descriptor.length,
             version: ContentVersion(descriptor.version),
+            location: immutable.then_some(location),
             compressed,
         })
     }

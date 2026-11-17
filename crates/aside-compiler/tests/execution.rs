@@ -49,6 +49,80 @@ fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
 }
 
 #[test]
+fn value_contracts_run_through_bytecode_and_mutable_aliases() {
+    let source = r#"
+        fn dynamic(value: any) -> any { value }
+        fn view(value: any) -> {node: int, caption: "back" | "title"} { value }
+        fn menu(value: any) -> "back" | "title" { value }
+        fn main() -> int {
+            let raw = dynamic({caption: "back", node: 7});
+            let result = view(raw);
+            if !(result is {caption:"back", node:int}) || result.caption.byte_len() != 4 {
+                throw "structural lookup";
+            }
+            let mut rejected = 0;
+            try { let _ = view(dynamic({node: 7, caption:"bad"})); } catch e { rejected += 1; }
+            try { let _ = view(dynamic({node: 7, caption:"back", extra:0})); } catch e { rejected += 1; }
+            try { let _ = menu(dynamic("bad")); } catch e { rejected += 1; }
+            try { result.node = dynamic("wrong"); } catch e { rejected += 1; }
+            if result.node != 7 { throw "invalid field write published"; }
+            raw.node = "wrong";
+            try { let _ = result.node; } catch e { rejected += 1; }
+            result.node = 37;
+            let {node} = result;
+            if !(("ti" + "tle") is "title") || !("" is "") || !("a\0" is "a\0") || (dynamic(7) is "7") {
+                throw "string literal type";
+            }
+            node + rejected
+        }
+    "#;
+    let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
+        .unwrap()
+        .into_module()
+        .unwrap();
+    let compiled = lowering::compile(
+        &module,
+        &lowering::Linkage::default(),
+        &[],
+        lowering::Options::default(),
+    )
+    .unwrap();
+    let package = compiled.program.package();
+    let entry = bc::FunctionId(
+        package
+            .functions
+            .iter()
+            .position(|f| package.symbols[f.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let bytes = bc::encode(package, bc::Limits::default()).unwrap();
+    let mut release = package.clone();
+    let pool = bc::externalize_text(&mut release).unwrap();
+    let release = bc::encode(&release, bc::Limits::default()).unwrap();
+    for program in [
+        compiled.program,
+        bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap(),
+        bc::VerifiedProgram::decode_with_text_pool(&release, bc::Limits::default(), pool).unwrap(),
+    ] {
+        let mut vm = Vm::load(
+            program,
+            bc::RuntimeSupport::default(),
+            VmLimits::default(),
+            SessionEpoch(1),
+        )
+        .unwrap();
+        let init = vm
+            .start(compiled.entry, &[], RootOwner(1), bc::Context::Init)
+            .unwrap();
+        finish(&mut vm, init, false);
+        let task = vm
+            .start(entry, &[], RootOwner(1), bc::Context::Ordinary)
+            .unwrap();
+        assert_eq!(finish(&mut vm, task, true).as_int(), Some(42));
+    }
+}
+
+#[test]
 fn bytes_annotations_check_real_values_and_survive_bytecode() {
     let source = r#"
         fn keep(value: Bytes) -> Bytes { value }
@@ -70,6 +144,7 @@ fn bytes_annotations_check_real_values_and_survive_bytecode() {
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();
@@ -153,6 +228,7 @@ fn table_remove_preserves_order_results_and_key_contracts_with_gc() {
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();
@@ -257,6 +333,57 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
                 try {dynamic.find(1,2);} catch e {rejected+=1;}
                 if rejected!=3 {throw "argument contracts";}
                 42
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let mut calls = 0;
+                let values = [20, 22, 100];
+                let first = values.first_where(|item| { calls += 1; item > 20 });
+                if calls != 2 || first != 22 || !values.any(|item| item == 20)
+                    || ().any(|item| true) { throw "predicate scan"; }
+                let entries = {existing: null};
+                if entries.get_or_insert_with("existing", || { throw "factory ran"; }) != null {
+                    throw "stored null was lost";
+                }
+                let second = entries.get_or_insert_with("new", || { calls += 1; 20 });
+                let current = entries.get_or_insert_with("competing", || {
+                    entries.competing = 7;
+                    8
+                });
+                if calls != 3 || current != 7 || entries.new != 20 {
+                    throw "entry factory";
+                }
+                first + second
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let {value: item, index} = {value: 20, index: 2};
+                let mut total = item + index;
+                for {field} in [{field: 20}] { total += field; }
+                total
+            }"#,
+            42,
+        ),
+        (
+            r#"fn single(value) { {value,} }
+            fn main() {
+                let mut width = 20;
+                let height = 22;
+                fn advance() { width += 1; width }
+                let parts = {width, next: advance(), height};
+                let result = if true {
+                    let width = parts.width;
+                    {width, height}
+                } else { {} };
+                let single_field = single(parts.next);
+                if width != 21 || single_field.value != 21 || ({height}).height != 22 {
+                    throw "shorthand record fields";
+                }
+                result.width + result.height
             }"#,
             42,
         ),
@@ -484,6 +611,12 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             if alias.len()!=0 || copy.len()!=3 || copy[0].n!=9 || copy[1]!=3 || copy[2]!=4 {throw "slice/clear";}
             a.extend((1,2)); a.extend(items:a); a.resize(length:6);
             if a.len()!=6 || a[2]!=1 || a[3]!=2 || a[4]!=null || a[5]!=null {throw "extend/resize";}
+            let grown = a.resize(length:181, value:shared);
+            if grown!=a || alias.len()!=181 || a[5]!=null {throw "resize commit";}
+            for i in 6..181 {
+                if a[i]!=shared {throw "resize fill";}
+            }
+            a.resize(6);
             if (1,2,3).slice(1..3)!=(2,3) || ().slice(0..0)!=() {throw "tuple slice";}
             let t={x:shared,y:2}; let keys=t.keys(); let values=t.values(); let entries=t.entries();
             if keys[0]!="x" || keys[1]!="y" || values[0]!=shared || entries[0]!=("x",shared) {throw "own fields";}
@@ -735,6 +868,30 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
     })
     .collect();
     cases.extend(split_cases.iter().map(|source| (source.as_str(), 42)));
+    let long_replacement = "界".repeat(900);
+    let replace_cases: Vec<_> = [
+        ("aaaaa", "aa", "中"),
+        ("", "", "🙂"),
+        ("中🙂é", "", "|"),
+        ("abc", "longer", ""),
+        (crossing.as_str(), "中文🙂", long_replacement.as_str()),
+        (repetitive.as_str(), long_separator.as_str(), "替"),
+    ]
+    .into_iter()
+    .map(|(text, pattern, replacement)| {
+        let expected = text.replace(pattern, replacement);
+        format!(
+            r#"fn main() {{
+            let substitute = {text:?}.replace;
+            if substitute(pattern: {pattern:?}, replacement: {replacement:?}) != {expected:?} {{
+                throw "replace result";
+            }}
+            42
+        }}"#
+        )
+    })
+    .collect();
+    cases.extend(replace_cases.iter().map(|source| (source.as_str(), 42)));
     for (source, expected) in cases {
         let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
             .unwrap()
@@ -743,6 +900,7 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         let compiled = lowering::compile(
             &module,
             &lowering::Linkage::default(),
+            &[],
             lowering::Options::default(),
         )
         .unwrap();
@@ -830,6 +988,7 @@ mod sorting {
         lowering::compile(
             &module,
             &lowering::Linkage::default(),
+            &[],
             lowering::Options::default(),
         )
         .unwrap()

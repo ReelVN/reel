@@ -12,6 +12,7 @@ aside_host::native_documentation! {
         /// or null.
         /// `frame_rate` accepts 1..1000 Hz, rounded to 0.001 Hz; 0 selects automatic
         /// display refresh rate (60 Hz when unknown). The default is automatic.
+        /// `"uncapped"` samples continuous animation whenever the player can produce a frame.
         /// It controls tweens, particles and transitions; explicit clock intervals,
         /// text reveal speed and window vsync retain their own settings.
         "reel::game::configure";
@@ -36,7 +37,15 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             ("width", nullable(TypeHint::Int)),
             ("height", nullable(TypeHint::Int)),
             ("text_speed", nullable(number())),
-            ("frame_rate", nullable(number())),
+            (
+                "frame_rate",
+                TypeHint::Union(vec![
+                    TypeHint::Int,
+                    TypeHint::Float,
+                    TypeHint::StringLiteral("uncapped".into()),
+                    TypeHint::Null,
+                ]),
+            ),
         ],
     );
     api.refine(
@@ -55,7 +64,8 @@ pub struct GameSettings {
     pub canvas_size: Option<[u32; 2]>,
     pub fonts: Vec<String>,
     pub text_speed: f64,
-    /// Continuous animation sampling rate in millihertz; None follows the display.
+    /// Continuous animation sampling rate in millihertz. None follows the display;
+    /// an explicit zero in this field represents uncapped sampling.
     pub frame_rate_millihertz: Option<u32>,
     pub source: Option<String>,
 }
@@ -68,6 +78,21 @@ impl Default for GameSettings {
             text_speed: 30.,
             frame_rate_millihertz: None,
             source: None,
+        }
+    }
+}
+
+impl GameSettings {
+    /// Resolve the animation rate. None denotes sampling without a cadence limit.
+    pub fn animation_rate(&self, display_millihertz: Option<u32>) -> Option<u32> {
+        match self.frame_rate_millihertz {
+            Some(0) => None,
+            Some(rate) => Some(rate),
+            None => Some(
+                display_millihertz
+                    .filter(|rate| (1_000..=1_000_000).contains(rate))
+                    .unwrap_or(60_000),
+            ),
         }
     }
 }
@@ -131,11 +156,17 @@ impl SessionVm {
             let rate = args[5]
                 .as_float()
                 .or_else(|| args[5].as_int().map(|n| n as f64))
-                .filter(|rate| rate.is_finite() && (*rate == 0. || (1.0..=1000.).contains(rate)))
-                .ok_or(AdapterError::Input(
-                    "frame_rate must be 0 (automatic) or finite Hz in 1..1000",
-                ))?;
-            next.frame_rate_millihertz = (rate != 0.).then_some((rate * 1000.).round() as u32);
+                .filter(|rate| *rate == 0. || (1.0..=1000.).contains(rate));
+            next.frame_rate_millihertz = match rate {
+                Some(0.) => None,
+                Some(rate) => Some((rate * 1000.).round() as u32),
+                None if read(args[5]).is_ok_and(|value| value == "uncapped") => Some(0),
+                None => {
+                    return Err(AdapterError::Input(
+                        "frame_rate must be 0 (automatic), Hz in 1..1000, or \"uncapped\"",
+                    ));
+                }
+            };
         }
         if next != *self.game {
             if next.fonts != self.game.fonts {

@@ -325,14 +325,7 @@ impl SessionVm {
                         }
                     }
                     put(self.vm.heap_mut(), w.state, S::Mounted, w.source)?;
-                    let revision = int(self.vm.heap(), w.state, S::Revision)? + 1;
-                    put(
-                        self.vm.heap_mut(),
-                        w.state,
-                        S::Revision,
-                        Value::int(revision),
-                    )?;
-                    commit_projection(self.vm.heap_mut(), w.state)?;
+                    commit_projection(self.vm.heap_mut(), w.state, true)?;
                     self.stage.publish_virtual(self.vm.heap(), host)?;
                     put(self.vm.heap_mut(), w.state, S::Candidate, Value::NULL)?;
                     self.virtual_target_arm(w.state)?;
@@ -340,7 +333,7 @@ impl SessionVm {
                 }
             }
             BUILT => {
-                let child = self.vm.host_callback_value(t)?;
+                let child = self.vm.host_resume_value(t)?;
                 if child.tag() == ValueTag::Null {
                     return Err(AdapterError::Input("virtual list build must return a node"));
                 }

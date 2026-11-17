@@ -145,8 +145,8 @@ pub(crate) fn analyze(
     if admitted > limits.max_work {
         return Err(admitted);
     }
-    // Summaries are optional editor data. Bound both work and the combined
-    // inference stack even when the host uses unrestricted compiler limits.
+    // Bound work and the combined inference stack when the host uses
+    // unrestricted compiler limits.
     let limits = AnalysisLimits {
         max_work: limits.max_work.min(
             admitted
@@ -324,6 +324,7 @@ pub(crate) fn analyze(
     Ok(work)
 }
 
+mod callbacks;
 mod expressions;
 mod flow;
 
@@ -355,12 +356,26 @@ impl Inference<'_> {
             Type::Int => TypeHint::Int,
             Type::Float => TypeHint::Float,
             Type::String => TypeHint::String,
+            Type::StringLiteral(text) => TypeHint::StringLiteral(text.clone()),
             Type::Array => TypeHint::Array,
             Type::Table => TypeHint::Table,
             Type::Future => TypeHint::Future,
             Type::Generator => TypeHint::Generator,
             Type::Closure | Type::Function(_) | Type::BoundMethod(_) => TypeHint::Closure,
             Type::Named(name) => TypeHint::Named(module.hir.name(*name).into()),
+            Type::Record(fields) => {
+                if !self.charge(fields.len()) {
+                    return TypeHint::Any;
+                }
+                let mut result = Vec::with_capacity(fields.len());
+                for &(name, ty) in fields {
+                    result.push((module.hir.name(name).into(), self.hint(m, ty, depth + 1)));
+                    if self.exhausted {
+                        return TypeHint::Any;
+                    }
+                }
+                TypeHint::Record(result)
+            }
             // Bound tuple/callable types remain available directly from HIR. Expanding
             // their shared type DAG into owned TypeHint trees would duplicate it.
             Type::Tuple(_) => TypeHint::Any,
@@ -702,13 +717,27 @@ impl Inference<'_> {
         }
         let previous = std::mem::replace(&mut self.current_module, m);
         let mut state = State::new();
-        let tail = self.visit(m, body, &mut state, 0);
+        let result = self.infer_function_body(m, body, generator, declared, &mut state);
+        self.facts[m].functions[id.0 as usize] = Some(result.clone());
+        self.active.remove(&(m, id));
+        self.current_module = previous;
+        result
+    }
+    fn infer_function_body(
+        &mut self,
+        m: usize,
+        body: NodeId,
+        generator: bool,
+        declared: Arc<SourceType>,
+        state: &mut State,
+    ) -> Arc<SourceType> {
+        let tail = self.visit(m, body, state, 0);
         if state.live {
-            let tail = self.snapshot(&tail, &mut state);
+            let tail = self.snapshot(&tail, state);
             state.returns.push(tail);
         }
         let mut inferred = None;
-        for value in state.returns {
+        for value in state.returns.drain(..) {
             inferred = Some(match inferred {
                 Some(old) => self.join(old, value),
                 None => value,
@@ -723,9 +752,9 @@ impl Inference<'_> {
         } else {
             declared
         };
-        let result = if generator {
+        if generator {
             let mut element = None;
-            for value in state.yields {
+            for value in state.yields.drain(..) {
                 element = Some(match element {
                     Some(old) => self.join(old, value),
                     None => value,
@@ -744,11 +773,7 @@ impl Inference<'_> {
             })
         } else {
             result
-        };
-        self.facts[m].functions[id.0 as usize] = Some(result.clone());
-        self.active.remove(&(m, id));
-        self.current_module = previous;
-        result
+        }
     }
     fn callable(&mut self, m: usize, id: FunctionId) -> Arc<SourceType> {
         Arc::new(SourceType {

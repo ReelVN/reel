@@ -1,6 +1,6 @@
 //! Session requests; the host owns storage and commits restored candidates.
 use super::{AdapterError, HostResponse, HostTicket, SessionVm, observable, results, text};
-use super::{NativeDispatch, data};
+use super::{NativeBudget, NativeDispatch, data};
 use aside_vm::{HeapReservation, RootKind, RootToken, Value, ValueTag};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -27,6 +27,21 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         );
     }
     api.refine("reel::saves::list", operation.clone(), &[]);
+    api.refine(
+        "reel::saves::jump",
+        operation.clone(),
+        &[("group", TypeHint::Int)],
+    );
+    api.refine(
+        "reel::saves::can_jump",
+        TypeHint::Bool,
+        &[("group", TypeHint::Int)],
+    );
+    api.refine(
+        "reel::saves::track_history",
+        TypeHint::Null,
+        &[("enabled", TypeHint::Bool)],
+    );
     api.refine(
         "reel::saves::copy",
         operation.clone(),
@@ -58,11 +73,6 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             nullable(TypeHint::String),
             "The storage failure message, or null before failure.",
         ),
-        (
-            "restored",
-            TypeHint::Bool,
-            "Whether this save operation resumed from its committed story snapshot.",
-        ),
     ] {
         descriptor.members.push(Member::field(
             &descriptor.name,
@@ -90,6 +100,10 @@ pub enum SaveOperation {
     },
     Load {
         slot: String,
+    },
+    /// Restore an in-memory dialogue checkpoint.
+    Jump {
+        group: u64,
     },
     /// Copy a committed slot without capturing the running session.
     Copy {
@@ -154,6 +168,8 @@ pub(super) struct Saves {
     pub(super) capture: Option<(HostTicket, data::Capture)>,
     restores: VecDeque<(SaveRequestId, data::Restore)>,
     restore_charge: Option<HeapReservation>,
+    track_history: bool,
+    history_points: Vec<u64>,
 }
 impl Saves {
     pub fn active(&self) -> bool {
@@ -186,7 +202,6 @@ fn complete(
     root: RootToken,
     result: SaveResult,
     read_limit: usize,
-    restored: bool,
     fallback: Option<RootToken>,
 ) -> Result<(), AdapterError> {
     let heap = vm.heap_mut();
@@ -244,7 +259,6 @@ fn complete(
     let status = heap.alloc_string(status)?;
     observable::publish(heap, object, 0, status)?;
     observable::publish(heap, object, 1, error)?;
-    observable::publish(heap, object, 2, Value::bool(restored))?;
     results::finish_task(heap, object, result)?;
     heap.release_root(root)?;
     if let Some(root) = fallback {
@@ -257,8 +271,79 @@ impl SessionVm {
     pub fn has_save_requests(&self) -> bool {
         !self.revoked && self.saves.pending.iter().any(|p| p.operation.is_some())
     }
+
+    /// Whether the current story has opted into retaining history checkpoints.
+    pub fn tracks_history(&self) -> bool {
+        self.saves.track_history
+    }
+
+    /// Publish the bounded in-memory checkpoint index in reading order.
+    pub fn set_history_points(&mut self, groups: impl Iterator<Item = u64>) {
+        self.saves.history_points.clear();
+        self.saves.history_points.extend(groups);
+    }
+
+    pub(super) fn dispatch_history_save(
+        &mut self,
+        session: &crate::Session,
+        ticket: HostTicket,
+        symbol: &str,
+    ) -> Result<NativeDispatch, AdapterError> {
+        let arg = self.vm.host_arguments(ticket)?[0];
+        let result = if symbol == "reel::saves::track_history" {
+            self.saves.track_history = arg
+                .as_bool()
+                .ok_or(AdapterError::Input("history tracking requires a bool"))?;
+            if !self.saves.track_history {
+                self.saves.history_points.clear();
+            }
+            Value::NULL
+        } else {
+            let group = arg
+                .as_int()
+                .and_then(|group| u64::try_from(group).ok())
+                .ok_or(AdapterError::Input("history jump requires a group_id"))?;
+            if symbol == "reel::saves::jump" {
+                self.enqueue_save(ticket, SaveOperation::Jump { group }, None, None)?;
+                return Ok(NativeDispatch::Ready { work: 1 });
+            }
+            Value::bool(
+                self.saves.history_points.binary_search(&group).is_ok()
+                    && session.view().history.find_interaction(group).is_some(),
+            )
+        };
+        self.vm.respond(ticket, HostResponse::Ready(result))?;
+        self.issued = None;
+        Ok(NativeDispatch::Ready { work: 1 })
+    }
+    pub(super) fn dispatch_save_availability(
+        &mut self,
+        ticket: HostTicket,
+        budget: NativeBudget,
+    ) -> Result<NativeDispatch, AdapterError> {
+        let active = self.flow_boundary().and_then(|(task, boundary)| {
+            let bound = self.vm.resume_wait_bound(&self.resume, task).ok()?;
+            Some((task, boundary, u32::try_from(bound.work).ok()?))
+        });
+        let work = active.map_or(1, |(_, _, work)| work);
+        if budget.with_minimum(work) < work {
+            return Ok(NativeDispatch::BudgetYield {
+                work: 0,
+                required_work: work,
+            });
+        }
+        let available = active.is_some_and(|(task, boundary, _)| {
+            self.vm.can_capture_resume(&self.resume, task, boundary)
+        });
+        self.vm
+            .respond(ticket, HostResponse::Ready(Value::bool(available)))?;
+        self.issued = None;
+        Ok(NativeDispatch::Ready { work })
+    }
+
     pub(super) fn dispatch_save(
         &mut self,
+        session: &crate::Session,
         ticket: HostTicket,
         symbol: &str,
         work: u32,
@@ -275,11 +360,6 @@ impl SessionVm {
             }
             match symbol {
                 "reel::saves::save" => {
-                    let title = if args[1].tag() == ValueTag::Null {
-                        String::new()
-                    } else {
-                        text::read_string(self.vm.heap(), args[1], self.read_limit)?
-                    };
                     let thumbnail = if args[2].tag() == ValueTag::Null {
                         None
                     } else {
@@ -303,6 +383,23 @@ impl SessionVm {
                         let (data, reservation) = capture.finish()?;
                         charge = Some(reservation);
                         Some(data)
+                    };
+                    let title = if args[1].tag() == ValueTag::Null {
+                        session
+                            .view()
+                            .history
+                            .last()
+                            .and_then(|group| group.lines().last())
+                            .map(|line| {
+                                line.resolved_text()
+                                    .chars()
+                                    .take(96)
+                                    .take_while(|&ch| ch != '\r' && ch != '\n')
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        text::read_string(self.vm.heap(), args[1], self.read_limit)?
                     };
                     SaveOperation::Save {
                         slot,
@@ -389,18 +486,14 @@ impl SessionVm {
         let heap = self.vm.heap_mut();
         let fields = heap.host_fields(object)?;
         let status = heap.alloc_string("pending")?;
-        for (i, (key, value)) in [
-            ("status", status),
-            ("error", Value::NULL),
-            ("restored", Value::bool(false)),
-        ]
-        .into_iter()
-        .enumerate()
+        for (i, (key, value)) in [("status", status), ("error", Value::NULL)]
+            .into_iter()
+            .enumerate()
         {
             let key = heap.alloc_string(key)?;
             heap.table_store(fields, i as u32, key, value)?;
         }
-        heap.observe_host_properties(object, 0, 3)?;
+        heap.observe_host_properties(object, 0, 2)?;
         let root = heap.add_root(self.root_owner, RootKind::Host, object)?;
         let fallback = fallback
             .map(|value| heap.add_root(self.root_owner, RootKind::Host, value))
@@ -478,7 +571,6 @@ impl SessionVm {
             self.saves.pending[index].saved.root,
             result,
             self.read_limit,
-            false,
             self.saves.pending[index].saved.fallback,
         )?;
         self.saves.pending.remove(index);
@@ -530,23 +622,17 @@ impl SessionVm {
         &mut self,
         record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
-        committed: Option<u64>,
     ) -> Result<(), AdapterError> {
         if matches!(record.part, super::snapshot::Part::Saves) {
             self.saves.serial = record.read()?;
         } else {
             let saved: SavedRequest = record.read()?;
-            let result = if committed == Some(saved.serial) {
-                SaveResult::Done
-            } else {
-                SaveResult::Failed("OperationInterrupted".into())
-            };
+            let result = SaveResult::Failed("OperationInterrupted".into());
             complete(
                 &mut self.vm,
                 map.root(saved.root)?,
                 result,
                 self.read_limit,
-                committed == Some(saved.serial),
                 saved.fallback.map(|root| map.root(root)).transpose()?,
             )?;
             self.results.changed();
@@ -557,21 +643,36 @@ impl SessionVm {
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
+        /// Report whether the main story is waiting at a verified save point.
+        /// Query when opening a save menu. The save request captures its data and
+        /// reports storage and data errors through the returned operation.
+        "reel::saves::can_capture";
+        /// Retain a bounded window of recent dialogue checkpoints in this story.
+        /// Call from the story Root when the game offers history jump buttons.
+        "reel::saves::track_history";
+        /// Report whether a history entry's `group_id` has a retained checkpoint.
+        "reel::saves::can_jump";
+        /// Restore the retained checkpoint for a history entry's `group_id`.
+        /// Failure rejects the operation in the current session. A successful
+        /// jump replaces the session, just as loading a save does.
+        "reel::saves::jump";
         /// Save the current session to a nonempty slot identifier.
-        /// `title` defaults to an empty string; `thumbnail` is null or PNG Bytes, commonly
-        /// obtained from `stage.capture`. Returns an awaitable operation with reactive
-        /// `status`, `error` and `restored` fields. Awaiting yields null on success and
-        /// throws on storage failure. After loading this saved continuation, `restored`
-        /// identifies the resumed save operation. Host-claimed writes are session operations
-        /// and continue independently of the requesting UI's node lifetime.
+        /// Omit `title` to use up to 96 characters from the first line of the most recent
+        /// transcript entry. An explicit title, including an empty string, takes precedence.
+        /// `thumbnail` is null or PNG Bytes, commonly obtained from `stage.capture`.
+        /// Returns an awaitable operation with reactive
+        /// `status` and `error` fields. Awaiting yields null on success and throws on
+        /// storage failure. Loading rebuilds the current Root and reconnects the saved
+        /// business point. Host-claimed writes continue independently of the requesting
+        /// UI's node lifetime.
         "reel::saves::save";
         /// Request restoration of a nonempty save slot and return an awaitable operation.
-        /// A successful load replaces the running session with the saved continuation;
+        /// A successful load rebuilds the current Root with the saved State and point;
         /// code after this request does not continue in the old session. Failure rejects
         /// the operation and remains catchable in the requesting session.
         "reel::saves::load";
         /// Copy an existing committed slot to another nonempty slot identifier.
-        /// Preserves the saved execution state, title, timestamp and thumbnail and
+        /// Preserves the saved checkpoint, title, timestamp and thumbnail and
         /// atomically replaces the destination. The current session keeps running.
         /// Returns a session-owned operation; awaiting yields null on success or
         /// throws on missing source or storage failure. Equal identifiers validate

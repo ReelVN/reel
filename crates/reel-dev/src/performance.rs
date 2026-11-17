@@ -11,10 +11,16 @@ use std::{
 };
 
 mod collect;
+mod debug;
 mod emulator;
 mod prepare;
 mod run;
 mod summary;
+mod verify;
+
+pub use debug::{DebugOptions, debug};
+
+const VITA_PLAYER_TITLE_ID: &str = "REELVITAP";
 
 /// Build, run and analyze the ordinary player.
 #[derive(Args)]
@@ -41,6 +47,12 @@ enum Action {
     Collect(Device),
     /// Analyze files already collected in a run directory.
     Report { directory: PathBuf },
+    /// Check a target export, completed playback and declared scene budgets.
+    Verify {
+        directory: PathBuf,
+        #[arg(long)]
+        policy: PathBuf,
+    },
 }
 
 #[derive(Args)]
@@ -75,6 +87,9 @@ struct Prepare {
 #[derive(Args)]
 struct Run {
     directory: PathBuf,
+    /// Verify the completed run against a release policy and write verification.json.
+    #[arg(long)]
+    policy: Option<PathBuf>,
     /// Vita vdb address; omit for a desktop game.
     #[arg(long)]
     address: Option<String>,
@@ -122,10 +137,7 @@ impl Manifest {
     fn read(directory: &Path) -> Result<Self> {
         let value: Self = serde_json::from_slice(&fs::read(directory.join("run.json"))?)?;
         ensure!(value.schema == 1, "unsupported performance run version");
-        value
-            .request
-            .validate()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        value.request.validate().map_err(anyhow::Error::msg)?;
         Ok(value)
     }
 }
@@ -138,6 +150,7 @@ pub fn execute(options: Options) -> Result<()> {
         Action::Run(options) => run::execute(options),
         Action::Collect(options) => collect::device(&options),
         Action::Report { directory } => collect::report(&directory),
+        Action::Verify { directory, policy } => verify::execute(&directory, &policy),
     }
 }
 

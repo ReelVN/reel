@@ -9,21 +9,61 @@ const VERSION: u32 = 1;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogicalReference {
     pub kind: String,
-    pub key: Vec<u8>,
+    pub version: u32,
+    pub fields: u32,
+    /// Portable adapter-owned data; graph references remain named field edges.
+    pub payload: Vec<u8>,
 }
 /// Adapters translate native values to logical identities and allocate current handles.
 /// Returned values remain rooted by the graph before its next work boundary.
 pub trait LogicalReferences {
+    /// Translate a public native property without flattening its binding chain.
+    fn property_name(
+        &self,
+        _: &Heap,
+        _: aside_vm::PropertyId,
+    ) -> Result<Option<&'static str>, TypedDataError> {
+        Ok(None)
+    }
+    fn property_index(&self, _: &Heap, _: Value, _: &str) -> Result<u32, TypedDataError> {
+        Err(TypedDataError::Contract(
+            "native property adapter is missing",
+        ))
+    }
     fn capture(
         &self,
         heap: &Heap,
         value: Value,
     ) -> Option<Result<LogicalReference, TypedDataError>>;
-    fn restore(
+    /// Enumerate one named edge in the shared object graph.
+    fn capture_field(
+        &self,
+        heap: &Heap,
+        value: Value,
+        index: u32,
+    ) -> Result<(std::borrow::Cow<'static, str>, Value), TypedDataError>;
+    /// Allocate a current native identity. The graph roots it before yielding.
+    fn allocate(
         &self,
         heap: &mut Heap,
+        object: u32,
         reference: &LogicalReference,
     ) -> Result<Value, TypedDataError>;
+    /// Connect one resolved graph edge after ordinary data has been initialized.
+    fn connect(
+        &self,
+        heap: &mut Heap,
+        value: Value,
+        name: &str,
+        field: Value,
+    ) -> Result<(), TypedDataError>;
+    /// Complete one bounded native reconstruction unit. No resource is mounted here.
+    fn finish(
+        &self,
+        heap: &mut Heap,
+        value: Value,
+        cursor: &mut u32,
+    ) -> Result<bool, TypedDataError>;
 }
 /// Reject native values when no logical-resource adapter was provided.
 pub struct NoReferences;
@@ -31,7 +71,32 @@ impl LogicalReferences for NoReferences {
     fn capture(&self, _: &Heap, _: Value) -> Option<Result<LogicalReference, TypedDataError>> {
         None
     }
-    fn restore(&self, _: &mut Heap, _: &LogicalReference) -> Result<Value, TypedDataError> {
+    fn capture_field(
+        &self,
+        _: &Heap,
+        _: Value,
+        _: u32,
+    ) -> Result<(std::borrow::Cow<'static, str>, Value), TypedDataError> {
+        Err(TypedDataError::Contract(
+            "logical resource adapter is missing",
+        ))
+    }
+    fn allocate(
+        &self,
+        _: &mut Heap,
+        _: u32,
+        _: &LogicalReference,
+    ) -> Result<Value, TypedDataError> {
+        Err(TypedDataError::Contract(
+            "logical resource adapter is missing",
+        ))
+    }
+    fn connect(&self, _: &mut Heap, _: Value, _: &str, _: Value) -> Result<(), TypedDataError> {
+        Err(TypedDataError::Contract(
+            "logical resource adapter is missing",
+        ))
+    }
+    fn finish(&self, _: &mut Heap, _: Value, _: &mut u32) -> Result<bool, TypedDataError> {
         Err(TypedDataError::Contract(
             "logical resource adapter is missing",
         ))
@@ -42,6 +107,7 @@ pub enum TypedDataError {
     Schema(SchemaError),
     Data(AdapterError),
     Contract(&'static str),
+    Field { path: String, reason: String },
 }
 impl From<SchemaError> for TypedDataError {
     fn from(e: SchemaError) -> Self {
@@ -64,6 +130,7 @@ impl std::fmt::Display for TypedDataError {
             Self::Schema(e) => write!(f, "{e}"),
             Self::Data(e) => write!(f, "{e}"),
             Self::Contract(e) => f.write_str(e),
+            Self::Field { path, reason } => write!(f, "{path}: {reason}"),
         }
     }
 }
@@ -75,6 +142,7 @@ struct Metadata {
     instances: BTreeMap<u32, u32>,
     observable: Vec<u32>,
     references: BTreeMap<u32, LogicalReference>,
+    properties: BTreeMap<u32, super::bindings::Property>,
     #[serde(skip)]
     bytes: usize,
 }
@@ -135,8 +203,26 @@ impl TypedDocument {
             if id as usize >= count || value.metadata.instances.contains_key(&id) {
                 return Err("invalid logical reference metadata".into());
             }
-            if !matches!(&value.data.objects[id as usize],Object::Table(v) if v.is_empty()) {
-                return Err("logical reference must have an empty data placeholder".into());
+            let reference = &value.metadata.references[&id];
+            if reference.version != 1
+                || !matches!(&value.data.objects[id as usize],Object::Table(v) if v.len() == reference.fields as usize)
+            {
+                return Err("logical resource fields do not match their header".into());
+            }
+        }
+        for &id in value.metadata.properties.keys() {
+            if !value
+                .metadata
+                .references
+                .get(&id)
+                .is_some_and(|r| r.kind == "aside.property" && r.fields == 1)
+            {
+                return Err("invalid property reference metadata".into());
+            }
+        }
+        for (&id, reference) in &value.metadata.references {
+            if reference.kind == "aside.property" && !value.metadata.properties.contains_key(&id) {
+                return Err("property reference address is missing".into());
             }
         }
         // Reuse graph validation instead of maintaining a second reference decoder.
@@ -184,9 +270,14 @@ fn metadata_bytes(m: &Metadata) -> usize {
         + tree_bytes::<u32, u32>(m.instances.len())
         + m.observable.capacity() * size_of::<u32>()
         + tree_bytes::<u32, LogicalReference>(m.references.len())
+        + tree_bytes::<u32, super::bindings::Property>(m.properties.len())
+        + m.properties
+            .values()
+            .map(super::bindings::Property::bytes)
+            .sum::<usize>()
         + m.references
             .iter()
-            .map(|(_, r)| r.kind.capacity() + r.key.capacity())
+            .map(|(_, r)| r.kind.capacity() + r.payload.capacity())
             .sum::<usize>()
 }
 pub(super) struct Context<'a> {
@@ -198,8 +289,62 @@ pub(super) struct Context<'a> {
 pub(super) struct CaptureState {
     metadata: Metadata,
     types: BTreeMap<u32, u32>,
+    cells: HashMap<HeapHandle, (Value, u32)>,
 }
 impl CaptureState {
+    pub(super) fn has_resource(&self, object: u32) -> bool {
+        self.metadata.references.contains_key(&object)
+    }
+    pub(super) fn binding_source(
+        &self,
+        heap: &Heap,
+        context: &Context<'_>,
+        reference: Value,
+    ) -> Result<(Value, super::bindings::Property), TypedDataError> {
+        use super::bindings::{Address, Property};
+        let (source, writable) = heap.property_ref(reference)?;
+        if heap.is_derived(source.host)? {
+            return Err(TypedDataError::Field {
+                path: "binding.source".into(),
+                reason: "derive must be rebuilt by the current view factory".into(),
+            });
+        }
+        if let Some(&(owner, index)) = self.cells.get(&heap.handle(source.host)?) {
+            return Ok((
+                owner,
+                Property {
+                    address: Address::State(index),
+                    writable,
+                },
+            ));
+        }
+        if let Some(name) = context.references.property_name(heap, source)? {
+            return Ok((
+                source.host,
+                Property {
+                    address: Address::Native(name.into()),
+                    writable,
+                },
+            ));
+        }
+        Err(TypedDataError::Contract(
+            "binding source must be a reachable State field or a public scene property",
+        ))
+    }
+    pub(super) fn record_property(
+        &mut self,
+        id: u32,
+        property: super::bindings::Property,
+        charge: &mut HeapReservation,
+    ) -> Result<(), TypedDataError> {
+        let before = tree_bytes::<u32, super::bindings::Property>(self.metadata.properties.len());
+        let after =
+            tree_bytes::<u32, super::bindings::Property>(self.metadata.properties.len() + 1);
+        charge.resize(charge.bytes() + (after - before + property.bytes()) as u64)?;
+        self.metadata.bytes += after - before + property.bytes();
+        self.metadata.properties.insert(id, property);
+        Ok(())
+    }
     pub fn record(
         &mut self,
         heap: &Heap,
@@ -244,10 +389,10 @@ impl CaptureState {
         }
         if let Some(reference) = reference {
             charge.resize(
-                charge.bytes() + (reference.kind.capacity() + reference.key.capacity()) as u64,
+                charge.bytes() + (reference.kind.capacity() + reference.payload.capacity()) as u64,
             )?;
             let before = tree_bytes::<u32, LogicalReference>(self.metadata.references.len());
-            self.metadata.bytes += reference.kind.capacity() + reference.key.capacity();
+            self.metadata.bytes += reference.kind.capacity() + reference.payload.capacity();
             self.metadata.references.insert(id, reference);
             self.metadata.bytes +=
                 tree_bytes::<u32, LogicalReference>(self.metadata.references.len()) - before;
@@ -263,6 +408,12 @@ impl CaptureState {
         charge: &mut HeapReservation,
     ) -> Result<(), SchemaError> {
         let class = context.registry.class_for_instance(heap, value)?;
+        let cell = heap.instance_field(value, index as u32)?.cell;
+        charge.resize(charge.bytes() + 256)?;
+        self.cells
+            .try_reserve(1)
+            .map_err(|_| SchemaError::Allocation)?;
+        self.cells.insert(heap.handle(cell)?, (value, index as u32));
         let schema = self.types[&class] as usize;
         if self.metadata.schemas[schema].fields.len() == index {
             let field = &context.registry.schema(class)?.fields[index];
@@ -284,40 +435,20 @@ impl CaptureState {
     }
 }
 /// Frozen-root typed capture. Finish or cancel explicitly releases its source root.
-pub struct TypedCapture<'a> {
-    inner: Capture,
-    context: Context<'a>,
+pub struct TypedCapture {
+    inner: Option<Capture>,
     root: RootToken,
     done: bool,
 }
-impl<'a> TypedCapture<'a> {
-    pub fn new(
-        heap: &mut Heap,
-        owner: RootOwner,
-        value: Value,
-        registry: &'a Registry,
-        references: &'a dyn LogicalReferences,
-    ) -> Result<Self, TypedDataError> {
-        let context = Context {
-            registry,
-            references,
-            error: std::cell::RefCell::new(None),
-        };
+impl TypedCapture {
+    /// Detached graph storage accumulated by the current bounded capture.
+    pub fn retained_bytes(&self) -> u64 {
+        self.inner.as_ref().map_or(0, |inner| inner.charge.bytes())
+    }
+    pub fn new(heap: &mut Heap, owner: RootOwner, value: Value) -> Result<Self, TypedDataError> {
         let root = heap.add_root(owner, RootKind::Host, value)?;
-        let inner = match Capture::new_inner(heap, value, Some(&context)) {
-            Ok(c) => c,
-            Err(e) => {
-                heap.release_root(root)?;
-                return Err(context
-                    .error
-                    .borrow_mut()
-                    .take()
-                    .unwrap_or(TypedDataError::Data(e)));
-            }
-        };
         Ok(Self {
-            inner,
-            context,
+            inner: None,
             root,
             done: false,
         })
@@ -325,21 +456,47 @@ impl<'a> TypedCapture<'a> {
     pub fn step(
         &mut self,
         heap: &Heap,
+        registry: &Registry,
+        references: &dyn LogicalReferences,
         work: u32,
         chunk: usize,
     ) -> Result<(bool, u32), TypedDataError> {
+        let value = heap.root_value(self.root)?;
+        let context = Context {
+            registry,
+            references,
+            error: std::cell::RefCell::new(None),
+        };
+        let mut remaining = work;
+        if self.inner.is_none() {
+            if remaining == 0 {
+                return Ok((false, 0));
+            }
+            self.inner = Some(
+                Capture::new_inner(heap, value, Some(&context)).map_err(|e| {
+                    context
+                        .error
+                        .borrow_mut()
+                        .take()
+                        .unwrap_or(TypedDataError::Data(e))
+                })?,
+            );
+            remaining -= 1;
+        }
         let result = self
             .inner
-            .step_inner(heap, work, chunk, Some(&self.context))
+            .as_mut()
+            .unwrap()
+            .step_inner(heap, remaining, chunk, Some(&context))
             .map_err(|e| {
-                self.context
+                context
                     .error
                     .borrow_mut()
                     .take()
                     .unwrap_or(TypedDataError::Data(e))
             })?;
         self.done = result.0;
-        Ok(result)
+        Ok((result.0, result.1 + work - remaining))
     }
     pub fn finish(
         mut self,
@@ -351,9 +508,10 @@ impl<'a> TypedCapture<'a> {
                 "typed State capture is incomplete",
             ));
         }
-        let metadata = self.inner.typed.take().unwrap().metadata;
+        let mut inner = self.inner.take().unwrap();
+        let metadata = inner.typed.take().unwrap().metadata;
         let extra = (metadata.bytes + size_of::<TypedDocument>() + 2 * size_of::<usize>()) as u64;
-        let (data, charge) = self.inner.finish_inner(extra)?;
+        let (data, charge) = inner.finish_inner(extra)?;
         let document = TypedDocument {
             version: VERSION,
             data,
@@ -406,10 +564,8 @@ fn reserve_slot<T>(
     charge.resize(before + actual as u64 - released as u64)?;
     Ok(())
 }
-pub(super) struct RestoreState<'a> {
+pub(super) struct RestoreState {
     document: Arc<TypedDocument>,
-    registry: &'a Registry,
-    references: &'a dyn LogicalReferences,
     mappings: Vec<ClassMapping>,
     schema: usize,
     matching_type: bool,
@@ -424,16 +580,72 @@ pub(super) struct RestoreState<'a> {
     next_instance: u32,
     sealing_field: u32,
     filled: bool,
+    next_resource: u32,
+    resource_field: u32,
+    resource_finish: u32,
+    next_property: u32,
+    resources_connected: bool,
 }
-impl RestoreState<'_> {
-    fn prepare(&mut self, charge: &mut HeapReservation) -> Result<(), TypedDataError> {
+impl RestoreState {
+    fn connect_property(
+        &self,
+        heap: &mut Heap,
+        values: Value,
+        id: u32,
+        property: &super::bindings::Property,
+        context: &Context<'_>,
+    ) -> Result<(), TypedDataError> {
+        use super::bindings::Address;
+        let Object::Table(entries) = &self.document.data.objects[id as usize] else {
+            unreachable!()
+        };
+        let Some(&(_, Atom::Object(source_id))) = entries.first() else {
+            return Err(TypedDataError::Contract(
+                "property source must be a graph object",
+            ));
+        };
+        let source = heap.sequence_get(values, source_id)?;
+        let address = match &property.address {
+            Address::Native(name) => aside_vm::PropertyId {
+                host: source,
+                field: context.references.property_index(heap, source, name)?,
+            },
+            Address::State(old) => {
+                let schema = *self
+                    .document
+                    .metadata
+                    .instances
+                    .get(&source_id)
+                    .ok_or(TypedDataError::Contract("property source is not a State"))?;
+                let current = self.mappings[schema as usize]
+                    .fields
+                    .get(*old as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or(TypedDataError::Contract(
+                        "binding source State field was removed",
+                    ))?;
+                aside_vm::PropertyId {
+                    host: heap.instance_field(source, current)?.cell,
+                    field: 0,
+                }
+            }
+        };
+        heap.initialize_property_ref(heap.sequence_get(values, id)?, address, property.writable)?;
+        Ok(())
+    }
+    fn prepare(
+        &mut self,
+        registry: &Registry,
+        charge: &mut HeapReservation,
+    ) -> Result<(), TypedDataError> {
         if self.schema == self.document.metadata.schemas.len() {
             self.prepared = true;
             return Ok(());
         }
         let saved = &self.document.metadata.schemas[self.schema];
         if !self.matching_type {
-            let class = self.registry.find(&saved.key)?;
+            let class = registry.find(&saved.key)?;
             reserve_slot(&mut self.mappings, charge)?;
             self.mappings.push(ClassMapping {
                 class,
@@ -451,7 +663,7 @@ impl RestoreState<'_> {
             return Ok(());
         }
         let field = &saved.fields[mapping.fields.len()];
-        let current = self.registry.match_field(mapping.class, field)?;
+        let current = registry.match_field(mapping.class, field)?;
         reserve_slot(&mut mapping.fields, charge)?;
         if let Some(index) = current {
             if mapping.present.contains(&index) {
@@ -469,15 +681,24 @@ impl RestoreState<'_> {
         mapping.fields.push(current);
         Ok(())
     }
-    pub fn allocate(&self, heap: &mut Heap, id: u32) -> Result<Option<Value>, TypedDataError> {
+    pub fn allocate(
+        &self,
+        heap: &mut Heap,
+        id: u32,
+        context: &Context<'_>,
+    ) -> Result<Option<Value>, TypedDataError> {
         if let Some(&schema) = self.document.metadata.instances.get(&id) {
             return Ok(Some(
-                self.registry
+                context
+                    .registry
                     .begin_instance(heap, self.mappings[schema as usize].class)?,
             ));
         }
         if let Some(reference) = self.document.metadata.references.get(&id) {
-            return Ok(Some(self.references.restore(heap, reference)?));
+            if reference.kind == "aside.property" {
+                return Ok(Some(heap.alloc_property_ref_shell()?));
+            }
+            return Ok(Some(context.references.allocate(heap, id, reference)?));
         }
         Ok(None)
     }
@@ -487,18 +708,22 @@ impl RestoreState<'_> {
         values: Value,
         id: u32,
         entries: &[(Atom, Atom)],
+        context: &Context<'_>,
     ) -> Result<Option<bool>, TypedDataError> {
         let Some(&schema) = self.document.metadata.instances.get(&id) else {
+            if self.document.metadata.references.contains_key(&id) {
+                return Ok(Some(true));
+            }
             return Ok(None);
         };
         let mapping = &self.mappings[schema as usize];
         let class = mapping.class;
-        let count = self.registry.schema(class)?.fields.len() as u32;
+        let registry = context.registry;
+        let count = registry.schema(class)?.fields.len() as u32;
         let instance = heap.sequence_get(values, id)?;
         if !self.connecting {
             if self.field < count {
-                self.registry
-                    .allocate_field(heap, class, instance, self.field)?;
+                registry.allocate_field(heap, class, instance, self.field)?;
                 self.field += 1;
                 return Ok(Some(false));
             }
@@ -509,7 +734,7 @@ impl RestoreState<'_> {
             let index = self.old;
             self.old += 1;
             if let Some(Some(current)) = mapping.fields.get(index) {
-                self.registry.initialize_field(
+                registry.initialize_field(
                     heap,
                     class,
                     instance,
@@ -525,7 +750,7 @@ impl RestoreState<'_> {
                 self.default_field += 1;
                 return Ok(Some(false));
             }
-            let plan = self.registry.default(class, index)?;
+            let plan = registry.default(class, index)?;
             if self.default.is_none() {
                 let mut build = plan.begin(heap, self.owner)?;
                 if self.document.metadata.observable.binary_search(&id).is_ok() {
@@ -536,7 +761,7 @@ impl RestoreState<'_> {
             }
             let build = self.default.as_mut().unwrap();
             if build.step(heap, plan, 1)? {
-                self.registry.initialize_field(
+                registry.initialize_field(
                     heap,
                     class,
                     instance,
@@ -558,7 +783,12 @@ impl RestoreState<'_> {
         }
         Ok(())
     }
-    pub fn complete(&mut self, heap: &mut Heap, values: Value) -> Result<bool, TypedDataError> {
+    pub fn complete(
+        &mut self,
+        heap: &mut Heap,
+        values: Value,
+        context: &Context<'_>,
+    ) -> Result<bool, TypedDataError> {
         self.connecting = true;
         let Some((&id, &schema)) = self
             .document
@@ -567,20 +797,20 @@ impl RestoreState<'_> {
             .range(self.next_instance..)
             .next()
         else {
-            return Ok(true);
+            return self.complete_resources(heap, values, context);
         };
         if !self.filled {
             let document = self.document.clone();
             let Object::Table(entries) = &document.data.objects[id as usize] else {
                 unreachable!()
             };
-            if self.fill(heap, values, id, entries)? == Some(true) {
+            if self.fill(heap, values, id, entries, context)? == Some(true) {
                 self.filled = true;
             }
             return Ok(false);
         }
         let class = self.mappings[schema as usize].class;
-        if self.registry.finish_instance(
+        if context.registry.finish_instance(
             heap,
             class,
             heap.sequence_get(values, id)?,
@@ -596,23 +826,82 @@ impl RestoreState<'_> {
         }
         Ok(false)
     }
+    fn complete_resources(
+        &mut self,
+        heap: &mut Heap,
+        values: Value,
+        context: &Context<'_>,
+    ) -> Result<bool, TypedDataError> {
+        if let Some((&id, property)) = self
+            .document
+            .metadata
+            .properties
+            .range(self.next_property..)
+            .next()
+        {
+            self.connect_property(heap, values, id, property, context)?;
+            self.next_property = id + 1;
+            return Ok(false);
+        }
+        let Some((&id, _)) = self
+            .document
+            .metadata
+            .references
+            .range(self.next_resource..)
+            .next()
+        else {
+            if !self.resources_connected {
+                self.resources_connected = true;
+                self.next_resource = 0;
+                return Ok(false);
+            }
+            return Ok(true);
+        };
+        if self.document.metadata.properties.contains_key(&id) {
+            self.next_resource = id + 1;
+            return Ok(false);
+        }
+        let Object::Table(entries) = &self.document.data.objects[id as usize] else {
+            unreachable!()
+        };
+        let value = heap.sequence_get(values, id)?;
+        if self.resources_connected {
+            if context
+                .references
+                .finish(heap, value, &mut self.resource_finish)?
+            {
+                self.next_resource = id + 1;
+                self.resource_finish = 0;
+            }
+        } else if let Some(&(key, field)) = entries.get(self.resource_field as usize) {
+            let key = Restore::value(heap, values, key)?;
+            let name = crate::aside::text::read_string(heap, key, 256)?;
+            context
+                .references
+                .connect(heap, value, &name, Restore::value(heap, values, field)?)?;
+            self.resource_field += 1;
+        } else {
+            self.next_resource = id + 1;
+            self.resource_field = 0;
+            self.resource_finish = 0;
+        }
+        Ok(false)
+    }
 }
 /// A candidate graph restore; release or cancel before releasing its class Registry.
-pub struct TypedRestore<'a> {
+pub struct TypedRestore {
     inner: Restore,
-    state: RestoreState<'a>,
+    state: RestoreState,
     done: bool,
     _charge: HeapReservation,
 }
-impl<'a> TypedRestore<'a> {
+impl TypedRestore {
     /// Retain a validated document and create the fixed graph root. Compatibility
     /// lookup and mapping allocation advance only through `step`.
     pub fn new(
         heap: &mut Heap,
         owner: RootOwner,
         document: Arc<TypedDocument>,
-        registry: &'a Registry,
-        references: &'a dyn LogicalReferences,
     ) -> Result<Self, TypedDataError> {
         if document.version != VERSION || !document.validated {
             return Err(TypedDataError::Contract("unsupported typed State document"));
@@ -628,8 +917,6 @@ impl<'a> TypedRestore<'a> {
             _charge: charge,
             state: RestoreState {
                 document,
-                registry,
-                references,
                 mappings: Vec::new(),
                 schema: 0,
                 matching_type: false,
@@ -644,6 +931,11 @@ impl<'a> TypedRestore<'a> {
                 next_instance: 0,
                 sealing_field: 0,
                 filled: false,
+                next_resource: 0,
+                resource_field: 0,
+                resource_finish: 0,
+                next_property: 0,
+                resources_connected: false,
             },
         })
     }
@@ -652,6 +944,8 @@ impl<'a> TypedRestore<'a> {
     pub fn step(
         &mut self,
         heap: &mut Heap,
+        registry: &Registry,
+        references: &dyn LogicalReferences,
         work: u32,
         chunk: usize,
     ) -> Result<bool, TypedDataError> {
@@ -660,15 +954,20 @@ impl<'a> TypedRestore<'a> {
         }
         let mut remaining = work;
         while remaining > 0 && !self.state.prepared {
-            self.state.prepare(&mut self._charge)?;
+            self.state.prepare(registry, &mut self._charge)?;
             remaining -= 1;
         }
         if !self.state.prepared {
             return Ok(false);
         }
+        let context = Context {
+            registry,
+            references,
+            error: std::cell::RefCell::new(None),
+        };
         let done = self
             .inner
-            .step_inner(heap, remaining, chunk, Some(&mut self.state))
+            .step_inner(heap, remaining, chunk, Some((&mut self.state, &context)))
             .map_err(|e| self.state.error.take().unwrap_or(TypedDataError::Data(e)))?;
         self.done = done;
         Ok(done)

@@ -495,38 +495,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "CPU measurement; run in release mode"]
-    fn morton_upload_measurement() {
-        let size = [1024, 1024];
-        let bytes = 1024 * 1024;
-        let source = vec![19u8; bytes];
-        let mut dest = vec![0u8; bytes];
-        let start = std::time::Instant::now();
-        for _ in 0..100 {
-            for y in 0..256 {
-                for x in 0..256 {
-                    let from = (y as usize * 256 + x as usize) * 16;
-                    let to = TextureStorageLayout::GxmBcMorton.block_offset(size, 16, x, y);
-                    dest[to..to + 16].copy_from_slice(&source[from..from + 16]);
-                }
-            }
-            std::hint::black_box(&dest);
-        }
-        let reorder = start.elapsed();
-        let start = std::time::Instant::now();
-        for _ in 0..100 {
-            dest.copy_from_slice(std::hint::black_box(&source));
-            std::hint::black_box(&dest);
-        }
-        eprintln!(
-            "100 x 1MiB CPU upload: runtime Morton {:?}, offline direct copy {:?}; source+destination 2MiB in both",
-            reorder,
-            start.elapsed()
-        );
-        assert_eq!(source, dest);
-    }
-
-    #[test]
     fn prepared_block_layout_and_file_envelope_use_exact_extents() {
         let d = TextureDescriptor {
             storage_layout: crate::texture::TextureStorageLayout::Linear,

@@ -100,6 +100,10 @@ impl StageBinding {
             return Ok(false);
         };
         let host = heap.import_handle(binding.handle)?;
-        publish(heap, host, binding.interaction_offset, event.state)
+        let changed = publish(heap, host, binding.interaction_offset, event.state)?;
+        if changed {
+            self.sync_tooltips(heap, event.node)?;
+        }
+        Ok(changed)
     }
 }

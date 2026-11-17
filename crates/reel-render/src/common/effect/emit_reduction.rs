@@ -117,6 +117,7 @@ impl Emitter<'_> {
             } => {
                 let child = self.child(parent);
                 self.scopes[child].blocked = proof.dependent.clone();
+                self.scopes[child].substituted = true;
                 let counter = self.next_name;
                 self.next_name += 1;
                 self.line(

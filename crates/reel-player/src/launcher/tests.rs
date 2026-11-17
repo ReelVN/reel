@@ -9,7 +9,6 @@ use reel_ui::{
         Widget,
     },
     dpi::PhysicalSize,
-    input::NavigationEvent,
 };
 
 struct Library(PathBuf);
@@ -170,17 +169,28 @@ impl View {
             .unwrap();
     }
     fn button(&mut self, button: GamepadButton) {
+        let mut navigation = reel_ui::input::NavigationInput::default();
         for value in [1., 0.] {
-            self.session
-                .handle_text(
-                    &mut self.bridge,
-                    TextEvent::Input(InputEvent::Value {
-                        device: reel_ui::input::InputDeviceId::Gamepad(1),
-                        control: Control::Button(button),
-                        value,
-                    }),
-                )
+            let event = InputEvent::Value {
+                device: reel_ui::input::InputDeviceId::Gamepad(1),
+                control: Control::Button(button),
+                value,
+            };
+            let handled = self
+                .session
+                .handle_text(&mut self.bridge, TextEvent::Input(event.clone()))
                 .unwrap();
+            if !handled.is_handled() {
+                let mut edge = None;
+                navigation
+                    .update(&event, std::time::Duration::ZERO, |value| {
+                        edge = Some(value)
+                    })
+                    .unwrap();
+                if let Some(edge) = edge {
+                    self.navigation(edge.action, edge.phase);
+                }
+            }
             self.session
                 .after_input(&mut self.bridge, self.root)
                 .unwrap();
@@ -236,7 +246,7 @@ fn touch_launch_requires_an_accepted_frame() {
 }
 
 #[test]
-fn controller_selects_and_launches_a_work() {
+fn circle_launches_the_focused_work() {
     let library = Library::new();
     library.game("A");
     let package = library.game("B");
@@ -244,8 +254,7 @@ fn controller_selects_and_launches_a_work() {
     view.present();
     view.navigation(NavigationAction::Down, ActionPhase::Pressed);
     view.present();
-    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.button(GamepadButton::East);
     view.present();
     settle_io(view.launcher());
     assert_eq!(
@@ -265,12 +274,10 @@ fn paging_mounts_bounded_rows_and_requires_new_frame_acceptance() {
     view.button(GamepadButton::RightShoulder);
     assert_eq!(view.launcher().selected, 4);
     assert!(view.launcher().list.as_ref().unwrap().rows.len() <= 7);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.button(GamepadButton::East);
     assert_eq!(view.launcher().take_outcome(), None);
     view.present();
-    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.button(GamepadButton::East);
     view.present();
     settle_io(view.launcher());
     assert_eq!(
@@ -284,7 +291,7 @@ fn refresh_discovers_copied_games_and_error_back_returns_to_library() {
     let library = Library::new();
     let mut view = View::new(&library, Some("package failure".into()));
     view.present();
-    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    view.button(GamepadButton::South);
     assert!(view.launcher().error.is_none());
     assert!(view.launcher().games.is_empty());
     let package = library.game("new");
@@ -317,16 +324,16 @@ fn reference_frame_keeps_large_rows_between_shared_header_and_footer() {
     let viewport = &launcher.stage.node(list.scroll).unwrap().props;
     assert_eq!(
         (viewport.x, viewport.y, viewport.width, viewport.height),
-        (64., 100., Some(832.), Some(355.))
+        (64., 108., Some(LIST_WIDTH), Some(LIST_HEIGHT))
     );
     let row = launcher.stage.node(list.rows[&0]).unwrap();
-    assert_eq!(row.props.height, Some(90.));
+    assert_eq!(row.props.height, Some(ROW_HEIGHT));
     assert!(row.children.iter().any(|node| {
         let node = launcher.stage.node(*node).unwrap();
         matches!(node.kind, NodeKind::Text(_)) && node.props.font_size == 28.
     }));
     let root = launcher.stage.node(launcher.stage.root().unwrap()).unwrap();
-    assert_eq!(root.props.background, Some([31, 35, 43, 255]));
+    assert_eq!(root.props.background, Some([15, 23, 30, 255]));
     let separators = launcher
         .stage
         .nodes()
@@ -353,8 +360,7 @@ fn dropdowns_persist_readable_preferences_and_restore_library_selection() {
     view.present();
     view.navigation(NavigationAction::Down, ActionPhase::Pressed);
     view.present();
-    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.button(GamepadButton::East);
     assert!(view.launcher().preferences.light);
     view.present();
     view.touch([650., 150.]);
@@ -362,15 +368,14 @@ fn dropdowns_persist_readable_preferences_and_restore_library_selection() {
     view.present();
     view.navigation(NavigationAction::Down, ActionPhase::Pressed);
     view.present();
-    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.button(GamepadButton::East);
     assert_eq!(view.launcher().preferences.language, Language::English);
     view.present();
-    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    view.button(GamepadButton::South);
     view.present();
+    assert_eq!(view.launcher().screen, Screen::Library);
     assert_eq!(view.launcher().selected, 1);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
-    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.button(GamepadButton::East);
     assert_eq!(view.launcher().take_outcome(), None);
     view.present();
     settle_io(view.launcher());
@@ -402,7 +407,7 @@ fn page_switches_reuse_nodes_and_popup_dismissal_keeps_settings() {
     for _ in 0..20 {
         view.button(GamepadButton::Select);
         view.present();
-        view.navigation(NavigationAction::Back, ActionPhase::Released);
+        view.button(GamepadButton::South);
         view.present();
     }
     eprintln!("40 page switches: {:?}", started.elapsed());
@@ -450,7 +455,7 @@ fn error_modal_blocks_underlying_touch_and_library_shortcuts() {
     assert_eq!(view.launcher().take_outcome(), None);
     assert_eq!(view.launcher().screen, Screen::Library);
     assert_eq!(view.launcher().error.as_deref(), Some("failure"));
-    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    view.button(GamepadButton::South);
     assert!(!view.launcher().modal());
 }
 

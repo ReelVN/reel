@@ -34,6 +34,49 @@ enum Slot {
 }
 
 impl Heap {
+    /// Identify a reactive producer without exposing its executable closure.
+    pub fn is_derived(&self, value: Value) -> Result<bool, HeapError> {
+        Ok(self.object(self.key(value)?)?.derived)
+    }
+    /// Allocate an unpublished reference identity for a graph restore. It cannot
+    /// be read or bound until `initialize_property_ref` connects its current address.
+    pub fn alloc_property_ref_shell(&mut self) -> Result<Value, HeapError> {
+        self.alloc_record(ObjectKind::PropertyRef, &[Value::NULL; 4])
+    }
+    /// Connect an unpublished reference once, preserving its object identity.
+    pub fn initialize_property_ref(
+        &mut self,
+        reference: Value,
+        property: PropertyId,
+        writable: bool,
+    ) -> Result<(), HeapError> {
+        if !self.is_property_ref(reference) || !self.get_field(reference, 0)?.same_bits(Value::NULL)
+        {
+            return Err(HeapError::WrongKind);
+        }
+        let writable = writable && self.property_access(property)?;
+        let generation = self.object(self.key(property.host)?)?.property_generation;
+        self.barrier(property.host)?;
+        let key = self.key(reference)?;
+        let object = self.objects.get_mut(key).unwrap();
+        let Payload::Values(values) = &mut object.payload else {
+            return Err(HeapError::WrongKind);
+        };
+        for (i, value) in [
+            property.host,
+            Value::int(i64::from(property.field)),
+            Value::bool(writable),
+            Value::int(generation as i64),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            values.set(i as u32, value);
+        }
+        object.content_version = object.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
+        Ok(())
+    }
     /// Register a writable prefix followed by read-only observable outputs. Other fields
     /// (for example methods) remain ordinary, non-observable host properties.
     pub fn observe_host_properties(
@@ -171,7 +214,9 @@ impl Heap {
         Ok(entry)
     }
 
-    fn property_binding(&self, property: PropertyId) -> Result<Value, HeapError> {
+    /// Return the directly stored binding reference, or null. This preserves each
+    /// connection in a chain; `property_source` instead resolves its final source.
+    pub fn property_binding(&self, property: PropertyId) -> Result<Value, HeapError> {
         let metadata = self.property_metadata(property)?;
         if metadata.same_bits(Value::NULL) {
             Ok(Value::NULL)

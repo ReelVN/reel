@@ -14,7 +14,9 @@ use reel_ui::stage::effect::{
     EffectBinary, EffectInput, EffectNodeId, EffectOp, EffectProgram, EffectTernary,
     EffectTextureChannel, EffectType, EffectUnary, EffectValue,
 };
+use smallvec::{SmallVec, smallvec};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 #[path = "effect/cg.rs"]
 mod cg;
@@ -31,6 +33,8 @@ pub use footprint::source_footprint;
 pub mod gxp_compiler;
 #[path = "effect/reduction.rs"]
 mod reduction;
+#[path = "effect/scalar_reduction.rs"]
+mod scalar_reduction;
 #[path = "effect/wgsl.rs"]
 mod wgsl;
 
@@ -424,6 +428,7 @@ fn generate_inner_with_diagonal(
         next_name: 0,
         samples_source: false,
         reductions: HashMap::new(),
+        scalar_reductions: HashMap::new(),
         max_block_width,
         diagonal,
         varying: control_flow::varying(program),
@@ -500,12 +505,20 @@ struct Scope {
     /// depend on it must be recomputed even if the original first tap was also
     /// demanded by an outer expression.
     blocked: BTreeSet<u32>,
+    substituted: bool,
 }
 
 enum Task {
     Scope(usize, EffectNodeId),
     Emit(usize, EffectNodeId),
     Reduction(emit_reduction::Continuation),
+    ScalarSum {
+        scope: usize,
+        body: usize,
+        id: EffectNodeId,
+        name: usize,
+        term: EffectNodeId,
+    },
     Otherwise {
         parent: usize,
         scope: usize,
@@ -532,17 +545,35 @@ struct Emitter<'a> {
     next_name: usize,
     samples_source: bool,
     reductions: HashMap<EffectNodeId, Option<reduction::Reduction>>,
+    scalar_reductions: HashMap<EffectNodeId, Option<Rc<scalar_reduction::ScalarReduction>>>,
     max_block_width: usize,
     diagonal: Option<diagonal::Proof>,
     varying: Vec<bool>,
 }
 
 impl Emitter<'_> {
-    fn reduction(&mut self, id: EffectNodeId) -> Option<reduction::Reduction> {
+    fn reduction(&mut self, scope: usize, id: EffectNodeId) -> Option<reduction::Reduction> {
+        if self.scopes[scope].substituted {
+            return None;
+        }
         let program = self.program;
         self.reductions
             .entry(id)
             .or_insert_with(|| reduction::Reduction::find(program, id))
+            .clone()
+    }
+    fn scalar_reduction(
+        &mut self,
+        scope: usize,
+        id: EffectNodeId,
+    ) -> Option<Rc<scalar_reduction::ScalarReduction>> {
+        if self.language != Language::Wgsl || self.scopes[scope].substituted {
+            return None;
+        }
+        let program = self.program;
+        self.scalar_reductions
+            .entry(id)
+            .or_insert_with(|| scalar_reduction::ScalarReduction::find(program, id).map(Rc::new))
             .clone()
     }
     fn lookup(&self, mut scope: usize, id: EffectNodeId) -> Option<usize> {
@@ -587,6 +618,7 @@ impl Emitter<'_> {
             depth: self.scopes[parent].depth + 1,
             values: HashMap::new(),
             blocked: BTreeSet::new(),
+            substituted: self.scopes[parent].substituted,
         });
         index
     }
@@ -607,13 +639,27 @@ impl Emitter<'_> {
                         if self.lookup(scope, id).is_some() || !reachable.insert(id.0) {
                             continue;
                         }
-                        if let Some(reduction) = self.reduction(id) {
+                        if let Some(reduction) = self.reduction(scope, id) {
+                            pending.extend(reduction.dependencies());
+                            continue;
+                        }
+                        if let Some(reduction) = self.scalar_reduction(scope, id) {
                             pending.extend(reduction.dependencies());
                             continue;
                         }
                         let op = &self.program.nodes()[id.0 as usize].op;
-                        if let EffectOp::Select { condition, .. } = *op {
+                        if let EffectOp::Select {
+                            condition,
+                            when_true,
+                            when_false,
+                        } = *op
+                        {
                             pending.push(condition);
+                            pending.extend(
+                                self.common_arm_dependencies(
+                                    scope, condition, when_true, when_false,
+                                ),
+                            );
                         } else {
                             pending.extend(dependencies(op));
                         }
@@ -629,8 +675,12 @@ impl Emitter<'_> {
                     if self.lookup(scope, id).is_some() {
                         continue;
                     }
-                    if let Some(reduction) = self.reduction(id) {
+                    if let Some(reduction) = self.reduction(scope, id) {
                         self.begin_reduction(scope, id, reduction, &mut tasks)?;
+                        continue;
+                    }
+                    if let Some(reduction) = self.scalar_reduction(scope, id) {
+                        reduction.emit(self, scope, id, &mut tasks)?;
                         continue;
                     }
                     let node = self.program.nodes()[id.0 as usize].clone();
@@ -642,6 +692,24 @@ impl Emitter<'_> {
                     {
                         let name = self.next_name;
                         self.next_name += 1;
+                        if self.language == Language::Wgsl
+                            && let (Some(accept), Some(reject)) = (
+                                self.lookup(scope, when_true),
+                                self.lookup(scope, when_false),
+                            )
+                        {
+                            let condition = self.value(scope, condition);
+                            self.line(
+                                scope,
+                                &self.language.declaration(
+                                    node.ty,
+                                    name,
+                                    &format!("select(reel_n{reject}, reel_n{accept}, {condition})"),
+                                ),
+                            )?;
+                            self.scopes[scope].values.insert(id, name);
+                            continue;
+                        }
                         self.line(scope, &self.language.mutable(node.ty, name))?;
                         if self.flatten_selection(scope, condition, [when_true, when_false]) {
                             self.line(scope, "#pragma branch (flatten: always)")?;
@@ -667,6 +735,18 @@ impl Emitter<'_> {
                     self.scopes[scope].values.insert(id, name);
                 }
                 Task::Reduction(continuation) => self.emit_reduction(continuation, &mut tasks)?,
+                Task::ScalarSum {
+                    scope,
+                    body,
+                    id,
+                    name,
+                    term,
+                } => {
+                    let term = self.value(body, term);
+                    self.line(body, &format!("reel_n{name} += {term};"))?;
+                    self.line(scope, "}")?;
+                    self.scopes[scope].values.insert(id, name);
+                }
                 Task::Otherwise {
                     parent,
                     scope,
@@ -894,17 +974,21 @@ impl Emitter<'_> {
     }
 }
 
-fn dependencies(op: &EffectOp) -> Vec<EffectNodeId> {
+fn dependencies(op: &EffectOp) -> SmallVec<[EffectNodeId; 4]> {
     match *op {
-        EffectOp::Constant(_) | EffectOp::Parameter(_) | EffectOp::Input(_) => vec![],
-        EffectOp::SourceSample { uv } | EffectOp::TextureSample { uv, .. } => vec![uv],
-        EffectOp::Vec2(ids) => ids.to_vec(),
-        EffectOp::Vec3(ids) => ids.to_vec(),
-        EffectOp::Vec4(ids) => ids.to_vec(),
-        EffectOp::Extract { value, .. } | EffectOp::Unary { value, .. } => vec![value],
-        EffectOp::Binary { left, right, .. } => vec![left, right],
-        EffectOp::Ternary { a, b, c, .. } => vec![a, b, c],
-        EffectOp::Select { .. } => unreachable!(),
+        EffectOp::Constant(_) | EffectOp::Parameter(_) | EffectOp::Input(_) => SmallVec::new(),
+        EffectOp::SourceSample { uv } | EffectOp::TextureSample { uv, .. } => smallvec![uv],
+        EffectOp::Vec2(ids) => SmallVec::from_slice(&ids),
+        EffectOp::Vec3(ids) => SmallVec::from_slice(&ids),
+        EffectOp::Vec4(ids) => SmallVec::from_buf(ids),
+        EffectOp::Extract { value, .. } | EffectOp::Unary { value, .. } => smallvec![value],
+        EffectOp::Binary { left, right, .. } => smallvec![left, right],
+        EffectOp::Ternary { a, b, c, .. } => smallvec![a, b, c],
+        EffectOp::Select {
+            condition,
+            when_true,
+            when_false,
+        } => smallvec![condition, when_true, when_false],
     }
 }
 

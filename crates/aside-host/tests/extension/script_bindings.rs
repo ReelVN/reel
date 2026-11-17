@@ -10,6 +10,7 @@ fn load(source: &str) -> (Vm, bc::FunctionId) {
     let compiled = lowering::compile(
         &module,
         &lowering::Linkage::default(),
+        &[],
         lowering::Options::default(),
     )
     .unwrap();
@@ -54,45 +55,6 @@ fn finish(vm: &mut Vm, task: TaskId) -> Value {
             }
             other => panic!("{other:?}"),
         }
-    }
-}
-
-#[test]
-#[ignore = "release source-to-B01 repeated script method cost"]
-fn script_method_call_cost() {
-    let source = r#"class Motion {
-        let base = 40.75;
-        fn sample(self, time: float) -> float { self.base + time }
-    }
-    fn main() {
-        let motion = Motion();
-        let mut sum = 0.0;
-        for i in 0..20000 { sum += motion.sample(1.25); }
-        sum
-    }"#;
-    for _ in 0..4 {
-        let (mut vm, main) = load(source);
-        let before = vm.stats();
-        let started = std::time::Instant::now();
-        let task = vm
-            .start(main, &[], RootOwner(1), bc::Context::Ordinary)
-            .unwrap();
-        assert_eq!(finish(&mut vm, task).as_float(), Some(840000.0));
-        let elapsed = started.elapsed().as_micros();
-        let after = vm.stats();
-        eprintln!(
-            "script_cache hits={} misses={}",
-            after.script_binding_hits - before.script_binding_hits,
-            after.script_binding_misses - before.script_binding_misses
-        );
-        eprintln!(
-            "script_method calls=20000 elapsed_us={elapsed} instructions={} work={} added_objects={} added_bytes={} chunks={}",
-            after.cumulative_instructions - before.cumulative_instructions,
-            after.cumulative_work - before.cumulative_work,
-            after.heap.live_objects - before.heap.live_objects,
-            after.heap.charged_bytes - before.heap.charged_bytes,
-            after.heap.chunk_allocations - before.heap.chunk_allocations
-        );
     }
 }
 

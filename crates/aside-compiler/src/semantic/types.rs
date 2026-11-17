@@ -87,6 +87,22 @@ pub(super) fn type_hint(hir: &Hir, n: NodeId) -> TypeHint {
             let text = hir.tokens(n).map(|t| hir.text(t.span)).collect::<String>();
             builtin_type(&text).unwrap_or(TypeHint::Named(text))
         }
+        H::StringType => hir
+            .children(n)
+            .next()
+            .and_then(|node| crate::strings::static_text(hir, node))
+            .map_or(TypeHint::Any, TypeHint::StringLiteral),
+        H::RecordType => TypeHint::Record(
+            hir.children(n)
+                .filter_map(|field| {
+                    let name = hir.tokens(field).next()?.name?;
+                    Some((
+                        hir.name(name).into(),
+                        type_hint(hir, hir.children(field).next()?),
+                    ))
+                })
+                .collect(),
+        ),
         H::GroupType => hir
             .children(n)
             .next()

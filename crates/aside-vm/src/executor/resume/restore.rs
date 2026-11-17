@@ -17,14 +17,14 @@ pub enum ResumeProgress {
     BudgetYield(SliceUsage),
     Complete(TaskId),
 }
-/// Exclusive candidate construction. Dropping an unfinished build cancels its task.
+/// Exclusive callback construction. Dropping an unfinished build cancels its task.
 pub struct ResumeRestore<'a> {
     vm: &'a mut Vm,
     plan: &'a VerifiedResumePlan,
     values: &'a [ResumeFrameValues],
     state: RestoreState,
 }
-/// Movable candidate construction for a host event loop.
+/// Movable callback construction in one current native ticket's task.
 ///
 /// Input root handles remain owned by the host and must stay live until completion
 /// or cancellation. An unfinished cursor must be cancelled with its original VM
@@ -38,7 +38,11 @@ struct RestoreState {
     heap: HeapId,
     epoch: SessionEpoch,
     owner: RootOwner,
-    task: Option<TaskId>,
+    task: TaskId,
+    native: FrameId,
+    base: usize,
+    context: ContextFlags,
+    effects: Effects,
     frame: usize,
     cell: usize,
     binding: usize,
@@ -47,15 +51,16 @@ struct RestoreState {
     failed: bool,
 }
 impl Vm {
-    /// Begin restoration from a verified stable-key plan. Input roots remain borrowed
-    /// until completion, so allocation and budget yields cannot collect future inputs.
+    /// Consume a current issued ticket and restore its callback from a verified plan.
+    /// The current continuation is rooted normally; business inputs stay borrowed.
     pub fn restore_resume<'a>(
         &'a mut self,
+        ticket: HostTicket,
         plan: &'a VerifiedResumePlan,
         values: &'a [ResumeFrameValues],
-        owner: RootOwner,
+        continuation: Continuation<'_>,
     ) -> Result<ResumeRestore<'a>, ResumeError> {
-        let state = RestoreState::begin(self, plan, values, owner)?;
+        let state = RestoreState::begin(self, ticket, plan, values, continuation)?;
         Ok(ResumeRestore {
             vm: self,
             plan,
@@ -63,15 +68,17 @@ impl Vm {
             state,
         })
     }
-    /// Begin a movable restoration bound to this candidate heap and session epoch.
-    /// The host retains all input roots and cancels an unfinished cursor explicitly.
+    /// Consume a current issued ticket and build its callback in the same task.
+    /// The cursor inherits this native's owner, context and effects. Until completion
+    /// the host advances this task only through the cursor and retains input roots.
     pub fn restore_resume_cursor(
         &mut self,
+        ticket: HostTicket,
         plan: VerifiedResumePlan,
         values: Vec<ResumeFrameValues>,
-        owner: RootOwner,
+        continuation: Continuation<'_>,
     ) -> Result<ResumeRestoreCursor, ResumeError> {
-        let state = RestoreState::begin(self, &plan, &values, owner)?;
+        let state = RestoreState::begin(self, ticket, &plan, &values, continuation)?;
         Ok(ResumeRestoreCursor {
             plan,
             values,
@@ -113,22 +120,31 @@ impl ResumeRestoreCursor {
     }
     /// Return the ordinary task only after every current frame and binding is installed.
     pub fn completed_task(&self) -> Option<TaskId> {
-        self.state.complete.then_some(self.state.task).flatten()
+        self.state.complete.then_some(self.state.task)
     }
 }
 impl RestoreState {
     fn begin(
-        vm: &Vm,
+        vm: &mut Vm,
+        ticket: HostTicket,
         plan: &VerifiedResumePlan,
         values: &[ResumeFrameValues],
-        owner: RootOwner,
+        continuation: Continuation<'_>,
     ) -> Result<Self, ResumeError> {
-        if vm.program.snapshot_identity() != plan.verified.program.snapshot_identity() {
+        super::descriptor::same_program(vm, &plan.verified)?;
+        let native = vm.ticket(ticket).map_err(error)?;
+        if no_wait(native.context) || native.effects.0 & Effects::WAIT == 0 {
             return Err(ResumeError::new(
-                "resume plan belongs to another current program",
+                "resume callback requires an ordinary waiting context",
             ));
         }
-        if values.len() != plan.frame_count() || values.len() > vm.limits.max_frames as usize {
+        let base = vm.task(ticket.task).map_err(error)?.frames.data.len();
+        if values.len() != plan.frame_count()
+            || base
+                .checked_add(values.len())
+                .and_then(|n| n.checked_add(1))
+                .is_none_or(|n| n > vm.limits.max_frames as usize)
+        {
             return Err(ResumeError::new(
                 "resume activation count differs from the plan",
             ));
@@ -141,11 +157,19 @@ impl RestoreState {
                 ));
             }
         }
+        // The existing response path admits and roots current continuation values
+        // before consuming the ticket. No script is executed by this publication.
+        vm.respond(ticket, HostResponse::Continue(continuation))
+            .map_err(error)?;
         Ok(Self {
             heap: vm.heap.id(),
             epoch: vm.heap.epoch(),
-            owner,
-            task: None,
+            owner: native.owner,
+            task: ticket.task,
+            native: native.id,
+            base,
+            context: native.context,
+            effects: native.effects,
             frame: 0,
             cell: 0,
             binding: 0,
@@ -165,9 +189,7 @@ impl RestoreState {
     fn cancel(&mut self, vm: &mut Vm) -> Result<(), ResumeError> {
         self.check_vm(vm)?;
         if !self.complete && !self.failed {
-            if let Some(task) = self.task {
-                vm.cancel_task(task).map_err(error)?;
-            }
+            vm.cancel_task(self.task).map_err(error)?;
             self.failed = true;
         }
         Ok(())
@@ -187,35 +209,40 @@ impl RestoreState {
             ));
         }
         if self.complete {
-            return Ok(ResumeProgress::Complete(self.task.unwrap()));
+            return Ok(ResumeProgress::Complete(self.task));
         }
         let result = (|| {
-            if let Some(task) = self.task {
-                vm.select_task(task).map_err(error)?;
-                if vm.active.cancelling || vm.active.terminal.is_some() {
-                    return Err(ResumeError::new(
-                        "partial resume task is no longer available",
-                    ));
-                }
-                let expected = self.frame + usize::from(self.admitted);
+            vm.select_task(self.task).map_err(error)?;
+            if vm.active.cancelling || vm.active.terminal.is_some() {
+                return Err(ResumeError::new(
+                    "partial resume task is no longer available",
+                ));
+            }
+            let restored = self.frame + usize::from(self.admitted);
+            if vm.active.frames.data.len() != self.base + restored
+                || !matches!(vm.active.frames.data.get(self.base - 1), Some(Frame::Native(frame))
+                        if frame.id == self.native && frame.continuation_active && matches!(frame.phase, NativePhase::Continue))
+            {
+                return Err(ResumeError::new(
+                    "resume callback's current native boundary changed",
+                ));
+            }
+            if restored != 0 {
                 let index = self.frame.saturating_sub(usize::from(!self.admitted));
                 let (flow, site) = plan.frame(index);
-                if vm.active.frames.data.len() != expected
-                    || !matches!(vm.active.frames.data.last(), Some(Frame::Script(frame))
+                if !matches!(vm.active.frames.data.last(), Some(Frame::Script(frame))
                         if frame.code.function == flow.function && frame.pc == site.entry
                             && matches!(frame.phase, ScriptPhase::Body))
                 {
                     return Err(ResumeError::new(
-                        "partial resume task advanced outside its construction cursor",
+                        "partial callback advanced outside its construction cursor",
                     ));
                 }
             }
             self.advance(vm, plan, values, budget, now)
         })();
         if result.is_err() {
-            if let Some(task) = self.task {
-                let _ = vm.cancel_task(task);
-            }
+            let _ = vm.cancel_task(self.task);
             self.failed = true;
         }
         result
@@ -235,7 +262,7 @@ impl RestoreState {
             }
             if self.frame == plan.frame_count() {
                 self.complete = true;
-                return Ok(ResumeProgress::Complete(self.task.unwrap()));
+                return Ok(ResumeProgress::Complete(self.task));
             }
             let (flow, site) = plan.frame(self.frame);
             if !self.admitted {
@@ -243,33 +270,31 @@ impl RestoreState {
                 if !meter.take(0, work, allocation) {
                     return Ok(ResumeProgress::BudgetYield(meter.usage));
                 }
-                if self.frame == 0 {
-                    self.task = Some(
-                        vm.start(flow.function, &[], self.owner, Context::Ordinary)
-                            .map_err(error)?,
-                    );
+                let ret = if self.frame == 0 {
+                    ReturnTo::Native { frame: self.native }
                 } else {
                     let Frame::Script(parent) = vm.active.frames.data.last().copied().unwrap()
                     else {
                         unreachable!()
                     };
                     let (_, parent_site) = plan.frame(self.frame - 1);
-                    vm.push_script(
-                        flow.function,
-                        None,
-                        ArgSource::None,
-                        0,
-                        self.owner,
-                        ContextFlags::from(Context::Ordinary),
-                        Effects::ALL,
-                        ReturnTo::Register {
-                            frame: parent.id,
-                            reg: parent_site.result,
-                            call: parent_site.call,
-                        },
-                    )
-                    .map_err(error)?;
-                }
+                    ReturnTo::Register {
+                        frame: parent.id,
+                        reg: parent_site.result,
+                        call: parent_site.call,
+                    }
+                };
+                vm.push_script(
+                    flow.function,
+                    None,
+                    ArgSource::None,
+                    0,
+                    self.owner,
+                    self.context,
+                    self.effects,
+                    ret,
+                )
+                .map_err(error)?;
                 let Frame::Script(frame) = vm.active.frames.data.last_mut().unwrap() else {
                     unreachable!()
                 };
@@ -353,6 +378,26 @@ impl RestoreState {
                     if matches!(storage, BindingStorage::Value(_)) {
                         vm.put(frame.bound, index, input).map_err(error)?;
                     }
+                }
+                self.binding += 1;
+                continue;
+            }
+            if let Some(&id) = site
+                .layout
+                .initialized_dead
+                .get(self.binding - site.layout.bindings.len())
+            {
+                if !meter.take(0, 2, 0) {
+                    return Ok(ResumeProgress::BudgetYield(meter.usage));
+                }
+                let def =
+                    &vm.program.package().functions[flow.function.index()].bindings[id.index()];
+                let (register, init) = (def.storage.reg(), def.initialization);
+                // Current-code liveness proves the old value cannot be read.
+                // BindWrite still needs this register to be initialized.
+                vm.put(frame.regs, register.0, Value::NULL).map_err(error)?;
+                if let BindingInitialization::Parameter(index) = init {
+                    vm.put(frame.bound, index, Value::NULL).map_err(error)?;
                 }
                 self.binding += 1;
                 continue;

@@ -292,6 +292,7 @@ fn build_inner(
         None,
         &effects,
         &compiled.resume,
+        reel_engine::aside::source::types(),
         limits,
     )
     .map_err(|e| fail(e.to_string()))?;

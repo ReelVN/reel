@@ -137,7 +137,10 @@ impl Workspace {
             return Some(ModuleTarget::Native(declaration));
         }
         let (roots, _) = self.effective_roots(uri);
-        if let Some(file) = module_file(&path.name, &roots) {
+        let name = roots
+            .last()
+            .and_then(|root| self.project_import_name(&path.name, &root.prefix));
+        if let Some(file) = module_file(name.as_deref().unwrap_or(&path.name), &roots) {
             let file_uri = file_uri(&file).ok()?;
             if let Some(open) = self.documents.get(&source_key(&file_uri)) {
                 return Some(ModuleTarget::Source(open.source.uri.clone()));

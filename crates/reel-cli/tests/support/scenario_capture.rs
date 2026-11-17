@@ -222,6 +222,8 @@ struct Offscreen {
     target_bytes: u64,
     stats: CaptureStats,
     capture_dir: Option<PathBuf>,
+    first_capture_pressure: bool,
+    deferred_capture: Option<reel_ui::bridge::CandidateKey>,
 }
 
 impl Offscreen {
@@ -265,6 +267,17 @@ impl CaptureBackend for Offscreen {
         output: &BudgetPool,
         wake: WakeSignal,
     ) -> Result<GpuCapture, GpuError> {
+        if std::mem::take(&mut self.first_capture_pressure) {
+            self.deferred_capture = Some(frame.key());
+            return Err(GpuError::Busy);
+        }
+        if let Some(key) = self.deferred_capture.take() {
+            assert_eq!(
+                key,
+                frame.key(),
+                "capture must retry the same accepted frame"
+            );
+        }
         self.renderer.capture(frame, size, output, wake)
     }
 
@@ -336,7 +349,7 @@ pub struct ScenarioCapture {
     ),
 }
 impl ScenarioCapture {
-    pub fn new(kind: &str, capture: bool) -> Self {
+    pub fn new(kind: &str, capture: bool, first_capture_pressure: bool) -> Self {
         let capture_dir = capture
             .then(|| std::env::var_os("REEL_SCENARIO_CAPTURE_DIR"))
             .flatten()
@@ -364,6 +377,8 @@ impl ScenarioCapture {
                 target_bytes: limits.target_bytes,
                 stats: CaptureStats::default(),
                 capture_dir,
+                first_capture_pressure,
+                deferred_capture: None,
             }),
             capture,
             kind,

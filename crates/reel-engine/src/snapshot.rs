@@ -16,7 +16,6 @@ struct ReadingCapture<'a> {
     current: usize,
     pending_read: usize,
     group: usize,
-    history_line: usize,
 }
 impl ReadingCapture<'_> {
     fn new(source: &reading::ReadingData) -> ReadingCapture<'_> {
@@ -45,14 +44,13 @@ impl ReadingCapture<'_> {
             saved: reading::ReadingData {
                 active,
                 completion: source.completion.clone(),
-                history: Vec::new(),
+                history: Default::default(),
                 control: source.control,
             },
             line: 0,
             current: 0,
             pending_read: 0,
             group: 0,
-            history_line: 0,
         }
     }
     fn step(&mut self) -> bool {
@@ -83,23 +81,13 @@ impl ReadingCapture<'_> {
             }
             _ => (),
         }
-        if let Some(group) = self.source.history.get(self.group) {
-            if self.saved.history.len() == self.group {
-                self.saved.history.push(HistoryGroup {
-                    group_id: group.group_id,
-                    interaction_id: group.interaction_id,
-                    lines: Vec::new(),
-                    page_locale: group.page_locale.clone(),
-                });
-                return false;
-            }
-            if let Some(line) = group.lines.get(self.history_line) {
-                self.saved.history[self.group].lines.push(line.clone());
-                self.history_line += 1;
-            } else {
-                self.group += 1;
-                self.history_line = 0;
-            }
+        if self
+            .saved
+            .history
+            .share_page(&self.source.history, self.group)
+            .is_some()
+        {
+            self.group += 1;
             return false;
         }
         true
@@ -219,7 +207,7 @@ fn restore_reading(
         }
         None => (),
     }
-    for group in &mut data.history {
+    for group in data.history.iter_mut() {
         group.group_id.0.identity = identity;
         group.interaction_id.identity = identity;
         for line in &mut group.lines {

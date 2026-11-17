@@ -123,6 +123,15 @@ pub enum TypeDef {
         name: SymbolId,
         version: u64,
     },
+    /// Type metadata stays inline when the executable's strings use an external pool.
+    StringLiteral(String),
+    /// The exact own string keys of an ordinary table and their value contracts.
+    Record(Vec<RecordFieldType>),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordFieldType {
+    pub name: SymbolId,
+    pub ty: TypeId,
 }
 /// A mask of allowed effects, not a promise that a call will actually wait.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

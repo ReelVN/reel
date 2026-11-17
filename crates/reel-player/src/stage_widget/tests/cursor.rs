@@ -520,10 +520,14 @@ fn cursor_snapshot_restores_subtree_and_owned_activity() {
         "en".into(),
         live.ui().assets(),
         live.initializer(),
+        live.entry_function(),
         live.catalogs(),
     )
     .unwrap();
-    while !restored.prepare_restored(SliceBudget::default()).unwrap() {}
+    while !restored
+        .prepare_restored(SliceBudget::default(), &mut || 0)
+        .unwrap()
+    {}
     drain(&mut restored);
     assert!(restored.activities_need_time());
     let pointer = restored

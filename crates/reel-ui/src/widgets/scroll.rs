@@ -16,6 +16,35 @@ pub fn wheel_delta_pixels(delta: ScrollDelta, scale_factor: f64, viewport: Size)
     }
 }
 
+/// Select the closest regular stop, with the end of the range available as a stop.
+pub fn snap_scroll_offset(value: f64, maximum: f64, step: Option<f64>) -> f64 {
+    let value = value.clamp(0., maximum);
+    let Some(step) = step else { return value };
+    let regular = ((value / step).round() * step).clamp(0., maximum);
+    if maximum - value < (regular - value).abs() {
+        maximum
+    } else {
+        regular
+    }
+}
+
+/// Move between stops, treating a short final interval as one step.
+pub fn scroll_offset_by(value: f64, delta: f64, maximum: f64, step: Option<f64>) -> f64 {
+    let Some(step) = step else {
+        return (value + delta).clamp(0., maximum);
+    };
+    if delta == 0. {
+        return value;
+    }
+    let start = if value == maximum && delta < 0. {
+        (maximum / step).ceil() * step
+    } else {
+        value
+    };
+    let distance = (delta.abs() / step).round().max(1.) * step;
+    snap_scroll_offset(start + delta.signum() * distance, maximum, Some(step))
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScrollAxis {
     Horizontal,
@@ -63,10 +92,14 @@ pub struct ScrollState {
     axis: ScrollAxis,
     touch: Option<Touch>,
     overscroll: ScrollOverscroll,
+    snap_y: Option<f64>,
     pull: Vec2,
     rebound: Option<(Vec2, u64)>,
 }
 impl ScrollState {
+    pub fn set_snap_y(&mut self, step: Option<f64>) {
+        self.snap_y = step;
+    }
     pub fn viewport(&self) -> Size {
         self.viewport
     }
@@ -210,25 +243,31 @@ impl ScrollState {
             },
         ));
     }
-    /// Returns how far the target rectangle moved in this viewport.
-    pub fn reveal(&mut self, rect: Rect) -> Vec2 {
-        let elastic = self.elastic_translation();
-        let rect = rect - elastic;
+    /// Find the nearest logical offset that shows a box in the current viewport.
+    pub fn reveal_offset(&self, rect: Rect, margins: [f64; 2]) -> Vec2 {
+        let rect = rect - self.elastic_translation();
         let delta = |start: f64, end: f64, extent: f64| {
-            if start < 0. || end - start > extent {
-                start
+            let start_edge = margins[0].min(extent);
+            let end_edge = (extent - margins[1]).max(start_edge);
+            if start < start_edge || end - start > end_edge - start_edge {
+                start - start_edge
             } else {
-                (end - extent).max(0.)
+                (end - end_edge).max(0.)
             }
         };
-        let before = self.offset;
-        self.set_offset(
-            before
+        self.clamped(
+            self.offset
                 + Vec2::new(
                     delta(rect.x0, rect.x1, self.viewport.width),
                     delta(rect.y0, rect.y1, self.viewport.height),
                 ),
-        );
+        )
+    }
+    /// Returns how far the target rectangle moved in this viewport.
+    pub fn reveal(&mut self, rect: Rect) -> Vec2 {
+        let before = self.offset;
+        let elastic = self.elastic_translation();
+        self.set_offset(self.reveal_offset(rect, [0.; 2]));
         before - self.offset - elastic
     }
     pub fn cancel(&mut self) {
@@ -302,7 +341,8 @@ impl ScrollState {
                 };
                 if delta.is_finite() {
                     let before = self.offset;
-                    if self.set_offset(self.offset + delta) {
+                    let y = scroll_offset_by(self.offset.y, delta.y, self.maximum().y, self.snap_y);
+                    if self.set_offset(Vec2::new(self.offset.x + delta.x, y)) {
                         if self.offset != before {
                             ctx.set_handled();
                             return true;
@@ -325,15 +365,21 @@ impl ScrollState {
             PointerEvent::Up(_) | PointerEvent::Cancel(_)
                 if self.touch.is_some_and(|touch| touch.info == info) =>
             {
-                if self.touch.unwrap().dragging && ctx.is_active() {
+                let dragged = self.touch.unwrap().dragging;
+                if dragged && ctx.is_active() {
                     ctx.release_pointer();
                     ctx.set_handled();
                 }
                 if matches!(event, PointerEvent::Up(_)) {
+                    let before = self.offset.y;
+                    if dragged && self.pull == Vec2::ZERO {
+                        self.offset.y = snap_scroll_offset(before, self.maximum().y, self.snap_y);
+                    }
                     self.release();
                     if self.animating() {
                         ctx.request_anim_frame();
                     }
+                    return self.offset.y != before;
                 } else {
                     let changed = self.pull != Vec2::ZERO;
                     self.cancel();
@@ -349,6 +395,17 @@ impl ScrollState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_rows_snap_to_whole_offsets_and_keep_a_short_last_stop() {
+        assert_eq!(snap_scroll_offset(345., 1380., Some(230.)), 460.);
+        assert_eq!(snap_scroll_offset(1278., 1300., Some(230.)), 1300.);
+        assert_eq!(snap_scroll_offset(2000., 1300., Some(230.)), 1300.);
+        assert_eq!(scroll_offset_by(460., -40., 1380., Some(230.)), 230.);
+        assert_eq!(scroll_offset_by(1190., -40., 1190., Some(230.)), 1150.);
+        assert_eq!(scroll_offset_by(345., 0., 1380., Some(230.)), 345.);
+        assert_eq!(snap_scroll_offset(345., 1380., None), 345.);
+    }
 
     fn state() -> ScrollState {
         let mut state = ScrollState::default();

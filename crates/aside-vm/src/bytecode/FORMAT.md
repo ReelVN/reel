@@ -47,7 +47,7 @@ Records follow model.rs field order, with these prefixes:
 | Record | Tags |
 | --- | --- |
 | Const | 0 Null, 1 Bool, 2 Int64, 3 Float64Bits, 4 Utf8, 5 Bytes, 6 Tuple, 7 Text(u64 offset,u32 length) |
-| TypeDef | 0 Builtin, 1 Tuple, 2 Union, 3 Function, 4 Named |
+| TypeDef | 0 Builtin, 1 Tuple, 2 Union, 3 Function, 4 Named, 5 StringLiteral, 6 Record |
 | FunctionKind | 0 Plain, 1 Async, 2 Generator, 3 Native(u32 NativeId) |
 | Context | 0 Ordinary, 1 NoWait, 2 Derived, 3 Init |
 | CaptureKind | 0 Value, 1 Cell |
@@ -202,6 +202,7 @@ begin at register_count.
 | 0068 | IterAdvance | d,x,y | writes done to d and value to y | yes | - |
 | 0069 | MatchFail | - | throw MatchError | yes | - |
 | 006a | SuperRef | d (captures the current method's receiver and lexical base) | next | yes | - |
+| 006b | ChildrenSpread | x,y | next (capture composable children and skip null) | yes | - |
 | 0070 | Throw | x | throw/unwind | yes | - |
 | 0071 | Rethrow | — | throw (catch only) | yes | - |
 | 0072 | Leave | p | unwind cleanup then target | yes | - |
@@ -274,8 +275,9 @@ an unstarted generator closes without entering its body. An escaping fault close
 the generator before propagating its original envelope. Generator execution
 inherits the no-wait boundary; its internal work remains budget resumable.
 Array iteration permits element replacement and rejects structural mutation.
-ChildrenPush collects composable Host values and ignores null. CallNoWait extends
-the restriction through ordinary helpers.
+ChildrenPush collects composable Host values and ignores null. ChildrenSpread
+applies the same rule to each array or tuple element using sliced capture.
+CallNoWait extends the restriction through ordinary helpers.
 
 ## Validation and execution admission
 
