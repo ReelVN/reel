@@ -64,13 +64,17 @@ fn linear_pixels_completion_and_frozen_crossfade() {
         prepared.quality(),
         renderer.usage()
     );
-    assert!(renderer.usage().targets > 0);
+    let targets = renderer.usage().targets;
+    assert!(targets > 0);
     let pixels = renderer.readback(prepared).unwrap();
     let p = pixels[100 * 400 + 100];
     assert!((p[0] - 128. / 255. * 0.5).abs() < 0.005, "{p:?}");
     assert!((p[2] - 0.5).abs() < 0.005, "{p:?}");
     assert!((p[3] - (128. / 255. + 1.) * 0.5).abs() < 0.005, "{p:?}");
-    assert_eq!(renderer.usage().targets, 0);
+    assert!(!renderer.has_pending());
+    let repeated = renderer.crossfade(&a, &b, 0.5).unwrap();
+    assert_eq!(renderer.usage().targets, targets);
+    close(pixel(&renderer.readback(repeated).unwrap(), 100, 100), p);
 }
 
 fn device() -> Renderer {
@@ -92,6 +96,28 @@ fn close(actual: [f32; 4], expected: [f32; 4]) {
             (actual[i] - expected[i]).abs() < 0.006,
             "actual={actual:?}, expected={expected:?}"
         );
+    }
+}
+
+fn read_frame(renderer: &mut Renderer, frame: &reel_ui::frame::RenderFrame) -> Vec<[f32; 4]> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match renderer.prepare(frame) {
+            Ok(prepared) => return renderer.readback(prepared).unwrap(),
+            Err(reel_render::gpu::GpuError::Preparing) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "frame preparation stalled"
+                );
+                renderer
+                    .gpu()
+                    .device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .unwrap();
+                renderer.poll().unwrap();
+            }
+            Err(error) => panic!("frame preparation failed: {error}"),
+        }
     }
 }
 #[test]
@@ -245,7 +271,8 @@ fn whole_group_opacity_and_nested_masks_clips() {
             close(pixel(&pixels, x + 2, y + 32), [0.; 4]);
         }
         close(pixel(&pixels, 399, 299), [0.; 4]);
-        assert_eq!(renderer.usage().targets, 0);
+        assert!(!renderer.has_pending());
+        assert!(renderer.usage().targets <= used);
 
         if count == 24 {
             let mut other = widget_bridge(
@@ -258,7 +285,8 @@ fn whole_group_opacity_and_nested_masks_clips() {
                 &pool,
             );
             let prepared = renderer.crossfade(&frame, &other, 0.5).unwrap();
-            assert!(renderer.usage().targets <= GpuLimits::default().target_bytes);
+            let fade_targets = renderer.usage().targets;
+            assert!(fade_targets <= GpuLimits::default().target_bytes);
             let pixels = renderer.readback(prepared).unwrap();
             close(
                 pixel(&pixels, 32, 32),
@@ -269,17 +297,23 @@ fn whole_group_opacity_and_nested_masks_clips() {
                 [0., alpha * 0.5, 0.5, (1. + alpha) * 0.5],
             );
             close(pixel(&pixels, 2, 32), [0., 0., 0.5, 0.5]);
-            assert_eq!(renderer.usage().targets, 0);
-            assert_eq!(renderer.usage().resources, 0);
-            assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
+            assert!(!renderer.has_pending());
+            assert!(renderer.usage().targets <= fade_targets);
         }
     }
 
-    // Live parents cannot be pooled: 301 full-size targets exceed 128 MiB even
-    // with the smallest supported RGBA8/1x quality. Refusal releases everything.
+    // Each parent has its own draw and a translucent child. Their simultaneous
+    // full-size targets exceed 128 MiB even at RGBA8/1x.
     let mut s = Scene::new();
     for _ in 0..300 {
-        s.push_group(Group::default());
+        s.push_group(Group {
+            composite: Composite {
+                alpha: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        fill(&mut s, Color::WHITE);
     }
     fill(&mut s, Color::WHITE);
     for _ in 0..300 {
@@ -291,16 +325,33 @@ fn whole_group_opacity_and_nested_masks_clips() {
         empty_snapshot(&pool),
         &pool,
     );
-    assert!(matches!(
-        renderer.prepare(&frame),
-        Err(reel_render::gpu::GpuError::Budget {
-            domain: "targets",
-            ..
-        })
-    ));
-    assert_eq!(renderer.usage().targets, 0);
-    assert_eq!(renderer.usage().resources, 0);
-    assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
+    let before_refusal = renderer.usage();
+    let mut retained = None;
+    for _ in 0..2 {
+        assert!(matches!(
+            renderer.prepare(&frame),
+            Err(reel_render::gpu::GpuError::Budget {
+                domain: "targets",
+                ..
+            })
+        ));
+        assert!(!renderer.has_pending());
+        let usage = renderer.usage();
+        assert!(usage.targets <= before_refusal.targets);
+        assert!(usage.resources <= before_refusal.resources);
+        // The group plan can remain cached. Retrying the same frame must reuse it.
+        assert_eq!(usage.transient, *retained.get_or_insert(usage.transient));
+    }
+    let mut bridge = widget_bridge(RecordWidget::new(scene(Color::WHITE)), Affine::IDENTITY);
+    let simple = build(
+        bridge.record(FrameId(6)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    close(
+        pixel(&read_frame(&mut renderer, &simple), 100, 100),
+        [1.; 4],
+    );
 }
 #[test]
 #[ignore = "requires an actual graphics adapter"]
@@ -332,7 +383,7 @@ fn bounded_admission_and_completion_preserve_frame_lease() {
     // Driver completion alone cannot release application ownership until poll observes it.
     assert!(renderer.usage().targets > 0);
     assert_eq!(renderer.poll().unwrap(), vec![id]);
-    assert_eq!(renderer.usage().targets, 0);
+    assert!(!renderer.has_pending());
     assert_eq!(pool.usage().bytes, 0);
 }
 
@@ -737,12 +788,15 @@ fn rgba_encodings_and_alpha_modes_match_independent_linear_pixels() {
                     color::linear_premultiplied([n, 1. - n, 128. / 255., n]).map(|c| c as f32),
                 );
             }
-            assert_eq!(renderer.usage().targets, 0);
-            assert_eq!(renderer.usage().resources, 256 * 8);
+            assert!(!renderer.has_pending());
+            assert_eq!(renderer.usage().cached_images, 256 * 8);
             assert!(registry.retire(handle));
+            drop(frame);
+            drop(bridge);
+            drop(lease);
             renderer.poll().unwrap();
-            assert_eq!(renderer.usage().resources, 0);
-            assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
+            assert_eq!(renderer.usage().cached_images, 0);
+            assert_eq!(renderer.usage().retired_image_readers, 0);
         }
     }
 }
@@ -847,9 +901,7 @@ fn retained_transition_uses_current_parent_backdrop_and_replaces_linear_pixels()
                 }],
                 &pool,
             );
-            let pixels = renderer
-                .readback(renderer.prepare(&frame).unwrap())
-                .unwrap();
+            let pixels = read_frame(&mut renderer, &frame);
             for (index, pixel) in pixels.into_iter().enumerate() {
                 let expected = std::array::from_fn(|channel| {
                     old_pixels[index][channel] * (1. - progress)
@@ -903,9 +955,7 @@ fn retained_transition_mask_endpoints_and_nested_midpoint_survive_new_frames() {
             }],
             &pool,
         );
-        let pixels = renderer
-            .readback(renderer.prepare(&frame).unwrap())
-            .unwrap();
+        let pixels = read_frame(&mut renderer, &frame);
         let coverage = if progress == 0. || progress == 1. {
             progress
         } else {
@@ -937,9 +987,7 @@ fn retained_transition_mask_endpoints_and_nested_midpoint_survive_new_frames() {
                 }],
                 &pool,
             );
-            let pixels = renderer
-                .readback(renderer.prepare(&nested).unwrap())
-                .unwrap();
+            let pixels = read_frame(&mut renderer, &nested);
             close(
                 pixel(&pixels, 100, 100),
                 [
@@ -994,9 +1042,7 @@ fn retained_transition_hidden_target_keeps_empty_subtree_boundary() {
         }],
         &pool,
     );
-    let pixels = renderer
-        .readback(renderer.prepare(&hidden).unwrap())
-        .unwrap();
+    let pixels = read_frame(&mut renderer, &hidden);
     close(pixel(&pixels, 60, 60), [0.5, 0., 0.5, 1.]);
     close(pixel(&pixels, 20, 20), [0., 0., 1., 1.]);
     let empty = retained_picture(&hidden, Some(child), &pool);

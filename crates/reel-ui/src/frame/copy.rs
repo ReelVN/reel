@@ -1,9 +1,6 @@
 //! Command field copying and draw ink bounds.
 use super::*;
 
-pub(super) fn cmd_id(scene: &Scene, pos: usize) -> &Command {
-    &scene.commands()[pos]
-}
 pub(super) fn source_geometry<'a>(scene: &'a Scene, c: &Command) -> Option<&'a Geometry> {
     match c {
         Command::PushClip(id) => Some(match scene.clip(*id) {

@@ -258,7 +258,7 @@ impl Building {
         p.units += count as u64 * units;
         p.bytes += count as u64 * bytes;
         if count == remaining {
-            job.field = 9;
+            job.field = COPY_FIELDS_END;
         }
         Ok(true)
     }

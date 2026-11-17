@@ -9,6 +9,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Reuse the verified bytecode digest when writing and loading an ASB.
 - Reuse existing translation archives before compressing their contents during a build.
 - Desktop saves and builds publish the synced staging file directly, removing an extra file rename per write.
+- Aside reuses the iterator and its source when advancing through arrays, tuples and integer ranges.
+- UI frame preparation skips payload copying for fixed-size draw commands. Occlusion planning allocates clip and isolation stacks as the drawing enters those scopes.
+- Audio decoding reuses existing buffer reservations across packets. Resizing a reservation to its current size no longer locks the resource budget.
 
 ### Fixed
 

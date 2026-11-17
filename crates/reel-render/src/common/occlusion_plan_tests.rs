@@ -509,6 +509,44 @@ fn plain_crop_of_an_opaque_image_can_occlude() {
 }
 
 #[test]
+fn flat_overdraw_fits_a_small_transient_budget() {
+    let mut scene = Scene::new();
+    for _ in 0..512 {
+        fill(
+            &mut scene,
+            Rect::new(0., 0., 400., 300.),
+            Affine::IDENTITY,
+            Default::default(),
+        );
+    }
+    let frame = frame(scene);
+    let limits = super::super::GpuLimits {
+        transient_bytes: 22 * 1024,
+        ..Default::default()
+    };
+    let shared = Budgets::new(limits);
+    let local = Budgets::new(limits);
+    let plan = Plan::collect(
+        std::iter::once(&frame),
+        [400, 300],
+        false,
+        &shared,
+        &local,
+        limits.transient_bytes,
+    )
+    .unwrap();
+    let mut draws = frame
+        .commands()
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, command)| matches!(command.op, FrameOp::Draw(_)));
+    let (front, _) = draws.next().unwrap();
+    assert!(plan.selected(frame.drawing(), front));
+    assert!(draws.all(|(index, _)| !plan.selected(frame.drawing(), index)));
+}
+
+#[test]
 fn capture_and_zero_metadata_budget_preserve_all_draws_without_charges() {
     let frame = image_frame(255, false);
     let limits = super::super::GpuLimits {
@@ -696,14 +734,16 @@ fn occlusion_planning_cost() {
             })
             .count();
         assert_eq!(selected, if overlap { 1 } else { 512 });
-        let bytes = budgets.transient.usage().bytes;
+        let usage = budgets.transient.usage();
         drop(plan);
         let start = Instant::now();
         for _ in 0..1000 {
             black_box(collect());
         }
         eprintln!(
-            "occlusion overlap={overlap} draws=512 selected={selected} retained_metadata_bytes={bytes} plan_us={:.2}",
+            "occlusion overlap={overlap} draws=512 selected={selected} retained_metadata_bytes={} peak_metadata_bytes={} plan_us={:.2}",
+            usage.bytes,
+            usage.peak_bytes,
             start.elapsed().as_secs_f64() * 1000.
         );
         assert_eq!(budgets.transient.usage().bytes, 0);

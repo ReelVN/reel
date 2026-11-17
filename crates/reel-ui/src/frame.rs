@@ -534,6 +534,8 @@ struct MaskMapping {
     local: record::MaskId,
     index: usize,
 }
+const COPY_FIELDS_END: u8 = 9;
+
 #[derive(Debug)]
 struct CopyJob {
     command: FrameCommand,
@@ -1333,4 +1335,4 @@ fn validate_draw(d: &FrameDraw) -> Result<(), BuildErrorKind> {
 }
 
 mod copy;
-use copy::{cmd_id, copy_field, draw_ink, field_size, initial_ink, source_glyph};
+use copy::{copy_field, draw_ink, field_size, initial_ink, source_glyph};

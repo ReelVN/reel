@@ -1,6 +1,17 @@
 //! Budgeted frame construction and copying.
 use super::*;
 
+impl StepBudget {
+    fn spend(&self, progress: &mut BuildProgress, units: u64, bytes: u64) -> bool {
+        if units > self.max_units - progress.units || bytes > self.max_bytes - progress.bytes {
+            return false;
+        }
+        progress.units += units;
+        progress.bytes += bytes;
+        true
+    }
+}
+
 impl Building {
     pub(super) fn error(&self, kind: BuildErrorKind) -> BuildError {
         let c = &self.cursors[0];
@@ -26,20 +37,6 @@ impl Building {
             .map_err(|_| self.error(BuildErrorKind::Bytes))?;
         self.bytes = next;
         Ok(())
-    }
-    pub(super) fn spend(
-        &mut self,
-        p: &mut BuildProgress,
-        b: &StepBudget,
-        units: u64,
-        bytes: u64,
-    ) -> Result<bool, BuildError> {
-        if units > b.max_units - p.units || bytes > b.max_bytes - p.bytes {
-            return Ok(false);
-        }
-        p.units += units;
-        p.bytes += bytes;
-        Ok(true)
     }
     pub(super) fn scene<'a>(source: &'a RecordedSource, c: &Cursor) -> Option<&'a Scene> {
         let VisualLayerKind::Scene(scene) = &source.plan.layers.get(c.layer)?.kind else {
@@ -67,7 +64,8 @@ impl Building {
                 break;
             }
             if self.job.as_ref().is_some_and(|job| {
-                job.field < 9 && matches!(job.command.op, FrameOp::Draw(FrameDraw::Sprites(_)))
+                job.field < COPY_FIELDS_END
+                    && matches!(job.command.op, FrameOp::Draw(FrameDraw::Sprites(_)))
             }) {
                 if !self.copy_sprites(&mut p, &b)? {
                     break;
@@ -76,14 +74,13 @@ impl Building {
             }
             if self.job.is_some() {
                 // Payload elements advance in place; move the full command only at commit.
-                if self.job.as_ref().unwrap().field < 9 {
-                    let resolve_units =
-                        2 * self.cursors.last().expect("active cursor").path.len() as u64 + 1;
-                    if !self.spend(&mut p, &b, resolve_units, 0)? {
+                if self.job.as_ref().unwrap().field < COPY_FIELDS_END {
+                    let c = self.cursors.last().expect("active cursor");
+                    let resolve_units = c.path.len() as u64 + 1;
+                    if !b.spend(&mut p, resolve_units, 0) {
                         p.minimum_units = resolve_units;
                         break;
                     }
-                    let c = self.cursors.last().expect("active cursor");
                     let scene = Self::scene(&self.source, c).expect("copy job scene");
                     let cmd = &scene.commands()[c.position];
                     let job = self.job.as_ref().unwrap();
@@ -120,19 +117,13 @@ impl Building {
                     }
                     let size = field_size(scene, cmd, job.field, job.index);
                     if let Some(size) = size {
-                        if !self.spend(&mut p, &b, 0, size as u64)? {
+                        if !b.spend(&mut p, 0, size as u64) {
                             p.minimum_units = resolve_units;
                             p.minimum_bytes = size as u64;
                             break;
                         }
-                        let scene =
-                            Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
                         let job = self.job.as_mut().unwrap();
-                        copy_field(
-                            scene,
-                            cmd_id(scene, self.cursors.last().unwrap().position),
-                            job,
-                        )?;
+                        copy_field(scene, cmd, job)?;
                         job.index += 1;
                     } else {
                         let job = self.job.as_mut().unwrap();
@@ -145,7 +136,7 @@ impl Building {
                 let commit_units = cursor.scopes.len() as u64
                     + cursor.path.len() as u64
                     + if cursor.stream.is_none() { 3 } else { 1 };
-                if !self.spend(&mut p, &b, commit_units, 0)? {
+                if !b.spend(&mut p, commit_units, 0) {
                     p.minimum_units = commit_units;
                     break;
                 }
@@ -162,7 +153,7 @@ impl Building {
             }
             let c = self.cursors.last().unwrap();
             if c.layer >= self.source.plan.layers.len() {
-                if !self.spend(&mut p, &b, 1, 0)? {
+                if !b.spend(&mut p, 1, 0) {
                     break;
                 }
                 let c = self.cursors.last().unwrap();
@@ -199,7 +190,7 @@ impl Building {
                 + owner_work
                 + 8;
             let available = (mapping_work - self.start_credit).min(b.max_units - p.units);
-            self.spend(&mut p, &b, available, 0)?;
+            p.units += available;
             self.start_credit += available;
             if self.start_credit < mapping_work {
                 p.minimum_units = 1;
@@ -209,7 +200,7 @@ impl Building {
             if let Some(scene) = Self::scene(&self.source, c) {
                 if c.position == scene.commands().len() {
                     let advance_units = if c.stream.is_none() { 3 } else { 1 };
-                    if !self.spend(&mut p, &b, advance_units, 0)? {
+                    if !b.spend(&mut p, advance_units, 0) {
                         p.minimum_units = advance_units;
                         break;
                     }
@@ -234,7 +225,7 @@ impl Building {
                     continue;
                 }
             } else {
-                if !self.spend(&mut p, &b, 0, size_of::<FrameCommand>() as u64)? {
+                if !b.spend(&mut p, 0, size_of::<FrameCommand>() as u64) {
                     p.minimum_bytes = size_of::<FrameCommand>() as u64;
                     break;
                 }
@@ -284,7 +275,7 @@ impl Building {
                 continue;
             }
             if self.allocation_need.is_none() {
-                if !self.spend(&mut p, &b, 0, size_of::<FrameCommand>() as u64)? {
+                if !b.spend(&mut p, 0, size_of::<FrameCommand>() as u64) {
                     p.minimum_bytes = size_of::<FrameCommand>() as u64;
                     break;
                 }
@@ -307,7 +298,7 @@ impl Building {
             }
             let need = self.allocation_need.expect("prepared allocation");
             let bytes = (need - self.allocation_credit).min(b.max_bytes - p.bytes);
-            self.spend(&mut p, &b, 0, bytes)?;
+            p.bytes += bytes;
             self.allocation_credit += bytes;
             if self.allocation_credit < need {
                 p.minimum_bytes = 1;
@@ -573,7 +564,8 @@ impl Building {
                 origin: CommandOrigin { source, local, at },
                 op,
             },
-            field: 0,
+            // A zero allocation also proves there are no variable-size fields to copy.
+            field: if allocation == 0 { COPY_FIELDS_END } else { 0 },
             index: 0,
             ink,
             descend,

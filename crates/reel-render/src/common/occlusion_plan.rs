@@ -3,7 +3,7 @@ use super::{
     GpuError,
     renderer::{Budgets, Reservation, reserve},
     scissor::Scissor,
-    scopes::GroupPlan,
+    scopes::{GroupPlan, push_stack},
 };
 use reel_core::texture::TextureFormat;
 use reel_ui::{
@@ -158,9 +158,7 @@ fn plan_drawing(
     if commands.is_empty() {
         return Ok(None);
     }
-    let mut bytes = (commands.len()
-        * (size_of::<Option<(usize, Scissor)>>() + size_of::<Scissor>() + size_of::<bool>()))
-        as u64;
+    let mut bytes = (commands.len() * size_of::<Option<(usize, Scissor)>>()) as u64;
     let mut scratch = reserve(
         &budgets.transient,
         &local.transient,
@@ -168,13 +166,9 @@ fn plan_drawing(
         limit,
         "occlusion scratch",
     )?;
+    let mut reserve_scratch = |additional| grow(&mut scratch, &mut bytes, additional, limit);
     let leases = drawing.resources().leases();
-    grow(
-        &mut scratch,
-        &mut bytes,
-        (leases.len() * size_of::<OpaqueImage>()) as u64,
-        limit,
-    )?;
+    reserve_scratch((leases.len() * size_of::<OpaqueImage>()) as u64)?;
     let mut opaque_images = Vec::with_capacity(leases.len());
     for lease in leases {
         if lease
@@ -196,18 +190,13 @@ fn plan_drawing(
         Some(0),
         std::iter::empty(),
         std::iter::empty(),
-        |additional| grow(&mut scratch, &mut bytes, additional, limit),
+        &mut reserve_scratch,
     )?;
-    grow(
-        &mut scratch,
-        &mut bytes,
-        commands.len().div_ceil(8) as u64,
-        limit,
-    )?;
+    reserve_scratch(commands.len().div_ceil(8) as u64)?;
     let mut hidden = vec![0u8; commands.len().div_ceil(8)];
     let mut events = Vec::with_capacity(commands.len());
-    let mut clips = Vec::with_capacity(commands.len());
-    let mut isolated = Vec::with_capacity(commands.len());
+    let mut clips = Vec::new();
+    let mut isolated = Vec::new();
     let mut scissor = Scissor::full(size);
     let mut next = 0;
     while let Some(command) = commands.get(next) {
@@ -217,7 +206,7 @@ fn plan_drawing(
             FrameOp::Draw(draw) if ordinary(draw) => events.push(Some((at, scissor))),
             FrameOp::PushClip(clip) => {
                 if let Some(rect) = Scissor::from_clip(clip, outer, size, 4) {
-                    clips.push(scissor);
+                    push_stack(&mut clips, scissor, &mut reserve_scratch)?;
                     scissor = scissor.intersect(rect);
                 } else {
                     events.push(None);
@@ -239,13 +228,13 @@ fn plan_drawing(
                     // grid (or keeps the full parent grid). Analyze its body
                     // independently; no coverage crosses either composite.
                     events.push(None);
-                    isolated.push(true);
+                    push_stack(&mut isolated, true, &mut reserve_scratch)?;
                 } else {
                     events.push(None);
                     next = scope_end(commands, at).unwrap_or(commands.len());
                 }
             }
-            FrameOp::PushGroup(_) => isolated.push(false),
+            FrameOp::PushGroup(_) => push_stack(&mut isolated, false, &mut reserve_scratch)?,
             FrameOp::PopGroup => {
                 if isolated.pop().unwrap_or(false) {
                     events.push(None);
@@ -265,15 +254,16 @@ fn plan_drawing(
         let FrameOp::Draw(draw) = &commands[index].op else {
             unreachable!()
         };
-        let bounds = draw_rect(draw, outer)
+        let rect = draw_rect(draw, outer);
+        let bounds = rect
             .and_then(|(rect, aligned)| pixels(rect, size, false, aligned))
             .unwrap_or(clip)
             .intersect(clip);
         if coverage.covers(bounds) {
             hidden[index / 8] |= 1 << (index % 8);
             any = true;
-        } else if opaque(draw, &opaque_images)
-            && let Some((rect, true)) = draw_rect(draw, outer)
+        } else if let Some((rect, true)) = rect
+            && opaque(draw, &opaque_images)
             && let Some(rect) = pixels(rect, size, true, true)
         {
             coverage.insert(rect.intersect(clip));
@@ -490,17 +480,17 @@ impl Coverage {
         if query.empty() {
             return true;
         }
-        let mut overlap = false;
+        let mut overlaps = 0;
         for &rect in &self.rectangles[..self.len] {
             let hit = rect.intersect(query);
             if hit == query {
                 return true;
             }
-            overlap |= !hit.empty();
+            overlaps += usize::from(!hit.empty());
         }
         // Most ordinary UI rectangles are disjoint. Avoid fragment scratch
         // initialization unless more than one opaque rectangle can contribute.
-        if !overlap {
+        if overlaps < 2 {
             return false;
         }
         let mut remaining = [EMPTY; RECT_LIMIT];
