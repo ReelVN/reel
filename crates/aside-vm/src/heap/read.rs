@@ -59,6 +59,20 @@ impl ObjectRead<'_> {
     }
 
     #[inline]
+    pub(crate) fn sequence_get(self, index: u32) -> Result<Value, HeapError> {
+        if !matches!(
+            self.kind(),
+            ObjectKind::Array | ObjectKind::Tuple | ObjectKind::Dependencies
+        ) {
+            return Err(HeapError::WrongKind);
+        }
+        self.object
+            .payload
+            .edge(index)
+            .ok_or(HeapError::OutOfBounds)
+    }
+
+    #[inline]
     pub(crate) fn host_fields(self) -> Result<Value, HeapError> {
         if self.kind() != ObjectKind::Host {
             return Err(HeapError::WrongKind);

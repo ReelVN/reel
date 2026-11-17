@@ -1,5 +1,6 @@
 //! Constant-space range and sequence cursors share the ordinary iterator protocol.
 use super::*;
+use crate::heap::ObjectRead;
 
 pub(super) struct Iteration {
     pub done: bool,
@@ -29,18 +30,23 @@ impl Vm {
         )
     }
 
-    pub(super) fn iterator_peek(&self, iterator: Value) -> Result<Iteration, HeapError> {
-        if self.heap.info(iterator)?.kind != ObjectKind::Iterator {
+    pub(super) fn iterator_peek(&self, iterator: ObjectRead<'_>) -> Result<Iteration, HeapError> {
+        if iterator.kind() != ObjectKind::Iterator {
             return Err(HeapError::WrongKind);
         }
-        let source = self.heap.get_field(iterator, 0)?;
-        if source.tag() != ValueTag::Null
-            && matches!(
-                self.heap.info(source)?.kind,
+        let source = iterator.field(0)?;
+        let source = if source.tag() == ValueTag::Null {
+            None
+        } else {
+            Some(self.heap.read_object(source)?)
+        };
+        if source.is_some_and(|source| {
+            matches!(
+                source.kind(),
                 ObjectKind::FaultStack | ObjectKind::FaultCause
             )
-        {
-            let current = self.heap.get_field(iterator, 1)?;
+        }) {
+            let current = iterator.field(1)?;
             let done = current.tag() == ValueTag::Null;
             return Ok(Iteration {
                 done,
@@ -53,26 +59,12 @@ impl Vm {
                 }),
             });
         }
-        let cursor = self
-            .heap
-            .get_field(iterator, 1)?
-            .as_int()
-            .ok_or(HeapError::WrongKind)?;
-        let (done, value, next) = if source.same_bits(Value::NULL) {
-            (true, Value::NULL, None)
-        } else {
-            let info = self.heap.info(source)?;
-            if info.kind == ObjectKind::Range {
-                let end = self
-                    .heap
-                    .get_field(source, 1)?
-                    .as_int()
-                    .ok_or(HeapError::WrongKind)?;
-                let inclusive = self
-                    .heap
-                    .get_field(source, 2)?
-                    .as_bool()
-                    .ok_or(HeapError::WrongKind)?;
+        let cursor = iterator.field(1)?.as_int().ok_or(HeapError::WrongKind)?;
+        let (done, value, next) = match source {
+            None => (true, Value::NULL, None),
+            Some(source) if source.kind() == ObjectKind::Range => {
+                let end = source.field(1)?.as_int().ok_or(HeapError::WrongKind)?;
+                let inclusive = source.field(2)?.as_bool().ok_or(HeapError::WrongKind)?;
                 let done = cursor > end || (!inclusive && cursor == end);
                 (
                     done,
@@ -83,12 +75,10 @@ impl Vm {
                     },
                     cursor.checked_add(1),
                 )
-            } else {
-                let version = self
-                    .heap
-                    .get_field(iterator, 2)?
-                    .as_int()
-                    .ok_or(HeapError::WrongKind)? as u64;
+            }
+            Some(source) => {
+                let info = source.info();
+                let version = iterator.field(2)?.as_int().ok_or(HeapError::WrongKind)? as u64;
                 if info.structure_version != version {
                     return Err(HeapError::ConcurrentModification);
                 }
@@ -99,7 +89,7 @@ impl Vm {
                     if done {
                         Value::NULL
                     } else {
-                        self.heap.sequence_get(source, index)?
+                        source.sequence_get(index)?
                     },
                     Some(cursor + 1),
                 )
@@ -126,13 +116,5 @@ impl Vm {
             _ => self.heap.set_field(iterator, 0, Value::NULL)?,
         }
         Ok(())
-    }
-    pub(super) fn iterator_next(&mut self, iterator: Value) -> Result<Value, HeapError> {
-        let step = self.iterator_peek(iterator)?;
-        let value = self
-            .heap
-            .alloc_tuple(&[Value::bool(step.done), step.value])?;
-        self.iterator_commit(iterator, step)?;
-        Ok(value)
     }
 }

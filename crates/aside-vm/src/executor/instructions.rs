@@ -165,16 +165,23 @@ impl Vm {
             }
             Opcode::IterNext => {
                 let iterator = self.read(s.regs, r(b))?;
-                if self.is_text(iterator, ObjectKind::Generator) {
+                let read = self.heap.read_object(iterator).map_err(heap_fault)?;
+                if read.kind() == ObjectKind::Generator {
                     self.generator_begin(s, iterator, GeneratorAction::Pair(r(a)))?;
                     return Ok(false);
                 }
-                let value = self.iterator_next(iterator).map_err(heap_fault)?;
+                let step = self.iterator_peek(read).map_err(heap_fault)?;
+                let value = self
+                    .heap
+                    .alloc_tuple(&[Value::bool(step.done), step.value])
+                    .map_err(heap_fault)?;
+                self.iterator_commit(iterator, step).map_err(heap_fault)?;
                 self.write(s.regs, r(a), value)?;
             }
             Opcode::IterAdvance => {
                 let iterator = self.read(s.regs, r(b))?;
-                if self.is_text(iterator, ObjectKind::Generator) {
+                let read = self.heap.read_object(iterator).map_err(heap_fault)?;
+                if read.kind() == ObjectKind::Generator {
                     self.generator_begin(
                         s,
                         iterator,
@@ -185,20 +192,19 @@ impl Vm {
                     )?;
                     return Ok(false);
                 }
-                let step = self.iterator_peek(iterator).map_err(heap_fault)?;
+                let step = self.iterator_peek(read).map_err(heap_fault)?;
                 self.write(s.regs, r(a), Value::bool(step.done))?;
                 self.write(s.regs, r(c), step.value)?;
                 self.iterator_commit(iterator, step).map_err(heap_fault)?;
             }
             Opcode::IterClose => {
                 let iterator = self.read(s.regs, r(a))?;
-                if self.is_text(iterator, ObjectKind::Generator) {
+                let kind = self.heap.read_object(iterator).map_err(heap_fault)?.kind();
+                if kind == ObjectKind::Generator {
                     self.generator_begin(s, iterator, GeneratorAction::Close(None))?;
                     return Ok(false);
                 }
-                if self.heap.read_object(iterator).map_err(heap_fault)?.kind()
-                    != ObjectKind::Iterator
-                {
+                if kind != ObjectKind::Iterator {
                     return Err(FaultKind::Type);
                 }
                 self.heap
