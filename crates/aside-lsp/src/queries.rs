@@ -415,10 +415,7 @@ fn source_symbol<'a>(
     snapshot: &'a Snapshot,
     reference: &SymbolReference,
 ) -> Option<(EditorModule<'a>, &'a Source, SymbolId)> {
-    let module = snapshot
-        .project
-        .modules()
-        .find(|module| module.canonical_path() == reference.module)?;
+    let module = snapshot.project.module(&reference.module)?;
     let source = snapshot.sources.get(&reference.module)?;
     let id = *module.exports().iter().find(|&&id| {
         Some(module.hir().name(module.symbols()[id.0 as usize].name)) == reference.export.as_deref()
@@ -430,10 +427,7 @@ fn source_class<'a>(
     name: &str,
 ) -> Option<(EditorModule<'a>, &'a Source, NodeId)> {
     let (path, name) = name.rsplit_once("::")?;
-    let module = snapshot
-        .project
-        .modules()
-        .find(|module| module.canonical_path() == path)?;
+    let module = snapshot.project.module(path)?;
     let source = snapshot.sources.get(path)?;
     let class =
         module
@@ -1129,8 +1123,7 @@ fn namespace_completions(snapshot: &Snapshot, host: &HostIndex, path: &str) -> V
     }
     snapshot
         .project
-        .modules()
-        .find(|module| module.canonical_path() == path)
+        .module(path)
         .zip(snapshot.sources.get(path))
         .map(|(module, source)| {
             module

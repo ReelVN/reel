@@ -10,3 +10,4 @@ Reel maintains the adopted library sources as `aside-syntax`. Local changes
 replace recursive green-tree destruction with an explicit queue and atomic
 final-owner decision. Token cursors traverse recovery subtrees iteratively while
 preserving zero-length tokens and subtree boundaries.
+The node cache retains hashes so table growth does not revisit child trees.

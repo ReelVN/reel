@@ -65,11 +65,13 @@ fn resolver() -> MemoryResolver {
     resolver
 }
 fn seed(version: u64, flow_effects: bc::Effects) -> bc::VerifiedProgram {
-    let mut package = bc::BytecodePackage::default();
-    package.content_version = version;
-    package.symbols = ["host", "host::wait", "value", "host::run_flow", "entry"]
-        .map(str::to_owned)
-        .into();
+    let mut package = bc::BytecodePackage {
+        content_version: version,
+        symbols: ["host", "host::wait", "value", "host::run_flow", "entry"]
+            .map(str::to_owned)
+            .into(),
+        ..Default::default()
+    };
     package.types = vec![
         bc::TypeDef::Builtin(bc::BuiltinType::Any),
         bc::TypeDef::Builtin(bc::BuiltinType::Int),

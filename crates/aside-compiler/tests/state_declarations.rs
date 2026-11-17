@@ -71,8 +71,10 @@ fn compile_modules(
     let plan = std::mem::take(&mut analysis.plan);
     let modules = analysis.into_modules().unwrap();
     let links = (0..modules.len()).map(|_| Vec::new()).collect::<Vec<_>>();
-    let mut seed: bc::BytecodePackage = bc::BytecodePackage::default();
-    seed.content_version = version;
+    let seed: bc::BytecodePackage = bc::BytecodePackage {
+        content_version: version,
+        ..Default::default()
+    };
     let seed = bc::verify(seed, bc::Limits::default()).unwrap();
     lowering::compile_project(
         modules,
@@ -333,8 +335,7 @@ fn declaration_contracts_reject_forged_locators_and_source_errors() {
         ),
     ] {
         let error = compile(&format!("use std::resume::{{state,root}};{source}"))
-            .err()
-            .expect("invalid contract");
+            .expect_err("invalid contract");
         assert!(error.contains(expected), "expected {expected}: {error}");
     }
     assert!(compile("fn ordinary(){1}").unwrap().resume.is_empty());

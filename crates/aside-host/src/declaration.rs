@@ -1,6 +1,10 @@
 use aside_compiler::semantic::{
     CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
 };
+use aside_compiler::{
+    hir::{AnalyzedModule, ExternalBindingKind},
+    lowering::{ExternalTarget, NativeLink},
+};
 use aside_vm::bytecode::{
     self as bc, BuiltinType, Effects, NativeSupport, Parameter, RuntimeSupport, Signature,
     SymbolId, TypeDef, TypeId,
@@ -132,6 +136,57 @@ impl From<aside_compiler::lowering::Options> for CompileOptions<'_> {
     }
 }
 
+type NativeDeclarations<'a> =
+    HashMap<SymbolReference, (bc::NativeId, Option<&'a ExternalSignature>)>;
+
+fn native_declarations<'a>(
+    contracts: &[NativeContract],
+    source_declarations: &'a [crate::source::Declaration],
+) -> NativeDeclarations<'a> {
+    let mut signatures = HashMap::with_capacity(source_declarations.len());
+    for declaration in source_declarations {
+        if let Some(reference) = declaration.symbol.reference.as_deref() {
+            signatures
+                .entry(reference)
+                .or_insert(declaration.symbol.signature.as_ref());
+        }
+    }
+    let mut natives = HashMap::with_capacity(contracts.len());
+    for (index, contract) in contracts.iter().enumerate() {
+        let reference = contract.reference();
+        let signature = signatures.get(&reference).copied().flatten();
+        natives
+            .entry(reference)
+            .or_insert((bc::NativeId(index as u32), signature));
+    }
+    natives
+}
+
+fn native_links<'a>(
+    module: &AnalyzedModule,
+    declarations: &'a NativeDeclarations<'_>,
+) -> Vec<NativeLink<'a>> {
+    module
+        .external_bindings()
+        .iter()
+        .filter(|binding| binding.kind == ExternalBindingKind::Reference)
+        .filter_map(|binding| {
+            let reference = binding.descriptor.reference.as_deref()?;
+            let (reference, &(native, source_signature)) = declarations.get_key_value(reference)?;
+            let target = binding
+                .symbol
+                .map(ExternalTarget::Symbol)
+                .or_else(|| binding.node.map(ExternalTarget::Node))?;
+            Some(NativeLink {
+                target,
+                native,
+                reference,
+                source_signature,
+            })
+        })
+        .collect()
+}
+
 /// Lower one analyzed module using independently registered native source types,
 /// runtime ABI contracts and host nominal declarations.
 pub fn lower(
@@ -142,7 +197,7 @@ pub fn lower(
     capabilities: &[String],
     options: CompileOptions<'_>,
 ) -> Result<aside_compiler::lowering::Compilation, BuildError> {
-    use aside_compiler::lowering::{self, ExternalTarget, Linkage, NativeLink};
+    use aside_compiler::lowering::{self, Linkage};
     if options.expansions.len() > 1 {
         return Err(BuildError::Lowering(Box::new(lowering::Error {
             kind: lowering::ErrorKind::LinkContract,
@@ -155,41 +210,8 @@ pub fn lower(
     let options = options.lowering;
     let seed = seed(contracts, types, capabilities, options.content_version)
         .map_err(BuildError::Format)?;
-    let references = contracts
-        .iter()
-        .map(NativeContract::reference)
-        .collect::<Vec<_>>();
-    let mut links = Vec::new();
-    for binding in module
-        .external_bindings()
-        .iter()
-        .filter(|binding| binding.kind == aside_compiler::hir::ExternalBindingKind::Reference)
-    {
-        let Some(reference) = binding.descriptor.reference.as_deref() else {
-            continue;
-        };
-        let Some(index) = references.iter().position(|r| r == reference) else {
-            continue;
-        };
-        let target = if let Some(symbol) = binding.symbol {
-            ExternalTarget::Symbol(symbol)
-        } else if let Some(node) = binding.node {
-            ExternalTarget::Node(node)
-        } else {
-            continue;
-        };
-        links.push(NativeLink {
-            target,
-            native: bc::NativeId(index as u32),
-            reference: &references[index],
-            source_signature: source_declarations
-                .iter()
-                .find(|declaration| {
-                    declaration.symbol.reference.as_deref() == Some(&references[index])
-                })
-                .and_then(|declaration| declaration.symbol.signature.as_ref()),
-        });
-    }
+    let declarations = native_declarations(contracts, source_declarations);
+    let links = native_links(module, &declarations);
     lowering::compile(
         module,
         &Linkage {
@@ -238,7 +260,7 @@ pub fn lower_project_with_progress(
     options: CompileOptions<'_>,
     progress: &mut dyn FnMut(aside_compiler::Progress),
 ) -> Result<aside_compiler::lowering::ProjectCompilation, aside_compiler::lowering::ProjectError> {
-    use aside_compiler::lowering::{self, ExternalTarget, NativeLink};
+    use aside_compiler::lowering;
     let expansions = options.expansions;
     let options = options.lowering;
     let seed = seed(contracts, types, capabilities, options.content_version).map_err(|error| {
@@ -252,41 +274,11 @@ pub fn lower_project_with_progress(
             }),
         }
     })?;
-    let references = contracts
+    let declarations = native_declarations(contracts, source_declarations);
+    let links: Vec<_> = modules
         .iter()
-        .map(NativeContract::reference)
-        .collect::<Vec<_>>();
-    let links = modules
-        .iter()
-        .map(|module| {
-            module
-                .external_bindings()
-                .iter()
-                .filter(|binding| {
-                    binding.kind == aside_compiler::hir::ExternalBindingKind::Reference
-                })
-                .filter_map(|binding| {
-                    let reference = binding.descriptor.reference.as_deref()?;
-                    let index = references.iter().position(|r| r == reference)?;
-                    let target = binding
-                        .symbol
-                        .map(ExternalTarget::Symbol)
-                        .or_else(|| binding.node.map(ExternalTarget::Node))?;
-                    Some(NativeLink {
-                        target,
-                        native: bc::NativeId(index as u32),
-                        reference: &references[index],
-                        source_signature: source_declarations
-                            .iter()
-                            .find(|declaration| {
-                                declaration.symbol.reference.as_deref() == Some(&references[index])
-                            })
-                            .and_then(|declaration| declaration.symbol.signature.as_ref()),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
+        .map(|module| native_links(module, &declarations))
+        .collect();
     lowering::compile_project_with_progress(
         modules, plan, &seed, types, &links, expansions, options, progress,
     )

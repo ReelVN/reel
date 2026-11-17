@@ -204,7 +204,13 @@ pub fn analyze_project_with_progress(
     resolver: &mut dyn ModuleResolver,
     progress: &mut dyn FnMut(crate::Progress),
 ) -> Result<ProjectAnalysis, SourceTooLarge> {
-    let result = analyze_project_inner(inputs, options, resolver, None, false, progress)?;
+    let result = analyze_project_inner(
+        inputs.iter().map(|input| (input, None)),
+        options,
+        resolver,
+        false,
+        progress,
+    )?;
     Ok(ProjectAnalysis {
         modules: if result.diagnostics.is_empty() && !result.exhausted {
             Some(result.modules)
@@ -222,26 +228,21 @@ pub(crate) fn analyze_editor_project(
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> Result<crate::editor::EditorProjectAnalysis, SourceTooLarge> {
-    let sources: Vec<_> = inputs.iter().map(|input| input.source.clone()).collect();
-    let parsed: BTreeMap<_, _> = inputs
-        .iter()
-        .map(|input| (input.source.canonical_path.as_str(), &input.parsed))
-        .collect();
     analyze_project_inner(
-        &sources,
+        inputs
+            .iter()
+            .map(|input| (&input.source, Some(&input.parsed))),
         options,
         resolver,
-        Some(&parsed),
         true,
         &mut |_| {},
     )
 }
 
-fn analyze_project_inner(
-    inputs: &[SourceModule],
+fn analyze_project_inner<'a>(
+    inputs: impl ExactSizeIterator<Item = (&'a SourceModule, Option<&'a Parse>)> + Clone,
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
-    parsed_inputs: Option<&BTreeMap<&str, &Parse>>,
     recover: bool,
     progress: &mut dyn FnMut(crate::Progress),
 ) -> Result<crate::editor::EditorProjectAnalysis, SourceTooLarge> {
@@ -250,11 +251,11 @@ fn analyze_project_inner(
     let mut memory = MemoryResolver::default();
     let mut exhausted = false;
     let diagnostic_limit = options.limits.max_diagnostics.max(1);
-    if inputs.len() > options.limits.max_modules
-        || inputs
-            .iter()
-            .fold(0usize, |total, m| total.saturating_add(m.source.len()))
-            > options.limits.max_total_source_bytes
+    let total = inputs.len();
+    if total > options.limits.max_modules
+        || inputs.clone().fold(0usize, |total, (input, _)| {
+            total.saturating_add(input.source.len())
+        }) > options.limits.max_total_source_bytes
     {
         diagnostics.push(ModuleDiagnostic {
             module: options.module.clone(),
@@ -272,15 +273,11 @@ fn analyze_project_inner(
         });
     }
     let mut total_nodes = 0usize;
-    let source_paths = inputs
-        .iter()
-        .map(|m| (m.canonical_path.as_str(), m.source_path.as_ref()))
-        .collect::<BTreeMap<_, _>>();
-    for (completed, input) in inputs.iter().enumerate() {
+    for (completed, (input, parsed)) in inputs.enumerate() {
         progress(crate::Progress {
             stage: crate::ProgressStage::Parse,
             completed,
-            total: inputs.len(),
+            total,
         });
         if projected.contains_key(&input.canonical_path) {
             diagnostics.push(ModuleDiagnostic {
@@ -294,11 +291,14 @@ fn analyze_project_inner(
             diagnostics.truncate(diagnostic_limit);
             continue;
         }
-        let parsed =
-            match parsed_inputs.and_then(|inputs| inputs.get(input.canonical_path.as_str())) {
-                Some(parsed) => (*parsed).clone(),
-                None => crate::parse(&input.source)?,
-            };
+        let owned_parse;
+        let parsed = match parsed {
+            Some(parsed) => parsed,
+            None => {
+                owned_parse = crate::parse(&input.source)?;
+                &owned_parse
+            }
+        };
         if !parsed.is_ok() {
             exhausted |= parsed.exhausted();
             diagnostics.extend(parsed.diagnostics().iter().cloned().map(|diagnostic| {
@@ -318,7 +318,7 @@ fn analyze_project_inner(
             super::project::project
         };
         match project(
-            &parsed,
+            parsed,
             AnalysisLimits {
                 max_nodes: options.limits.max_nodes.saturating_sub(total_nodes),
                 ..options.limits
@@ -338,14 +338,14 @@ fn analyze_project_inner(
                     version: input.version.clone(),
                     exports: declarations(&hir, &input.canonical_path, &input.version),
                 });
-                projected.insert(input.canonical_path.clone(), hir);
+                projected.insert(input.canonical_path.clone(), (hir, input));
             }
         }
     }
     progress(crate::Progress {
         stage: crate::ProgressStage::Parse,
-        completed: inputs.len(),
-        total: inputs.len(),
+        completed: total,
+        total,
     });
     let analysis_total = projected.len();
     progress(crate::Progress {
@@ -358,7 +358,7 @@ fn analyze_project_inner(
     // once and revisit only users of changed interfaces, including legal cycles.
     let mut requests = BTreeMap::new();
     let mut users: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (path, hir) in &projected {
+    for (path, (hir, _)) in &projected {
         let mut module_requests = Vec::new();
         for n in hir.children(NodeId(0)) {
             if hir.node(n).kind != H::ModifiedDeclaration
@@ -466,7 +466,7 @@ fn analyze_project_inner(
         })
         .collect();
     let mut type_names = BTreeMap::new();
-    for (path, hir) in &projected {
+    for (path, (hir, _)) in &projected {
         let mut names = BTreeMap::new();
         for node in hir.children(NodeId(0)) {
             let declaration = match hir.node(node).form {
@@ -589,12 +589,10 @@ fn analyze_project_inner(
         let mut symbols = 0usize;
         let mut captures = 0usize;
         let mut imports = 0usize;
-        for (completed, (path, hir)) in projected.into_iter().enumerate() {
+        for (completed, (path, (hir, input))) in projected.into_iter().enumerate() {
             let local = AnalysisOptions {
                 module: path.clone(),
-                source_path: source_paths
-                    .get(path.as_str())
-                    .and_then(|path| path.cloned()),
+                source_path: input.source_path.clone(),
                 context: AnalysisContext::Module,
                 version: memory.modules[&path].version.clone(),
                 limits: AnalysisLimits {

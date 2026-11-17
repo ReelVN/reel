@@ -14,6 +14,12 @@ type HashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
 #[derive(Debug)]
 struct NoHash<T>(T);
 
+#[derive(Debug)]
+struct CachedNode {
+    hash: u64,
+    node: GreenNode,
+}
+
 /// Interner for GreenTokens and GreenNodes
 // XXX: the impl is a bit tricky. As usual when writing interners, we want to
 // store all values in one HashSet.
@@ -35,7 +41,7 @@ struct NoHash<T>(T);
 // we don't accidentally use the wrong hash!
 #[derive(Default, Debug)]
 pub struct NodeCache {
-    nodes: HashMap<NoHash<GreenNode>, ()>,
+    nodes: HashMap<NoHash<CachedNode>, ()>,
     tokens: HashMap<NoHash<GreenToken>, ()>,
 }
 
@@ -43,19 +49,6 @@ fn token_hash(token: &GreenTokenData) -> u64 {
     let mut h = FxHasher::default();
     token.kind().hash(&mut h);
     token.text().hash(&mut h);
-    h.finish()
-}
-
-fn node_hash(node: &GreenNodeData) -> u64 {
-    let mut h = FxHasher::default();
-    node.kind().hash(&mut h);
-    for child in node.children() {
-        match child {
-            NodeOrToken::Node(it) => node_hash(it),
-            NodeOrToken::Token(it) => token_hash(it),
-        }
-        .hash(&mut h)
-    }
     h.finish()
 }
 
@@ -103,9 +96,10 @@ impl NodeCache {
         // For example, all `#[inline]` in this file share the same green node!
         // For `libsyntax/parse/parser.rs`, measurements show that deduping saves
         // 17% of the memory for green nodes!
-        let entry = self.nodes.raw_entry_mut().from_hash(hash, |node| {
-            node.0.kind() == kind && node.0.children().len() == children_ref.len() && {
-                let lhs = node.0.children();
+        let entry = self.nodes.raw_entry_mut().from_hash(hash, |cached| {
+            let node = &cached.0.node;
+            node.kind() == kind && node.children().len() == children_ref.len() && {
+                let lhs = node.children();
                 let rhs = children_ref.iter().map(|(_, it)| it.as_deref());
 
                 let lhs = lhs.map(element_id);
@@ -118,11 +112,17 @@ impl NodeCache {
         let node = match entry {
             RawEntryMut::Occupied(entry) => {
                 drop(children.drain(first_child..));
-                entry.key().0.clone()
+                entry.key().0.node.clone()
             }
             RawEntryMut::Vacant(entry) => {
                 let node = build_node(children);
-                entry.insert_with_hasher(hash, NoHash(node.clone()), (), |n| node_hash(&n.0));
+                // Cache growth can rehash every entry. Reuse each completed
+                // hash so shared or deeply nested children are never revisited.
+                let cached = NoHash(CachedNode {
+                    hash,
+                    node: node.clone(),
+                });
+                entry.insert_with_hasher(hash, cached, (), |cached| cached.0.hash);
                 node
             }
         };

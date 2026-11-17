@@ -112,6 +112,10 @@ pub fn compile_project(
 }
 
 /// Run the same pipeline while reporting completed stages and modules.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the public progress interface"
+)]
 pub fn compile_project_with_progress(
     modules: Vec<h::AnalyzedModule>,
     plan: &ModulePlan,
@@ -412,7 +416,7 @@ pub fn compile_project_with_progress(
             host_types,
             &mut state.budget,
         )
-        .map_err(|error| {
+        .inspect_err(|_| {
             resume_source = state.budget.source.and_then(|source| {
                 results
                     .iter()
@@ -422,7 +426,6 @@ pub fn compile_project_with_progress(
                         package.symbols[package.modules[module.module.index()].path.index()].clone()
                     })
             });
-            error
         })?;
 
         progress(crate::Progress {

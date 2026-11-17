@@ -83,10 +83,7 @@ impl Workspace {
                     );
                 }
             }
-            if let Some(module) = snapshot
-                .project
-                .modules()
-                .find(|module| module.canonical_path() == source_path)
+            if let Some(module) = snapshot.project.module(source_path)
                 && let Some(source) = snapshot.sources.get(source_path)
             {
                 for &id in module.exports() {
@@ -249,11 +246,7 @@ impl Workspace {
                         .map(|symbol| completion(symbol, &snapshot, &self.host))
                         .collect());
                 }
-                if let Some(module) = snapshot
-                    .project
-                    .modules()
-                    .find(|module| module.canonical_path() == namespace.module)
-                {
+                if let Some(module) = snapshot.project.module(&namespace.module) {
                     return Ok(module
                         .exports()
                         .iter()

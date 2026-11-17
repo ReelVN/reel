@@ -512,11 +512,11 @@ pub(crate) fn build(
         program
             .verify_resume(table.clone(), host_types, r::ResumeLimits::default())
             .map_err(|error| {
-                if let (Some(function), Some(pc)) = (error.function, error.pc) {
-                    if let Some(span) = program.source_at(function, pc) {
-                        b.source = Some(span.file);
-                        b.span = TextRange::new(span.start.into(), span.end.into());
-                    }
+                if let (Some(function), Some(pc)) = (error.function, error.pc)
+                    && let Some(span) = program.source_at(function, pc)
+                {
+                    b.source = Some(span.file);
+                    b.span = TextRange::new(span.start.into(), span.end.into());
                 }
                 b.error(ErrorKind::Unsupported, error.to_string())
             })?;

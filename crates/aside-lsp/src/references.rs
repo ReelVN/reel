@@ -163,11 +163,8 @@ fn collect(
     declarations: bool,
     locations: &mut Vec<Location>,
 ) {
-    for module in snapshot.project.modules() {
+    let mut collect_module = |module: EditorModule<'_>| {
         let path = module.canonical_path();
-        if current_only && path != snapshot.entry {
-            continue;
-        }
         let source = &snapshot.sources[path];
         occurrences(module, |found, span, declaration| {
             if identity == found && (!declaration || declarations) {
@@ -177,6 +174,13 @@ fn collect(
                 ));
             }
         });
+    };
+    if current_only {
+        if let Some(module) = snapshot.module() {
+            collect_module(module);
+        }
+    } else {
+        snapshot.project.modules().for_each(collect_module);
     }
 }
 

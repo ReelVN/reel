@@ -84,7 +84,10 @@ fn constant(meta: &Meta) -> Result<TokenStream, ParseError> {
     }
     Ok(moxy::template! { ::aside_host::constant({{ tokens }}) })
 }
-fn type_arguments<'a>(ty: &'a Type, name: &str) -> Option<Vec<&'a Type>> {
+fn type_arguments<'a>(
+    ty: &'a Type,
+    name: &str,
+) -> Option<impl Iterator<Item = &'a Type> + use<'a>> {
     let Type::Path(path) = ty else {
         return None;
     };
@@ -95,23 +98,20 @@ fn type_arguments<'a>(ty: &'a Type, name: &str) -> Option<Vec<&'a Type>> {
     let PathArguments::AngleBracketed(args) = &last.args else {
         return None;
     };
-    Some(
-        args.args
-            .iter()
-            .filter_map(|a| {
-                if let GenericArgument::Type(t) = a {
-                    Some(t)
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    )
+    Some(args.args.iter().filter_map(|argument| {
+        if let GenericArgument::Type(ty) = argument {
+            Some(ty)
+        } else {
+            None
+        }
+    }))
 }
 
 fn source_type(ty: &Type, conversion: TokenStream) -> TokenStream {
-    if let Some(types) = type_arguments(ty, "Option") {
-        let inner = source_type(types[0], conversion);
+    if let Some(mut types) = type_arguments(ty, "Option")
+        && let (Some(inner), None) = (types.next(), types.next())
+    {
+        let inner = source_type(inner, conversion);
         moxy::template! { ::aside_host::source::nullable({{ inner }}) }
     } else {
         moxy::template! { ::aside_host::hint(&<{{ ty }} as {{ conversion }}>::TYPE) }
@@ -249,20 +249,23 @@ fn native_impl(
                     "context requires &mut CallContext<'_, Host>",
                 ));
             };
-            let Some(types) = type_arguments(&reference.elem, "CallContext") else {
+            let Some(mut types) = type_arguments(&reference.elem, "CallContext") else {
                 return Err(ParseError::new(
                     param.ty.span(),
                     "context requires &mut CallContext<'_, Host>",
                 ));
             };
-            if types.len() != 1 || reference.mutability.is_none() || context_seen || opts.len() != 1
-            {
+            let (Some(host_type), None, true) = (
+                types.next(),
+                types.next(),
+                reference.mutability.is_some() && !context_seen && opts.len() == 1,
+            ) else {
                 return Err(ParseError::new(
                     param.span(),
                     "one mutable context parameter is allowed",
                 ));
-            }
-            host = types[0].to_token_stream();
+            };
+            host = host_type.to_token_stream();
             context_seen = true;
             arguments.push(moxy::template! { &mut __aside_context });
             continue;
@@ -318,37 +321,36 @@ fn native_impl(
         });
         arguments.push(moxy::template! { {{ argument }} });
     }
-    let (result, error, fallible) = match &function.sig.output {
-        ReturnType::Default => (
-            moxy::template! { () },
-            moxy::template! { ::aside_host::Error },
-            false,
-        ),
+    let (result_type, error, fallible) = match &function.sig.output {
+        ReturnType::Default => (None, moxy::template! { ::aside_host::Error }, false),
         ReturnType::Type(_, ty) => {
-            if let Some(types) = type_arguments(ty, "Result") {
-                if types.len() != 2 {
+            if let Some(mut types) = type_arguments(ty, "Result") {
+                let (Some(result), Some(error), None) = (types.next(), types.next(), types.next())
+                else {
                     return Err(ParseError::new(
                         ty.span(),
                         "use Result<Value, Error> with an explicit error type",
                     ));
-                }
-                (types[0].to_token_stream(), types[1].to_token_stream(), true)
+                };
+                (Some(result), error.to_token_stream(), true)
             } else {
                 (
-                    ty.to_token_stream(),
+                    Some(ty.as_ref()),
                     moxy::template! { ::aside_host::Error },
                     false,
                 )
             }
         }
     };
+    let result = result_type.map_or_else(|| moxy::template! { () }, Type::to_token_stream);
     let source_result = find(&opts, "doc_result")
         .map(expression)
         .transpose()?
         .unwrap_or_else(|| {
-            let result_type = result.clone();
-            let ty: Type = moxy::parse!(result_type).expect("parsed Rust return type");
-            source_type(&ty, moxy::template! { ::aside_host::IntoValue })
+            result_type.map_or_else(
+                || moxy::template! { ::aside_host::hint(&<() as ::aside_host::IntoValue>::TYPE) },
+                |ty| source_type(ty, moxy::template! { ::aside_host::IntoValue }),
+            )
         });
     let name = &function.sig.ident;
     let vis = &function.vis;

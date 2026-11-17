@@ -20,6 +20,15 @@ impl EditorProjectAnalysis {
     pub fn modules(&self) -> impl Iterator<Item = EditorModule<'_>> {
         self.modules.iter().map(EditorModule)
     }
+
+    /// Find the analyzed module by its canonical path.
+    pub fn module(&self, path: &str) -> Option<EditorModule<'_>> {
+        let index = self
+            .modules
+            .binary_search_by(|module| module.canonical_path().cmp(path))
+            .ok()?;
+        Some(EditorModule(&self.modules[index]))
+    }
 }
 
 /// Partial facts retained for editor queries, including after source errors.
@@ -170,6 +179,34 @@ mod tests {
             .unwrap();
         assert!(module.imports().is_empty());
     }
+    #[test]
+    fn duplicate_module_uses_the_accepted_inputs_parse_and_source_path() {
+        let inputs = [
+            ("current.aside", "fn current() {}"),
+            ("duplicate.aside", "fn duplicate() {}"),
+        ]
+        .map(|(path, source)| EditorSource {
+            source: SourceModule {
+                canonical_path: "main".into(),
+                source_path: Some(path.into()),
+                version: "1".into(),
+                source: source.into(),
+            },
+            parsed: crate::parse(source).unwrap(),
+        });
+        let project =
+            analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+        assert_eq!(project.diagnostics.len(), 1);
+        let module = project.modules().next().unwrap();
+        assert_eq!(module.source_path(), "current.aside");
+        assert!(
+            module
+                .symbols()
+                .iter()
+                .any(|symbol| module.hir().name(symbol.name) == "current")
+        );
+    }
+
     #[test]
     fn partial_editor_facts_do_not_admit_invalid_executable_modules() {
         for source in [

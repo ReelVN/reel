@@ -75,12 +75,13 @@ fn finite(value: Value) -> Result<f64, NativeError> {
     Ok(number)
 }
 
-fn text_is(heap: &Heap, value: Value, expected: &str) -> bool {
-    heap.info(value)
-        .is_ok_and(|info| info.kind == ObjectKind::String && info.len == expected.len() as u32)
-        && heap
-            .byte_segment(value, 0)
-            .is_ok_and(|bytes| bytes == expected.as_bytes())
+fn short_text(heap: &Heap, value: Value) -> Option<&[u8]> {
+    let info = heap.info(value).ok()?;
+    if info.kind != ObjectKind::String || info.len > b"out_tangent".len() as u32 {
+        return None;
+    }
+    let bytes = heap.byte_segment(value, 0).ok()?;
+    (bytes.len() == info.len as usize).then_some(bytes)
 }
 
 struct Key {
@@ -92,11 +93,11 @@ struct Key {
 }
 
 fn read_key(heap: &mut Heap, record: Value) -> Result<Key, NativeError> {
+    const FIELDS: NativeError =
+        NativeError::Input("curve key fields are time, value, mode, in_tangent and out_tangent");
     let count = heap.table_len(record)?;
     if count > 5 {
-        return Err(NativeError::Input(
-            "curve key fields are time, value, mode, in_tangent and out_tangent",
-        ));
+        return Err(FIELDS);
     }
     heap.observe_read(record, None)?;
     let mut time = None;
@@ -106,30 +107,24 @@ fn read_key(heap: &mut Heap, record: Value) -> Result<Key, NativeError> {
     let mut outgoing = 0.;
     for index in 0..count {
         let (name, field) = heap.table_entry(record, index)?;
-        if text_is(heap, name, "time") {
-            time = Some(finite(field)?);
-        } else if text_is(heap, name, "value") {
-            value = Some(finite(field)?);
-        } else if text_is(heap, name, "mode") {
-            mode = if text_is(heap, field, "linear") {
-                LINEAR
-            } else if text_is(heap, field, "step") {
-                STEP
-            } else if text_is(heap, field, "cubic") {
-                CUBIC
-            } else {
-                return Err(NativeError::Input(
-                    "curve mode must be linear, step or cubic",
-                ));
-            };
-        } else if text_is(heap, name, "in_tangent") {
-            incoming = finite(field)?;
-        } else if text_is(heap, name, "out_tangent") {
-            outgoing = finite(field)?;
-        } else {
-            return Err(NativeError::Input(
-                "curve key fields are time, value, mode, in_tangent and out_tangent",
-            ));
+        match short_text(heap, name) {
+            Some(b"time") => time = Some(finite(field)?),
+            Some(b"value") => value = Some(finite(field)?),
+            Some(b"mode") => {
+                mode = match short_text(heap, field) {
+                    Some(b"linear") => LINEAR,
+                    Some(b"step") => STEP,
+                    Some(b"cubic") => CUBIC,
+                    _ => {
+                        return Err(NativeError::Input(
+                            "curve mode must be linear, step or cubic",
+                        ));
+                    }
+                };
+            }
+            Some(b"in_tangent") => incoming = finite(field)?,
+            Some(b"out_tangent") => outgoing = finite(field)?,
+            _ => return Err(FIELDS),
         }
     }
     Ok(Key {
@@ -197,21 +192,19 @@ pub(super) fn construct(
             if key.time < before {
                 return Err(NativeError::Input("curve key times must be nondecreasing"));
             }
-            if key.time > before {
+            if key.time > before && vm.heap().sequence_get(previous, 2)?.as_int() == Some(CUBIC) {
                 let value = number(vm.heap(), previous, 1)?;
-                if vm.heap().sequence_get(previous, 2)?.as_int() == Some(CUBIC) {
-                    let duration = key.time - before;
-                    let left = outgoing * duration;
-                    let right = key.incoming * duration;
-                    let difference = value - key.value;
-                    for (offset, coefficient) in [
-                        (3, 2. * difference + left + right),
-                        (4, -3. * difference - 2. * left - right),
-                        (5, left),
-                    ] {
-                        vm.heap_mut()
-                            .set_field(previous, offset, Value::float(coefficient))?;
-                    }
+                let duration = key.time - before;
+                let left = outgoing * duration;
+                let right = key.incoming * duration;
+                let difference = value - key.value;
+                for (offset, coefficient) in [
+                    (3, 2. * difference + left + right),
+                    (4, -3. * difference - 2. * left - right),
+                    (5, left),
+                ] {
+                    vm.heap_mut()
+                        .set_field(previous, offset, Value::float(coefficient))?;
                 }
             }
         }

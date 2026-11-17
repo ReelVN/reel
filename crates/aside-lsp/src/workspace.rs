@@ -275,9 +275,7 @@ pub(crate) struct Snapshot {
 }
 impl Snapshot {
     pub fn module(&self) -> Option<editor::EditorModule<'_>> {
-        self.project
-            .modules()
-            .find(|module| module.canonical_path() == self.entry)
+        self.project.module(&self.entry)
     }
     pub fn source(&self) -> &Source {
         &self.sources[&self.entry]
@@ -288,8 +286,7 @@ impl Snapshot {
         Some(self.features.get(path)?.get_or_init(|| {
             let module = self
                 .project
-                .modules()
-                .find(|module| module.canonical_path() == path)
+                .module(path)
                 .expect("feature slots belong to analyzed modules");
             analyze(module)
         }))
@@ -449,9 +446,15 @@ impl Workspace {
             return Ok(false);
         }
         let mut text = document.source.text.to_string();
-        for change in changes {
+        for (number, change) in changes.into_iter().enumerate() {
             if let Some(range) = change.range {
-                let index = LineIndex::new(&text);
+                let updated_index;
+                let index = if number == 0 {
+                    &document.source.lines
+                } else {
+                    updated_index = LineIndex::new(&text);
+                    &updated_index
+                };
                 let start = index
                     .offset(&text, range.start, encoding)
                     .ok_or("invalid change start position")?;
@@ -660,13 +663,10 @@ impl Workspace {
         let mut sources = BTreeMap::from([(entry.clone(), source)]);
         dependencies.insert(key.clone());
         let mut queue = VecDeque::from([entry.clone()]);
-        let mut visited = BTreeSet::new();
+        let mut attempted = BTreeSet::from([entry.clone()]);
         let mut aliases = BTreeMap::new();
         let prefix = roots.last().map_or("", |root| root.prefix.as_str());
         while let Some(module) = queue.pop_front() {
-            if !visited.insert(module.clone()) {
-                continue;
-            }
             let requests = sources[&module].imports.clone();
             for (request, _) in requests.iter() {
                 if self
@@ -697,7 +697,7 @@ impl Workspace {
                 .flatten()
                 {
                     let candidate = candidate.join("::");
-                    if sources.contains_key(&candidate) {
+                    if !attempted.insert(candidate.clone()) {
                         continue;
                     }
                     let Some(path) = module_file(&candidate, &roots) else {

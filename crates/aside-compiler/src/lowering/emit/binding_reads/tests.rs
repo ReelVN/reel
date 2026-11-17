@@ -311,7 +311,7 @@ fn binding_flow_scratch_is_released_and_work_exhaustion_is_reported() {
     budget.limits.max_work = work - 1;
     let error = eliminate(&mut function, &definition, &mut budget).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Limit);
-    assert!(error.stats.work_units <= work - 1);
+    assert!(error.stats.work_units < work);
 }
 
 #[test]

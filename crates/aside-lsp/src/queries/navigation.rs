@@ -311,11 +311,7 @@ impl Workspace {
                 range: source.lines.range(&source.text, range, encoding),
             }));
         }
-        let Some(target) = snapshot
-            .project
-            .modules()
-            .find(|module| module.canonical_path() == reference.module)
-        else {
+        let Some(target) = snapshot.project.module(&reference.module) else {
             return Ok(None);
         };
         let Some(source) = snapshot.sources.get(&reference.module) else {

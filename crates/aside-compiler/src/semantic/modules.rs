@@ -180,7 +180,7 @@ pub struct NamespaceRef {
 }
 /// Canonical declaration identity supplied by a module resolver or the single
 /// trusted native registry. A namespace references the module with export=None.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SymbolReference {
     pub module: String,
     pub version: String,
