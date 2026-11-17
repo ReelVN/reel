@@ -12,6 +12,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Aside reuses the iterator and its source when advancing through arrays, tuples and integer ranges.
 - UI frame preparation skips payload copying for fixed-size draw commands. Occlusion planning allocates clip and isolation stacks as the drawing enters those scopes.
 - Audio decoding reuses existing buffer reservations across packets. Resizing a reservation to its current size no longer locks the resource budget.
+- The Aside syntax cache reuses subtree hashes as it grows. The editor reuses parsed modules during linking, and the compiler indexes native declarations once per build.
+- Single-node stage updates avoid a temporary heap buffer. Image requests reuse the stage index when deciding whether fixed-size images need viewport layout.
+- Audio tracks mix and clear only the scratch samples consumed by each output block.
 
 ### Fixed
 
@@ -19,6 +22,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Concurrent requests for the same font or effect shader can share a single resident copy.
 - Use the current viewport to decide whether a failed image tile blocks the frame.
 - Load saves after a story edit removes a local value that was live at the saved line. Loading reports an incompatible point if the updated story replaces the saved dialogue with a different kind of wait.
+- Release temporary VM roots when checkpoint restoration rejects malformed data.
 
 ## 0.3.14 — 2026-11-18
 

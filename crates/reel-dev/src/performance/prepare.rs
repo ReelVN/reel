@@ -160,7 +160,7 @@ pub(super) fn artifact(messages: &[u8], name: &str) -> Result<PathBuf> {
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|v| v["reason"] == "compiler-artifact" && v["target"]["name"] == name)
         .filter_map(|v| v["executable"].as_str().map(PathBuf::from))
-        .last()
+        .next_back()
         .with_context(|| format!("Cargo did not produce {name}"))
 }
 

@@ -134,10 +134,10 @@ fn summarize(block: &Block) -> Result<Value> {
             .get("status")
             .context("missing event status")?
             .as_str();
-        if let Some((last_seq, last_wall)) = previous {
-            if seq != last_seq + 1 || wall < last_wall {
-                errors.push(format!("event sequence/time discontinuity at {seq}"));
-            }
+        if let Some((last_seq, last_wall)) = previous
+            && (seq.checked_sub(1) != Some(last_seq) || wall < last_wall)
+        {
+            errors.push(format!("event sequence/time discontinuity at {seq}"));
         }
         previous = Some((seq, wall));
         if matches!(status, "error" | "timeout" | "aborted") {

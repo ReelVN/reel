@@ -341,26 +341,26 @@ mod tests {
 
     #[test]
     fn checks_only_the_requested_scene_with_complete_intervals() {
-        let scene = json!({
+        let scenes = [json!({
             "label":"Gallery scroll",
             "submission_intervals_us":{"samples":2,"p95_us":16500,"max_us":16500},
             "main_thread_wall":{"top_phases":[{"phase":"ui_layout"}]},
-        });
-        let playback = json!({"label":"Gallery scroll","present_calls":3,"vm_peak_bytes":900});
+        })];
+        let playback = [json!({"label":"Gallery scroll","present_calls":3,"vm_peak_bytes":900})];
         let mut policy = policy();
-        let result = check_scene(&policy, &[scene.clone()], &[playback.clone()]);
+        let result = check_scene(&policy, &scenes, &playback);
         assert_eq!(result["passed"], true);
 
         policy.max_p95_submit_us = Some(16000);
         policy.max_vm_bytes = Some(800);
-        let result = check_scene(&policy, &[scene.clone()], &[playback.clone()]);
+        let result = check_scene(&policy, &scenes, &playback);
         assert_eq!(result["passed"], false);
         assert_eq!(result["issues"][0]["observed"], 16500);
         assert_eq!(result["issues"][1]["observed"], 900);
         assert!(result["advice"].is_string());
 
         let incomplete = json!({"label":"Gallery scroll","present_calls":4,"vm_peak_bytes":900});
-        let result = check_scene(&policy, &[scene], &[incomplete]);
+        let result = check_scene(&policy, &scenes, &[incomplete]);
         assert_eq!(result["issues"][0]["check"], "complete_intervals");
     }
 

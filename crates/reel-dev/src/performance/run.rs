@@ -116,10 +116,10 @@ fn device(options: &Run, directory: &Path, manifest: &Manifest) -> Result<()> {
     let mut next_progress = Duration::from_secs(20);
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        if let Some(status) = vdb.status(&status_path)? {
-            if status["state"] != "running" {
-                break;
-            }
+        if let Some(status) = vdb.status(&status_path)?
+            && status["state"] != "running"
+        {
+            break;
         }
         if started.elapsed() >= next_progress {
             println!(

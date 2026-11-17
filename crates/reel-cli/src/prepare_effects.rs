@@ -111,7 +111,7 @@ pub fn prepare_with_input(
             let path = cache.join(format!("effect-{key}.reel-effect"));
             let size = (|| -> io::Result<usize> {
                 Ok(
-                    if let Some(bytes) = cached(&path)?
+                    if let Some(bytes) = cached(&path, &mut [])?
                         && valid_product(&bytes, definition, format)
                     {
                         prepared.report.reused += 1;
@@ -255,7 +255,7 @@ pub fn prepare_with_input(
                                 "prepared effect shader exceeds its byte limit",
                             ));
                         }
-                        publish(&path, &bytes)?;
+                        publish(&path, &[&bytes])?;
                         prepared.report.converted += 1;
                         bytes.len()
                     },
@@ -273,7 +273,7 @@ pub fn prepare_with_input(
     let index = directory.join(format!("{}.json", target.name()));
     publish(
         &index,
-        &serde_json::to_vec(&prepared.files).map_err(io::Error::other)?,
+        &[&serde_json::to_vec(&prepared.files).map_err(io::Error::other)?],
     )?;
     prepared.index = Some(index);
     Ok(prepared)
@@ -358,24 +358,23 @@ fn gxp(
     let path = cache.join(format!("effect-code-{key}.gxp"));
     // The cached binary carries a digest, so an interrupted or damaged cache is
     // rebuilt before it can enter a new typed shader envelope.
-    if let Some(bytes) = cached(&path)?
-        && bytes.len() > 32
-        && blake3::hash(&bytes[32..]).as_bytes() == &bytes[..32]
+    let mut digest = [0; 32];
+    if let Some(binary) = cached(&path, &mut digest)?
+        && !binary.is_empty()
+        && blake3::hash(&binary).as_bytes() == &digest
     {
-        return Ok(bytes[32..].to_vec());
+        return Ok(binary);
     }
     let binary = compiler.compile(Stage::Fragment, source)?;
     if binary.len() > MAX_SHADER_BYTES - 32 {
         return Err(io::Error::other("effect GXP binary exceeds its byte limit"));
     }
-    let mut bytes = blake3::hash(&binary).as_bytes().to_vec();
-    bytes.extend_from_slice(&binary);
-    publish(&path, &bytes)?;
+    publish(&path, &[blake3::hash(&binary).as_bytes(), &binary])?;
     Ok(binary)
 }
 
-fn cached(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    let file = match File::open(path) {
+fn cached(path: &Path, header: &mut [u8]) -> io::Result<Option<Vec<u8>>> {
+    let mut file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
@@ -383,10 +382,16 @@ fn cached(path: &Path) -> io::Result<Option<Vec<u8>>> {
     if file.metadata()?.len() > MAX_SHADER_BYTES as u64 {
         return Ok(None);
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_SHADER_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    Ok((bytes.len() <= MAX_SHADER_BYTES).then_some(bytes))
+    if let Err(error) = file.read_exact(header) {
+        return match error.kind() {
+            io::ErrorKind::UnexpectedEof => Ok(None),
+            _ => Err(error),
+        };
+    }
+    let limit = MAX_SHADER_BYTES - header.len();
+    let mut payload = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut payload)?;
+    Ok((payload.len() <= limit).then_some(payload))
 }
 fn identity(fields: &[&[u8]]) -> String {
     let mut hash = blake3::Hasher::new();
@@ -396,8 +401,13 @@ fn identity(fields: &[&[u8]]) -> String {
     }
     hash.finalize().to_hex().to_string()
 }
-fn publish(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let result = reel_storage::publish(path, true, |file| file.write_all(bytes))?;
+fn publish(path: &Path, parts: &[&[u8]]) -> io::Result<()> {
+    let result = reel_storage::publish(path, true, |file| {
+        for part in parts {
+            file.write_all(part)?;
+        }
+        Ok(())
+    })?;
     if let Some(warning) = result.cleanup_warning {
         eprintln!("{warning}");
     }
@@ -449,6 +459,21 @@ pub fn archive(prepared: &Prepared, output: &Path) -> io::Result<Option<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_shader_separates_digest_and_payload_and_rejects_short_headers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("effect.gxp");
+        let binary = b"compiled fragment";
+        let digest = blake3::hash(binary);
+        publish(&path, &[digest.as_bytes(), binary]).unwrap();
+        let mut header = [0; 32];
+        assert_eq!(cached(&path, &mut header).unwrap().unwrap(), binary);
+        assert_eq!(&header, digest.as_bytes());
+        fs::write(&path, &header[..31]).unwrap();
+        assert!(cached(&path, &mut header).unwrap().is_none());
+    }
+
     #[test]
     fn optional_diagonal_code_keeps_all_existing_segments_at_the_complete_limit() {
         let mut raw = b"ordinaryfull".to_vec();
