@@ -46,8 +46,10 @@ fn request_recording_publishes_running_frames_and_one_terminal_result() {
     assert!(reel_core::profile::WallSnapshot::is_active());
     // Isolate report publication from the process-global phase collector used
     // concurrently by other tests; boundary accumulation has its owning tests.
-    let mut row = Row::default();
-    row.loops = 1;
+    let mut row = Row {
+        loops: 1,
+        ..Default::default()
+    };
     row.phases.calls[reel_core::profile::Phase::Present as usize] = 1;
     recording.frames.record("workload", &row);
     recording.finish("workload", "closed").unwrap();

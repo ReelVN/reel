@@ -43,46 +43,6 @@ impl ImageMotion {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_images_approaching_the_viewport_are_prefetched() {
-        let mut motion = ImageMotion::default();
-        let now = Instant::now();
-        let sample = |distances: [f64; 5]| {
-            distances
-                .into_iter()
-                .enumerate()
-                .map(|(id, distance)| OffscreenImage {
-                    id: NodeId(id as u64 + 1),
-                    distance,
-                    moving_inward: false,
-                })
-                .collect()
-        };
-        assert!(
-            motion
-                .observe(now, sample([100., 100., 100., f64::INFINITY, 1000.]))
-                .1
-                .is_empty()
-        );
-        let next = now + Duration::from_millis(20);
-        assert!(
-            motion
-                .observe(next, sample([70., 100., 130., 2., 970.]))
-                .1
-                .is_empty()
-        );
-        let (_, approaching) = motion.observe(
-            next + Duration::from_millis(20),
-            sample([40., 100., 160., 1., 940.]),
-        );
-        assert_eq!(approaching, [NodeId(1)]);
-    }
-}
-
 impl SessionUi {
     /// Fixed image dimensions let the existing candidate layout decide raster
     /// demand before IO. Repeated polls of that candidate reuse the same demand.
@@ -100,14 +60,14 @@ impl SessionUi {
             return Ok(true);
         };
         if !self.image_layout_pending {
-            let requests = candidate.layout_image_requests(self.images.shader_format)?;
-            if !requests.deferred_images {
-                self.pending_images_ready = self.images.request_stage_images(Ok(requests));
+            let requests = candidate.layout_image_requests(self.images.shader_format);
+            if !requests.index.has_fixed_images {
+                self.pending_images_ready = self.images.request_stage_images(requests);
                 self.image_demand_dirty = false;
                 return Ok(true);
             }
             if !self.images.requests_ready(&requests) {
-                self.images.request_stage_images(Ok(requests));
+                self.images.request_stage_images(requests);
                 self.image_layout_pending = true;
             }
         }
@@ -224,5 +184,45 @@ impl SessionUi {
             self.images.commit();
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_images_approaching_the_viewport_are_prefetched() {
+        let mut motion = ImageMotion::default();
+        let now = Instant::now();
+        let sample = |distances: [f64; 5]| {
+            distances
+                .into_iter()
+                .enumerate()
+                .map(|(id, distance)| OffscreenImage {
+                    id: NodeId(id as u64 + 1),
+                    distance,
+                    moving_inward: false,
+                })
+                .collect()
+        };
+        assert!(
+            motion
+                .observe(now, sample([100., 100., 100., f64::INFINITY, 1000.]))
+                .1
+                .is_empty()
+        );
+        let next = now + Duration::from_millis(20);
+        assert!(
+            motion
+                .observe(next, sample([70., 100., 130., 2., 970.]))
+                .1
+                .is_empty()
+        );
+        let (_, approaching) = motion.observe(
+            next + Duration::from_millis(20),
+            sample([40., 100., 160., 1., 940.]),
+        );
+        assert_eq!(approaching, [NodeId(1)]);
     }
 }

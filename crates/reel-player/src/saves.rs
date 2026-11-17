@@ -405,7 +405,7 @@ impl SaveStorage for DirectorySaves {
         if bytes.len() as u64 > self.max_snapshot_bytes {
             return Err("checkpoint exceeds storage budget".into());
         }
-        Ok(CheckpointRecord::decode(&bytes)?)
+        CheckpointRecord::decode(&bytes)
     }
     fn delete(&self, slot: &str) -> Result<(), StorageError> {
         match reel_storage::remove(&self.path(slot)) {

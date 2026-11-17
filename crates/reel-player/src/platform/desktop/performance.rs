@@ -53,6 +53,17 @@ impl Capture {
     }
 }
 
+/// A render-bearing callback has at most one present. Maintenance callbacks
+/// accumulate VM and phase work until the next actual presentation submission.
+pub(super) fn record(capture: &mut Option<Capture>, state: &State, started: &mut Option<Instant>) {
+    if let Some(capture) = capture
+        && let Some(at) = started.take()
+    {
+        capture.record(state, at);
+        *started = Some(Instant::now());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,8 +94,10 @@ mod tests {
                 save_frame: false,
             }),
         };
-        let mut options = PlayerOptions::default();
-        options.save_directory = Some("ordinary-saves".into());
+        let mut options = PlayerOptions {
+            save_directory: Some("ordinary-saves".into()),
+            ..Default::default()
+        };
         let result = Capture::from_request(request, &mut options);
         assert!(result.is_err());
         assert_eq!(
@@ -98,16 +111,5 @@ mod tests {
         assert_eq!(status["capabilities"]["serial_pass"], false);
         assert_eq!(status["capabilities"]["gpu_timestamp"], false);
         assert!(!output.join("frames.tsv").exists());
-    }
-}
-
-/// A render-bearing callback has at most one present. Maintenance callbacks
-/// accumulate VM and phase work until the next actual presentation submission.
-pub(super) fn record(capture: &mut Option<Capture>, state: &State, started: &mut Option<Instant>) {
-    if let Some(capture) = capture
-        && let Some(at) = started.take()
-    {
-        capture.record(state, at);
-        *started = Some(Instant::now());
     }
 }

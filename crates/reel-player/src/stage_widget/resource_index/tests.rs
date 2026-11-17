@@ -9,7 +9,7 @@ fn hidden_preload_is_inherited_without_becoming_visible_demand() {
     props.preload = true;
     stage.update(root, NodeKind::Stack, props.clone()).unwrap();
     let view = StageView::capture(&stage);
-    let requests = view.image_requests(EffectShaderFormat::Wgsl).unwrap();
+    let requests = view.image_requests(EffectShaderFormat::Wgsl);
     assert_eq!(requests.required().count(), 0);
     assert_eq!(
         requests.preloaded().collect::<Vec<_>>(),
@@ -19,7 +19,7 @@ fn hidden_preload_is_inherited_without_becoming_visible_demand() {
     stage.update(root, NodeKind::Stack, props).unwrap();
     let changed = StageView::update(&stage, Some(&view));
     assert!(!same_inputs(view.root.as_ref(), changed.root.as_ref()));
-    let requests = changed.image_requests(EffectShaderFormat::Wgsl).unwrap();
+    let requests = changed.image_requests(EffectShaderFormat::Wgsl);
     assert_eq!(requests.preloaded().count(), 0);
     assert_eq!(requests.required().count(), 0);
 }
@@ -75,15 +75,11 @@ fn viewport_and_animation_share_identities_but_visibility_rebuilds() {
         .update(nodes[0], image("picture-0.png"), props)
         .unwrap();
     let first = StageView::capture(&stage);
-    let layout = first
-        .layout_image_requests(EffectShaderFormat::Wgsl)
-        .unwrap();
+    let layout = first.layout_image_requests(EffectShaderFormat::Wgsl);
     assert_eq!(layout.required().collect::<Vec<_>>(), [("mask.png", None)]);
-    assert!(layout.deferred_images);
+    assert!(layout.index.has_fixed_images);
     let outside = vec![nodes[1]];
-    let visible = first
-        .viewport_image_requests(outside, vec![nodes[1]], EffectShaderFormat::Wgsl)
-        .unwrap();
+    let visible = first.viewport_image_requests(outside, vec![nodes[1]], EffectShaderFormat::Wgsl);
     assert!(Arc::ptr_eq(&layout.index, &visible.index));
     assert_eq!(
         visible.required().map(|(s, _)| s).collect::<Vec<_>>(),
@@ -103,7 +99,7 @@ fn viewport_and_animation_share_identities_but_visibility_rebuilds() {
     props.visible = false;
     stage.update(root, NodeKind::Stack, props).unwrap();
     let hidden = StageView::update(&stage, Some(&moved));
-    let hidden_requests = hidden.image_requests(EffectShaderFormat::Wgsl).unwrap();
+    let hidden_requests = hidden.image_requests(EffectShaderFormat::Wgsl);
     assert!(!Arc::ptr_eq(&layout.index, &hidden_requests.index));
     assert!(hidden_requests.required().next().is_none());
     assert_eq!(hidden_requests.index.mounted().count(), 4);
@@ -127,16 +123,13 @@ fn shared_source_uses_visible_origin_and_fixed_size_requirement() {
     }
     stage.update(nodes[1], kind, props).unwrap();
     let view = StageView::capture(&stage);
-    let layout = view
-        .layout_image_requests(EffectShaderFormat::Wgsl)
-        .unwrap();
+    let layout = view.layout_image_requests(EffectShaderFormat::Wgsl);
     assert_eq!(
         layout.required().collect::<Vec<_>>(),
         [("shared.png", Some("auto-size:7"))]
     );
-    let request = view
-        .viewport_image_requests(vec![nodes[1]], Vec::new(), EffectShaderFormat::Wgsl)
-        .unwrap();
+    let request =
+        view.viewport_image_requests(vec![nodes[1]], Vec::new(), EffectShaderFormat::Wgsl);
     assert_eq!(
         request.required().collect::<Vec<_>>(),
         [("shared.png", Some("shared.png:1"))]
@@ -151,12 +144,12 @@ fn viewport_resource_collection_cost() {
     let view = StageView::capture(&stage);
     let index = view.resource_index(EffectShaderFormat::Wgsl);
     let retained = std::mem::size_of::<ResourceIndex>()
-        + index.entries.capacity() * std::mem::size_of::<Entry>()
+        + index.entries.capacity() * std::mem::size_of::<(String, Entry)>()
         + index
             .entries
             .iter()
-            .map(|e| {
-                e.source.capacity()
+            .map(|(source, e)| {
+                source.capacity()
                     + e.uses.capacity() * std::mem::size_of::<Usage>()
                     + e.uses
                         .iter()
@@ -171,9 +164,11 @@ fn viewport_resource_collection_cost() {
         let allocations = allocation_counter::measure(|| {
             for _ in 0..2000 {
                 if indexed {
-                    let requests = view
-                        .viewport_image_requests(Vec::new(), Vec::new(), EffectShaderFormat::Wgsl)
-                        .unwrap();
+                    let requests = view.viewport_image_requests(
+                        Vec::new(),
+                        Vec::new(),
+                        EffectShaderFormat::Wgsl,
+                    );
                     counts[1] += std::hint::black_box(
                         requests
                             .required()

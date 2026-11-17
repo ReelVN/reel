@@ -1126,7 +1126,9 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         .unwrap();
     view = StageView::update(&stage, Some(&view));
     assert!(
-        view.image_requests(EffectShaderFormat::Wgsl).is_ok(),
+        view.image_requests(EffectShaderFormat::Wgsl)
+            .required()
+            .any(|(path, _)| path == "background.reel-image"),
         "prepared atlas regions share image geometry"
     );
     stage
@@ -1165,7 +1167,10 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         stage.update(background, kind, props).unwrap();
         let mut invalid = StageView::update(&stage, Some(&view));
         assert!(
-            invalid.image_requests(EffectShaderFormat::Wgsl).is_ok(),
+            invalid
+                .image_requests(EffectShaderFormat::Wgsl)
+                .required()
+                .any(|(path, _)| path == "atlas.png"),
             "filename extensions do not classify images"
         );
         images.request_stage(&invalid);
@@ -1283,7 +1288,6 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
     assert!(
         StageView::capture(&f.stage)
             .image_requests(EffectShaderFormat::Wgsl)
-            .unwrap()
             .required()
             .next()
             .is_none()
@@ -1337,7 +1341,6 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
         assert!(
             StageView::capture(&f.stage)
                 .image_requests(EffectShaderFormat::Wgsl)
-                .unwrap()
                 .required()
                 .next()
                 .is_none()

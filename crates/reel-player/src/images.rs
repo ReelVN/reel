@@ -155,73 +155,63 @@ impl Images {
     /// The caller may retain its resolved leases; tiled viewport work stays live.
     pub(crate) fn request_stage_images(
         &mut self,
-        requests: Result<crate::stage_widget::ImageRequests, String>,
+        requests: crate::stage_widget::ImageRequests,
     ) -> bool {
         #[cfg(test)]
         {
             self.stage_requests += 1;
         }
-        match requests {
-            Ok(requests) => {
-                if self.closed {
-                    return false;
+        if self.closed {
+            return false;
+        }
+        let same_index = self
+            .request_index
+            .as_ref()
+            .is_some_and(|old| Arc::ptr_eq(old, &requests.index));
+        let same_approach = self.approaching == requests.approaching;
+        if same_index
+            && same_approach
+            && self.settled
+            && self.failure.is_none()
+            && self.manifests.is_empty()
+            && self
+                .skipped
+                .iter()
+                .all(|source| self.prefetch.contains(source))
+            && requests.required().eq(self
+                .wanted
+                .iter()
+                .map(|(source, origin)| (source.as_str(), origin.as_deref())))
+        {
+            return true;
+        }
+        if !same_index || !same_approach {
+            self.prefetch = requests.preloaded().map(str::to_owned).collect();
+            self.approaching.clone_from(&requests.approaching);
+        }
+        if !same_index {
+            self.encoded = requests
+                .index
+                .encoded()
+                .map(|(source, bytes)| (source.to_owned(), bytes.clone()))
+                .collect();
+            self.shader_sources = requests.index.shaders().map(str::to_owned).collect();
+            self.mounted = requests.index.mounted().map(str::to_owned).collect();
+            self.request_index = Some(requests.index.clone());
+        }
+        self.wanted
+            .retain(|source, _| requests.origin(source).is_some());
+        for (source, origin) in requests.required() {
+            if let Some(current) = self.wanted.get_mut(source) {
+                if current.as_deref() != origin {
+                    *current = origin.map(str::to_owned);
                 }
-                let same_index = self
-                    .request_index
-                    .as_ref()
-                    .is_some_and(|old| Arc::ptr_eq(old, &requests.index));
-                let same_approach = self.approaching == requests.approaching;
-                if same_index
-                    && same_approach
-                    && self.settled
-                    && self.failure.is_none()
-                    && self.manifests.is_empty()
-                    && self
-                        .skipped
-                        .iter()
-                        .all(|source| self.prefetch.contains(source))
-                    && requests.required().eq(self
-                        .wanted
-                        .iter()
-                        .map(|(source, origin)| (source.as_str(), origin.as_deref())))
-                {
-                    return true;
-                }
-                if !same_index || !same_approach {
-                    self.prefetch = requests.preloaded().map(str::to_owned).collect();
-                    self.approaching.clone_from(&requests.approaching);
-                }
-                if !same_index {
-                    self.encoded = requests
-                        .index
-                        .encoded()
-                        .map(|(source, bytes)| (source.to_owned(), bytes.clone()))
-                        .collect();
-                    self.shader_sources = requests.index.shaders().map(str::to_owned).collect();
-                    self.mounted = requests.index.mounted().map(str::to_owned).collect();
-                    self.request_index = Some(requests.index.clone());
-                }
+            } else {
                 self.wanted
-                    .retain(|source, _| requests.origin(source).is_some());
-                for (source, origin) in requests.required() {
-                    if let Some(current) = self.wanted.get_mut(source) {
-                        if current.as_deref() != origin {
-                            *current = origin.map(str::to_owned);
-                        }
-                    } else {
-                        self.wanted
-                            .insert(source.to_owned(), origin.map(str::to_owned));
-                    }
-                }
-                self.reconcile_requests();
-            }
-            Err(error) => {
-                self.encoded.clear();
-                self.shader_sources.clear();
-                self.request(BTreeMap::new());
-                self.failure = Some(error);
+                    .insert(source.to_owned(), origin.map(str::to_owned));
             }
         }
+        self.reconcile_requests();
         false
     }
     pub(crate) fn requests_ready(&self, requests: &crate::stage_widget::ImageRequests) -> bool {
@@ -233,22 +223,14 @@ impl Images {
         self.wanted.contains_key(source)
     }
     pub fn request(&mut self, wanted: BTreeMap<String, Option<String>>) {
-        let mounted = wanted.keys().cloned().collect();
-        self.request_mounted(wanted, mounted);
-    }
-    fn request_mounted(
-        &mut self,
-        wanted: BTreeMap<String, Option<String>>,
-        mounted: BTreeSet<String>,
-    ) {
         if self.closed {
             return;
         }
         self.request_index = None;
+        self.mounted = wanted.keys().cloned().collect();
         self.wanted = wanted;
         self.prefetch.clear();
         self.approaching.clear();
-        self.mounted = mounted;
         self.reconcile_requests();
     }
     fn reconcile_requests(&mut self) {

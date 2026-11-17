@@ -1,5 +1,6 @@
 //! Mounted resource identities shared by layout and viewport demand queries.
 use super::*;
+use std::borrow::Cow;
 use std::sync::{OnceLock, Weak};
 
 #[cfg(test)]
@@ -12,11 +13,12 @@ pub(super) struct ResourceIndexCache {
 }
 
 pub(crate) struct ResourceIndex {
-    entries: Vec<Entry>,
+    entries: Vec<(String, Entry)>,
+    pub has_fixed_images: bool,
 }
 
+#[derive(Default)]
 struct Entry {
-    source: String,
     uses: Vec<Usage>,
     encoded: Option<Arc<[u8]>>,
     shader: bool,
@@ -38,7 +40,6 @@ pub(crate) struct ImageRequests {
     pub index: Arc<ResourceIndex>,
     selection: Selection,
     pub approaching: Vec<NodeId>,
-    pub deferred_images: bool,
 }
 
 pub(super) struct RowResources {
@@ -80,37 +81,29 @@ impl StageView {
             .clone()
     }
     #[cfg(test)]
-    pub fn image_requests(&self, format: EffectShaderFormat) -> Result<ImageRequests, String> {
-        Ok(ImageRequests::new(
-            self.resource_index(format),
-            Selection::All,
-        ))
+    pub fn image_requests(&self, format: EffectShaderFormat) -> ImageRequests {
+        ImageRequests::new(self.resource_index(format), Selection::All)
     }
-    pub(crate) fn layout_image_requests(
-        &self,
-        format: EffectShaderFormat,
-    ) -> Result<ImageRequests, String> {
-        Ok(ImageRequests::new(
-            self.resource_index(format),
-            Selection::Layout,
-        ))
+    pub(crate) fn layout_image_requests(&self, format: EffectShaderFormat) -> ImageRequests {
+        ImageRequests::new(self.resource_index(format), Selection::Layout)
     }
     pub(crate) fn viewport_image_requests(
         &self,
         outside: Vec<NodeId>,
         approaching: Vec<NodeId>,
         format: EffectShaderFormat,
-    ) -> Result<ImageRequests, String> {
+    ) -> ImageRequests {
         let mut requests =
             ImageRequests::new(self.resource_index(format), Selection::Viewport(outside));
         requests.approaching = approaching;
-        Ok(requests)
+        requests
     }
 }
 
 impl ResourceIndex {
-    fn collect(root: Option<&Arc<SceneNode>>, format: EffectShaderFormat) -> Self {
-        let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
+    fn collect<'a>(root: Option<&'a Arc<SceneNode>>, format: EffectShaderFormat) -> Self {
+        let mut entries: BTreeMap<Cow<'a, str>, Entry> = BTreeMap::new();
+        let mut has_fixed_images = false;
         let mut pending: Vec<_> = root
             .into_iter()
             .map(|node| (node, true, true, false, false, false))
@@ -132,29 +125,27 @@ impl ResourceIndex {
                     .iter()
                     .map(|child| (child, visible, enabled, true, cursor, preload)),
             );
-            let mut add =
-                |source: &str, origin: Option<&str>, image, shader, encoded: Option<Arc<[u8]>>| {
-                    let entry = entries.entry(source.to_owned()).or_insert_with(|| Entry {
-                        source: source.to_owned(),
-                        uses: Vec::new(),
-                        encoded: None,
-                        shader: false,
-                        preload: false,
+            let mut add = |source: Cow<'a, str>,
+                           origin: Option<&str>,
+                           image,
+                           shader,
+                           encoded: Option<Arc<[u8]>>| {
+                let entry = entries.entry(source).or_default();
+                entry.preload |= preload;
+                if visible || preload {
+                    entry.shader |= shader;
+                    if encoded.is_some() {
+                        entry.encoded = encoded;
+                    }
+                }
+                if visible {
+                    has_fixed_images |= matches!(image, Some((_, true)));
+                    entry.uses.push(Usage {
+                        origin: origin.map(str::to_owned),
+                        image,
                     });
-                    entry.preload |= preload;
-                    if visible || preload {
-                        entry.shader |= shader;
-                        if encoded.is_some() {
-                            entry.encoded = encoded;
-                        }
-                    }
-                    if visible {
-                        entry.uses.push(Usage {
-                            origin: origin.map(str::to_owned),
-                            image,
-                        });
-                    }
-                };
+                }
+            };
             // Keep appearance dependencies before the image for diagnostic precedence.
             for effect in node
                 .node
@@ -164,7 +155,7 @@ impl ResourceIndex {
                 .chain(node.node.props.mask_effect.iter())
             {
                 add(
-                    &format.asset_path(effect.definition()),
+                    Cow::Owned(format.asset_path(effect.definition())),
                     node.node.props.appearance_origin.as_deref(),
                     None,
                     true,
@@ -172,7 +163,7 @@ impl ResourceIndex {
                 );
                 for source in effect.textures() {
                     add(
-                        source,
+                        Cow::Borrowed(source),
                         node.node.props.appearance_origin.as_deref(),
                         None,
                         false,
@@ -187,7 +178,7 @@ impl ResourceIndex {
                     None
                 };
                 add(
-                    source,
+                    Cow::Borrowed(source),
                     origin.as_deref(),
                     (!cursor).then_some((node.node.id, node.has_fixed_image_size())),
                     false,
@@ -196,7 +187,7 @@ impl ResourceIndex {
             }
             for source in node.node.props.mask.iter().flat_map(|mask| mask.sources()) {
                 add(
-                    source,
+                    Cow::Borrowed(source),
                     node.node.props.appearance_origin.as_deref(),
                     None,
                     false,
@@ -205,32 +196,30 @@ impl ResourceIndex {
             }
         }
         Self {
+            has_fixed_images,
             entries: entries
-                .into_values()
-                .map(|mut entry| {
+                .into_iter()
+                .map(|(source, mut entry)| {
                     entry.uses.shrink_to_fit();
-                    entry
+                    (source.into_owned(), entry)
                 })
                 .collect(),
         }
     }
 
     pub fn mounted(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|entry| entry.source.as_str())
+        self.entries.iter().map(|(source, _)| source.as_str())
     }
     pub fn encoded(&self) -> impl Iterator<Item = (&str, &Arc<[u8]>)> {
-        self.entries.iter().filter_map(|entry| {
-            entry
-                .encoded
-                .as_ref()
-                .map(|bytes| (entry.source.as_str(), bytes))
+        self.entries.iter().filter_map(|(source, entry)| {
+            entry.encoded.as_ref().map(|bytes| (source.as_str(), bytes))
         })
     }
     pub fn shaders(&self) -> impl Iterator<Item = &str> {
         self.entries
             .iter()
-            .filter(|entry| entry.shader)
-            .map(|entry| entry.source.as_str())
+            .filter(|(_, entry)| entry.shader)
+            .map(|(source, _)| source.as_str())
     }
 }
 
@@ -246,19 +235,14 @@ impl Selection {
 
 impl ImageRequests {
     fn new(index: Arc<ResourceIndex>, selection: Selection) -> Self {
-        let deferred_images = index
-            .entries
-            .iter()
-            .any(|entry| entry.uses.iter().any(|usage| !selection.includes(usage)));
         Self {
             index,
             selection,
             approaching: Vec::new(),
-            deferred_images,
         }
     }
     pub fn preloaded(&self) -> impl Iterator<Item = &str> {
-        self.index.entries.iter().filter_map(|entry| {
+        self.index.entries.iter().filter_map(|(source, entry)| {
             (entry.preload
                 || (!self.approaching.is_empty()
                     && entry.uses.iter().any(|usage| {
@@ -266,25 +250,26 @@ impl ImageRequests {
                             .image
                             .is_some_and(|(id, _)| self.approaching.binary_search(&id).is_ok())
                     })))
-            .then_some(entry.source.as_str())
+            .then_some(source.as_str())
         })
     }
     pub fn required(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
-        self.index.entries.iter().filter_map(|entry| {
+        self.index.entries.iter().filter_map(|(source, entry)| {
             entry
                 .uses
                 .iter()
                 .find(|usage| self.selection.includes(usage))
-                .map(|usage| (entry.source.as_str(), usage.origin.as_deref()))
+                .map(|usage| (source.as_str(), usage.origin.as_deref()))
         })
     }
     pub fn origin(&self, source: &str) -> Option<Option<&str>> {
         let index = self
             .index
             .entries
-            .binary_search_by(|entry| entry.source.as_str().cmp(source))
+            .binary_search_by(|(key, _)| key.as_str().cmp(source))
             .ok()?;
-        self.index.entries[index]
+        let (_, entry) = &self.index.entries[index];
+        entry
             .uses
             .iter()
             .find(|usage| self.selection.includes(usage))

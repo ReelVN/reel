@@ -87,7 +87,7 @@ impl<'a> From<ShapeInstanceKey<'a>> for ShapeInstanceId {
             font_blob_id: key.font_blob_id,
             font_index: key.font_index,
             synthesis: *key.synthesis,
-            variations: key.variations.map(|v| v.to_vec().into()),
+            variations: key.variations.map(Box::from),
         }
     }
 }
@@ -155,13 +155,8 @@ impl<'a> Equivalent<ShapePlanId> for ShapePlanKey<'a> {
             && self.direction == key.direction
             && self.script == key.script
             && self.language == key.language
-            && self.features.len() == key.features.len()
+            && self.features == key.features.as_ref()
             && self.variations == key.variations.as_deref()
-            && self
-                .features
-                .iter()
-                .zip(key.features.iter())
-                .all(|(a, b)| a == b)
     }
 }
 
@@ -175,8 +170,8 @@ impl<'a> From<ShapePlanKey<'a>> for ShapePlanId {
             direction: key.direction,
             script: key.script,
             language: key.language,
-            features: key.features.to_vec().into(),
-            variations: key.variations.map(|v| v.to_vec().into()),
+            features: Box::from(key.features),
+            variations: key.variations.map(Box::from),
         }
     }
 }

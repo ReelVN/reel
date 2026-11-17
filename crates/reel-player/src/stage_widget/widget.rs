@@ -323,10 +323,9 @@ impl Widget for SceneWidget {
                 | Update::DisabledChanged(true)
                 | Update::StashedChanged(true)
                 | Update::ActiveChanged(false)
-        ) {
-            if let Some(state) = &mut self.scrollbar {
-                state.cancel();
-            }
+        ) && let Some(state) = &mut self.scrollbar
+        {
+            state.cancel();
         }
         if matches!(
             event,
