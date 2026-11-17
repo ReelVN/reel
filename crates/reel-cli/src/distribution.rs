@@ -6,7 +6,7 @@ use reel_package::{
     resource_target::ResourceTarget,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::{self, File},
     io::{self, Write},
     num::NonZeroU64,
@@ -271,13 +271,10 @@ pub fn export(
             "export output contains a prepared resource input",
         ));
     }
-    let mut names = BTreeSet::new();
-    for name in resources.keys().chain(text.keys()) {
-        if !names.insert(name) {
-            return Err(io::Error::other(format!(
-                "text and resources both define {name}"
-            )));
-        }
+    if let Some(name) = text.keys().find(|name| resources.contains_key(*name)) {
+        return Err(io::Error::other(format!(
+            "text and resources both define {name}"
+        )));
     }
     let catalogs = crate::localization::bundle_project(&loaded.project_root, &artifact.catalogs)?;
     for key in catalogs.files.keys() {
@@ -307,46 +304,42 @@ pub fn export(
         .prefix(".reel-export-")
         .tempdir_in(&parent)?;
     let staging = candidate.path();
-    let result: io::Result<Exported> = (|| {
+    let result = {
         let mut manifest = Distribution {
             text: None,
             resources: vec![],
-            catalogs: catalogs.catalogs.clone(),
+            catalogs: catalogs.catalogs,
             loose: None,
         };
         let mut asset_bytes = 0;
-        if artifact.profile == BuildProfile::Release {
-            let pool = artifact
-                .text_pool
-                .as_ref()
-                .ok_or_else(|| io::Error::other("release export requires external text"))?;
-            let mut writer =
-                ArchiveWriter::new(File::create(staging.join("game.rtp"))?, ArchiveKind::Text)?;
-            asset_bytes += writer.add(TEXT_POOL_ENTRY, &mut pool.as_bytes())?.length;
-            for (name, file) in &text {
-                asset_bytes += writer.add(name, &mut File::open(file)?)?.length;
+        let release = artifact.profile == BuildProfile::Release;
+        if release || !catalogs.files.is_empty() {
+            let mut writer = ArchiveWriter::new(
+                File::create_new(staging.join("game.rtp"))?,
+                ArchiveKind::Text,
+            )?;
+            if release {
+                let pool = artifact
+                    .text_pool
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("release export requires external text"))?;
+                asset_bytes += writer.add(TEXT_POOL_ENTRY, &mut pool.as_bytes())?.length;
+                for (name, file) in &text {
+                    asset_bytes += writer.add(name, &mut File::open(file)?)?.length;
+                }
             }
             for (name, text) in &catalogs.files {
                 asset_bytes += writer.add(name, &mut text.as_bytes())?.length;
             }
             writer.finish()?.sync_all()?;
             manifest.text = Some("game.rtp".into());
+        }
+        if release {
             let (volumes, bytes) = resource_volumes(&resources, staging, options.pack_bytes.get())?;
             manifest.resources = volumes;
             asset_bytes += bytes;
         } else {
             fs::create_dir_all(staging.join("resources"))?;
-            if !catalogs.files.is_empty() {
-                let mut writer = ArchiveWriter::new(
-                    File::create_new(staging.join("game.rtp"))?,
-                    ArchiveKind::Text,
-                )?;
-                for (name, text) in &catalogs.files {
-                    asset_bytes += writer.add(name, &mut text.as_bytes())?.length;
-                }
-                writer.finish()?.sync_all()?;
-                manifest.text = Some("game.rtp".into());
-            }
             for (name, file) in resources.iter().chain(text.iter()) {
                 asset_bytes += copy(file, &staging.join("resources").join(name))?;
             }
@@ -358,12 +351,11 @@ pub fn export(
         let runtime_bytes = runtime_files.iter().try_fold(0u64, |total, (name, file)| {
             copy(file, &staging.join(name)).map(|bytes| total + bytes)
         })?;
-        Ok(Exported {
+        Exported {
             files: resources.len() + text.len() + catalogs.files.len(),
             bytes: encoded.len() as u64 + runtime_bytes + asset_bytes,
-        })
-    })();
-    let result = result?;
+        }
+    };
     // Build every file before touching the previous export. Both renames stay
     // on the same filesystem; rollback keeps the old output if publication fails.
     let backup = tempfile::Builder::new()

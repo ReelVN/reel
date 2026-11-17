@@ -13,13 +13,6 @@ fn project_resources(path: &Path) -> io::Result<Option<PathBuf>> {
     Ok(crate::project::find(root)?.map(|project| project.root.join("resources")))
 }
 
-fn asset_overlay(
-    loaded: &reel_player::distribution::LoadedDistribution,
-    explicit: Option<PathBuf>,
-) -> Option<PathBuf> {
-    explicit.or_else(|| loaded.loose.clone())
-}
-
 type ResourceFiles = BTreeMap<String, PathBuf>;
 
 /// Prepare the current project's resource view, optionally selecting another
@@ -94,7 +87,7 @@ pub fn load(
     let project_resources = project_resources(path).map_err(|error| error.to_string())?;
     let loaded = reel_player::distribution::load(path, project_resources.as_deref())
         .map_err(|error| error.to_string())?;
-    let assets = asset_overlay(&loaded, assets);
+    let assets = assets.or(loaded.loose);
     let (assets, resource_files) = if let Some(project_root) =
         project_resources.as_ref().and_then(|root| root.parent())
         && assets.is_some()
@@ -150,38 +143,33 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn temporary() -> tempfile::TempDir {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/reel-artifacts/playback-project-tests");
-        fs::create_dir_all(&root).unwrap();
-        tempfile::tempdir_in(root).unwrap()
-    }
-
     #[test]
-    fn raw_asb_uses_project_resources_and_exports_keep_their_manifest() {
-        let temporary = temporary();
-        let root = temporary.path();
+    fn playback_resolves_project_standalone_export_and_explicit_asset_roots() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("project");
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("resources")).unwrap();
         fs::create_dir_all(root.join("build/debug")).unwrap();
         fs::write(root.join("src/main.aside"), "fn main() { 1 }").unwrap();
         let project =
-            crate::project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
+            crate::project::load(&root).unwrap_or_else(|error| panic!("{:?}", error.failure));
         let checked = project.check().unwrap();
         let artifact =
             crate::build_export(&checked, "main::main", crate::BuildProfile::Debug).unwrap();
         let package = root.join("build/debug/game.asb");
         fs::write(&package, artifact.encode(None).unwrap()).unwrap();
-        let loaded = reel_player::distribution::load(
-            &package,
-            project_resources(&package).unwrap().as_deref(),
-        )
-        .unwrap();
-        assert_eq!(asset_overlay(&loaded, None), Some(project.assets()));
-        let explicit = root.join("overrides");
+        let overlay = |path: &Path, explicit| {
+            load(path, explicit, std::env::consts::OS.into())
+                .unwrap()
+                .1
+                .asset_overlay
+        };
+        assert_eq!(overlay(&package, None), Some(project.assets()));
+        let standalone = temporary.path().join("single.asb");
+        fs::copy(&package, &standalone).unwrap();
         assert_eq!(
-            asset_overlay(&loaded, Some(explicit.clone())),
-            Some(explicit.clone())
+            overlay(&standalone, None),
+            Some(temporary.path().canonicalize().unwrap().join("resources"))
         );
         let options = crate::distribution::ExportOptions {
             output: root.join("build/export/debug"),
@@ -193,30 +181,17 @@ mod tests {
             runtime: None,
         };
         crate::distribution::export(&project, &artifact, &options).unwrap();
-        let loaded = reel_player::distribution::load(
-            &options.output.join("game.asb"),
-            Some(&project.assets()),
-        )
-        .unwrap();
-        assert_eq!(asset_overlay(&loaded, None), loaded.loose);
-        assert_ne!(asset_overlay(&loaded, None), Some(project.assets()));
+        let exported = options.output.join("game.asb");
         assert_eq!(
-            asset_overlay(&loaded, Some(explicit.clone())),
-            Some(explicit)
+            overlay(&exported, None),
+            Some(options.output.canonicalize().unwrap().join("resources"))
         );
-    }
-
-    #[test]
-    fn standalone_raw_asb_uses_its_adjacent_resources_directory() {
-        let temporary = temporary();
-        let checked = crate::check("fn main() { 1 }", "single.aside").unwrap();
-        let artifact = crate::build(&checked, Some("main::main")).unwrap();
-        let package = temporary.path().join("single.asb");
-        fs::write(&package, &artifact.bytes).unwrap();
-        let loaded = reel_player::distribution::load(&package, None).unwrap();
-        assert_eq!(
-            asset_overlay(&loaded, None),
-            Some(loaded.root.join("resources"))
-        );
+        let explicit = root.join("overrides");
+        for path in [&package, &exported] {
+            assert_eq!(
+                overlay(path, Some(explicit.clone())),
+                Some(explicit.clone())
+            );
+        }
     }
 }

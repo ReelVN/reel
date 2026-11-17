@@ -129,7 +129,7 @@ impl EffectProducts {
             .iter()
             .take_while(|binding| binding.function == function)
             .find(|binding| binding.mask.is_none())?;
-        self.definition(binding.definition)
+        self.by_id(binding.definition)
     }
     /// Definitions in lexicographic content-id order, shared by every binding.
     pub fn definitions(&self) -> impl ExactSizeIterator<Item = &Arc<EffectDefinition>> {
@@ -165,17 +165,23 @@ impl EffectProducts {
         &self,
         mask: &reel_ui::stage::MaskProgram,
     ) -> Option<&Arc<EffectDefinition>> {
-        let binding = self.bindings.iter().find(|binding| {
+        self.by_id(self.mask_binding(mask)?.definition)
+    }
+
+    fn mask_binding(&self, mask: &reel_ui::stage::MaskProgram) -> Option<&EffectBinding> {
+        self.bindings.iter().find(|binding| {
             binding.mask.as_ref().is_some_and(|template| {
                 template.operations() == mask.operations()
                     && template.sources().len() == mask.sources().len()
             })
-        })?;
-        self.definition(binding.definition)
+        })
     }
     /// Resolve a definition already retained by an accepted mask instance.
     pub fn by_id(&self, id: EffectDefinitionId) -> Option<&Arc<EffectDefinition>> {
-        self.definition(id)
+        self.definitions
+            .binary_search_by_key(&id, |definition| definition.id)
+            .ok()
+            .map(|index| &self.definitions[index])
     }
 
     /// Whether this source/package has no compiled effect functions.
@@ -212,12 +218,6 @@ impl EffectProducts {
                 })
                 .sum::<usize>()
     }
-    fn definition(&self, id: EffectDefinitionId) -> Option<&Arc<EffectDefinition>> {
-        self.definitions
-            .binary_search_by_key(&id, |definition| definition.id)
-            .ok()
-            .map(|index| &self.definitions[index])
-    }
     fn bind(
         &mut self,
         program: &bc::VerifiedProgram,
@@ -225,29 +225,26 @@ impl EffectProducts {
         definition: EffectDefinitionId,
         mask: Option<Arc<reel_ui::stage::MaskProgram>>,
     ) -> Result<(), EffectProductError> {
+        let index = self
+            .bindings
+            .partition_point(|binding| binding.function <= function);
         if mask.is_none()
-            && self
-                .bindings
+            && self.bindings[..index]
                 .iter()
-                .any(|binding| binding.function == function && binding.mask.is_none())
+                .rev()
+                .take_while(|binding| binding.function == function)
+                .any(|binding| binding.mask.is_none())
         {
             return Err(EffectProductError(
                 "duplicate effect function binding".into(),
             ));
         }
-        if let Some(mask) = &mask
-            && self.bindings.iter().any(|binding| {
-                binding.mask.as_ref().is_some_and(|other| {
-                    other.operations() == mask.operations()
-                        && other.sources().len() == mask.sources().len()
-                })
-            })
+        if mask
+            .as_ref()
+            .is_some_and(|mask| self.mask_binding(mask).is_some())
         {
             return Ok(());
         }
-        let index = self
-            .bindings
-            .partition_point(|binding| binding.function <= function);
         self.bindings
             .try_reserve(1)
             .map_err(|error| EffectProductError(error.to_string()))?;
@@ -357,11 +354,11 @@ impl EffectProducts {
                     "effect function must be plain, unbound and in its declared module".into(),
                 ));
             }
-            let Some(effect) = products.definition(definition) else {
+            let Some(effect) = products.by_id(definition) else {
                 return Err(EffectProductError("effect definition is missing".into()));
             };
-            if let Some(mask) = &mask {
-                let lowered = reel_ui::stage::effect::lower_mask(mask)
+            if let Some(mask) = mask {
+                let lowered = reel_ui::stage::effect::lower_mask(&mask)
                     .ok_or_else(|| EffectProductError("unsupported static mask template".into()))?;
                 if lowered.as_ref() != effect.program.as_ref() {
                     return Err(EffectProductError(
@@ -372,7 +369,7 @@ impl EffectProducts {
                     function,
                     definition,
                     origin: EffectOrigin::from_function(program, function),
-                    mask: Some(mask.clone()),
+                    mask: Some(mask),
                 });
                 continue;
             }
@@ -387,20 +384,14 @@ impl EffectProducts {
             }
             let package = program.package();
             let mut numeric = effect.program.parameters().iter();
-            let mut textures = effect.program.textures().iter();
+            let mut textures = effect.program.textures().iter().peekable();
             for parameter in signature.parameters.iter().skip(1) {
                 let name = package.symbols[parameter.name.index()].as_str();
-                let valid = if let Some(texture) = effect
-                    .program
-                    .textures()
-                    .iter()
-                    .find(|texture| texture.name.as_ref() == name)
+                let valid = if textures
+                    .next_if(|texture| texture.name.as_ref() == name)
+                    .is_some()
                 {
-                    let ordered = textures
-                        .next()
-                        .is_some_and(|next| next.name == texture.name);
-                    ordered
-                        && parameter.default.is_none()
+                    parameter.default.is_none()
                         && matches!(&package.types[parameter.ty.index()], bc::TypeDef::Named { name, .. } if matches!(package.symbols[name.index()].as_str(), "Texture" | "reel::types::Texture"))
                 } else {
                     numeric.next().is_some_and(|effect| {

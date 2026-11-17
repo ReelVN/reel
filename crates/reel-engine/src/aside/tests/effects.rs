@@ -144,15 +144,17 @@ fn opening() {
 fn texture_parameters_and_scalar_masks_update_in_source_and_asb() {
     let code = r##"
 use reel::types::{Fragment, Texture};
-fn channel(pixel: Fragment, ink: Texture, amount: float = 0.5) -> float {
+fn channel(pixel: Fragment, ink: Texture, gain: float, paper: Texture, amount: float = 0.5) -> float {
     let (r, g, b, a) = ink.sample(pixel.uv);
     if amount > 0.5 { return ink.gray(pixel.uv) * a; }
-    ink.alpha(pixel.uv) * amount
+    ink.alpha(pixel.uv) * amount * gain * paper.alpha(pixel.uv)
 }
 fn color(pixel: Fragment) -> (float, float, float, float) { (1.0, 0.0, 0.0, 1.0) }
 fn opening() {
     let state = model({ink: texture("mask-a.png"), amount: 0.25});
-    let paint = effect(channel, params: {ink: bind(state.ink), amount: bind(state.amount)});
+    let paint = effect(channel, params: {
+        ink: bind(state.ink), gain: 1.0, paper: texture("paper.png"), amount: bind(state.amount),
+    });
     let node = stack(width: 64, height: 64, mask: paint);
     stage.replace(node);
     narrator("first");
@@ -182,13 +184,24 @@ fn opening() {
         };
         let first = mask(&vm);
         assert_eq!(first.textures()[0].as_ref(), "mask-a.png");
-        assert_eq!(first.values(), &[EffectValue::Float(0.25_f32.to_bits())]);
-        assert_eq!(first.program().parameters().len(), 1);
-        assert_eq!(first.program().textures()[0].name.as_ref(), "ink");
+        assert_eq!(first.textures()[1].as_ref(), "paper.png");
+        assert_eq!(
+            first.values(),
+            &[
+                EffectValue::Float(1.0_f32.to_bits()),
+                EffectValue::Float(0.25_f32.to_bits())
+            ]
+        );
         advance(&mut vm, &mut session);
         let second = mask(&vm);
         assert_eq!(second.textures()[0].as_ref(), "mask-b.reel-texture");
-        assert_eq!(second.values(), &[EffectValue::Float(0.75_f32.to_bits())]);
+        assert_eq!(
+            second.values(),
+            &[
+                EffectValue::Float(1.0_f32.to_bits()),
+                EffectValue::Float(0.75_f32.to_bits())
+            ]
+        );
         assert!(Arc::ptr_eq(first.program(), second.program()));
         assert_eq!(
             first.textures()[0].as_ref(),

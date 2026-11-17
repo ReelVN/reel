@@ -31,15 +31,15 @@ pub fn story_from_package(
     let (program, metadata, products, resume) = package.into_parts();
     let bindings = products
         .bindings
-        .iter()
+        .into_iter()
         .map(|binding| {
             (
                 bc::ModuleId(binding.module),
                 bc::FunctionId(binding.function),
                 products.definitions[binding.definition as usize].id,
-                match &binding.kind {
+                match binding.kind {
                     reel_package::EffectBindingKind::Function => None,
-                    reel_package::EffectBindingKind::MaskTemplate { key } => Some(key.clone()),
+                    reel_package::EffectBindingKind::MaskTemplate { key } => Some(key),
                 },
             )
         })

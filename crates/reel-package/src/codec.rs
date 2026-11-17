@@ -36,7 +36,9 @@ pub fn encode(
         ErrorKind::Limit,
         "B01 byte budget exceeded",
     )?;
-    metadata.validate(encoded.program(), bytecode, limits, &mut budget)?;
+    budget.charge(bytecode.len())?;
+    let bytecode_hash = blake3::hash(bytecode);
+    metadata.validate(encoded.program(), bytecode_hash, limits, &mut budget)?;
     effects.validate(encoded.program(), limits, &mut budget)?;
     verify_resume(encoded.program(), resume.clone(), host_types, limits)?;
     let resume_bytes = if resume.is_empty() {
@@ -62,21 +64,26 @@ pub fn encode(
         .transpose()?;
     let distribution_bytes = distribution.as_deref().unwrap_or_default();
     budget.charge(distribution_bytes.len())?;
-    let section_count = 2
-        + usize::from(distribution.is_some())
-        + usize::from(!effect_bytes.is_empty())
-        + usize::from(!resume_bytes.is_empty());
+    let sections = [
+        (B01, bytecode),
+        (METADATA, json.as_slice()),
+        (DISTRIBUTION, distribution_bytes),
+        (EFFECTS, effect_bytes.as_slice()),
+        (RESUME, resume_bytes.as_slice()),
+    ]
+    .into_iter()
+    .filter(|(_, bytes)| !bytes.is_empty());
+    let section_count = sections.clone().count();
     require(
         limits.max_sections >= section_count,
         ErrorKind::Limit,
         "section count budget exceeded",
     )?;
-    let index_offset = HEADER_LEN
-        .checked_add(bytecode.len())
-        .and_then(|n| n.checked_add(json.len()))
-        .and_then(|n| n.checked_add(distribution_bytes.len()))
-        .and_then(|n| n.checked_add(effect_bytes.len()))
-        .and_then(|n| n.checked_add(resume_bytes.len()))
+    let index_offset = sections
+        .clone()
+        .try_fold(HEADER_LEN, |offset, (_, bytes)| {
+            offset.checked_add(bytes.len())
+        })
         .ok_or_else(|| Error::new(ErrorKind::Limit, "container size overflow"))?;
     let total = index_offset
         .checked_add(section_count * INDEX_ENTRY_LEN)
@@ -91,40 +98,18 @@ pub fn encode(
     out.try_reserve_exact(total)
         .map_err(|e| Error::new(ErrorKind::Limit, e.to_string()))?;
     out.resize(HEADER_LEN, 0);
-    out.extend_from_slice(bytecode);
-    out.extend_from_slice(&json);
-    out.extend_from_slice(distribution_bytes);
-    out.extend_from_slice(&effect_bytes);
-    out.extend_from_slice(&resume_bytes);
-    index_entry(&mut out, B01, HEADER_LEN, bytecode);
-    index_entry(&mut out, METADATA, HEADER_LEN + bytecode.len(), &json);
-    if distribution.is_some() {
-        index_entry(
-            &mut out,
-            DISTRIBUTION,
-            HEADER_LEN + bytecode.len() + json.len(),
-            distribution_bytes,
-        );
+    for (_, bytes) in sections.clone() {
+        out.extend_from_slice(bytes);
     }
-    if !effect_bytes.is_empty() {
-        index_entry(
-            &mut out,
-            EFFECTS,
-            HEADER_LEN + bytecode.len() + json.len() + distribution_bytes.len(),
-            &effect_bytes,
-        );
-    }
-    if !resume_bytes.is_empty() {
-        index_entry(
-            &mut out,
-            RESUME,
-            HEADER_LEN
-                + bytecode.len()
-                + json.len()
-                + distribution_bytes.len()
-                + effect_bytes.len(),
-            &resume_bytes,
-        );
+    let mut offset = HEADER_LEN;
+    for (kind, bytes) in sections {
+        let hash = if kind == B01 {
+            bytecode_hash
+        } else {
+            blake3::hash(bytes)
+        };
+        index_entry(&mut out, kind, offset, bytes.len(), hash);
+        offset += bytes.len();
     }
     out[..8].copy_from_slice(MAGIC);
     out[8..10].copy_from_slice(&VERSION.to_le_bytes());
@@ -148,12 +133,12 @@ fn json_bytes(value: &impl serde::Serialize, limits: Limits) -> Result<Vec<u8>, 
     Ok(writer.bytes)
 }
 
-fn index_entry(out: &mut Vec<u8>, kind: u32, offset: usize, bytes: &[u8]) {
+fn index_entry(out: &mut Vec<u8>, kind: u32, offset: usize, length: usize, hash: blake3::Hash) {
     out.extend_from_slice(&kind.to_le_bytes());
     out.extend_from_slice(&REQUIRED.to_le_bytes());
     out.extend_from_slice(&(offset as u64).to_le_bytes());
-    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-    out.extend_from_slice(blake3::hash(bytes).as_bytes());
+    out.extend_from_slice(&(length as u64).to_le_bytes());
+    out.extend_from_slice(hash.as_bytes());
 }
 
 /// Bounded static validation only. Unknown optional sections are hash-checked
@@ -171,7 +156,11 @@ pub fn decode(
     for section in &sections {
         check_digest(&input[section.range.clone()], &section.digest)?;
     }
-    let b01 = payload(input, &sections, B01).expect("required B01");
+    let code = sections
+        .iter()
+        .find(|section| section.kind == B01)
+        .expect("required B01");
+    let b01 = &input[code.range.clone()];
     let json = payload(input, &sections, METADATA).expect("required metadata");
     let metadata: Metadata = decode_json(json, limits, &mut budget)?;
     let distribution = payload(input, &sections, DISTRIBUTION)
@@ -179,7 +168,8 @@ pub fn decode(
         .transpose()?;
     let program = bc::VerifiedProgram::decode(b01, limits.bytecode)
         .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
-    metadata.validate(&program, b01, limits, &mut budget)?;
+    budget.charge(b01.len())?;
+    metadata.validate(&program, code.digest.into(), limits, &mut budget)?;
     let effects = payload(input, &sections, EFFECTS)
         .map(|bytes| EffectProducts::decode(bytes, limits, &mut budget))
         .transpose()?

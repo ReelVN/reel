@@ -23,7 +23,7 @@ impl Metadata {
     pub(crate) fn validate(
         &self,
         program: &bc::VerifiedProgram,
-        bytes: &[u8],
+        bytecode_hash: blake3::Hash,
         limits: Limits,
         budget: &mut Budget,
     ) -> Result<(), Error> {
@@ -34,9 +34,8 @@ impl Metadata {
             ErrorKind::Version,
             "unsupported metadata schema",
         )?;
-        budget.charge(bytes.len())?;
         require(
-            self.bytecode_blake3 == digest(bytes),
+            self.bytecode_blake3 == bytecode_hash.to_hex().as_str(),
             ErrorKind::Integrity,
             "metadata refers to different bytecode",
         )?;
