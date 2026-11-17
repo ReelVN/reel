@@ -4,6 +4,21 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+## 0.3.14 — 2026-11-18
+
+### Changed
+
+- Assemble the final ASB directly from the compiled program and prepared resource manifest during builds and exports.
+
+### Fixed
+
+- Wake desktop playback for gamepad input and background work without redrawing an unchanged scene.
+- Exit desktop playback as soon as session cleanup finishes, even with a pending wake deadline.
+- Complete public exports after a module separator inside a grouped Aside import.
+- Identify the native function and missing parameter when a compiled game uses an older host signature.
+
+## 0.3.13 — 2026-11-17
+
 ### Added
 
 - Capture frame timings and source diagnostics while reproducing an issue in a desktop development session.
