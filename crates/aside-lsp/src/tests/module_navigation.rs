@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn root_module_exports_navigate_to_the_open_mod_file() {
+    let (_project, root) = project_sources();
+    let main = file_uri(&root.join("main.aside")).unwrap();
+    let module = file_uri(&root.join("mod.aside")).unwrap();
+    let source = "use game::answer; fn main(){answer();}";
+    let mut workspace = Workspace::new(project_options());
+    workspace
+        .open(module.clone(), 1, "pub fn answer(){42}".into())
+        .unwrap();
+    workspace.open(main.clone(), 1, source.into()).unwrap();
+    let diagnostics = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
+    assert!(
+        diagnostics.iter().all(|file| file.diagnostics.is_empty()),
+        "{diagnostics:?}"
+    );
+    let target = workspace
+        .definition(&main, position(source, "answer();", false), Encoding::Utf16)
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.uri, module);
+}
+
+#[test]
 fn source_prefixes_browse_real_files_and_one_directory_level_with_unsaved_children() {
     let (_project, root) = project_sources();
     std::fs::create_dir_all(root.join("ui/unrelated/deep")).unwrap();

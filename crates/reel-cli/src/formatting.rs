@@ -2,7 +2,6 @@
 use aside_compiler::{FormatError, semantic::SourceModule};
 use reel_cli::{Failure, ReportedDiagnostic};
 use std::{
-    fs,
     io::{self, Write},
     path::{Path, PathBuf},
 };
@@ -10,30 +9,6 @@ use std::{
 struct Change {
     path: PathBuf,
     text: String,
-}
-
-fn collect(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            collect(&entry.path(), files)?;
-        } else if kind.is_file() {
-            if entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "aside")
-            {
-                files.push(entry.path());
-            }
-        } else {
-            return Err(io::Error::other(format!(
-                "formatting requires regular source files and directories: {}",
-                entry.path().display()
-            )));
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn run(check: bool) -> io::Result<u8> {
@@ -44,12 +19,13 @@ pub(super) fn run(check: bool) -> io::Result<u8> {
             return Ok(2);
         }
     };
-    let mut files = Vec::new();
-    if let Err(error) = collect(&project.root.join("src"), &mut files) {
-        super::failure(false, "input", project.root.to_str(), &error.to_string())?;
-        return Ok(2);
-    }
-    files.sort();
+    let files = match reel_cli::project::source_files(&project.root) {
+        Ok(files) => files,
+        Err(error) => {
+            super::failure(false, "input", project.root.to_str(), &error.to_string())?;
+            return Ok(2);
+        }
+    };
     let mut changes = Vec::new();
     for path in &files {
         let label = path.strip_prefix(&project.root).unwrap().to_string_lossy();

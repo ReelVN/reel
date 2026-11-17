@@ -505,14 +505,15 @@ impl MemoryResolver {
             .collect()
     }
 }
-pub fn canonical_import<'a>(
-    request: &'a ImportRequest,
+/// Resolve the longest matching module alias and preserve the remaining path.
+pub fn canonical_module_path<'a>(
+    path: &'a [String],
     aliases: &BTreeMap<String, String>,
-) -> std::borrow::Cow<'a, ImportRequest> {
+) -> std::borrow::Cow<'a, [String]> {
     if aliases.is_empty() {
-        return std::borrow::Cow::Borrowed(request);
+        return std::borrow::Cow::Borrowed(path);
     }
-    let full = request.path.join("::");
+    let full = path.join("::");
     let mut end = full.len();
     loop {
         if let Some(canonical) = aliases
@@ -520,11 +521,10 @@ pub fn canonical_import<'a>(
             .filter(|canonical| *canonical != &full[..end])
         {
             let prefix = full[..end].split("::").count();
-            let mut normalized = request.clone();
-            normalized.path = canonical
+            let normalized = canonical
                 .split("::")
                 .map(str::to_owned)
-                .chain(request.path[prefix..].iter().cloned())
+                .chain(path[prefix..].iter().cloned())
                 .collect();
             return std::borrow::Cow::Owned(normalized);
         }
@@ -533,7 +533,22 @@ pub fn canonical_import<'a>(
         };
         end = prefix;
     }
-    std::borrow::Cow::Borrowed(request)
+    std::borrow::Cow::Borrowed(path)
+}
+
+/// Apply module aliases to an import while retaining its origin and import kind.
+pub fn canonical_import<'a>(
+    request: &'a ImportRequest,
+    aliases: &BTreeMap<String, String>,
+) -> std::borrow::Cow<'a, ImportRequest> {
+    match canonical_module_path(&request.path, aliases) {
+        std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(request),
+        std::borrow::Cow::Owned(path) => std::borrow::Cow::Owned(ImportRequest {
+            from: request.from.clone(),
+            kind: request.kind,
+            path,
+        }),
+    }
 }
 impl ModuleResolver for MemoryResolver {
     fn canonical_request<'a>(

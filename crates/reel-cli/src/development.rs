@@ -24,30 +24,6 @@ pub struct Cache {
     target: String,
 }
 
-fn collect(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in walkdir::WalkDir::new(directory).min_depth(1) {
-        let entry = entry?;
-        let kind = entry.file_type();
-        if kind.is_dir() {
-            continue;
-        } else if kind.is_file() {
-            if entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "aside")
-            {
-                files.push(entry.into_path());
-            }
-        } else {
-            // The ordinary loader still handles projects outside this cache's file model.
-            return Err(io::Error::other(
-                "source cache requires regular files and directories",
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
     let mut file = fs::File::open(path)?;
     let mut hash = blake3::Hasher::new();
@@ -56,9 +32,7 @@ fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
 }
 
 fn fingerprint(root: &Path, tool: &Path, target: &str) -> io::Result<String> {
-    let mut files = Vec::new();
-    collect(&root.join("src"), &mut files)?;
-    files.sort();
+    let files = project::source_files(root)?;
     let mut hash = blake3::Hasher::new();
     hash.update(b"Reel development cache v1\0");
     hash.update(&(target.len() as u64).to_le_bytes());
@@ -97,11 +71,6 @@ impl Cache {
             key,
             target: target.into(),
         })
-    }
-
-    /// Loose assets remain live across source-cache hits.
-    pub fn assets(&self) -> PathBuf {
-        self.root.join("resources")
     }
 
     /// A stale or incomplete cache is rebuilt through the ordinary compiler.
@@ -210,10 +179,6 @@ mod tests {
         let other = Cache::with_tool(dir.path(), cache.tool.clone(), "vita").unwrap();
         assert_ne!(other.key, cache.key);
         assert!(other.read().is_none());
-        assert_eq!(
-            next.assets(),
-            dir.path().canonicalize().unwrap().join("resources")
-        );
     }
 
     #[test]

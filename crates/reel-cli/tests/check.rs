@@ -2,40 +2,25 @@
 use serde_json::Value;
 use std::{
     fs,
-    path::PathBuf,
     process::{Command, Output},
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
 struct Case {
-    dir: PathBuf,
+    dir: tempfile::TempDir,
 }
 impl Case {
     fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/reel-artifacts/cli-tests");
-        fs::create_dir_all(&root).unwrap();
-        let dir = root.join(format!(
-            "{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(dir.join("src")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
         Self { dir }
     }
     fn run(&self, source: &[u8], format: &str) -> Output {
-        fs::write(self.dir.join("src/main.aside"), source).unwrap();
+        fs::write(self.dir.path().join("src/main.aside"), source).unwrap();
         Command::new(env!("CARGO_BIN_EXE_reel"))
-            .current_dir(&self.dir)
+            .current_dir(self.dir.path())
             .args(["check", "--format", format])
             .output()
             .unwrap()
-    }
-}
-impl Drop for Case {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.dir).unwrap();
     }
 }
 
@@ -55,7 +40,7 @@ fn check_never_executes_an_infinite_loop_and_writes_no_artifacts() {
     assert_eq!(report["runtime_admitted"], false);
     assert_eq!(report["release_package"], false);
     assert_eq!(report["entry"]["kind"], "project-initializer");
-    assert_eq!(fs::read_dir(&case.dir).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(case.dir.path()).unwrap().count(), 1);
 }
 
 #[test]
@@ -116,7 +101,7 @@ fn usage_io_and_invalid_utf8_are_machine_readable() {
         vec!["check", "src/main.aside", "extra.aside", "--format", "json"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-            .current_dir(&case.dir)
+            .current_dir(case.dir.path())
             .args(args)
             .output()
             .unwrap();
@@ -129,7 +114,7 @@ fn usage_io_and_invalid_utf8_are_machine_readable() {
 fn source_input_rejects_directories() {
     let case = Case::new();
     assert_eq!(
-        reel_cli::read_source(&case.dir).unwrap_err().code,
+        reel_cli::read_source(case.dir.path()).unwrap_err().code,
         "REEL-INPUT-FILE"
     );
 }
@@ -159,9 +144,9 @@ fn compiler_related_locations_and_fixes_survive_json_rendering() {
 #[test]
 fn option_terminator_help_and_duplicate_options() {
     let case = Case::new();
-    fs::write(case.dir.join("-source.aside"), "let value = 1;").unwrap();
+    fs::write(case.dir.path().join("-source.aside"), "let value = 1;").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-        .current_dir(&case.dir)
+        .current_dir(case.dir.path())
         .args(["check", "--help"])
         .output()
         .unwrap();
@@ -171,7 +156,7 @@ fn option_terminator_help_and_duplicate_options() {
         String::from_utf8_lossy(&output.stderr)
     );
     let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-        .current_dir(&case.dir)
+        .current_dir(case.dir.path())
         .args(["check", "--", "--format", "json"])
         .output()
         .unwrap();
@@ -183,7 +168,7 @@ fn option_terminator_help_and_duplicate_options() {
             .contains("unexpected argument '--format'")
     );
     let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-        .current_dir(&case.dir)
+        .current_dir(case.dir.path())
         .args(["check", "--format", "json", "--format", "human"])
         .output()
         .unwrap();
@@ -224,10 +209,13 @@ fn source_larger_than_old_cli_and_string_caps_passes_the_shared_pipeline() {
 fn rejects_non_utf8_paths_and_special_files_without_opening_them() {
     use std::os::unix::{ffi::OsStringExt, net::UnixListener};
     let case = Case::new();
-    let path = case.dir.join(std::ffi::OsString::from_vec(vec![0xff]));
+    let path = case
+        .dir
+        .path()
+        .join(std::ffi::OsString::from_vec(vec![0xff]));
     fs::write(&path, "let value = 1;").unwrap();
     assert_eq!(reel_cli::read_source(&path).unwrap(), "let value = 1;");
-    let socket = case.dir.join("socket.aside");
+    let socket = case.dir.path().join("socket.aside");
     let _listener = UnixListener::bind(&socket).unwrap();
     assert_eq!(
         reel_cli::read_source(&socket).unwrap_err().code,

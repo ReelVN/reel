@@ -2,7 +2,7 @@
 use super::{Checked, Failure, ReportedDiagnostic, error, read_source};
 use aside_compiler::{
     DiagnosticCode, TextRange,
-    semantic::{self, ImportKind, ImportRequest, SourceModule},
+    semantic::{self, ImportKind, SourceModule, canonical_module_path},
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -17,6 +17,29 @@ pub const ENTRY: &str = "main::main";
 pub struct Location {
     pub root: PathBuf,
     pub input: PathBuf,
+}
+
+/// List every Aside file in the project's source tree in stable path order.
+/// Formatting and cache invalidation include modules outside the entry's import graph.
+pub fn source_files(project_root: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(project_root.join("src")).min_depth(1) {
+        let entry = entry?;
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            return Err(io::Error::other(format!(
+                "expected a regular source file or directory: {}",
+                entry.path().display()
+            )));
+        }
+        if entry.path().extension().is_some_and(|ext| ext == "aside") {
+            files.push(entry.into_path());
+        }
+    }
+    files.sort_unstable();
+    Ok(files)
 }
 
 /// Find `src/main.aside` in this directory or an ancestor, without scanning trees.
@@ -89,18 +112,6 @@ fn failure(
         sources,
         input_error: None,
     }
-}
-fn canonical(path: &[String], aliases: &BTreeMap<String, String>) -> Vec<String> {
-    semantic::canonical_import(
-        &ImportRequest {
-            from: String::new(),
-            path: path.to_vec(),
-            kind: ImportKind::NamespaceOrSymbol,
-        },
-        aliases,
-    )
-    .path
-    .clone()
 }
 fn module_file(path: &[String], root: &Path, input: &Path) -> Option<PathBuf> {
     if path == ["main"] {
@@ -198,7 +209,7 @@ pub fn load_with_progress(
     let mut logical = std::collections::BTreeSet::new();
     let mut total_bytes = 0usize;
     while let Some((path, origin)) = pending.pop_front() {
-        let path = canonical(&path, &aliases);
+        let path = canonical_module_path(&path, &aliases);
         let name = path.join("::");
         if logical.contains(&name) {
             continue;
@@ -232,7 +243,11 @@ pub fn load_with_progress(
                     sources.clone(),
                 )
             })?;
-            let label = "src/".to_owned() + &path[1..].join("/") + ".aside";
+            let label = file
+                .strip_prefix(&location.root)
+                .expect("project source")
+                .to_string_lossy()
+                .replace('\\', "/");
             SourceModule {
                 canonical_path: name.clone(),
                 source_path: Some(label),
@@ -295,10 +310,10 @@ pub fn load_with_progress(
                     .entry(first.clone())
                     .or_insert_with(|| format!("game::{first}"));
             }
-            let requested = canonical(&request.path, &aliases);
+            let requested = canonical_module_path(&request.path, &aliases);
             let mut found = false;
             for candidate in [
-                (request.kind != ImportKind::Symbol).then_some(requested.as_slice()),
+                (request.kind != ImportKind::Symbol).then_some(requested.as_ref()),
                 (request.kind != ImportKind::Wildcard && requested.len() > 1)
                     .then_some(&requested[..requested.len() - 1]),
             ]

@@ -10,7 +10,7 @@ use reel_cli::{BuildProfile, diagnostic_json, package_limits_json, prepare_build
 use serde_json::{Value, json};
 use std::{
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     process::ExitCode,
 };
 fn report_json(value: &Value) -> io::Result<()> {
@@ -106,28 +106,12 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
         if let Some(cache) = &cache
             && let Some(story) = cache.read()
         {
-            progress.phase("Preparing resources");
-            let (assets, resource_files) = match reel_cli::playback::prepare_story_assets(
-                cache.project_root(),
-                args.playback.assets.clone(),
-                &args.playback.resource_target,
-                &story.effects,
-            ) {
-                Ok(resources) => resources,
-                Err(error) => {
-                    progress.stop();
-                    failure(false, "resources", None, &error.to_string())?;
-                    return Ok(1);
-                }
-            };
-            progress.finish("Using cached code; starting game");
-            return launch(
+            return launch_development(
                 story,
-                assets,
-                args.playback.save_directory.clone(),
-                args.playback.resource_target.clone(),
-                resource_files,
-                path,
+                cache.project_root(),
+                &args.playback,
+                &mut progress,
+                "Using cached code; starting game",
             );
         }
         cache
@@ -402,32 +386,11 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 progress.stop();
                 writeln!(io::stderr().lock(), "warning: compilation cache: {error}")?;
             }
-            progress.phase("Preparing resources");
-            let (assets, resource_files) = match reel_cli::playback::prepare_story_assets(
-                &loaded.project_root,
-                args.playback.assets,
-                &args.playback.resource_target,
-                &checked.effects,
-            ) {
-                Ok(resources) => resources,
-                Err(error) => {
-                    progress.stop();
-                    failure(false, "resources", None, &error.to_string())?;
-                    return Ok(1);
-                }
-            };
             match reel_cli::into_story(checked, entry) {
                 Ok(story) => {
+                    let root = loaded.project_root.clone();
                     drop(loaded);
-                    progress.finish("Starting game");
-                    launch(
-                        story,
-                        assets,
-                        args.playback.save_directory,
-                        args.playback.resource_target,
-                        resource_files,
-                        path,
-                    )
+                    launch_development(story, &root, &args.playback, &mut progress, "Starting game")
                 }
                 Err(error) => {
                     progress.stop();
@@ -626,24 +589,37 @@ fn source_error(
     Ok(1)
 }
 
-fn launch(
+fn launch_development(
     story: reel_engine::aside::source::CompiledStory,
-    assets: PathBuf,
-    save_directory: Option<PathBuf>,
-    resource_target: String,
-    resource_files: Option<std::collections::BTreeMap<String, PathBuf>>,
-    path: &str,
+    project: &Path,
+    playback: &commands::Playback,
+    progress: &mut progress::Progress,
+    status: &str,
 ) -> io::Result<u8> {
+    progress.phase("Preparing resources");
+    let (assets, resource_files) = match reel_cli::playback::prepare_story_assets(
+        project,
+        playback.assets.clone(),
+        &playback.resource_target,
+        &story.effects,
+    ) {
+        Ok(resources) => resources,
+        Err(error) => {
+            progress.stop();
+            failure(false, "resources", None, &error.to_string())?;
+            return Ok(1);
+        }
+    };
     let mut options = reel_player::player::PlayerOptions::default();
     options.assets.root = assets;
-    options.save_directory = save_directory;
-    options.resource_target = resource_target;
+    options.save_directory = playback.save_directory.clone();
+    options.resource_target = playback.resource_target.clone();
     options.resource_files = resource_files;
-    let result = reel_cli::playback::launch(story, options);
-    match result {
+    progress.finish(status);
+    match reel_cli::playback::launch(story, options) {
         Ok(()) => Ok(0),
         Err(message) => {
-            failure(false, "player", Some(path), &message)?;
+            failure(false, "player", Some("src/main.aside"), &message)?;
             Ok(1)
         }
     }

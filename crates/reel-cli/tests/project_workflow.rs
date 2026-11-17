@@ -552,51 +552,14 @@ fn project_commands_prepare_inline_languages_and_preserve_older_builds() {
 
 mod projects {
     //! Real filesystem projects share compilation, ASB execution and source diagnostics.
+    use super::{command, temporary, write};
     use reel_engine::{
         Epoch, Session, SessionId,
         aside::{RunOutcome, SessionStep, SessionVm, SliceBudget, VmLimits},
     };
     use serde_json::Value;
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        process::Command,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use std::{fs, path::Path};
 
-    struct Case {
-        dir: PathBuf,
-    }
-    impl Case {
-        fn new() -> Self {
-            static NEXT: AtomicUsize = AtomicUsize::new(0);
-            let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/reel-artifacts/project-tests")
-                .join(format!(
-                    "{}-{}",
-                    std::process::id(),
-                    NEXT.fetch_add(1, Ordering::Relaxed)
-                ));
-            fs::create_dir_all(&dir).unwrap();
-            Self { dir }
-        }
-        fn write(&self, path: &str, value: &str) {
-            let path = self.dir.join(if path.ends_with(".aside") {
-                PathBuf::from("src").join(path)
-            } else {
-                PathBuf::from(path)
-            });
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, value).unwrap();
-        }
-        fn command(&self, args: &[&str]) -> std::process::Output {
-            Command::new(env!("CARGO_BIN_EXE_reel"))
-                .current_dir(&self.dir)
-                .args(args)
-                .output()
-                .unwrap()
-        }
-    }
     fn execute(
         story: reel_engine::aside::source::CompiledStory,
     ) -> (bool, reel_engine::aside::GameSettings) {
@@ -644,14 +607,38 @@ mod projects {
 
     #[test]
     fn copied_source_aliases_share_module_state_and_code_runs_after_moving_the_artifact() {
-        let case = Case::new();
-        case.write(
-        "library/data.aside",
-        "pub use reel::prelude::text as label; use std::random; pub let model={value:0}; pub fn bump(){model.value+=random(seed: 42).int(1,2);}",
-    );
-        case.write("main.aside", "use library::data as a; use game::library::data as b; use game::main as entry; pub let project={}; fn main(){if entry.project!=project {throw \"entry identity\";}game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
-        let loaded = reel_cli::project::load(&case.dir)
-            .unwrap_or_else(|error| panic!("{:?}", error.failure));
+        let project = temporary();
+        let root = project.path();
+        write(
+            root,
+            "src/library/data.aside",
+            r#"pub use reel::prelude::text as label;
+use std::random;
+pub let model = {value: 0};
+pub fn bump() { model.value += random(seed: 42).int(1, 2); }"#,
+        );
+        write(
+            root,
+            "src/main.aside",
+            r#"use library::data as a;
+use game::library::data as b;
+use game::main as entry;
+pub let project = {};
+fn main() {
+    if entry.project != project { throw "entry identity"; }
+    game.configure(title: "窗" + "边", width: 400 * 2, height: 600, fonts: ["body.ttf", "cjk.ttf"]);
+    let label = text("Title", font: "serif");
+    label.font = "sans-serif, system-ui";
+    if label.font != "sans-serif, system-ui" { throw "font"; }
+    a.bump();
+    b.bump();
+    if a.model != b.model { throw "identity"; }
+    if a.label != text { throw "native identity"; }
+    a.model.value == 2
+}"#,
+        );
+        let loaded =
+            reel_cli::project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
         assert_eq!(loaded.sources.len(), 2);
         let checked = loaded.check().unwrap();
         let (result, settings) =
@@ -660,16 +647,19 @@ mod projects {
         assert_eq!(settings.title, "窗边");
         assert_eq!(settings.canvas_size, Some([800, 600]));
         assert_eq!(settings.fonts, ["body.ttf", "cjk.ttf"]);
-        let output = case.command(&["build", "--output", "project.asb", "--format", "json"]);
+        let output = command(
+            root,
+            &["build", "--output", "project.asb", "--format", "json"],
+        );
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-        let destination = case.dir.join("moved");
+        let destination = root.join("moved");
         fs::create_dir_all(&destination).unwrap();
-        fs::rename(case.dir.join("project.asb"), destination.join("story.asb")).unwrap();
-        fs::remove_file(case.dir.join("src/main.aside")).unwrap();
+        fs::rename(root.join("project.asb"), destination.join("story.asb")).unwrap();
+        fs::remove_file(root.join("src/main.aside")).unwrap();
         let bytes = fs::read(destination.join("story.asb")).unwrap();
         let package = reel_package::decode(
             &bytes,
@@ -687,21 +677,24 @@ mod projects {
 
     #[test]
     fn prelude_types_resolve_in_imported_callable_signatures() {
-        let case = Case::new();
-        case.write(
-            "ui.aside",
+        let project = temporary();
+        let root = project.path();
+        write(
+            root,
+            "src/ui.aside",
             r#"pub class View {
                 fn factory(self) -> fn() -> Node {
                     || { stack(width: 12) }
                 }
             }"#,
         );
-        case.write(
-            "main.aside",
+        write(
+            root,
+            "src/main.aside",
             "use ui::View; fn main() { let build = View().factory(); build().width == 12 }",
         );
-        let loaded = reel_cli::project::load(&case.dir)
-            .unwrap_or_else(|error| panic!("{:?}", error.failure));
+        let loaded =
+            reel_cli::project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
         let checked = loaded.check().unwrap();
         let (result, _) = execute(reel_cli::into_story(checked, reel_cli::project::ENTRY).unwrap());
         assert!(result);
@@ -709,13 +702,19 @@ mod projects {
 
     #[test]
     fn project_diagnostics_locate_imported_source_and_missing_import_without_executing() {
-        let case = Case::new();
-        case.write("main.aside", "use game::ui::{panel}; fn main(){panel();}");
-        case.write(
-            "ui.aside",
+        let project = temporary();
+        let root = project.path();
+        write(
+            root,
+            "src/main.aside",
+            "use game::ui::{panel}; fn main(){panel();}",
+        );
+        write(
+            root,
+            "src/ui.aside",
             "pub fn panel(){\n let text=\"字\";\n missing;\n}",
         );
-        let output = case.command(&["check", "--format", "json"]);
+        let output = command(root, &["check", "--format", "json"]);
         assert!(!output.status.success());
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["executed"], false);
@@ -725,16 +724,28 @@ mod projects {
             .find(|d| d["source"] == "src/ui.aside")
             .unwrap_or_else(|| panic!("imported source diagnostic: {report}"));
         assert_eq!(diagnostic["range"]["start"]["line"], 2);
-        fs::remove_file(case.dir.join("src/ui.aside")).unwrap();
-        let output = case.command(&["check", "--format", "json"]);
+        fs::remove_file(root.join("src/ui.aside")).unwrap();
+        let output = command(root, &["check", "--format", "json"]);
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["stage"], "resolve");
         assert_eq!(report["diagnostics"][0]["source"], "src/main.aside");
-        assert!(!case.dir.join("project.asb").exists());
-        case.write("main.aside", "use game::ui::{panel}; fn main(){} ");
-        case.write("ui.aside", "pub fn panel(required){required}");
-        let loaded = reel_cli::project::load(&case.dir)
-            .unwrap_or_else(|error| panic!("{:?}", error.failure));
+        write(
+            root,
+            "src/main.aside",
+            "use game::answer; fn main(){answer()}",
+        );
+        write(root, "src/mod.aside", "pub fn answer(){missing_value}");
+        let output = command(root, &["check", "--format", "json"]);
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["diagnostics"][0]["source"], "src/mod.aside");
+        write(
+            root,
+            "src/main.aside",
+            "use game::ui::{panel}; fn main(){} ",
+        );
+        write(root, "src/ui.aside", "pub fn panel(required){required}");
+        let loaded =
+            reel_cli::project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
         let checked = loaded.check().unwrap();
         let failure = reel_cli::build(&checked, Some("game::ui::panel"))
             .err()
@@ -744,7 +755,7 @@ mod projects {
             failure.diagnostics[0].source.as_deref(),
             Some("src/ui.aside")
         );
-        assert!(!case.dir.join("project.asb").exists());
+        assert!(!root.join("build").exists());
     }
 
     #[test]

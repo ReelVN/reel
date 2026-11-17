@@ -1060,6 +1060,10 @@ fn module_path(uri: &Uri, roots: &[ModuleRoot]) -> Option<String> {
         .iter()
         .filter_map(|root| {
             let relative = path.strip_prefix(&root.path).ok()?;
+            let priority = (root.path.components().count(), root.prefix.len());
+            if !root.prefix.is_empty() && relative == Path::new("mod.aside") {
+                return Some((priority, root.prefix.clone()));
+            }
             let mut parts: Vec<_> = relative
                 .with_extension("")
                 .components()
@@ -1068,10 +1072,7 @@ fn module_path(uri: &Uri, roots: &[ModuleRoot]) -> Option<String> {
             if !root.prefix.is_empty() {
                 parts.insert(0, root.prefix.clone());
             }
-            Some((
-                (root.path.components().count(), root.prefix.len()),
-                parts.join("::"),
-            ))
+            Some((priority, parts.join("::")))
         })
         .max_by_key(|(priority, _)| *priority)
         .map(|(_, module)| module)
@@ -1080,6 +1081,9 @@ fn module_file(module: &str, roots: &[ModuleRoot]) -> Option<PathBuf> {
     roots
         .iter()
         .filter_map(|root| {
+            if !root.prefix.is_empty() && module == root.prefix {
+                return Some((root.prefix.len(), root.path.join("mod.aside")));
+            }
             let suffix = if root.prefix.is_empty() {
                 module
             } else {
