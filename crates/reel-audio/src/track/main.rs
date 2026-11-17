@@ -51,10 +51,7 @@ impl MainTrack {
 		self.volume.update(dt * out.len() as f64, info);
 		for (_, sound) in &mut self.sounds {
 			sound.process(&mut self.temp_buffer[..out.len()], dt, info);
-			for (summed_out, sound_out) in out.iter_mut().zip(self.temp_buffer.iter().copied()) {
-				*summed_out += sound_out;
-			}
-			self.temp_buffer.fill(Frame::ZERO);
+			crate::frame::mix_and_clear(out, &mut self.temp_buffer);
 		}
 		for effect in &mut self.effects {
 			effect.process(out, dt, info);

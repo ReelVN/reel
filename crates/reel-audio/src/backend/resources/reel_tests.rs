@@ -53,6 +53,35 @@ fn sound(left: f32, right: f32) -> StaticSoundData {
 		slice: None,
 	}
 }
+
+#[test]
+fn uneven_stereo_blocks_mix_the_same_samples_as_full_blocks() {
+	fn mix(blocks: &[usize]) -> Vec<f32> {
+		let mut manager = AudioManager::<Capture>::new(AudioManagerSettings {
+			backend_settings: (),
+			internal_buffer_size: 32,
+			..Default::default()
+		})
+		.unwrap();
+		let _left = manager.play(sound(0.25, 0.)).unwrap();
+		let _right = manager.play(sound(0., -0.5)).unwrap();
+		let mut renderer = manager.backend_mut().0.take().unwrap();
+		renderer.on_start_processing();
+		let mut pcm = Vec::new();
+		for frames in blocks {
+			let start = pcm.len();
+			pcm.resize(start + frames * 2, 0.);
+			renderer.process(&mut pcm[start..], 2);
+		}
+		pcm
+	}
+
+	let expected = mix(&[32, 32, 32]);
+	assert!(expected.as_chunks::<2>().0.contains(&[0.25, -0.5]));
+	assert_eq!(expected.last(), Some(&0.));
+	assert_eq!(mix(&[7, 25, 2, 31, 31]), expected);
+}
+
 #[test]
 fn reel_retirement_interleaving_retains_pcm_and_explicit_reclaim_has_quota() {
 	let mut manager = AudioManager::<Capture>::new(AudioManagerSettings {

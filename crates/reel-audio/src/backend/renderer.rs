@@ -121,6 +121,6 @@ impl Renderer {
 				}
 			}
 		}
-		self.temp_buffer.fill(Frame::ZERO);
+		self.temp_buffer[..num_frames].fill(Frame::ZERO);
 	}
 }

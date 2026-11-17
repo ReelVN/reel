@@ -89,10 +89,7 @@ impl Mixer {
 				None,
 				&mut self.send_tracks,
 			);
-			for (summed_out, sound_out) in out.iter_mut().zip(self.temp_buffer.iter().copied()) {
-				*summed_out += sound_out;
-			}
-			self.temp_buffer.fill(Frame::ZERO);
+			crate::frame::mix_and_clear(out, &mut self.temp_buffer);
 		}
 		let info = Info::new(
 			&clocks.0.resources,
@@ -102,10 +99,7 @@ impl Mixer {
 		);
 		for (_, track) in &mut self.send_tracks {
 			track.process(&mut self.temp_buffer[..out.len()], dt, &info);
-			for (summed_out, sound_out) in out.iter_mut().zip(self.temp_buffer.iter().copied()) {
-				*summed_out += sound_out;
-			}
-			self.temp_buffer.fill(Frame::ZERO);
+			crate::frame::mix_and_clear(out, &mut self.temp_buffer);
 		}
 		self.main_track.process(out, dt, &info);
 	}

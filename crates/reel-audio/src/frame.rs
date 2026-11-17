@@ -15,6 +15,13 @@ pub struct Frame {
 	pub right: f32,
 }
 
+/// Accumulate this block and return its consumed scratch frames to silence.
+pub(crate) fn mix_and_clear(out: &mut [Frame], scratch: &mut [Frame]) {
+	for (output, input) in out.iter_mut().zip(scratch) {
+		*output += std::mem::take(input);
+	}
+}
+
 impl Frame {
 	/// A [`Frame`] with both the left and right samples
 	/// set to `0.0`.

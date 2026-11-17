@@ -70,10 +70,7 @@ impl SendTrack {
 
 	pub fn process(&mut self, out: &mut [Frame], dt: f64, info: &Info) {
 		self.volume.update(dt * out.len() as f64, info);
-		for (out_frame, input_frame) in out.iter_mut().zip(self.input.iter().copied()) {
-			*out_frame += input_frame;
-		}
-		self.input.fill(Frame::ZERO);
+		crate::frame::mix_and_clear(out, &mut self.input);
 		for effect in &mut self.effects {
 			effect.process(out, dt, info);
 		}

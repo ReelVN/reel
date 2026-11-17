@@ -10,6 +10,7 @@ include bounded ownership transfer of retired sounds, decoder reservation/
 cancellation checkpoints, pending seek publication, interpolation-preserving
 PCM queues and worker-backed frame windows. Native device output and physical
 PCM retirement are owned by `reel-media`.
+Mixer tracks accumulate and clear the active scratch frames in one pass.
 
 Static transport rate ramps freeze while paused or held. Coalesced rate commands
 carry acknowledgement identities; the existing coherent cursor publication also
