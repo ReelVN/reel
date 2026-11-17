@@ -15,7 +15,11 @@ pub(crate) fn static_target(
         bc::CallTarget::Function(function) => Ok(function),
         bc::CallTarget::Native(native) => native_target(program, native, b),
         bc::CallTarget::Register(reg) => {
-            register_target(program, f, reg, pc, entry, true, host_types, b)
+            let start = match entry {
+                Some(start) => start,
+                None => last_entry(f, pc, b)?,
+            };
+            register_target(program, f, reg, start..pc.index(), true, host_types, b)
         }
     }
 }
@@ -24,20 +28,15 @@ fn register_target(
     program: &bc::VerifiedProgram,
     f: &bc::RuntimeFunction,
     mut reg: Reg,
-    pc: Pc,
-    entry: Option<usize>,
+    block: std::ops::Range<usize>,
     allow_global: bool,
     host_types: &[crate::HostTypeSupport],
     b: &mut Budget,
 ) -> Result<FunctionId, ResumeError> {
-    let last_entry = match entry {
-        Some(entry) => entry,
-        None => last_entry(f, pc, b)?,
-    };
-    let mut end = pc.index();
+    let mut end = block.end;
     while let Some(start) = f.code.previous_pc(end) {
         b.work(1)?;
-        if start < last_entry {
+        if start < block.start {
             break;
         }
         end = start;
@@ -217,12 +216,12 @@ pub(super) fn global_target(
                     "resume global requires one initializer-owned closure definition",
                 ));
             }
+            let entry = last_entry(f, Pc(range.start as u32), b)?;
             producer = Some(register_target(
                 program,
                 f,
                 Reg(instruction.operands[0]),
-                Pc(range.start as u32),
-                None,
+                entry..range.start,
                 false,
                 host_types,
                 b,

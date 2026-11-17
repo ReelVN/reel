@@ -356,10 +356,10 @@ impl RestoreState {
                         vm.heap.cell_initialize(cell, input).map_err(error)?;
                     }
                 }
-                if let BindingInitialization::Parameter(index) = init {
-                    if matches!(storage, BindingStorage::Value(_)) {
-                        vm.put(frame.bound, index, input).map_err(error)?;
-                    }
+                if let BindingInitialization::Parameter(index) = init
+                    && matches!(storage, BindingStorage::Value(_))
+                {
+                    vm.put(frame.bound, index, input).map_err(error)?;
                 }
                 self.binding += 1;
                 continue;

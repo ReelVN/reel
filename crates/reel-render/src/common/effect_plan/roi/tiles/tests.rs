@@ -109,9 +109,9 @@ fn row_union_is_bounded_disjoint_and_keeps_original_pixel_edges() {
             }
         }
     }
-    for y in 0..111 {
-        for x in 0..173 {
-            assert_eq!(visits[y][x], u8::from(cover.contains(x as u32, y as u32)));
+    for (y, row) in visits.iter().enumerate() {
+        for (x, &count) in row.iter().enumerate() {
+            assert_eq!(count, u8::from(cover.contains(x as u32, y as u32)));
         }
     }
     assert!(Cover::rectangle(bounds, [4097, 111]).is_none());

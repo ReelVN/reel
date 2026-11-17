@@ -93,13 +93,7 @@ fn capture_reclaims_idle_live_targets_only_when_its_budget_requires_it() {
         .poll_capture(&mut capture, u64::MAX)
         .unwrap()
         .unwrap();
-    assert!(
-        pixels
-            .rgba
-            .as_slice()
-            .chunks_exact(4)
-            .all(|p| p == [255; 4])
-    );
+    assert!(pixels.rgba.as_slice().iter().all(|&channel| channel == 255));
     drop((capture, pixels));
     subject.poll().unwrap();
     assert!(subject.prepare(&frame).is_ok());

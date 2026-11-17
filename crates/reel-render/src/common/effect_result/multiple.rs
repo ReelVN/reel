@@ -54,7 +54,8 @@ impl Images<'_> {
             .flat_map(|r| {
                 r.commands
                     .iter()
-                    .filter_map(|c| matches!(c.op, FrameOp::Draw(_)).then(|| r.record(c)))
+                    .filter(|c| matches!(c.op, FrameOp::Draw(_)))
+                    .map(|c| r.record(c))
             })
             .chain(stored.iter().cloned().map(Some))
     }

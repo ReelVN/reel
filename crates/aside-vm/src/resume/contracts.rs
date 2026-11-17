@@ -132,14 +132,13 @@ pub(super) fn normalize(
             b.work(1)?;
             if let bc::Descriptor::Class(class) = descriptor
                 && let Some(nominal) = class.nominal
+                && let bc::TypeDef::Named { module, name, .. } = p.types[nominal.index()]
             {
-                if let bc::TypeDef::Named { module, name, .. } = p.types[nominal.index()] {
-                    b.bytes(4 * (size_of::<(&str, &str)>() + 64))?;
-                    scripted.insert((
-                        p.symbols[p.modules[module.index()].path.index()].as_str(),
-                        p.symbols[name.index()].as_str(),
-                    ));
-                }
+                b.bytes(4 * (size_of::<(&str, &str)>() + 64))?;
+                scripted.insert((
+                    p.symbols[p.modules[module.index()].path.index()].as_str(),
+                    p.symbols[name.index()].as_str(),
+                ));
             }
         }
     }

@@ -345,7 +345,7 @@ impl Paragraph {
                             } else {
                                 0.
                             };
-                            let bounds_inline = crate::core::run_glyph_transform(&run)
+                            let bounds_inline = crate::core::run_glyph_transform(run)
                                 .unwrap_or(Affine::IDENTITY)
                                 .transform_rect_bbox(
                                     Rect::new(

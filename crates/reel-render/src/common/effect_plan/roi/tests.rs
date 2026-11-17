@@ -192,7 +192,9 @@ fn physical_initialization_preserves_poisoned_padding_and_filter_neighbors() {
                                             && pixel[1] >= rect.y
                                             && pixel[1] < rect.y + rect.height
                                     };
-                                    let value = if inside(draw) && (pixel[0] + pixel[1]) % 3 == 0 {
+                                    let value = if inside(draw)
+                                        && (pixel[0] + pixel[1]).is_multiple_of(3)
+                                    {
                                         ((pixel[0] * 17 + pixel[1] * 37) % 251) as f64 / 255.
                                     } else {
                                         0.

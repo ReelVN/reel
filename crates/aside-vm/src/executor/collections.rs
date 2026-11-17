@@ -563,14 +563,15 @@ impl Vm {
             Some(info) => info.len,
             None => self.heap.info(table)?.len,
         };
-        if matches!(s.phase, ScriptPhase::TableScan) && !work.matched && work.entry == 0 {
-            if let Some(key) = self.query_key(s, len)?
-                && let Some(entry) = self.table_queries.get(table, key, work.version)
-            {
-                work.entry = entry;
-                work.matched = entry < len;
-                s.table_work = Some(work);
-            }
+        if matches!(s.phase, ScriptPhase::TableScan)
+            && !work.matched
+            && work.entry == 0
+            && let Some(key) = self.query_key(s, len)?
+            && let Some(entry) = self.table_queries.get(table, key, work.version)
+        {
+            work.entry = entry;
+            work.matched = entry < len;
+            s.table_work = Some(work);
         }
         // Source keys are unique. Entries appended by this spread cannot
         // match a later source key, so only scan the original destination.

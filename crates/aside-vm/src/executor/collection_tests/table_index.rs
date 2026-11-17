@@ -16,7 +16,7 @@ fn literal(count: u32, long: bool) -> BytecodePackage {
     let mut fields = Vec::new();
     for (i, key) in keys.into_iter().enumerate() {
         let register = i as u32 * 2;
-        constants.push(Const::Utf8(key.into()));
+        constants.push(Const::Utf8(key));
         constants.push(Const::Int(i as i64));
         code.push(op(Opcode::LoadConst, register, register, 0));
         code.push(op(Opcode::LoadConst, register + 1, register + 1, 0));

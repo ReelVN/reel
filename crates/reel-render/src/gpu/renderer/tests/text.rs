@@ -185,7 +185,7 @@ fn alternating_font_raster_cost() {
             registry
                 .register(
                     reel_core::identity::ResourceVersion {
-                        key: reel_core::identity::AssetKey(format!("font-{index}").into()),
+                        key: reel_core::identity::AssetKey(format!("font-{index}")),
                         version: reel_core::identity::ContentVersion([index; 32]),
                     },
                     ResourceData::Font(font.clone()),
