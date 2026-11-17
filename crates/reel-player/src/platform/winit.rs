@@ -6,7 +6,10 @@ mod display;
 mod text;
 #[path = "winit_touch.rs"]
 mod touch;
-use reel_core::clock::{Clock, MonoTime, UnixMillis};
+use reel_core::{
+    clock::{Clock, MonoTime, UnixMillis},
+    wake::WakeSignal,
+};
 use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -25,6 +28,7 @@ pub struct WinitHost {
     exiting: bool,
     text: text::TextInputHost,
     display: display::WindowDisplay,
+    event_wake: Option<WakeSignal>,
 }
 impl WinitHost {
     pub fn new(window: Arc<Window>) -> Self {
@@ -36,7 +40,13 @@ impl WinitHost {
             exiting: false,
             text: text::TextInputHost::default(),
             display,
+            event_wake: None,
         }
+    }
+    #[cfg(feature = "window")]
+    pub(crate) fn with_event_wake(mut self, wake: WakeSignal) -> Self {
+        self.event_wake = Some(wake);
+        self
     }
     pub fn window(&self) -> &Window {
         &self.window
@@ -52,7 +62,10 @@ impl WinitHost {
     /// Apply pending commands before returning control to the native event loop.
     pub fn apply(&self, event_loop: &ActiveEventLoop) {
         if self.exiting {
+            // The Windows event loop can wait once more before observing exit.
+            event_loop.set_control_flow(ControlFlow::Poll);
             event_loop.exit();
+            return;
         }
         event_loop.set_control_flow(
             self.deadline
@@ -100,6 +113,10 @@ impl Host for WinitHost {
         self.window.set_visible(visible);
     }
     fn wake_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        if let Some(wake) = &self.event_wake {
+            let wake = wake.clone();
+            return Arc::new(move || wake.wake());
+        }
         let window = Arc::downgrade(&self.window);
         Arc::new(move || {
             if let Some(window) = window.upgrade() {

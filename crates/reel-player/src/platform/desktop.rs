@@ -3,8 +3,11 @@ use crate::hal::PlatformHost;
 mod diagnostic;
 #[cfg(feature = "performance")]
 mod performance;
+#[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
+mod tests;
 mod window;
 use crate::player::{PlayerOptions, PointerKind};
+use reel_core::wake::WakeSignal;
 use reel_engine::{
     Epoch, Session, SessionId,
     aside::{VmLimits, source::CompiledStory},
@@ -17,7 +20,7 @@ use window::State;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::WindowId,
 };
 type Error = Box<dyn std::error::Error>;
@@ -94,7 +97,7 @@ fn run_mode_recorded(
         }
     };
     let mut app = App {
-        proxy: event_loop.create_proxy(),
+        wake: event_wake(event_loop.create_proxy()),
         state: None,
         error: None,
         next_generation: 1,
@@ -129,8 +132,15 @@ fn run_mode_recorded(
     }
     Ok(())
 }
+
+fn event_wake(proxy: EventLoopProxy<()>) -> WakeSignal {
+    WakeSignal::new(move || {
+        let _ = proxy.send_event(());
+    })
+}
+
 struct App {
-    proxy: winit::event_loop::EventLoopProxy<()>,
+    wake: WakeSignal,
     state: Option<State>,
     error: Option<String>,
     next_generation: u64,
@@ -205,13 +215,15 @@ impl ApplicationHandler for App {
             return;
         };
         let created = match mode {
-            Mode::SessionDiagnostic => State::new_session(event_loop, self.next_generation),
-            Mode::Diagnostic => State::new(event_loop, self.next_generation),
+            Mode::SessionDiagnostic => {
+                State::new_session(event_loop, self.wake.clone(), self.next_generation)
+            }
+            Mode::Diagnostic => State::new(event_loop, self.wake.clone(), self.next_generation),
             Mode::Story(story) => {
                 let (driver, options) = *story;
                 State::new_story(
                     event_loop,
-                    self.proxy.clone(),
+                    self.wake.clone(),
                     self.next_generation,
                     driver,
                     options,
@@ -377,6 +389,8 @@ impl ApplicationHandler for App {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::HostEvent);
+        // Clear before draining so a source that races the drain can wake the loop again.
+        self.wake.acknowledge();
         #[cfg(feature = "performance")]
         self.start_performance();
         if let Some(state) = &mut self.state {
@@ -449,14 +463,15 @@ impl ApplicationHandler for App {
                 };
                 Instant::now() + Duration::from_millis(interval)
             });
-            let deadline = match (completion_deadline, state.story_deadline()) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-            let deadline = match (deadline, state.input_deadline()) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
+            let deadline = [
+                completion_deadline,
+                state.story_deadline(),
+                state.input_deadline(),
+                self.wake.is_pending().then(Instant::now),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             state.host.wait_until(deadline);
             state.host.apply(event_loop);
             #[cfg(feature = "performance")]

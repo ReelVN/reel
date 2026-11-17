@@ -1,4 +1,4 @@
-use super::*;
+use super::{super::event_wake, *};
 use crate::demand::Model;
 use reel_render::{PresentOutcome, presentation_notice};
 use reel_ui::app::InputGeometrySource;
@@ -23,7 +23,7 @@ fn accepted_transform(state: &State) -> reel_ui::kurbo::Affine {
 #[test]
 #[ignore = "requires a native display, actual graphics adapter and REEL_SESSION_FONT; creates only a hidden window"]
 fn actual_cursor_window_routes_leave_and_clears_presented_appearance() {
-    struct Harness(winit::event_loop::EventLoopProxy<()>);
+    struct Harness(WakeSignal);
     impl ApplicationHandler for Harness {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
             use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
@@ -114,14 +114,15 @@ fn actual_cursor_window_routes_leave_and_clears_presented_appearance() {
         .unwrap();
     #[cfg(target_os = "windows")]
     let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
-    let proxy = event_loop.create_proxy();
-    event_loop.run_app(&mut Harness(proxy)).unwrap();
+    let wake = event_wake(event_loop.create_proxy());
+    event_loop.run_app(&mut Harness(wake)).unwrap();
 }
 
-fn exercise(event_loop: &ActiveEventLoop) {
+fn exercise(event_loop: &ActiveEventLoop, wake: &WakeSignal) {
     // Derive pressure from the current profile rather than assuming 4x support.
     let mut probe = State::with_limits(
         event_loop,
+        wake.clone(),
         1,
         GpuLimits {
             target_bytes: 512 << 20,
@@ -184,6 +185,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
     drop(probe);
     let mut state = State::with_limits(
         event_loop,
+        wake.clone(),
         1,
         GpuLimits {
             target_bytes: single_targets * 3 / 2,
@@ -537,7 +539,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
             ..Default::default()
         },
     ] {
-        let mut refused = State::with_limits(event_loop, 1, limits).unwrap();
+        let mut refused = State::with_limits(event_loop, wake.clone(), 1, limits).unwrap();
         refused.render().unwrap();
         assert_eq!(refused.player.presentation.demand.model, Model::Blocked);
         assert!(refused.player.presentation.bridge.accepted_key().is_none());
@@ -647,8 +649,8 @@ fn advance_session_text(state: &mut State) {
         .unwrap();
     state.invalidate();
 }
-fn exercise_session(event_loop: &ActiveEventLoop) {
-    let mut state = State::new_session(event_loop, 1).unwrap();
+fn exercise_session(event_loop: &ActiveEventLoop, wake: &WakeSignal) {
+    let mut state = State::new_session(event_loop, wake.clone(), 1).unwrap();
     let identity = state
         .player
         .session
@@ -761,7 +763,7 @@ fn exercise_session(event_loop: &ActiveEventLoop) {
     assert!(session.view().interaction.is_none());
     present_session(&mut state);
     drop(state);
-    let mut cancelled = State::new_session(event_loop, 1).unwrap();
+    let mut cancelled = State::new_session(event_loop, wake.clone(), 1).unwrap();
     present_session(&mut cancelled);
     assert!(
         cancelled
@@ -824,10 +826,10 @@ fn exercise_session(event_loop: &ActiveEventLoop) {
 #[test]
 #[ignore = "requires a native display, a graphics adapter and REEL_SESSION_FONT"]
 fn actual_session_window_host_contract() {
-    struct Harness(winit::event_loop::EventLoopProxy<()>);
+    struct Harness(WakeSignal);
     impl ApplicationHandler for Harness {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-            exercise_session(event_loop);
+            exercise_session(event_loop, &self.0);
             exercise_author_resources(event_loop, self.0.clone(), None);
             exercise_author_resources(event_loop, self.0.clone(), Some([720, 480]));
             event_loop.exit();
@@ -848,12 +850,12 @@ fn actual_session_window_host_contract() {
         .unwrap();
     #[cfg(target_os = "windows")]
     let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
-    let proxy = event_loop.create_proxy();
-    event_loop.run_app(&mut Harness(proxy)).unwrap();
+    let wake = event_wake(event_loop.create_proxy());
+    event_loop.run_app(&mut Harness(wake)).unwrap();
 }
 fn exercise_author_resources(
     event_loop: &ActiveEventLoop,
-    proxy: winit::event_loop::EventLoopProxy<()>,
+    wake: WakeSignal,
     initial_size: Option<[u32; 2]>,
 ) {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
@@ -899,7 +901,7 @@ fn main() {{
     )
     .unwrap()
     .with_asset_options(options.assets.clone());
-    let mut state = State::new_story(event_loop, proxy, 1, driver, options).unwrap();
+    let mut state = State::new_story(event_loop, wake, 1, driver, options).unwrap();
     assert!(state.player.first_frame_pending);
     #[cfg(target_os = "windows")]
     assert_eq!(state.window.is_visible(), Some(false));
@@ -1094,10 +1096,10 @@ fn main() {{
 #[test]
 #[ignore = "requires a native display and actual graphics adapter"]
 fn actual_window_retry_and_recovery_contract() {
-    struct Harness;
+    struct Harness(WakeSignal);
     impl ApplicationHandler for Harness {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-            exercise(event_loop);
+            exercise(event_loop, &self.0);
             event_loop.exit();
         }
         fn window_event(
@@ -1116,5 +1118,6 @@ fn actual_window_retry_and_recovery_contract() {
         .unwrap();
     #[cfg(target_os = "windows")]
     let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
-    event_loop.run_app(&mut Harness).unwrap();
+    let wake = event_wake(event_loop.create_proxy());
+    event_loop.run_app(&mut Harness(wake)).unwrap();
 }

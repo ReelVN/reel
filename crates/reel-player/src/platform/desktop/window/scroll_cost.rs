@@ -1,5 +1,5 @@
 //! Opt-in measurement through the production native window, VM deadline and GPU path.
-use super::*;
+use super::{super::event_wake, *};
 use std::time::Duration;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::EventLoopBuilderExtWindows;
@@ -10,7 +10,7 @@ use winit::{application::ApplicationHandler, event_loop::EventLoop};
 #[test]
 #[ignore = "requires REEL_SCROLL_ASB, REEL_SCROLL_ASSETS, REEL_SESSION_FONT and a native GPU/window"]
 fn external_gallery_native_frame_cost() {
-    struct Harness(winit::event_loop::EventLoopProxy<()>);
+    struct Harness(WakeSignal);
     impl ApplicationHandler for Harness {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
             exercise(event_loop, self.0.clone());
@@ -32,11 +32,11 @@ fn external_gallery_native_frame_cost() {
         .with_any_thread(true)
         .build()
         .unwrap();
-    let proxy = event_loop.create_proxy();
-    event_loop.run_app(&mut Harness(proxy)).unwrap();
+    let wake = event_wake(event_loop.create_proxy());
+    event_loop.run_app(&mut Harness(wake)).unwrap();
 }
 
-fn exercise(event_loop: &ActiveEventLoop, proxy: winit::event_loop::EventLoopProxy<()>) {
+fn exercise(event_loop: &ActiveEventLoop, wake: WakeSignal) {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
     let bytes = std::fs::read(std::env::var_os("REEL_SCROLL_ASB").unwrap()).unwrap();
     let compiled = crate::distribution::decode_story(&bytes).unwrap();
@@ -61,7 +61,7 @@ fn exercise(event_loop: &ActiveEventLoop, proxy: winit::event_loop::EventLoopPro
         ),
         ..Default::default()
     };
-    let mut state = State::new_story(event_loop, proxy, 1, driver, options).unwrap();
+    let mut state = State::new_story(event_loop, wake, 1, driver, options).unwrap();
     let start = Instant::now();
     let mut warm = 0;
     while warm < 5 {

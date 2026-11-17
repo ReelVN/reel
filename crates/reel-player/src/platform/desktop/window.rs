@@ -1,5 +1,5 @@
 use super::diagnostic::Diagnostic;
-use crate::hal::PlatformHost;
+use crate::hal::{Host, PlatformHost};
 #[cfg(test)]
 use crate::player::build_frame;
 use crate::player::{PlayerOptions, PointerKind};
@@ -12,6 +12,7 @@ use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     clock::Clock,
     identity::{AssetKey, ContentVersion, ResourceVersion, SurfaceEpoch},
+    wake::WakeSignal,
 };
 #[cfg(test)]
 use reel_render::RenderEvent;
@@ -97,15 +98,21 @@ impl State {
 
         state
     }
-    pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
-        Self::with_limits(event_loop, generation, default_gpu_limits())
+    pub(crate) fn new(
+        event_loop: &ActiveEventLoop,
+        wake: WakeSignal,
+        generation: u64,
+    ) -> Result<Self, Error> {
+        Self::with_limits(event_loop, wake, generation, default_gpu_limits())
     }
     pub(crate) fn new_session(
         event_loop: &ActiveEventLoop,
+        wake: WakeSignal,
         generation: u64,
     ) -> Result<Self, Error> {
         Self::with_mode(
             event_loop,
+            wake,
             generation,
             default_gpu_limits(),
             Some(PlayerSession::Diagnostic(Box::new(
@@ -116,7 +123,7 @@ impl State {
     }
     pub(crate) fn new_story(
         event_loop: &ActiveEventLoop,
-        proxy: winit::event_loop::EventLoopProxy<()>,
+        wake: WakeSignal,
         generation: u64,
         driver: AsideSessionUi,
         options: PlayerOptions,
@@ -143,39 +150,28 @@ impl State {
             crate::saves::default_save_directory(&data, &options.assets.root)?
         };
         let save_bytes = options.save_bytes;
-        let assets = driver.ui().assets();
-        let media_proxy = proxy.clone();
+        let media_wake = wake.clone();
         let media = crate::media::desktop_media(
-            assets.clone(),
+            driver.ui().assets(),
             options.media.clone(),
-            reel_core::wake::WakeSignal::new(move || {
-                let _ = media_proxy.send_event(());
-            }),
+            WakeSignal::new(move || media_wake.wake()),
         );
         let driver = driver.with_media(media())?;
         let mut state = Self::with_mode(
             event_loop,
+            wake.clone(),
             generation,
             default_gpu_limits(),
             Some(PlayerSession::aside(driver)),
             Some(options),
         )?;
-        // Worker completions need a native event even while the window has no paint demand.
-        let resource_proxy = proxy.clone();
-        assets.set_waker(Arc::new(move || {
-            let _ = resource_proxy.send_event(());
-        }));
-        let save_proxy = proxy.clone();
-        let save_wake = reel_core::wake::WakeSignal::new(move || {
-            let _ = save_proxy.send_event(());
-        });
         let service = crate::saves::SaveService::new(
             Arc::new(crate::saves::DirectorySaves::new(root, save_bytes)),
             reel_core::budget::QueueLimits {
                 max_requests: 1,
                 max_bytes: save_bytes,
             },
-            save_wake,
+            WakeSignal::new(move || wake.wake()),
         );
         if let Some(PlayerSession::Aside { story: runtime, .. }) = &mut state.player.session {
             runtime.set_saves(crate::saves::RuntimeSaves::new(service, save_bytes));
@@ -186,13 +182,15 @@ impl State {
 
     fn with_limits(
         event_loop: &ActiveEventLoop,
+        wake: WakeSignal,
         generation: u64,
         limits: GpuLimits,
     ) -> Result<Self, Error> {
-        Self::with_mode(event_loop, generation, limits, None, None)
+        Self::with_mode(event_loop, wake, generation, limits, None, None)
     }
     fn with_mode(
         event_loop: &ActiveEventLoop,
+        wake: WakeSignal,
         generation: u64,
         limits: GpuLimits,
         mut session: Option<PlayerSession>,
@@ -225,14 +223,6 @@ impl State {
             )?,
         );
         let instance = wgpu::Instance::default();
-        if let Some(session) = &mut session {
-            let window = Arc::downgrade(&window);
-            session.ui_mut()?.set_resource_waker(Arc::new(move || {
-                if let Some(window) = window.upgrade() {
-                    window.request_redraw();
-                }
-            }));
-        }
         let surface = instance.create_surface(window.clone())?;
         let gpu = pollster::block_on(Gpu::request(
             &instance,
@@ -254,8 +244,8 @@ impl State {
             gpu.quality([size.width.max(1), size.height.max(1)])?
         );
         let mut backend = WgpuBackend::new(gpu, surface);
+        let mut host = WinitHost::new(window.clone()).with_event_wake(wake);
         if let Some(options) = options {
-            let mut host = WinitHost::new(window.clone());
             let player = crate::player::Player::mount(
                 session.expect("story session supplied with player options"),
                 backend,
@@ -263,6 +253,9 @@ impl State {
                 &options,
             )?;
             return Ok(Self::assemble(player, instance, window, host));
+        }
+        if let Some(session) = &mut session {
+            session.ui_mut()?.set_resource_waker(host.wake_callback());
         }
         backend.configure(info)?;
         let pool = BudgetPool::new(
@@ -346,7 +339,6 @@ impl State {
         };
         let root_id = widget.id();
         let canvas_id = None;
-        let host = WinitHost::new(window.clone());
         let root = RenderRoot::new(
             widget,
             host.ui_signal_handler(),
@@ -376,11 +368,11 @@ impl State {
             .cloned();
         let player = crate::player::Player {
             captures: {
-                let window = window.clone();
+                let wake = host.wake_callback();
                 crate::capture::CaptureService::new(
                     crate::assets::AssetOptions::default().input_bytes,
                     crate::player::PlayerOptions::default().capture_readback_bytes_per_poll,
-                    reel_core::wake::WakeSignal::new(move || window.request_redraw()),
+                    WakeSignal::new(move || wake()),
                 )
             },
             backend,
@@ -470,14 +462,10 @@ impl State {
     fn start_gamepads(&mut self) {
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if self.gamepads.is_none() {
-            let window = Arc::downgrade(&self.window);
+            let wake = self.host.wake_callback();
             match crate::platform::gamepad::GamepadSource::new(
                 std::num::NonZeroUsize::new(256).unwrap(),
-                move || {
-                    if let Some(window) = window.upgrade() {
-                        window.request_redraw();
-                    }
-                },
+                move || wake(),
             ) {
                 Ok(source) => self.gamepads = Some(source),
                 Err(error) => eprintln!("gamepad backend unavailable: {error}"),
@@ -505,7 +493,7 @@ impl State {
         let now = self.input_origin.elapsed();
         self.input_pending = false;
         // A bounded drain prevents a noisy device from monopolizing a frame.
-        // Remaining events keep the window awake via the backend's notifications.
+        // An immediate deadline continues a full batch on the next loop turn.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         for index in 0..256 {
             let Some(source) = &self.gamepads else {
