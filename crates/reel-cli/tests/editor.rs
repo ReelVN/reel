@@ -187,7 +187,7 @@ fn file_uri(path: &Path) -> String {
         "file:///"
     });
     for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || b"/:-._~".contains(&byte) {
+        if byte.is_ascii_alphanumeric() || b"/:-._~!".contains(&byte) {
             uri.push(char::from(byte));
         } else {
             write!(uri, "%{byte:02X}").unwrap();
@@ -219,8 +219,11 @@ fn nested_src_document_uses_the_project_source_root() {
     let source = "use game::story::opening::opening;\nfn scene() -> string { opening() }\n";
     let path = root.join("src/ui/scene.aside");
     std::fs::write(&path, source).unwrap();
+    #[cfg(windows)]
+    let root = root.with_file_name("作品 with SPACES");
+    let path = root.join("src/ui/scene.aside");
     let uri = file_uri(&path);
-    let opening_uri = file_uri(&opening);
+    let opening_uri = file_uri(&root.join("src/story/opening.aside"));
     let main_uri = file_uri(&root.join("src/main.aside"));
 
     let options = reel_cli::editor::options();
@@ -623,27 +626,9 @@ mod editor_stdio {
 
 mod editor_modules {
     //! Query real module prefixes through the shipped LSP and generated host source.
-    use super::support;
+    use super::{file_uri, support};
     use serde_json::{Value, json};
-    use std::{fmt::Write, path::Path};
     use support::Server;
-
-    fn file_uri(path: &Path) -> String {
-        let path = path.to_str().unwrap().replace('\\', "/");
-        let mut uri = String::from(if path.starts_with('/') {
-            "file://"
-        } else {
-            "file:///"
-        });
-        for byte in path.bytes() {
-            if byte.is_ascii_alphanumeric() || b"/:-._~".contains(&byte) {
-                uri.push(char::from(byte));
-            } else {
-                write!(uri, "%{byte:02X}").unwrap();
-            }
-        }
-        uri
-    }
 
     fn position(source: &str, needle: &str) -> Value {
         let before = &source[..source.find(needle).unwrap()];

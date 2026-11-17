@@ -21,17 +21,17 @@ pub struct Location {
 
 /// Find `src/main.aside` in this directory or an ancestor, without scanning trees.
 pub fn locate(directory: &Path) -> io::Result<Location> {
-    locate_with(directory, &Path::is_file)
+    locate_with(&canonical_directory(directory)?, &Path::is_file)
 }
 
 /// Query project membership for compiled artifacts that may live without source.
 pub fn find(directory: &Path) -> io::Result<Option<Location>> {
-    find_with(directory, &Path::is_file)
+    Ok(find_with(&canonical_directory(directory)?, &Path::is_file))
 }
 
-/// Share project discovery with editor overlays containing an unsaved entry.
+/// Find the entry using the supplied directory spelling, as used by editor buffers.
 pub fn locate_with(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> io::Result<Location> {
-    find_with(directory, exists)?.ok_or_else(|| {
+    find_with(directory, exists).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "Reel project not found: expected src/main.aside in this directory or an ancestor",
@@ -39,7 +39,7 @@ pub fn locate_with(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> io::Resu
     })
 }
 
-fn find_with(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> io::Result<Option<Location>> {
+fn canonical_directory(directory: &Path) -> io::Result<PathBuf> {
     let directory = directory.canonicalize()?;
     if !directory.is_dir() {
         return Err(io::Error::new(
@@ -47,13 +47,17 @@ fn find_with(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> io::Result<Opt
             "project discovery requires a directory",
         ));
     }
-    Ok(directory
+    Ok(directory)
+}
+
+fn find_with(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> Option<Location> {
+    directory
         .ancestors()
         .find(|root| exists(&root.join("src/main.aside")))
         .map(|root| Location {
             root: root.to_path_buf(),
             input: root.join("src/main.aside"),
-        }))
+        })
 }
 
 pub struct Loaded {

@@ -21,6 +21,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Return the shared desktop brush texture to the render budget when GPU work releases it and another resource needs space.
 - Check performance policies before launching playback and associate frame measurements with their original request.
 - Flush queued Windows audio at session changes while reusing the negotiated device format.
+- Resolve imports from unsaved editor documents when Windows path spelling differs from the filesystem.
 
 ## 0.3.12 — 2026-11-17
 
