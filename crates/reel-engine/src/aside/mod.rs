@@ -72,6 +72,7 @@ use aside_vm::{
 #[derive(Debug)]
 pub enum AdapterError {
     Source(source::SourceError),
+    Declaration(aside_host::DeclarationError),
     Vm(VmError),
     Heap(HeapError),
     Session(SessionError),
@@ -121,7 +122,7 @@ impl From<HeapError> for AdapterError {
 }
 impl From<aside_host::DeclarationError> for AdapterError {
     fn from(error: aside_host::DeclarationError) -> Self {
-        Self::Input(error.0)
+        Self::Declaration(error)
     }
 }
 impl From<aside_host::Error> for AdapterError {
@@ -145,6 +146,7 @@ impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Input(message) => f.write_str(message),
+            Self::Declaration(error) => write!(f, "{error}"),
             Self::Asset(message) => f.write_str(message),
             Self::Snapshot(error) => write!(f, "{error}"),
             Self::State(error) => write!(f, "{error}"),
@@ -162,7 +164,9 @@ impl AdapterError {
             Self::Vm(VmError::Effect) => Some(FaultKind::Effect),
             Self::Vm(VmError::Limit) => Some(FaultKind::Resource),
             Self::InputQueue(_) => Some(FaultKind::Resource),
-            Self::Input(_) | Self::Markup(_) | Self::State(_) => Some(FaultKind::Type),
+            Self::Input(_) | Self::Declaration(_) | Self::Markup(_) | Self::State(_) => {
+                Some(FaultKind::Type)
+            }
             Self::Stage(_) => Some(FaultKind::Type),
             Self::Allocation | Self::Session(SessionError::AllocationFailed) => {
                 Some(FaultKind::Resource)

@@ -8,11 +8,23 @@ use aside_vm::bytecode::{
 pub use aside_vm::{HostMethodSupport, HostTypeSupport};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DeclarationError(pub &'static str);
+/// A trusted native declaration could not be resolved against the compiled package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeclarationError {
+    Invalid(&'static str),
+    MissingParameter { native: String, parameter: String },
+}
 impl std::fmt::Display for DeclarationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
+        match self {
+            Self::Invalid(message) => f.write_str(message),
+            Self::MissingParameter { native, parameter } => {
+                write!(
+                    f,
+                    "compiled package lacks parameter `{parameter}` required by `{native}`"
+                )
+            }
+        }
     }
 }
 impl std::error::Error for DeclarationError {}
@@ -291,7 +303,7 @@ pub fn runtime_support(
 ) -> Result<RuntimeSupport, DeclarationError> {
     program
         .require_text_pool()
-        .map_err(|_| DeclarationError("native defaults require a bound text pool"))?;
+        .map_err(|_| DeclarationError::Invalid("native defaults require a bound text pool"))?;
     let package = program.package();
     let mut package_natives = HashMap::with_capacity(package.natives.len());
     for native in &package.natives {
@@ -302,7 +314,7 @@ pub fn runtime_support(
     let mut natives = Vec::new();
     for contract in contracts {
         if !trusted_names.insert(contract.symbol.as_str()) {
-            return Err(DeclarationError("duplicate trusted native"));
+            return Err(DeclarationError::Invalid("duplicate trusted native"));
         }
         // Unused host natives need not have names/types in a smaller package.
         let Some(native) = package_natives.get(contract.symbol.as_str()) else {
@@ -320,7 +332,10 @@ pub fn runtime_support(
                 .iter()
                 .position(|s| s == name)
                 .map(|i| SymbolId(i as u32))
-                .ok_or(DeclarationError("native parameter name missing"))
+                .ok_or_else(|| DeclarationError::MissingParameter {
+                    native: contract.symbol.clone(),
+                    parameter: name.to_owned(),
+                })
         };
         let ty = |builtin: &BuiltinType| {
             package
@@ -328,7 +343,7 @@ pub fn runtime_support(
                 .iter()
                 .position(|t| t == &TypeDef::Builtin(*builtin))
                 .map(|i| TypeId(i as u32))
-                .ok_or(DeclarationError("native builtin type missing"))
+                .ok_or(DeclarationError::Invalid("native builtin type missing"))
         };
         let parameters = contract
             .parameters
@@ -392,9 +407,9 @@ fn default_value(
         .parameters
         .get(index)
         .and_then(|p| p.default)
-        .ok_or(DeclarationError("native default missing"))?;
+        .ok_or(DeclarationError::Invalid("native default missing"))?;
     let bc::ParameterDefault::Constant(id) = default else {
-        return Err(DeclarationError(
+        return Err(DeclarationError::Invalid(
             "native literal default must reference a constant",
         ));
     };
@@ -405,7 +420,9 @@ fn default_value(
         (actual, _) => actual == Some(value),
     };
     if !valid {
-        return Err(DeclarationError("native default differs from registry"));
+        return Err(DeclarationError::Invalid(
+            "native default differs from registry",
+        ));
     }
     Ok(default)
 }

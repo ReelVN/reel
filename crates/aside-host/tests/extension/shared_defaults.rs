@@ -29,6 +29,22 @@ fn default(program: &bc::VerifiedProgram, native: usize, index: usize) -> bc::Pa
 }
 
 #[test]
+fn missing_parameter_identifies_the_native_and_its_expected_name() {
+    let mut contracts = [contract("scroll", vec![])];
+    let old = aside_host::seed(&contracts, &[], &[], 1).unwrap();
+    contracts[0].parameters.push(parameter(
+        "snap_y",
+        bc::BuiltinType::Any,
+        Some(bc::Const::Null),
+    ));
+    let error = aside_host::runtime_support(&old, &contracts, &[], &[]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "compiled package lacks parameter `snap_y` required by `sample::scroll`"
+    );
+}
+
+#[test]
 fn literal_sharing_uses_pool_values_independently_of_prefix_and_preserves_native_types() {
     use bc::{BuiltinType as T, Const as C};
     let base = vec![
