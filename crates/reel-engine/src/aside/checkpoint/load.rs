@@ -1,7 +1,7 @@
 //! Bounded loading into a fresh session using the current initializer and Root.
 use super::{
     CheckpointDataRestore, CheckpointError, CheckpointRecord, CheckpointResumeCursor,
-    RestoredCheckpoint, flow::FlowPreparation,
+    RestoredCheckpoint, flow::FlowPreparation, interaction::is_reading_wait,
 };
 use crate::{
     Session,
@@ -234,48 +234,62 @@ impl CheckpointLoad {
                 match self.step_vm(candidate, session, budget, now)? {
                     SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                         let reading = candidate.reading_resume_pending();
-                        let at_point = if reading {
-                            // The Reading adapter proves and caches this actual ticket
-                            // before reconnecting its saved wait.
-                            false
-                        } else if self.proof.is_some_and(|(proved, _)| proved == ticket) {
-                            self.proof.unwrap().1
-                        } else {
-                            let bound = candidate
-                                .vm
-                                .resume_descriptor_bound(&candidate.resume, ticket)?;
-                            self.required_work = u32::try_from(
-                                bound.work.saturating_add(bound.key_bytes),
-                            )
-                            .map_err(|_| {
-                                CheckpointError::Contract(
-                                    "saved operation proof exceeds native work capacity",
+                        let p = candidate.vm.program().package();
+                        let symbol = &p.symbols[p.natives[ticket.native.index()].symbol.index()];
+                        // The Reading adapter proves its own ticket before reconnecting a wait.
+                        let binds_reading = reading && is_reading_wait(symbol);
+                        let boundary = candidate.flow_boundary().filter(|&(task, _)| {
+                            !binds_reading
+                                && ticket.task == task
+                                && ticket.input == NativeInput::Entry
+                        });
+                        let at_point = match (boundary, self.proof) {
+                            (None, _) => false,
+                            (Some(_), Some((proved, matches))) if proved == ticket => matches,
+                            (Some((_, boundary)), _) => {
+                                let bound = candidate
+                                    .vm
+                                    .resume_descriptor_bound(&candidate.resume, ticket)?;
+                                self.required_work = u32::try_from(
+                                    bound.work.saturating_add(bound.key_bytes),
                                 )
-                            })?;
-                            if native_budget.with_minimum(self.required_work) < self.required_work {
+                                .map_err(|_| {
+                                    CheckpointError::Contract(
+                                        "saved operation proof exceeds native work capacity",
+                                    )
+                                })?;
+                                if native_budget.with_minimum(self.required_work)
+                                    < self.required_work
+                                {
+                                    return Ok(false);
+                                }
+                                let matches = candidate
+                                    .vm
+                                    .resume_descriptor(
+                                        &candidate.resume,
+                                        ticket,
+                                        boundary,
+                                        aside_vm::resume::ResumeLimits {
+                                            work: bound.work,
+                                            ..Default::default()
+                                        },
+                                    )
+                                    .is_ok_and(|descriptor| {
+                                        descriptor.matches(self.record.continuation())
+                                    });
+                                self.proof = Some((ticket, matches));
+                                self.required_work = 1;
                                 return Ok(false);
                             }
-                            let matches = candidate
-                                .vm
-                                .resume_descriptor(
-                                    &candidate.resume,
-                                    ticket,
-                                    candidate.flow_boundary().unwrap().1,
-                                    aside_vm::resume::ResumeLimits {
-                                        work: bound.work,
-                                        ..Default::default()
-                                    },
-                                )
-                                .is_ok_and(|descriptor| {
-                                    descriptor.matches(self.record.continuation())
-                                });
-                            self.proof = Some((ticket, matches));
-                            self.required_work = 1;
-                            return Ok(false);
                         };
+                        if reading && at_point {
+                            return Err(CheckpointError::Contract(
+                                "current point operation differs from the saved reading interaction",
+                            ));
+                        }
                         let dispatched =
                             candidate.dispatch(session, ticket, locale, native_budget)?;
-                        if (at_point || reading)
+                        if (at_point || binds_reading)
                             && matches!(
                                 dispatched,
                                 NativeDispatch::Ready { .. } | NativeDispatch::Published { .. }

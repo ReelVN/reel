@@ -7,6 +7,7 @@ pub struct ResumeValue {
     pub root: RootToken,
 }
 /// Business values for one saved activation, keyed independently of register layout.
+/// The current activation only consumes bindings that are still live at its site.
 #[derive(Clone, Debug, Default)]
 pub struct ResumeFrameValues {
     pub bindings: Vec<ResumeValue>,
@@ -148,14 +149,6 @@ impl RestoreState {
             return Err(ResumeError::new(
                 "resume activation count differs from the plan",
             ));
-        }
-        for (index, values) in values.iter().enumerate() {
-            let (_, site) = plan.frame(index);
-            if values.bindings.len() != site.layout.bindings.len() {
-                return Err(ResumeError::new(
-                    "saved business binding count differs from the current layout",
-                ));
-            }
         }
         // The existing response path admits and roots current continuation values
         // before consuming the ticket. No script is executed by this publication.
@@ -329,9 +322,8 @@ impl RestoreState {
                 let ty = def.ty;
                 let storage = def.storage;
                 let init = def.initialization;
-                let lookup = (values[self.frame].bindings.len() as u64)
-                    .saturating_mul(binding.key.0.len() as u64 + 1)
-                    .saturating_mul(2);
+                let saved = &values[self.frame].bindings;
+                let lookup = (saved.len() as u64).saturating_mul(binding.key.0.len() as u64 + 1);
                 let work = lookup
                     .checked_add(5)
                     .and_then(|n| n.checked_add(vm.type_checks.extra(ty)))
@@ -339,24 +331,14 @@ impl RestoreState {
                 if !meter.take(0, work, 0) {
                     return Ok(ResumeProgress::BudgetYield(meter.usage));
                 }
-                if values[self.frame]
-                    .bindings
-                    .iter()
-                    .filter(|value| value.key == binding.key)
-                    .count()
-                    != 1
-                {
+                let mut matches = saved.iter().filter(|value| value.key == binding.key);
+                let (Some(value), None) = (matches.next(), matches.next()) else {
                     return Err(ResumeError::new(format!(
                         "missing or duplicate business binding {}",
                         binding.key.0
                     ))
                     .at(flow.function, site.entry));
-                }
-                let value = values[self.frame]
-                    .bindings
-                    .iter()
-                    .find(|value| value.key == binding.key)
-                    .unwrap();
+                };
                 let input = vm.heap.root_value(value.root).map_err(error)?;
                 vm.check_type(ty, input).map_err(|e| {
                     ResumeError::new(format!(

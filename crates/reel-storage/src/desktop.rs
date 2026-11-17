@@ -1,5 +1,4 @@
-use super::{Published, Staging, destination};
-use atomic_write_file::AtomicWriteFile;
+use super::{Published, Staging, destination, write_synced};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -13,11 +12,7 @@ pub(super) fn publish(
     let target = destination(target)?;
     let staging = Staging::new(target.parent().unwrap())?;
     let candidate = staging.path().join("candidate");
-    let mut file = AtomicWriteFile::open(&candidate)?;
-    fill(&mut file)?;
-    // Directory sync can fail after the dependency's rename. Its commit stays
-    // inside private staging, so that error still preserves the destination.
-    file.commit()?;
+    write_synced(&candidate, fill)?;
     if overwrite {
         fs::rename(&candidate, &target)?;
     } else {

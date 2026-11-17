@@ -28,6 +28,17 @@ pub(in crate::aside) struct ReadingResume {
     choice: Option<ChoiceKeys>,
 }
 
+pub(super) fn is_reading_wait(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "reel::narrator"
+            | "reel::character::speak"
+            | "reel::say"
+            | "reel::choose"
+            | "reel::speech::wait"
+    )
+}
+
 impl SessionVm {
     /// Move detached reading contents into the candidate before current Root execution.
     pub(crate) fn prepare_reading_resume(
@@ -119,16 +130,7 @@ impl SessionVm {
         symbol: &str,
         budget: NativeBudget,
     ) -> Result<Option<NativeDispatch>, AdapterError> {
-        if !self.reading_resume_pending()
-            || !matches!(
-                symbol,
-                "reel::narrator"
-                    | "reel::character::speak"
-                    | "reel::say"
-                    | "reel::choose"
-                    | "reel::speech::wait"
-            )
-        {
+        if !self.reading_resume_pending() || !is_reading_wait(symbol) {
             return Ok(None);
         }
         let Some((task, boundary)) = self.flow_boundary() else {

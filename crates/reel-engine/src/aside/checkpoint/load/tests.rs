@@ -217,6 +217,54 @@ fn movable_load_restores_old_reading_then_runs_current_suffix_without_replaying_
 }
 
 #[test]
+fn a_saved_dialogue_cannot_reconnect_to_a_different_wait_at_the_same_point() {
+    let code = r#"
+        use std::resume::{state,root,flow,point};
+        use reel::types::Completion;
+        class World { let score:int=0; }
+        state(World,"world");root(start,"story");
+        fn start(w:World=model(World())) { run_flow(story,w,context:completion()); }
+        fn story(w:World,cue:Completion) {
+            flow("story");
+            point("line");
+            READING_WAIT
+        }
+    "#;
+    let old = code.replace(
+        "READING_WAIT",
+        "narrator(\"Saved dialogue\"); if !cue.pending { throw \"unexpected completion\"; }",
+    );
+    let (mut session, mut vm) = fresh(&old, 1);
+    start_root(&mut vm, &mut session);
+    reach_wait(&mut vm, &mut session);
+    let mut capture = vm.capture_checkpoint_begin(&session).unwrap();
+    while !capture
+        .step(&mut vm, &session, NativeBudget::RetryMinimum(256), 256)
+        .unwrap()
+    {}
+    let captured = capture.finish(&mut vm).unwrap();
+
+    let current = code.replace("READING_WAIT", "await cue;");
+    let (mut candidate_session, mut candidate) = fresh(&current, 2);
+    let mut load = CheckpointLoad::new(captured.record().clone(), &candidate).unwrap();
+    let failure = (0..1_024)
+        .find_map(|_| {
+            load.step(
+                &mut candidate,
+                &mut candidate_session,
+                "en",
+                NativeBudget::RetryMinimum(256),
+                256,
+                SliceBudget::default(),
+                || 0,
+            )
+            .err()
+        })
+        .expect("the incompatible wait must terminate the restore");
+    assert!(failure.to_string().contains("saved reading interaction"));
+}
+
+#[test]
 fn load_returns_a_terminal_error_when_collection_cannot_free_enough_objects() {
     let (mut live_session, mut live) = fresh(&source_code("A"), 1);
     start_root(&mut live, &mut live_session);

@@ -31,6 +31,25 @@ pub fn publish(
     platform::publish(target, overwrite, fill)
 }
 
+/// Close a fully synced staging file before its name is published.
+fn write_synced(
+    path: &Path,
+    fill: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
+) -> io::Result<()> {
+    #[cfg(target_os = "vita")]
+    let mut file = vita_native::app::fs::File::create_new(path)?;
+    #[cfg(not(target_os = "vita"))]
+    let mut file = fs::File::create_new(path)?;
+    fill(&mut file)?;
+    #[cfg(target_os = "vita")]
+    {
+        file.sync()?;
+        file.close()
+    }
+    #[cfg(not(target_os = "vita"))]
+    file.sync_all()
+}
+
 /// Open the published contents as a standard file.
 pub fn open(target: &Path) -> io::Result<fs::File> {
     platform::open(target)

@@ -1,7 +1,7 @@
 //! Atomic logical publication on filesystems whose rename cannot replace a file.
 //! Immutable data and a synced commit record are prepared separately. Publishing
 //! the record with native no-replace rename is the single visibility boundary.
-use super::{Published, Staging};
+use super::{Published, Staging, write_synced};
 use std::{
     fs,
     io::{self, Read, Write},
@@ -105,30 +105,6 @@ fn next(root: &Path, old: Option<Commit>) -> io::Result<u64> {
             return Ok(generation);
         }
     }
-}
-fn write_synced(
-    path: &Path,
-    fill: impl FnOnce(&mut dyn Write) -> io::Result<()>,
-) -> io::Result<()> {
-    #[cfg(target_os = "vita")]
-    let mut file = vita_native::app::fs::File::create_new(path)?;
-    #[cfg(not(target_os = "vita"))]
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    fill(&mut file)?;
-    #[cfg(target_os = "vita")]
-    {
-        file.sync()?;
-        file.close()?;
-    }
-    #[cfg(not(target_os = "vita"))]
-    {
-        file.sync_all()?;
-        drop(file);
-    }
-    Ok(())
 }
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "vita")]

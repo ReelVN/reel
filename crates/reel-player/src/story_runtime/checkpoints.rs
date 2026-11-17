@@ -35,7 +35,7 @@ fn source(current: bool) -> String {
             "chapter",
             "story",
             "world.primary.score+=5;",
-            "world.primary.score+=10;",
+            "world.primary.score+=old_reward;",
             "A custom view",
             "let value=model(Stats());self.primary=value;self.alias=value;for i in 0..512{self.items.append(i);}",
             "",
@@ -51,6 +51,11 @@ fn source(current: bool) -> String {
         "page.add(text(value:derive(||f\"extra={world.primary.extra}\"),y:140));"
     } else {
         ""
+    };
+    let old_local = if current {
+        ""
+    } else {
+        "let old_reward=world.primary.score-2;"
     };
     let line = if current {
         "B changed the text at the saved point"
@@ -85,7 +90,7 @@ fn source(current: bool) -> String {
             }}
         }}
         fn {inner}(world:World){{
-            flow("chapter");{prefix}
+            flow("chapter");{prefix}{old_local}
             point("line");narrator("{line}");
             {suffix}
         }}
@@ -369,6 +374,15 @@ fn incompatible_saved_point_keeps_live_session_and_committed_slot() {
             .replace("let mut points:int=7", "let mut points:string=\"changed\"")
             .replace("world.primary.points+=1000;", "")
             .replace("world.primary.points+=100;", ""),
+        source(true)
+            .replace(
+                "point(\"line\");",
+                "let new_reward=world.primary.points;point(\"line\");",
+            )
+            .replace(
+                "world.primary.points+=100;",
+                "world.primary.points+=new_reward;",
+            ),
     ] {
         let mut current = runtime(&code, 27, storage.clone());
         drain(&mut current);
