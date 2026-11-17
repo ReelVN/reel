@@ -724,3 +724,51 @@ fn metadata_readiness_reopens_after_failure_and_cancelled_demand() {
     assert!(images.metadata_ready());
     assert!(images.poll().unwrap());
 }
+
+#[test]
+fn pending_tile_failure_follows_current_viewport_requirement() {
+    let (mut images, wake) = loader();
+    let owner = "background.reel-image";
+    let source = "assets/missing-tile.png";
+    let manifest =
+        PreparedImage::new(128, 128, 128, reel_core::prepared_image::TileEncoding::Png).unwrap();
+    images
+        .encoded
+        .insert(owner.into(), Arc::from(manifest.encode()));
+    images.request(wanted(&[owner]));
+    assert!(!images.poll().unwrap());
+    assert!(images.poll().unwrap());
+
+    let tiles = |required| {
+        BTreeMap::from([(
+            source.into(),
+            TileDemand {
+                owner: owner.into(),
+                required,
+                dimensions: [128, 128],
+                transform: Affine::IDENTITY,
+                clip: Rect::new(0., 0., 128., 128.),
+            },
+        )])
+    };
+    assert!(images.request_tiles(tiles(true)));
+    assert!(!images.poll().unwrap());
+    let id = images.pending[0].id;
+    assert!(images.request_tiles(tiles(false)));
+    assert_eq!(images.pending[0].id, id);
+    while !images.settled {
+        assert!(
+            images.poll().unwrap(),
+            "optional tiles cannot block the frame"
+        );
+        if !images.settled {
+            wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+    assert!(images.skipped.contains(source));
+
+    assert!(images.request_tiles(tiles(true)));
+    let error = ready(&mut images, &wake).unwrap_err();
+    assert!(error.contains("main:17:9"));
+    assert!(error.contains(source));
+}

@@ -4,6 +4,19 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+### Changed
+
+- Reuse the verified bytecode digest when writing and loading an ASB.
+- Reuse existing translation archives before compressing their contents during a build.
+- Desktop saves and builds publish the synced staging file directly, removing an extra file rename per write.
+
+### Fixed
+
+- Report diagnostics and navigate to definitions in the project root module at `src/mod.aside`.
+- Concurrent requests for the same font or effect shader can share a single resident copy.
+- Use the current viewport to decide whether a failed image tile blocks the frame.
+- Load saves after a story edit removes a local value that was live at the saved line. Loading reports an incompatible point if the updated story replaces the saved dialogue with a different kind of wait.
+
 ## 0.3.14 — 2026-11-18
 
 ### Changed

@@ -690,6 +690,55 @@ fn concurrent_images_share_decode_capacity_and_source_identities() {
 }
 
 #[test]
+fn concurrent_font_requests_share_one_resident_allocation() {
+    const FONT: &[u8] = include_bytes!(
+        "../../../../examples/author_arcade/resources/fonts/AtkinsonHyperlegible-Regular.ttf"
+    );
+    let assets = Assets::with_adapters(
+        AssetOptions {
+            resident_bytes: FONT.len() as u64,
+            ..Default::default()
+        },
+        |wake| {
+            let limits = QueueLimits {
+                max_requests: 32,
+                max_bytes: 1 << 20,
+            };
+            let pool = BudgetPool::new(BudgetCategory::CpuInput, limits);
+            let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
+            io.insert_asset(
+                ResourceVersion {
+                    key: AssetKey("font.ttf".into()),
+                    version: ContentVersion(*blake3::hash(FONT).as_bytes()),
+                },
+                MemoryAsset {
+                    bytes: OwnedBytes::new(FONT.to_vec(), pool.reserve(FONT.len() as u64).unwrap())
+                        .unwrap(),
+                    media_type: None,
+                },
+            )
+            .unwrap();
+            (
+                Box::new(MemoryReader::new(io, wake.clone(), true, None)),
+                Box::new(ImageExecutor::new(limits, wake)),
+            )
+        },
+    );
+    let first = assets.request("font.ttf", AssetKind::Font);
+    let second = assets.request("font.ttf", AssetKind::Font);
+    for _ in 0..3 {
+        assets.maintain();
+    }
+    let first = assets.take_ready(first).unwrap().unwrap();
+    let second = assets.take_ready(second).unwrap().unwrap();
+    assert_eq!(first.handle(), second.handle());
+    assert_eq!(assets.output_pool().usage().bytes, FONT.len() as u64);
+    assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+    drop((first, second));
+    assert_eq!(assets.output_pool().usage().bytes, 0);
+}
+
+#[test]
 fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service() {
     use std::io::{Read, Seek, SeekFrom};
     let (packaged, _fixture) = packed::packaged_assets(1024);

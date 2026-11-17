@@ -890,6 +890,12 @@ impl Service {
             Phase::Decode if matches!(load.kind, AssetKind::Font | AssetKind::EffectShader) => {
                 load.output = load.input.as_ref().unwrap().as_slice().len() as u64;
                 self.admit_prefetch(load)?;
+                // Another request may have registered this version during this pump.
+                if let Some(lease) = self.origins.shared(load) {
+                    load.input = None;
+                    load.phase = Phase::Done(Ok(lease));
+                    return Ok(());
+                }
                 let input = load.input.take().unwrap();
                 let mut bytes =
                     Arc::try_unwrap(input).expect("undecoded resource input has one owner");

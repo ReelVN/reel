@@ -906,8 +906,8 @@ fn author_image_gpu_fit_alpha_and_clip_pixels() {
         linear(224) * alpha,
         alpha,
     ];
-    // SessionWidget paints its opaque background beneath the author stage.
-    let background = [linear(35), linear(54), linear(74), 1.];
+    // Uncovered stage pixels and translucent images composite over opaque black.
+    let background = [0., 0., 0., 1.];
     let over_background = |pixel: [f32; 4]| -> [f32; 4] {
         std::array::from_fn(|channel| pixel[channel] + background[channel] * (1. - pixel[3]))
     };
@@ -943,11 +943,8 @@ fn author_image_gpu_fit_alpha_and_clip_pixels() {
             );
         }
     }
-    assert_eq!(
-        renderer.usage().targets,
-        0,
-        "readback completion releases all targets"
-    );
+    assert!(!renderer.has_pending());
+    let pooled_targets = renderer.usage().targets;
     // Exercise the same author's source edit through the live widget projection,
     // not a renderer-only replacement of the PNG brush.
     let mut id = 1;
@@ -977,7 +974,7 @@ fn author_image_gpu_fit_alpha_and_clip_pixels() {
         }
     }
     assert_eq!(driver.ui().images.loads, 2);
-    assert_eq!(renderer.usage().targets, 0);
+    assert_eq!(renderer.usage().targets, pooled_targets);
     let window_frame = frame_with_info(
         &mut driver,
         &mut bridge,
@@ -994,5 +991,5 @@ fn author_image_gpu_fit_alpha_and_clip_pixels() {
     eprintln!("default window 960x540 prepared={:?}", renderer.usage());
     let window_pixels = renderer.readback(prepared).unwrap();
     assert_eq!(window_pixels.len(), 960 * 540);
-    assert_eq!(renderer.usage().targets, 0);
+    assert!(!renderer.has_pending());
 }

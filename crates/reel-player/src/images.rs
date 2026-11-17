@@ -571,12 +571,16 @@ impl Images {
         if changed {
             self.settled = false;
         }
-        self.pending.retain(|pending| {
-            let retain = self.wanted.contains_key(&pending.source)
-                || tiles.contains_key(&pending.source)
+        self.pending.retain_mut(|pending| {
+            let wanted = self.wanted.contains_key(&pending.source);
+            let tile = tiles.get(&pending.source);
+            let retain = wanted
+                || tile.is_some()
                 || (pending.prefetch && self.prefetch.contains(&pending.source));
             if !retain {
                 self.assets.cancel(pending.id);
+            } else if !pending.prefetch {
+                pending.optional = !wanted && tile.is_some_and(|tile| !tile.required);
             }
             retain
         });
