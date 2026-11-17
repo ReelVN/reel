@@ -290,29 +290,21 @@ impl DecodedSound {
                     .len()
                     .checked_add(pcm.len())
                     .ok_or("PCM size overflow")?;
-                let capacity = if required > frames.capacity() {
-                    required.max(frames.capacity().saturating_mul(2))
-                } else {
-                    frames.capacity()
-                };
-                let peak = capacity
-                    .checked_add(if capacity > frames.capacity() {
-                        frames.capacity()
-                    } else {
-                        0
-                    })
-                    .and_then(|n| n.checked_mul(size_of::<Frame>()))
-                    .filter(|&n| n <= isize::MAX as usize)
-                    .ok_or("PCM capacity overflow")?;
-                ticket.resize(peak as u64).map_err(|e| e.message)?;
-                if capacity > frames.capacity() {
+                if required > frames.capacity() {
+                    let capacity = required.max(frames.capacity().saturating_mul(2));
+                    let peak = capacity
+                        .checked_add(frames.capacity())
+                        .and_then(|n| n.checked_mul(size_of::<Frame>()))
+                        .filter(|&n| n <= isize::MAX as usize)
+                        .ok_or("PCM capacity overflow")?;
+                    ticket.resize(peak as u64).map_err(|e| e.message)?;
                     frames
                         .try_reserve_exact(capacity - frames.len())
                         .map_err(|e| e.to_string())?;
+                    ticket
+                        .resize(frames.capacity() as u64 * size_of::<Frame>() as u64)
+                        .map_err(|e| e.message)?;
                 }
-                ticket
-                    .resize(frames.capacity() as u64 * size_of::<Frame>() as u64)
-                    .map_err(|e| e.message)?;
                 frames.extend_from_slice(pcm);
             }
             if frames.is_empty() {

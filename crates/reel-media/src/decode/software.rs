@@ -86,12 +86,11 @@ impl AudioDecoder for Software {
                     .map_err(|e| std::io::Error::other(e.message))
             })
             .map_err(|e| e.to_string())?;
+        let retained = READER_BYTES
+            + self.codec_workspace
+            + self.packet.capacity() as u64 * size_of::<Frame>() as u64;
         self.scratch
-            .resize(self.scratch.bytes().max(
-                READER_BYTES
-                    + self.codec_workspace
-                    + self.packet.capacity() as u64 * size_of::<Frame>() as u64,
-            ))
+            .resize(self.scratch.bytes().max(retained))
             .map_err(|e| e.message)?;
         Ok(decoded)
     }

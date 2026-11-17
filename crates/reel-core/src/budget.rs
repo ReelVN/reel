@@ -266,6 +266,9 @@ impl BudgetTicket {
     /// Change this reservation without briefly releasing its existing charge.
     /// A rejected growth leaves the ticket, domain and group usage unchanged.
     pub fn resize(&mut self, bytes: u64) -> Result<(), RejectReason> {
+        if bytes == self.bytes {
+            return Ok(());
+        }
         let mut account = self.account.lock().expect("budget account poisoned");
         let Account {
             limits,
