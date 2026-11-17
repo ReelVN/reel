@@ -56,7 +56,7 @@ fn stable_stack_is_available_after_debug_release_and_external_text_reencoding() 
         let artifact = reel_cli::build_export(&checked, "main::main", profile).unwrap();
         let text_pool = artifact.text_pool.clone();
         let mut package = rp::decode(
-            &artifact.bytes,
+            &artifact.encode(None).unwrap(),
             reel_engine::aside::source::types(),
             Default::default(),
         )
@@ -175,7 +175,7 @@ fn state_declarations_survive_asb_without_story_flows() {
     for profile in [BuildProfile::Debug, BuildProfile::Release] {
         let artifact = reel_cli::build_export(&checked, "main::main", profile).unwrap();
         let mut package = rp::decode(
-            &artifact.bytes,
+            &artifact.encode(None).unwrap(),
             reel_engine::aside::source::types(),
             Default::default(),
         )

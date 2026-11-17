@@ -30,8 +30,12 @@ fn rebuild_code_with_frozen_resource_archives() {
         limits,
     )
     .unwrap();
-    let package =
-        reel_package::decode(&artifact.bytes, reel_engine::aside::source::types(), limits).unwrap();
+    let package = reel_package::decode(
+        &artifact.encode(None).unwrap(),
+        reel_engine::aside::source::types(),
+        limits,
+    )
+    .unwrap();
     let identities = |effects: &reel_package::EffectProducts| {
         let mut identities = effects
             .definitions
@@ -77,17 +81,7 @@ fn rebuild_code_with_frozen_resource_archives() {
             .unwrap();
     }
     writer.finish().unwrap().sync_all().unwrap();
-    let bytecode = package.program().encode(limits.bytecode).unwrap();
-    let bytes = reel_package::encode(
-        &bytecode,
-        package.metadata(),
-        Some(&manifest),
-        package.effects(),
-        package.resume().table(),
-        reel_engine::aside::source::types(),
-        limits,
-    )
-    .unwrap();
+    let bytes = artifact.encode(Some(&manifest)).unwrap();
     fs::write(output.join("game.asb"), &bytes).unwrap();
     eprintln!(
         "fixture ASB={}, blake3={}, frozen resources={:?}",

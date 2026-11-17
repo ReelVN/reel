@@ -1,9 +1,9 @@
 //! Inline source translations share the seekable package protocol in every profile.
 use reel_cli::{
-    BuildProfile, build, build_export, build_with_profile,
+    BuildProfile, build, build_export,
     distribution::{self, ExportOptions, Mount},
     localization::{check_project, prepare_project},
-    project,
+    prepare_build, project,
 };
 use reel_package::{
     archive::{ArchiveIndex, ReadScratch},
@@ -74,8 +74,7 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
     write(root, "resources/marker", "original asset");
     let loaded = project::load(root).unwrap_or_else(|e| panic!("{:?}", e.failure));
     let checked = loaded.check().unwrap();
-    let artifact =
-        build_with_profile(&checked, Some(project::ENTRY), BuildProfile::Release).unwrap();
+    let artifact = prepare_build(&checked, Some(project::ENTRY), BuildProfile::Release).unwrap();
     assert!(std::sync::Arc::ptr_eq(
         &checked.catalogs,
         &artifact.catalogs
@@ -87,7 +86,9 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
     let unchanged = prepare_project(root, &artifact.catalogs, &output).unwrap();
     assert_eq!(first.archive, unchanged.archive);
     assert_eq!(fs::metadata(archive).unwrap().modified().unwrap(), modified);
-    let old_bytes = distribution::with_catalogs(&artifact, &first).unwrap();
+    let old_bytes = artifact
+        .encode(distribution::build_manifest(&first, None).unwrap().as_ref())
+        .unwrap();
     let old = output.join("old.asb");
     fs::write(&old, &old_bytes).unwrap();
     let before = reel_player::distribution::load(&old, Some(&loaded.assets())).unwrap();
@@ -135,15 +136,17 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
     );
     write(root, "src/main.aside", &source("Updated localized body."));
     let loaded = project::load(root).unwrap_or_else(|e| panic!("{:?}", e.failure));
-    let next = build_with_profile(
-        &loaded.check().unwrap(),
-        Some(project::ENTRY),
-        BuildProfile::Release,
-    )
-    .unwrap();
+    let checked = loaded.check().unwrap();
+    let next = prepare_build(&checked, Some(project::ENTRY), BuildProfile::Release).unwrap();
     let second = prepare_project(root, &next.catalogs, &output).unwrap();
     assert_ne!(first.archive, second.archive);
-    let updated_bytes = distribution::with_catalogs(&next, &second).unwrap();
+    let updated_bytes = next
+        .encode(
+            distribution::build_manifest(&second, None)
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap();
     assert!(reel_cli::output::write(&old, &loaded.input, &updated_bytes, false).is_err());
     assert_eq!(fs::read(&old).unwrap(), old_bytes);
     let updated = output.join("new.asb");

@@ -6,7 +6,7 @@ use aside_compiler::{SourceMap, semantic::SourceModule};
 use clap::Parser;
 use codespan_reporting::{files::SimpleFile, term};
 use commands::{Cli, Command, SourceCommand};
-use reel_cli::{BuildProfile, build_with_profile, diagnostic_json, package_limits_json};
+use reel_cli::{BuildProfile, diagnostic_json, package_limits_json, prepare_build};
 use serde_json::{Value, json};
 use std::{
     io::{self, Write},
@@ -200,14 +200,13 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
         }
         SourceCommand::Build(args) => {
             progress.phase("Building ASB");
-            let mut artifact =
-                match build_with_profile(&checked, Some(entry), args.settings.profile()) {
-                    Ok(artifact) => artifact,
-                    Err(error) => {
-                        progress.stop();
-                        return source_error(json_format, path, inputs, error);
-                    }
-                };
+            let code = match prepare_build(&checked, Some(entry), args.settings.profile()) {
+                Ok(artifact) => artifact,
+                Err(error) => {
+                    progress.stop();
+                    return source_error(json_format, path, inputs, error);
+                }
+            };
             let default_output = args.output.is_none();
             let output = args.output.unwrap_or_else(|| {
                 loaded
@@ -255,32 +254,31 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                     return Ok(1);
                 }
             };
-            if prepared.archive.is_some() {
-                artifact.bytes = match reel_cli::distribution::with_catalogs(&artifact, &prepared) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        progress.stop();
-                        failure(json_format, "output", output.to_str(), &error.to_string())?;
-                        return Ok(2);
-                    }
-                };
-                artifact.blake3 = reel_package::digest(&artifact.bytes);
-            }
             progress.phase("Preparing effect shaders");
-            artifact.bytes = match reel_cli::distribution::with_effects(
-                &artifact,
+            let manifest = reel_cli::prepare_effects::prepare(
                 &loaded.project_root,
-                &archive_directory,
+                &checked.effects,
                 reel_cli::prepare_effects::Target::for_export(&args.resource_target),
-            ) {
-                Ok(bytes) => bytes,
+            )
+            .and_then(|effects| reel_cli::prepare_effects::archive(&effects, &archive_directory))
+            .and_then(|effects| {
+                reel_cli::distribution::build_manifest(&prepared, effects.as_deref())
+            });
+            let manifest = match manifest {
+                Ok(manifest) => manifest,
                 Err(error) => {
                     progress.stop();
                     failure(json_format, "effects", Some(path), &error.to_string())?;
                     return Ok(1);
                 }
             };
-            artifact.blake3 = reel_package::digest(&artifact.bytes);
+            let artifact = match code.finish(manifest.as_ref()) {
+                Ok(artifact) => artifact,
+                Err(error) => {
+                    progress.stop();
+                    return source_error(json_format, path, inputs, error);
+                }
+            };
             progress.phase("Writing build");
             let published = match reel_cli::output::write(
                 &output,

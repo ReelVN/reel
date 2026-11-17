@@ -11,7 +11,8 @@ pub mod output;
 mod prepare_audio;
 mod prepare_media;
 pub use artifact::{
-    Artifact, BuildProfile, build, build_export, build_with_profile, package_limits_json,
+    Artifact, BuildProfile, PreparedCode, build, build_export, build_with_profile,
+    package_limits_json, prepare_build,
 };
 pub mod development;
 pub mod distribution;

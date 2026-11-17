@@ -168,9 +168,10 @@ mod tests {
         let project =
             crate::project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
         let checked = project.check().unwrap();
-        let artifact = crate::build(&checked, Some("main::main")).unwrap();
+        let artifact =
+            crate::build_export(&checked, "main::main", crate::BuildProfile::Debug).unwrap();
         let package = root.join("build/debug/game.asb");
-        fs::write(&package, &artifact.bytes).unwrap();
+        fs::write(&package, artifact.encode(None).unwrap()).unwrap();
         let loaded = reel_player::distribution::load(
             &package,
             project_resources(&package).unwrap().as_deref(),

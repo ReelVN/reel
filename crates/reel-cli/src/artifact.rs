@@ -92,6 +92,15 @@ pub struct Artifact {
     pub game_entry: Option<rp::GameEntry>,
     pub profile: BuildProfile,
     pub bytecode_bytes: usize,
+}
+
+/// A verified program and its sidecar data, ready to assemble with a distribution manifest.
+pub struct PreparedCode<'a> {
+    bytecode: bc::EncodedProgram,
+    metadata: rp::Metadata,
+    package_effects: rp::EffectProducts,
+    resume: &'a aside_vm::resume::ResumeTable,
+    pub profile: BuildProfile,
     pub text_pool: Option<bc::TextPool>,
     pub catalogs: std::sync::Arc<reel_engine::aside::source::CatalogProducts>,
     pub effects: std::sync::Arc<reel_engine::aside::source::EffectProducts>,
@@ -213,15 +222,25 @@ pub fn build_with_profile(
     entry: Option<&str>,
     profile: BuildProfile,
 ) -> Result<Artifact, Failure> {
-    build_inner(checked, entry, profile, false)
+    prepare_build(checked, entry, profile)?.finish(None)
 }
 
-pub fn build_export(
-    checked: &Checked,
+/// Prepare a standalone ASB with embedded original text.
+pub fn prepare_build<'a>(
+    checked: &'a Checked,
+    entry: Option<&str>,
+    profile: BuildProfile,
+) -> Result<PreparedCode<'a>, Failure> {
+    prepare_code(checked, entry, profile, false)
+}
+
+/// Prepare code for export, externalizing original text in the release profile.
+pub fn build_export<'a>(
+    checked: &'a Checked,
     entry: &str,
     profile: BuildProfile,
-) -> Result<Artifact, Failure> {
-    build_inner(
+) -> Result<PreparedCode<'a>, Failure> {
+    prepare_code(
         checked,
         Some(entry),
         profile,
@@ -229,12 +248,12 @@ pub fn build_export(
     )
 }
 
-fn build_inner(
-    checked: &Checked,
+fn prepare_code<'a>(
+    checked: &'a Checked,
     entry: Option<&str>,
     profile: BuildProfile,
     external_text: bool,
-) -> Result<Artifact, Failure> {
+) -> Result<PreparedCode<'a>, Failure> {
     let compiled = &checked.compilation;
     let p = compiled.program.package();
     let fail = |detail| {
@@ -281,31 +300,60 @@ fn build_inner(
             module_id: p.functions[compiled.initializer.index()].module.0,
             function_id: compiled.initializer.0,
         },
-        game_entry: game_entry.clone(),
+        game_entry,
     };
     drop(release);
-    let limits = rp::Limits::default();
-    let effects = package_effects(&checked.effects, bytecode.program()).map_err(fail)?;
-    let bytes = rp::encode(
-        &bytecode,
-        &metadata,
-        None,
-        &effects,
-        &compiled.resume,
-        reel_engine::aside::source::types(),
-        limits,
-    )
-    .map_err(|e| fail(e.to_string()))?;
-    Ok(Artifact {
-        blake3: rp::digest(&bytes),
-        bytes,
-        game_entry,
+    let package_effects = package_effects(&checked.effects, bytecode.program()).map_err(fail)?;
+    Ok(PreparedCode {
+        bytecode,
+        metadata,
+        package_effects,
+        resume: &compiled.resume,
         profile,
-        bytecode_bytes: bytecode.as_bytes().len(),
         text_pool,
         catalogs: checked.catalogs.clone(),
         effects: checked.effects.clone(),
     })
+}
+
+impl PreparedCode<'_> {
+    /// Serialize the ASB with its final external resource locations.
+    pub fn encode(
+        &self,
+        manifest: Option<&rp::distribution::Distribution>,
+    ) -> Result<Vec<u8>, rp::Error> {
+        rp::encode(
+            &self.bytecode,
+            &self.metadata,
+            manifest,
+            &self.package_effects,
+            self.resume,
+            reel_engine::aside::source::types(),
+            rp::Limits::default(),
+        )
+    }
+
+    /// Finish a build and record the identity of the exact bytes being published.
+    pub fn finish(
+        self,
+        manifest: Option<&rp::distribution::Distribution>,
+    ) -> Result<Artifact, Failure> {
+        let bytes = self.encode(manifest).map_err(|e| {
+            error(
+                "package",
+                DiagnosticCode::InvalidHir,
+                TextRange::empty(0.into()),
+                e.to_string(),
+            )
+        })?;
+        Ok(Artifact {
+            blake3: rp::digest(&bytes),
+            bytes,
+            game_entry: self.metadata.game_entry,
+            profile: self.profile,
+            bytecode_bytes: self.bytecode.as_bytes().len(),
+        })
+    }
 }
 
 fn package_effects(

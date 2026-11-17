@@ -1,5 +1,5 @@
 //! Build a relocatable author export through the ordinary ASB/AssetIo path.
-use crate::{Artifact, BuildProfile, project::Loaded};
+use crate::{BuildProfile, PreparedCode, project::Loaded};
 use reel_package::{
     archive::{ArchiveKind, ArchiveWriter},
     distribution::{Distribution, LooseResources, MAIN_PACKAGE, TEXT_POOL_ENTRY, relative_path},
@@ -15,82 +15,26 @@ use std::{
 
 use reel_player::distribution::read_manifest;
 
-/// Add a prepared language index without changing bytecode or code identity.
-/// The content-addressed archive is already published beside the target ASB.
-pub fn with_catalogs(
-    artifact: &Artifact,
-    prepared: &crate::localization::PreparedCatalogs,
-) -> io::Result<Vec<u8>> {
-    let Some(archive) = &prepared.archive else {
-        return Ok(artifact.bytes.clone());
+/// Resolve the content-addressed sidecars for a standalone ASB build.
+pub fn build_manifest(
+    catalogs: &crate::localization::PreparedCatalogs,
+    effects: Option<&Path>,
+) -> io::Result<Option<Distribution>> {
+    if catalogs.archive.is_none() && effects.is_none() {
+        return Ok(None);
+    }
+    let name = |path: &Path| {
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .map(str::to_owned)
+            .ok_or_else(|| io::Error::other("archive filename must be UTF-8"))
     };
-    update_manifest(artifact, |manifest| {
-        manifest.text = Some(
-            archive
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| io::Error::other("catalog archive filename must be UTF-8"))?
-                .into(),
-        );
-        manifest.catalogs = prepared.catalogs.clone();
-        Ok(())
-    })
-}
-
-/// Prepare and publish shader resources beside an ASB, retaining its catalog
-/// index and all existing resource archives.
-pub fn with_effects(
-    artifact: &Artifact,
-    project: &Path,
-    output: &Path,
-    target: crate::prepare_effects::Target,
-) -> io::Result<Vec<u8>> {
-    let prepared = crate::prepare_effects::prepare(project, &artifact.effects, target)?;
-    let Some(archive) = crate::prepare_effects::archive(&prepared, output)? else {
-        return Ok(artifact.bytes.clone());
-    };
-    update_manifest(artifact, |manifest| {
-        let name = archive
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| io::Error::other("effect archive filename must be UTF-8"))?
-            .to_owned();
-        if !manifest.resources.contains(&name) {
-            manifest.resources.push(name);
-        }
-        Ok(())
-    })
-}
-
-fn update_manifest(
-    artifact: &Artifact,
-    update: impl FnOnce(&mut Distribution) -> io::Result<()>,
-) -> io::Result<Vec<u8>> {
-    let limits = reel_package::Limits::default();
-    let package =
-        reel_package::decode(&artifact.bytes, reel_engine::aside::source::types(), limits)
-            .map_err(io::Error::other)?;
-    let mut manifest = package.distribution().cloned().unwrap_or(Distribution {
-        text: None,
-        resources: Vec::new(),
-        catalogs: BTreeMap::new(),
+    Ok(Some(Distribution {
+        text: catalogs.archive.as_deref().map(name).transpose()?,
+        resources: effects.map(name).transpose()?.into_iter().collect(),
+        catalogs: catalogs.catalogs.clone(),
         loose: Some(LooseResources::Project),
-    });
-    update(&mut manifest)?;
-    let bytecode = package
-        .program()
-        .encode(limits.bytecode)
-        .map_err(io::Error::other)?;
-    reel_package::encode(
-        &bytecode,
-        package.metadata(),
-        Some(&manifest),
-        package.effects(),
-        package.resume().table(),
-        reel_engine::aside::source::types(),
-        limits,
-    )
-    .map_err(io::Error::other)
+    }))
 }
 
 pub fn player_path(cli: &Path) -> PathBuf {
@@ -239,7 +183,7 @@ fn sources(loaded: &Loaded, staging: &Path) -> io::Result<()> {
 
 pub fn export(
     loaded: &Loaded,
-    artifact: &Artifact,
+    artifact: &PreparedCode<'_>,
     options: &ExportOptions,
 ) -> io::Result<Exported> {
     let parent = options
@@ -409,25 +353,7 @@ pub fn export(
             manifest.loose = Some(LooseResources::Directory("resources".into()));
             sources(loaded, staging)?;
         }
-        manifest.validate()?;
-        let limits = reel_package::Limits::default();
-        let package =
-            reel_package::decode(&artifact.bytes, reel_engine::aside::source::types(), limits)
-                .map_err(io::Error::other)?;
-        let bytecode = package
-            .program()
-            .encode(limits.bytecode)
-            .map_err(io::Error::other)?;
-        let encoded = reel_package::encode(
-            &bytecode,
-            package.metadata(),
-            Some(&manifest),
-            package.effects(),
-            package.resume().table(),
-            reel_engine::aside::source::types(),
-            limits,
-        )
-        .map_err(io::Error::other)?;
+        let encoded = artifact.encode(Some(&manifest)).map_err(io::Error::other)?;
         File::create_new(staging.join(MAIN_PACKAGE))?.write_all(&encoded)?;
         let runtime_bytes = runtime_files.iter().try_fold(0u64, |total, (name, file)| {
             copy(file, &staging.join(name)).map(|bytes| total + bytes)

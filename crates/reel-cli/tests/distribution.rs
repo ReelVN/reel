@@ -432,12 +432,8 @@ fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_
     )
     .unwrap();
     let loaded = project::load(&source).unwrap_or_else(|error| panic!("{:?}", error.failure));
-    let artifact = build_export(
-        &loaded.check().unwrap(),
-        "main::main",
-        BuildProfile::Release,
-    )
-    .unwrap();
+    let checked = loaded.check().unwrap();
+    let artifact = build_export(&checked, "main::main", BuildProfile::Release).unwrap();
     let player = root.join("player");
     fs::write(&player, "player fixture").unwrap();
     let mut options = ExportOptions {
