@@ -7,6 +7,7 @@ use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetSource, ContentVersion, IoId},
     io::*,
+    profile::{Phase, Scope},
     queue::{charge, invalid},
     request_ids::RequestIds,
     result::{RejectCode, RejectReason, Rejected, Terminal},
@@ -211,6 +212,7 @@ impl Files {
         location: Option<pack::Location>,
         cancelled: &AtomicBool,
     ) -> Result<ReadFile<'_>, IoError> {
+        let _timing = Scope::new(Phase::ReadOpen);
         if cancelled.load(Ordering::Acquire) {
             return Err(failure("read cancelled"));
         }
@@ -260,6 +262,7 @@ impl<'a> ReadFile<'a> {
         cancelled: &AtomicBool,
         read_ahead: bool,
     ) -> Result<(), IoError> {
+        let _timing = Scope::new(Phase::ReadPayload);
         if let Some((entry, scratch)) = &mut self.compressed {
             if let Some(cursor) = cursor {
                 return entry
@@ -311,7 +314,7 @@ impl FileIo {
                 wake,
                 2,
                 move |(id, request), cancelled, read_ahead| {
-                    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Read);
+                    let _timing = Scope::new(Phase::Read);
                     let (scope, completion, result) = match request {
                         Request::Describe(r) => {
                             let result = files

@@ -3,345 +3,235 @@
 //! their totals can exceed the main thread's elapsed time. Normal builds erase
 //! scopes and counters; profiling builds use fixed atomic arrays without IO.
 
-/// Stages recorded by the shared runtime and device backend.
-#[derive(Clone, Copy)]
-#[repr(usize)]
-pub enum Phase {
-    Input,
-    Tick,
+macro_rules! profile_phases {
+    ($( $(#[$meta:meta])* $phase:ident => $name:literal, )+) => {
+        /// Stages recorded by the shared runtime and device backend.
+        #[derive(Clone, Copy)]
+        #[repr(usize)]
+        pub enum Phase { $( $(#[$meta])* $phase, )+ }
+
+        /// Report column names in phase index order.
+        pub const NAMES: [&str; [$($name),+].len()] = [$($name),+];
+    };
+}
+
+profile_phases! {
+    Input => "input",
+    Tick => "tick",
     /// Session scheduling, interpreter slices and native host work.
-    Session,
-    UiSync,
-    Record,
-    Compile,
-    ImagePlan,
-    Upload,
-    Replay,
-    GlyphRaster,
-    Draw,
-    Present,
-    Read,
-    Decode,
-    TargetCreate,
-    BufferCreate,
-    Poll,
-    Load,
-    Mount,
-    Sampler,
-    Composite,
-    Screen,
-    Clear,
-    SourceComposite,
-    CoverageComposite,
-    EffectComposite,
-    AudioMix,
-    AudioDecode,
-    VideoOpen,
-    VideoDecode,
-    OffscreenPlan,
-    CompositeBatch,
-    RetainedPlan,
+    Session => "session",
+    UiSync => "ui_sync",
+    Record => "record",
+    Compile => "compile",
+    ImagePlan => "image_plan",
+    Upload => "upload",
+    Replay => "replay",
+    GlyphRaster => "glyph_raster",
+    Draw => "draw",
+    Present => "present",
+    Read => "read",
+    Decode => "decode",
+    TargetCreate => "target_create",
+    BufferCreate => "buffer_create",
+    Poll => "poll",
+    Load => "load",
+    Mount => "mount",
+    Sampler => "sampler",
+    Composite => "composite",
+    Screen => "screen",
+    Clear => "clear",
+    SourceComposite => "source_composite",
+    CoverageComposite => "coverage_composite",
+    EffectComposite => "effect_composite",
+    AudioMix => "audio_mix",
+    AudioDecode => "audio_decode",
+    VideoOpen => "video_open",
+    VideoDecode => "video_decode",
+    OffscreenPlan => "offscreen_plan",
+    CompositeBatch => "composite_batch",
+    RetainedPlan => "retained_plan",
     /// Interpreter slices, including VM builtins; excludes external host dispatch.
-    VmSlice,
+    VmSlice => "vm_slice",
     /// External native dispatch, including continuation resumes.
-    HostCall,
+    HostCall => "host_call",
     /// Ordered copies between GPU-resident textures; includes submission CPU time.
-    TextureCopy,
+    TextureCopy => "texture_copy",
     /// Sampling native controller and touch state, before input dispatch.
-    ControlPoll,
+    ControlPoll => "control_poll",
     /// Host event wait, including timeout and scheduler wake latency.
-    HostWait,
+    HostWait => "host_wait",
     /// Offscreen payload admission, nested within TargetCreate.
-    TargetReserve,
+    TargetReserve => "target_reserve",
     /// Native offscreen pixel allocation, nested within TargetCreate.
-    TargetTexture,
+    TargetTexture => "target_texture",
     /// Native surface and scheduling owner creation, nested within TargetCreate.
-    TargetFramebuffer,
+    TargetFramebuffer => "target_framebuffer",
     /// Successfully constructed targets; instantaneous count, zero duration.
-    TargetCreated,
+    TargetCreated => "target_created",
     /// Cross-frame scratch cache hits; instantaneous count, zero duration.
-    TargetReused,
+    TargetReused => "target_reused",
     /// Native decoded pictures returned before timestamp lookahead.
-    VideoDecoded,
+    VideoDecoded => "video_decoded",
     /// Pictures published into the playback queue.
-    VideoQueued,
+    VideoQueued => "video_queued",
     /// Pictures selected for the current playback position.
-    VideoSelected,
+    VideoSelected => "video_selected",
     /// Queued pictures superseded by another already-due picture.
-    VideoDropped,
+    VideoDropped => "video_dropped",
     /// Video pictures installed into the stage model.
-    VideoStage,
+    VideoStage => "video_stage",
     /// New stage revisions captured by the player UI.
-    ProjectionChanged,
+    ProjectionChanged => "projection_changed",
     /// UI revisions published after resource preparation.
-    ProjectionPublished,
+    ProjectionPublished => "projection_published",
     /// Model invalidations delivered to presentation scheduling.
-    PresentationInvalidated,
+    PresentationInvalidated => "presentation_invalidated",
     /// Project committed VM properties into the shared stage.
-    UiStageSync,
+    UiStageSync => "ui_stage_sync",
     /// Build the player's immutable stage view and resource demand identity.
-    UiStageView,
+    UiStageView => "ui_stage_view",
     /// Resolve visible image requests, including candidate layout when needed.
-    UiImageRequests,
+    UiImageRequests => "ui_image_requests",
     /// Plan visible tiles and prepare their resource leases.
-    UiImageTiles,
+    UiImageTiles => "ui_image_tiles",
     /// Apply a stage view to the retained widget tree.
-    UiWidgetSync,
+    UiWidgetSync => "ui_widget_sync",
     /// Incremental VM collection driven by the session scheduler.
-    SessionGc,
+    SessionGc => "session_gc",
     /// Session activity/time updates, including bounded animation graph work.
-    SessionActivity,
+    SessionActivity => "session_activity",
     /// Task selection/maintenance and VM slices; excludes later host dispatch.
-    SessionSchedule,
+    SessionSchedule => "session_schedule",
     /// Project VM node properties into the authored stage; nested in its caller.
-    StageProperties,
+    StageProperties => "stage_properties",
     /// Synchronous session diagnostic formatting and stderr output, nested in Session.
-    SessionDiagnostics,
+    SessionDiagnostics => "session_diagnostics",
     /// Complete backend render/present call, including its nested preparation and submission.
-    RenderSubmission,
+    RenderSubmission => "render_submission",
     /// Session host maintenance before clock and interpreter work; may contain nested services.
-    SessionMaintenance,
+    SessionMaintenance => "session_maintenance",
     /// Begin a VM collection; incremental collection slices use SessionGc.
-    SessionGcBegin,
+    SessionGcBegin => "session_gc_begin",
     /// Poll media and deliver its session completions, nested in SessionMaintenance.
-    SessionMedia,
+    SessionMedia => "session_media",
     /// Advance save requests and storage completions, nested in SessionMaintenance.
-    SessionSaves,
+    SessionSaves => "session_saves",
     /// Poll localization and script asset reads, nested in SessionMaintenance.
-    SessionAssets,
+    SessionAssets => "session_assets",
     /// Finish native GPU encoding and submit work; may wait for driver capacity.
-    RenderFence,
+    RenderFence => "render_fence",
     /// Native draw call wall time, including driver backpressure.
-    DriverDraw,
+    DriverDraw => "driver_draw",
     /// Native clear call wall time, including driver backpressure.
-    DriverClear,
+    DriverClear => "driver_clear",
     /// Main-thread diagnostic collection and recording.
-    Observer,
+    Observer => "observer",
     /// Successfully admitted ordered effect chains; instantaneous count.
-    MacrotileChain,
+    MacrotileChain => "macrotile_chain",
     /// Effect outputs selected from ordered macrotile cells; instantaneous count.
-    MacrotilePass,
+    MacrotilePass => "macrotile_pass",
     /// Error recovery waiting for all native graphics, transfer and display work.
-    RenderDrain,
+    RenderDrain => "render_drain",
     /// Physical pressure before drawing begins; instantaneous count.
-    RenderPreparationPressure,
+    RenderPreparationPressure => "render_preparation_pressure",
     /// Physical pressure after drawing begins; instantaneous count.
-    RenderStreamPressure,
+    RenderStreamPressure => "render_stream_pressure",
     /// Scratch acquisitions during drawing beyond the prepared set; instantaneous count.
-    TargetUnplanned,
+    TargetUnplanned => "target_unplanned",
     /// Rebuilding an equal-capacity scratch view; includes scheduling metadata,
     /// without allocating color storage. Counts attempts, including failures.
-    TargetReshape,
+    TargetReshape => "target_reshape",
     /// Settle widget mutations, layout, transforms and input state.
-    UiRewrite,
+    UiRewrite => "ui_rewrite",
     /// Measure and arrange dirty widget subtrees, nested in UiRewrite.
-    UiLayout,
+    UiLayout => "ui_layout",
     /// Update widget transforms and clipping, nested in UiRewrite.
-    UiCompose,
+    UiCompose => "ui_compose",
     /// Record retained widget paint commands.
-    UiPaint,
+    UiPaint => "ui_paint",
     /// Capture or reuse candidate input/layout geometry.
-    UiGeometry,
+    UiGeometry => "ui_geometry",
     /// Resolve image metadata and resource leases in a stage projection.
-    UiImageResolve,
+    UiImageResolve => "ui_image_resolve",
     /// Prepare glyph residency and measured group ink before replay.
-    GlyphPrepare,
+    GlyphPrepare => "glyph_prepare",
     /// Look up or construct drawable geometry during replay, including nested draws.
-    GeometryPrepare,
+    GeometryPrepare => "geometry_prepare",
     /// Prepare image storage and metadata, including nested pixel transfers.
-    ImageAllocate,
+    ImageAllocate => "image_allocate",
     /// Transfer prepared image pixels into native texture storage.
-    ImageTransfer,
+    ImageTransfer => "image_transfer",
     /// Convert source pixels to the backend's upload encoding.
-    ImageConvert,
+    ImageConvert => "image_convert",
     /// Select reusable geometry buffers and upload changed vertex/index ranges.
-    GeometryUpload,
+    GeometryUpload => "geometry_upload",
     /// Pack ordered geometry segments into a backend upload layout.
-    GeometryPack,
+    GeometryPack => "geometry_pack",
     /// Resolve paint programs, uniforms and state, including nested driver calls.
-    DrawPrepare,
+    DrawPrepare => "draw_prepare",
     /// Record invalidated widget paint; excludes traversal of cached widgets.
-    UiPaintRecord,
+    UiPaintRecord => "ui_paint_record",
     /// Construct and validate a native shader or render pipeline on a cache miss.
-    PipelineCreate,
+    PipelineCreate => "pipeline_create",
     /// Acquire a native presentation image, including display or driver waits.
-    SurfaceAcquire,
+    SurfaceAcquire => "surface_acquire",
     /// Check the active desktop audio device and its negotiated format.
-    AudioDeviceCheck,
+    AudioDeviceCheck => "audio_device_check",
     /// Enumerate native audio format capabilities.
-    AudioDeviceFormats,
+    AudioDeviceFormats => "audio_device_formats",
     /// Create, start, suspend or close the native audio stream.
-    AudioStreamControl,
+    AudioStreamControl => "audio_stream_control",
     /// Finish recording a native GPU command buffer before queue submission.
-    CommandFinish,
+    CommandFinish => "command_finish",
     /// Player frame preparation and acceptance, including nested backend work.
-    PlayerRender,
+    PlayerRender => "player_render",
     /// Publish accepted geometry and presentation completion to the session.
-    FrameAccept,
+    FrameAccept => "frame_accept",
     /// Native window callbacks and event-loop maintenance outside nested phases.
-    HostEvent,
+    HostEvent => "host_event",
     /// Configure native presentation images after geometry or surface changes.
-    SurfaceConfigure,
+    SurfaceConfigure => "surface_configure",
     /// Scale and transform a font outline before rasterization.
-    GlyphOutline,
+    GlyphOutline => "glyph_outline",
     /// Expand a glyph stroke into a fillable path.
-    GlyphStroke,
+    GlyphStroke => "glyph_stroke",
     /// Allocate and rasterize the glyph's alpha coverage.
-    GlyphCoverage,
+    GlyphCoverage => "glyph_coverage",
     /// Desktop preparations that selected RGBA16F with four samples; instantaneous count.
-    RenderTier16f4x,
+    RenderTier16f4x => "render_tier_16f_4x",
     /// Desktop preparations that selected RGBA16F with one sample; instantaneous count.
-    RenderTier16f1x,
+    RenderTier16f1x => "render_tier_16f_1x",
     /// Desktop preparations that selected RGBA8 with one sample; instantaneous count.
-    RenderTier8u1x,
+    RenderTier8u1x => "render_tier_8u_1x",
     /// Create a sampled desktop image's native texture and view.
-    ImageTextureCreate,
+    ImageTextureCreate => "image_texture_create",
     /// Allocate a sampled desktop image before creating its view.
-    ImageNativeAllocate,
+    ImageNativeAllocate => "image_native_allocate",
     /// Create the shader-visible view of a sampled desktop image.
-    ImageNativeView,
+    ImageNativeView => "image_native_view",
     /// Shape styled text into positioned font runs.
-    UiTextShape,
+    UiTextShape => "ui_text_shape",
     /// Break shaped text into lines.
-    UiTextWrap,
+    UiTextWrap => "ui_text_wrap",
     /// Index glyph bounds for viewport culling.
-    UiTextPaintBounds,
+    UiTextPaintBounds => "ui_text_paint_bounds",
     /// Advance and route shared asset IO and decode completions.
-    AssetPump,
+    AssetPump => "asset_pump",
     /// Attach atlas views and publish their resolved backing pages.
-    AssetAtlas,
+    AssetAtlas => "asset_atlas",
     /// Publish audio decoder completions to pending segments.
-    MediaDecoded,
+    MediaDecoded => "media_decoded",
     /// Advance loaded audio activities and submit ready segments.
-    MediaActivities,
+    MediaActivities => "media_activities",
     /// Reclaim mixer activity state and deliver terminal events.
-    MediaAudioService,
+    MediaAudioService => "media_audio_service",
     /// Measure alpha support and opacity when registering immutable image pixels.
-    ImageCoverage,
+    ImageCoverage => "image_coverage",
+    /// Resolve a key and version to a file or archive entry, including cache misses.
+    ReadOpen => "read_open",
+    /// Read the requested bytes, including archive decompression when applicable.
+    ReadPayload => "read_payload",
 }
-pub const NAMES: [&str; 121] = [
-    "input",
-    "tick",
-    "session",
-    "ui_sync",
-    "record",
-    "compile",
-    "image_plan",
-    "upload",
-    "replay",
-    "glyph_raster",
-    "draw",
-    "present",
-    "read",
-    "decode",
-    "target_create",
-    "buffer_create",
-    "poll",
-    "load",
-    "mount",
-    "sampler",
-    "composite",
-    "screen",
-    "clear",
-    "source_composite",
-    "coverage_composite",
-    "effect_composite",
-    "audio_mix",
-    "audio_decode",
-    "video_open",
-    "video_decode",
-    "offscreen_plan",
-    "composite_batch",
-    "retained_plan",
-    "vm_slice",
-    "host_call",
-    "texture_copy",
-    "control_poll",
-    "host_wait",
-    "target_reserve",
-    "target_texture",
-    "target_framebuffer",
-    "target_created",
-    "target_reused",
-    "video_decoded",
-    "video_queued",
-    "video_selected",
-    "video_dropped",
-    "video_stage",
-    "projection_changed",
-    "projection_published",
-    "presentation_invalidated",
-    "ui_stage_sync",
-    "ui_stage_view",
-    "ui_image_requests",
-    "ui_image_tiles",
-    "ui_widget_sync",
-    "session_gc",
-    "session_activity",
-    "session_schedule",
-    "stage_properties",
-    "session_diagnostics",
-    "render_submission",
-    "session_maintenance",
-    "session_gc_begin",
-    "session_media",
-    "session_saves",
-    "session_assets",
-    "render_fence",
-    "driver_draw",
-    "driver_clear",
-    "observer",
-    "macrotile_chain",
-    "macrotile_pass",
-    "render_drain",
-    "render_preparation_pressure",
-    "render_stream_pressure",
-    "target_unplanned",
-    "target_reshape",
-    "ui_rewrite",
-    "ui_layout",
-    "ui_compose",
-    "ui_paint",
-    "ui_geometry",
-    "ui_image_resolve",
-    "glyph_prepare",
-    "geometry_prepare",
-    "image_allocate",
-    "image_transfer",
-    "image_convert",
-    "geometry_upload",
-    "geometry_pack",
-    "draw_prepare",
-    "ui_paint_record",
-    "pipeline_create",
-    "surface_acquire",
-    "audio_device_check",
-    "audio_device_formats",
-    "audio_stream_control",
-    "command_finish",
-    "player_render",
-    "frame_accept",
-    "host_event",
-    "surface_configure",
-    "glyph_outline",
-    "glyph_stroke",
-    "glyph_coverage",
-    "render_tier_16f_4x",
-    "render_tier_16f_1x",
-    "render_tier_8u_1x",
-    "image_texture_create",
-    "image_native_allocate",
-    "image_native_view",
-    "ui_text_shape",
-    "ui_text_wrap",
-    "ui_text_paint_bounds",
-    "asset_pump",
-    "asset_atlas",
-    "media_decoded",
-    "media_activities",
-    "media_audio_service",
-    "image_coverage",
-];
 
 /// Record an instantaneous event in the phase's call count without a duration.
 #[inline]
