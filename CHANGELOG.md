@@ -4,6 +4,8 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Size the desktop player's initial texture upload buffers from the window's pixel dimensions. Larger image uploads continue to allocate on demand.
+- Reuse desktop image staging buffers for video uploads once the GPU has finished reading them.
 - Remove the node's `preload` property. The player uses spare loading capacity to prepare a retained modal page's visible layers while the page is hidden.
 - During a dialogue wait, the player can prepare the next image or a literal group of image layers, including descriptors forwarded through helpers or selected by matching a known expression name. Scrolling, controls and dialogue share the same spare image budget. Masked transitions also start preparing their mask while the old scene is still on screen.
 - `layered_image` accepts an array of image descriptors. Bind the whole composition, one layer, or individual properties with ordinary bindings. Existing scripts passing a callback can wrap it in `derive`.

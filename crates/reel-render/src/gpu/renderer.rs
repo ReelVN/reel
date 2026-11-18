@@ -201,7 +201,10 @@ impl Renderer {
                 &self.budgets.transient,
             )?;
         }
-        self.images.prepare_staging(&self.gpu, &self.budgets)?;
+        let viewport_upload =
+            super::resources::row_bytes(size[0]).saturating_mul(u64::from(size[1]));
+        self.images
+            .prepare_staging(&self.gpu, &self.budgets, viewport_upload)?;
         self.gpu.check()
     }
     pub(super) fn reserve_readback(

@@ -47,7 +47,12 @@ impl Default for Cache {
     }
 }
 impl Cache {
-    pub(super) fn warm(&mut self, gpu: &Gpu, budgets: &Budgets) -> Result<(), GpuError> {
+    pub(super) fn warm(
+        &mut self,
+        gpu: &Gpu,
+        budgets: &Budgets,
+        viewport_upload: u64,
+    ) -> Result<(), GpuError> {
         if self.warmed {
             return Ok(());
         }
@@ -55,6 +60,7 @@ impl Cache {
         let bytes = gpu
             .limits
             .image_upload_bytes_per_prepare
+            .min(viewport_upload)
             .min(gpu.limits.resource_bytes / 8)
             / alignment
             * alignment;
@@ -269,19 +275,19 @@ mod tests {
         eprintln!(
             "8 completed texture buffer uploads: staging_buffer_creations=1 (former=8), native_copy_calls=8, retained_capacity=4096"
         );
-        cache.warm(&gpu, &budgets).unwrap();
-        let bytes = gpu.limits.image_upload_bytes_per_prepare;
+        let bytes = 4096;
+        cache.warm(&gpu, &budgets, bytes).unwrap();
         assert_eq!(budgets.resources.usage().bytes, bytes * 2);
         let in_flight = cache.acquire(&gpu, &budgets, bytes).unwrap().unwrap();
         let creations = gpu.upload_creations.staging.load(Ordering::Relaxed);
-        cache.warm(&gpu, &budgets).unwrap();
+        cache.warm(&gpu, &budgets, bytes * 2).unwrap();
         assert_eq!(
             gpu.upload_creations.staging.load(Ordering::Relaxed),
             creations
         );
         cache.put(in_flight);
         cache.clear();
-        cache.warm(&gpu, &budgets).unwrap();
+        cache.warm(&gpu, &budgets, bytes).unwrap();
         assert_eq!(budgets.resources.usage().bytes, 0);
         assert_eq!(budgets.transient.usage().bytes, 0);
     }

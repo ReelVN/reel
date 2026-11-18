@@ -222,7 +222,22 @@ fn nv12_submit_preserves_producer_and_reuses_only_matching_completed_planes() {
         .unwrap();
     renderer.poll().unwrap();
     let (third, third_pixels) = make_frame(Yuv420Layout::Nv12, 4);
+    let settled = renderer.usage().transient;
+    let staging = renderer
+        .gpu
+        .upload_creations
+        .staging
+        .load(Ordering::Relaxed);
     let prepared = renderer.prepare(&third).unwrap();
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .staging
+            .load(Ordering::Relaxed),
+        staging,
+        "completed video staging is reused"
+    );
     assert_eq!(
         renderer
             .gpu
@@ -242,7 +257,10 @@ fn nv12_submit_preserves_producer_and_reuses_only_matching_completed_planes() {
         .unwrap();
     renderer.poll().unwrap();
     assert!(third_pixels.upgrade().is_none());
-    assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
+    assert!(!renderer.has_pending_image_uploads());
+    assert_eq!(renderer.usage().transient, settled);
+    assert!(renderer.images.clear_idle());
+    assert!(renderer.usage().transient < settled);
     assert_eq!(pool.usage().bytes, 0);
 }
 

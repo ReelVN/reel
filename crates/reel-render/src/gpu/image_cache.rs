@@ -55,8 +55,16 @@ struct Copy {
 }
 
 impl ImageCache {
-    pub(super) fn prepare_staging(&self, gpu: &Gpu, budgets: &Budgets) -> Result<(), GpuError> {
-        self.staging.lock().unwrap().warm(gpu, budgets)
+    pub(super) fn prepare_staging(
+        &self,
+        gpu: &Gpu,
+        budgets: &Budgets,
+        viewport_upload: u64,
+    ) -> Result<(), GpuError> {
+        self.staging
+            .lock()
+            .unwrap()
+            .warm(gpu, budgets, viewport_upload)
     }
     pub(super) fn submitted(&self) {
         self.images.lock().unwrap().submitted();
@@ -484,8 +492,24 @@ impl ImageCache {
                 } else {
                     reserve_gpu(item.resident)?
                 };
-                let upload = reserve_gpu(item.staging)?;
-                let mut image = super::video::upload(gpu, &mut encoder, source, recycled)?;
+                let upload = match self
+                    .staging
+                    .lock()
+                    .unwrap()
+                    .acquire(gpu, budgets, item.staging)
+                {
+                    Ok(buffer) => buffer,
+                    Err(error) => {
+                        deferred = Some(error);
+                        break;
+                    }
+                };
+                if upload.is_none() {
+                    staging.push(reserve_gpu(item.staging)?);
+                }
+                let mut image =
+                    super::video::upload(gpu, &mut encoder, source, recycled, upload.as_deref())?;
+                buffers.extend(upload);
                 image.residency = Some(residency);
                 image.source = Some(resources::ResourceSource {
                     version: item.source.version().clone(),
@@ -498,7 +522,6 @@ impl ImageCache {
                     source: item.source.clone(),
                     next_row: None,
                 });
-                staging.push(upload);
             }
         }
         if !uploaded.is_empty() {

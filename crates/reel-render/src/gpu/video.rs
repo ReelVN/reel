@@ -43,6 +43,7 @@ pub(super) fn upload(
     encoder: &mut wgpu::CommandEncoder,
     image: &Yuv420Image,
     recycled: Option<Image>,
+    reusable: Option<&super::upload::Buffer>,
 ) -> Result<Image, GpuError> {
     gpu.check()?;
     let size = image.size();
@@ -118,25 +119,35 @@ pub(super) fn upload(
         }
     };
     let (_, staging_size) = costs(image);
-    #[cfg(test)]
-    gpu.upload_creations
-        .staging
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("YUV video upload"),
-        size: staging_size,
-        usage: wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: true,
-    });
+    let one_off;
+    let staging = if let Some(buffer) = reusable {
+        &buffer.buffer
+    } else {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
+        #[cfg(test)]
+        gpu.upload_creations
+            .staging
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        one_off = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("YUV video upload"),
+            size: staging_size,
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        &one_off
+    };
     gpu.check()?;
     let mut offset = 0u64;
     let planes = output.yuv.as_mut().unwrap();
     {
-        let mut mapped = staging.slice(..).get_mapped_range_mut().map_err(|error| {
-            gpu.check()
-                .err()
-                .unwrap_or_else(|| GpuError::Device(error.to_string()))
-        })?;
+        let mut mapped = staging
+            .slice(..staging_size)
+            .get_mapped_range_mut()
+            .map_err(|error| {
+                gpu.check()
+                    .err()
+                    .unwrap_or_else(|| GpuError::Device(error.to_string()))
+            })?;
         for i in 0..image.plane_count() {
             let h = image.plane_size(i)[1];
             let visible = image.row_bytes(i) as usize;
@@ -173,7 +184,7 @@ pub(super) fn upload(
         let row = u64::from(image.row_bytes(i)).div_ceil(256) * 256;
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
-                buffer: &staging,
+                buffer: staging,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset,
                     bytes_per_row: Some(u32::try_from(row).map_err(|_| {
@@ -192,7 +203,10 @@ pub(super) fn upload(
         );
         offset += row * u64::from(h);
     }
-    encoder.copy_buffer_to_buffer(&staging, offset, &planes.color, 0, 64);
+    encoder.copy_buffer_to_buffer(staging, offset, &planes.color, 0, 64);
+    if let Some(buffer) = reusable {
+        buffer.remap(encoder);
+    }
     #[cfg(test)]
     gpu.upload_creations
         .copies
