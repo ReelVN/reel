@@ -483,6 +483,10 @@ impl Recording {
             geometry: geometry.delta(self.last_geometry),
         };
         self.last_geometry = geometry;
+        self.record_row(title, row, story)
+    }
+
+    fn record_row(&mut self, title: &str, row: Row, story: Option<&StoryRuntime>) -> bool {
         self.timeline.record(title, &row, story);
         #[cfg(any(feature = "vm-execution-counts", feature = "vm-profiling"))]
         if row.phases.calls[reel_core::profile::Phase::Present as usize] != 0 {
@@ -501,18 +505,18 @@ impl Recording {
             }
         }
         self.segment.1.add(row);
-        if !cfg!(target_os = "vita") && active >= 50_000 {
+        if !cfg!(target_os = "vita") && row.active >= 50_000 {
             if self.slow.len() == SLOW {
                 self.slow.pop_front();
             }
             self.slow.push_back(row);
         }
-        if !cfg!(target_os = "vita") && elapsed - self.window_start >= 250_000 {
+        if !cfg!(target_os = "vita") && row.elapsed - self.window_start >= 250_000 {
             if self.windows.len() == WINDOWS {
                 self.windows.pop_front();
             }
             self.windows.push_back(std::mem::take(&mut self.pending));
-            self.window_start = elapsed;
+            self.window_start = row.elapsed;
         }
         row.phases.calls[reel_core::profile::Phase::Present as usize] != 0
     }

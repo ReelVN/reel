@@ -70,23 +70,36 @@ fn vm_snapshot_reports_selected_task_execution_and_collection_progress() {
     assert_eq!(field(collected, "slices"), field(sample, "slices"));
     assert_eq!(field(collected, "gc_phase"), 0);
     assert_eq!(vm_sample(None), [ABSENT; VM_NAMES.len()]);
+    let mut recording = Recording::new();
+    recording.record(Instant::now(), Some(&story), 1024, "waiting");
+    assert_eq!(
+        recording.segment.1.vm,
+        story
+            .driver()
+            .adapter()
+            .vm()
+            .heap()
+            .budget_usage()
+            .charged_bytes()
+    );
+    assert_eq!(recording.segment.1.gpu, 1024);
 }
 
 #[test]
 fn recording_keeps_bounded_history_and_writes_complete_totals() {
-    let live = Live::start().unwrap();
     let mut recording = Recording::new();
+    let draw = reel_core::profile::Phase::Draw as usize;
+    let startup_calls = recording.startup.phases.calls[draw];
     for index in 1..=600 {
-        recording.started = Instant::now() - std::time::Duration::from_millis(index * 300);
-        drop(reel_core::profile::Scope::new(
-            reel_core::profile::Phase::Draw,
-        ));
-        recording.record(
-            Instant::now() - std::time::Duration::from_millis(60),
-            None,
-            1024,
-            if index <= 300 { "First" } else { "Second" },
-        );
+        let mut row = Row {
+            elapsed: index * 300_000,
+            active: 60_000,
+            max_loop: 60_000,
+            loops: 1,
+            ..Default::default()
+        };
+        row.phases.calls[draw] = 1;
+        recording.record_row(if index <= 300 { "First" } else { "Second" }, row, None);
     }
     assert_eq!(recording.windows.len(), WINDOWS);
     assert_eq!(recording.slow.len(), SLOW);
@@ -94,10 +107,7 @@ fn recording_keeps_bounded_history_and_writes_complete_totals() {
     assert_eq!(recording.segments[0].1.loops, 300);
     assert_eq!(recording.segment.1.loops, 300);
     recording.record_device([77; device::NAMES.len()]);
-    assert_eq!(
-        recording.total.phases.calls[reel_core::profile::Phase::Draw as usize],
-        600
-    );
+    assert_eq!(recording.total.phases.calls[draw], startup_calls + 600);
     let mut output = Vec::new();
     recording
         .report(&mut output, "Window\tlight", "Device failure")
@@ -130,5 +140,4 @@ fn recording_keeps_bounded_history_and_writes_complete_totals() {
     assert_eq!(rows[0].split('\t').count(), device::NAMES.len() + 1);
     assert_eq!(rows[1].split('\t').count(), device::NAMES.len() + 1);
     assert!(rows[1].ends_with("\t77"));
-    drop(live);
 }
