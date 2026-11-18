@@ -47,6 +47,8 @@ struct State<R, E> {
     next_client: u64,
     max_clients: u32,
     handler: Option<Arc<Handler<R, E>>>,
+    workers: usize,
+    max_workers: usize,
     closed: bool,
 }
 type Shared<R, E> = Arc<(Mutex<State<R, E>>, Condvar)>;
@@ -66,7 +68,7 @@ pub(super) fn check_completion(ticket: &BudgetTicket) -> Result<(), RejectReason
     Ok(())
 }
 
-/// One bounded background lane, shared by all resource kinds using the adapter.
+/// A bounded background queue, shared by all clients of the adapter.
 pub(crate) struct Worker<R, E> {
     state: Shared<R, E>,
     cancel_event: fn(&mut E),
@@ -105,6 +107,8 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                     next_client: 1,
                     max_clients: limits.max_requests,
                     handler: Some(Arc::new(handler)),
+                    workers: 0,
+                    max_workers: 1,
                     closed: false,
                 }),
                 Condvar::new(),
@@ -112,6 +116,10 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
             cancel_event,
             client: 0,
         }
+    }
+    pub(super) fn with_parallelism(self, workers: usize) -> Self {
+        self.state.0.lock().unwrap().max_workers = workers;
+        self
     }
     /// Shares the worker, queue and handler without starting another thread.
     /// Client registrations are bounded by the lane's request ceiling.
@@ -165,10 +173,12 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                 reason: closed(),
             });
         }
-        if let Some(handler) = state.handler.clone() {
+        if state.workers <= state.active.len()
+            && let Some(handler) = state.handler.clone()
+        {
             let shared = self.state.clone();
             let cancel_event = self.cancel_event;
-            if let Err(error) = std::thread::Builder::new()
+            let worker = std::thread::Builder::new()
                 .name("reel-resource".into())
                 .spawn(move || {
                     let mut observed_quantum = Duration::ZERO;
@@ -242,16 +252,22 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                     }
                     let wakes = shared.0.lock().unwrap().wakes.clone();
                     notify(&wakes);
-                })
-            {
-                return Err(Rejected {
-                    request,
-                    reason: RejectReason::new(RejectCode::Unavailable, error.to_string()),
                 });
+            match worker {
+                Ok(_) => {
+                    state.workers += 1;
+                    if state.workers == state.max_workers {
+                        state.handler = None;
+                    }
+                }
+                Err(error) if state.workers == 0 => {
+                    return Err(Rejected {
+                        request,
+                        reason: RejectReason::new(RejectCode::Unavailable, error.to_string()),
+                    });
+                }
+                Err(_) => state.handler = None,
             }
-            // The running thread is now the only handler owner, so its Files
-            // and metadata tickets are released when accepted work has settled.
-            state.handler = None;
         }
         let cancelled = Arc::new(AtomicBool::new(false));
         state
@@ -352,7 +368,7 @@ impl<R, E> Drop for Worker<R, E> {
         let wakes = state.wakes.clone();
         drop(state);
         drop(handler);
-        self.state.1.notify_one();
+        self.state.1.notify_all();
         notify(&wakes);
     }
 }

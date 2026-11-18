@@ -402,6 +402,45 @@ fn rgba8_png_requests_decode_from_header_without_a_worker_probe() {
     assert_eq!(lease.read_pixels().unwrap().bytes(), pixels);
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[test]
+fn independent_pngs_share_decode_workspace_and_cancellation_releases_the_slot() {
+    let pixels = [25, 50, 75, 255].repeat(32 * 32);
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, 32, 32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+    let assets = Assets::directory(AssetOptions {
+        decode_bytes: 320 << 10,
+        ..Default::default()
+    });
+    let first = assets.request_encoded("first".into(), &encoded).unwrap();
+    let second = assets.request_encoded("second".into(), &encoded).unwrap();
+    let same = assets.request_encoded("first".into(), &encoded).unwrap();
+    assets.maintain();
+    {
+        let service = assets.0.borrow();
+        assert!(matches!(service.loads[&first].phase, Phase::Decoding(_)));
+        assert!(matches!(service.loads[&second].phase, Phase::Decoding(_)));
+        assert!(matches!(service.loads[&same].phase, Phase::DecodePlainPng));
+        assert_eq!(service.pending_pngs.len(), 2);
+    }
+    assets.cancel(first);
+    for id in [second, same] {
+        let image = load_until_done(&assets, id).unwrap();
+        assert_eq!(image.read_pixels().unwrap().bytes(), pixels);
+    }
+    assert!(assets.0.borrow().pending_pngs.is_empty());
+    assert_eq!(assets.temporary_pool().usage().bytes, 0);
+}
+
 #[test]
 fn static_webp_decodes_by_content_with_reserved_workspace() {
     let pixels = [1, 23, 45, 128].repeat(19 * 5);

@@ -16,7 +16,14 @@ pub type ArtworkDecoder<'a> = (Box<dyn ImageDecoder + 'a>, u64);
 
 /// An RGBA8 PNG's first chunk contains its exact decoded shape.
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-pub(crate) fn rgba8_png_shape(bytes: &[u8]) -> Option<([u32; 2], u64)> {
+pub(crate) struct Rgba8Png {
+    pub size: [u32; 2],
+    pub bytes: u64,
+    pub data_only: bool,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub(crate) fn rgba8_png_shape(bytes: &[u8]) -> Option<Rgba8Png> {
     const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     const HEADER_BYTES: usize = 33;
     if !bytes.starts_with(SIGNATURE) {
@@ -28,7 +35,32 @@ pub(crate) fn rgba8_png_shape(bytes: &[u8]) -> Option<([u32; 2], u64)> {
         return None;
     }
     let pixels = u64::from(info.width) * u64::from(info.height);
-    Some(([info.width, info.height], pixels.checked_mul(4)?))
+    Some(Rgba8Png {
+        size: [info.width, info.height],
+        bytes: pixels.checked_mul(4)?,
+        data_only: png_has_only_image_data(&bytes[HEADER_BYTES..]),
+    })
+}
+
+/// Data-only PNGs have no variable-size metadata to claim the decoder's full
+/// allowance. Walk chunk headers only. Unusual inputs use the ordinary budget.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn png_has_only_image_data(mut chunks: &[u8]) -> bool {
+    for _ in 0..256 {
+        let Some(header) = chunks.get(..8) else { break };
+        if &header[4..] == b"IEND" {
+            return header[..4] == [0; 4] && chunks.len() == 12;
+        }
+        if &header[4..] != b"IDAT" {
+            break;
+        }
+        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let Some(rest) = length.checked_add(12).and_then(|end| chunks.get(end..)) else {
+            break;
+        };
+        chunks = rest;
+    }
+    false
 }
 
 /// Inspect a source file by its contents.

@@ -105,6 +105,7 @@ enum Phase {
     Probe,
     Probing(WorkId),
     Decode,
+    DecodePlainPng,
     Decoding(WorkId),
     Done(Result<ResourceLease, String>),
     Bytes(ResourceVersion, Arc<OwnedBytes>),
@@ -151,6 +152,7 @@ struct Service {
     streams: stream::Streams,
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
+    pending_pngs: Vec<(WorkId, AssetSource)>,
     #[cfg(test)]
     pumps: usize,
 }
@@ -326,6 +328,7 @@ impl Assets {
             streams: stream::Streams::default(),
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
+            pending_pngs: Vec::new(),
             #[cfg(test)]
             pumps: 0,
         })))
@@ -352,6 +355,7 @@ impl Assets {
     pub fn close(&self) {
         let mut service = self.0.borrow_mut();
         service.loads.clear();
+        service.pending_pngs.clear();
         service.atlas_pages.clear();
         service.origins.clear();
         service.streams.close();
@@ -759,6 +763,7 @@ impl Service {
             if event.scope != Scope::Process {
                 continue;
             }
+            self.pending_pngs.retain(|(id, _)| *id != event.id);
             let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Probing(id) | Phase::Decoding(id) if id == event.id)) else { continue; };
             let result = match event.result {
                 Terminal::Completed(data) if matches!(load.phase, Phase::Probing(_)) => {
@@ -910,7 +915,7 @@ impl Service {
                 }
                 load.phase = Phase::Done(result);
             }
-            Phase::Probe | Phase::Decode => {
+            Phase::Probe | Phase::Decode | Phase::DecodePlainPng => {
                 let mut probe = matches!(load.phase, Phase::Probe);
                 if probe
                     && load
@@ -955,15 +960,19 @@ impl Service {
                 }
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 if probe
-                    && let Some((size, output)) =
+                    && let Some(png) =
                         crate::artwork::rgba8_png_shape(load.input.as_ref().unwrap().as_slice())
-                    && let Some(temporary) = output.checked_mul(2)
+                    && let Some(temporary) = png.bytes.checked_mul(2)
                 {
                     // Reserve the same storage as the decoder's full probe.
-                    load.size = size;
-                    load.output = output;
+                    load.size = png.size;
+                    load.output = png.bytes;
                     load.temporary = temporary;
-                    load.phase = Phase::Decode;
+                    load.phase = if png.data_only {
+                        Phase::DecodePlainPng
+                    } else {
+                        Phase::Decode
+                    };
                     probe = false;
                 }
                 if probe
@@ -1031,7 +1040,27 @@ impl Service {
                 if !probe && load.temporary > decode_bytes {
                     return Err("image decode limit exceeded".into());
                 }
-                if self.temporary.usage().bytes > self.io_workspace_bytes {
+                let plain_png = matches!(load.phase, Phase::DecodePlainPng);
+                let workspace = if plain_png {
+                    // Ordinary RGBA8 rows plus fixed inflater/row workspace.
+                    // Small user budgets retain their existing decoder limit.
+                    load.temporary.saturating_add(128 << 10).min(decode_bytes)
+                } else if load.texture.is_some() {
+                    load.temporary
+                } else {
+                    decode_bytes
+                };
+                if plain_png {
+                    if self.pending_pngs.len() >= decode::MAX_IMAGE_WORKERS
+                        || self
+                            .pending_pngs
+                            .iter()
+                            .any(|(_, source)| source == &load.source)
+                        || self.temporary.available_bytes() < workspace
+                    {
+                        return Ok(());
+                    }
+                } else if self.temporary.usage().bytes > self.io_workspace_bytes {
                     return Ok(());
                 }
                 // A concurrent request may have completed while this one waited
@@ -1042,27 +1071,19 @@ impl Service {
                     load.phase = Phase::Done(Ok(lease));
                     return Ok(());
                 }
-                let output = self
-                    .output
-                    .reserve(if probe {
-                        TextureHeader::LEN as u64
-                    } else {
-                        load.output
-                    })
-                    .map_err(|e| format!("image resident budget: {}", e.message))?;
-                let prepared = load
-                    .input
-                    .as_ref()
-                    .unwrap()
-                    .as_slice()
-                    .starts_with(TextureHeader::MAGIC);
+                let output_bytes = if probe {
+                    TextureHeader::LEN as u64
+                } else {
+                    load.output
+                };
+                let output = match self.output.reserve(output_bytes) {
+                    Ok(ticket) => ticket,
+                    Err(_) if !self.pending_pngs.is_empty() => return Ok(()),
+                    Err(error) => return Err(format!("image resident budget: {}", error.message)),
+                };
                 let temporary = self
                     .temporary
-                    .reserve(if prepared {
-                        if probe { 0 } else { load.temporary }
-                    } else {
-                        decode_bytes
-                    })
+                    .reserve(workspace)
                     .map_err(|e| format!("image decode limit: {}", e.message))?;
                 let request = WorkRequest {
                     kind: if probe {
@@ -1081,6 +1102,9 @@ impl Service {
                 };
                 match self.executor.as_mut().unwrap().submit(request) {
                     Ok(id) => {
+                        if plain_png {
+                            self.pending_pngs.push((id, load.source.clone()));
+                        }
                         load.phase = if probe {
                             Phase::Probing(id)
                         } else {
