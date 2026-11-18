@@ -3471,6 +3471,7 @@ dependencies = [
 name = "reel-engine"
 version = "0.4.0-dev.1"
 dependencies = [
+ "arrayvec",
  "aside-compiler",
  "aside-host",
  "aside-std",

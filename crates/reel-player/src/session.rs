@@ -1106,6 +1106,9 @@ impl SessionUi {
     pub(crate) fn images_need_poll(&self) -> bool {
         self.images_pending() || self.images.has_result_pending()
     }
+    pub(crate) fn set_story_prediction(&mut self, source: Option<&str>) {
+        self.images.set_story_prediction(source);
+    }
     /// Immutable leases for the currently published stage, suitable for a frame snapshot.
     pub fn image_resources(&self) -> &[reel_ui::resources::ResourceLease] {
         self.stage.as_ref().map_or(&[], |view| &view.resources)

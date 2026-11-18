@@ -24,6 +24,25 @@ struct Pending {
     prefetch: bool,
 }
 
+#[derive(Default)]
+struct PrefetchSources {
+    stage: BTreeSet<String>,
+    story: Option<Box<str>>,
+}
+
+impl PrefetchSources {
+    fn contains(&self, source: &str) -> bool {
+        self.story.as_deref() == Some(source) || self.stage.contains(source)
+    }
+
+    fn candidates(&self) -> impl Iterator<Item = &str> {
+        self.story
+            .as_deref()
+            .into_iter()
+            .chain(self.stage.iter().map(String::as_str))
+    }
+}
+
 // Keep metadata for recently displayed uploads. Pixel storage is already gone;
 // renderer pressure can still evict the GPU copy and request exact-version IO.
 struct RecentImages {
@@ -69,7 +88,8 @@ pub(crate) struct Images {
     pub(crate) tiles: BTreeMap<String, TileDemand>,
     skipped: BTreeSet<String>,
     wanted: BTreeMap<String, Option<String>>,
-    prefetch: BTreeSet<String>,
+    prefetch: PrefetchSources,
+    story_prediction_changed: bool,
     approaching: Vec<reel_ui::stage::NodeId>,
     mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
@@ -111,7 +131,8 @@ impl Images {
             tiles: BTreeMap::new(),
             skipped: BTreeSet::new(),
             wanted: BTreeMap::new(),
-            prefetch: BTreeSet::new(),
+            prefetch: PrefetchSources::default(),
+            story_prediction_changed: false,
             approaching: Vec::new(),
             mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
@@ -174,7 +195,7 @@ impl Images {
             && (!requests.index.has_skin_paths
                 || requests
                     .preloaded()
-                    .eq(self.prefetch.iter().map(String::as_str)));
+                    .eq(self.prefetch.stage.iter().map(String::as_str)));
         if same_prefetch
             && self.failure.is_none()
             && self.manifests.is_empty()
@@ -192,7 +213,7 @@ impl Images {
             return self.settled;
         }
         if !same_prefetch {
-            self.prefetch = requests.preloaded().map(str::to_owned).collect();
+            self.prefetch.stage = requests.preloaded().map(str::to_owned).collect();
             self.approaching.clone_from(&requests.approaching);
         }
         if !same_index {
@@ -228,18 +249,38 @@ impl Images {
     pub(crate) fn is_required(&self, source: &str) -> bool {
         self.wanted.contains_key(source)
     }
+    pub(crate) fn set_story_prediction(&mut self, source: Option<&str>) {
+        if self.prefetch.story.as_deref() != source {
+            self.prefetch.story = source.map(Box::from);
+            // Apply alongside the next visible demand so it can take over
+            // an in-flight read when the dialogue advances directly to the image.
+            self.story_prediction_changed = true;
+        }
+    }
+    #[cfg(test)]
     pub fn request(&mut self, wanted: BTreeMap<String, Option<String>>) {
+        self.request_paths(wanted, BTreeSet::new());
+    }
+    pub(crate) fn request_paths(
+        &mut self,
+        wanted: BTreeMap<String, Option<String>>,
+        prefetch: BTreeSet<String>,
+    ) {
         if self.closed {
             return;
         }
         self.request_index = None;
         self.mounted = wanted.keys().cloned().collect();
         self.wanted = wanted;
-        self.prefetch.clear();
+        self.prefetch = PrefetchSources {
+            stage: prefetch,
+            story: None,
+        };
         self.approaching.clear();
         self.reconcile_requests();
     }
     fn reconcile_requests(&mut self) {
+        self.story_prediction_changed = false;
         self.settled = false;
         // A returning GPU image already satisfies foreground demand.
         for source in self.wanted.keys() {
@@ -293,6 +334,7 @@ impl Images {
         }) {
             self.recent.insert(source, lease);
         }
+        self.trim_hidden_prefetch();
     }
     pub fn poll(&mut self) -> Result<bool, String> {
         self.assets.maintain();
@@ -301,6 +343,9 @@ impl Images {
         }
         if let Some(failure) = &self.failure {
             return Err(failure.clone());
+        }
+        if self.story_prediction_changed {
+            self.reconcile_requests();
         }
         if self.settled {
             return Ok(true);
@@ -429,7 +474,7 @@ impl Images {
         {
             let Some(source) = self
                 .prefetch
-                .iter()
+                .candidates()
                 .find(|source| {
                     !self.wanted.contains_key(*source)
                         && !self.loaded.contains_key(*source)
@@ -437,7 +482,7 @@ impl Images {
                         && !self.skipped.contains(*source)
                         && !self.is_loading(source)
                 })
-                .cloned()
+                .map(str::to_owned)
             else {
                 break;
             };
@@ -488,7 +533,10 @@ impl Images {
         self.loaded
             .iter()
             .filter_map(|(source, lease)| {
-                if !self.prefetch.contains(source) || self.wanted.contains_key(source) {
+                if !self.prefetch.contains(source)
+                    || self.wanted.contains_key(source)
+                    || self.displayed.contains(source)
+                {
                     return None;
                 }
                 let backing = lease.image_backing();
@@ -506,6 +554,21 @@ impl Images {
                 }
             })
             .sum()
+    }
+    fn trim_hidden_prefetch(&mut self) {
+        if (self.prefetch.story.is_none() && self.prefetch.stage.is_empty())
+            || self.hidden_prefetch_bytes() <= self.assets.prefetch_available(0)
+        {
+            return;
+        }
+        for (key, lease) in self.loaded.extract_if(.., |key, _| {
+            self.prefetch.contains(key)
+                && !self.wanted.contains_key(key)
+                && !self.displayed.contains(key)
+        }) {
+            self.recent.insert(key.clone(), lease);
+            self.skipped.insert(key);
+        }
     }
     fn free_slots(&self) -> usize {
         (self.assets.worker_limits().max_requests as usize).saturating_sub(self.pending.len())
@@ -695,22 +758,10 @@ impl Images {
         // A previously required image may now be only a skin alternative.
         // Releasing the old frame must not turn its whole pixel allocation into
         // speculative residency outside the prefetch quota.
-        if self
+        let retiring_prefetch = self
             .displayed
             .iter()
-            .any(|key| !self.wanted.contains_key(key) && self.prefetch.contains(key))
-            && self.hidden_prefetch_bytes() > self.assets.prefetch_available(0)
-        {
-            for key in &self.displayed {
-                if !self.wanted.contains_key(key)
-                    && self.prefetch.contains(key)
-                    && let Some(lease) = self.loaded.remove(key)
-                {
-                    self.recent.insert(key.clone(), lease);
-                    self.skipped.insert(key.clone());
-                }
-            }
-        }
+            .any(|key| !self.wanted.contains_key(key) && self.prefetch.contains(key));
         self.displayed = self.wanted.keys().cloned().collect();
         self.displayed.extend(
             self.tiles
@@ -718,6 +769,9 @@ impl Images {
                 .filter(|(_, tile)| tile.required)
                 .map(|(source, _)| source.clone()),
         );
+        if retiring_prefetch {
+            self.trim_hidden_prefetch();
+        }
         for (source, lease) in self.loaded.extract_if(.., |source, _| {
             !self.mounted.contains(source)
                 && !self.prefetch.contains(source)
@@ -734,7 +788,7 @@ impl Images {
             self.assets.cancel(pending.id);
         }
         self.wanted.clear();
-        self.prefetch.clear();
+        self.prefetch = PrefetchSources::default();
         self.approaching.clear();
         self.metadata_ready = true;
         self.mounted.clear();

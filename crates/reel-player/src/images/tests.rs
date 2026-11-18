@@ -103,7 +103,7 @@ fn visible_skin_prepares_the_next_state_once_and_drops_offscreen_demand() {
     let view = StageView::capture(&stage);
     let format = images.shader_format;
     images.request_stage_images(view.viewport_image_requests(vec![id], vec![], format));
-    assert!(images.prefetch.is_empty());
+    assert!(images.prefetch.stage.is_empty());
     images.request_stage_images(view.viewport_image_requests(vec![], vec![], format));
     assert!(images.is_required(base) && !images.is_required(hover));
     assert!(images.prefetch.contains(hover));
@@ -133,7 +133,7 @@ fn visible_skin_prepares_the_next_state_once_and_drops_offscreen_demand() {
     assert_eq!(images.hidden_prefetch_bytes(), 0);
     images.request_stage_images(view.viewport_image_requests(vec![id], vec![], format));
     images.commit();
-    assert!(images.prefetch.is_empty());
+    assert!(images.prefetch.stage.is_empty());
     assert!(!images.loaded.contains_key(base));
 }
 
@@ -158,6 +158,42 @@ fn visible_image_takes_over_in_flight_prefetch() {
 }
 
 #[test]
+fn dialogue_prediction_yields_to_a_visible_request_in_the_same_update() {
+    let (mut images, wake) = loader();
+    let source = "assets/panels.png";
+    images.set_story_prediction(Some(source));
+    assert!(images.poll().unwrap());
+    let id = images.pending[0].id;
+
+    images.set_story_prediction(None);
+    let (mut stage, node) = preload_stage(source);
+    let mut image = stage.node(node).unwrap().clone();
+    image.props.visible = true;
+    image.props.preload = false;
+    stage.update(node, image.kind, image.props).unwrap();
+    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    assert_eq!(images.pending[0].id, id);
+    assert!(!images.pending[0].optional);
+    ready(&mut images, &wake).unwrap();
+    assert_eq!(images.loads, 1);
+}
+
+#[test]
+fn superseded_candidate_cannot_lend_its_foreground_allocation_to_prediction() {
+    let (mut images, wake) = configured(3 * 160 * 90 * 4, 256 << 20);
+    let source = "assets/panels.png";
+    images.request(wanted(&[source]));
+    ready(&mut images, &wake).unwrap();
+    images.set_story_prediction(Some(source));
+    images.request_stage(&crate::stage_widget::StageView::capture(
+        &reel_ui::stage::Stage::default(),
+    ));
+    assert!(images.poll().unwrap());
+    assert!(!images.loaded.contains_key(source));
+    assert_eq!(images.hidden_prefetch_bytes(), 0);
+}
+
+#[test]
 fn removing_a_preloaded_page_cancels_its_work_without_retaining_pixels() {
     let (mut images, _) = loader();
     let (mut stage, _) = preload_stage("assets/panels.png");
@@ -170,7 +206,7 @@ fn removing_a_preloaded_page_cancels_its_work_without_retaining_pixels() {
     stage.replace(root).unwrap();
     images.request_stage(&crate::stage_widget::StageView::capture(&stage));
     assert!(images.pending.is_empty());
-    assert!(images.prefetch.is_empty());
+    assert!(images.prefetch.stage.is_empty());
     assert!(images.loaded.is_empty());
     assert!(images.poll().unwrap());
 }
@@ -186,7 +222,7 @@ fn returning_gpu_image_does_not_cancel_unrelated_prefetch() {
     images.request(wanted(&[]));
     images.commit();
 
-    images.prefetch.insert("assets/sun.jpg".into());
+    images.prefetch.stage.insert("assets/sun.jpg".into());
     images.settled = false;
     assert!(images.poll().unwrap());
     let queued = images.pending[0].id;
@@ -251,7 +287,7 @@ fn foreground_residency_does_not_consume_the_hidden_prefetch_share() {
     let foreground = images.pool.reserve(PANEL * 2).unwrap();
     let (stage, _) = preload_stage("assets/panels.png");
     images.request_stage(&crate::stage_widget::StageView::capture(&stage));
-    images.prefetch.insert("assets/sun.jpg".into());
+    images.prefetch.stage.insert("assets/sun.jpg".into());
     assert!(images.poll().unwrap());
     while !images.skipped.contains("assets/sun.jpg") {
         wake.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -404,7 +440,7 @@ fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
     assert!(!weak.is_released());
     assert_eq!(images.loads, 2);
 
-    images.prefetch.insert("assets/panels.png".to_owned());
+    images.prefetch.stage.insert("assets/panels.png".to_owned());
     images.settled = false;
     assert!(images.poll().unwrap());
     assert_eq!(images.loaded["assets/panels.png"].handle(), first);

@@ -70,6 +70,37 @@ impl Iterator for HostCallSites<'_> {
 }
 
 impl Vm {
+    /// Borrow call instructions reached by ordinary returns from a suspended
+    /// native, innermost first. Native callbacks, generators and unwinding
+    /// interrupt this chain. A completed or cancelled wait has no continuation.
+    pub fn wait_call_sites(&self, wait: WaitId) -> impl Iterator<Item = HostCallSite> + '_ {
+        let mut frames = self
+            .pending_wait_task(wait)
+            .filter(|task| task.unwinds.data.is_empty())
+            .map_or(&[][..], |task| task.frames.data.as_slice());
+        std::iter::from_fn(move || {
+            let (child, parents) = frames.split_last()?;
+            let Frame::Script(parent) = parents.last()? else {
+                return None;
+            };
+            let ret = match child {
+                Frame::Native(frame) => frame.ret,
+                Frame::Script(frame) => frame.ret,
+            };
+            let ReturnTo::Register { call, .. } = ret else {
+                return None;
+            };
+            if parent.generator || parent.derived_bridge.is_some() {
+                return None;
+            }
+            frames = parents;
+            Some(HostCallSite {
+                code: parent.code,
+                pc: call,
+            })
+        })
+    }
+
     /// Borrow the complete logical caller path of this live, issued native.
     /// Source locations remain available separately on the ticket for diagnostics.
     pub fn host_call_sites(&self, ticket: HostTicket) -> Result<HostCallSites<'_>, VmError> {
@@ -143,6 +174,19 @@ mod tests {
             vm.host_call_sites(ticket),
             Err(VmError::InvalidTicket)
         ));
+    }
+
+    #[test]
+    fn pending_wait_exposes_normal_return_sites_until_completion() {
+        let (mut vm, ticket) = issued();
+        let mut sites: Vec<_> = vm.host_call_sites(ticket).unwrap().collect();
+        sites.reverse();
+        let wait = ticket.wait_id();
+        vm.respond(ticket, HostResponse::Pending(wait)).unwrap();
+        assert!(vm.wait_call_sites(wait).eq(sites));
+        vm.complete(wait, Completion::Ready(Value::int(42)))
+            .unwrap();
+        assert!(vm.wait_call_sites(wait).next().is_none());
     }
 
     #[test]

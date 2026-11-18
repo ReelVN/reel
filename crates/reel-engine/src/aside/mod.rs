@@ -52,6 +52,7 @@ mod stage;
 mod tests;
 mod text;
 mod views;
+mod visual_prediction;
 pub mod window;
 
 use crate::{
@@ -284,6 +285,7 @@ pub struct SessionVm {
     authored_stage_revision: u64,
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
+    predicted_image: Option<(WaitId, Option<Box<str>>)>,
     choice_reader: Option<choice::ChoiceReader>,
     dialogue_reader: Option<dialogue::DialogueReader>,
     // Constructed speech handles and their VM objects, without production counters.
@@ -414,6 +416,7 @@ impl SessionVm {
             authored_stage_revision: 0,
             issued: None,
             pending: None,
+            predicted_image: None,
             choice_reader: None,
             dialogue_reader: None,
             #[cfg(test)]
@@ -991,6 +994,34 @@ impl SessionVm {
             self.vm.heap_mut().release_root(keys.root)?;
         }
         Ok(())
+    }
+
+    /// The next statically known image after a pending dialogue advance.
+    /// The player may prepare its pixels within its spare resource budget.
+    pub fn predicted_dialogue_image(&mut self) -> Option<&str> {
+        let Some(wait) = self
+            .pending
+            .as_ref()
+            .filter(|pending| {
+                matches!(pending.kind, PendingInteractionKind::Advance)
+                    && pending.keys.is_none()
+                    && self.vm.wait_is_pending(pending.wait)
+            })
+            .map(|pending| pending.wait)
+        else {
+            self.predicted_image = None;
+            return None;
+        };
+        if self
+            .predicted_image
+            .as_ref()
+            .is_none_or(|(last, _)| *last != wait)
+        {
+            let source =
+                visual_prediction::next_image(self.vm.program(), self.vm.wait_call_sites(wait));
+            self.predicted_image = Some((wait, source.map(Box::from)));
+        }
+        self.predicted_image.as_ref()?.1.as_deref()
     }
 
     fn deliver_completion(&mut self, session: &mut Session) -> Result<(), AdapterError> {

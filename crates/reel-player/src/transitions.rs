@@ -13,7 +13,10 @@ use reel_ui::{
     },
     resources::ResourceLease,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 type Error = Box<dyn std::error::Error>;
 const LIMITS: BuildLimits = BuildLimits { max_bytes: 8 << 20 };
@@ -64,7 +67,8 @@ pub(crate) struct Transitions {
     restoring: Vec<Restoring>,
     masks: Option<crate::images::Images>,
     wanted_masks: BTreeMap<String, Option<String>>,
-    mask_programs: Vec<Arc<reel_ui::stage::MaskProgram>>,
+    prefetch_masks: BTreeSet<String>,
+    mask_programs: Vec<(Arc<reel_ui::stage::MaskProgram>, bool)>,
     gate_stamp: Option<(u64, crate::session::ProjectionStamp, WidgetId)>,
     #[cfg(test)]
     mask_rebuilds: usize,
@@ -81,7 +85,7 @@ impl Transitions {
         !self.waiting.is_empty() || !self.retaining.is_empty() || !self.ready()
     }
     pub fn ready(&self) -> bool {
-        self.restoring.is_empty() && (self.masks.is_none() || self.masks_ready)
+        self.restoring.is_empty() && (self.wanted_masks.is_empty() || self.masks_ready)
     }
     pub fn resources(&self) -> &[ResourceLease] {
         &self.resources
@@ -206,55 +210,85 @@ impl Transitions {
         }
         changed |= self.request_masks(
             || {
-                vm.transition_views()
-                    .filter_map(|view| view.previous.and(view.mask))
+                vm.transition_views().filter_map(|view| {
+                    let mask = view.mask?;
+                    let required = view.previous.is_some();
+                    (required || view.phase == TransitionPhase::OldPending)
+                        .then_some((mask, required))
+                })
             },
             assets,
         );
-        if let Some(images) = &mut self.masks
-            && !self.masks_ready
-            && images.poll()?
-        {
-            images.commit();
-            self.resources = images.loaded.values().cloned().collect();
-            self.masks_ready = true;
-            changed = true;
-        }
+        changed |= self.poll_masks()?;
         Ok(changed)
     }
-    fn request_masks<I: Iterator<Item = Arc<reel_ui::stage::MaskProgram>>>(
+    fn poll_masks(&mut self) -> Result<bool, Error> {
+        if let Some(images) = &mut self.masks
+            && (!self.masks_ready || !self.prefetch_masks.is_empty())
+            && images.poll()?
+            && !self.masks_ready
+        {
+            images.commit();
+            // Only masks used in the current candidate belong to its drawing.
+            self.resources = self
+                .wanted_masks
+                .keys()
+                .map(|source| {
+                    images.loaded.get(source).cloned().ok_or_else(|| {
+                        format!("stage.transition: mask {source:?} requires a single image texture")
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            self.masks_ready = true;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    fn request_masks<I: Iterator<Item = (Arc<reel_ui::stage::MaskProgram>, bool)>>(
         &mut self,
         masks: impl Fn() -> I,
         assets: &Assets,
     ) -> bool {
         let mut previous = self.mask_programs.iter();
-        let unchanged = masks()
-            .all(|mask| previous.next().is_some_and(|old| Arc::ptr_eq(old, &mask)))
-            && previous.next().is_none();
-        if !unchanged {
-            #[cfg(test)]
-            {
-                self.mask_rebuilds += 1;
-            }
-            self.mask_programs.clear();
-            self.mask_programs.extend(masks());
-            let wanted = self
-                .mask_programs
-                .iter()
-                .flat_map(|mask| mask.sources())
-                .map(|source| (source.to_string(), Some("stage.transition".into())))
-                .collect::<BTreeMap<_, _>>();
-            if wanted != self.wanted_masks {
-                let images = self
-                    .masks
-                    .get_or_insert_with(|| crate::images::Images::new(assets.clone()));
-                images.request(wanted.clone());
-                self.wanted_masks = wanted;
-                self.masks_ready = false;
-                return true;
+        if masks().all(|(mask, required)| {
+            previous.next().is_some_and(|(old, was_required)| {
+                required == *was_required && Arc::ptr_eq(old, &mask)
+            })
+        }) && previous.next().is_none()
+        {
+            return false;
+        }
+        #[cfg(test)]
+        {
+            self.mask_rebuilds += 1;
+        }
+        self.mask_programs.clear();
+        self.mask_programs.extend(masks());
+        let mut wanted = BTreeMap::new();
+        let mut prefetch = BTreeSet::new();
+        for (mask, required) in &self.mask_programs {
+            for source in mask.sources() {
+                if *required {
+                    wanted.insert(source.to_string(), Some("stage.transition".into()));
+                } else {
+                    prefetch.insert(source.to_string());
+                }
             }
         }
-        false
+        prefetch.retain(|source| !wanted.contains_key(source));
+        let required_changed = wanted != self.wanted_masks;
+        if !required_changed && prefetch == self.prefetch_masks {
+            return false;
+        }
+        self.masks
+            .get_or_insert_with(|| crate::images::Images::new(assets.clone()))
+            .request_paths(wanted.clone(), prefetch.clone());
+        self.wanted_masks = wanted;
+        self.prefetch_masks = prefetch;
+        if required_changed {
+            self.masks_ready = false;
+        }
+        true
     }
     pub fn gate(
         &mut self,
@@ -407,9 +441,9 @@ mod tests {
         let assets = Assets::directory(Default::default());
         let mut transitions = Transitions::default();
         let first = reel_ui::stage::MaskProgram::image("first.png".into());
-        assert!(transitions.request_masks(|| [first.clone()].into_iter(), &assets));
+        assert!(transitions.request_masks(|| [(first.clone(), true)].into_iter(), &assets));
         for _ in 0..4096 {
-            assert!(!transitions.request_masks(|| [first.clone()].into_iter(), &assets));
+            assert!(!transitions.request_masks(|| [(first.clone(), true)].into_iter(), &assets));
         }
         assert_eq!(transitions.mask_rebuilds, 1);
         println!(
@@ -418,12 +452,106 @@ mod tests {
         );
         assert!(transitions.wanted_masks.contains_key("first.png"));
         let second = reel_ui::stage::MaskProgram::image("second.png".into());
-        assert!(transitions.request_masks(|| [second.clone()].into_iter(), &assets));
+        assert!(transitions.request_masks(|| [(second.clone(), true)].into_iter(), &assets));
         assert_eq!(transitions.wanted_masks.len(), 1);
         assert!(transitions.wanted_masks.contains_key("second.png"));
         assert!(transitions.request_masks(std::iter::empty, &assets));
         assert!(transitions.wanted_masks.is_empty());
     }
+
+    #[test]
+    fn announced_mask_keeps_old_drawing_ready_and_cancels_with_transition() {
+        use crate::{assets::ImageExecutor, images::tests::ControlledIo};
+        use reel_core::{budget::QueueLimits, identity::FrameId, test_support::MemoryAssetIo};
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut controlled_io = None;
+        let assets = Assets::with_adapters(Default::default(), |wake| {
+            let limits = QueueLimits {
+                max_requests: 8,
+                max_bytes: 1 << 20,
+            };
+            let io = Rc::new(RefCell::new(MemoryAssetIo::new(
+                limits,
+                limits,
+                wake.clone(),
+            )));
+            controlled_io = Some(io.clone());
+            (
+                Box::new(ControlledIo(io)),
+                Box::new(ImageExecutor::new(limits, wake)),
+            )
+        });
+        let io = controlled_io.unwrap();
+        let mut driver = crate::aside_session::AsideSessionUi::from_source(
+            crate::session::tests::session(),
+            r##"fn main() {
+                let view = stack(width: 64, height: 64, background: "#ff0000");
+                stage.replace(view);
+                stage.transition(target: view, duration: 1, mask: "held.png", change: || {
+                    view.background = "#0000ff";
+                });
+            }"##,
+            "mask_preparation",
+            1,
+            "main",
+            "en",
+            Default::default(),
+        )
+        .unwrap()
+        .with_assets(assets.clone());
+        for _ in 0..1000 {
+            driver.tick(Default::default(), 256, || 0).unwrap();
+            if driver.adapter().stage_ready() && !driver.has_runnable_tasks() {
+                break;
+            }
+        }
+        let view = driver.adapter().transition_views().next().unwrap();
+        assert_eq!(view.phase, TransitionPhase::OldPending);
+        assert!(view.previous.is_none());
+        let (mut bridge, root) = crate::session::tests::mount(driver.ui());
+        driver.sync(&mut bridge, root).unwrap();
+        assert_eq!(io.borrow().read_usage().requests, 1);
+        assert!(driver.transition_resources().is_empty());
+        let (_, receipt) = driver
+            .record(&mut bridge, root, FrameId(1))
+            .unwrap()
+            .expect("old drawing can be recorded while the mask is still loading");
+        assert!(receipt.needs_transition_drawing());
+
+        driver.cancel().unwrap();
+        assets.maintain();
+        assert_eq!(io.borrow().read_usage().requests, 0);
+        assert!(!io.borrow_mut().complete_next_read());
+    }
+
+    #[test]
+    fn transition_takes_over_the_in_flight_mask() {
+        use std::{sync::mpsc, time::Duration};
+
+        let assets = crate::assets::tests::memory_assets();
+        let (send, receive) = mpsc::channel();
+        assets.set_waker(Arc::new(move || {
+            let _ = send.send(());
+        }));
+        let mut transitions = Transitions::default();
+        let mask = reel_ui::stage::MaskProgram::image("assets/panels.png".into());
+        assert!(transitions.request_masks(|| [(mask.clone(), false)].into_iter(), &assets));
+        assert!(transitions.ready());
+        transitions.poll_masks().unwrap();
+        assert!(transitions.resources().is_empty());
+        assert_eq!(transitions.masks.as_ref().unwrap().loads, 1);
+
+        assert!(transitions.request_masks(|| [(mask.clone(), true)].into_iter(), &assets));
+        assert!(!transitions.ready());
+        while !transitions.poll_masks().unwrap() {
+            receive.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        assert!(transitions.ready());
+        assert_eq!(transitions.resources().len(), 1);
+        assert_eq!(transitions.masks.as_ref().unwrap().loads, 1);
+    }
+
     #[test]
     fn transition_gates_reuse_stable_projections_and_apply_accepted_releases() {
         let mut driver = crate::aside_session::AsideSessionUi::from_source(

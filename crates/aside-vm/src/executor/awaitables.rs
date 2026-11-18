@@ -35,7 +35,11 @@ impl Vm {
     /// Hosts use this when retiring subscriptions. A completed/cancelled consumer
     /// cannot receive another result; removing it does not cancel its producer.
     pub fn wait_is_pending(&self, wait: WaitId) -> bool {
-        self.task(wait.task).is_ok_and(|task| {
+        self.pending_wait_task(wait).is_some()
+    }
+
+    pub(super) fn pending_wait_task(&self, wait: WaitId) -> Option<&TaskState> {
+        self.task(wait.task).ok().filter(|task| {
             !task.cancelling && task.frames.data.last().is_some_and(|frame| {
                 matches!(frame, Frame::Native(n) if matches!(n.phase, NativePhase::Waiting(w) if w == wait))
             })

@@ -21,7 +21,7 @@ pub(crate) use code_residency::CodeWindow;
 pub(crate) use code_residency::PAGE_WORDS;
 pub use code_residency::{CodeCacheStats, CodeStore};
 pub use codec::{decode, encode};
-pub use compact::{CompactCode, CompactIter, InstructionSequence};
+pub use compact::{CompactCode, CompactIter, InstructionSequence, ResidentCodeReader};
 pub use encoded::EncodedProgram;
 pub use model::*;
 pub use source_map::{CompactSourceMap, SourceMapIter, SourceMapSequence};

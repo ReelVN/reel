@@ -89,6 +89,28 @@ pub struct CompactCode {
     data: CodeData,
     words: u32,
 }
+
+/// Inspect executable instructions already in memory. Successive reads share
+/// one cache window. A missing page ends the query without allocating or
+/// evicting execution pages on behalf of an optional consumer.
+#[derive(Default)]
+pub struct ResidentCodeReader {
+    window: CodeWindow,
+}
+
+impl ResidentCodeReader {
+    /// Return the instruction and its following word PC, when resident.
+    pub fn read(
+        &mut self,
+        code: &CompactCode,
+        pc: usize,
+    ) -> Result<Option<(Instruction, usize)>, Error> {
+        if pc >= code.end_pc() || !code.is_boundary(pc) {
+            return Ok(None);
+        }
+        code.fetch_budgeted(pc, &mut self.window, &mut |_, _| false)
+    }
+}
 impl Default for CompactCode {
     fn default() -> Self {
         Self {

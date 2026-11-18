@@ -476,6 +476,21 @@ fn instruction_operands_reject_noncanonical_and_overflowing_encodings() {
 }
 
 #[test]
+fn optional_instruction_reads_leave_cold_execution_pages_untouched() {
+    let program = verify(fixtures::helper_native(), limits()).unwrap();
+    let code = &program.package().functions[0].code;
+    let mut reader = ResidentCodeReader::default();
+    assert_eq!(reader.read(code, 0).unwrap(), None);
+    assert_eq!(
+        program.code_cache_stats().unwrap().resident_capacity_bytes,
+        0
+    );
+    let instruction = code.instruction(0).unwrap().unwrap();
+    let next = code.next_pc(0).unwrap().unwrap();
+    assert_eq!(reader.read(code, 0).unwrap(), Some((instruction, next)));
+}
+
+#[test]
 fn runtime_must_explicitly_support_all_opcodes_natives_and_capabilities() {
     let p = verify(fixtures::helper_native(), limits()).unwrap();
     assert_eq!(
