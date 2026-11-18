@@ -218,6 +218,7 @@ impl Plan {
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, u64, Vec<R>, T), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::OffscreenPlan);
+        let padding = super::target_storage::Padding::for_samples(samples);
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],
@@ -359,6 +360,7 @@ impl Plan {
                         capacity_limit,
                         cost,
                         resident,
+                        padding,
                         &mut reserve,
                     )
                 } else {
@@ -368,6 +370,7 @@ impl Plan {
                         capacity_limit,
                         cost,
                         resident,
+                        padding,
                         &mut reserve,
                     )
                 };
@@ -402,6 +405,7 @@ impl Plan {
                             capacity_limit,
                             cost,
                             resident,
+                            padding,
                             &mut reserve,
                         ) {
                             storage = padded;
@@ -477,6 +481,7 @@ impl Plan {
                             capacity_limit,
                             cost,
                             resident,
+                            padding,
                             &mut reserve,
                         );
                         if let Ok(Some((storage, padded_tickets))) = padded {

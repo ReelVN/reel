@@ -2,10 +2,39 @@
 use super::*;
 use crate::common::target_plan::Requirements;
 
+#[derive(Clone, Copy)]
+pub(crate) struct Padding {
+    min_alignment: u32,
+    alignment_divisor: u32,
+    extra_divisor: u64,
+}
+
+impl Padding {
+    pub(crate) fn for_samples(samples: u32) -> Self {
+        if samples > 1 {
+            Self {
+                min_alignment: 64,
+                alignment_divisor: 16,
+                extra_divisor: 4,
+            }
+        } else {
+            Self {
+                min_alignment: 32,
+                alignment_divisor: 32,
+                extra_divisor: 8,
+            }
+        }
+    }
+}
+
 impl Plan {
     /// Stabilize the physical classes produced by lifetime sharing. The logical
     /// map is composed with the padded classes, preserving every source grid and
     /// the already established simultaneous-use multiplicity.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "scratch capacity and backend accounting"
+    )]
     pub(crate) fn padded_capacities<R>(
         &self,
         root: [u32; 2],
@@ -13,6 +42,7 @@ impl Plan {
         byte_limit: u64,
         cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         resident: &Requirements,
+        padding: Padding,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<Option<(Self, Vec<R>)>, GpuError> {
         let Some((padding, _temporary)) = Self::capacities(
@@ -22,6 +52,7 @@ impl Plan {
             byte_limit,
             cost,
             resident,
+            padding,
             &mut reserve,
         )?
         else {
@@ -82,8 +113,12 @@ impl Plan {
         )))
     }
 
-    /// Keep output exact. Scratch padding is limited to one eighth of its
-    /// backend byte cost and admitted against the same physical frame peak.
+    /// Keep output exact. Limit padding by the backend's byte cost and by the
+    /// physical peak of the entire frame.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "scratch capacity and backend accounting"
+    )]
     pub(crate) fn capacities<R>(
         required: &Requirements,
         root: [u32; 2],
@@ -91,6 +126,7 @@ impl Plan {
         byte_limit: u64,
         cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         resident: &Requirements,
+        padding: Padding,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<Option<(Self, Vec<R>)>, GpuError> {
         let mut baseline = 0u64;
@@ -117,7 +153,7 @@ impl Plan {
             .filter(|(size, _)| *size != root && !required.exact().contains(size))
         {
             let Some((storage, total_extra)) =
-                padded_size(size, count, max_dimension, spare, cost)?
+                padded_size(size, count, max_dimension, spare, cost, padding)?
             else {
                 continue;
             };
@@ -156,6 +192,7 @@ impl Plan {
             max_dimension,
             byte_limit,
             cost,
+            padding,
             |bytes| {
                 tickets.push(reserve(bytes)?);
                 Ok(())
@@ -180,6 +217,7 @@ fn resident_capacities(
     max_dimension: u32,
     byte_limit: u64,
     cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+    padding: Padding,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<(), GpuError> {
     for (logical, count) in required
@@ -214,7 +252,7 @@ fn resident_capacities(
                 continue;
             }
             let bytes = cost(capacity)?;
-            if bytes.saturating_sub(original_bytes) > original_bytes / 8 {
+            if bytes.saturating_sub(original_bytes) > original_bytes / padding.extra_divisor {
                 continue;
             }
             let total = plan.bytes - previous_bytes * count;
@@ -270,6 +308,7 @@ fn padded_size(
     max_dimension: u32,
     spare: u64,
     cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
+    padding: Padding,
 ) -> Result<Option<([u32; 2], u64)>, GpuError> {
     let before = cost(size)?;
     let bucket = |value: u32, divisor: u32| {
@@ -278,7 +317,8 @@ fn padded_size(
             .map(|power| (power / divisor).max(1))
             .ok_or(GpuError::InvalidSize)
     };
-    let square = bucket(size[0].max(size[1]), 32)?.max(32);
+    let square =
+        bucket(size[0].max(size[1]), padding.alignment_divisor)?.max(padding.min_alignment);
     let mut quantum = [square; 2];
     let mut square_candidate = true;
     loop {
@@ -297,7 +337,7 @@ fn padded_size(
                 .checked_sub(before)
                 .ok_or(GpuError::InvalidSize)?;
             let total = extra.checked_mul(count).ok_or(GpuError::InvalidSize)?;
-            if extra <= before / 8 && total <= spare {
+            if extra <= before / padding.extra_divisor && total <= spare {
                 return Ok(Some((storage, total)));
             }
         }
@@ -336,10 +376,18 @@ mod tests {
         let inputs = required(&[(root, 1), (a, 1), (b, 1)]);
         for count in [1, 2] {
             let resident = required(&[(capacity, count)]);
-            let (plan, _) =
-                Plan::capacities(&inputs, root, 4096, u64::MAX, &cost, &resident, |_| Ok(()))
-                    .unwrap()
-                    .unwrap();
+            let (plan, _) = Plan::capacities(
+                &inputs,
+                root,
+                4096,
+                u64::MAX,
+                &cost,
+                &resident,
+                Padding::for_samples(1),
+                |_| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(plan.storage_size(a), capacity);
             assert_eq!(plan.requirements.count(capacity), count);
             assert_eq!(plan.storage_size(b) == capacity, count == 2);
@@ -353,10 +401,18 @@ mod tests {
         let exact = required(&[(root, 1), (a, 1), (b, 1)])
             .with_exact(&[a], |_| Ok(()))
             .unwrap();
-        let (plan, _) =
-            Plan::capacities(&exact, root, 4096, u64::MAX, &cost, &resident, |_| Ok(()))
-                .unwrap()
-                .unwrap();
+        let (plan, _) = Plan::capacities(
+            &exact,
+            root,
+            4096,
+            u64::MAX,
+            &cost,
+            &resident,
+            Padding::for_samples(1),
+            |_| Ok(()),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(plan.storage_size(a), a);
         assert_eq!(plan.storage_size(root), root);
         assert_eq!(plan.storage_size(b), capacity);
@@ -367,6 +423,7 @@ mod tests {
             u64::MAX,
             &cost,
             &Requirements::default(),
+            Padding::for_samples(1),
             |_| Ok(()),
         )
         .unwrap()
@@ -378,6 +435,7 @@ mod tests {
             baseline.bytes,
             &cost,
             &resident,
+            Padding::for_samples(1),
             |_| Ok(()),
         )
         .unwrap()
@@ -396,9 +454,18 @@ mod tests {
         let inputs = required(&[(root, 1), (a, 3)]);
         let resident = required(&[(root, 1), (resident_size, 2)]);
         let limit = cost(root).unwrap() + 3 * cost(resident_size).unwrap();
-        let (plan, _) = Plan::capacities(&inputs, root, 4096, limit, &cost, &resident, |_| Ok(()))
-            .unwrap()
-            .unwrap();
+        let (plan, _) = Plan::capacities(
+            &inputs,
+            root,
+            4096,
+            limit,
+            &cost,
+            &resident,
+            Padding::for_samples(1),
+            |_| Ok(()),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(plan.storage_size(a), resident_size);
         assert_eq!(plan.requirements.count(resident_size), 3);
         assert_eq!(plan.bytes, limit);
@@ -411,29 +478,53 @@ mod tests {
             "two existing owners satisfy the enlarged simultaneous-use class"
         );
         let competing = required(&[(padded, 2), (resident_size, 2)]);
-        let (preferred, _) =
-            Plan::capacities(&inputs, root, 4096, limit, &cost, &competing, |_| Ok(()))
-                .unwrap()
-                .unwrap();
+        let (preferred, _) = Plan::capacities(
+            &inputs,
+            root,
+            4096,
+            limit,
+            &cost,
+            &competing,
+            Padding::for_samples(1),
+            |_| Ok(()),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(preferred.storage_size(a), padded);
 
         let inputs = required(&[(root, 1), (a, 2), (b, 2)]);
         let resident = required(&[(root, 1), (resident_size, 3)]);
         let limit = cost(root).unwrap() + 4 * cost(resident_size).unwrap();
-        let (shared, _) =
-            Plan::capacities(&inputs, root, 4096, limit, &cost, &resident, |_| Ok(()))
-                .unwrap()
-                .unwrap();
+        let (shared, _) = Plan::capacities(
+            &inputs,
+            root,
+            4096,
+            limit,
+            &cost,
+            &resident,
+            Padding::for_samples(1),
+            |_| Ok(()),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(shared.storage_size(a), resident_size);
         assert_eq!(shared.storage_size(b), resident_size);
         assert_eq!(shared.requirements.count(resident_size), 4);
         assert_eq!(shared.bytes, limit);
         assert!(cost(resident_size).unwrap() - cost(a).unwrap() <= cost(a).unwrap() / 8);
         let tight = cost(root).unwrap() + 4 * cost(padded).unwrap();
-        let (fallback, _) =
-            Plan::capacities(&inputs, root, 4096, tight, &cost, &resident, |_| Ok(()))
-                .unwrap()
-                .unwrap();
+        let (fallback, _) = Plan::capacities(
+            &inputs,
+            root,
+            4096,
+            tight,
+            &cost,
+            &resident,
+            Padding::for_samples(1),
+            |_| Ok(()),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(fallback.requirements.count(resident_size), 0);
         assert_eq!(fallback.bytes, tight);
     }
@@ -483,6 +574,7 @@ mod tests {
                     exact.bytes(),
                     &cost,
                     &Requirements::default(),
+                    Padding::for_samples(1),
                     |_| Ok(())
                 )
                 .unwrap()
@@ -497,6 +589,7 @@ mod tests {
                 limit,
                 &cost,
                 &Requirements::default(),
+                Padding::for_samples(1),
                 |bytes| pool.reserve(bytes).map_err(|_| GpuError::InvalidSize),
             )
             .unwrap()
@@ -522,6 +615,7 @@ mod tests {
                     limit,
                     &cost,
                     &Requirements::default(),
+                    Padding::for_samples(1),
                     |_| Err::<(), _>(GpuError::InvalidSize)
                 )
                 .is_err()
@@ -547,6 +641,7 @@ mod tests {
                 u64::MAX,
                 &cost,
                 &Requirements::default(),
+                Padding::for_samples(1),
                 |_| Ok(()),
             )
             .unwrap()
@@ -578,6 +673,38 @@ mod tests {
     }
 
     #[test]
+    fn multisampled_bounds_cross_fewer_capacity_classes() {
+        let root = [1280, 720];
+        let capacities = |samples, extra| {
+            (513..=639)
+                .map(|width| {
+                    let logical = [width, 608];
+                    let required = required(&[(root, 1), (logical, 1)]);
+                    let (plan, _) = Plan::capacities(
+                        &required,
+                        root,
+                        4096,
+                        u64::MAX,
+                        &cost,
+                        &Requirements::default(),
+                        Padding::for_samples(samples),
+                        |_| Ok(()),
+                    )
+                    .unwrap()
+                    .unwrap_or_default();
+                    let storage = plan.storage_size(logical);
+                    let bytes = cost(logical).unwrap();
+                    assert!(cost(storage).unwrap() <= bytes + bytes / extra);
+                    assert_eq!(plan.storage_size(root), root);
+                    storage
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(capacities(4, 4).len(), 2);
+        assert_eq!(capacities(1, 8).len(), 4);
+    }
+
+    #[test]
     fn padding_respects_full_frame_budget_and_backend_layout_cost() {
         let root = [960, 544];
         let size = [481, 384];
@@ -591,6 +718,7 @@ mod tests {
                 exact,
                 &cost,
                 &Requirements::default(),
+                Padding::for_samples(1),
                 |_| Ok(())
             )
             .unwrap()
@@ -603,6 +731,7 @@ mod tests {
             u64::MAX,
             &cost,
             &Requirements::default(),
+            Padding::for_samples(1),
             |_| Ok(()),
         )
         .unwrap()
@@ -623,6 +752,7 @@ mod tests {
                 u64::MAX,
                 &cost,
                 &Requirements::default(),
+                Padding::for_samples(1),
                 |_| Ok(())
             )
             .unwrap()
@@ -638,6 +768,7 @@ mod tests {
             budget,
             &padded,
             &Requirements::default(),
+            Padding::for_samples(1),
             |_| Ok(()),
         )
         .unwrap()

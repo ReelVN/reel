@@ -4,6 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Reduce desktop offscreen allocations during animated bounds changes by sharing wider multisampled scratch capacity classes.
 - Reuse desktop draw bindings for stable images, glyph atlas pages and solid fills across frames.
 - Size the desktop player's initial texture upload buffers from the window's pixel dimensions. Larger image uploads continue to allocate on demand.
 - Reuse desktop image staging buffers for video uploads once the GPU has finished reading them.

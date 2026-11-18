@@ -513,6 +513,7 @@ mod tests {
                         limits.target_bytes,
                         &|size| super::super::targets::target_bytes(size, quality),
                         &cache.capacities(root, quality, |_| Ok(())).unwrap(),
+                        target_storage::Padding::for_samples(quality.samples),
                         |_| Ok(()),
                     )
                     .unwrap()

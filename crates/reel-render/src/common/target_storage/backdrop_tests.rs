@@ -192,6 +192,7 @@ fn separate(frame: &RenderFrame) -> (target_plan::Requirements, u64) {
         LIMIT,
         &cost,
         &target_plan::Requirements::default(),
+        super::Padding::for_samples(1),
         |_| Ok(()),
     )
     .unwrap()

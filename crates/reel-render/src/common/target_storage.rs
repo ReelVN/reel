@@ -5,6 +5,7 @@ mod animation_tests;
 #[cfg(test)]
 mod backdrop_tests;
 mod capacities;
+pub(crate) use capacities::Padding;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Event {
