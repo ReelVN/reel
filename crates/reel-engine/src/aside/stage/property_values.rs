@@ -933,7 +933,6 @@ pub(super) fn read_props(
         invert: invert(get(NodeProperty::Invert)?)?,
         blend: blend(heap, get(NodeProperty::Blend)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
-        preload: boolean(get(NodeProperty::Preload)?)?,
         capture_included: boolean(get(NodeProperty::CaptureIncluded)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,
         modal: boolean(get(NodeProperty::Modal)?)?,

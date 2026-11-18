@@ -208,13 +208,6 @@ pub(super) enum NodeProperty {
     /// Show this subtree and include it in input hit testing.
     #[aside(name = "visible", ty = Bool, default = true)]
     Visible,
-    /// Read and decode this mounted subtree's image and effect sources ahead of an
-    /// explicit reveal or source change. Approaching fixed-size images are prepared
-    /// automatically from their layout motion.
-    /// Prefetch uses spare resource capacity and does not delay the visible frame.
-    /// Layout, glyphs and GPU uploads are prepared when the subtree is drawn.
-    #[aside(name = "preload", ty = Bool, default = false)]
-    Preload,
     /// Allow this subtree to receive input while retaining its presentation.
     #[aside(name = "enabled", ty = Bool, default = true)]
     Enabled,

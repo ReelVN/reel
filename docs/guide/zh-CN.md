@@ -425,15 +425,7 @@ let arrival = portrait("smile");
 stage.replace(arrival);
 ```
 
-由运行时数据决定的复杂图层或菜单，可以在确定即将显示时挂成 `preload: true` 的隐藏子树。子节点继承这项设置，播放器用空余容量提前读取、解码图片和效果。路线改变时，移除这棵子树即可释放请求与资源。
-
-```aside
-let menu = stack(visible: false, preload: true) {
-    image("assets/panels.png", width: 320, height: 180);
-};
-scene.add(button("Menu", on_click: |e| { menu.visible = true; }));
-scene.add(menu);
-```
+保持已挂载的模态菜单隐藏，打开时更新可见性即可。播放器使用空余容量准备打开时会显示的素材。图片由正文运行时数据决定时，随实际画面准备。
 
 ```aside
 stage.replace(scene);

@@ -29,7 +29,7 @@ fn preload_stage(source: &str) -> (reel_ui::stage::Stage, reel_ui::stage::NodeId
             },
             NodeProps {
                 visible: false,
-                preload: true,
+                modal: true,
                 width: Some(160.),
                 height: Some(90.),
                 ..Default::default()
@@ -98,7 +98,7 @@ fn visible_skin_prepares_the_next_state_once_and_drops_offscreen_demand() {
     };
     source.skin_paths = Some(Arc::clone(&paths));
     art.props.visible = true;
-    art.props.preload = false;
+    art.props.modal = false;
     stage.update(id, art.kind, art.props).unwrap();
     let view = StageView::capture(&stage);
     let format = images.shader_format;
@@ -169,7 +169,7 @@ fn dialogue_prediction_yields_to_a_visible_request_in_the_same_update() {
     let (mut stage, node) = preload_stage(source);
     let mut image = stage.node(node).unwrap().clone();
     image.props.visible = true;
-    image.props.preload = false;
+    image.props.modal = false;
     stage.update(node, image.kind, image.props).unwrap();
     images.request_stage(&crate::stage_widget::StageView::capture(&stage));
     assert_eq!(images.pending[0].id, id);

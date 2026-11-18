@@ -425,15 +425,7 @@ let arrival = portrait("smile");
 stage.replace(arrival);
 ```
 
-For a composition or menu selected by runtime data, you can mount its hidden subtree with `preload: true` once you know it will be shown. Descendants inherit the setting. The player uses spare capacity to read and decode their images and effects. If the route changes, remove the subtree to release its requests and resources.
-
-```aside
-let menu = stack(visible: false, preload: true) {
-    image("assets/panels.png", width: 320, height: 180);
-};
-scene.add(button("Menu", on_click: |e| { menu.visible = true; }));
-scene.add(menu);
-```
+Keep a mounted modal menu hidden and update its visibility to open it. The player uses spare capacity to prepare the resources visible on opening. Images selected by runtime story data prepare as the actual scene is built.
 
 ```aside
 stage.replace(scene);

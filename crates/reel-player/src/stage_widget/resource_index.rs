@@ -112,7 +112,7 @@ impl ResourceIndex {
             .into_iter()
             .map(|node| (node, true, true, false, false, false))
             .collect();
-        while let Some((node, parent_visible, parent_enabled, has_parent, cursor, preload)) =
+        while let Some((node, parent_visible, parent_enabled, has_parent, cursor, preparing_page)) =
             pending.pop()
         {
             if !node.image_branch {
@@ -123,7 +123,11 @@ impl ResourceIndex {
                 && node.node.props.enabled
                 && !matches!(node.node.kind, NodeKind::Cursor);
             let cursor = cursor || matches!(node.node.kind, NodeKind::Cursor);
-            let preload = preload || node.node.props.preload;
+            let props = &node.node.props;
+            // Opening the first hidden modal reveals only its visible descendants.
+            // Hidden tabs and inactive layers inside it still wait for a selection.
+            let preload = (preparing_page && props.visible)
+                || (parent_visible && !props.visible && props.modal);
             pending.extend(
                 node.children
                     .iter()
@@ -327,8 +331,8 @@ pub(super) fn same_inputs(a: Option<&Arc<SceneNode>>, b: Option<&Arc<SceneNode>>
         if !Arc::ptr_eq(&a.node, &b.node) {
             let ap = &a.node.props;
             let bp = &b.node.props;
-            if (ap.visible, ap.enabled, ap.preload, a.has_fixed_image_size())
-                != (bp.visible, bp.enabled, bp.preload, b.has_fixed_image_size())
+            if (ap.visible, ap.enabled, ap.modal, a.has_fixed_image_size())
+                != (bp.visible, bp.enabled, bp.modal, b.has_fixed_image_size())
                 || matches!(a.node.kind, NodeKind::Popup(_))
                     != matches!(b.node.kind, NodeKind::Popup(_))
                 || matches!(a.node.kind, NodeKind::Cursor)
