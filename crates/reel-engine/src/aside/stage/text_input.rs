@@ -22,8 +22,9 @@ pub(super) const METRICS: [&str; 4] = [
     "can_redo",
 ];
 pub(super) fn metrics() -> u32 {
-    (TextInputField::PROPERTIES.len() + NodeProperty::PROPERTIES.len() + interaction::FIELDS.len())
-        as u32
+    (TextInputField::PROPERTIES.len()
+        + NodeProperty::PROPERTIES.len()
+        + interaction::Field::NAMES.len()) as u32
 }
 pub(super) fn selection(heap: &Heap, host: Value) -> Result<TextSelection, HeapError> {
     Ok(TextSelection {

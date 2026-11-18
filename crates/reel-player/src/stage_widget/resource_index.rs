@@ -15,6 +15,7 @@ pub(super) struct ResourceIndexCache {
 pub(crate) struct ResourceIndex {
     entries: Vec<(String, Entry)>,
     pub has_fixed_images: bool,
+    pub has_skin_paths: bool,
 }
 
 #[derive(Default)]
@@ -23,11 +24,13 @@ struct Entry {
     encoded: Option<Arc<[u8]>>,
     shader: bool,
     preload: bool,
+    mounted: bool,
 }
 
 struct Usage {
     origin: Option<String>,
     image: Option<(NodeId, bool)>,
+    skin: bool,
 }
 
 enum Selection {
@@ -104,6 +107,7 @@ impl ResourceIndex {
     fn collect<'a>(root: Option<&'a Arc<SceneNode>>, format: EffectShaderFormat) -> Self {
         let mut entries: BTreeMap<Cow<'a, str>, Entry> = BTreeMap::new();
         let mut has_fixed_images = false;
+        let mut has_skin_paths = false;
         let mut pending: Vec<_> = root
             .into_iter()
             .map(|node| (node, true, true, false, false, false))
@@ -131,6 +135,7 @@ impl ResourceIndex {
                            shader,
                            encoded: Option<Arc<[u8]>>| {
                 let entry = entries.entry(source).or_default();
+                entry.mounted = true;
                 entry.preload |= preload;
                 if visible || preload {
                     entry.shader |= shader;
@@ -143,6 +148,7 @@ impl ResourceIndex {
                     entry.uses.push(Usage {
                         origin: origin.map(str::to_owned),
                         image,
+                        skin: false,
                     });
                 }
             };
@@ -194,9 +200,28 @@ impl ResourceIndex {
                     None,
                 );
             }
+            if visible
+                && enabled
+                && let NodeKind::Image { source, .. } = &node.node.kind
+                && let Some(paths) = &source.skin_paths
+            {
+                for path in paths.iter().filter(|path| path.as_str() != source.key()) {
+                    has_skin_paths = true;
+                    entries
+                        .entry(Cow::Borrowed(path.as_str()))
+                        .or_default()
+                        .uses
+                        .push(Usage {
+                            origin: None,
+                            image: Some((node.node.id, node.has_fixed_image_size())),
+                            skin: true,
+                        });
+                }
+            }
         }
         Self {
             has_fixed_images,
+            has_skin_paths,
             entries: entries
                 .into_iter()
                 .map(|(source, mut entry)| {
@@ -208,7 +233,10 @@ impl ResourceIndex {
     }
 
     pub fn mounted(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|(source, _)| source.as_str())
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.mounted)
+            .map(|(source, _)| source.as_str())
     }
     fn entry(&self, source: &str) -> Option<&Entry> {
         let index = self
@@ -219,7 +247,7 @@ impl ResourceIndex {
     }
     pub(crate) fn has_visible_use(&self, source: &str) -> bool {
         self.entry(source)
-            .is_some_and(|entry| !entry.uses.is_empty())
+            .is_some_and(|entry| entry.uses.iter().any(|usage| !usage.skin))
     }
     pub fn encoded(&self) -> impl Iterator<Item = (&str, &Arc<[u8]>)> {
         self.entries.iter().filter_map(|(source, entry)| {
@@ -255,11 +283,16 @@ impl ImageRequests {
     pub fn preloaded(&self) -> impl Iterator<Item = &str> {
         self.index.entries.iter().filter_map(|(source, entry)| {
             (entry.preload
+                || entry
+                    .uses
+                    .iter()
+                    .any(|usage| usage.skin && self.selection.includes(usage))
                 || (!self.approaching.is_empty()
                     && entry.uses.iter().any(|usage| {
-                        usage
-                            .image
-                            .is_some_and(|(id, _)| self.approaching.binary_search(&id).is_ok())
+                        !usage.skin
+                            && usage
+                                .image
+                                .is_some_and(|(id, _)| self.approaching.binary_search(&id).is_ok())
                     })))
             .then_some(source.as_str())
         })
@@ -269,7 +302,7 @@ impl ImageRequests {
             entry
                 .uses
                 .iter()
-                .find(|usage| self.selection.includes(usage))
+                .find(|usage| !usage.skin && self.selection.includes(usage))
                 .map(|usage| (source.as_str(), usage.origin.as_deref()))
         })
     }
@@ -278,7 +311,7 @@ impl ImageRequests {
             .entry(source)?
             .uses
             .iter()
-            .find(|usage| self.selection.includes(usage))
+            .find(|usage| !usage.skin && self.selection.includes(usage))
             .map(|usage| usage.origin.as_deref())
     }
 }
@@ -301,6 +334,7 @@ pub(super) fn same_inputs(a: Option<&Arc<SceneNode>>, b: Option<&Arc<SceneNode>>
                 || matches!(a.node.kind, NodeKind::Cursor)
                     != matches!(b.node.kind, NodeKind::Cursor)
                 || image_source(&a.node.kind) != image_source(&b.node.kind)
+                || skin_paths(&a.node.kind) != skin_paths(&b.node.kind)
                 || image_resource(&a.node.kind).map(ResourceLease::handle)
                     != image_resource(&b.node.kind).map(ResourceLease::handle)
                 || ap.appearance_origin != bp.appearance_origin
@@ -323,5 +357,12 @@ pub(super) fn same_inputs(a: Option<&Arc<SceneNode>>, b: Option<&Arc<SceneNode>>
         (None, None) => true,
         (Some(a), Some(b)) => visit(a, b),
         _ => false,
+    }
+}
+
+fn skin_paths(kind: &NodeKind) -> Option<&[String]> {
+    match kind {
+        NodeKind::Image { source, .. } => source.skin_paths.as_deref(),
+        _ => None,
     }
 }

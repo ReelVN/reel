@@ -5,7 +5,7 @@ use reel_core::{
     identity::{AssetSource, ContentVersion},
     io::{IoError, IoErrorCode},
 };
-use reel_package::resource_target::ResourceTarget;
+use reel_package::resource_target::{ResourceDirectory, ResourceTarget};
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -24,19 +24,15 @@ pub(super) struct Files {
     open: lru::LruCache<String, OpenFile>,
 }
 enum Source {
-    Directory {
-        root: PathBuf,
-        target: ResourceTarget,
-    },
+    Directory(ResourceDirectory),
     Selected(BTreeMap<String, PathBuf>),
 }
 impl Source {
     fn resolve(&self, logical: &str) -> Result<Cow<'_, Path>, IoError> {
         match self {
-            Self::Directory { root, target } => target
-                .resolve(root, logical)
-                .map(Cow::Owned)
-                .map_err(io_error),
+            Self::Directory(directory) => {
+                directory.resolve(logical).map(Cow::Owned).map_err(io_error)
+            }
             Self::Selected(files) => files
                 .get(logical)
                 .map(|path| Cow::Borrowed(path.as_path()))
@@ -63,7 +59,7 @@ impl Files {
         ))
     }
     fn with_target(root: PathBuf, capacity: usize, target: ResourceTarget) -> Self {
-        Self::from_source(Source::Directory { root, target }, capacity)
+        Self::from_source(Source::Directory(target.directory(root)), capacity)
     }
     pub(super) fn selected(files: BTreeMap<String, PathBuf>, capacity: usize) -> Self {
         Self::from_source(Source::Selected(files), capacity)
@@ -162,7 +158,14 @@ mod tests {
         let (room, common_identity) = read(&mut common, "bg/room.bin").unwrap();
         assert_eq!(room, b"common");
         assert_ne!(identity, common_identity);
+        fs::create_dir_all(root.join("@desktop/bg")).unwrap();
+        fs::write(root.join("@desktop/bg/room.bin"), b"shared").unwrap();
+        common.open(&source("large.bin")).unwrap(); // evict the room descriptor
+        assert_eq!(read(&mut common, "bg/room.bin").unwrap().0, b"common");
         drop(common);
+        let mut reopened = Files::for_target(root.clone(), 1, "windows".into()).unwrap();
+        assert_eq!(read(&mut reopened, "bg/room.bin").unwrap().0, b"shared");
+        drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
 }

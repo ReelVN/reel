@@ -591,11 +591,11 @@ impl StageBinding {
         let type_name = registry::node_type(schema::symbol(shape)).unwrap();
         let (id, value) = self.allocate_node_shell(heap, fields, children, shape, type_name)?;
         let offset = (shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;
-        for (i, name) in interaction::FIELDS.into_iter().enumerate() {
+        for (i, &name) in interaction::Field::NAMES.iter().enumerate() {
             let key = self.property_key(heap, name)?;
             heap.table_store(fields, offset + i as u32, key, Value::bool(false))?;
         }
-        heap.observe_host_properties(value, offset, interaction::FIELDS.len() as u32)?;
+        heap.observe_host_properties(value, offset, interaction::Field::NAMES.len() as u32)?;
         if matches!(
             shape,
             snapshot::Shape::TextInput | snapshot::Shape::TextArea
@@ -624,14 +624,14 @@ impl StageBinding {
                 let key = self.property_key(heap, name)?;
                 heap.table_store(
                     fields,
-                    offset + interaction::FIELDS.len() as u32 + i as u32,
+                    offset + interaction::Field::NAMES.len() as u32 + i as u32,
                     key,
                     Value::float(0.),
                 )?;
             }
             heap.observe_host_properties(
                 value,
-                offset + interaction::FIELDS.len() as u32,
+                offset + interaction::Field::NAMES.len() as u32,
                 scroll::METRICS.len() as u32,
             )?;
         }

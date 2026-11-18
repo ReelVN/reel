@@ -169,8 +169,13 @@ impl Images {
             .as_ref()
             .is_some_and(|old| Arc::ptr_eq(old, &requests.index));
         let same_approach = self.approaching == requests.approaching;
-        if same_index
+        let same_prefetch = same_index
             && same_approach
+            && (!requests.index.has_skin_paths
+                || requests
+                    .preloaded()
+                    .eq(self.prefetch.iter().map(String::as_str)));
+        if same_prefetch
             && self.failure.is_none()
             && self.manifests.is_empty()
             && self
@@ -186,7 +191,7 @@ impl Images {
             // poll() owns their progress; only changed demand needs reconciliation.
             return self.settled;
         }
-        if !same_index || !same_approach {
+        if !same_prefetch {
             self.prefetch = requests.preloaded().map(str::to_owned).collect();
             self.approaching.clone_from(&requests.approaching);
         }
@@ -284,7 +289,7 @@ impl Images {
             !(self.wanted.contains_key(source)
                 || self.displayed.contains(source)
                 || self.tiles.contains_key(source)
-                || (!loading && self.mounted.contains(source)))
+                || (!loading && (self.mounted.contains(source) || self.prefetch.contains(source))))
         }) {
             self.recent.insert(source, lease);
         }
@@ -687,6 +692,25 @@ impl Images {
             .collect()
     }
     pub fn commit(&mut self) {
+        // A previously required image may now be only a skin alternative.
+        // Releasing the old frame must not turn its whole pixel allocation into
+        // speculative residency outside the prefetch quota.
+        if self
+            .displayed
+            .iter()
+            .any(|key| !self.wanted.contains_key(key) && self.prefetch.contains(key))
+            && self.hidden_prefetch_bytes() > self.assets.prefetch_available(0)
+        {
+            for key in &self.displayed {
+                if !self.wanted.contains_key(key)
+                    && self.prefetch.contains(key)
+                    && let Some(lease) = self.loaded.remove(key)
+                {
+                    self.recent.insert(key.clone(), lease);
+                    self.skipped.insert(key.clone());
+                }
+            }
+        }
         self.displayed = self.wanted.keys().cloned().collect();
         self.displayed.extend(
             self.tiles
@@ -695,7 +719,9 @@ impl Images {
                 .map(|(source, _)| source.clone()),
         );
         for (source, lease) in self.loaded.extract_if(.., |source, _| {
-            !self.mounted.contains(source) && !self.tiles.contains_key(source)
+            !self.mounted.contains(source)
+                && !self.prefetch.contains(source)
+                && !self.tiles.contains_key(source)
         }) {
             if !self.closed {
                 self.recent.insert(source, lease);

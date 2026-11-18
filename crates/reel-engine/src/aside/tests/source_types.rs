@@ -294,7 +294,7 @@ fn host_node_binding_completion_task_and_scope_annotations_execute_from_source_a
             label.y=derive(|| state.x+1);
             let press:ButtonNode=button(on_click:|| {});
             let root:Node=column(){common;press;};
-            let layers:Node=layered_image(|| []);
+            let layers:Node=layered_image([]);
             root.add(layers);
             stage.replace(root);
             if label.x!=3 || label.y!=4 {throw "binding result";}

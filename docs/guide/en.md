@@ -397,6 +397,14 @@ let caption = text("窗外下起了雨。")
 caption.with(opacity: 0.5);
 ```
 
+For a portrait with a fixed body and a changeable face, bind the face slot. Set it to `null` to hide the expression, or assign a new image descriptor to show it.
+
+```aside
+let pose = model({ face: null });
+let portrait = layered_image([{ source: "assets/body.png" }, bind(pose.face)]);
+pose.face = { source: "assets/smile.png" };
+```
+
 Await `stage.presented()` when choreography should start after the current scene is visible. The player retains the previous presented view while resources prepare.
 
 The player uses layout motion to prepare fixed-size images entering the viewport. When the next background, pose or menu is already known, mount its hidden subtree with `preload: true` while the player reads the current line or watches the current animation. Descendants inherit the setting. The player uses spare capacity to read and decode their images and effects. If the route changes, remove the subtree to release its requests and resources.
@@ -978,12 +986,8 @@ An image button uses the same `button`, selecting images from interaction state.
 
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
-    let control = button(on_click: clicked);
-    control.add(image(source: derive(|| {
-        if control.pressed { pressed }
-        else if control.hover { hovered }
-        else { normal }
-    })));
+    let control = button(on_click: clicked, decorated: false);
+    control.add(image(image_skin(control, normal, highlight: hovered, pressed: pressed)));
     return control;
 }
 ```

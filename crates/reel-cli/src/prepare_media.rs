@@ -24,15 +24,7 @@ impl Tools {
         let mut identity = String::new();
         for path in [&ffmpeg, &ffprobe] {
             let mut hasher = blake3::Hasher::new();
-            let mut file = File::open(path)?;
-            let mut buffer = [0; 65536];
-            loop {
-                let length = file.read(&mut buffer)?;
-                if length == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..length]);
-            }
+            hasher.update_reader(File::open(path)?)?;
             let version = run(command(path).arg("-version"), "media tool version")?;
             identity.push_str(&format!(
                 "{}\n{}\n{}\n",

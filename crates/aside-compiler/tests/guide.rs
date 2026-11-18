@@ -35,8 +35,21 @@ fn every_bilingual_author_scene_parses_in_its_actual_context() {
             let root = parsed.syntax();
             assert_eq!(root.text().to_string(), *code);
             if source.contains("on_click:") {
+                let mut callbacks = root
+                    .descendants()
+                    .filter(|n| {
+                        n.kind() == K::NamedArg
+                            && n.text().to_string().trim_start().starts_with("on_click:")
+                    })
+                    .peekable();
                 assert!(
-                    root.descendants().any(|n| n.kind() == K::ClosureExpr),
+                    callbacks.peek().is_some(),
+                    "on_click argument missing in {name}"
+                );
+                assert!(
+                    callbacks.all(|arg| arg
+                        .children()
+                        .any(|n| matches!(n.kind(), K::NameExpr | K::ClosureExpr))),
                     "callback missing in {name}"
                 );
             }
@@ -132,6 +145,8 @@ mod semantic_guides {
         "delay",
         "binding",
         "image",
+        "image_skin",
+        "layered_image",
         "video",
         "slider",
         "toggle",

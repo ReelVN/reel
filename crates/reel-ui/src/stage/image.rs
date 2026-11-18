@@ -12,6 +12,8 @@ pub struct ImageSource {
     key: Arc<str>,
     encoded: Option<Arc<[u8]>>,
     resource: Option<crate::resources::ResourceLease>,
+    /// Distinct asset paths available in this image's interaction skin.
+    pub skin_paths: Option<Arc<[String]>>,
 }
 impl ImageSource {
     /// No picture has been supplied yet. This never requests an asset.
@@ -20,6 +22,7 @@ impl ImageSource {
             key: Arc::from(""),
             encoded: None,
             resource: None,
+            skin_paths: None,
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -31,6 +34,7 @@ impl ImageSource {
             key: format!("memory:image/{}", NEXT.fetch_add(1, Ordering::Relaxed)).into(),
             encoded: Some(bytes.into()),
             resource: None,
+            skin_paths: None,
         }
     }
     /// A decoded frame or host image. Existing snapshots/accepted frames retain
@@ -45,6 +49,7 @@ impl ImageSource {
             .into(),
             encoded: None,
             resource: Some(lease),
+            skin_paths: None,
         }
     }
     pub fn lease(&self) -> Option<&crate::resources::ResourceLease> {
@@ -59,7 +64,7 @@ impl ImageSource {
 }
 impl PartialEq for ImageSource {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
+        self.key == other.key && self.skin_paths == other.skin_paths
     }
 }
 impl From<String> for ImageSource {
@@ -68,6 +73,7 @@ impl From<String> for ImageSource {
             key: key.into(),
             encoded: None,
             resource: None,
+            skin_paths: None,
         }
     }
 }
@@ -77,6 +83,7 @@ impl From<&str> for ImageSource {
             key: key.into(),
             encoded: None,
             resource: None,
+            skin_paths: None,
         }
     }
 }

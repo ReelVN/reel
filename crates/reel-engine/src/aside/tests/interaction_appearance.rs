@@ -29,8 +29,9 @@ fn image_skin_projects_asset_and_atlas_region_from_control_state() {
     let code = r#"fn opening() {
         let control = button("Start", width: 100, height: 100);
         let art = image(image_skin(control, "base.png",
-            hover: {source: "atlas.png", source_rect: (20, 0, 20, 20)},
-            pressed: {source: "atlas.png", source_rect: (40, 0, 20, 20)}),
+            highlight: {source: "atlas.png", source_rect: (20, 0, 20, 20)},
+            focus_visible: {source: "atlas.png", source_rect: (60, 0, 20, 20)},
+            pressed: (40, 0, 20, 20)),
             source_rect: (0, 0, 20, 20));
         control.add(art);
         stage.replace(control);
@@ -51,6 +52,10 @@ fn image_skin_projects_asset_and_atlas_region_from_control_state() {
                 panic!("expected image");
             };
             assert_eq!(source.key(), key);
+            assert_eq!(
+                source.skin_paths.as_deref().unwrap(),
+                ["base.png", "atlas.png"]
+            );
             assert_eq!(source_rect.unwrap().x0, crop);
         };
         check(&vm, "base.png", 0.);
@@ -70,11 +75,23 @@ fn image_skin_projects_asset_and_atlas_region_from_control_state() {
             id,
             InteractionState {
                 hover: true,
-                pressed: true,
+                focus_visible: true,
                 ..Default::default()
             },
         );
-        check(&vm, "atlas.png", 40.);
+        check(&vm, "atlas.png", 60.);
+        state(
+            &mut vm,
+            &session,
+            id,
+            InteractionState {
+                hover: true,
+                pressed: true,
+                focus_visible: true,
+                ..Default::default()
+            },
+        );
+        check(&vm, "base.png", 40.);
         (session, vm) = scopes::restored(&mut vm, &session);
         vm.sync_stage(&session).unwrap();
         check(&vm, "base.png", 0.);

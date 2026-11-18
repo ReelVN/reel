@@ -83,6 +83,61 @@ fn hidden_prefetch_keeps_presentation_ready_and_reuses_decoded_pixels_on_show() 
 }
 
 #[test]
+fn visible_skin_prepares_the_next_state_once_and_drops_offscreen_demand() {
+    use crate::stage_widget::StageView;
+    use reel_ui::stage::NodeKind;
+    // The 96x96 hover fits in the prefetch quarter, the 160x90 base does not.
+    let (mut images, wake) = configured(160 * 90 * 4 * 3, 256 << 20);
+    let base = "assets/panels.png";
+    let hover = "assets/sun.jpg";
+    let paths = Arc::from([base.to_owned(), hover.to_owned()]);
+    let (mut stage, id) = preload_stage(base);
+    let mut art = stage.node(id).unwrap().clone();
+    let NodeKind::Image { source, .. } = &mut art.kind else {
+        unreachable!()
+    };
+    source.skin_paths = Some(Arc::clone(&paths));
+    art.props.visible = true;
+    art.props.preload = false;
+    stage.update(id, art.kind, art.props).unwrap();
+    let view = StageView::capture(&stage);
+    let format = images.shader_format;
+    images.request_stage_images(view.viewport_image_requests(vec![id], vec![], format));
+    assert!(images.prefetch.is_empty());
+    images.request_stage_images(view.viewport_image_requests(vec![], vec![], format));
+    assert!(images.is_required(base) && !images.is_required(hover));
+    assert!(images.prefetch.contains(hover));
+    while !images.loaded.contains_key(hover) {
+        images.poll().unwrap();
+        if !images.loaded.contains_key(hover) {
+            wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+    images.commit();
+    let handle = images.loaded[hover].handle();
+    let loads = images.loads;
+    let mut art = stage.node(id).unwrap().clone();
+    let NodeKind::Image { source, .. } = &mut art.kind else {
+        unreachable!()
+    };
+    *source = hover.into();
+    source.skin_paths = Some(paths);
+    stage.update(id, art.kind, art.props).unwrap();
+    let view = StageView::capture(&stage);
+    images.request_stage_images(view.viewport_image_requests(vec![], vec![], format));
+    assert!(images.poll().unwrap());
+    assert_eq!(images.loaded[hover].handle(), handle);
+    assert_eq!(images.loads, loads);
+    images.commit();
+    assert!(!images.loaded.contains_key(base));
+    assert_eq!(images.hidden_prefetch_bytes(), 0);
+    images.request_stage_images(view.viewport_image_requests(vec![id], vec![], format));
+    images.commit();
+    assert!(images.prefetch.is_empty());
+    assert!(!images.loaded.contains_key(base));
+}
+
+#[test]
 fn visible_image_takes_over_in_flight_prefetch() {
     let (mut images, wake) = configured(160 * 90 * 4, 256 << 20);
     let source = "assets/panels.png";

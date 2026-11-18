@@ -1,6 +1,8 @@
 # 视觉资源自动准备提案
 
-目标是让作者只描述最终要显示的画面。正文写一次换表情，菜单写一次打开页面，绘制和提前准备共用同一份资源定义。以下是替代公开节点属性 `preload` 的设计，0.3.15 的实际行为见[引擎架构](engine-architecture.md)。
+目标是让作者只描述最终要显示的画面。正文写一次换表情，菜单写一次打开页面，绘制和提前准备共用同一份资源定义。0.4 开发版已经从可见控件的 `image_skin` 准备备选图。剧情预测仍在设计，现行合同见[引擎架构](engine-architecture.md)。
+
+Shin 的执行链说明了两个不同的时机。执行 `LAYERLOAD` 后开始加载，准备好才替换图层。立绘另按表情选块，多套表情可以共享身体。Reel 可直接从皮肤取得有限的未来状态，而剧情要提前到上一句准备，仍需要下面的控制流信息。[Shin 图层加载](https://github.com/DCNick3/shin/blob/2405086f8a1d319c9df3605df38a4f0a6379a42d/shin/src/adv/command/layerload.rs#L135-L228) · [Shin 立绘](https://github.com/DCNick3/shin/blob/2405086f8a1d319c9df3605df38a4f0a6379a42d/shin/src/asset/bustup.rs#L87-L110)
 
 ## 从哪里知道下一幅画面
 

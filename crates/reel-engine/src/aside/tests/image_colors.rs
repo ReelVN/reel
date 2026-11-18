@@ -82,12 +82,12 @@ fn layered_images_use_shared_image_defaults_and_keep_slots_across_restore_and_up
     use reel_ui::kurbo::Rect;
     let code = r#"fn opening() {
         let state=model({changed:false});
-        let portrait=layered_image(|| if state.changed {
+        let portrait=layered_image(derive(|| if state.changed {
             [{source:"still.png",x:12,width:80,height:90,saturation:0.5,
               brightness:[2,0.5,1],color_offset:0.1,source_rect:(4,5,16,32),sampling:"nearest"}]
         } else {
             [{source:"still.png",x:7,width:80,height:90}]
-        },x:23);
+        }),x:23);
         stage.replace(portrait);
         narrator("defaults");
         state.changed=true;
@@ -161,6 +161,61 @@ fn layered_images_use_shared_image_defaults_and_keep_slots_across_restore_and_up
                 assert_eq!(source_rect, None);
                 assert_eq!(adjustment, ImageColorAdjustment::default());
             }
+        }
+    }
+}
+
+#[test]
+fn layered_image_observes_slot_bindings_and_in_place_descriptor_edits() {
+    let code = r#"fn opening() {
+        let body = model({source:"body.png", x:7});
+        let pose = model({face: null});
+        stage.replace(layered_image([body, bind(pose.face)]));
+        narrator("body");
+        pose.face = {source:"face.png"};
+        narrator("smile");
+        body.x = 19;
+        narrator("move body");
+        pose.face = null;
+        narrator("hide");
+        pose.face = {source:"face.png"};
+        narrator("show");
+    }"#;
+    let (mut session, mut vm) = models::prepared(code, true);
+    let mut ids = None;
+    for (index, (x, visible)) in [
+        (7., None),
+        (7., Some(true)),
+        (19., Some(true)),
+        (19., Some(false)),
+        (19., Some(true)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index != 0 {
+            let current = session.view().interaction.unwrap().id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(current))
+                    .unwrap();
+            }
+        }
+        drive(&mut vm, &mut session);
+        let find = |key| {
+            vm.stage().nodes().find(
+                |node| matches!(&node.kind, NodeKind::Image { source, .. } if source.key() == key),
+            )
+        };
+        let body = find("body.png").unwrap();
+        let face = find("face.png");
+        assert_eq!(body.props.x, x);
+        assert_eq!(face.map(|n| n.props.visible), visible);
+        if let Some(face) = face {
+            assert_eq!(*ids.get_or_insert((body.id, face.id)), (body.id, face.id));
+        }
+        if index == 1 {
+            (session, vm) = restore(&session, &mut vm);
         }
     }
 }

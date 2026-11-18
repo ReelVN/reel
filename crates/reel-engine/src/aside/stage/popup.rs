@@ -107,10 +107,12 @@ impl StageBinding {
             } else {
                 let fields = heap.host_fields(self.value(heap, anchor)?)?;
                 let offset = self.handles[&anchor].interaction_offset;
-                let state = |index| -> Result<bool, HeapError> {
-                    Ok(heap.table_entry(fields, offset + index)?.1.as_bool() == Some(true))
+                let fields = heap.table_read(fields)?;
+                let state = |field: interaction::Field| -> Result<bool, HeapError> {
+                    Ok(fields.value(offset + field.index() as u32)?.as_bool() == Some(true))
                 };
-                let visible = !state(3)? && (state(0)? || state(4)?);
+                let visible = !state(interaction::Field::Disabled)?
+                    && interaction::VisualState::Highlight.active(state)?;
                 active = Some(visible);
                 visible
             };

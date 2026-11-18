@@ -397,6 +397,14 @@ let caption = text("窗外下起了雨。")
 caption.with(opacity: 0.5);
 ```
 
+立绘的身体固定、表情可变时，可以只绑定脸部所在的位置。赋值为 `null` 就隐藏表情，赋一张新图就换表情。
+
+```aside
+let pose = model({ face: null });
+let portrait = layered_image([{ source: "assets/body.png" }, bind(pose.face)]);
+pose.face = { source: "assets/smile.png" };
+```
+
 需要让玩家先看到当前画面再开始演出时，等待 `stage.presented()`。资源准备期间播放器保留上一幅已显示画面。
 
 移入视口的定尺寸图片由播放器根据运动方向自动准备。下一张背景、立绘表情或菜单已经确定时，可以在玩家阅读当前台词或观看当前演出期间，把它挂成 `preload: true` 的隐藏子树。子节点继承这项设置，播放器用空余资源容量提前读取、解码图片和效果。路线改变时，移除这棵子树即可释放请求与资源。
@@ -978,12 +986,8 @@ fn main() {
 
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
-    let control = button(on_click: clicked);
-    control.add(image(source: derive(|| {
-        if control.pressed { pressed }
-        else if control.hover { hovered }
-        else { normal }
-    })));
+    let control = button(on_click: clicked, decorated: false);
+    control.add(image(image_skin(control, normal, highlight: hovered, pressed: pressed)));
     return control;
 }
 ```

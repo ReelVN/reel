@@ -4,6 +4,10 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- `layered_image` accepts an array of image descriptors. Bind the whole composition, one layer, or individual properties with ordinary bindings. Existing scripts passing a callback can wrap it in `derive`.
+- `image_skin` and `appearance` share pointer and navigation artwork through `highlight`. A skin state can use a crop tuple from its base image. The player uses spare loading capacity to prepare a visible skin's alternate files.
+- Loose-file playback discovers the available platform resource directories once per session. Games that ship only common assets open each file directly.
+
 ## 0.3.15 — 2026-11-18
 
 ### Changed

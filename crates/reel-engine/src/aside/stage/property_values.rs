@@ -485,7 +485,8 @@ pub(in crate::aside) fn validate_layout_property(
     value: Value,
 ) -> Result<(), HeapError> {
     if index as usize >= NodeProperty::PROPERTIES.len() {
-        return if (index as usize) < NodeProperty::PROPERTIES.len() + interaction::FIELDS.len()
+        return if (index as usize)
+            < NodeProperty::PROPERTIES.len() + interaction::Field::NAMES.len()
             && value.as_bool().is_some()
         {
             Ok(())

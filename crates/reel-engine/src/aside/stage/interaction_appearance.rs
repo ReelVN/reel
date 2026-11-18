@@ -1,10 +1,10 @@
 //! Immutable interaction paint projected onto the existing node and input identity.
+use super::interaction::{Field, VisualState};
 use super::{AdapterError, NodeProperty, overrides, text};
 use aside_host::PropertySchema;
 use aside_vm::{Heap, HeapError, ObjectKind, Value, ValueTag};
 
 const TAG: i64 = -1112;
-const STATES: [&str; 5] = ["base", "hover", "focus_visible", "pressed", "disabled"];
 const PROPERTIES: &[&str] = &[
     "opacity",
     "invert",
@@ -30,7 +30,7 @@ aside_host::native_documentation! {
     pub(in crate::aside) fn documentation {
         /// Create immutable, shareable interaction appearance for common stage nodes.
         /// Each argument is a table of visual properties, copied and validated once.
-        /// Precedence is base, hover, focus_visible, pressed, disabled, then scope
+        /// Precedence is base, highlight, hover, focus_visible, pressed, disabled, then scope
         /// overrides. Unspecified properties retain the node's ordinary values.
         /// Selection preserves bindings, node identity, focus and ongoing presses.
         ///
@@ -39,6 +39,7 @@ aside_host::native_documentation! {
         /// anchor_x, anchor_y, text_outline, text_outline_color, text_shadow_x,
         /// text_shadow_y and text_shadow_color. Values are literal property values;
         /// bindings belong on the node. Null clears nullable paint properties.
+        /// Use `highlight` to share paint between hover and navigation focus.
         ///
         /// ```aside
         /// fn main() {
@@ -60,7 +61,10 @@ pub(in crate::aside) fn describe(api: &mut aside_host::source::Api) {
     api.refine(
         "reel::appearance",
         named("reel::types::Appearance"),
-        &STATES.map(|name| (name, nullable(TypeHint::Table))),
+        &VisualState::NAMES
+            .iter()
+            .map(|&name| (name, nullable(TypeHint::Table)))
+            .collect::<Vec<_>>(),
     );
     api.types.push(NamedType::new("reel::types::Appearance",
         "Immutable common stage paint selected by the node's interaction state. Construct with appearance.", Vec::new()));
@@ -72,10 +76,10 @@ pub(in crate::aside) fn contracts() -> Vec<aside_host::NativeContract> {
         standard_derived_commit: false,
         read_only_leaf: None,
         symbol: "reel::appearance".into(),
-        abi_version: 1,
-        parameters: STATES
-            .into_iter()
-            .map(|name| aside_host::NativeParameter {
+        abi_version: 2,
+        parameters: VisualState::NAMES
+            .iter()
+            .map(|&name| aside_host::NativeParameter {
                 name: name.into(),
                 ty: BuiltinType::Any,
                 default: Some(Const::Null),
@@ -93,7 +97,7 @@ pub(in crate::aside) fn create(
     args: &[Value],
     limit: usize,
 ) -> Result<Value, AdapterError> {
-    let mut payload = [Value::NULL; 6];
+    let mut payload = [Value::NULL; 1 + VisualState::NAMES.len()];
     payload[0] = Value::int(TAG);
     for (state, &table) in args.iter().enumerate() {
         if table.tag() == ValueTag::Null {
@@ -161,31 +165,33 @@ impl Selection {
         }
         validate(heap, appearance)?;
         let interaction = (offset + NodeProperty::PROPERTIES.len()) as u32;
-        let state = |index| -> Result<bool, HeapError> {
-            if heap.table_len(fields)? <= interaction + index {
+        let table = heap.table_read(fields)?;
+        let state = |field: Field| -> Result<bool, HeapError> {
+            let index = interaction + field.index() as u32;
+            if table.len() <= index {
                 return Ok(false);
             }
-            Ok(heap.table_entry(fields, interaction + index)?.1.as_bool() == Some(true))
+            Ok(table.value(index)?.as_bool() == Some(true))
         };
-        let disabled = state(3)?
-            || overrides::get(
-                heap,
-                fields,
-                offset,
-                overrides,
-                NodeProperty::Enabled.index(),
-            )?
-            .as_bool()
-                == Some(false);
-        for (state, active) in [true, state(0)?, state(4)?, state(1)?, disabled]
-            .into_iter()
-            .enumerate()
-        {
-            if !active {
-                continue;
-            }
-            let entries = heap.host_payload(appearance, state as u32 + 1)?;
-            if entries.tag() == ValueTag::Null {
+        let enabled = overrides::get(
+            heap,
+            fields,
+            offset,
+            overrides,
+            NodeProperty::Enabled.index(),
+        )?
+        .as_bool();
+        for visual in VisualState::PRIORITY.into_iter().rev() {
+            let entries = heap.host_payload(appearance, visual.index() as u32 + 1)?;
+            if entries.tag() == ValueTag::Null
+                || !visual.active(|field| {
+                    if matches!(field, Field::Disabled) && enabled == Some(false) {
+                        Ok(true)
+                    } else {
+                        state(field)
+                    }
+                })?
+            {
                 continue;
             }
             for index in (0..heap.sequence_len(entries)?).step_by(2) {

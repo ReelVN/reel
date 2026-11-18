@@ -94,13 +94,13 @@ pub(in crate::aside) fn describe(api: &mut Api) {
             )
         })
         .collect::<Vec<_>>();
-    for name in interaction::FIELDS {
+    for (index, &name) in interaction::Field::NAMES.iter().enumerate() {
         members.push(Member::field(
             node_name,
             name,
             TypeHint::Bool,
             None,
-            interaction_documentation(name),
+            interaction::Field::documentation(index),
             Some(aside_vm::bytecode::Const::Bool(false)),
         ));
     }
@@ -242,15 +242,9 @@ pub(in crate::aside) fn describe(api: &mut Api) {
             .property_group("Node properties", &schema::<NodeProperty>());
     }
     api.refine("reel::stage::replace", TypeHint::Null, &[("root", node)]);
-}
-
-fn interaction_documentation(name: &str) -> &'static str {
-    match name {
-        "hover" => "Whether this node or a descendant is under the pointer.",
-        "pressed" => "Whether pointer capture or the node's confirmation control is pressed.",
-        "focused" => "Whether this node or a descendant receives keyboard focus.",
-        "focus_visible" => "Whether keyboard or gamepad navigation focus should be displayed.",
-        "disabled" => "Whether this node is disabled by itself or an ancestor.",
-        _ => unreachable!("registered interaction field"),
-    }
+    api.refine(
+        "reel::layered_image",
+        named("reel::types::Node"),
+        &[("layers", bindable(TypeHint::Array))],
+    );
 }

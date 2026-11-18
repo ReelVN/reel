@@ -21,6 +21,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("custom mouse cursor", E::Block),
     ("typed author classes", E::Module),
     ("configure a component", E::Block),
+    ("bind a portrait layer", E::Block),
     ("hidden page preload", E::Block),
     ("presentation wait", E::Block),
     ("locally composed control", E::Block),

@@ -4,9 +4,9 @@ use super::*;
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
-        /// Return a stable container composed from `layers()`, a read-only reactive
-        /// function returning an array of image descriptors or null slots. Each descriptor
-        /// uses image constructor fields; array position identifies the slot, without keys.
+        /// Compose a stable container from an array of image descriptors or null slots.
+        /// The array, a slot or an individual image property can be a binding.
+        /// Array position identifies the slot. Descriptors use image constructor fields.
         /// Reusing a slot updates its existing node. A null slot hides its previous node
         /// while retaining that node and its source; shortening the array retires its tail.
         /// Observable descriptor fields participate in dependency tracking.
@@ -25,6 +25,7 @@ enum State {
     Node,
     Defaults,
     Slots,
+    Descriptions,
 }
 
 #[derive(Clone, Copy)]
@@ -95,38 +96,59 @@ fn defaults(heap: &mut Heap) -> Result<Value, HeapError> {
     Ok(values)
 }
 
-/// Resolve one descriptor while dependency capture is active, before touching
-/// any visible node. The common image schema is the only validation boundary.
+fn observed(heap: &mut Heap, value: Value) -> Result<Value, HeapError> {
+    if !heap.is_property_ref(value) {
+        return Ok(value);
+    }
+    let (property, _) = heap.property_ref(value)?;
+    heap.observe_read(property.host, Some(property.field))?;
+    heap.host_property(property)
+}
+
+// The first two entries identify a reusable scalar descriptor. Remaining pairs
+// hold only its authored property indices and values, in constructor order.
 fn description(
     heap: &mut Heap,
     part: Value,
-    defaults: Value,
+    previous: Value,
 ) -> Result<(Value, u32), AdapterError> {
+    let part = observed(heap, part)?;
     if part.tag() == ValueTag::Null {
         return Ok((Value::NULL, 1));
     }
     let count = heap.table_len(part)?;
-    heap.observe_read(part, None)?;
-    let mut values =
-        Vec::with_capacity(registry::IMAGE_PREFIX.len() + NodeProperty::PROPERTIES.len());
-    let mut work = 2 * heap.sequence_len(defaults)?;
-    for i in 0..heap.sequence_len(defaults)? {
-        values.push(heap.sequence_get(defaults, i)?);
+    if count as usize > registry::IMAGE_PREFIX.len() + NodeProperty::PROPERTIES.len() {
+        return Err(AdapterError::Input("unknown image layer property"));
     }
+    heap.observe_read(part, None)?;
+    let version = Value::int(heap.info(part)?.content_version as i64);
+    if previous.tag() != ValueTag::Null
+        && heap.sequence_get(previous, 0)?.same_bits(part)
+        && heap.sequence_get(previous, 1)?.same_bits(version)
+    {
+        return Ok((previous, 3));
+    }
+    let mut fields = Vec::with_capacity(count as usize);
+    let mut reusable = true;
+    let mut work = 3;
     for i in 0..count {
-        let (key, mut value) = heap.table_entry(part, i)?;
-        // Property names are from a fixed schema, so no arbitrary string copy.
+        let (key, raw) = heap.table_entry(part, i)?;
         let (field, compared) = image_field(heap, key)?;
         work += compared + 1;
-        if heap.is_property_ref(value) {
-            let (property, _) = heap.property_ref(value)?;
-            heap.observe_read(property.host, Some(property.field))?;
-            value = heap.host_property(property)?;
-        }
-        values[field] = value;
-    }
-    for (field, &value) in values.iter().enumerate() {
+        let value = observed(heap, raw)?;
         stage::validate_image_property(heap, field as u32, value)?;
+        reusable &= raw.tag() != ValueTag::Object
+            || matches!(heap.info(raw)?.kind, ObjectKind::String | ObjectKind::Bytes);
+        fields.push((field, value));
+    }
+    fields.sort_unstable_by_key(|&(field, _)| field);
+    if fields.first().map(|&(field, _)| field) != Some(0) {
+        return Err(AdapterError::Input("image layer requires a source"));
+    }
+    let mut values = Vec::with_capacity(2 + 2 * fields.len());
+    values.extend([if reusable { part } else { Value::NULL }, version]);
+    for (field, value) in fields {
+        values.extend([Value::int(field as i64), value]);
     }
     Ok((heap.alloc_array(&values)?, work))
 }
@@ -135,6 +157,9 @@ fn image_field(heap: &Heap, key: Value) -> Result<(usize, u32), AdapterError> {
     let info = heap.info(key)?;
     let mut work = 1;
     if info.kind == ObjectKind::String {
+        // Schema keys normally fit in one VM segment. Borrow it once for the
+        // entire lookup and only fetch a suffix when a key crosses a boundary.
+        let prefix = heap.byte_segment(key, 0)?;
         for (index, name) in registry::IMAGE_PREFIX
             .iter()
             .copied()
@@ -142,20 +167,19 @@ fn image_field(heap: &Heap, key: Value) -> Result<(usize, u32), AdapterError> {
             .enumerate()
         {
             work += 1;
-            if name.len() != info.len as usize {
+            if name.len() != info.len as usize || !name.as_bytes().starts_with(prefix) {
                 continue;
             }
-            let mut same = true;
-            for (offset, expected) in name.bytes().enumerate() {
+            let mut offset = prefix.len();
+            while offset < name.len() {
+                let segment = heap.byte_segment(key, offset as u32)?;
                 work += 1;
-                let mut byte = [0];
-                heap.read_bytes(key, offset as u32, &mut byte)?;
-                if byte[0] != expected {
-                    same = false;
+                if segment.is_empty() || !name.as_bytes()[offset..].starts_with(segment) {
                     break;
                 }
+                offset += segment.len();
             }
-            if same {
+            if offset == name.len() {
                 return Ok((index, work));
             }
         }
@@ -221,10 +245,14 @@ impl SessionVm {
                     self.read_limit,
                     origin,
                 )?;
-                let output = self.vm.heap_mut().alloc_derived(args[0])?;
+                let output = self.vm.heap_mut().alloc_derived(Value::NULL)?;
                 let defaults = defaults(self.vm.heap_mut())?;
                 let slots = self.vm.heap_mut().alloc_array(&[])?;
-                let state = self.vm.heap_mut().alloc_array(&[node, defaults, slots])?;
+                let descriptions = self.vm.heap_mut().alloc_array(&[])?;
+                let state =
+                    self.vm
+                        .heap_mut()
+                        .alloc_array(&[node, defaults, slots, descriptions])?;
                 self.vm.heap_mut().set_derived_state(output, state)?;
                 self.vm.heap_mut().set_host_payload(node, 3, output)?;
                 (output, state)
@@ -239,27 +267,29 @@ impl SessionVm {
                 index: 0,
                 version: 0,
             };
-            self.vm
-                .call_reactive(ticket, output, args[0], true, &work.values())?;
+            self.vm.begin_reactive(
+                ticket,
+                output,
+                true,
+                Continuation {
+                    version: 1,
+                    stage: Phase::Source as u64,
+                    values: &work.values(),
+                    faults: FaultRetention::Preserve,
+                },
+            )?;
             return Ok(NodeProperty::PROPERTIES.len() as u32);
         }
 
         let mut work = Work::load(self.vm.host_continuation(ticket)?);
-        if ticket.input == NativeInput::CallbackFault {
-            self.vm.heap_mut().end_derived(work.output)?;
-            self.vm.respond(
-                ticket,
-                HostResponse::ForwardFault(self.vm.host_callback_fault(ticket)?.unwrap().id),
-            )?;
-            return Ok(1);
-        }
         let mut cost = 1;
         match ticket.continuation.unwrap().stage {
             phase if phase == Phase::Source as u64 => {
-                work.source = self.vm.host_resume_value(ticket)?;
+                let input = self.vm.host_arguments(ticket)?[0];
+                work.source = observed(self.vm.heap_mut(), input)?;
                 if self.vm.heap().info(work.source)?.kind != ObjectKind::Array {
                     return Err(AdapterError::Input(
-                        "layered_image layers must return an array",
+                        "layered_image expects an array of image descriptors",
                     ));
                 }
                 work.version = self.vm.heap().info(work.source)?.content_version;
@@ -272,8 +302,13 @@ impl SessionVm {
                 }
                 if work.index < self.vm.heap().sequence_len(work.source)? {
                     let part = self.vm.heap().sequence_get(work.source, work.index)?;
-                    let defaults = work.state(self.vm.heap(), State::Defaults)?;
-                    let (args, work_cost) = description(self.vm.heap_mut(), part, defaults)?;
+                    let old = work.state(self.vm.heap(), State::Descriptions)?;
+                    let previous = if work.index < self.vm.heap().sequence_len(old)? {
+                        self.vm.heap().sequence_get(old, work.index)?
+                    } else {
+                        Value::NULL
+                    };
+                    let (args, work_cost) = description(self.vm.heap_mut(), part, previous)?;
                     cost += work_cost;
                     self.vm.heap_mut().array_push(work.descriptions, args)?;
                     work.index += 1;
@@ -288,8 +323,7 @@ impl SessionVm {
             }
             phase if phase == Phase::Apply as u64 => {
                 if work.index < self.vm.heap().sequence_len(work.descriptions)? {
-                    self.apply_image_slot(ticket, &work)?;
-                    cost += (NodeProperty::PROPERTIES.len() + registry::IMAGE_PREFIX.len()) as u32;
+                    cost += self.apply_image_slot(ticket, &work)?;
                     work.index += 1;
                     self.layered_continue(ticket, &work, Phase::Apply)?;
                 } else {
@@ -304,6 +338,11 @@ impl SessionVm {
                     self.vm
                         .heap_mut()
                         .set_field(work.state, State::Slots as u32, work.slots)?;
+                    self.vm.heap_mut().set_field(
+                        work.state,
+                        State::Descriptions as u32,
+                        work.descriptions,
+                    )?;
                     self.vm.heap_mut().end_derived(work.output)?;
                     self.vm.respond(ticket, HostResponse::Ready(node))?;
                 }
@@ -313,14 +352,27 @@ impl SessionVm {
         Ok(cost)
     }
 
-    fn apply_image_slot(&mut self, ticket: HostTicket, work: &Work) -> Result<(), AdapterError> {
+    fn apply_image_slot(&mut self, ticket: HostTicket, work: &Work) -> Result<u32, AdapterError> {
         let old = work.state(self.vm.heap(), State::Slots)?;
-        let mut node = if work.index < self.vm.heap().sequence_len(old)? {
-            self.vm.heap().sequence_get(old, work.index)?
+        // Store the field revision alongside the node. Script and animation writes
+        // invalidate the fast path even when the descriptor itself did not change.
+        let slot = work.index * 2;
+        let mut node = if slot < self.vm.heap().sequence_len(old)? {
+            self.vm.heap().sequence_get(old, slot)?
         } else {
             Value::NULL
         };
         let args = self.vm.heap().sequence_get(work.descriptions, work.index)?;
+        let mut cost = 2;
+        let unchanged = if node.tag() != ValueTag::Null && args.tag() != ValueTag::Null {
+            let heap = self.vm.heap();
+            let previous = work.state(heap, State::Descriptions)?;
+            heap.sequence_get(previous, work.index)?.same_bits(args)
+                && heap.sequence_get(old, slot + 1)?.as_int()
+                    == Some(heap.info(heap.host_fields(node)?)?.content_version as i64)
+        } else {
+            false
+        };
         if args.tag() == ValueTag::Null {
             if node.tag() != ValueTag::Null {
                 let property = PropertyId {
@@ -333,34 +385,72 @@ impl SessionVm {
                         .write_host_property(property, Value::bool(false), true)?;
                 }
             }
-        } else if node.tag() == ValueTag::Null {
-            let values = (0..self.vm.heap().sequence_len(args)?)
-                .map(|i| self.vm.heap().sequence_get(args, i))
-                .collect::<Result<Vec<_>, _>>()?;
-            let origin = self.stage_origin(ticket);
-            node = self.stage.dispatch(
-                &mut self.vm,
-                self.root_owner,
-                "reel::image",
-                &values,
-                self.read_limit,
-                origin,
-            )?;
-        } else {
-            for field in 0..self.vm.heap().sequence_len(args)? {
-                let value = self.vm.heap().sequence_get(args, field)?;
-                let property = PropertyId { host: node, field };
-                if !self.vm.heap().host_property(property)?.same_bits(value) {
-                    self.vm
-                        .heap_mut()
-                        .write_host_property(property, value, true)?;
+        } else if !unchanged {
+            let defaults = work.state(self.vm.heap(), State::Defaults)?;
+            let field_count = self.vm.heap().sequence_len(defaults)?;
+            cost += field_count;
+            let creating = node.tag() == ValueTag::Null;
+            let mut constructor = Vec::new();
+            if creating {
+                constructor.reserve_exact(field_count as usize);
+            }
+            let length = self.vm.heap().sequence_len(args)?;
+            let next_field = |heap: &Heap, offset| -> Result<Option<i64>, HeapError> {
+                if offset < length {
+                    Ok(heap.sequence_get(args, offset)?.as_int())
+                } else {
+                    Ok(None)
                 }
+            };
+            let mut offset = 2;
+            let mut authored = next_field(self.vm.heap(), offset)?;
+            for field in 0..field_count {
+                let value = if authored == Some(i64::from(field)) {
+                    let value = self.vm.heap().sequence_get(args, offset + 1)?;
+                    offset += 2;
+                    authored = next_field(self.vm.heap(), offset)?;
+                    value
+                } else {
+                    self.vm.heap().sequence_get(defaults, field)?
+                };
+                if creating {
+                    constructor.push(value);
+                } else {
+                    let property = PropertyId { host: node, field };
+                    if !self.vm.heap().host_property(property)?.same_bits(value) {
+                        self.vm
+                            .heap_mut()
+                            .write_host_property(property, value, true)?;
+                    }
+                }
+            }
+            if creating {
+                let origin = self.stage_origin(ticket);
+                node = self.stage.dispatch(
+                    &mut self.vm,
+                    self.root_owner,
+                    "reel::image",
+                    &constructor,
+                    self.read_limit,
+                    origin,
+                )?;
             }
         }
         self.vm.heap_mut().array_push(work.slots, node)?;
+        let version = if node.tag() == ValueTag::Null {
+            Value::NULL
+        } else {
+            Value::int(
+                self.vm
+                    .heap()
+                    .info(self.vm.heap().host_fields(node)?)?
+                    .content_version as i64,
+            )
+        };
+        self.vm.heap_mut().array_push(work.slots, version)?;
         if node.tag() != ValueTag::Null {
             self.vm.heap_mut().array_push(work.children, node)?;
         }
-        Ok(())
+        Ok(cost)
     }
 }

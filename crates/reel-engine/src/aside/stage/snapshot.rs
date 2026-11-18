@@ -130,7 +130,11 @@ impl Shape {
                         }
                         reel_ui::stage::ImageSource::empty()
                     } else {
-                        read_source(heap, image_source, limit)?
+                        let mut source = read_source(heap, image_source, limit)?;
+                        if image_skin::is_skin(heap, get(0)?) {
+                            source.skin_paths = image_skin::paths(heap, get(0)?, limit)?;
+                        }
+                        source
                     },
                     fit: read_fit(heap, get(1)?)?,
                     slice: read_slice(heap, get(2)?)?,

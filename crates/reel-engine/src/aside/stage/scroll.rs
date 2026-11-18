@@ -119,7 +119,8 @@ pub(super) fn kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError>
 }
 pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
     let prefix = ScrollField::PROPERTIES.len() as u32;
-    let metrics = prefix + NodeProperty::PROPERTIES.len() as u32 + interaction::FIELDS.len() as u32;
+    let metrics =
+        prefix + NodeProperty::PROPERTIES.len() as u32 + interaction::Field::NAMES.len() as u32;
     if index < prefix {
         ScrollField::validate(heap, index, value)
     } else if (metrics..metrics + METRICS.len() as u32).contains(&index) {
@@ -163,7 +164,7 @@ impl StageBinding {
                 changed = true;
             }
         }
-        let metrics = binding.interaction_offset + interaction::FIELDS.len() as u32;
+        let metrics = binding.interaction_offset + interaction::Field::NAMES.len() as u32;
         for (i, value) in [
             event.viewport.width,
             event.viewport.height,

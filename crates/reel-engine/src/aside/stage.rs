@@ -803,9 +803,9 @@ impl StageBinding {
             }
         }
         let (id, value) = self.allocate_node_shell(heap, fields, references, shape, type_name)?;
-        for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
+        for (offset, &name) in interaction::Field::NAMES.iter().enumerate() {
             let key = self.property_key(heap, name)?;
-            let state = name == "disabled" && !props.enabled;
+            let state = offset == interaction::Field::Disabled.index() && !props.enabled;
             heap.table_store(
                 fields,
                 (field_count + offset) as u32,
@@ -813,8 +813,12 @@ impl StageBinding {
                 Value::bool(state),
             )?;
         }
-        heap.observe_host_properties(value, field_count as u32, interaction::FIELDS.len() as u32)?;
-        let extra_fields = interaction::FIELDS.len();
+        heap.observe_host_properties(
+            value,
+            field_count as u32,
+            interaction::Field::NAMES.len() as u32,
+        )?;
+        let extra_fields = interaction::Field::NAMES.len();
         if matches!(
             shape,
             snapshot::Shape::TextInput | snapshot::Shape::TextArea

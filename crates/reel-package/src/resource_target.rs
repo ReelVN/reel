@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 /// A source-resource variant name, independent of the executable's build target.
@@ -10,6 +11,33 @@ use std::{
 /// letters, digits, underscores or hyphens. The default is the host OS name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceTarget(String);
+
+/// A fixed source directory for one playback session. The first resolution
+/// discovers which target overlays exist without enumerating their contents.
+pub struct ResourceDirectory {
+    root: PathBuf,
+    target: ResourceTarget,
+    overlays: OnceLock<Vec<PathBuf>>,
+}
+
+impl ResourceDirectory {
+    /// Select a logical asset using this session's exact, shared and common roots.
+    pub fn resolve(&self, logical: &str) -> io::Result<PathBuf> {
+        let overlays = self.overlays.get_or_init(|| {
+            self.target
+                .overlay_paths(&self.root)
+                .filter(|path| {
+                    match fs::metadata(path) {
+                        Ok(metadata) => metadata.is_dir(),
+                        // Keep other failures so resolution reports the underlying IO error.
+                        Err(error) => !missing_path(&error),
+                    }
+                })
+                .collect()
+        });
+        resolve_in(&self.root, logical, overlays)
+    }
+}
 
 impl ResourceTarget {
     /// Validate a target name used by a top-level `@NAME` resource directory.
@@ -45,26 +73,27 @@ impl ResourceTarget {
         }
     }
 
+    /// Bind a resource root for repeated lookups. File IO starts on first use.
+    pub fn directory(self, root: PathBuf) -> ResourceDirectory {
+        ResourceDirectory {
+            root,
+            target: self,
+            overlays: OnceLock::new(),
+        }
+    }
+
+    fn overlay_paths<'a>(&'a self, root: &'a Path) -> impl Iterator<Item = PathBuf> + 'a {
+        std::iter::once(self.as_str())
+            .chain(self.fallback())
+            .map(|name| root.join(format!("@{name}")))
+    }
+
     /// Resolve a logical file directly in its source tree, without copying it.
     /// The exact target takes precedence over the shared overlay and common file.
     /// Top-level `@NAME/` paths belong to selection and cannot be requested as
     /// logical resource paths; nested `@NAME` directories remain ordinary paths.
     pub fn resolve(&self, root: &Path, logical: &str) -> io::Result<PathBuf> {
-        validate_logical_path(logical, io::ErrorKind::NotFound)?;
-        for name in std::iter::once(self.as_str()).chain(self.fallback()) {
-            let variant = root.join(format!("@{name}")).join(logical);
-            match fs::metadata(&variant) {
-                Ok(metadata) if metadata.is_file() => return Ok(variant),
-                Ok(_) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                    ) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(root.join(logical))
+        resolve_in(root, logical, self.overlay_paths(root))
     }
 
     /// Collect selected logical names in stable order while retaining source
@@ -101,6 +130,31 @@ impl Default for ResourceTarget {
     fn default() -> Self {
         Self(std::env::consts::OS.into())
     }
+}
+
+fn missing_path(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+fn resolve_in(
+    root: &Path,
+    logical: &str,
+    overlays: impl IntoIterator<Item = impl AsRef<Path>>,
+) -> io::Result<PathBuf> {
+    validate_logical_path(logical, io::ErrorKind::NotFound)?;
+    for overlay in overlays {
+        let variant = overlay.as_ref().join(logical);
+        match fs::metadata(&variant) {
+            Ok(metadata) if metadata.is_file() => return Ok(variant),
+            Ok(_) => {}
+            Err(error) if missing_path(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(root.join(logical))
 }
 
 fn collect_directory(

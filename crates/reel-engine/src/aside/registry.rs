@@ -595,7 +595,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         read_only_leaf: None,
         rest: None,
         symbol: "reel::layered_image".into(),
-        abi_version: 1,
+        abi_version: 2,
         parameters: view_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

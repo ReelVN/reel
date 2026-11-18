@@ -52,9 +52,9 @@ impl StageBinding {
             } else {
                 Value::NULL
             };
+            let mut selected_skin = None;
             if version == binding.fields_version
                 && !binding.projection_dirty
-                && binding.image_skin.is_none()
                 && !matches!(node.kind, NodeKind::ScrollBar(_))
                 && !super::super::effects::changed(heap, binding.effect_source)?
                 && !mask_changed(heap, binding.mask_source)?
@@ -65,7 +65,20 @@ impl StageBinding {
                     .transpose()?
                     .unwrap_or(false)
             {
-                continue;
+                let Some(skin) = binding.image_skin else {
+                    continue;
+                };
+                let fallback = heap
+                    .table_entry(fields, appearance::ImageField::SourceRect.index() as u32)?
+                    .1;
+                let selection = image_skin::select(heap, heap.import_handle(skin)?, fallback)?;
+                if binding.text_source == Some(heap.handle(selection.0)?)
+                    && let NodeKind::Image { source_rect, .. } = &node.kind
+                    && *source_rect == read_source_rect(heap, selection.1)?
+                {
+                    continue;
+                }
+                selected_skin = Some(selection);
             }
             let mut projected_image = None;
             let (mut kind, offset) = match &node.kind {
@@ -232,25 +245,33 @@ impl StageBinding {
                     let raw_rect = table.value(11)?;
                     let skin = binding.shape == snapshot::Shape::Image
                         && image_skin::is_skin(heap, raw_source);
-                    let (asset, rect) = if skin {
+                    let (asset, rect) = if let Some(selection) = selected_skin {
+                        selection
+                    } else if skin {
                         image_skin::select(heap, raw_source, raw_rect)?
                     } else {
                         (raw_source, raw_rect)
                     };
                     let asset_handle = heap.handle(asset)?;
-                    projected_image = Some((
-                        asset_handle,
-                        skin.then(|| heap.handle(raw_source)).transpose()?,
-                    ));
+                    let skin_handle = skin.then(|| heap.handle(raw_source)).transpose()?;
+                    projected_image = Some((asset_handle, skin_handle));
+                    let mut selected_source = if binding.shape == snapshot::Shape::Video
+                        || binding.text_source == Some(asset_handle)
+                    {
+                        source.clone()
+                    } else {
+                        read_source(heap, asset, read_limit)?
+                    };
+                    selected_source.skin_paths = if skin_handle == binding.image_skin {
+                        source.skin_paths.clone()
+                    } else if skin {
+                        image_skin::paths(heap, raw_source, read_limit)?
+                    } else {
+                        None
+                    };
                     (
                         NodeKind::Image {
-                            source: if binding.shape == snapshot::Shape::Video
-                                || binding.text_source == Some(asset_handle)
-                            {
-                                source.clone()
-                            } else {
-                                read_source(heap, asset, read_limit)?
-                            },
+                            source: selected_source,
                             fit: read_fit(heap, table.value(1)?)?,
                             slice: read_slice(heap, table.value(2)?)?,
                             slice_scale: nonnegative(table.value(3)?)?,

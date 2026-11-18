@@ -51,8 +51,9 @@ fn validate_thumb(_h: &Heap, v: Value) -> Result<(), HeapError> {
     }
 }
 pub(super) fn parts_offset() -> u32 {
-    (ScrollBarField::PROPERTIES.len() + NodeProperty::PROPERTIES.len() + interaction::FIELDS.len())
-        as u32
+    (ScrollBarField::PROPERTIES.len()
+        + NodeProperty::PROPERTIES.len()
+        + interaction::Field::NAMES.len()) as u32
 }
 pub(super) fn validate(h: &Heap, i: u32, v: Value) -> Result<(), HeapError> {
     let prefix = ScrollBarField::PROPERTIES.len() as u32;
@@ -99,7 +100,7 @@ pub(super) fn view(h: &Heap, fields: Value) -> Result<ScrollBarView, AdapterErro
     }
     let metrics = scroll::ScrollField::PROPERTIES.len()
         + NodeProperty::PROPERTIES.len()
-        + interaction::FIELDS.len();
+        + interaction::Field::NAMES.len();
     view.viewport = nonnegative(field(h, target_fields, metrics + usize::from(!horizontal))?)?;
     view.content = nonnegative(field(
         h,
