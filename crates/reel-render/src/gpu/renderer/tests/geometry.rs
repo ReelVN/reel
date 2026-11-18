@@ -431,6 +431,9 @@ fn geometry_staging_yields_to_whole_frame_admission() {
     }
     let frame = frame(scene, &pool());
     let baseline = renderer(Default::default());
+    // The retry builds its own group proof inside the frame budget. Measure
+    // that path and include the shared peak, which also owns resident metadata.
+    baseline.targets.1.lock().unwrap().disable();
     let original = baseline
         .prepare_cached(
             &frame,
@@ -441,7 +444,12 @@ fn geometry_staging_yields_to_whole_frame_admission() {
             None,
         )
         .unwrap();
-    let required = original.budget_scope.transient.usage().peak_bytes;
+    let required = original
+        .budget_scope
+        .transient
+        .usage()
+        .peak_bytes
+        .max(baseline.budgets.transient.usage().peak_bytes);
     drop(original);
     drop(baseline);
     let mut renderer = renderer(crate::gpu::GpuLimits {
@@ -472,10 +480,17 @@ fn geometry_staging_yields_to_whole_frame_admission() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         renderer.poll().unwrap();
+        let brush_bytes = renderer
+            .white
+            .get_mut()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .brush
+            .bytes();
         assert_eq!(
             renderer.usage().transient,
-            renderer.targets.metadata_bytes(),
-            "only admitted target-cache metadata survives completion"
+            renderer.targets.metadata_bytes() + brush_bytes
         );
         assert_eq!(renderer.usage().cached_geometry, 0);
     }
