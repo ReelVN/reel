@@ -27,18 +27,18 @@ struct Pending {
 #[derive(Default)]
 struct PrefetchSources {
     stage: BTreeSet<String>,
-    story: Option<Box<str>>,
+    story: Box<[Box<str>]>,
 }
 
 impl PrefetchSources {
     fn contains(&self, source: &str) -> bool {
-        self.story.as_deref() == Some(source) || self.stage.contains(source)
+        self.story.iter().any(|path| path.as_ref() == source) || self.stage.contains(source)
     }
 
     fn candidates(&self) -> impl Iterator<Item = &str> {
         self.story
-            .as_deref()
-            .into_iter()
+            .iter()
+            .map(Box::as_ref)
             .chain(self.stage.iter().map(String::as_str))
     }
 }
@@ -249,9 +249,9 @@ impl Images {
     pub(crate) fn is_required(&self, source: &str) -> bool {
         self.wanted.contains_key(source)
     }
-    pub(crate) fn set_story_prediction(&mut self, source: Option<&str>) {
-        if self.prefetch.story.as_deref() != source {
-            self.prefetch.story = source.map(Box::from);
+    pub(crate) fn set_story_prediction(&mut self, sources: &[Box<str>]) {
+        if self.prefetch.story.as_ref() != sources {
+            self.prefetch.story = sources.into();
             // Apply alongside the next visible demand so it can take over
             // an in-flight read when the dialogue advances directly to the image.
             self.story_prediction_changed = true;
@@ -274,7 +274,7 @@ impl Images {
         self.wanted = wanted;
         self.prefetch = PrefetchSources {
             stage: prefetch,
-            story: None,
+            story: Box::default(),
         };
         self.approaching.clear();
         self.reconcile_requests();
@@ -556,7 +556,7 @@ impl Images {
             .sum()
     }
     fn trim_hidden_prefetch(&mut self) {
-        if (self.prefetch.story.is_none() && self.prefetch.stage.is_empty())
+        if (self.prefetch.story.is_empty() && self.prefetch.stage.is_empty())
             || self.hidden_prefetch_bytes() <= self.assets.prefetch_available(0)
         {
             return;

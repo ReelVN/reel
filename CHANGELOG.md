@@ -4,7 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
-- During a dialogue wait, the player can prepare the next image from a literal path or a statically resolved helper. Scrolling, controls and dialogue share the same spare image budget. Masked transitions also start preparing their mask while the old scene is still on screen.
+- During a dialogue wait, the player can prepare the next image or a literal group of image layers, including descriptors forwarded through simple helpers. Scrolling, controls and dialogue share the same spare image budget. Masked transitions also start preparing their mask while the old scene is still on screen.
 - `layered_image` accepts an array of image descriptors. Bind the whole composition, one layer, or individual properties with ordinary bindings. Existing scripts passing a callback can wrap it in `derive`.
 - `image_skin` and `appearance` share pointer and navigation artwork through `highlight`. A skin state can use a crop tuple from its base image. The player uses spare loading capacity to prepare a visible skin's alternate files.
 - Loose-file playback discovers the available platform resource directories once per session. Games that ship only common assets open each file directly. Performance reports separate resource lookup from payload reads and show how often the player opens a loose file or queries its metadata.

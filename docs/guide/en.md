@@ -407,7 +407,7 @@ pose.face = { source: "assets/smile.png" };
 
 Await `stage.presented()` when choreography should start after the current scene is visible. The player retains the previous presented view while resources prepare.
 
-Write dialogue and image changes in story order. While the reader is on a line, the player can prepare the next `image("path")`, including paths forwarded by simple functions. It also prepares fixed-size images moving into view, alternate control skins, and transition masks.
+Write dialogue and image changes in story order. While the reader is on a line, the player can prepare the next `image("path")` or `layered_image([{ source: "body.png" }, { source: "face.png" }])`, including paths and layer descriptors forwarded by simple functions. It also prepares fixed-size images moving into view, alternate control skins, and transition masks.
 
 For a composition or menu selected by runtime data, you can mount its hidden subtree with `preload: true` once you know it will be shown. Descendants inherit the setting. The player uses spare capacity to read and decode their images and effects. If the route changes, remove the subtree to release its requests and resources.
 

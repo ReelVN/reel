@@ -161,11 +161,11 @@ fn visible_image_takes_over_in_flight_prefetch() {
 fn dialogue_prediction_yields_to_a_visible_request_in_the_same_update() {
     let (mut images, wake) = loader();
     let source = "assets/panels.png";
-    images.set_story_prediction(Some(source));
+    images.set_story_prediction(&[source.into()]);
     assert!(images.poll().unwrap());
     let id = images.pending[0].id;
 
-    images.set_story_prediction(None);
+    images.set_story_prediction(&[]);
     let (mut stage, node) = preload_stage(source);
     let mut image = stage.node(node).unwrap().clone();
     image.props.visible = true;
@@ -184,7 +184,7 @@ fn superseded_candidate_cannot_lend_its_foreground_allocation_to_prediction() {
     let source = "assets/panels.png";
     images.request(wanted(&[source]));
     ready(&mut images, &wake).unwrap();
-    images.set_story_prediction(Some(source));
+    images.set_story_prediction(&[source.into()]);
     images.request_stage(&crate::stage_widget::StageView::capture(
         &reel_ui::stage::Stage::default(),
     ));

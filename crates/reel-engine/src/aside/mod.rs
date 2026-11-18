@@ -285,7 +285,7 @@ pub struct SessionVm {
     authored_stage_revision: u64,
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
-    predicted_image: Option<(WaitId, Option<Box<str>>)>,
+    predicted_images: Option<(WaitId, Box<[Box<str>]>)>,
     choice_reader: Option<choice::ChoiceReader>,
     dialogue_reader: Option<dialogue::DialogueReader>,
     // Constructed speech handles and their VM objects, without production counters.
@@ -416,7 +416,7 @@ impl SessionVm {
             authored_stage_revision: 0,
             issued: None,
             pending: None,
-            predicted_image: None,
+            predicted_images: None,
             choice_reader: None,
             dialogue_reader: None,
             #[cfg(test)]
@@ -996,9 +996,9 @@ impl SessionVm {
         Ok(())
     }
 
-    /// The next statically known image after a pending dialogue advance.
-    /// The player may prepare its pixels within its spare resource budget.
-    pub fn predicted_dialogue_image(&mut self) -> Option<&str> {
+    /// Paths from the next statically known image or layered image after a
+    /// pending dialogue advance, in preparation order.
+    pub fn predicted_dialogue_images(&mut self) -> &[Box<str>] {
         let Some(wait) = self
             .pending
             .as_ref()
@@ -1009,19 +1009,23 @@ impl SessionVm {
             })
             .map(|pending| pending.wait)
         else {
-            self.predicted_image = None;
-            return None;
+            self.predicted_images = None;
+            return &[];
         };
         if self
-            .predicted_image
+            .predicted_images
             .as_ref()
             .is_none_or(|(last, _)| *last != wait)
         {
-            let source =
-                visual_prediction::next_image(self.vm.program(), self.vm.wait_call_sites(wait));
-            self.predicted_image = Some((wait, source.map(Box::from)));
+            let sources =
+                visual_prediction::next_images(self.vm.program(), self.vm.wait_call_sites(wait))
+                    .into_iter()
+                    .flatten()
+                    .map(Box::from)
+                    .collect();
+            self.predicted_images = Some((wait, sources));
         }
-        self.predicted_image.as_ref()?.1.as_deref()
+        &self.predicted_images.as_ref().unwrap().1
     }
 
     fn deliver_completion(&mut self, session: &mut Session) -> Result<(), AdapterError> {

@@ -13,12 +13,19 @@ const CALLER_LIMIT: usize = 16;
 const ARGUMENT_LIMIT: usize = 32;
 const FACT_LIMIT: usize = 32;
 const PATH_LIMIT: usize = 1024;
+const LAYER_LIMIT: usize = 8;
+const GROUP_LIMIT: usize = 8;
+const FIELD_LIMIT: usize = 64;
+
+type Paths<'p> = ArrayVec<&'p str, LAYER_LIMIT>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fact {
     Unknown,
     Constant(bc::ConstId),
     Function(bc::FunctionId),
+    Layer(bc::ConstId),
+    Layers(u8),
 }
 
 #[derive(Clone, Default)]
@@ -47,20 +54,21 @@ impl Facts {
 }
 
 enum Outcome<'p> {
-    Image(&'p str),
+    Images(Paths<'p>),
     Return(Fact),
 }
 
 /// Examine ordinary suspended callers, starting with the innermost one. A
 /// successful return can expose the next caller. An unresolved path cannot.
-pub(super) fn next_image(
+pub(super) fn next_images(
     program: &bc::VerifiedProgram,
     sites: impl Iterator<Item = HostCallSite>,
-) -> Option<&str> {
+) -> Option<Paths<'_>> {
     let mut walk = Walk {
         program,
         remaining: INSTRUCTION_LIMIT,
         code: bc::ResidentCodeReader::default(),
+        layers: ArrayVec::new(),
     };
     for site in sites.take(CALLER_LIMIT) {
         if site.code.version != program.package().content_version {
@@ -76,7 +84,7 @@ pub(super) fn next_image(
             return None;
         }
         match walk.function(function, next, Facts::default(), 0)? {
-            Outcome::Image(path) => return Some(path),
+            Outcome::Images(paths) => return Some(paths),
             Outcome::Return(_) => {}
         }
     }
@@ -87,6 +95,7 @@ struct Walk<'p> {
     program: &'p bc::VerifiedProgram,
     remaining: usize,
     code: bc::ResidentCodeReader,
+    layers: ArrayVec<ArrayVec<bc::ConstId, LAYER_LIMIT>, GROUP_LIMIT>,
 }
 
 impl<'p> Walk<'p> {
@@ -122,7 +131,7 @@ impl<'p> Walk<'p> {
                         return None;
                     };
                     match self.call(call, &facts, nesting)? {
-                        image @ Outcome::Image(_) => return Some(image),
+                        images @ Outcome::Images(_) => return Some(images),
                         Outcome::Return(value) => facts.set(a, value),
                     }
                 }
@@ -137,6 +146,14 @@ impl<'p> Walk<'p> {
                         .map_or(Fact::Unknown, Fact::Function);
                     facts.set(a, value);
                 }
+                Opcode::MakeTable => {
+                    let source = self.layer_source(&function.descriptors[b as usize], &facts);
+                    facts.set(a, source.map_or(Fact::Unknown, Fact::Layer));
+                }
+                Opcode::MakeArray => {
+                    let group = self.layer_group(&function.descriptors[b as usize], &facts);
+                    facts.set(a, group.map_or(Fact::Unknown, Fact::Layers));
+                }
                 Opcode::Jump => {
                     pc = forward(pc, a)?;
                     continue;
@@ -150,8 +167,8 @@ impl<'p> Walk<'p> {
                         self.function(function, forward(pc, b)?, facts.clone(), nesting + 1)?;
                     let right = self.function(function, forward(pc, c)?, facts, nesting + 1)?;
                     return match (left, right) {
-                        (Outcome::Image(left), Outcome::Image(right)) if left == right => {
-                            Some(Outcome::Image(left))
+                        (Outcome::Images(left), Outcome::Images(right)) if left == right => {
+                            Some(Outcome::Images(left))
                         }
                         (Outcome::Return(left), Outcome::Return(right)) => {
                             Some(Outcome::Return(if left == right {
@@ -174,7 +191,7 @@ impl<'p> Walk<'p> {
         let constant = match fact {
             Fact::Unknown => return Some(None),
             Fact::Constant(id) => Some(&self.program.package().constants[id.index()]),
-            Fact::Function(_) => None,
+            Fact::Function(_) | Fact::Layer(_) | Fact::Layers(_) => None,
         };
         match (opcode, constant) {
             (Opcode::BranchBool, Some(bc::Const::Bool(value))) => Some(Some(*value)),
@@ -202,7 +219,8 @@ impl<'p> Walk<'p> {
         };
         if let Some(native) = native {
             let native = &package.natives[native.index()];
-            if package.symbols[native.symbol.index()] != "reel::image" {
+            let symbol = package.symbols[native.symbol.index()].as_str();
+            if !matches!(symbol, "reel::image" | "reel::layered_image") {
                 return None;
             }
             let signature = &package.signatures[native.signature.index()];
@@ -220,20 +238,20 @@ impl<'p> Walk<'p> {
                 (false, Some(named)) => named.offset,
                 _ => return None,
             };
-            let Fact::Constant(id) = facts.get(window.start.0 + offset) else {
-                return None;
+            let mut paths = Paths::new();
+            match (symbol, facts.get(window.start.0 + offset)) {
+                ("reel::image", Fact::Constant(id)) => paths.push(self.path(id)?),
+                ("reel::layered_image", Fact::Layers(group)) => {
+                    for &id in &self.layers[usize::from(group)] {
+                        let path = self.path(id)?;
+                        if !paths.contains(&path) {
+                            paths.push(path);
+                        }
+                    }
+                }
+                _ => return None,
             };
-            if !matches!(
-                package.constants[id.index()],
-                bc::Const::Utf8(_) | bc::Const::Text { .. }
-            ) {
-                return None;
-            }
-            let bytes = self.program.constant_bytes(id)?;
-            if bytes.is_empty() || bytes.len() > PATH_LIMIT {
-                return None;
-            }
-            return Some(Outcome::Image(std::str::from_utf8(bytes).ok()?));
+            return Some(Outcome::Images(paths));
         }
 
         let bc::CallTarget::Function(id) = target else {
@@ -257,6 +275,76 @@ impl<'p> Walk<'p> {
             parameters.set(index as u32, fact);
         }
         self.function(function, 0, parameters, nesting + 1)
+    }
+
+    fn text(&self, id: bc::ConstId) -> Option<&'p str> {
+        if !matches!(
+            self.program.package().constants[id.index()],
+            bc::Const::Utf8(_) | bc::Const::Text { .. }
+        ) {
+            return None;
+        }
+        std::str::from_utf8(self.program.constant_bytes(id)?).ok()
+    }
+
+    fn path(&self, id: bc::ConstId) -> Option<&'p str> {
+        let path = self.text(id)?;
+        (!path.is_empty() && path.len() <= PATH_LIMIT).then_some(path)
+    }
+
+    fn layer_source(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<bc::ConstId> {
+        let count = match descriptor {
+            bc::Descriptor::Table(pairs) => pairs.len(),
+            bc::Descriptor::TableSources(entries) => entries.len(),
+            _ => return None,
+        };
+        if count > FIELD_LIMIT {
+            return None;
+        }
+        self.remaining = self.remaining.checked_sub(count)?;
+        let mut source = Fact::Unknown;
+        for index in 0..count {
+            let [key, value] = match descriptor {
+                bc::Descriptor::Table(pairs) => pairs[index],
+                bc::Descriptor::TableSources(entries) => match entries[index] {
+                    bc::TableSource::Pair(pair) => pair,
+                    bc::TableSource::Spread(_) => return None,
+                },
+                _ => unreachable!("table descriptor"),
+            };
+            let Fact::Constant(key) = facts.get(key.0) else {
+                return None;
+            };
+            if self.text(key)? == "source" {
+                source = facts.get(value.0);
+            }
+        }
+        match source {
+            Fact::Constant(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn layer_group(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<u8> {
+        let bc::Descriptor::Sequence(window) = descriptor else {
+            return None;
+        };
+        if window.len as usize > LAYER_LIMIT {
+            return None;
+        }
+        self.remaining = self.remaining.checked_sub(window.len as usize)?;
+        let mut group = ArrayVec::new();
+        for offset in 0..window.len {
+            match facts.get(window.start.0 + offset) {
+                Fact::Layer(id) => group.push(id),
+                Fact::Constant(id)
+                    if self.program.package().constants[id.index()] == bc::Const::Null => {}
+                _ => return None,
+            }
+        }
+        let index = self.layers.len() as u8;
+        self.layers.try_push(group).ok()?;
+        Some(index)
     }
 
     fn arguments(
@@ -405,6 +493,16 @@ mod tests {
     use super::*;
     use aside_vm::{bytecode::InstructionSequence, executor::CodeRef};
 
+    fn next_image(
+        program: &bc::VerifiedProgram,
+        sites: impl Iterator<Item = HostCallSite>,
+    ) -> Option<&str> {
+        next_images(program, sites).map(|paths| {
+            assert_eq!(paths.len(), 1);
+            paths[0]
+        })
+    }
+
     fn compile(source: &str) -> bc::VerifiedProgram {
         super::super::source::compile_story(source, "prediction", 1, "opening")
             .unwrap()
@@ -492,6 +590,37 @@ mod tests {
     }
 
     #[test]
+    fn predicts_layer_sources_forwarded_through_a_helper() {
+        let program = compile(
+            r#"
+                fn portrait(layers: array) { let _ = layered_image(layers, width: 128); }
+                fn opening() {
+                    narrator("wait");
+                    let body = {source: "body.png", width: 128};
+                    portrait([body, null, {source: "face.png"}, body]);
+                }
+            "#,
+        );
+        let site = first_call(&program, "opening");
+        let paths = next_images(&program, [site].into_iter()).unwrap();
+        assert_eq!(paths.as_slice(), ["body.png", "face.png"]);
+    }
+
+    #[test]
+    fn skips_layer_groups_with_runtime_sources_or_unknown_spreads() {
+        for layers in ["[{source: path}]", "[{source: \"known.png\", ...changes}]"] {
+            let program = compile(&format!(
+                r#"fn opening(path: string = "runtime.png", changes: table = {{}}) {{
+                    narrator("wait");
+                    let _ = layered_image({layers});
+                }}"#
+            ));
+            let site = first_call(&program, "opening");
+            assert!(next_images(&program, [site].into_iter()).is_none());
+        }
+    }
+
+    #[test]
     fn only_an_ordinary_return_reaches_an_outer_continuation() {
         for (body, expected) in [
             ("narrator(\"wait\");", Some("outer.png")),
@@ -532,6 +661,7 @@ mod tests {
             program: &program,
             remaining: 1,
             code: bc::ResidentCodeReader::default(),
+            layers: ArrayVec::new(),
         };
         assert!(walk.function(function, next, Facts::default(), 0).is_none());
         assert_eq!(walk.remaining, 0);
