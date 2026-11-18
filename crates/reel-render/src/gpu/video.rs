@@ -98,6 +98,7 @@ pub(super) fn upload(
         });
         Image {
             view: textures.as_slice()[0].create_view(&Default::default()),
+            brush: Default::default(),
             texture: textures.as_slice()[0].clone(),
             size,
             layout: reel_core::texture::TextureLayout::identity(size),

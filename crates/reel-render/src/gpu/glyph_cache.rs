@@ -20,6 +20,7 @@ mod upload;
 pub(super) use crate::common::glyph_key::{Key, RunKey};
 pub(super) struct Page {
     pub view: wgpu::TextureView,
+    pub(super) brush: super::draw::BrushCache,
     texture: wgpu::Texture,
     allocator: Mutex<AtlasAllocator>,
     pub size: [u32; 2],
@@ -362,6 +363,7 @@ impl GlyphCache {
             let allocation = allocator.allocate(requested).unwrap();
             let page = Arc::new(Page {
                 view: texture.create_view(&Default::default()),
+                brush: Default::default(),
                 texture,
                 allocator: Mutex::new(allocator),
                 size,

@@ -5,8 +5,28 @@ use reel_ui::{
     kurbo::{Affine, Rect},
     peniko::{Brush, Extend, Fill, ImageQuality, color::LinearSrgb},
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
+
+#[derive(Default)]
+pub(super) struct BrushCache(Mutex<Option<Box<CachedBrush>>>);
+
+struct CachedBrush {
+    layout: wgpu::BindGroupLayout,
+    group: wgpu::BindGroup,
+    _storage: reel_core::budget::BudgetTicket,
+}
+
+#[cfg(test)]
+impl BrushCache {
+    pub(super) fn bytes(&self) -> u64 {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |brush| brush._storage.bytes())
+    }
+}
 
 pub(super) struct PaintBatch {
     target: Target,
@@ -20,6 +40,7 @@ struct VideoState {
 #[derive(PartialEq)]
 struct PaintState {
     image: wgpu::TextureView,
+    brush: Option<wgpu::BindGroup>,
     texture_format: Option<reel_core::texture::TextureFormat>,
     coverage: bool,
     yuv: Option<VideoState>,
@@ -44,6 +65,7 @@ impl PaintState {
 
 struct SampledImage<'a> {
     view: &'a wgpu::TextureView,
+    brush_cache: Option<&'a BrushCache>,
     coverage: bool,
     format: Option<reel_core::texture::TextureFormat>,
     yuv: Option<&'a super::video::Planes>,
@@ -51,15 +73,17 @@ struct SampledImage<'a> {
     source: mesh::PaintSource,
 }
 impl<'a> SampledImage<'a> {
-    fn coverage(view: &'a wgpu::TextureView) -> Self {
+    fn coverage(page: &'a super::glyph_cache::Page) -> Self {
         Self {
             coverage: true,
-            ..Self::plain(view)
+            brush_cache: Some(&page.brush),
+            ..Self::plain(&page.view)
         }
     }
     fn plain(view: &'a wgpu::TextureView) -> Self {
         Self {
             view,
+            brush_cache: None,
             coverage: false,
             format: None,
             yuv: None,
@@ -156,6 +180,7 @@ impl Context<'_> {
             mesh,
             SampledImage {
                 source: mesh::PaintSource::Solid,
+                brush_cache: Some(&white.brush),
                 ..SampledImage::plain(&white.view)
             },
             [false; 2],
@@ -511,7 +536,7 @@ impl Context<'_> {
                 self.paint_mesh(
                     target,
                     mesh,
-                    SampledImage::coverage(&page.view),
+                    SampledImage::coverage(page),
                     [false; 2],
                     paint,
                 )?;
@@ -577,7 +602,7 @@ impl Context<'_> {
                 self.paint_mesh(
                     target,
                     batch,
-                    SampledImage::coverage(&previous.view),
+                    SampledImage::coverage(previous),
                     [false; 2],
                     paint,
                 )?;
@@ -622,7 +647,7 @@ impl Context<'_> {
             self.paint_mesh(
                 target,
                 batch,
-                SampledImage::coverage(&page.view),
+                SampledImage::coverage(&page),
                 [false; 2],
                 paint,
             )?;
@@ -659,6 +684,7 @@ impl Context<'_> {
             mesh,
             SampledImage {
                 view: &image.view,
+                brush_cache: Some(image.brush_cache()),
                 coverage: false,
                 format: image.texture_format,
                 yuv: image.yuv.as_ref(),
@@ -681,6 +707,7 @@ impl Context<'_> {
         let mesh = mesh.into();
         let SampledImage {
             view: image,
+            brush_cache,
             coverage,
             format: texture_format,
             yuv,
@@ -759,11 +786,12 @@ impl Context<'_> {
                 });
             }
         }
-        let state = PaintState {
+        let mut state = PaintState {
             bounded: mesh.bounded_color.paint(direct, texture_format),
             direct,
             opaque: mesh.opaque_paint(direct),
             image: image.clone(),
+            brush: None,
             coverage: coverage && direct.is_none(),
             texture_format,
             yuv: yuv.map(|planes| VideoState {
@@ -775,6 +803,9 @@ impl Context<'_> {
             appearance: if direct.is_some() { None } else { appearance },
             scissor: self.scissor.for_vertices(&mesh.vertices, self.size),
         };
+        if let Some(cache) = brush_cache {
+            self.reuse_brush(&mut state, cache);
+        }
         self.expand_instances()?;
         self.queue_mesh(target, mesh, state)
     }
@@ -817,7 +848,40 @@ impl Context<'_> {
             Ok(())
         }
     }
+    fn reuse_brush(&self, state: &mut PaintState, cache: &BrushCache) {
+        if state.appearance.is_some()
+            || state.yuv.is_some()
+            || state.repeat != [false; 2]
+            || state.quality == ImageQuality::Low
+        {
+            return;
+        }
+        let layout = &self.pipelines.paint_layout;
+        let mut cached = cache.0.lock().unwrap();
+        if let Some(binding) = cached.as_mut() {
+            if binding.layout != *layout {
+                // Replace the single slot when the renderer changes quality.
+                binding.layout = layout.clone();
+                binding.group = self.paint_group(state);
+            }
+        } else if let Ok(storage) = self
+            .budgets
+            .transient
+            .reserve(size_of::<CachedBrush>() as u64)
+        {
+            *cached = Some(Box::new(CachedBrush {
+                layout: layout.clone(),
+                group: self.paint_group(state),
+                _storage: storage,
+            }));
+        }
+        state.brush = cached.as_ref().map(|binding| binding.group.clone());
+    }
+
     fn paint_group(&self, state: &PaintState) -> wgpu::BindGroup {
+        if let Some(group) = &state.brush {
+            return group.clone();
+        }
         let device = &self.gpu.device;
         let PaintState {
             image,

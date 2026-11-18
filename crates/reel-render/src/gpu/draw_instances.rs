@@ -74,8 +74,9 @@ impl Context<'_> {
             appearance.as_ref(),
             image.texture_format,
         );
-        let state = PaintState {
+        let mut state = PaintState {
             image: image.view.clone(),
+            brush: None,
             texture_format: image.texture_format,
             yuv: None,
             coverage: false,
@@ -87,6 +88,7 @@ impl Context<'_> {
             opaque: geometry.opaque_paint(direct),
             scissor: geometry.scissor(self.scissor, self.size),
         };
+        self.reuse_brush(&mut state, image.brush_cache());
         if let Some(mut pending) = self.instance_batch.take() {
             if pending.state.same_material(&state)
                 && pending.state.direct == state.direct

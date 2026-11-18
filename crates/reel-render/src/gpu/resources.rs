@@ -45,6 +45,7 @@ impl UploadCreations {
 
 pub struct Image {
     pub view: wgpu::TextureView,
+    pub(super) brush: super::draw::BrushCache,
     pub(super) texture: wgpu::Texture,
     pub size: [u32; 2],
     pub(super) layout: TextureLayout,
@@ -61,6 +62,10 @@ pub struct Image {
     pub(super) _view_storage: Option<super::renderer::Reservation>,
 }
 impl Image {
+    pub(super) fn brush_cache(&self) -> &super::draw::BrushCache {
+        &self.backing.as_deref().unwrap_or(self).brush
+    }
+
     pub(super) fn normalized_origin(&self) -> [f64; 2] {
         std::array::from_fn(|i| f64::from(self.origin[i]) / f64::from(self.layout.storage_size[i]))
     }
@@ -88,6 +93,7 @@ impl Image {
             .map_err(|_| GpuError::InvalidSize)?;
         Ok(Self {
             view: backing.view.clone(),
+            brush: Default::default(),
             texture: backing.texture.clone(),
             size: backing.size,
             layout: TextureLayout {
@@ -190,6 +196,7 @@ pub(super) fn rows_per_upload(height: u32, first: u32, available: u64, row_bytes
 }
 pub(super) struct WhiteTexture {
     pub(super) view: wgpu::TextureView,
+    pub(super) brush: super::draw::BrushCache,
     _residency: reel_core::budget::BudgetTicket,
     initialization: AtomicU8,
 }
@@ -248,6 +255,7 @@ impl WhiteTexture {
         // ordered even if the first frame using this view is abandoned.
         let texture = Arc::new(Self {
             view,
+            brush: Default::default(),
             _residency: residency,
             initialization: AtomicU8::new(Self::INITIALIZING),
         });
@@ -308,6 +316,7 @@ pub(super) fn create_image(
     )?;
     Ok(Image {
         view,
+        brush: Default::default(),
         texture,
         size,
         layout: TextureLayout::identity(size),
@@ -390,6 +399,7 @@ pub(super) fn create_texture(
     )?;
     Ok(Image {
         view,
+        brush: Default::default(),
         texture,
         size,
         layout: upload.layout,

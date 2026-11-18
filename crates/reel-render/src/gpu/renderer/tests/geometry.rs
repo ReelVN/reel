@@ -56,6 +56,7 @@ fn clipped_material_preparation_cost() {
         - before_groups;
     let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - before_draws;
     assert_eq!(draws, 256 * 64);
+    assert_eq!(groups, 0, "stable fills reuse their binding across frames");
     eprintln!(
         "frames=64 clipped_draws={draws} material_groups={groups} prepare_us={}",
         prepare_time.as_micros()
@@ -253,8 +254,8 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
             .upload_creations
             .brush_groups
             .load(Ordering::Relaxed),
-        3,
-        "each segment shares material bindings across clip and blend changes"
+        1,
+        "all solid segments share one persistent binding"
     );
     assert_eq!(
         renderer
@@ -296,10 +297,18 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
         .unwrap();
     renderer.poll().unwrap();
     let cached = renderer.usage().cached_geometry;
+    let brush_bytes = renderer
+        .white
+        .get_mut()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .brush
+        .bytes();
     assert!(cached > 0);
     assert_eq!(
         renderer.usage().transient,
-        cached + renderer.targets.metadata_bytes()
+        cached + renderer.targets.metadata_bytes() + brush_bytes
     );
     // Two prepared encoders must each own their uploads. Cancelling one cannot
     // rewrite the other's pending geometry or return either slot before a fence.
@@ -331,7 +340,7 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
     renderer.poll().unwrap();
     assert_eq!(
         renderer.usage().transient,
-        cached + renderer.targets.metadata_bytes()
+        cached + renderer.targets.metadata_bytes() + brush_bytes
     );
     assert_eq!(renderer.usage().cached_geometry, cached);
     let warm = renderer.prepare(&frame).unwrap();
@@ -352,7 +361,7 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
     renderer.poll().unwrap();
     assert_eq!(
         renderer.usage().transient,
-        cached + renderer.targets.metadata_bytes()
+        cached + renderer.targets.metadata_bytes() + brush_bytes
     );
     assert_eq!(
         renderer
@@ -379,7 +388,7 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
             .iter()
             .all(|slot| !slot.storage.has_staging())
     );
-    assert_eq!(renderer.usage().cached_geometry, 0);
+    assert_eq!(renderer.usage().cached_geometry, cached);
     assert_eq!(
         renderer
             .gpu
@@ -391,10 +400,14 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
     drop(capture);
     assert_eq!(
         renderer.usage().transient,
-        renderer.targets.metadata_bytes()
+        cached + renderer.targets.metadata_bytes() + brush_bytes
     );
+    renderer.geometry.clear();
     renderer.targets.clear();
-    assert_eq!(renderer.usage().transient, 0);
+    assert_eq!(
+        renderer.usage().transient,
+        renderer.targets.metadata_bytes() + brush_bytes
+    );
     assert_eq!(renderer.admission.usage().tickets, 0);
 }
 
@@ -502,7 +515,11 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
     let image = crate::test_support::image_data(&lease);
     let mut renderer = renderer(Default::default());
     eprintln!("sprite adapter: {:?}", renderer.gpu.adapter.get_info());
-    for (particles, boundary) in [(128, false), (2048, false), (16384, false), (2048, true)] {
+    for (index, (particles, boundary)) in
+        [(128, false), (2048, false), (16384, false), (2048, true)]
+            .into_iter()
+            .enumerate()
+    {
         let mut scene = Scene::new();
         for index in 0..particles {
             if boundary && index == particles / 2 {
@@ -549,7 +566,11 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
         let batches = if boundary { 2 } else { 1 };
         assert_eq!(
             std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
-            [batches, if boundary { 0 } else { 2 }, batches]
+            [
+                batches,
+                if boundary { 0 } else { 2 },
+                usize::from(index == 0)
+            ]
         );
         renderer.submit(prepared).unwrap();
         renderer
@@ -559,8 +580,9 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
             .unwrap();
         renderer.poll().unwrap();
         eprintln!(
-            "{particles} sprites group_boundary={boundary}: draws={batches}, buffer_creations={}, brush_groups={batches}, prepare={preparation:?}, prepare_submit_complete={:?}, transient_peak_bytes={transient_peak}, image_peak_bytes={resources_peak}",
+            "{particles} sprites group_boundary={boundary}: draws={batches}, buffer_creations={}, brush_groups={}, prepare={preparation:?}, prepare_submit_complete={:?}, transient_peak_bytes={transient_peak}, image_peak_bytes={resources_peak}",
             after[1] - before[1],
+            after[2] - before[2],
             start.elapsed()
         );
     }
@@ -591,17 +613,32 @@ fn image_sampling_changes_split_batches_and_share_resident_texture() {
         frame_with_snapshot(scene, registry.freeze(&handles[..1], &pool).unwrap(), &pool)
     };
     let mut renderer = renderer(Default::default());
-    for (first, second) in [
-        (ImageQuality::Low, ImageQuality::Medium),
-        (ImageQuality::Medium, ImageQuality::Low),
+    for (first, second, new_groups) in [
+        (ImageQuality::Low, ImageQuality::Medium, 3),
+        (ImageQuality::Medium, ImageQuality::Low, 1),
     ] {
         let frame = make_frame(&[first, first, second, second, first]);
         let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
+        let groups = renderer
+            .gpu
+            .upload_creations
+            .brush_groups
+            .load(Ordering::Relaxed);
         let prepared = renderer.prepare(&frame).unwrap();
         assert_eq!(
             renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - draws,
             3,
             "each consecutive sampling mode forms one ordered batch"
+        );
+        assert_eq!(
+            renderer
+                .gpu
+                .upload_creations
+                .brush_groups
+                .load(Ordering::Relaxed)
+                - groups,
+            new_groups,
+            "only ordinary linear sampling reuses the stable binding"
         );
         counts(&renderer, 1);
         renderer.submit(prepared).unwrap();
@@ -611,7 +648,7 @@ fn image_sampling_changes_split_batches_and_share_resident_texture() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         renderer.poll().unwrap();
-        assert_eq!(renderer.usage().resources, 4 * 4 * 8);
+        assert_eq!(renderer.usage().cached_images, 4 * 4 * 8);
     }
     let frame = make_frame(&[ImageQuality::High]);
     assert!(matches!(
