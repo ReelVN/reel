@@ -7,6 +7,7 @@ const IDLE_GRACE: Duration = Duration::from_millis(100);
 pub(super) struct OutputIdle {
     pub(super) quiet: Option<(Instant, u64)>,
     pub(super) max_pull_frames: u32,
+    pub(super) can_suspend: bool,
 }
 impl MediaPlayer {
     fn dormant_sources(&self) -> usize {
@@ -111,7 +112,7 @@ impl MediaPlayer {
         let Some(output) = &mut self.output else {
             return;
         };
-        if output.status().state != AudioState::Running || !output.capabilities().suspend {
+        if !self.output_idle.can_suspend || output.status().state != AudioState::Running {
             self.output_idle.quiet = None;
             return;
         }

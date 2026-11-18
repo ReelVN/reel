@@ -419,10 +419,10 @@ impl MediaPlayer {
         let factory = self.factory.take().ok_or("audio output unavailable")?;
         let mut output = factory(self.wake.clone())?;
         let mut request = reel_media::AudioRequest::default();
-        request.max_pull_frames = request
-            .max_pull_frames
-            .max(output.capabilities().min_pull_frames);
+        let capabilities = output.capabilities();
+        request.max_pull_frames = request.max_pull_frames.max(capabilities.min_pull_frames);
         let format = output.configure(request).map_err(|e| e.to_string())?;
+        self.output_idle.can_suspend = output.capabilities().suspend;
         self.output_idle.max_pull_frames = format.max_pull_frames;
         let reclaim = AudioReclaimService::new(
             ReclaimLimits {

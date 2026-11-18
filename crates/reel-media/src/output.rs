@@ -548,6 +548,18 @@ impl<D: Driver> DrivenOutput<D> {
     any(target_os = "linux", target_os = "windows", target_os = "macos")
 ))]
 impl<D: Driver> DrivenOutput<D> {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn replace_parked_stream(
+        &mut self,
+        format: Option<&AudioFormat>,
+    ) -> Result<(), AudioError> {
+        self.stop()?;
+        if let Some(format) = format {
+            self.prepared = Some(self.prepare_stream(format)?);
+        }
+        Ok(())
+    }
+
     pub(crate) fn park(&mut self) -> Result<(), AudioError> {
         if self.status().state == AudioState::Running {
             self.suspend()?;

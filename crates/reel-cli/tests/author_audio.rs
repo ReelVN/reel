@@ -34,16 +34,19 @@ fn author_audio_source_and_asb_complete_on_native_output() {
         reel_cli::into_story(checked, "main::main").unwrap(),
         reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ];
+    // Both sessions use the same physical endpoint, just like new game and load.
+    // The second renderer must reach its own completion after the first retires.
+    let wake = reel_core::wake::WakeSignal::new(|| {});
+    let endpoint = DesktopAudio::new(wake.clone());
     for story in stories {
-        let wake = reel_core::wake::WakeSignal::new(|| {});
-        let output = DesktopAudio::new(wake.clone());
+        let output = endpoint.clone();
         let backend = MediaPlayer::new(
             Assets::directory(AssetOptions {
                 root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
                 ..Default::default()
             }),
             MediaOptions::default(),
-            wake,
+            wake.clone(),
             move |_| {
                 output
                     .session()

@@ -2,6 +2,9 @@ use super::*;
 use reel_core::result::{RejectCode, RejectReason};
 use std::{cell::RefCell, rc::Rc};
 
+#[cfg(target_os = "windows")]
+mod restart;
+
 /// Owns the desktop audio device and its configuration across story sessions.
 #[derive(Clone)]
 pub struct DesktopAudio {
@@ -10,7 +13,10 @@ pub struct DesktopAudio {
 }
 
 struct Device {
-    output: CpalOutput,
+    output: Option<CpalOutput>,
+    capabilities: AudioCaps,
+    #[cfg(target_os = "windows")]
+    restart: Option<restart::StreamRestart>,
     format: Option<AudioFormat>,
     attached: bool,
 }
@@ -28,8 +34,8 @@ impl DesktopAudio {
     pub fn session(&self) -> Result<impl AudioOutput + use<>, AudioError> {
         let capabilities = self
             .open(&mut self.device.borrow_mut())?
-            .output
-            .capabilities();
+            .capabilities
+            .clone();
         Ok(SessionOutput {
             desktop: self.clone(),
             capabilities,
@@ -40,8 +46,12 @@ impl DesktopAudio {
 
     fn open<'a>(&self, device: &'a mut Option<Device>) -> Result<&'a mut Device, AudioError> {
         if device.is_none() {
+            let output = CpalOutput::new(self.wake.clone(), MonoTime(0))?;
             *device = Some(Device {
-                output: CpalOutput::new(self.wake.clone(), MonoTime(0))?,
+                capabilities: output.capabilities(),
+                output: Some(output),
+                #[cfg(target_os = "windows")]
+                restart: None,
                 format: None,
                 attached: false,
             });
@@ -58,9 +68,16 @@ struct SessionOutput {
 }
 
 impl Device {
+    fn ready(&mut self) -> &mut CpalOutput {
+        self.output
+            .as_mut()
+            .expect("audio endpoint on control thread")
+    }
+
     fn prepare(&mut self, request: AudioRequest) -> Result<AudioFormat, AudioError> {
         self.format = None;
-        let format = self.output.configure(request)?;
+        let format = self.ready().configure(request)?;
+        self.capabilities = self.ready().capabilities();
         self.format = Some(format.clone());
         Ok(format)
     }
@@ -71,25 +88,19 @@ impl Device {
         expected: &AudioFormat,
         fill: PcmFill,
     ) -> Result<(), Rejected<PcmFill>> {
-        let fill = if self.format.as_ref() != Some(expected) {
-            let _ = self.output.stop();
-            fill
-        } else {
-            let parked = self.output.status().state == AudioState::Suspended;
+        let fill = if self.format.as_ref() == Some(expected) {
+            let output = self.ready();
+            let parked = output.status().state == AudioState::Suspended;
             let result = if parked {
-                self.output.inner.start_parked(fill)
+                output.inner.start_parked(fill)
             } else if cfg!(target_os = "windows") {
-                self.output.inner.try_start(fill)
+                output.inner.try_start(fill)
             } else {
-                return self.output.start(fill);
+                return output.start(fill);
             };
             match result {
                 Ok(()) => return Ok(()),
-                Err((error, fill)) if error.kind == AudioErrorKind::ReconfigureRequired => {
-                    let _ = self.output.stop();
-                    self.format = None;
-                    fill
-                }
+                Err((error, fill)) if error.kind == AudioErrorKind::ReconfigureRequired => fill,
                 Err((error, request)) if parked => {
                     return Err(Rejected {
                         request,
@@ -100,28 +111,24 @@ impl Device {
                     return Err(DrivenOutput::<CpalDriver>::reject(fill, error));
                 }
             }
+        } else {
+            fill
         };
-        if self.format.as_ref() != Some(expected) {
-            let actual = match self.prepare(request.clone()) {
-                Ok(actual) => actual,
-                Err(error) => {
-                    return Err(Rejected {
-                        request: fill,
-                        reason: RejectReason::new(RejectCode::Unavailable, error.message),
-                    });
-                }
-            };
-            if actual != *expected {
-                return Err(Rejected {
-                    request: fill,
-                    reason: RejectReason::new(
-                        RejectCode::Unsupported,
-                        "audio format changed during session preparation",
-                    ),
-                });
-            }
+        let _ = self.ready().stop();
+        match self.prepare(request.clone()) {
+            Ok(actual) if actual == *expected => self.ready().start(fill),
+            Ok(_) => Err(Rejected {
+                request: fill,
+                reason: RejectReason::new(
+                    RejectCode::Unsupported,
+                    "audio format changed during session preparation",
+                ),
+            }),
+            Err(error) => Err(Rejected {
+                request: fill,
+                reason: RejectReason::new(RejectCode::Unavailable, error.message),
+            }),
         }
-        self.output.start(fill)
     }
 }
 
@@ -140,12 +147,12 @@ impl AudioOutput for SessionOutput {
         self.configuration = None;
         let mut shared = self.desktop.device.borrow_mut();
         let device = self.desktop.open(&mut shared)?;
-        self.capabilities = device.output.capabilities();
         let format = if device.format.is_none() {
             device.prepare(request.clone())?
         } else {
-            negotiate(&self.capabilities, &request)?
+            negotiate(&device.capabilities, &request)?
         };
+        self.capabilities = device.capabilities.clone();
         self.configuration = Some((request, format.clone()));
         Ok(format)
     }
@@ -173,8 +180,15 @@ impl AudioOutput for SessionOutput {
                 reason: RejectReason::new(RejectCode::Busy, "audio output has a session"),
             });
         }
+        #[cfg(target_os = "windows")]
+        if let Err(error) = device.prepare_attachment(format, &self.desktop.wake) {
+            if error.kind != AudioErrorKind::Busy {
+                *shared = None;
+            }
+            return Err(DrivenOutput::<CpalDriver>::reject(fill, error));
+        }
         if let Err(error) = device.start(request, format, fill) {
-            if device.output.status().state == AudioState::Failed {
+            if device.ready().status().state == AudioState::Failed {
                 *shared = None;
             }
             return Err(error);
@@ -199,8 +213,8 @@ impl AudioOutput for SessionOutput {
                 .device
                 .borrow()
                 .as_ref()
-                .unwrap()
-                .output
+                .and_then(|device| device.output.as_ref())
+                .expect("attached audio endpoint")
                 .status();
         }
         AudioStatus {
@@ -220,8 +234,8 @@ impl AudioOutput for SessionOutput {
                 .device
                 .borrow()
                 .as_ref()
-                .unwrap()
-                .output
+                .and_then(|device| device.output.as_ref())
+                .expect("attached audio endpoint")
                 .clock_observation();
         }
         let rate = self
@@ -239,13 +253,7 @@ impl AudioOutput for SessionOutput {
         let mut shared = self.desktop.device.borrow_mut();
         let device = shared.as_mut().unwrap();
         device.attached = false;
-        let result = if cfg!(target_os = "windows") {
-            // WASAPI resumes queued endpoint samples when a paused stream starts again.
-            // Close the stream at the session boundary and retain its negotiated format.
-            device.output.stop()
-        } else {
-            device.output.inner.park()
-        };
+        let result = device.ready().inner.park();
         if result.is_err() {
             *shared = None;
         }
@@ -264,7 +272,7 @@ impl SessionOutput {
                 "session has no audio output",
             ));
         }
-        action(&mut self.desktop.device.borrow_mut().as_mut().unwrap().output)
+        action(self.desktop.device.borrow_mut().as_mut().unwrap().ready())
     }
 }
 
