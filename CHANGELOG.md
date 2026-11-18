@@ -4,8 +4,12 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+## 0.3.15 — 2026-11-18
+
 ### Changed
 
+- On Windows, starting a new story or loading a save prepares its replacement audio stream off the game thread. The player releases the previous mixer before handing the endpoint to the new session.
+- Desktop players decode up to three independent RGBA8 PNG layers in parallel within the game's existing memory budget. PNGs with metadata retain the full decoder allowance.
 - Reuse the verified bytecode digest when writing and loading an ASB.
 - Reuse existing translation archives before compressing their contents during a build.
 - Desktop saves and builds publish the synced staging file directly, removing an extra file rename per write.
