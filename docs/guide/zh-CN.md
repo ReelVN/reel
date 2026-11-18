@@ -409,6 +409,22 @@ pose.face = { source: "assets/smile.png" };
 
 按剧情顺序写对白和换图即可。玩家阅读台词时，播放器能提前读取下一次 `image("path")` 或 `layered_image([{ source: "body.png" }, { source: "face.png" }])` 用到的图片，也能识别简单函数转发的路径和图层描述。定尺寸图片移入视口、控件切换皮肤和带遮罩的转场也会自动准备素材。
 
+用普通函数按表情名选择图层时，同一份描述可以用于绘制和预读。对白后调用这个函数，再挂载它返回的节点。
+
+```aside
+fn portrait(expression: string) {
+    let face = match expression {
+        "smile" => "assets/smile.png",
+        _ => "assets/neutral.png",
+    };
+    layered_image([{ source: "assets/body.png" }, { source: face }])
+}
+
+narrator("The door opened.");
+let arrival = portrait("smile");
+stage.replace(arrival);
+```
+
 由运行时数据决定的复杂图层或菜单，可以在确定即将显示时挂成 `preload: true` 的隐藏子树。子节点继承这项设置，播放器用空余容量提前读取、解码图片和效果。路线改变时，移除这棵子树即可释放请求与资源。
 
 ```aside

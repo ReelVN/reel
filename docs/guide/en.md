@@ -409,6 +409,22 @@ Await `stage.presented()` when choreography should start after the current scene
 
 Write dialogue and image changes in story order. While the reader is on a line, the player can prepare the next `image("path")` or `layered_image([{ source: "body.png" }, { source: "face.png" }])`, including paths and layer descriptors forwarded by simple functions. It also prepares fixed-size images moving into view, alternate control skins, and transition masks.
 
+Use an ordinary function to select layers by expression name. The same description drives drawing and prefetching. Call the function after the dialogue and mount the node it returns.
+
+```aside
+fn portrait(expression: string) {
+    let face = match expression {
+        "smile" => "assets/smile.png",
+        _ => "assets/neutral.png",
+    };
+    layered_image([{ source: "assets/body.png" }, { source: face }])
+}
+
+narrator("The door opened.");
+let arrival = portrait("smile");
+stage.replace(arrival);
+```
+
 For a composition or menu selected by runtime data, you can mount its hidden subtree with `preload: true` once you know it will be shown. Descendants inherit the setting. The player uses spare capacity to read and decode their images and effects. If the route changes, remove the subtree to release its requests and resources.
 
 ```aside

@@ -22,6 +22,7 @@ type Paths<'p> = ArrayVec<&'p str, LAYER_LIMIT>;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fact {
     Unknown,
+    Bool(bool),
     Constant(bc::ConstId),
     Function(bc::FunctionId),
     Layer(bc::ConstId),
@@ -154,6 +155,22 @@ impl<'p> Walk<'p> {
                     let group = self.layer_group(&function.descriptors[b as usize], &facts);
                     facts.set(a, group.map_or(Fact::Unknown, Fact::Layers));
                 }
+                Opcode::Eq | Opcode::Ne => {
+                    // Literal match arms lower to a string comparison and a
+                    // branch. Compare the actual bytes, including text-pool values.
+                    let (Fact::Constant(left), Fact::Constant(right)) =
+                        (facts.get(b), facts.get(c))
+                    else {
+                        return None;
+                    };
+                    let left = self.text(left)?;
+                    let right = self.text(right)?;
+                    if left.len().max(right.len()) > PATH_LIMIT {
+                        return None;
+                    }
+                    let equal = left == right;
+                    facts.set(a, Fact::Bool(equal == (op == Opcode::Eq)));
+                }
                 Opcode::Jump => {
                     pc = forward(pc, a)?;
                     continue;
@@ -190,6 +207,7 @@ impl<'p> Walk<'p> {
     fn branch(&self, opcode: Opcode, fact: Fact) -> Option<Option<bool>> {
         let constant = match fact {
             Fact::Unknown => return Some(None),
+            Fact::Bool(value) => return Some(Some(opcode == Opcode::BranchBool && value)),
             Fact::Constant(id) => Some(&self.program.package().constants[id.index()]),
             Fact::Function(_) | Fact::Layer(_) | Fact::Layers(_) => None,
         };
@@ -618,6 +636,43 @@ mod tests {
             let site = first_call(&program, "opening");
             assert!(next_images(&program, [site].into_iter()).is_none());
         }
+    }
+
+    #[test]
+    fn predicts_the_named_expression_and_shared_body_from_the_same_factory() {
+        let program = compile(
+            r#"
+                fn portrait(expression: string) -> Node {
+                    let face = match expression {
+                        "smile" => "smile.png",
+                        _ => "neutral.png",
+                    };
+                    layered_image([{source: "body.png"}, {source: face}])
+                }
+                fn opening(expression: string = "smile") {
+                    narrator("wait");
+                    let _ = portrait("smile");
+                }
+                fn other() {
+                    narrator("wait");
+                    let _ = portrait("other");
+                }
+                fn dynamic(expression: string) {
+                    narrator("wait");
+                    let _ = portrait(expression);
+                }
+            "#,
+        );
+        for (name, paths) in [
+            ("opening", ["body.png", "smile.png"]),
+            ("other", ["body.png", "neutral.png"]),
+        ] {
+            let site = first_call(&program, name);
+            let predicted = next_images(&program, [site].into_iter()).unwrap();
+            assert_eq!(predicted.as_slice(), paths);
+        }
+        let site = first_call(&program, "dynamic");
+        assert!(next_images(&program, [site].into_iter()).is_none());
     }
 
     #[test]

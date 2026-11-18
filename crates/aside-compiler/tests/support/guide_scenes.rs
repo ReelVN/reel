@@ -22,6 +22,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("typed author classes", E::Module),
     ("configure a component", E::Block),
     ("bind a portrait layer", E::Block),
+    ("portrait selected by expression", E::Block),
     ("hidden page preload", E::Block),
     ("presentation wait", E::Block),
     ("locally composed control", E::Block),
