@@ -45,10 +45,14 @@ fn preload_stage(source: &str) -> (reel_ui::stage::Stage, reel_ui::stage::NodeId
 fn hidden_prefetch_keeps_presentation_ready_and_reuses_decoded_pixels_on_show() {
     let (mut images, wake) = loader();
     let (mut stage, id) = preload_stage("assets/panels.png");
-    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    let hidden = crate::stage_widget::StageView::capture(&stage);
+    images.request_stage(&hidden);
     assert!(images.poll().unwrap());
     let pending = images.pending[0].id;
-    images.request_stage(&crate::stage_widget::StageView::capture(&stage));
+    let scans = images.metadata_scans;
+    let revision = images.content_revision;
+    images.request_stage(&hidden);
+    assert_eq!(images.metadata_scans, scans);
     assert_eq!(
         images.pending[0].id, pending,
         "unchanged foreground keeps its in-flight prefetch"
@@ -60,6 +64,10 @@ fn hidden_prefetch_keeps_presentation_ready_and_reuses_decoded_pixels_on_show() 
             "hidden preparation must retain foreground readiness"
         );
     }
+    assert_eq!(
+        images.content_revision, revision,
+        "hidden pixels do not change the visible layout"
+    );
     images.commit();
     let handle = images.loaded["assets/panels.png"].handle();
     let loads = images.loads;

@@ -76,7 +76,7 @@ pub(crate) struct Images {
     shader_sources: BTreeSet<String>,
     request_index: Option<Arc<crate::stage_widget::ResourceIndex>>,
     pub(crate) shader_format: EffectShaderFormat,
-    /// Advances when newly prepared content becomes available to projections.
+    /// Advances when newly prepared content can affect the current projection.
     pub(crate) content_revision: u64,
     displayed: BTreeSet<String>,
     pending: Vec<Pending>,
@@ -171,7 +171,6 @@ impl Images {
         let same_approach = self.approaching == requests.approaching;
         if same_index
             && same_approach
-            && self.settled
             && self.failure.is_none()
             && self.manifests.is_empty()
             && self
@@ -183,7 +182,9 @@ impl Images {
                 .iter()
                 .map(|(source, origin)| (source.as_str(), origin.as_deref())))
         {
-            return true;
+            // Geometry may move again while the same images are still being read.
+            // poll() owns their progress; only changed demand needs reconciliation.
+            return self.settled;
         }
         if !same_index || !same_approach {
             self.prefetch = requests.preloaded().map(str::to_owned).collect();
@@ -338,7 +339,15 @@ impl Images {
                     let pending = self.pending.remove(index);
                     metadata_completed |=
                         !self.metadata_ready && self.wanted.contains_key(&pending.source);
-                    self.content_revision = self.content_revision.wrapping_add(1);
+                    if !pending.prefetch
+                        || self.tiles.contains_key(&pending.source)
+                        || self
+                            .request_index
+                            .as_ref()
+                            .is_some_and(|index| index.has_visible_use(&pending.source))
+                    {
+                        self.content_revision = self.content_revision.wrapping_add(1);
+                    }
                 }
                 Err(error) => {
                     let pending = self.pending.remove(index);

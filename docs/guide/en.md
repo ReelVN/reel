@@ -399,14 +399,14 @@ caption.with(opacity: 0.5);
 
 Await `stage.presented()` when choreography should start after the current scene is visible. The player retains the previous presented view while resources prepare.
 
-The player uses layout motion to prepare fixed-size images entering the viewport. Retain pages shown through `visible` and set `preload: true` on the subtree that needs to open immediately. The player reads and decodes its images and effects in spare resource capacity. Descendants inherit this setting; removing the page releases its requests and resources.
+The player uses layout motion to prepare fixed-size images entering the viewport. When the next background, pose or menu is already known, mount its hidden subtree with `preload: true` while the player reads the current line or watches the current animation. Descendants inherit the setting. The player uses spare capacity to read and decode their images and effects. If the route changes, remove the subtree to release its requests and resources.
 
 ```aside
 let menu = stack(visible: false, preload: true) {
     image("assets/panels.png", width: 320, height: 180);
 };
+scene.add(button("Menu", on_click: |e| { menu.visible = true; }));
 scene.add(menu);
-menu.visible = true;
 ```
 
 ```aside

@@ -210,6 +210,17 @@ impl ResourceIndex {
     pub fn mounted(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|(source, _)| source.as_str())
     }
+    fn entry(&self, source: &str) -> Option<&Entry> {
+        let index = self
+            .entries
+            .binary_search_by(|(key, _)| key.as_str().cmp(source))
+            .ok()?;
+        Some(&self.entries[index].1)
+    }
+    pub(crate) fn has_visible_use(&self, source: &str) -> bool {
+        self.entry(source)
+            .is_some_and(|entry| !entry.uses.is_empty())
+    }
     pub fn encoded(&self) -> impl Iterator<Item = (&str, &Arc<[u8]>)> {
         self.entries.iter().filter_map(|(source, entry)| {
             entry.encoded.as_ref().map(|bytes| (source.as_str(), bytes))
@@ -263,13 +274,8 @@ impl ImageRequests {
         })
     }
     pub fn origin(&self, source: &str) -> Option<Option<&str>> {
-        let index = self
-            .index
-            .entries
-            .binary_search_by(|(key, _)| key.as_str().cmp(source))
-            .ok()?;
-        let (_, entry) = &self.index.entries[index];
-        entry
+        self.index
+            .entry(source)?
             .uses
             .iter()
             .find(|usage| self.selection.includes(usage))
