@@ -231,6 +231,10 @@ profile_phases! {
     ReadOpen => "read_open",
     /// Read the requested bytes, including archive decompression when applicable.
     ReadPayload => "read_payload",
+    /// Open a loose file on a descriptor cache miss, nested within ReadOpen.
+    FileOpen => "file_open",
+    /// Query a newly opened loose file's metadata, nested within ReadOpen.
+    FileMetadata => "file_metadata",
 }
 
 /// Record an instantaneous event in the phase's call count without a duration.

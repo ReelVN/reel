@@ -4,6 +4,7 @@ use super::{file::File, io_error};
 use reel_core::{
     identity::{AssetSource, ContentVersion},
     io::{IoError, IoErrorCode},
+    profile::{Phase, Scope},
 };
 use reel_package::resource_target::{ResourceDirectory, ResourceTarget};
 use std::{
@@ -74,9 +75,14 @@ impl Files {
         self.open
             .try_get_or_insert_mut_ref(source.key.0.as_str(), || {
                 let path = self.source.resolve(&source.key.0)?;
-                let file = File::open(&path).map_err(io_error)?;
-                let metadata = file.metadata().map_err(io_error)?;
-                let length = metadata.len();
+                let file = {
+                    let _timing = Scope::new(Phase::FileOpen);
+                    File::open(&path).map_err(io_error)?
+                };
+                let length = {
+                    let _timing = Scope::new(Phase::FileMetadata);
+                    file.metadata().map_err(io_error)?.len()
+                };
                 // Only the path is hashed. Opening a stream reads no payload bytes.
                 let mut hash = blake3::Hasher::new();
                 hash.update(b"reel/fixed-file/v1\0");
