@@ -78,7 +78,7 @@ pub struct Prepared {
     pub files: BTreeMap<String, PathBuf>,
     /// Actual work performed by this invocation.
     pub report: Report,
-    /// Atomically published cache index, present when this target has rules.
+    /// Index published by explicit preparation or export for a configured target.
     pub index: Option<PathBuf>,
 }
 
@@ -517,6 +517,7 @@ pub fn prepare_project(root: &Path, target: &ResourceTarget) -> io::Result<Prepa
 /// Prepare a directory only when the selected target has conversion rules.
 /// Development callers use `None` to keep ordinary lazy directory resolution;
 /// unconfigured targets never enumerate or stat the resource tree.
+/// Playback consumes the selected files in memory and does not publish an index.
 pub fn prepare_directory_if_configured(
     project_root: &Path,
     resources: &Path,
@@ -526,11 +527,7 @@ pub fn prepare_directory_if_configured(
     if rules.is_empty() {
         return Ok(None);
     }
-    let selected = if resources.is_dir() {
-        target.collect(resources)?
-    } else {
-        BTreeMap::new()
-    };
+    let selected = directory_files(target, resources)?;
     prepare_with_rules(
         project_root,
         target,
@@ -550,13 +547,18 @@ pub fn prepare_project_with_limit(
     target: &ResourceTarget,
     memory_bytes: u64,
 ) -> io::Result<Prepared> {
-    let resources = root.join("resources");
-    let selected = if resources.is_dir() {
-        target.collect(&resources)?
-    } else {
-        BTreeMap::new()
-    };
+    let selected = directory_files(target, &root.join("resources"))?;
     prepare_with_identity(root, target, selected, memory_bytes, converter_identity)
+}
+
+fn directory_files(target: &ResourceTarget, root: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
+    if root.is_dir() {
+        // The resource walk admits regular files and directories. Resolve the
+        // project root once so every selected file already has an absolute path.
+        target.collect(&root.canonicalize()?)
+    } else {
+        Ok(BTreeMap::new())
+    }
 }
 
 /// Prepare an already selected logical resource map, including explicit mounts.
@@ -564,8 +566,11 @@ pub fn prepare_project_with_limit(
 pub fn prepare_selected(
     root: &Path,
     target: &ResourceTarget,
-    selected: BTreeMap<String, PathBuf>,
+    mut selected: BTreeMap<String, PathBuf>,
 ) -> io::Result<Prepared> {
+    for path in selected.values_mut() {
+        *path = path.canonicalize()?;
+    }
     prepare_with_identity(root, target, selected, MEMORY_BYTES, converter_identity)
 }
 
@@ -598,7 +603,24 @@ fn prepare_with_identity<'a>(
     identity: impl Fn(&Recipe) -> &'a str,
 ) -> io::Result<Prepared> {
     let rules = rules(root, target)?;
-    prepare_with_rules(root, target, selected, memory_bytes, rules, identity)
+    let publish_index = !rules.is_empty();
+    let mut prepared = prepare_with_rules(root, target, selected, memory_bytes, rules, identity)?;
+    if publish_index {
+        let directory = root
+            .canonicalize()?
+            .join("build/resources")
+            .join(target.as_str());
+        fs::create_dir_all(&directory)?;
+        let index = directory.join("index.json");
+        let published = reel_storage::publish(&index, true, |file| {
+            serde_json::to_writer(file, &prepared.files).map_err(io::Error::other)
+        })?;
+        if let Some(warning) = published.cleanup_warning {
+            eprintln!("{warning}");
+        }
+        prepared.index = Some(index);
+    }
+    Ok(prepared)
 }
 
 fn prepare_with_rules<'a>(
@@ -627,7 +649,11 @@ fn prepare_with_rules<'a>(
         {
             groups.entry(index).or_default().push((name, source));
         } else {
-            ordinary.push((name, source));
+            ordinary.push((
+                name,
+                source,
+                selected_rule.map(|index| &rules[index].recipe),
+            ));
         }
     }
     for (index, members) in groups {
@@ -641,14 +667,9 @@ fn prepare_with_rules<'a>(
             &mut prepared,
         )?;
     }
-    for (name, source) in ordinary {
-        let source = source.canonicalize()?;
+    for (name, source, recipe) in ordinary {
         let source_bytes = fs::metadata(&source)?.len();
         prepared.report.source_bytes += source_bytes;
-        let recipe = rules
-            .iter()
-            .find(|rule| rule.matcher.is_match(&name))
-            .map(|rule| &rule.recipe);
         if matches!(recipe, None | Some(Recipe::Copy))
             && target.is_desktop()
             && source
@@ -751,7 +772,8 @@ fn prepare_with_rules<'a>(
             }
             _ => {
                 prepared.report.unchanged += 1;
-                source
+                prepared.insert(name, source, source_bytes)?;
+                continue;
             }
         };
         if matches!(recipe, Some(Recipe::Tiles { .. })) {
@@ -775,32 +797,27 @@ fn prepare_with_rules<'a>(
         }
         insert_prepared(&mut prepared, name, path)?;
     }
-    if !rules.is_empty() {
-        let directory = root.join("build/resources").join(target.as_str());
-        fs::create_dir_all(&directory)?;
-        let index = directory.join("index.json");
-        let published = reel_storage::publish(&index, true, |file| {
-            serde_json::to_writer(file, &prepared.files).map_err(io::Error::other)
-        })?;
-        if let Some(warning) = published.cleanup_warning {
-            eprintln!("{warning}");
-        }
-        prepared.index = Some(index);
-    }
     Ok(prepared)
 }
 
 fn insert_prepared(prepared: &mut Prepared, name: String, path: PathBuf) -> io::Result<()> {
-    use std::collections::btree_map::Entry;
-    match prepared.files.entry(name) {
-        Entry::Occupied(entry) => Err(invalid(format!(
-            "generated resource conflicts with {:?}",
-            entry.key()
-        ))),
-        Entry::Vacant(entry) => {
-            prepared.report.output_bytes += fs::metadata(&path)?.len();
-            entry.insert(path);
-            Ok(())
+    let bytes = fs::metadata(&path)?.len();
+    prepared.insert(name, path, bytes)
+}
+
+impl Prepared {
+    fn insert(&mut self, name: String, path: PathBuf, bytes: u64) -> io::Result<()> {
+        use std::collections::btree_map::Entry;
+        match self.files.entry(name) {
+            Entry::Occupied(entry) => Err(invalid(format!(
+                "generated resource conflicts with {:?}",
+                entry.key()
+            ))),
+            Entry::Vacant(entry) => {
+                self.report.output_bytes += bytes;
+                entry.insert(path);
+                Ok(())
+            }
         }
     }
 }

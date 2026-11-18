@@ -192,7 +192,7 @@ fn prepare(root: &Path, tool: &Path, target: &ResourceTarget, memory: u64) -> io
     prepare_with_identity(
         root,
         target,
-        target.collect(&root.join("resources"))?,
+        directory_files(target, &root.join("resources"))?,
         memory,
         |_| identity.as_str(),
     )
@@ -462,7 +462,7 @@ fn desktop_overlays_and_rules_apply_below_exact_os_overrides() {
 }
 
 #[test]
-fn development_without_selected_target_rules_keeps_lazy_directory_resolution() {
+fn development_uses_lazy_or_prepared_resources_without_publishing_an_index() {
     let (directory, _, _) = fixture();
     let target = ResourceTarget::parse("desktop").unwrap();
     let prepared = prepare_directory_if_configured(
@@ -477,6 +477,21 @@ fn development_without_selected_target_rules_keeps_lazy_directory_resolution() {
         crate::playback::prepare_assets(directory.path(), None, "desktop").unwrap();
     assert_eq!(assets, directory.path().join("resources"));
     assert!(files.is_none());
+    let root = directory.path();
+    fs::write(
+        root.join("resources.toml"),
+        "[[targets.desktop]]\nmatch = '*.txt'\nconvert = 'copy'\n",
+    )
+    .unwrap();
+    let preview = prepare_directory_if_configured(root, &assets, &target)
+        .unwrap()
+        .unwrap();
+    assert!(preview.index.is_none());
+    assert!(!root.join("build/resources/desktop/index.json").exists());
+    let published = prepare_project(root, &target).unwrap();
+    assert!(published.index.unwrap().is_file());
+    assert_eq!(preview.files, published.files);
+    assert_eq!(preview.report.source_bytes, preview.report.output_bytes);
 }
 
 #[test]
