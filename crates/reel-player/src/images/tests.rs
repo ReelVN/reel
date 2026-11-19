@@ -455,6 +455,14 @@ fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
         "a resident GPU identity needs no source reload"
     );
     images.close();
+    assert!(!weak.is_released());
+    let mut replacement = Images::new(images.assets.clone());
+    replacement.request(wanted(&["assets/panels.png"]));
+    assert!(replacement.poll().unwrap());
+    assert_eq!(replacement.loaded["assets/panels.png"].handle(), first);
+    assert_eq!(replacement.loads, 0);
+    replacement.close();
+    images.assets.close();
     assert!(weak.is_released());
     assert_eq!(images.pool.usage().bytes, 0);
 }

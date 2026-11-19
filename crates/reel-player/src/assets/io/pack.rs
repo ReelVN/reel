@@ -2,7 +2,7 @@ use super::{ReadFile, directory, failure, file::File, io_error};
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, BudgetTicket},
     identity::{AssetSource, ContentVersion},
-    io::{IoError, IoErrorCode},
+    io::{AssetInfo, IoError, IoErrorCode},
 };
 use reel_package::archive::{self, ArchiveIndex, EntryStorage, ReadScratch};
 use std::path::PathBuf;
@@ -121,6 +121,38 @@ impl Files {
             _storage: storage,
         })
     }
+    pub(super) fn indexed_info(&self, source: &AssetSource) -> Option<AssetInfo> {
+        if self.overlay.is_some() {
+            return None;
+        }
+        let location = Self::locate(&self.archives, source)?;
+        let entry = self.archives[location.archive]
+            .index
+            .entry_at(location.entry)?;
+        let version = ContentVersion(entry.version);
+        if source.version.is_some_and(|requested| requested != version) {
+            return None;
+        }
+        Some(AssetInfo {
+            length: Some(entry.length),
+            range_read: true,
+            seekable: true,
+            version: Some(version),
+            media_type: None,
+        })
+    }
+    fn locate(archives: &[Archive], source: &AssetSource) -> Option<Location> {
+        archives
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(archive, mount)| {
+                mount
+                    .index
+                    .index_of(&source.key.0)
+                    .map(|entry| Location { archive, entry })
+            })
+    }
     pub(super) fn entry(
         &mut self,
         source: &AssetSource,
@@ -135,18 +167,7 @@ impl Files {
             }
         }
         let location = location
-            .or_else(|| {
-                self.archives
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(archive, mount)| {
-                        mount
-                            .index
-                            .index_of(&source.key.0)
-                            .map(|entry| Location { archive, entry })
-                    })
-            })
+            .or_else(|| Self::locate(&self.archives, source))
             .ok_or_else(|| IoError {
                 code: IoErrorCode::NotFound,
                 message: format!("asset not found in mounted archives: {}", source.key.0),

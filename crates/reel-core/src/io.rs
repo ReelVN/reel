@@ -219,6 +219,11 @@ pub trait AssetIo {
         ))
     }
     fn capabilities(&self) -> IoCaps;
+    /// Returns exact metadata from a mounted index when immediately available.
+    /// This lookup must never wait for IO. Call `describe` when it returns `None`.
+    fn indexed_info(&self, _source: &AssetSource) -> Option<AssetInfo> {
+        None
+    }
     fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>>;
     fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>>;
     fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>>;

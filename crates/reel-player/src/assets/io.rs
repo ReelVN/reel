@@ -18,7 +18,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -109,6 +109,7 @@ pub struct PackIo(FileIo);
 type ReadObserver = std::sync::Arc<dyn Fn(IoId, usize, usize, usize) + Send + Sync>;
 struct FileIo {
     worker: Worker<(IoId, Request), IoEvent>,
+    indexed_files: Option<Arc<Mutex<Files>>>,
     ids: RequestIds<IoId>,
     limits: QueueLimits,
 }
@@ -307,7 +308,9 @@ impl FileIo {
         wake: WakeSignal,
         #[cfg(test)] observer: Option<ReadObserver>,
     ) -> Self {
-        let files = Mutex::new(files);
+        let indexed = matches!(&files, Files::Pack(_));
+        let files = Arc::new(Mutex::new(files));
+        let indexed_files = indexed.then(|| files.clone());
         Self {
             worker: Worker::stepped(
                 limits,
@@ -379,6 +382,7 @@ impl FileIo {
                 },
                 |event| event.result = Terminal::Cancelled,
             ),
+            indexed_files,
             ids: RequestIds::default(),
             limits,
         }
@@ -408,6 +412,7 @@ impl AssetIo for FileIo {
     fn background_reader(&self, wake: WakeSignal) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
         Ok(Box::new(Self {
             worker: self.worker.client(wake)?,
+            indexed_files: None,
             ids: self.ids.clone(),
             limits: self.limits,
         }))
@@ -421,6 +426,12 @@ impl AssetIo for FileIo {
                 max_bytes: 0,
             },
             save_levels: vec![],
+        }
+    }
+    fn indexed_info(&self, source: &AssetSource) -> Option<AssetInfo> {
+        match &*self.indexed_files.as_ref()?.try_lock().ok()? {
+            Files::Pack(files) => files.indexed_info(source),
+            Files::Directory(_) => None,
         }
     }
     fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>> {
@@ -526,6 +537,9 @@ macro_rules! forward_asset_io {
             }
             fn capabilities(&self) -> IoCaps {
                 self.0.capabilities()
+            }
+            fn indexed_info(&self, source: &AssetSource) -> Option<AssetInfo> {
+                self.0.indexed_info(source)
             }
             fn describe(
                 &mut self,

@@ -43,39 +43,6 @@ impl PrefetchSources {
     }
 }
 
-// Keep metadata for recently displayed uploads. Pixel storage is already gone;
-// renderer pressure can still evict the GPU copy and request exact-version IO.
-struct RecentImages {
-    slots: [Option<(String, ResourceLease)>; 64],
-    next: usize,
-}
-impl Default for RecentImages {
-    fn default() -> Self {
-        Self {
-            slots: [const { None }; 64],
-            next: 0,
-        }
-    }
-}
-impl RecentImages {
-    fn insert(&mut self, source: String, lease: ResourceLease) {
-        let backing = lease.image_backing();
-        if lease.is_retired() || backing.pixel_byte_len().is_none() || backing.pixels_resident() {
-            return;
-        }
-        self.slots[self.next] = Some((source, lease));
-        self.next = (self.next + 1) % self.slots.len();
-    }
-    fn take(&mut self, source: &str) -> Option<ResourceLease> {
-        self.slots
-            .iter_mut()
-            .find(|slot| slot.as_ref().is_some_and(|(key, _)| key == source))?
-            .take()
-            .map(|(_, lease)| lease)
-            .filter(|lease| !lease.is_retired())
-    }
-}
-
 pub(crate) struct Images {
     pub(crate) assets: Assets,
     #[cfg(test)]
@@ -83,7 +50,6 @@ pub(crate) struct Images {
     #[cfg(test)]
     pub(crate) work: BudgetPool,
     pub(crate) loaded: BTreeMap<String, ResourceLease>,
-    recent: RecentImages,
     pub(crate) manifests: BTreeMap<String, PreparedImage>,
     pub(crate) tiles: BTreeMap<String, TileDemand>,
     skipped: BTreeSet<String>,
@@ -126,7 +92,6 @@ impl Images {
             work: assets.temporary_pool(),
             assets,
             loaded: BTreeMap::new(),
-            recent: RecentImages::default(),
             manifests: BTreeMap::new(),
             tiles: BTreeMap::new(),
             skipped: BTreeSet::new(),
@@ -285,7 +250,7 @@ impl Images {
         // A returning GPU image already satisfies foreground demand.
         for source in self.wanted.keys() {
             if !self.loaded.contains_key(source)
-                && let Some(lease) = self.recent.take(source)
+                && let Some(lease) = self.assets.take_uploaded_image(source)
             {
                 self.loaded.insert(source.clone(), lease);
                 self.content_revision = self.content_revision.wrapping_add(1);
@@ -332,7 +297,7 @@ impl Images {
                 || self.tiles.contains_key(source)
                 || (!loading && (self.mounted.contains(source) || self.prefetch.contains(source))))
         }) {
-            self.recent.insert(source, lease);
+            self.assets.remember_uploaded_image(source, lease);
         }
         self.trim_hidden_prefetch();
     }
@@ -486,7 +451,7 @@ impl Images {
             else {
                 break;
             };
-            if let Some(lease) = self.recent.take(&source) {
+            if let Some(lease) = self.assets.take_uploaded_image(&source) {
                 self.loaded.insert(source, lease);
                 continue;
             }
@@ -566,7 +531,7 @@ impl Images {
                 && !self.wanted.contains_key(key)
                 && !self.displayed.contains(key)
         }) {
-            self.recent.insert(key.clone(), lease);
+            self.assets.remember_uploaded_image(key.clone(), lease);
             self.skipped.insert(key);
         }
     }
@@ -688,7 +653,7 @@ impl Images {
                 || self.tiles.contains_key(source)
                 || (self.metadata_ready && self.prefetch.contains(source)))
         }) {
-            self.recent.insert(source, lease);
+            self.assets.remember_uploaded_image(source, lease);
         }
     }
     fn poll_tiles(&mut self) -> bool {
@@ -777,9 +742,7 @@ impl Images {
                 && !self.prefetch.contains(source)
                 && !self.tiles.contains_key(source)
         }) {
-            if !self.closed {
-                self.recent.insert(source, lease);
-            }
+            self.assets.remember_uploaded_image(source, lease);
         }
     }
     pub fn close(&mut self) {
@@ -799,7 +762,6 @@ impl Images {
         self.request_index = None;
         self.skipped.clear();
         self.failure = None;
-        self.recent = RecentImages::default();
         self.commit();
         // Assets belongs to the host. A replacement session and other consumers
         // keep using it after this stage has released its own requests and leases.

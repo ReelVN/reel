@@ -17,7 +17,7 @@ use reel_core::texture::{TextureCodec, TextureDescriptor, TextureHeader, Texture
 use reel_core::{
     budget::{BudgetCategory, BudgetGroup, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetKey, AssetSource, IoId, Priority, ResourceVersion, Scope, WorkId},
-    io::{AssetIo, DescribeRequest, IoError, IoEvent, IoPayload, ReadRequest},
+    io::{AssetInfo, AssetIo, DescribeRequest, IoError, IoEvent, IoPayload, ReadRequest},
     result::Terminal,
     wake::WakeSignal,
     work::{WorkBudget, WorkEvent, WorkExecutor, WorkRequest, WorkReservations},
@@ -148,6 +148,7 @@ struct Service {
     next: u64,
     loads: BTreeMap<LoadId, Load>,
     origins: origins::Origins,
+    recent_images: origins::RecentImages,
     atlas_pages: atlas::Pages,
     streams: stream::Streams,
     io_events: Vec<IoEvent>,
@@ -317,6 +318,7 @@ impl Assets {
             stream_input: input_pool(options.stream_input_bytes()),
             output: pool(BudgetCategory::CpuOutput, options.resident_bytes),
             origins: origins::Origins::new(metadata.clone()),
+            recent_images: Default::default(),
             atlas_pages: atlas::Pages::default(),
             metadata,
             io_workspace_bytes: temporary.usage().bytes,
@@ -357,12 +359,22 @@ impl Assets {
         service.loads.clear();
         service.pending_pngs.clear();
         service.atlas_pages.clear();
+        service.recent_images = Default::default();
         service.origins.clear();
         service.streams.close();
         service.io = None;
         service.executor = None;
         service.io_events.clear();
         service.work_events.clear();
+    }
+    pub(crate) fn remember_uploaded_image(&self, source: String, lease: ResourceLease) {
+        let mut service = self.0.borrow_mut();
+        if service.io.is_some() {
+            service.recent_images.insert(source, lease);
+        }
+    }
+    pub(crate) fn take_uploaded_image(&self, source: &str) -> Option<ResourceLease> {
+        self.0.borrow_mut().recent_images.take(source)
     }
     /// Create a media reader using this service's adapters and budgets.
     /// Read/seek may block a decoder worker or native media callback. Its reader
@@ -705,25 +717,7 @@ impl Service {
             let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Describing(id) | Phase::Reading(id) if id == event.id)) else { continue; };
             let result = match event.result {
                 Terminal::Completed(IoPayload::Described(info)) => {
-                    if load
-                        .source
-                        .version
-                        .is_some_and(|version| info.version != Some(version))
-                    {
-                        Err("asset adapter described a different version".into())
-                    } else {
-                        load.source.version = info.version;
-                        match info.length.and_then(|n| u32::try_from(n).ok()) {
-                            Some(length) => {
-                                load.phase = self
-                                    .origins
-                                    .shared(load)
-                                    .map_or(Phase::Read(length), |lease| Phase::Done(Ok(lease)));
-                                Ok(())
-                            }
-                            None => Err("asset must have a bounded length for preparation".into()),
-                        }
-                    }
+                    accept_description(&self.origins, load, info)
                 }
                 Terminal::Completed(IoPayload::Read(read)) => {
                     let described_version = load.source.version.is_some();
@@ -840,6 +834,11 @@ impl Service {
     }
     fn advance(&mut self, load: &mut Load) -> Result<(), String> {
         let completion = || self.completion.reserve(512).map_err(|e| e.message);
+        if matches!(load.phase, Phase::Describe)
+            && let Some(info) = self.io.as_ref().unwrap().indexed_info(&load.source)
+        {
+            accept_description(&self.origins, load, info)?;
+        }
         match load.phase {
             Phase::Describe => match self.io.as_mut().unwrap().describe(DescribeRequest {
                 resource: load.source.clone(),
@@ -1137,6 +1136,29 @@ impl Drop for Service {
         self.streams.close();
     }
 }
+fn accept_description(
+    origins: &origins::Origins,
+    load: &mut Load,
+    info: AssetInfo,
+) -> Result<(), String> {
+    if load
+        .source
+        .version
+        .is_some_and(|version| info.version != Some(version))
+    {
+        return Err("asset adapter described a different version".into());
+    }
+    let length = info
+        .length
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or("asset must have a bounded length for preparation")?;
+    load.source.version = info.version;
+    load.phase = origins
+        .shared(load)
+        .map_or(Phase::Read(length), |lease| Phase::Done(Ok(lease)));
+    Ok(())
+}
+
 fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {
     let version = ResourceVersion {
         key: load.source.key.clone(),

@@ -107,8 +107,12 @@ fn run_mode_recorded(
         capture,
         #[cfg(feature = "performance")]
         capture_started: None,
+        #[cfg(feature = "performance")]
+        capture_wait: None,
     };
     let run = event_loop.run_app(&mut app);
+    #[cfg(feature = "performance")]
+    drop(app.capture_wait.take());
     #[cfg(feature = "performance")]
     if let Some(capture) = &mut app.capture {
         let outcome = app
@@ -150,6 +154,8 @@ struct App {
     capture: Option<performance::Capture>,
     #[cfg(feature = "performance")]
     capture_started: Option<Instant>,
+    #[cfg(feature = "performance")]
+    capture_wait: Option<reel_core::profile::Scope>,
 }
 impl App {
     #[cfg(feature = "performance")]
@@ -200,6 +206,10 @@ impl App {
     }
 }
 impl ApplicationHandler for App {
+    #[cfg(feature = "performance")]
+    fn new_events(&mut self, _: &ActiveEventLoop, _: winit::event::StartCause) {
+        drop(self.capture_wait.take());
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(feature = "performance")]
         self.start_performance();
@@ -475,7 +485,15 @@ impl ApplicationHandler for App {
             state.host.wait_until(deadline);
             state.host.apply(event_loop);
             #[cfg(feature = "performance")]
-            performance::record(&mut self.capture, state, &mut self.capture_started);
+            {
+                performance::record(&mut self.capture, state, &mut self.capture_started);
+                drop(_timing);
+                if self.capture.is_some() {
+                    self.capture_wait = Some(reel_core::profile::Scope::new(
+                        reel_core::profile::Phase::HostWait,
+                    ));
+                }
+            }
         }
     }
 }

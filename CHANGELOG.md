@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Reuse recently uploaded images across story restarts and save loads in the same game without keeping a second copy of the pixels on the CPU.
+- Start loading packed resources from their mounted lengths and versions without waiting for a separate metadata request when the index is immediately available.
+- Record desktop event loop waits separately from frame preparation and GPU submission.
 - Reduce desktop offscreen allocations during animated bounds changes by sharing wider multisampled scratch capacity classes.
 - Reuse desktop draw bindings for stable images, glyph atlas pages and solid fills across frames.
 - Size the desktop player's initial texture upload buffers from the window's pixel dimensions. Larger image uploads continue to allocate on demand.

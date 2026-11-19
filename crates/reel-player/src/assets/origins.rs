@@ -20,6 +20,47 @@ struct Index {
     entries: HashTable<Entry>,
     ticket: Option<BudgetTicket>,
 }
+// Recently used GPU images can keep their identity through a story replacement.
+// GPU pressure can still evict their pixels and request exact-version IO.
+pub(super) struct RecentImages {
+    slots: [Option<(String, ResourceLease)>; 64],
+    next: usize,
+}
+impl Default for RecentImages {
+    fn default() -> Self {
+        Self {
+            slots: [const { None }; 64],
+            next: 0,
+        }
+    }
+}
+impl RecentImages {
+    pub(super) fn insert(&mut self, source: String, lease: ResourceLease) {
+        let backing = lease.image_backing();
+        if lease.is_retired() || backing.pixel_byte_len().is_none() || backing.pixels_resident() {
+            return;
+        }
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.as_ref().is_some_and(|(key, _)| key == &source));
+        if let Some(slot) = slot {
+            *slot = Some((source, lease));
+        } else {
+            self.slots[self.next] = Some((source, lease));
+            self.next = (self.next + 1) % self.slots.len();
+        }
+    }
+    pub(super) fn take(&mut self, source: &str) -> Option<ResourceLease> {
+        self.slots
+            .iter_mut()
+            .find(|slot| slot.as_ref().is_some_and(|(key, _)| key == source))?
+            .take()
+            .map(|(_, lease)| lease)
+            .filter(|lease| !lease.is_retired())
+    }
+}
+
 pub(super) struct Origins {
     items: BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
     index: Option<Index>,

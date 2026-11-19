@@ -279,6 +279,10 @@ fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
         } else {
             b"patched"
         };
+        let indexed = io.indexed_info(&source("asset", None));
+        assert!(io.indexed_info(&source("missing", None)).is_none());
+        let original = ContentVersion(*blake3::hash(b"original").as_bytes());
+        assert!(io.indexed_info(&source("asset", Some(original))).is_none());
         io.describe(requests.describe("asset")).unwrap();
         let described = events(&mut io, &wake, &receiver, 1);
         let Terminal::Completed(IoPayload::Described(info)) = &described[0].result else {
@@ -287,6 +291,9 @@ fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
         let version = info.version.expect("selected fixed source has an identity");
         if overlay.is_none() {
             assert_eq!(version, ContentVersion(*blake3::hash(expected).as_bytes()));
+            assert_eq!(indexed.as_ref(), Some(info));
+        } else {
+            assert!(indexed.is_none());
         }
         assert_eq!(info.length, Some(expected.len() as u64));
         assert!(info.range_read && info.seekable);
@@ -303,14 +310,8 @@ fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
         assert_eq!(bytes(&reads[2]), b"chapter = translation");
         drop(reads);
         // A pinned version never selects an older pack or bypasses an overriding loose file.
-        io.read(requests.read(
-            "asset",
-            0,
-            1,
-            Some(ContentVersion(*blake3::hash(b"original").as_bytes())),
-            Priority::Normal,
-        ))
-        .unwrap();
+        io.read(requests.read("asset", 0, 1, Some(original), Priority::Normal))
+            .unwrap();
         io.read(requests.read("../asset", 0, 1, None, Priority::Normal))
             .unwrap();
         io.read(requests.read(
