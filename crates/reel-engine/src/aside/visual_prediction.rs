@@ -16,6 +16,9 @@ const PATH_LIMIT: usize = 1024;
 const LAYER_LIMIT: usize = 8;
 const GROUP_LIMIT: usize = 8;
 const FIELD_LIMIT: usize = 64;
+const DIALOGUE_LIMIT: usize = 2;
+const CLOSURE_LIMIT: usize = 8;
+const CAPTURE_LIMIT: usize = 8;
 
 type Paths<'p> = ArrayVec<&'p str, LAYER_LIMIT>;
 
@@ -25,31 +28,37 @@ enum Fact {
     Bool(bool),
     Constant(bc::ConstId),
     Function(bc::FunctionId),
+    Closure(u8),
     Layer(bc::ConstId),
     Layers(u8),
 }
 
+type Captures = ArrayVec<Fact, CAPTURE_LIMIT>;
+
 #[derive(Clone, Default)]
-struct Facts(ArrayVec<(u32, Fact), FACT_LIMIT>);
+struct Facts {
+    registers: ArrayVec<(u32, Fact), FACT_LIMIT>,
+    captures: Captures,
+}
 
 impl Facts {
     fn get(&self, register: u32) -> Fact {
-        self.0
+        self.registers
             .iter()
             .find_map(|&(key, fact)| (key == register).then_some(fact))
             .unwrap_or(Fact::Unknown)
     }
 
     fn set(&mut self, register: u32, fact: Fact) {
-        if let Some(index) = self.0.iter().position(|&(key, _)| key == register) {
+        if let Some(index) = self.registers.iter().position(|&(key, _)| key == register) {
             if fact == Fact::Unknown {
-                self.0.swap_remove(index);
+                self.registers.swap_remove(index);
             } else {
-                self.0[index].1 = fact;
+                self.registers[index].1 = fact;
             }
         } else if fact != Fact::Unknown {
             // Excess registers stay unknown for this walk.
-            let _ = self.0.try_push((register, fact));
+            let _ = self.registers.try_push((register, fact));
         }
     }
 }
@@ -68,8 +77,10 @@ pub(super) fn next_images(
     let mut walk = Walk {
         program,
         remaining: INSTRUCTION_LIMIT,
+        dialogue_remaining: DIALOGUE_LIMIT,
         code: bc::ResidentCodeReader::default(),
         layers: ArrayVec::new(),
+        closures: ArrayVec::new(),
     };
     for site in sites.take(CALLER_LIMIT) {
         if site.code.version != program.package().content_version {
@@ -95,8 +106,10 @@ pub(super) fn next_images(
 struct Walk<'p> {
     program: &'p bc::VerifiedProgram,
     remaining: usize,
+    dialogue_remaining: usize,
     code: bc::ResidentCodeReader,
     layers: ArrayVec<ArrayVec<bc::ConstId, LAYER_LIMIT>, GROUP_LIMIT>,
+    closures: ArrayVec<(bc::FunctionId, Captures), CLOSURE_LIMIT>,
 }
 
 impl<'p> Walk<'p> {
@@ -155,6 +168,20 @@ impl<'p> Walk<'p> {
                     let group = self.layer_group(&function.descriptors[b as usize], &facts);
                     facts.set(a, group.map_or(Fact::Unknown, Fact::Layers));
                 }
+                Opcode::MakeClosure => {
+                    let closure = self.closure(function, &function.descriptors[b as usize], &facts);
+                    facts.set(a, closure.unwrap_or(Fact::Unknown));
+                }
+                Opcode::CaptureRead => {
+                    facts.set(
+                        a,
+                        facts
+                            .captures
+                            .get(b as usize)
+                            .copied()
+                            .unwrap_or(Fact::Unknown),
+                    );
+                }
                 Opcode::Eq | Opcode::Ne => {
                     // Literal match arms lower to a string comparison and a
                     // branch. Compare the actual bytes, including text-pool values.
@@ -209,7 +236,7 @@ impl<'p> Walk<'p> {
             Fact::Unknown => return Some(None),
             Fact::Bool(value) => return Some(Some(opcode == Opcode::BranchBool && value)),
             Fact::Constant(id) => Some(&self.program.package().constants[id.index()]),
-            Fact::Function(_) | Fact::Layer(_) | Fact::Layers(_) => None,
+            Fact::Function(_) | Fact::Closure(_) | Fact::Layer(_) | Fact::Layers(_) => None,
         };
         match (opcode, constant) {
             (Opcode::BranchBool, Some(bc::Const::Bool(value))) => Some(Some(*value)),
@@ -220,12 +247,12 @@ impl<'p> Walk<'p> {
 
     fn call(&mut self, call: &bc::CallDesc, facts: &Facts, nesting: usize) -> Option<Outcome<'p>> {
         let package = self.program.package();
-        let target = match call.target {
-            bc::CallTarget::Register(reg) => match facts.get(reg.0) {
-                Fact::Function(function) => bc::CallTarget::Function(function),
-                _ => return None,
-            },
-            target => target,
+        let (target, captures) = match call.target {
+            bc::CallTarget::Register(reg) => {
+                let (id, captures) = self.resolve_closure(facts.get(reg.0))?;
+                (bc::CallTarget::Function(id), captures)
+            }
+            target => (target, Captures::new()),
         };
         let native = match target {
             bc::CallTarget::Native(native) => Some(native),
@@ -238,10 +265,26 @@ impl<'p> Walk<'p> {
         if let Some(native) = native {
             let native = &package.natives[native.index()];
             let symbol = package.symbols[native.symbol.index()].as_str();
+            if matches!(
+                symbol,
+                "reel::narrator" | "reel::say" | "reel::character::speak"
+            ) {
+                self.dialogue_remaining = self.dialogue_remaining.checked_sub(1)?;
+                return Some(Outcome::Return(Fact::Unknown));
+            }
+            let signature = &package.signatures[native.signature.index()];
+            if symbol == "reel::stage::transition" {
+                let arguments = self.arguments(signature, call, facts)?;
+                let change = signature
+                    .parameters
+                    .iter()
+                    .position(|parameter| package.symbols[parameter.name.index()] == "change")?;
+                let (id, captures) = self.resolve_closure(arguments[change]?)?;
+                return self.invoke(id, [None; ARGUMENT_LIMIT], captures, nesting);
+            }
             if !matches!(symbol, "reel::image" | "reel::layered_image") {
                 return None;
             }
-            let signature = &package.signatures[native.signature.index()];
             let bc::Arguments::Window(window) = call.arguments else {
                 return None;
             };
@@ -276,12 +319,29 @@ impl<'p> Walk<'p> {
             return None;
         };
         let function = &package.functions[id.index()];
-        if !function.captures.is_empty() {
-            return None;
-        }
         let signature = &package.signatures[function.signature.index()];
         let arguments = self.arguments(signature, call, facts)?;
-        let mut parameters = Facts::default();
+        self.invoke(id, arguments, captures, nesting)
+    }
+
+    fn invoke(
+        &mut self,
+        id: bc::FunctionId,
+        arguments: [Option<Fact>; ARGUMENT_LIMIT],
+        captures: Captures,
+        nesting: usize,
+    ) -> Option<Outcome<'p>> {
+        let package = self.program.package();
+        let function = &package.functions[id.index()];
+        let signature = &package.signatures[function.signature.index()];
+        if signature.parameters.len() > ARGUMENT_LIMIT || function.captures.len() != captures.len()
+        {
+            return None;
+        }
+        let mut parameters = Facts {
+            captures,
+            ..Facts::default()
+        };
         for (index, parameter) in signature.parameters.iter().enumerate() {
             let fact = if let Some(provided) = arguments[index] {
                 provided
@@ -293,6 +353,48 @@ impl<'p> Walk<'p> {
             parameters.set(index as u32, fact);
         }
         self.function(function, 0, parameters, nesting + 1)
+    }
+
+    fn closure(
+        &mut self,
+        owner: &bc::RuntimeFunction,
+        descriptor: &bc::Descriptor,
+        facts: &Facts,
+    ) -> Option<Fact> {
+        let bc::Descriptor::Closure { function, captures } = descriptor else {
+            return None;
+        };
+        if captures.is_empty() {
+            return Some(Fact::Function(*function));
+        }
+        if captures.len() > CAPTURE_LIMIT {
+            return None;
+        }
+        self.remaining = self.remaining.checked_sub(captures.len())?;
+        let mut values = Captures::new();
+        for source in captures {
+            let value = match *source {
+                bc::CaptureSource::Binding(id) => {
+                    let bc::BindingStorage::Value(reg) = owner.bindings[id.index()].storage else {
+                        return None;
+                    };
+                    facts.get(reg.0)
+                }
+                bc::CaptureSource::Capture(id) => *facts.captures.get(id.index())?,
+            };
+            values.push(value);
+        }
+        let index = self.closures.len() as u8;
+        self.closures.try_push((*function, values)).ok()?;
+        Some(Fact::Closure(index))
+    }
+
+    fn resolve_closure(&self, fact: Fact) -> Option<(bc::FunctionId, Captures)> {
+        match fact {
+            Fact::Function(id) => Some((id, Captures::new())),
+            Fact::Closure(index) => self.closures.get(usize::from(index)).cloned(),
+            _ => None,
+        }
     }
 
     fn text(&self, id: bc::ConstId) -> Option<&'p str> {
@@ -679,7 +781,15 @@ mod tests {
     fn only_an_ordinary_return_reaches_an_outer_continuation() {
         for (body, expected) in [
             ("narrator(\"wait\");", Some("outer.png")),
-            ("narrator(\"wait\"); narrator(\"another wait\");", None),
+            (
+                "narrator(\"wait\"); narrator(\"another line\"); narrator(\"last line\");",
+                Some("outer.png"),
+            ),
+            (
+                "narrator(\"wait\"); narrator(\"one\"); narrator(\"two\"); narrator(\"three\");",
+                None,
+            ),
+            ("narrator(\"wait\"); choose([{text: \"Next\"}]);", None),
             (
                 "try { narrator(\"wait\"); } finally { let value = 1; }",
                 None,
@@ -693,6 +803,34 @@ mod tests {
                 first_call(&program, "opening"),
             ];
             assert_eq!(next_image(&program, sites.into_iter()), expected);
+        }
+    }
+
+    #[test]
+    fn follows_a_transition_callback_with_known_value_captures() {
+        let program = compile(
+            r#"
+                fn transition_to(path: string) {
+                    let change = || { let _ = image(path); };
+                    stage.transition(duration: 0.1, change: change);
+                }
+                fn opening() {
+                    narrator("wait");
+                    narrator("next line");
+                    transition_to("school.png");
+                }
+                fn mutable_capture() {
+                    narrator("wait");
+                    let mut path = "before.png";
+                    let change = || { let _ = image(path); };
+                    path = "after.png";
+                    stage.transition(change: change);
+                }
+            "#,
+        );
+        for (function, expected) in [("opening", Some("school.png")), ("mutable_capture", None)] {
+            let site = first_call(&program, function);
+            assert_eq!(next_image(&program, [site].into_iter()), expected);
         }
     }
 
@@ -715,8 +853,10 @@ mod tests {
         let mut walk = Walk {
             program: &program,
             remaining: 1,
+            dialogue_remaining: DIALOGUE_LIMIT,
             code: bc::ResidentCodeReader::default(),
             layers: ArrayVec::new(),
+            closures: ArrayVec::new(),
         };
         assert!(walk.function(function, next, Facts::default(), 0).is_none());
         assert_eq!(walk.remaining, 0);

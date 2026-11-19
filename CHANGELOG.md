@@ -4,6 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Look ahead through upcoming dialogue and statically known transition callbacks to prepare their pictures earlier.
 - Reuse recently uploaded images across story restarts and save loads in the same game without keeping a second copy of the pixels on the CPU.
 - Start loading packed resources from their mounted lengths and versions without waiting for a separate metadata request when the index is immediately available.
 - Record desktop event loop waits separately from frame preparation and GPU submission.
