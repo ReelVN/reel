@@ -109,7 +109,7 @@ pub struct PackIo(FileIo);
 type ReadObserver = std::sync::Arc<dyn Fn(IoId, usize, usize, usize) + Send + Sync>;
 struct FileIo {
     worker: Worker<(IoId, Request), IoEvent>,
-    indexed_files: Option<Arc<Mutex<Files>>>,
+    indexes: Option<Arc<pack::MountedIndexes>>,
     ids: RequestIds<IoId>,
     limits: QueueLimits,
 }
@@ -170,7 +170,7 @@ impl PackIo {
     /// Compressed entries share one fixed workspace charged to `temporary` until
     /// the IO worker exits. Raw-only mounts allocate no decoding workspace.
     /// `metadata` admits index/mount capacities and parsing peak before allocation;
-    /// retained index storage stays charged until the IO worker releases it.
+    /// the worker and foreground share one immutable archive index allocation.
     pub fn open(
         paths: impl IntoIterator<Item = PathBuf>,
         overlay: Option<PathBuf>,
@@ -308,9 +308,11 @@ impl FileIo {
         wake: WakeSignal,
         #[cfg(test)] observer: Option<ReadObserver>,
     ) -> Self {
-        let indexed = matches!(&files, Files::Pack(_));
-        let files = Arc::new(Mutex::new(files));
-        let indexed_files = indexed.then(|| files.clone());
+        let indexes = match &files {
+            Files::Pack(files) => files.immutable_indexes(),
+            Files::Directory(_) => None,
+        };
+        let files = Mutex::new(files);
         Self {
             worker: Worker::stepped(
                 limits,
@@ -336,11 +338,11 @@ impl FileIo {
                             (r.scope, r.completion, result)
                         }
                         Request::Read(mut reading) => {
-                            let result =
-                                reading.step(&mut files.lock().unwrap(), cancelled, read_ahead);
+                            let mut files = files.lock().unwrap();
+                            let result = reading.step(&mut files, cancelled, read_ahead);
                             #[cfg(test)]
                             if let Some(observer) = &observer {
-                                let seeks = match &*files.lock().unwrap() {
+                                let seeks = match &*files {
                                     Files::Pack(files) => files.seek_calls(),
                                     Files::Directory(_) => 0,
                                 };
@@ -351,6 +353,7 @@ impl FileIo {
                                     seeks,
                                 );
                             }
+                            drop(files);
                             if matches!(result, Ok(false)) {
                                 return Step::Continue((id, Request::Read(reading)));
                             }
@@ -382,7 +385,7 @@ impl FileIo {
                 },
                 |event| event.result = Terminal::Cancelled,
             ),
-            indexed_files,
+            indexes,
             ids: RequestIds::default(),
             limits,
         }
@@ -412,7 +415,7 @@ impl AssetIo for FileIo {
     fn background_reader(&self, wake: WakeSignal) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
         Ok(Box::new(Self {
             worker: self.worker.client(wake)?,
-            indexed_files: None,
+            indexes: None,
             ids: self.ids.clone(),
             limits: self.limits,
         }))
@@ -429,10 +432,7 @@ impl AssetIo for FileIo {
         }
     }
     fn indexed_info(&self, source: &AssetSource) -> Option<AssetInfo> {
-        match &*self.indexed_files.as_ref()?.try_lock().ok()? {
-            Files::Pack(files) => files.indexed_info(source),
-            Files::Directory(_) => None,
-        }
+        self.indexes.as_ref()?.indexed_info(source)
     }
     fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>> {
         let checks = check_completion(&request.completion).and_then(|_| {

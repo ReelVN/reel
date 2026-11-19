@@ -512,6 +512,7 @@ fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
         .read(read(large_key, large_length, Priority::Prefetch))
         .unwrap();
     started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    let indexed_media = io.indexed_info(&source(media_key, None));
     // Fill all ordinary slots while the first large quantum owns its one buffer.
     let other = io
         .read(read(media_key, media_length, Priority::Normal))
@@ -526,6 +527,12 @@ fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
         .unwrap();
     io.promote_visible(large);
     resume_tx.send(()).unwrap();
+    let indexed_media = indexed_media.expect("archive metadata available during a read");
+    assert_eq!(indexed_media.length, Some(media_entry.length));
+    assert_eq!(
+        indexed_media.version,
+        Some(ContentVersion(media_entry.version))
+    );
     let result = events(&mut io, &wake, &receiver, 3);
     assert_eq!(
         result.iter().map(|event| event.id).collect::<Vec<_>>(),
