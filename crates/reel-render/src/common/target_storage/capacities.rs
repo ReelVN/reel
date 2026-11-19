@@ -29,9 +29,12 @@ impl Padding {
         }
     }
 
-    pub(crate) fn with_viewport_reuse(mut self, enabled: bool) -> Self {
-        self.borrow_viewport = enabled;
-        self
+    pub(crate) fn desktop_multisample() -> Self {
+        Self {
+            alignment_divisor: 8,
+            borrow_viewport: true,
+            ..Self::for_samples(4)
+        }
     }
 }
 
@@ -161,7 +164,7 @@ impl Plan {
             .filter(|(size, _)| *size != root && !required.exact().contains(size))
         {
             let Some((storage, total_extra)) =
-                padded_size(size, count, max_dimension, spare, cost, padding)?
+                padded_size(size, root, count, max_dimension, spare, cost, padding)?
             else {
                 continue;
             };
@@ -317,6 +320,7 @@ fn resident_capacities(
 /// admits it. Exact sizing is the final candidate, with no changed quality tier.
 fn padded_size(
     size: [u32; 2],
+    root: [u32; 2],
     count: u64,
     max_dimension: u32,
     spare: u64,
@@ -335,11 +339,17 @@ fn padded_size(
     let mut quantum = [square; 2];
     let mut square_candidate = true;
     loop {
-        let round = |axis: usize| {
-            size[axis]
+        let round = |axis: usize| -> Result<u32, GpuError> {
+            let extent = size[axis]
                 .div_ceil(quantum[axis])
                 .checked_mul(quantum[axis])
-                .ok_or(GpuError::InvalidSize)
+                .ok_or(GpuError::InvalidSize)?;
+            // Do not add pixels outside a viewport already containing this axis.
+            Ok(if padding.borrow_viewport && size[axis] <= root[axis] {
+                extent.min(root[axis])
+            } else {
+                extent
+            })
         };
         let storage = [round(0)?, round(1)?];
         if storage == size {
@@ -401,7 +411,7 @@ mod tests {
                 budget,
                 &cost,
                 &resident,
-                Padding::for_samples(4).with_viewport_reuse(true),
+                Padding::desktop_multisample(),
                 |_| Ok(()),
             )
             .unwrap();
@@ -752,6 +762,29 @@ mod tests {
         };
         assert_eq!(capacities(4, 4).len(), 2);
         assert_eq!(capacities(1, 8).len(), 4);
+    }
+
+    #[test]
+    fn desktop_multisample_buckets_share_large_bounds_without_padding_past_viewport() {
+        let root = [1280, 720];
+        for logical in [[931, 684], [971, 703], [1011, 718]] {
+            let required = required(&[(root, 1), (logical, 4)]);
+            let (plan, _) = Plan::capacities(
+                &required,
+                root,
+                4096,
+                u64::MAX,
+                &cost,
+                &Requirements::default(),
+                Padding::desktop_multisample(),
+                |_| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(plan.storage_size(logical), [1024, 720]);
+            assert_eq!(plan.requirements().count([1024, 720]), 4);
+            assert_eq!(plan.storage_size(root), root);
+        }
     }
 
     #[test]

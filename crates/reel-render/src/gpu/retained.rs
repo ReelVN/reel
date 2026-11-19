@@ -10,6 +10,37 @@ pub(super) struct Output {
     pub target: super::targets::Target,
 }
 
+#[derive(Clone)]
+pub(super) struct TransitionOutput {
+    pub read: TransitionRead,
+    pub target: super::targets::Target,
+}
+
+/// A retained picture can stay in the scratch pool while its readers hold the pixels.
+/// The inline lease occupies the same storage as the previous allocation owner.
+pub(super) struct TransitionRead(Arc<Allocation>);
+impl TransitionRead {
+    pub(super) fn new(allocation: Arc<Allocation>) -> Self {
+        allocation.pin();
+        Self(allocation)
+    }
+
+    #[cfg(test)]
+    pub(super) fn allocation(&self) -> &Arc<Allocation> {
+        &self.0
+    }
+}
+impl Clone for TransitionRead {
+    fn clone(&self) -> Self {
+        Self::new(self.0.clone())
+    }
+}
+impl Drop for TransitionRead {
+    fn drop(&mut self) {
+        self.0.unpin();
+    }
+}
+
 pub(super) struct Pending {
     pub notify_ready: bool,
     pub flight: Inflight,
@@ -51,7 +82,7 @@ impl PendingQueue {
 }
 #[derive(Default)]
 pub(super) struct Cache {
-    pub inputs: crate::common::retained::Cache<Output, Quality>,
+    pub inputs: crate::common::retained::Cache<TransitionOutput, Quality>,
     pub pending: Mutex<PendingQueue>,
     pub ceiling: Mutex<Option<(CandidateKey, Quality)>>,
     pub epoch: Mutex<Option<reel_core::identity::SurfaceEpoch>>,

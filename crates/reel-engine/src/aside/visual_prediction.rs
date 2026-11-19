@@ -29,7 +29,7 @@ enum Fact {
     Constant(bc::ConstId),
     Function(bc::FunctionId),
     Closure(u8),
-    Layer(bc::ConstId),
+    Table { start: u8, end: u8 },
     Layers(u8),
 }
 
@@ -81,6 +81,7 @@ pub(super) fn next_images(
         code: bc::ResidentCodeReader::default(),
         layers: ArrayVec::new(),
         closures: ArrayVec::new(),
+        fields: ArrayVec::new(),
     };
     for site in sites.take(CALLER_LIMIT) {
         if site.code.version != program.package().content_version {
@@ -110,6 +111,7 @@ struct Walk<'p> {
     code: bc::ResidentCodeReader,
     layers: ArrayVec<ArrayVec<bc::ConstId, LAYER_LIMIT>, GROUP_LIMIT>,
     closures: ArrayVec<(bc::FunctionId, Captures), CLOSURE_LIMIT>,
+    fields: ArrayVec<(bc::ConstId, Fact), FIELD_LIMIT>,
 }
 
 impl<'p> Walk<'p> {
@@ -161,8 +163,20 @@ impl<'p> Walk<'p> {
                     facts.set(a, value);
                 }
                 Opcode::MakeTable => {
-                    let source = self.layer_source(&function.descriptors[b as usize], &facts);
-                    facts.set(a, source.map_or(Fact::Unknown, Fact::Layer));
+                    let table = self.table(&function.descriptors[b as usize], &facts);
+                    facts.set(a, table.unwrap_or(Fact::Unknown));
+                }
+                Opcode::IndexGet | Opcode::MemberGet => {
+                    let key = if op == Opcode::IndexGet {
+                        let Fact::Constant(key) = facts.get(c) else {
+                            return None;
+                        };
+                        self.text(key)?
+                    } else {
+                        self.program.package().symbols[c as usize].as_str()
+                    };
+                    let value = self.field(facts.get(b), key)?;
+                    facts.set(a, value);
                 }
                 Opcode::MakeArray => {
                     let group = self.layer_group(&function.descriptors[b as usize], &facts);
@@ -183,20 +197,21 @@ impl<'p> Walk<'p> {
                     );
                 }
                 Opcode::Eq | Opcode::Ne => {
-                    // Literal match arms lower to a string comparison and a
-                    // branch. Compare the actual bytes, including text-pool values.
-                    let (Fact::Constant(left), Fact::Constant(right)) =
-                        (facts.get(b), facts.get(c))
-                    else {
-                        return None;
+                    let equal = match (facts.get(b), facts.get(c)) {
+                        (Fact::Constant(left), Fact::Constant(right)) => self
+                            .text(left)
+                            .zip(self.text(right))
+                            .and_then(|(left, right)| {
+                                (left.len().max(right.len()) <= PATH_LIMIT).then(|| left == right)
+                            }),
+                        _ => None,
                     };
-                    let left = self.text(left)?;
-                    let right = self.text(right)?;
-                    if left.len().max(right.len()) > PATH_LIMIT {
-                        return None;
-                    }
-                    let equal = left == right;
-                    facts.set(a, Fact::Bool(equal == (op == Opcode::Eq)));
+                    facts.set(
+                        a,
+                        equal.map_or(Fact::Unknown, |equal| {
+                            Fact::Bool(equal == (op == Opcode::Eq))
+                        }),
+                    );
                 }
                 Opcode::Jump => {
                     pc = forward(pc, a)?;
@@ -236,7 +251,7 @@ impl<'p> Walk<'p> {
             Fact::Unknown => return Some(None),
             Fact::Bool(value) => return Some(Some(opcode == Opcode::BranchBool && value)),
             Fact::Constant(id) => Some(&self.program.package().constants[id.index()]),
-            Fact::Function(_) | Fact::Closure(_) | Fact::Layer(_) | Fact::Layers(_) => None,
+            Fact::Function(_) | Fact::Closure(_) | Fact::Table { .. } | Fact::Layers(_) => None,
         };
         match (opcode, constant) {
             (Opcode::BranchBool, Some(bc::Const::Bool(value))) => Some(Some(*value)),
@@ -265,9 +280,16 @@ impl<'p> Walk<'p> {
         if let Some(native) = native {
             let native = &package.natives[native.index()];
             let symbol = package.symbols[native.symbol.index()].as_str();
+            if symbol == "reel::tr" {
+                return Some(Outcome::Return(Fact::Unknown));
+            }
             if matches!(
                 symbol,
-                "reel::narrator" | "reel::say" | "reel::character::speak"
+                "reel::narrator"
+                    | "reel::say"
+                    | "reel::character::speak"
+                    | "reel::speech::wait"
+                    | "reel::speech::revealed"
             ) {
                 self.dialogue_remaining = self.dialogue_remaining.checked_sub(1)?;
                 return Some(Outcome::Return(Fact::Unknown));
@@ -412,18 +434,18 @@ impl<'p> Walk<'p> {
         (!path.is_empty() && path.len() <= PATH_LIMIT).then_some(path)
     }
 
-    fn layer_source(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<bc::ConstId> {
+    fn table(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<Fact> {
         let count = match descriptor {
             bc::Descriptor::Table(pairs) => pairs.len(),
             bc::Descriptor::TableSources(entries) => entries.len(),
             _ => return None,
         };
-        if count > FIELD_LIMIT {
+        let start = self.fields.len();
+        if count > FIELD_LIMIT - start {
             return None;
         }
         self.remaining = self.remaining.checked_sub(count)?;
-        let mut source = Fact::Unknown;
-        for index in 0..count {
+        let built = (0..count).try_for_each(|index| {
             let [key, value] = match descriptor {
                 bc::Descriptor::Table(pairs) => pairs[index],
                 bc::Descriptor::TableSources(entries) => match entries[index] {
@@ -435,14 +457,35 @@ impl<'p> Walk<'p> {
             let Fact::Constant(key) = facts.get(key.0) else {
                 return None;
             };
-            if self.text(key)? == "source" {
-                source = facts.get(value.0);
+            if self.text(key)?.len() > PATH_LIMIT {
+                return None;
             }
+            self.fields.push((key, facts.get(value.0)));
+            Some(())
+        });
+        if built.is_none() {
+            self.fields.truncate(start);
+            return None;
         }
-        match source {
-            Fact::Constant(id) => Some(id),
-            _ => None,
+        Some(Fact::Table {
+            start: start as u8,
+            end: self.fields.len() as u8,
+        })
+    }
+
+    fn field(&mut self, table: Fact, key: &str) -> Option<Fact> {
+        let Fact::Table { start, end } = table else {
+            return None;
+        };
+        if key.len() > PATH_LIMIT {
+            return None;
         }
+        let fields = &self.fields[start as usize..end as usize];
+        self.remaining = self.remaining.checked_sub(fields.len())?;
+        fields
+            .iter()
+            .rev()
+            .find_map(|&(name, value)| (self.text(name) == Some(key)).then_some(value))
     }
 
     fn layer_group(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<u8> {
@@ -456,7 +499,12 @@ impl<'p> Walk<'p> {
         let mut group = ArrayVec::new();
         for offset in 0..window.len {
             match facts.get(window.start.0 + offset) {
-                Fact::Layer(id) => group.push(id),
+                table @ Fact::Table { .. } => {
+                    let Fact::Constant(id) = self.field(table, "source")? else {
+                        return None;
+                    };
+                    group.push(id);
+                }
                 Fact::Constant(id)
                     if self.program.package().constants[id.index()] == bc::Const::Null => {}
                 _ => return None,
@@ -699,12 +747,40 @@ mod tests {
     fn branches_require_the_same_first_image() {
         for (right, expected) in [("shared.png", Some("shared.png")), ("different.png", None)] {
             let program = compile(&format!(
-                r#"fn opening(flag: bool = true) {{
+                r#"fn opening(route: string = "hall") {{
                     narrator("wait");
-                    if flag {{ let _ = image("shared.png"); }} else {{ let _ = image("{right}"); }}
+                    if route == "hall" {{ let _ = image("shared.png"); }} else {{ let _ = image("{right}"); }}
                 }}"#,
             ));
             let site = first_call(&program, "opening");
+            assert_eq!(next_image(&program, [site].into_iter()), expected);
+        }
+    }
+
+    #[test]
+    fn localized_dialogue_can_look_ahead_to_a_known_table_key() {
+        let program = compile(
+            r#"
+                fn room(name: string) {
+                    let rooms = {hall: {path: "old.png"}, cafe: {path: "cafe.png"},
+                                 ["hall"]: {path: "hall.png"}};
+                    let _ = image(rooms[name].path);
+                }
+                fn opening() {
+                    narrator("wait");
+                    narrator(tr("Yet another sentence.", {en: "One more sentence."}));
+                    room("hall");
+                }
+                fn changed() {
+                    narrator("wait");
+                    let rooms = {hall: "old.png"};
+                    rooms["hall"] = "new.png";
+                    let _ = image(rooms["hall"]);
+                }
+            "#,
+        );
+        for (name, expected) in [("opening", Some("hall.png")), ("changed", None)] {
+            let site = first_call(&program, name);
             assert_eq!(next_image(&program, [site].into_iter()), expected);
         }
     }
@@ -857,6 +933,7 @@ mod tests {
             code: bc::ResidentCodeReader::default(),
             layers: ArrayVec::new(),
             closures: ArrayVec::new(),
+            fields: ArrayVec::new(),
         };
         assert!(walk.function(function, next, Facts::default(), 0).is_none());
         assert_eq!(walk.remaining, 0);

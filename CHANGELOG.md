@@ -4,6 +4,8 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Start image preparation during dialogue reveal and look through translated lines and local table literals when the next image path is known.
+- Return desktop transition textures to scratch reuse after all prepared and submitted readers have released them.
 - Use queued video timestamps to schedule media updates closer to when pictures are due.
 - Skip desktop upload color conversion outside decoded images' nonzero-alpha bounds.
 - Reuse spare desktop viewport textures for large cropped groups during multisampled rendering.
@@ -12,7 +14,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 - Reuse recently uploaded images across story restarts and save loads in the same game without keeping a second copy of the pixels on the CPU.
 - Start loading packed resources from their mounted lengths and versions without waiting for a separate metadata request when the index is immediately available.
 - Record desktop event loop waits separately from frame preparation and GPU submission.
-- Reduce desktop offscreen allocations during animated bounds changes by sharing wider multisampled scratch capacity classes.
+- Reduce desktop offscreen allocations during animated bounds changes by sharing wider multisampled scratch capacity classes. Padding stays within the viewport on axes where the original target fits.
 - Reuse desktop draw bindings for stable images, glyph atlas pages and solid fills across frames.
 - Size the desktop player's initial texture upload buffers from the window's pixel dimensions. Larger image uploads continue to allocate on demand.
 - Reuse desktop image staging buffers for video uploads once the GPU has finished reading them.

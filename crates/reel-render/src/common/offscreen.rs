@@ -219,9 +219,11 @@ impl Plan {
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, u64, Vec<R>, T), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::OffscreenPlan);
-        let padding = super::target_storage::Padding::for_samples(samples).with_viewport_reuse(
-            samples > 1 && resident.is_some_and(|targets| targets.borrow_viewport),
-        );
+        let padding = if samples > 1 && resident.is_some_and(|targets| targets.borrow_viewport) {
+            super::target_storage::Padding::desktop_multisample()
+        } else {
+            super::target_storage::Padding::for_samples(samples)
+        };
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],

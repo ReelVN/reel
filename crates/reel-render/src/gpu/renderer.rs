@@ -29,6 +29,7 @@ pub struct Prepared {
     effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
     retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    transition_reads: Vec<super::retained::TransitionRead>,
     effect_pending: Vec<crate::common::effect_result::Pending<super::retained::Output>>,
     effect_pins: Vec<super::targets::Target>,
     effect_uniform_slots: Vec<super::effect_uniform::Storage>,
@@ -61,6 +62,7 @@ pub(super) struct Inflight {
     _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
     _retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    _transition_reads: Vec<super::retained::TransitionRead>,
     _effect_pins: Vec<super::targets::Target>,
     effect_uniform_slots: Vec<super::effect_uniform::Storage>,
     _admission: BudgetTicket,
@@ -959,6 +961,7 @@ impl Renderer {
                 effect_uniform_slots: Vec::new(),
                 selection,
                 retained_inputs: Vec::new(),
+                transition_reads: Vec::new(),
                 warm,
                 warmed: false,
                 target_allocations: Vec::new(),
@@ -1042,13 +1045,13 @@ impl Renderer {
                 let storage = output.storage_size();
                 self.retained.inputs.stage(
                     token,
-                    super::retained::Output {
-                        allocation: allocation.clone(),
+                    super::retained::TransitionOutput {
+                        read: super::retained::TransitionRead::new(allocation),
                         target: output.clone(),
                     },
                     super::targets::target_bytes(storage, quality)?,
                 );
-                Some((token, allocation))
+                Some(token)
             } else {
                 None
             };
@@ -1068,6 +1071,7 @@ impl Renderer {
                 effects: ctx.effects,
                 targets: ctx.target_allocations,
                 retained_inputs: ctx.retained_inputs,
+                transition_reads: ctx.transition_reads,
                 effect_pending: ctx.effect_pending,
                 effect_pins: ctx.effect_pins,
                 effect_uniform_slots: ctx.effect_uniform_slots,
@@ -1077,7 +1081,7 @@ impl Renderer {
                 generation: self.gpu.generation,
                 owner: self.owner.clone(),
             };
-            if let Some((token, retained_output)) = retained {
+            if let Some(token) = retained {
                 let done = Arc::new(AtomicBool::new(false));
                 for slot in &mut prepared.effect_uniform_slots {
                     slot.upload(&self.gpu);
@@ -1101,7 +1105,7 @@ impl Renderer {
                     &self.budgets.transient,
                     self.gpu.limits.transient_bytes,
                 );
-                target_cache.publish(size, quality, &prepared.targets, Some(&retained_output));
+                target_cache.publish(size, quality, &prepared.targets);
                 if let Some(coverage) = self.gpu.coverage_quality(quality) {
                     coverage_target_cache.reserve_metadata(
                         size,
@@ -1110,12 +1114,7 @@ impl Renderer {
                         &self.budgets.transient,
                         self.gpu.limits.transient_bytes,
                     );
-                    coverage_target_cache.publish(
-                        size,
-                        coverage,
-                        &prepared.targets,
-                        Some(&retained_output),
-                    );
+                    coverage_target_cache.publish(size, coverage, &prepared.targets);
                 }
                 self.retained
                     .pending
@@ -1136,6 +1135,7 @@ impl Renderer {
                             _effects: prepared.effects,
                             _targets: prepared.targets,
                             _retained_inputs: prepared.retained_inputs,
+                            _transition_reads: prepared.transition_reads,
                             _effect_pins: prepared.effect_pins,
                             effect_uniform_slots: prepared.effect_uniform_slots,
                             _admission: prepared.admission,
@@ -1216,6 +1216,7 @@ impl Renderer {
             _effects: prepared.effects,
             _targets: prepared.targets,
             _retained_inputs: prepared.retained_inputs,
+            _transition_reads: prepared.transition_reads,
             _effect_pins: prepared.effect_pins,
             effect_uniform_slots: prepared.effect_uniform_slots,
             _admission: prepared.admission,
@@ -1228,14 +1229,12 @@ impl Renderer {
                 prepared.size,
                 prepared.quality,
                 &self.inflight.last().unwrap()._targets,
-                None,
             );
             if let Some(coverage_quality) = self.gpu.coverage_quality(prepared.quality) {
                 self.coverage_targets.publish(
                     prepared.size,
                     coverage_quality,
                     &self.inflight.last().unwrap()._targets,
-                    None,
                 );
             }
         }

@@ -56,9 +56,11 @@ pub(super) struct Context<'a> {
     pub(super) coverage_target_cache: &'a super::target_cache::TargetCache,
     pub(super) coverage_quality: Option<Quality>,
     pub(super) coverage_pipeline: Option<Arc<wgpu::RenderPipeline>>,
-    pub(super) retained_cache: &'a crate::common::retained::Cache<super::retained::Output, Quality>,
+    pub(super) retained_cache:
+        &'a crate::common::retained::Cache<super::retained::TransitionOutput, Quality>,
     pub(super) selection: Arc<crate::common::retained::Plan>,
     pub(super) retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    pub(super) transition_reads: Vec<super::retained::TransitionRead>,
     pub(super) warm: Option<usize>,
     pub(super) warmed: bool,
     pub(super) target_allocations: Vec<Arc<super::target_cache::Allocation>>,
@@ -202,11 +204,10 @@ impl Context<'_> {
                     retained.map_or((None, None), |(index, output)| (Some(index), output));
                 if let Some(previous) = cached {
                     let target = previous.target;
-                    let mut inputs = std::mem::take(&mut self.retained_inputs);
-                    let result = push_stack(&mut inputs, previous.allocation, |bytes| {
-                        self.transient(bytes)
-                    });
-                    self.retained_inputs = inputs;
+                    let mut inputs = std::mem::take(&mut self.transition_reads);
+                    let result =
+                        push_stack(&mut inputs, previous.read, |bytes| self.transient(bytes));
+                    self.transition_reads = inputs;
                     result?;
                     let child = self.start_stream(
                         current.drawing,

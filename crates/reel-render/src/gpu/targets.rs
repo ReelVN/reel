@@ -44,9 +44,7 @@ struct EffectPin {
 }
 impl Drop for EffectPin {
     fn drop(&mut self) {
-        self.allocation
-            .effect_pins
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.allocation.unpin();
     }
 }
 #[derive(Clone)]
@@ -66,12 +64,7 @@ impl Target {
         self.allocation
             .as_ref()
             .and_then(std::sync::Weak::upgrade)
-            .is_some_and(|allocation| {
-                allocation
-                    .effect_pins
-                    .load(std::sync::atomic::Ordering::Acquire)
-                    != 0
-            })
+            .is_some_and(|allocation| allocation.is_pinned())
     }
     pub(super) fn effect_token(&self) -> Option<crate::common::effect_result::Token> {
         self.effect_content
@@ -100,9 +93,7 @@ impl Target {
         let metadata = pool
             .reserve((size_of::<EffectPin>() + 2 * size_of::<usize>()) as u64)
             .ok()?;
-        allocation
-            .effect_pins
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        allocation.pin();
         let mut result = self.clone().with_effect_content(token);
         result.effect_pin = Some(std::sync::Arc::new(EffectPin {
             allocation,

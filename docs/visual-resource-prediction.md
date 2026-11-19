@@ -1,6 +1,6 @@
 # 视觉资源自动准备提案
 
-目标是让作者只描述最终要显示的画面。0.4 开发版从可见控件的 `image_skin` 取得备选图，也会在对白等待时查询下一次确定的 `image` 或 `layered_image`。目前播放器仅查询已驻留的字节码，能越过少量对白、检查 `stage.transition` 的回调和已知按值捕获、解析常量路径与直接构造的描述数组，以及识别可证明的函数转发、字面量匹配和各出口使用同一组图的分支。对大型图层目录与页面的构建期索引仍在设计中。现行合同见[引擎架构](engine-architecture.md)。
+目标是让作者只描述最终要显示的画面。0.4 开发版从可见控件的 `image_skin` 取得备选图，也会在对白揭示或推进等待时查询下一次确定的 `image` 或 `layered_image`。目前播放器仅查询已驻留的字节码，能越过少量含翻译的对白、检查 `stage.transition` 回调的已知按值捕获、解析常量路径与局部表字面量，以及识别可证明的函数转发、字面量匹配和各出口使用同一组图的分支。对大型图层目录与页面的构建期索引仍在设计中。现行合同见[引擎架构](engine-architecture.md)。
 
 Shin 的执行链说明了两个不同的时机。执行 `LAYERLOAD` 后开始加载，准备好才替换图层。立绘另按表情选块，多套表情可以共享身体。Reel 可直接从皮肤取得有限的未来状态，而剧情要提前到上一句准备，仍需要下面的控制流信息。[Shin 图层加载](https://github.com/DCNick3/shin/blob/2405086f8a1d319c9df3605df38a4f0a6379a42d/shin/src/adv/command/layerload.rs#L135-L228) · [Shin 立绘](https://github.com/DCNick3/shin/blob/2405086f8a1d319c9df3605df38a4f0a6379a42d/shin/src/asset/bustup.rs#L87-L110)
 

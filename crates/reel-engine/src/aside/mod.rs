@@ -997,14 +997,16 @@ impl SessionVm {
     }
 
     /// Paths from the next statically known image or layered image after a
-    /// pending dialogue advance, in preparation order.
+    /// pending dialogue reveal or advance, in preparation order.
     pub fn predicted_dialogue_images(&mut self) -> &[Box<str>] {
         let Some(wait) = self
             .pending
             .as_ref()
             .filter(|pending| {
-                matches!(pending.kind, PendingInteractionKind::Advance)
-                    && pending.keys.is_none()
+                matches!(
+                    pending.kind,
+                    PendingInteractionKind::Reveal | PendingInteractionKind::Advance
+                ) && pending.keys.is_none()
                     && self.vm.wait_is_pending(pending.wait)
             })
             .map(|pending| pending.wait)

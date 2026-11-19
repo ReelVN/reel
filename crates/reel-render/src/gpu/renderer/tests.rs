@@ -1195,9 +1195,14 @@ fn retained_transition_reuploads_retired_images_and_releases_them_after_completi
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    let pixels = renderer
-        .readback(renderer.prepare(&frame).unwrap())
-        .unwrap();
+    let prepared = renderer.prepare(&frame).unwrap();
+    assert_eq!(prepared.transition_reads.len(), 1);
+    let retained_owner = prepared.transition_reads[0].allocation().clone();
+    renderer.cancel_preparations();
+    assert!(retained_owner.is_pinned());
+    let pixels = renderer.readback(prepared).unwrap();
+    assert!(!retained_owner.is_pinned());
+    drop(retained_owner);
     assert!(pixels.iter().enumerate().all(|(index, pixel)| {
         let mut expected = [128. / 255. * 0.5, 0., 0., (128. / 255. + 1.) * 0.5];
         expected[((index % 64) / 20).min(2)] += 0.5;
@@ -1207,7 +1212,6 @@ fn retained_transition_reuploads_retired_images_and_releases_them_after_completi
             .all(|(a, b)| (*a - b).abs() < 0.006)
     }));
     counts(&renderer, 4); // Three retained images and the shared solid-color white texture.
-    renderer.cancel_preparations();
     drop(frame);
     renderer.poll().unwrap();
     renderer.images.clear_idle();
