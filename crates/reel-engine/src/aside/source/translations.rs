@@ -330,11 +330,14 @@ impl Context<'_> {
 pub fn extract_translations(
     modules: &[h::AnalyzedModule],
 ) -> Result<(CatalogProducts, Vec<Vec<CallExpansion>>), TranslationDiagnostic> {
-    let views = modules
-        .iter()
-        .map(aside_compiler::editor::EditorModule::from)
-        .collect::<Vec<_>>();
-    let selected = modules
+    let selected = select_branches(modules)?;
+    extract_selected(modules, &selected)
+}
+
+pub(super) fn select_branches(
+    modules: &[h::AnalyzedModule],
+) -> Result<Vec<aside_compiler::lowering::BranchSelection>, TranslationDiagnostic> {
+    modules
         .iter()
         .map(|module| {
             aside_compiler::lowering::select_branches(module, Default::default()).map_err(|error| {
@@ -345,8 +348,18 @@ pub fn extract_translations(
                 }
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    let (products, expansions, analysis) = extract_views(&views, Some(&selected));
+        .collect()
+}
+
+pub(super) fn extract_selected(
+    modules: &[h::AnalyzedModule],
+    selected: &[aside_compiler::lowering::BranchSelection],
+) -> Result<(CatalogProducts, Vec<Vec<CallExpansion>>), TranslationDiagnostic> {
+    let views = modules
+        .iter()
+        .map(aside_compiler::editor::EditorModule::from)
+        .collect::<Vec<_>>();
+    let (products, expansions, analysis) = extract_views(&views, Some(selected));
     if let Some(error) = analysis.diagnostics.into_iter().next() {
         return Err(error);
     }

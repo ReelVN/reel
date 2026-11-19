@@ -93,6 +93,32 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
 
 #[test]
 #[ignore = "requires actual graphics adapter and pixel readback"]
+fn raster_uploads_share_one_mapped_buffer_without_overwriting_spans() {
+    use reel_ui::resources::ColorEncoding;
+
+    for (encoding, row_bytes) in [(ColorEncoding::Linear, 512), (ColorEncoding::Srgb, 256)] {
+        let (frame, _, _) = image_restore_fixture_with_encoding([64, 4], true, encoding);
+        let mut renderer = renderer(Default::default());
+        renderer
+            .images
+            .prepare_staging(&renderer.gpu, &renderer.budgets, 3 * 4 * row_bytes)
+            .unwrap();
+        let prepared = renderer.prepare(&frame).unwrap();
+        assert_eq!(renderer.gpu.upload_creations.snapshot(), [3, 2, 3]);
+        let pixels = renderer.readback(prepared).unwrap();
+        assert!(pixels.iter().enumerate().all(|(index, pixel)| {
+            let mut expected = [0., 0., 0., 1.];
+            expected[((index % 64) / 20).min(2)] = 1.;
+            pixel
+                .iter()
+                .zip(expected)
+                .all(|(actual, channel)| (*actual - channel).abs() < 0.006)
+        }));
+    }
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter and pixel readback"]
 fn opaque_srgb_upload_matches_linear_reference_on_a_scaled_dark_gradient() {
     use reel_core::{
         budget::OwnedBytes,

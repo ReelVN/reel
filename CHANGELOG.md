@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Reuse the verified bytecode size at encoding time and compress debug source once when writing it.
+- Share target branch selection among translation, effect, and mask compilation.
+- Place raster uploads from the same desktop batch in available spans of the same staging buffer.
 - Compile a visual preparation plan into ASB so dialogue and transitions can prepare known images without walking bytecode during playback.
 - Expose measured scroll limits as `max_scroll_x` and `max_scroll_y` for custom navigation and scrollbar visibility.
 - Reuse each admitted literal lookup when executing the instruction or assigning a default argument.

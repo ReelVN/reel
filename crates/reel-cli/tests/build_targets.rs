@@ -33,18 +33,29 @@ fn target_selects_code_closures_translations_and_shader_products() {
                 (create(), message, 11223)
             } else {
                 let message = tr("desktop", { "zh-CN": "桌面" });
-                (null, message, 33445)
+                let reveal = mask.gray("desktop-mask.png");
+                (reveal, message, 33445)
             }
         }
     "#;
-    for (target, kept, removed, text, effects) in [
-        ("vita", 11223, 33445, "portable", 1),
-        ("windows", 33445, 11223, "desktop", 0),
+    for (target, kept, removed, text, has_mask) in [
+        ("vita", 11223, 33445, "portable", false),
+        ("windows", 33445, 11223, "desktop", true),
     ] {
         let checked = check(source, target).unwrap();
         assert_eq!(checked.catalogs.messages.len(), 1);
         assert_eq!(checked.catalogs.messages[0].source, text);
-        assert_eq!(checked.effects.definitions().len(), effects);
+        assert_eq!(checked.effects.definitions().len(), 1);
+        assert_eq!(
+            checked
+                .effects
+                .binding_records()
+                .next()
+                .unwrap()
+                .2
+                .is_some(),
+            has_mask
+        );
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         let package = reel_package::decode(
             &artifact.bytes,
@@ -55,7 +66,14 @@ fn target_selects_code_closures_translations_and_shader_products() {
         let constants = &package.program().package().constants;
         assert!(constants.contains(&Const::Int(kept)));
         assert!(!constants.contains(&Const::Int(removed)));
-        assert_eq!(package.effects().definitions.len(), effects);
+        assert_eq!(package.effects().definitions.len(), 1);
+        assert_eq!(
+            matches!(
+                package.effects().bindings[0].kind,
+                reel_package::EffectBindingKind::MaskTemplate { .. }
+            ),
+            has_mask
+        );
     }
 }
 

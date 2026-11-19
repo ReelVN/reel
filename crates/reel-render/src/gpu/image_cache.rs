@@ -202,7 +202,7 @@ impl ImageCache {
             });
         let mut uploaded = Vec::with_capacity(capacity);
         let mut staging = Vec::with_capacity(capacity);
-        let mut buffers = Vec::with_capacity(capacity);
+        let mut buffers: Vec<Box<super::upload::Buffer>> = Vec::with_capacity(capacity);
         let reserve_gpu = |bytes| {
             pool.reserve(bytes).map_err(|_| GpuError::Pressure {
                 domain: "image upload",
@@ -243,6 +243,16 @@ impl ImageCache {
                 item.resident
             };
             let cached_staging = self.staging.lock().unwrap().capacity();
+            let open_staging = if item.raster_format.is_some() {
+                buffers
+                    .iter()
+                    .map(|buffer| buffer.remaining())
+                    .max()
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let cached_staging = cached_staging.max(open_staging);
             let minimum = resident
                 + if cached_staging >= item.minimum_staging {
                     0
@@ -324,6 +334,7 @@ impl ImageCache {
                     limit
                         .saturating_sub(pool.usage().bytes)
                         .max(self.staging.lock().unwrap().capacity())
+                        .max(open_staging)
                         .min(staging_limit),
                     row_bytes,
                 );
@@ -337,18 +348,30 @@ impl ImageCache {
                 }
                 let next_row = pending.next_row + count;
                 let upload_bytes = row_bytes * u64::from(count);
-                let upload = match self
-                    .staging
-                    .lock()
-                    .unwrap()
-                    .acquire(gpu, budgets, upload_bytes)
-                {
-                    Ok(ticket) => ticket,
-                    Err(error) => {
-                        deferred = Some(error);
-                        break;
-                    }
-                };
+                let mut new_buffer = None;
+                let mut upload = buffers
+                    .iter_mut()
+                    .find_map(|buffer| buffer.allocate_span(upload_bytes));
+                if upload.is_none() {
+                    new_buffer =
+                        match self
+                            .staging
+                            .lock()
+                            .unwrap()
+                            .acquire(gpu, budgets, upload_bytes)
+                        {
+                            Ok(buffer) => buffer,
+                            Err(error) => {
+                                deferred = Some(error);
+                                break;
+                            }
+                        };
+                    upload = new_buffer.as_mut().map(|buffer| {
+                        buffer
+                            .allocate_span(upload_bytes)
+                            .expect("admitted raster upload capacity")
+                    });
+                }
                 let one_off = if upload.is_none() {
                     Some(reserve_gpu(upload_bytes)?)
                 } else {
@@ -361,7 +384,7 @@ impl ImageCache {
                     item.at,
                     &pending.image,
                     pending.next_row..next_row,
-                    upload.as_deref(),
+                    upload,
                 )?;
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
                 converted = true;
@@ -370,8 +393,8 @@ impl ImageCache {
                     source: item.source.clone(),
                     next_row: Some(next_row),
                 });
-                if let Some(upload) = upload {
-                    buffers.push(upload);
+                if let Some(buffer) = new_buffer {
+                    buffers.push(buffer);
                 }
                 if let Some(one_off) = one_off {
                     staging.push(one_off);
@@ -525,6 +548,9 @@ impl ImageCache {
             }
         }
         if !uploaded.is_empty() {
+            for buffer in &buffers {
+                buffer.finish_spans(&mut encoder);
+            }
             let done = Arc::new(AtomicBool::new(false));
             gpu.submit(encoder);
             // Advance source cursors only after submission. Failed encoding

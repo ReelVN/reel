@@ -16,6 +16,44 @@ fn source_reader(wire: &[u8], limits: Limits) -> Reader<'_> {
 }
 
 #[test]
+fn verified_encoding_uses_the_canonical_size_and_keeps_output_limits() {
+    let mut package = super::super::fixtures::helper_native();
+    package.sources[0].text.push_str(&"中文🎬\n".repeat(4096));
+    let limits = Limits::default();
+    let program = super::super::verify(package, limits).unwrap();
+    let stats = program.stats();
+    let encoded = program.encode(limits).unwrap();
+    assert_eq!(encoded.as_bytes().len(), stats.encoded_bytes);
+    assert_eq!(
+        encoded.as_bytes(),
+        encode(program.package(), limits).unwrap()
+    );
+    assert_eq!(
+        decode(encoded.as_bytes(), limits).unwrap().sources,
+        program.package().sources
+    );
+    for tight in [
+        Limits {
+            max_bytes: stats.encoded_bytes - 1,
+            ..limits
+        },
+        Limits {
+            max_work: stats.encoded_bytes as u64 - 1,
+            ..limits
+        },
+        Limits {
+            max_records: stats.records as u32 - 1,
+            ..limits
+        },
+    ] {
+        assert_eq!(
+            encode_verified(&program, tight).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+    }
+}
+
+#[test]
 fn compressed_sources_admit_expanded_bytes_and_work_before_allocation() {
     let source = "中文🎬\n".repeat(4096);
     let wire = source_wire(source.as_bytes(), source.len());

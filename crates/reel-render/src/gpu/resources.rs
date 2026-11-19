@@ -122,7 +122,7 @@ pub(super) fn image_rows(
     at: RecordLocation,
     target: &Image,
     rows: std::ops::Range<u32>,
-    staging: Option<&super::upload::Buffer>,
+    staging: Option<super::upload::Span<'_>>,
 ) -> Result<(), GpuError> {
     let (lease, pixels) = source;
     let Some(image) = lease.image_descriptor() else {
@@ -137,56 +137,67 @@ pub(super) fn image_rows(
             record: "image format",
         });
     }
-    upload_rows_with(gpu, encoder, target, rows.clone(), staging, |buffer| {
-        if target.texture.format() == wgpu::TextureFormat::Rgba8UnormSrgb {
-            let packed = image.width as usize * 4;
-            let stride = raster_row_bytes(image.width, target.texture.format()) as usize;
-            let height = (rows.end - rows.start) as usize;
-            let first = rows.start as usize * packed;
-            let source = &pixels.bytes()[first..first + height * packed];
-            let mut mapping = buffer
-                .slice(..(height * stride) as u64)
-                .get_mapped_range_mut()
-                .map_err(|e| GpuError::Device(e.to_string()))?;
-            let mut output = mapping.slice(..);
-            if packed == stride {
-                output.copy_from_slice(source);
-            } else {
-                for (y, row) in source.chunks_exact(packed).enumerate() {
-                    output
-                        .slice(y * stride..y * stride + packed)
-                        .copy_from_slice(row);
+    upload_rows_with(
+        gpu,
+        encoder,
+        target,
+        rows.clone(),
+        staging,
+        |(buffer, offset)| {
+            if target.texture.format() == wgpu::TextureFormat::Rgba8UnormSrgb {
+                let packed = image.width as usize * 4;
+                let stride = raster_row_bytes(image.width, target.texture.format()) as usize;
+                let height = (rows.end - rows.start) as usize;
+                let first = rows.start as usize * packed;
+                let source = &pixels.bytes()[first..first + height * packed];
+                let mut mapping = buffer
+                    .slice(offset..offset + (height * stride) as u64)
+                    .get_mapped_range_mut()
+                    .map_err(|e| GpuError::Device(e.to_string()))?;
+                let mut output = mapping.slice(..);
+                if packed == stride {
+                    output.copy_from_slice(source);
+                } else {
+                    for (y, row) in source.chunks_exact(packed).enumerate() {
+                        output
+                            .slice(y * stride..y * stride + packed)
+                            .copy_from_slice(row);
+                    }
                 }
+                Ok(())
+            } else {
+                let conversion = {
+                    let _timing =
+                        reel_core::profile::Scope::new(reel_core::profile::Phase::ImageConvert);
+                    Rgba8LinearF16::new(image.encoding, image.alpha_type)
+                };
+                let (pixels, _) = pixels.bytes().as_chunks::<4>();
+                let support = lease
+                    .image_coverage()
+                    .filter(|coverage| !coverage.is_full());
+                let bands = support.map(|coverage| {
+                    coverage
+                        .rectangles()
+                        .collect::<smallvec::SmallVec<[[u32; 4]; IMAGE_COVERAGE_BANDS]>>()
+                });
+                convert_rows(
+                    gpu,
+                    (buffer, offset),
+                    image.width,
+                    rows,
+                    32 * 1024,
+                    bands.as_deref(),
+                    &|first, output| {
+                        convert_rgba8_chunk(
+                            &pixels[first..first + output.len()],
+                            output,
+                            &conversion,
+                        );
+                    },
+                )
             }
-            Ok(())
-        } else {
-            let conversion = {
-                let _timing =
-                    reel_core::profile::Scope::new(reel_core::profile::Phase::ImageConvert);
-                Rgba8LinearF16::new(image.encoding, image.alpha_type)
-            };
-            let (pixels, _) = pixels.bytes().as_chunks::<4>();
-            let support = lease
-                .image_coverage()
-                .filter(|coverage| !coverage.is_full());
-            let bands = support.map(|coverage| {
-                coverage
-                    .rectangles()
-                    .collect::<smallvec::SmallVec<[[u32; 4]; IMAGE_COVERAGE_BANDS]>>()
-            });
-            convert_rows(
-                gpu,
-                buffer,
-                image.width,
-                rows,
-                32 * 1024,
-                bands.as_deref(),
-                &|first, output| {
-                    convert_rgba8_chunk(&pixels[first..first + output.len()], output, &conversion);
-                },
-            )
-        }
-    })
+        },
+    )
 }
 #[cfg(test)]
 pub use crate::common::resources::upload_cost;
@@ -551,8 +562,8 @@ fn upload_rows_with(
     encoder: &mut wgpu::CommandEncoder,
     image: &Image,
     rows: std::ops::Range<u32>,
-    reusable: Option<&super::upload::Buffer>,
-    fill: impl FnOnce(&wgpu::Buffer) -> Result<(), GpuError>,
+    reusable: Option<super::upload::Span<'_>>,
+    fill: impl FnOnce((&wgpu::Buffer, u64)) -> Result<(), GpuError>,
 ) -> Result<(), GpuError> {
     gpu.check()?;
     let size = image.size;
@@ -565,8 +576,8 @@ fn upload_rows_with(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let owned;
-    let staging = if let Some(buffer) = reusable {
-        &buffer.buffer
+    let staging = if let Some(span) = reusable {
+        span
     } else {
         owned = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bounded image upload"),
@@ -574,21 +585,26 @@ fn upload_rows_with(
             usage: wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
         });
-        &owned
+        super::upload::Span {
+            buffer: &owned,
+            offset: 0,
+        }
     };
     gpu.check()?;
     let _transfer = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageTransfer);
-    fill(staging)?;
-    staging.unmap();
+    fill((staging.buffer, staging.offset))?;
+    if reusable.is_none() {
+        staging.buffer.unmap();
+    }
     #[cfg(test)]
     gpu.upload_creations
         .copies
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     encoder.copy_buffer_to_texture(
         wgpu::TexelCopyBufferInfo {
-            buffer: staging,
+            buffer: staging.buffer,
             layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
+                offset: staging.offset,
                 bytes_per_row: Some(row),
                 rows_per_image: None,
             },
@@ -609,15 +625,12 @@ fn upload_rows_with(
             depth_or_array_layers: 1,
         },
     );
-    if let Some(reusable) = reusable {
-        reusable.remap(encoder);
-    }
     Ok(())
 }
 
 fn convert_rows(
     gpu: &Gpu,
-    staging: &wgpu::Buffer,
+    (staging, offset): (&wgpu::Buffer, u64),
     width: u32,
     rows: std::ops::Range<u32>,
     batch_pixels: u32,
@@ -635,7 +648,10 @@ fn convert_rows(
         // WGPU grants each worker its disjoint mapping. WriteOnly slices
         // stay on the thread which obtained the view.
         let mut mapped = staging
-            .slice(u64::from(first) * u64::from(row)..u64::from(end) * u64::from(row))
+            .slice(
+                offset + u64::from(first) * u64::from(row)
+                    ..offset + u64::from(end) * u64::from(row),
+            )
             .get_mapped_range_mut()
             .map_err(|error| {
                 gpu.check()

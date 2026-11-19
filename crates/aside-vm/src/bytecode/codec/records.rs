@@ -215,6 +215,17 @@ impl Wire for SourceFile {
             .map_err(|_| Error::new(ErrorKind::Limit, "source length"))?
             .put(w)?;
         w.scratch(SOURCE_COMPRESSION_SCRATCH)?;
+        if w.bytes.is_some() && w.digest.is_none() {
+            // The output buffer can fill the length after its single pass.
+            // A digest or measurement still consumes the canonical prefix.
+            let prefix = w.len;
+            0u32.put(w)?;
+            let len = compressed_source(self.text.as_bytes(), |part| w.write(part))?;
+            let len = u32::try_from(len)
+                .map_err(|_| Error::new(ErrorKind::Limit, "packed source length"))?;
+            w.bytes.as_mut().unwrap()[prefix..prefix + 4].copy_from_slice(&len.to_le_bytes());
+            return Ok(());
+        }
         let len = compressed_source(self.text.as_bytes(), |_| Ok(()))?;
         u32::try_from(len)
             .map_err(|_| Error::new(ErrorKind::Limit, "packed source length"))?

@@ -303,6 +303,24 @@ pub struct ProjectSourceCompilation {
     pub effects: Arc<EffectProducts>,
 }
 
+struct SourceProducts {
+    catalogs: CatalogProducts,
+    expansions: Vec<Vec<lowering::CallExpansion>>,
+    effects: Vec<CompiledEffect>,
+}
+
+fn collect_source_products(modules: &[AnalyzedModule]) -> Result<SourceProducts, SourceError> {
+    let selected = translations::select_branches(modules).map_err(SourceError::Translation)?;
+    let (catalogs, expansions) =
+        translations::extract_selected(modules, &selected).map_err(SourceError::Translation)?;
+    let effects = effects::collect_registered(modules, &selected).map_err(SourceError::Effect)?;
+    Ok(SourceProducts {
+        catalogs,
+        expansions,
+        effects,
+    })
+}
+
 /// The author CLI and runtime share this resolver and trusted native registry.
 /// `content_version` is supplied by the asset/module resolver, not a save ID.
 fn build_api() -> Api {
@@ -662,10 +680,11 @@ pub fn compile_module(
         .map_err(SourceError::Source)?
         .into_module()
         .map_err(SourceError::Analysis)?;
-    let (catalogs, expansions) =
-        extract_translations(std::slice::from_ref(&module)).map_err(SourceError::Translation)?;
-    let effects =
-        effects::collect_registered(std::slice::from_ref(&module)).map_err(SourceError::Effect)?;
+    let SourceProducts {
+        catalogs,
+        expansions,
+        effects,
+    } = collect_source_products(std::slice::from_ref(&module))?;
     let compiled = aside_host::lower(
         &module,
         contracts(),
@@ -794,9 +813,11 @@ pub fn compile_project_with_progress(
         .into_modules()
         .map_err(SourceError::ProjectAnalysis)?;
 
-    let (catalogs, expansions) =
-        extract_translations(&modules).map_err(SourceError::Translation)?;
-    let effects = effects::collect_registered(&modules).map_err(SourceError::Effect)?;
+    let SourceProducts {
+        catalogs,
+        expansions,
+        effects,
+    } = collect_source_products(&modules)?;
     let module_paths = modules
         .iter()
         .map(|module| module.canonical_path().to_owned())

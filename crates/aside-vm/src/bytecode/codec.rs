@@ -1029,6 +1029,7 @@ pub fn encode(
         package,
         limits,
         stats.owned_capacity_bytes - stats.derived_capacity_bytes,
+        None,
     )
 }
 /// Serialize the immutable verifier result without rebuilding semantic metadata.
@@ -1041,21 +1042,28 @@ pub(super) fn encode_verified(program: &VerifiedProgram, limits: Limits) -> Resu
     {
         return Err(Error::new(ErrorKind::Limit, "register limit"));
     }
-    encode_fields(
-        program.package(),
-        limits,
-        program.stats().owned_capacity_bytes,
-    )
+    let stats = program.stats();
+    let package = program.package();
+    // The shared store is already in canonical wire order. Its final
+    // measurement includes the compressed code and all encoded records.
+    let measured = package
+        .functions
+        .first()
+        .and_then(|f| f.code.runtime_store())
+        .map(|_| (stats.encoded_bytes, stats.records));
+    encode_fields(package, limits, stats.owned_capacity_bytes, measured)
 }
 fn encode_fields(
     package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
     owned: usize,
+    measured: Option<(usize, u64)>,
 ) -> Result<Vec<u8>, Error> {
     encode_fields_impl(
         package,
         limits,
         owned,
+        measured,
         #[cfg(test)]
         false,
     )
@@ -1064,6 +1072,7 @@ fn encode_fields_impl(
     package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
     owned: usize,
+    measured: Option<(usize, u64)>,
     #[cfg(test)] unverified_fixture: bool,
 ) -> Result<Vec<u8>, Error> {
     let borrowed = package
@@ -1081,29 +1090,36 @@ fn encode_fields_impl(
     let owned = owned
         .checked_add(if borrowed { 0 } else { store.capacity_bytes() })
         .ok_or_else(|| Error::new(ErrorKind::Limit, "encoding code capacity"))?;
-    let mut measure = Writer {
-        digest: None,
-        bytes: None,
-        len: HEADER_BYTES,
-        max: limits.max_bytes,
-        capacity: 0,
-        retained: owned,
-        #[cfg(test)]
-        unverified_fixture,
-        records: 0,
-        code_store: None,
-        function_word: 0,
-        limits,
+    let wire_bytes = if let Some((bytes, records)) = measured {
+        if bytes > limits.max_bytes || bytes as u64 > limits.max_work {
+            return Err(Error::new(ErrorKind::Limit, "encoded byte/work limit"));
+        }
+        if records > u64::from(limits.max_records) {
+            return Err(Error::new(ErrorKind::Limit, "encoded record limit"));
+        }
+        bytes
+    } else {
+        let mut measure = Writer {
+            digest: None,
+            bytes: None,
+            len: HEADER_BYTES,
+            max: limits.max_bytes,
+            capacity: 0,
+            retained: owned,
+            #[cfg(test)]
+            unverified_fixture,
+            records: 0,
+            code_store: Some(store.clone()),
+            function_word: 0,
+            limits,
+        };
+        put_package(package, &mut measure)?;
+        measure.len
     };
-    measure.code_store = Some(store.clone());
-    put_package(package, &mut measure)?;
     let len =
-        u32::try_from(measure.len).map_err(|_| Error::new(ErrorKind::Limit, "package size"))?;
-    if measure.len > limits.max_allocation_bytes {
-        return Err(Error::new(ErrorKind::Limit, "output allocation limit"));
-    }
+        u32::try_from(wire_bytes).map_err(|_| Error::new(ErrorKind::Limit, "package size"))?;
     if owned
-        .checked_add(measure.len)
+        .checked_add(wire_bytes)
         .is_none_or(|n| n > limits.max_allocation_bytes)
     {
         return Err(Error::new(
@@ -1113,7 +1129,7 @@ fn encode_fields_impl(
     }
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(measure.len)
+        .try_reserve_exact(wire_bytes)
         .map_err(|_| Error::new(ErrorKind::Allocation, "encoded output"))?;
     if owned
         .checked_add(bytes.capacity())
@@ -1254,7 +1270,8 @@ pub(crate) fn measure(
 pub(super) fn encode_unverified(
     package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
 ) -> Vec<u8> {
-    encode_fields_impl(package, Limits::default(), 0, true).expect("bounded malformed test fixture")
+    encode_fields_impl(package, Limits::default(), 0, None, true)
+        .expect("bounded malformed test fixture")
 }
 
 // Hash canonical fields without materializing another copy of the code package.

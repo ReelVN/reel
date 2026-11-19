@@ -12,16 +12,48 @@ const FAILED: u8 = 2;
 pub(super) struct Buffer {
     pub buffer: wgpu::Buffer,
     pub capacity: u64,
+    used: u64,
     state: Arc<AtomicU8>,
     _gpu: BudgetTicket,
     _metadata: BudgetTicket,
 }
+#[derive(Clone, Copy)]
+pub(super) struct Span<'a> {
+    pub buffer: &'a wgpu::Buffer,
+    pub offset: u64,
+}
+
 impl Buffer {
     pub fn settled(&self) -> bool {
         self.state.load(Ordering::Acquire) != PENDING
     }
     pub fn ready(&self) -> bool {
         self.state.load(Ordering::Acquire) == MAPPED
+    }
+    pub fn remaining(&self) -> u64 {
+        if self.ready() {
+            self.capacity - self.used
+        } else {
+            0
+        }
+    }
+    /// Raster spans are whole padded rows, so every offset stays copy-aligned.
+    pub fn allocate_span(&mut self, bytes: u64) -> Option<Span<'_>> {
+        if bytes > self.remaining() {
+            return None;
+        }
+        let offset = self.used;
+        self.used += bytes;
+        Some(Span {
+            buffer: &self.buffer,
+            offset,
+        })
+    }
+    pub fn finish_spans(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.used != 0 {
+            self.buffer.unmap();
+            self.remap(encoder);
+        }
     }
     pub fn remap(&self, encoder: &mut wgpu::CommandEncoder) {
         self.state.store(PENDING, Ordering::Release);
@@ -102,8 +134,9 @@ impl Cache {
     pub fn clear(&mut self) {
         self.slots.iter_mut().for_each(|slot| *slot = None);
     }
-    pub fn put(&mut self, buffer: Box<Buffer>) {
+    pub fn put(&mut self, mut buffer: Box<Buffer>) {
         if buffer.ready() {
+            buffer.used = 0;
             let index = if let Some(index) = self.slots.iter().position(Option::is_none) {
                 index
             } else {
@@ -173,6 +206,7 @@ impl Cache {
         Ok(Some(Box::new(Buffer {
             buffer,
             capacity: bytes,
+            used: 0,
             state: Arc::new(AtomicU8::new(MAPPED)),
             _gpu: ticket,
             _metadata: metadata,

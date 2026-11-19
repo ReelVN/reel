@@ -43,6 +43,7 @@ struct Proof<'a> {
 
 pub(super) fn collect(
     modules: &[h::AnalyzedModule],
+    selected: &[aside_compiler::lowering::BranchSelection],
 ) -> Result<Vec<CompiledEffect>, EffectDiagnostic> {
     let initializers: Vec<_> = modules
         .iter()
@@ -78,18 +79,12 @@ pub(super) fn collect(
         work: 0,
     };
     for (module_index, module) in modules.iter().enumerate() {
-        let selected = aside_compiler::lowering::select_branches(module, Default::default())
-            .map_err(|error| EffectDiagnostic {
-                module: module.source_path().into(),
-                span: error.span,
-                message: error.detail,
-            })?;
         let mut function_nodes = vec![None; module.hir().nodes.len()];
         for (index, function) in module.functions().iter().enumerate() {
             function_nodes[function.node.0 as usize] = Some(h::FunctionId(index as u32));
         }
         for (index, node) in module.hir().nodes.iter().enumerate() {
-            if !selected.contains(h::NodeId(index as u32))
+            if !selected[module_index].contains(h::NodeId(index as u32))
                 || !matches!(node.form, Form::Call { .. })
             {
                 continue;

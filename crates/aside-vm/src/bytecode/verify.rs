@@ -748,6 +748,7 @@ fn compact_package(
     let measured = super::codec::measure(&package, limits)?;
     stats.encoded_bytes = measured.0;
     stats.owned_capacity_bytes = measured.1 + stats.derived_capacity_bytes;
+    stats.records = measured.2;
     stats.validation_work = budget.work;
     stats.validation_scratch_peak = stats
         .validation_scratch_peak

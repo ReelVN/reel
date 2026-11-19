@@ -1,7 +1,7 @@
 //! Discover effect entries through resolved calls while preserving ordinary lowering.
 use super::*;
 use aside_compiler::{lowering, semantic::SymbolReference};
-use std::collections::HashSet;
+use std::{borrow::Borrow, collections::HashSet};
 
 /// Collect static entries referenced by this exact native declaration. The source
 /// call, Function value and parameter expressions retain their normal VM lowering.
@@ -10,17 +10,29 @@ pub fn collect_effects(
     native: &SymbolReference,
     limits: EffectCompileLimits,
 ) -> Result<Vec<CompiledEffect>, EffectDiagnostic> {
+    let selected = modules.iter().map(|module| {
+        lowering::select_branches(module, lowering::Limits::default()).map_err(|error| {
+            EffectDiagnostic {
+                module: module.source_path().into(),
+                span: error.span,
+                message: error.detail,
+            }
+        })
+    });
+    collect_selected(modules, selected, native, limits)
+}
+
+fn collect_selected<S: Borrow<lowering::BranchSelection>>(
+    modules: &[h::AnalyzedModule],
+    selected: impl Iterator<Item = Result<S, EffectDiagnostic>>,
+    native: &SymbolReference,
+    limits: EffectCompileLimits,
+) -> Result<Vec<CompiledEffect>, EffectDiagnostic> {
     let mut entries = HashSet::new();
     let mut output = Vec::new();
-    for (module_index, module) in modules.iter().enumerate() {
-        let selected =
-            lowering::select_branches(module, lowering::Limits::default()).map_err(|error| {
-                EffectDiagnostic {
-                    module: module.source_path().into(),
-                    span: error.span,
-                    message: error.detail,
-                }
-            })?;
+    for ((module_index, module), selected) in modules.iter().enumerate().zip(selected) {
+        let selected = selected?;
+        let selected = selected.borrow();
         for (index, node) in module.hir().nodes.iter().enumerate() {
             if !selected.contains(h::NodeId(index as u32)) {
                 continue;
@@ -90,6 +102,7 @@ pub fn collect_effects(
 
 pub(in crate::aside::source) fn collect_registered(
     modules: &[h::AnalyzedModule],
+    selected: &[lowering::BranchSelection],
 ) -> Result<Vec<CompiledEffect>, EffectDiagnostic> {
     let Some(contract) = super::super::contracts()
         .iter()
@@ -97,12 +110,13 @@ pub(in crate::aside::source) fn collect_registered(
     else {
         return Ok(Vec::new());
     };
-    let mut entries = collect_effects(
+    let mut entries = collect_selected(
         modules,
+        selected.iter().map(Ok),
         &contract.reference(),
         EffectCompileLimits::default(),
     )?;
-    entries.extend(super::masks::collect(modules)?);
+    entries.extend(super::masks::collect(modules, selected)?);
     Ok(entries)
 }
 
