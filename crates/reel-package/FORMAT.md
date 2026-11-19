@@ -17,12 +17,14 @@ Each 56-byte index record contains `kind:u32`, `flags:u32`, `offset:u64`,
 | 3 | UTF-8 JSON `Distribution` | Exported projects |
 | 4 | Effect definitions and linked function bindings | Projects using compiled effects |
 | 5 | UTF-8 JSON logical continuation and State table, version 1 | Projects declaring State, Root or stable flows |
+| 6 | Visual preparation plan | Projects with planned visual resources |
 
-Known sections set flags=1 (required when present). Kinds are unique; nonempty
-ranges are disjoint and outside the header/index. Unknown required sections
-fail. Full decoding hash-checks all payloads, including optional unknown sections.
+Kinds 1 through 5 set flags=1. The visual preparation plan sets flags=0 and
+is optional. Kinds are unique and nonempty ranges are disjoint and outside the
+header/index. Unknown required sections fail. Full decoding hash-checks all
+payloads, including optional unknown sections.
 Writers emit header, bytecode, metadata, optional distribution, optional effects,
-optional logical continuations and index.
+optional logical continuations, optional visual preparation plan and index.
 Container writers receive immutable serialized bytecode paired with its verified
 program and validate metadata against that shared program.
 
@@ -83,6 +85,19 @@ work limits. An absent section denotes an empty current-version table.
 Continuation metadata survives release debug stripping, external text extraction
 and distribution re-encoding. It describes current code; saved logical records
 store stable keys and data independently of this numeric layout.
+
+## Visual preparation plan
+
+The package treats section 6 as opaque bytes and limits the payload to 1 MiB
+and the configured metadata byte limit. Writers omit an empty plan.
+
+The payload starts with `record_count:u32`, followed by that many 16-byte
+records and a tail array of `u32` string constant identifiers. Records are
+sorted by `(function_id, word_pc)`. Each record stores `function_id:u32,
+word_pc:u32, first_id_index:u32, id_count:u32`, where the index is relative to
+the tail array. A zero count describes an ordinary return and allows the
+query to continue at the caller. The engine verifies references against the
+verified program after binding its external text pool.
 
 ## Resource and text archives v1
 

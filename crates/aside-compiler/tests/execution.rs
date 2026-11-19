@@ -6,6 +6,8 @@ use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc
 mod binding_reads;
 #[path = "execution/generators.rs"]
 mod generators;
+#[path = "execution/text_match.rs"]
+mod text_match;
 
 fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
     let mut budget = if tiny {

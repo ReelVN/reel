@@ -281,6 +281,20 @@ impl Vm {
                     self.execute_call(s, op, a, b, Pc(next_pc as u32), Some(callee)),
                 InstructionPlan::NamedRead(read) =>
                     self.execute_named_read(s, read, Reg(a), Reg(b), SymbolId(c), m),
+                InstructionPlan::Constant(load) =>
+                    self.execute_constant(s, Reg(a), ConstId(b), load, next),
+                InstructionPlan::StringLiteral(subject) => subject.and_then(|subject| {
+                    let TypeDef::StringLiteral(text) = &self.program.package().types[c as usize]
+                    else {
+                        unreachable!("planned literal type check")
+                    };
+                    let accepted = subject.is_some_and(|value| {
+                        types::string_equal_bytes(&self.heap, value, text).unwrap_or(false)
+                    });
+                    self.write(s.regs, Reg(a), Value::bool(accepted))?;
+                    s.pc = next;
+                    Ok(false)
+                }),
                 InstructionPlan::None => self.execute(s, op, a, b, c, Pc(next_pc as u32)),
             }
         );

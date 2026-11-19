@@ -620,19 +620,11 @@ impl StageBinding {
             )?;
         }
         if shape == snapshot::Shape::Scroll {
-            for (i, name) in scroll::METRICS.into_iter().enumerate() {
-                let key = self.property_key(heap, name)?;
-                heap.table_store(
-                    fields,
-                    offset + interaction::Field::NAMES.len() as u32 + i as u32,
-                    key,
-                    Value::float(0.),
-                )?;
-            }
-            heap.observe_host_properties(
+            self.initialize_scroll_metrics(
+                heap,
                 value,
+                fields,
                 offset + interaction::Field::NAMES.len() as u32,
-                scroll::METRICS.len() as u32,
             )?;
         }
         for field in schema::writable(shape) {

@@ -1,6 +1,6 @@
 use super::{
-    Budget, CodePackage, EffectProducts, Error, ErrorKind, Limits, Metadata,
-    distribution::Distribution, require,
+    Budget, CodePackage, EffectProducts, Error, ErrorKind, Limits, MAX_VISUAL_PLAN_BYTES, Metadata,
+    Products, distribution::Distribution, require,
 };
 use aside_vm::bytecode as bc;
 use aside_vm::resume::{ResumeLimits, ResumeTable, VerifiedResumeTable};
@@ -15,20 +15,25 @@ const METADATA: u32 = 2;
 const DISTRIBUTION: u32 = 3;
 const EFFECTS: u32 = 4;
 const RESUME: u32 = 5;
+const VISUAL_PLAN: u32 = 6;
 const REQUIRED: u32 = 1;
 
-/// Canonical writer: header, B01, metadata, distribution, effects, resume, index.
+/// Canonical writer: header, B01, metadata, distribution, effects, resume, visual plan, index.
 /// Reuses the serialization's verified program for metadata validation.
 /// Host registrations validate nominal method targets in continuation metadata.
 pub fn encode(
     encoded: &bc::EncodedProgram,
     metadata: &Metadata,
     distribution: Option<&Distribution>,
-    effects: &EffectProducts,
-    resume: &ResumeTable,
+    products: Products<'_>,
     host_types: &[bc::HostTypeSupport],
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
+    let Products {
+        effects,
+        resume,
+        visual_plan,
+    } = products;
     let bytecode = encoded.as_bytes();
     let mut budget = Budget::new(limits);
     require(
@@ -36,6 +41,8 @@ pub fn encode(
         ErrorKind::Limit,
         "B01 byte budget exceeded",
     )?;
+    require_visual_plan_size(visual_plan.len(), limits)?;
+    budget.charge(visual_plan.len())?;
     budget.charge(bytecode.len())?;
     let bytecode_hash = blake3::hash(bytecode);
     metadata.validate(encoded.program(), bytecode_hash, limits, &mut budget)?;
@@ -70,6 +77,7 @@ pub fn encode(
         (DISTRIBUTION, distribution_bytes),
         (EFFECTS, effect_bytes.as_slice()),
         (RESUME, resume_bytes.as_slice()),
+        (VISUAL_PLAN, visual_plan),
     ]
     .into_iter()
     .filter(|(_, bytes)| !bytes.is_empty());
@@ -134,8 +142,9 @@ fn json_bytes(value: &impl serde::Serialize, limits: Limits) -> Result<Vec<u8>, 
 }
 
 fn index_entry(out: &mut Vec<u8>, kind: u32, offset: usize, length: usize, hash: blake3::Hash) {
+    let flags = if kind == VISUAL_PLAN { 0 } else { REQUIRED };
     out.extend_from_slice(&kind.to_le_bytes());
-    out.extend_from_slice(&REQUIRED.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
     out.extend_from_slice(&(offset as u64).to_le_bytes());
     out.extend_from_slice(&(length as u64).to_le_bytes());
     out.extend_from_slice(hash.as_bytes());
@@ -180,11 +189,20 @@ pub fn decode(
         .transpose()?
         .unwrap_or_default();
     let resume = verify_resume(&program, resume, host_types, limits)?;
+    let mut visual_plan = Vec::new();
+    if let Some(bytes) = payload(input, &sections, VISUAL_PLAN) {
+        budget.charge(bytes.len())?;
+        visual_plan
+            .try_reserve_exact(bytes.len())
+            .map_err(|e| Error::new(ErrorKind::Limit, e.to_string()))?;
+        visual_plan.extend_from_slice(bytes);
+    }
     Ok(CodePackage {
         metadata,
         distribution,
         effects,
         resume,
+        visual_plan: visual_plan.into_boxed_slice(),
     })
 }
 
@@ -333,17 +351,13 @@ fn parse_index(
         let flags = u32_at(entry, 4);
         require(kinds.insert(kind), Encoding, "duplicate section kind")?;
         require(flags & !REQUIRED == 0, Version, "unknown section flags")?;
-        let known = matches!(kind, B01 | METADATA | DISTRIBUTION | EFFECTS | RESUME);
-        require(
-            known || flags & REQUIRED == 0,
-            Version,
-            "unknown required section",
-        )?;
-        require(
-            !known || flags == REQUIRED,
-            Encoding,
-            "core section must be required",
-        )?;
+        if matches!(kind, B01 | METADATA | DISTRIBUTION | EFFECTS | RESUME) {
+            require(flags == REQUIRED, Encoding, "core section must be required")?;
+        } else if kind == VISUAL_PLAN {
+            require(flags == 0, Encoding, "visual plan section must be optional")?;
+        } else {
+            require(flags == 0, Version, "unknown required section")?;
+        }
         let section = range(u64_at(entry, 8), u64_at(entry, 16), total)?;
         require(
             !section.is_empty() && section.start >= HEADER_LEN && !overlaps(&section, &index),
@@ -362,6 +376,8 @@ fn parse_index(
                 Limit,
                 "metadata byte budget exceeded",
             )?;
+        } else if kind == VISUAL_PLAN {
+            require_visual_plan_size(section.len(), limits)?;
         }
         sections.push(Section {
             kind,
@@ -382,6 +398,14 @@ fn parse_index(
         end = section.range.end;
     }
     Ok(sections)
+}
+
+fn require_visual_plan_size(length: usize, limits: Limits) -> Result<(), Error> {
+    require(
+        length <= limits.max_metadata_bytes.min(MAX_VISUAL_PLAN_BYTES),
+        ErrorKind::Limit,
+        "visual plan byte budget exceeded",
+    )
 }
 
 fn payload<'a>(input: &'a [u8], sections: &[Section], kind: u32) -> Option<&'a [u8]> {

@@ -76,6 +76,7 @@ impl StoryRuntime {
             entry: live.entry_function(),
             catalogs: Default::default(),
             effects: live.adapter().effect_products(),
+            visual_plan: live.adapter().visual_plan(),
         };
         let mut candidate = AsideSessionUi::from_compiled(
             session,

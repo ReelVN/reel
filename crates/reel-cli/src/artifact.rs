@@ -100,6 +100,7 @@ pub struct PreparedCode<'a> {
     metadata: rp::Metadata,
     package_effects: rp::EffectProducts,
     resume: &'a aside_vm::resume::ResumeTable,
+    visual_plan: &'a [u8],
     pub profile: BuildProfile,
     pub text_pool: Option<bc::TextPool>,
     pub catalogs: std::sync::Arc<reel_engine::aside::source::CatalogProducts>,
@@ -265,6 +266,11 @@ fn prepare_code<'a>(
         )
     };
     let game_entry = select_entry(checked, entry)?;
+    // Both profiles preserve linked function IDs, PCs and string constant IDs.
+    let visual_plan = game_entry
+        .as_ref()
+        .and_then(|_| checked.visual_plan())
+        .map_or(&[][..], |plan| plan.as_bytes());
     let mut release = (profile == BuildProfile::Release).then(|| without_debug(p));
     let mut text_pool = None;
     if let Some(release) = release.as_mut()
@@ -309,6 +315,7 @@ fn prepare_code<'a>(
         metadata,
         package_effects,
         resume: &compiled.resume,
+        visual_plan,
         profile,
         text_pool,
         catalogs: checked.catalogs.clone(),
@@ -326,8 +333,11 @@ impl PreparedCode<'_> {
             &self.bytecode,
             &self.metadata,
             manifest,
-            &self.package_effects,
-            self.resume,
+            rp::Products {
+                effects: &self.package_effects,
+                resume: self.resume,
+                visual_plan: self.visual_plan,
+            },
             reel_engine::aside::source::types(),
             rp::Limits::default(),
         )

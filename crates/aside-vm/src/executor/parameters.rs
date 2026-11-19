@@ -96,16 +96,19 @@ impl Vm {
                     .get(parameter as usize)
                     .filter(|_| self.slots.read_vm(at(n.bound, parameter)).is_err())
                     .and_then(|p| match p.default {
-                        Some(ParameterDefault::Constant(id)) => Some((id, p.ty)),
+                        Some(ParameterDefault::Constant(id)) => {
+                            Some((id, p.ty, self.plan_constant(id)))
+                        }
                         _ => None,
                     });
-                let literal_work = literal.map_or(0, |(_, ty)| 2 + self.type_checks.extra(ty));
+                let literal_work = literal.map_or(0, |(_, ty, _)| 2 + self.type_checks.extra(ty));
                 let layout_work = if n.bindings.is_some() {
                     self.native_layout_work()
                 } else {
                     0
                 };
-                let allocation = literal.map_or(0, |(id, _)| self.constant_allocation_bytes(id));
+                let allocation =
+                    literal.map_or(0, |(_, _, load)| load.allocation_bytes(&self.heap));
                 if !m.take(0, layout_work + 8 + literal_work, allocation) {
                     return Ok(false);
                 }
@@ -123,8 +126,8 @@ impl Vm {
                     .get(parameter as usize)
                     .and_then(|p| p.default)
                 {
-                    if let Some((constant, ty)) = literal {
-                        match self.start_constant(constant, n.roots, [0, 1]) {
+                    if let Some((constant, ty, load)) = literal {
+                        match self.start_constant(load, n.roots, [0, 1]) {
                             Ok(Some(value)) => match self.check_type(ty, value) {
                                 Ok(()) => {
                                     self.put(n.bound, parameter, value)?;

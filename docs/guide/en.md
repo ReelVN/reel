@@ -642,6 +642,8 @@ pub fn nvl_view(model) {
 
 Use `scroll(snap_y: 48)` to align a fixed-height list to vertical row stops. The mouse wheel, touch release, and linked scrollbar snap to those stops, including the end of the content. Scripted `scroll_y` assignments retain precise offsets.
 
+Read `viewport.max_scroll_y` to get the current bottom scroll position. It is zero when all content fits, so it can also control scrollbar visibility. Use `max_scroll_x` for horizontal scrolling.
+
 Place `scrollbar(viewport)` beside the same scroll viewport. Its stable `track` and `thumb` content slots accept backgrounds or images with `stretch: "both"`; omitting `thumb_size` makes the thumb follow the visible-content proportion. External buttons can call `scroll_by` or `scroll_to`. Track clicks, dragging, keyboard and controller input share the target scroll position. See the [scrollbar source API](../../crates/reel-engine/src/aside/stage/scrollbar.rs) for parameters and lifetime behavior.
 
 ```aside
@@ -649,7 +651,8 @@ fn main() {
     let viewport = scroll(width: 280, height: 120) {
         column() { for i in 0 .. 20 { text(f"Line {i}"); } }
     };
-    let bar = scrollbar(viewport, width: 16, height: 120);
+    let bar = scrollbar(viewport, width: 16, height: 120,
+        visible: derive(|| viewport.max_scroll_y > 0));
     bar.track.background = "#28303a";
     bar.thumb.background = "#9daabe";
     stage.replace(row(gap: 8) { viewport; bar; });

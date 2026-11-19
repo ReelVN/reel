@@ -1,4 +1,4 @@
-//! Pure callable metadata lives only inside one instruction admission/execute.
+//! Instruction plans live only inside one admission/execute step.
 use super::*;
 
 pub(super) enum InstructionPlan {
@@ -6,6 +6,8 @@ pub(super) enum InstructionPlan {
     ClassRead(classes::ClassRead, Option<crate::PropertyId>),
     Callee(PreparedCallee),
     NamedRead(named_reads::NamedRead),
+    Constant(constants::ConstantLoad),
+    StringLiteral(Result<Option<Value>, FaultKind>),
 }
 
 /// Values remain reachable through the caller's original target register until

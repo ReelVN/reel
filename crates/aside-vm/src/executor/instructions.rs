@@ -420,18 +420,6 @@ impl Vm {
                 let value = self.read(s.regs, r(c))?;
                 self.sequence_set(object, index, value)?;
             }
-            Opcode::LoadConst => {
-                if let Some(value) = self.start_constant(ConstId(b), s.env, [1, 2])? {
-                    self.write(s.regs, r(a), value)?;
-                } else {
-                    s.phase = ScriptPhase::Constant(constants::ConstantWork {
-                        dest: r(a),
-                        id: ConstId(b),
-                        index: 0,
-                    });
-                    return Ok(false);
-                }
-            }
             Opcode::Move => {
                 let v = self.read(s.regs, r(b))?;
                 self.write(s.regs, r(a), v)?;

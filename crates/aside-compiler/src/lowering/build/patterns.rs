@@ -1,6 +1,10 @@
 //! Value patterns use the same resumable comparisons and branches as expressions.
 use super::*;
 
+const TEXT_MATCH_MIN_ARMS: usize = 8;
+// Includes the two quote bytes. Decoding escapes does not grow the literal.
+const TEXT_MATCH_MAX_SOURCE_BYTES: u32 = 66;
+
 impl FunctionBuilder<'_, '_> {
     pub(super) fn bind_value(
         &mut self,
@@ -162,6 +166,11 @@ impl FunctionBuilder<'_, '_> {
         source: h::NodeId,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let subject_type = self.l.m.facts()[source.0 as usize].ty;
+        let typed_text = matches!(
+            self.l.m.types()[subject_type.0 as usize],
+            h::Type::String | h::Type::StringLiteral(_)
+        );
         let Some(source) = self.value(source, depth)? else {
             return Ok(None);
         };
@@ -169,6 +178,14 @@ impl FunctionBuilder<'_, '_> {
         let join = self.block()?;
         let mut falls = false;
         self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
+        let use_text_checks = typed_text
+            && self
+                .l
+                .m
+                .hir()
+                .children(node)
+                .nth(TEXT_MATCH_MIN_ARMS)
+                .is_some();
         for arm in self.l.m.hir().children(node).skip(1) {
             let Form::MatchArm {
                 pattern,
@@ -180,7 +197,7 @@ impl FunctionBuilder<'_, '_> {
             };
             let next = self.block()?;
             self.enter_scope(arm)?;
-            self.value_pattern(pattern, source, next, depth)?;
+            self.value_pattern(pattern, source, next, depth, use_text_checks)?;
             // Every supported value pattern binds the original value. OR alternatives
             // share these symbols; commit once, after the complete test succeeds.
             let scope = self.l.m.facts()[arm.0 as usize].scope.expect("match scope");
@@ -255,6 +272,7 @@ impl FunctionBuilder<'_, '_> {
         value: bc::Reg,
         failed: BlockId,
         depth: usize,
+        use_text_checks: bool,
     ) -> Result<(), Box<Error>> {
         self.l.b.span = self.span(node);
         self.l.b.work(1)?;
@@ -268,12 +286,22 @@ impl FunctionBuilder<'_, '_> {
         match self.l.m.hir().node(node).form {
             Form::Name { .. } | Form::Wildcard => Ok(()),
             Form::Single { child } if self.l.m.hir().node(node).kind == H::GroupPattern => {
-                self.value_pattern(child, value, failed, depth)
+                self.value_pattern(child, value, failed, depth, use_text_checks)
             }
             Form::LiteralPattern {
                 value: literal,
                 negative,
             } => {
+                // Short text patterns can test the exact existing string
+                // contract without materializing an object or comparison frame.
+                if use_text_checks
+                    && !negative
+                    && let Some(ty) = self.short_string_pattern(literal)?
+                {
+                    let condition = self.temp()?;
+                    self.op(bc::Opcode::Is, condition.0, value.0, ty.0, node)?;
+                    return self.pattern_branch(node, condition, failed);
+                }
                 let literal = if negative {
                     let Form::Literal { token } = self.l.m.hir().node(literal).form else {
                         unreachable!("negative numeric pattern");
@@ -296,15 +324,15 @@ impl FunctionBuilder<'_, '_> {
                 let condition = self.temp()?;
                 self.op(bc::Opcode::Is, condition.0, value.0, ty.0, node)?;
                 self.pattern_branch(node, condition, failed)?;
-                self.value_pattern(pattern, value, failed, depth)
+                self.value_pattern(pattern, value, failed, depth, use_text_checks)
             }
             Form::Or { left, right } => {
                 let alternative = self.block()?;
                 let accepted = self.block()?;
-                self.value_pattern(left, value, alternative, depth)?;
+                self.value_pattern(left, value, alternative, depth, use_text_checks)?;
                 self.terminate(Terminator::Jump(accepted), node)?;
                 self.start(alternative)?;
-                self.value_pattern(right, value, failed, depth)?;
+                self.value_pattern(right, value, failed, depth, use_text_checks)?;
                 self.terminate(Terminator::Jump(accepted), node)?;
                 self.start(accepted)
             }
@@ -313,5 +341,23 @@ impl FunctionBuilder<'_, '_> {
                 "structural pattern lowering is not connected",
             )),
         }
+    }
+
+    fn short_string_pattern(
+        &mut self,
+        literal: h::NodeId,
+    ) -> Result<Option<bc::TypeId>, Box<Error>> {
+        let source = self.l.m.hir().node(literal);
+        if source.kind != H::String || u32::from(source.span.len()) > TEXT_MATCH_MAX_SOURCE_BYTES {
+            return Ok(None);
+        }
+        let Some(bc::Const::Utf8(text)) = self.l.literal_constant(literal)? else {
+            return Ok(None);
+        };
+        let ty = bc::TypeId(self.l.package.types.len() as u32);
+        self.l
+            .b
+            .push(&mut self.l.package.types, bc::TypeDef::StringLiteral(text))?;
+        Ok(Some(ty))
     }
 }

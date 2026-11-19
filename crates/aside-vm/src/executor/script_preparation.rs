@@ -238,15 +238,16 @@ impl Vm {
             PreparationPhase::Defaults { parameter } => {
                 let sig = &self.program.package().signatures[signature.index()];
                 let bound = self.slots.read_vm(at(s.bound, parameter)).is_ok();
-                let allocation = sig
+                let default = sig
                     .parameters
                     .get(parameter as usize)
                     .filter(|_| !bound)
-                    .and_then(|p| p.default)
-                    .map_or(0, |default| match default {
-                        ParameterDefault::Constant(id) => self.constant_allocation_bytes(id),
-                        _ => 0,
-                    });
+                    .and_then(|p| p.default);
+                let literal = match default {
+                    Some(ParameterDefault::Constant(id)) => Some(self.plan_constant(id)),
+                    _ => None,
+                };
+                let allocation = literal.map_or(0, |load| load.allocation_bytes(&self.heap));
                 let work = 2 + if bound {
                     self.program.script_parameter_lookup_work()
                 } else {
@@ -260,7 +261,7 @@ impl Vm {
                 } else if bound {
                     let storage = self.program.script_parameter_storage(s.function, parameter);
                     s.phase = PreparationPhase::Parameter { parameter, storage };
-                } else if let Some(default) = sig.parameters[parameter as usize].default {
+                } else if let Some(default) = default {
                     match default {
                         ParameterDefault::Function(function) => {
                             s.phase = PreparationPhase::DefaultCall {
@@ -269,7 +270,11 @@ impl Vm {
                             }
                         }
                         ParameterDefault::Constant(id) => {
-                            match self.start_constant(id, s.env, [1, 2]) {
+                            match self.start_constant(
+                                literal.expect("constant default plan"),
+                                s.env,
+                                [1, 2],
+                            ) {
                                 Ok(Some(value)) => {
                                     self.put(s.bound, parameter, value)?;
                                 }

@@ -346,7 +346,8 @@ aside_host::native_documentation! {
         /// let viewport = scroll(width: 280, height: 120) {
         ///     column() { for i in 0 .. 20 { text(f"Line {i}"); } }
         /// };
-        /// let bar = scrollbar(viewport, width: 16, height: 120);
+        /// let bar = scrollbar(viewport, width: 16, height: 120,
+        ///     visible: derive(|| viewport.max_scroll_y > 0));
         /// bar.track.background = "#28303a";
         /// bar.thumb.background = "#9daabe";
         /// stage.replace(row(gap: 8) { viewport; bar; });

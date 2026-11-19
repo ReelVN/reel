@@ -219,6 +219,8 @@ pub struct CompiledStory {
     pub catalogs: Arc<CatalogProducts>,
     /// Validated effect definitions indexed by final linked FunctionId.
     pub effects: Arc<EffectProducts>,
+    /// Optional build-time image candidates for the admitted code.
+    pub visual_plan: Option<Arc<super::visual_plan::VisualPlan>>,
 }
 
 impl CompiledStory {
@@ -740,6 +742,7 @@ pub fn compile_story(
         entry,
         catalogs,
         effects,
+        visual_plan: None,
     };
     story.validate()?;
     Ok(story)

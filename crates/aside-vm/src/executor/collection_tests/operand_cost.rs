@@ -2,6 +2,38 @@
 use super::*;
 
 #[test]
+fn literal_type_check_charges_payload_only_when_string_length_matches() {
+    let expected = "a".repeat(64);
+    let run = |subject: &str, accepted| {
+        let mut p = package(
+            vec![Const::Utf8(subject.into())],
+            vec![op(Opcode::LoadConst, 0, 0, 0), op(Opcode::Return, 0, 0, 0)],
+            vec![],
+            1,
+        );
+        let literal = p.types.len() as u32;
+        p.types.push(TypeDef::StringLiteral(expected.clone()));
+        p.functions[0].code.insert(1, op(Opcode::Is, 0, 0, literal));
+        let mut vm = load(p);
+        let task = vm
+            .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+            .unwrap();
+        let out = vm.run_slice(task, SliceBudget::default(), || 0).unwrap();
+        let RunOutcome::Returned(delivery) = out else {
+            panic!("{out:?}")
+        };
+        assert_eq!(
+            vm.delivery_value(delivery).unwrap().as_bool(),
+            Some(accepted)
+        );
+        vm.last_usage.work
+    };
+    let mismatch_work = run("short", false);
+    assert_eq!(run(&expected, true) - mismatch_work, 64);
+    assert_eq!(run(&"b".repeat(64), false) - mismatch_work, 64);
+}
+
+#[test]
 #[ignore = "release differential paired-register execution measurement"]
 fn packed_arithmetic_operand_cost() {
     for paired in [false, true, true, false] {

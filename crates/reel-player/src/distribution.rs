@@ -26,9 +26,20 @@ pub fn decode_story(bytes: &[u8]) -> Result<CompiledStory, reel_package::Error> 
 /// the story admitted by [`crate::aside_session::AsideSessionUi::from_compiled`].
 /// Runtime native admission remains the driver's responsibility.
 pub fn story_from_package(
-    package: reel_package::CodePackage,
+    mut package: reel_package::CodePackage,
 ) -> Result<CompiledStory, reel_package::Error> {
+    let visual_plan = package.take_visual_plan();
     let (program, metadata, products, resume) = package.into_parts();
+    let visual_plan = if visual_plan.is_empty() {
+        None
+    } else {
+        let plan = reel_engine::aside::visual_plan::VisualPlan::decode(visual_plan, &program)
+            .ok_or_else(|| reel_package::Error {
+                kind: reel_package::ErrorKind::Metadata,
+                detail: "invalid visual preparation plan".into(),
+            })?;
+        Some(std::sync::Arc::new(plan))
+    };
     let bindings = products
         .bindings
         .into_iter()
@@ -68,6 +79,7 @@ pub fn story_from_package(
         entry: bc::FunctionId(entry.function_id),
         catalogs: Default::default(),
         effects: std::sync::Arc::new(effects),
+        visual_plan,
     })
 }
 

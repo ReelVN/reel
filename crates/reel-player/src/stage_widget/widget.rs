@@ -857,9 +857,9 @@ impl Widget for SceneWidget {
         if let Some(offset) = self.scroll_request.take() {
             self.scroll.set_offset(offset);
         }
-        let translation = if let NodeKind::Scroll { align, .. } = self.node.kind {
+        let translation = if let NodeKind::Scroll { align, axis, .. } = self.node.kind {
             let offset = self.scroll.offset();
-            let metrics = (self.scroll.viewport(), self.scroll.content());
+            let metrics = (self.scroll.viewport(), self.scroll.content(), axis);
             if self.scroll_input
                 || self.scroll_feedback != Some(metrics)
                 || self.scroll_baseline != offset

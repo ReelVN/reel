@@ -723,7 +723,10 @@ fn default_cold_string_prepays_object_storage_and_reuses_the_live_pool_value() {
     };
     assert_eq!(vm.heap.stats().live_objects, before.live_objects);
     assert_eq!(vm.heap.stats().charged_bytes, before.charged_bytes);
-    assert_eq!(required, vm.constant_allocation_bytes(ConstId(0)));
+    assert_eq!(
+        required,
+        vm.plan_constant(ConstId(0)).allocation_bytes(&vm.heap)
+    );
     let delivery = finish_default(&mut vm, task);
     let value = vm.delivery_value(delivery).unwrap();
     assert_eq!(
@@ -735,7 +738,7 @@ fn default_cold_string_prepays_object_storage_and_reuses_the_live_pool_value() {
         0,
         "text borrows the code pool"
     );
-    assert_eq!(vm.constant_allocation_bytes(ConstId(0)), 0);
+    assert_eq!(vm.plan_constant(ConstId(0)).allocation_bytes(&vm.heap), 0);
     let task = vm
         .start(FunctionId(0), &[], RootOwner(2), Context::Ordinary)
         .unwrap();

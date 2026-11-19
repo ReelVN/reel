@@ -836,19 +836,11 @@ impl StageBinding {
             )?;
         }
         if symbol == "reel::scroll" {
-            for (i, name) in scroll::METRICS.into_iter().enumerate() {
-                let key = self.property_key(heap, name)?;
-                heap.table_store(
-                    fields,
-                    (field_count + extra_fields + i) as u32,
-                    key,
-                    Value::float(0.),
-                )?;
-            }
-            heap.observe_host_properties(
+            self.initialize_scroll_metrics(
+                heap,
                 value,
+                fields,
                 (field_count + extra_fields) as u32,
-                scroll::METRICS.len() as u32,
             )?;
             for field in [scroll::ScrollField::X, scroll::ScrollField::Y] {
                 heap.require_writable_property(PropertyId {

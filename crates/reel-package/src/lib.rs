@@ -14,6 +14,19 @@ use aside_vm::bytecode as bc;
 pub use codec::{HEADER_LEN, INDEX_ENTRY_LEN, MAGIC, VERSION, decode, encode, read_distribution};
 pub use metadata::*;
 
+/// Maximum bytes retained for a visual preparation plan in an ASB.
+pub const MAX_VISUAL_PLAN_BYTES: usize = 1024 * 1024;
+
+/// Build products accompanying the immutable bytecode in an ASB.
+pub struct Products<'a> {
+    /// Bound effect definitions for this bytecode.
+    pub effects: &'a EffectProducts,
+    /// Current logical continuation metadata.
+    pub resume: &'a aside_vm::resume::ResumeTable,
+    /// Optional opaque visual preparation plan. An empty slice omits the section.
+    pub visual_plan: &'a [u8],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub max_file_bytes: usize,
@@ -94,6 +107,7 @@ pub struct CodePackage {
     distribution: Option<distribution::Distribution>,
     effects: EffectProducts,
     resume: aside_vm::resume::VerifiedResumeTable,
+    visual_plan: Box<[u8]>,
 }
 impl CodePackage {
     /// Bind the external immutable text storage before runtime admission.
@@ -117,6 +131,14 @@ impl CodePackage {
     /// Current continuation metadata, already verified against this code.
     pub fn resume(&self) -> &aside_vm::resume::VerifiedResumeTable {
         &self.resume
+    }
+    /// Size- and digest-checked plan bytes, interpreted by the engine.
+    pub fn visual_plan(&self) -> &[u8] {
+        &self.visual_plan
+    }
+    /// Transfer the opaque plan to engine admission without copying it.
+    pub fn take_visual_plan(&mut self) -> Box<[u8]> {
+        std::mem::take(&mut self.visual_plan)
     }
     /// Transfer code, metadata, effects and continuations together to engine admission.
     pub fn into_parts(

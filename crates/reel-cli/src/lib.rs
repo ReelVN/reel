@@ -1,8 +1,12 @@
 //! Author compilation, relocatable packages, and shared player startup.
 use aside_compiler::{Diagnostic, SourceMap, TextRange, lowering};
 use aside_vm::bytecode as bc;
-use reel_engine::aside::source::{self, CompiledStory, ProjectSourceCompilation, SourceError};
+use reel_engine::aside::{
+    source::{self, CompiledStory, ProjectSourceCompilation, SourceError},
+    visual_plan::VisualPlan,
+};
 use serde_json::{Value, json};
+use std::sync::{Arc, OnceLock};
 mod input;
 pub use input::{InputError, read_source};
 mod artifact;
@@ -67,6 +71,21 @@ pub struct Checked {
     pub modules: Vec<reel_package::ModuleMetadata>,
     pub catalogs: std::sync::Arc<source::CatalogProducts>,
     pub effects: std::sync::Arc<source::EffectProducts>,
+    visual_plan: OnceLock<Option<Arc<VisualPlan>>>,
+}
+
+impl Checked {
+    fn visual_plan(&self) -> Option<&Arc<VisualPlan>> {
+        self.visual_plan
+            .get_or_init(|| {
+                VisualPlan::compile(
+                    &self.compilation.program,
+                    reel_package::MAX_VISUAL_PLAN_BYTES,
+                )
+                .map(Arc::new)
+            })
+            .as_ref()
+    }
 }
 
 /// Compile and verify source, retaining the program, entry and module metadata.
@@ -124,6 +143,7 @@ pub fn check_sources_with_progress(
         modules: metadata,
         catalogs,
         effects,
+        visual_plan: Default::default(),
     })
 }
 
@@ -243,6 +263,7 @@ pub fn source_failure(failure: SourceError) -> Failure {
 
 pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failure> {
     let entry = artifact::select_entry(&checked, Some(entry))?.expect("requested entry");
+    let visual_plan = checked.visual_plan().cloned();
     let resume = checked
         .compilation
         .program
@@ -259,6 +280,7 @@ pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failur
         entry: bc::FunctionId(entry.function_id),
         catalogs: checked.catalogs,
         effects: checked.effects,
+        visual_plan,
     })
 }
 

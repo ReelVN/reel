@@ -52,6 +52,7 @@ mod stage;
 mod tests;
 mod text;
 mod views;
+pub mod visual_plan;
 mod visual_prediction;
 pub mod window;
 
@@ -285,6 +286,7 @@ pub struct SessionVm {
     authored_stage_revision: u64,
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
+    visual_plan: Option<std::sync::Arc<visual_plan::VisualPlan>>,
     predicted_images: Option<(WaitId, Box<[Box<str>]>)>,
     choice_reader: Option<choice::ChoiceReader>,
     dialogue_reader: Option<dialogue::DialogueReader>,
@@ -342,6 +344,7 @@ impl SessionVm {
         story.validate()?;
         let mut vm = Self::load(session, story.program, limits)?;
         vm.resume = story.resume;
+        vm.visual_plan = story.visual_plan;
         vm.stage.set_effect_products(vm.vm.heap(), story.effects)?;
         if !story.catalogs.catalogs.is_empty() {
             vm.set_source_catalogs(localization::SourceCatalogs::from_products(story.catalogs))?;
@@ -351,6 +354,10 @@ impl SessionVm {
     /// Share compiled effect definitions when starting or restoring this program.
     pub fn effect_products(&self) -> std::sync::Arc<source::EffectProducts> {
         self.stage.effect_products.clone()
+    }
+    /// Share the code's immutable visual plan when creating a new session.
+    pub fn visual_plan(&self) -> Option<std::sync::Arc<visual_plan::VisualPlan>> {
+        self.visual_plan.clone()
     }
     /// Share current-code continuation metadata when starting or restoring this story.
     pub fn resume_table(&self) -> &aside_vm::resume::VerifiedResumeTable {
@@ -416,6 +423,7 @@ impl SessionVm {
             authored_stage_revision: 0,
             issued: None,
             pending: None,
+            visual_plan: None,
             predicted_images: None,
             choice_reader: None,
             dialogue_reader: None,
@@ -1019,12 +1027,22 @@ impl SessionVm {
             .as_ref()
             .is_none_or(|(last, _)| *last != wait)
         {
-            let sources =
-                visual_prediction::next_images(self.vm.program(), self.vm.wait_call_sites(wait))
-                    .into_iter()
-                    .flatten()
-                    .map(Box::from)
-                    .collect();
+            let program = self.vm.program();
+            let sites = self.vm.wait_call_sites(wait);
+            let sources = self
+                .visual_plan
+                .as_ref()
+                .and_then(|plan| plan.next_images(program, sites));
+            if let Some((last, previous)) = &mut self.predicted_images
+                && previous
+                    .iter()
+                    .map(Box::as_ref)
+                    .eq(sources.iter().flatten().copied())
+            {
+                *last = wait;
+                return &self.predicted_images.as_ref().unwrap().1;
+            }
+            let sources = sources.into_iter().flatten().map(Box::from).collect();
             self.predicted_images = Some((wait, sources));
         }
         &self.predicted_images.as_ref().unwrap().1

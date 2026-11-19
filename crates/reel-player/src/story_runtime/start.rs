@@ -31,6 +31,7 @@ impl StoryRuntime {
             entry: self.starting.unwrap(),
             catalogs: Default::default(),
             effects: old.adapter().effect_products(),
+            visual_plan: old.adapter().visual_plan(),
         };
         let mut next = AsideSessionUi::from_compiled(
             session,

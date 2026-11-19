@@ -642,6 +642,8 @@ pub fn nvl_view(model) {
 
 固定高度的列表可以用 `scroll(snap_y: 48)` 指定纵向停靠间距。滚轮、触摸松手和关联滚动条停在整行位置，内容末端也是停靠点。脚本仍可用 `scroll_y` 指定精确偏移。
 
+用 `viewport.max_scroll_y` 取得当前底部的滚动位置。内容全部可见时它为零，可以直接用来隐藏滚动条。`max_scroll_x` 用于横向滚动。
+
 把 `scrollbar(viewport)` 与同一个滚动视口并排放置。`track`、`thumb` 是稳定内容槽，可以设置背景或添加 `stretch: "both"` 的图片；省略 `thumb_size` 时，滑块长度跟随可见内容的比例。外部按钮可以调用 `scroll_by`、`scroll_to`，轨道、拖动、键盘和手柄共用目标滚动位置。参数和生命周期见[滚动条源码 API](../../crates/reel-engine/src/aside/stage/scrollbar.rs)。
 
 ```aside
@@ -649,7 +651,8 @@ fn main() {
     let viewport = scroll(width: 280, height: 120) {
         column() { for i in 0 .. 20 { text(f"Line {i}"); } }
     };
-    let bar = scrollbar(viewport, width: 16, height: 120);
+    let bar = scrollbar(viewport, width: 16, height: 120,
+        visible: derive(|| viewport.max_scroll_y > 0));
     bar.track.background = "#28303a";
     bar.thumb.background = "#9daabe";
     stage.replace(row(gap: 8) { viewport; bar; });

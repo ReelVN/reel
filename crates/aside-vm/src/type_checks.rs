@@ -292,11 +292,30 @@ impl TypeChecks {
 }
 
 fn string_equal(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
-    if !heap.accepts_builtin(BuiltinType::String, value)?
-        || heap.read_object(value)?.len() as usize != expected.len()
-    {
+    if !string_matches_length(heap, value, expected.len())? {
         return Ok(false);
     }
+    string_equal_bytes(heap, value, expected)
+}
+
+pub(super) fn string_matches_length(
+    heap: &Heap,
+    value: Value,
+    len: usize,
+) -> Result<bool, HeapError> {
+    if value.tag() != crate::ValueTag::Object {
+        return Ok(false);
+    }
+    let object = heap.read_object(value)?;
+    Ok(object.kind() == crate::ObjectKind::String && object.len() as usize == len)
+}
+
+/// Compare the payload after checking both the string kind and length.
+pub(super) fn string_equal_bytes(
+    heap: &Heap,
+    value: Value,
+    expected: &str,
+) -> Result<bool, HeapError> {
     let mut remaining = expected.as_bytes();
     let mut offset = 0;
     while !remaining.is_empty() {

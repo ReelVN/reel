@@ -46,11 +46,31 @@ pub(super) fn snap(value: Value) -> Result<Option<f64>, AdapterError> {
 fn validate_snap(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(snap(value))
 }
-pub(super) const METRICS: [&str; 4] = [
-    "viewport_width",
-    "viewport_height",
-    "content_width",
-    "content_height",
+pub(super) const METRICS: [(&str, &str); 6] = [
+    (
+        "viewport_width",
+        "The accepted viewport width in logical pixels.",
+    ),
+    (
+        "viewport_height",
+        "The accepted viewport height in logical pixels.",
+    ),
+    (
+        "content_width",
+        "The accepted content width in logical pixels.",
+    ),
+    (
+        "content_height",
+        "The accepted content height in logical pixels.",
+    ),
+    (
+        "max_scroll_x",
+        "The accepted rightmost scroll offset in logical pixels. Zero when horizontal scrolling is unavailable.",
+    ),
+    (
+        "max_scroll_y",
+        "The accepted bottom scroll offset in logical pixels. Zero when vertical scrolling is unavailable.",
+    ),
 ];
 fn axis(heap: &Heap, value: Value) -> Result<ScrollAxis, HeapError> {
     word(heap, value, |word| match word {
@@ -130,6 +150,20 @@ pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), Heap
     }
 }
 impl StageBinding {
+    pub(super) fn initialize_scroll_metrics(
+        &mut self,
+        heap: &mut Heap,
+        host: Value,
+        fields: Value,
+        first: u32,
+    ) -> Result<(), HeapError> {
+        for (index, (name, _)) in METRICS.into_iter().enumerate() {
+            let key = self.property_key(heap, name)?;
+            heap.table_store(fields, first + index as u32, key, Value::float(0.))?;
+        }
+        heap.observe_host_properties(host, first, METRICS.len() as u32)?;
+        Ok(())
+    }
     pub(in crate::aside) fn scroll(
         &mut self,
         heap: &mut Heap,
@@ -138,12 +172,11 @@ impl StageBinding {
         let Some(binding) = self.handles.get(&event.node) else {
             return Ok((false, false));
         };
-        if !matches!(
-            self.scene.node(event.node).map(|n| &n.kind),
-            Some(NodeKind::Scroll { .. })
-        ) {
+        let Some(NodeKind::Scroll { axis, .. }) = self.scene.node(event.node).map(|n| &n.kind)
+        else {
             return Ok((false, false));
-        }
+        };
+        let maximum = axis.maximum(event.viewport, event.content);
         let host = heap.import_handle(binding.handle)?;
         let offset_fields = [ScrollField::X.index() as u32, ScrollField::Y.index() as u32];
         let mut changed = false;
@@ -170,6 +203,8 @@ impl StageBinding {
             event.viewport.height,
             event.content.width,
             event.content.height,
+            maximum.x,
+            maximum.y,
         ]
         .into_iter()
         .enumerate()

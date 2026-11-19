@@ -22,7 +22,7 @@ fn ids(vm: &SessionVm) -> (reel_ui::stage::NodeId, reel_ui::stage::NodeId) {
         .id;
     (bar, scroll)
 }
-fn metrics(vm: &mut SessionVm, s: &mut Session, content: f64, offset: f64) {
+fn metrics(vm: &mut SessionVm, s: &mut Session, content: Size, offset: f64) {
     let (_, scroll) = ids(vm);
     let host = vm.stage.value(vm.vm.heap(), scroll).unwrap();
     let previous = stage::number(
@@ -43,7 +43,7 @@ fn metrics(vm: &mut SessionVm, s: &mut Session, content: f64, offset: f64) {
             requested: Vec2::new(0., previous),
             offset: Vec2::new(0., offset),
             viewport: Size::new(100., 100.),
-            content: Size::new(100., content),
+            content,
         })],
     )
     .unwrap();
@@ -99,7 +99,7 @@ fn native_scrollbar_borrows_viewport_and_preserves_slots_through_gc_and_restore(
         let (mut s, mut vm) = prepared(code, encoded);
         drive(&mut vm, &mut s, true);
         let (bar, scroll) = ids(&vm);
-        metrics(&mut vm, &mut s, 500., 0.);
+        metrics(&mut vm, &mut s, Size::new(100., 500.), 0.);
         let NodeKind::ScrollBar(view) = vm.stage().node(bar).unwrap().kind else {
             panic!()
         };
@@ -133,7 +133,7 @@ fn native_scrollbar_numeric_input_uses_target_property_without_callback_tasks() 
             encoded,
         );
         drive(&mut vm, &mut s, true);
-        metrics(&mut vm, &mut s, 500., 0.);
+        metrics(&mut vm, &mut s, Size::new(100., 500.), 0.);
         let (bar, scroll) = ids(&vm);
         let NodeKind::ScrollBar(view) = vm.stage().node(bar).unwrap().kind else {
             panic!()
@@ -152,7 +152,7 @@ fn native_scrollbar_numeric_input_uses_target_property_without_callback_tasks() 
         );
         assert_eq!(vm.tasks.len(), tasks);
         assert_eq!(value(&vm, scroll), 175.);
-        metrics(&mut vm, &mut s, 200., 100.);
+        metrics(&mut vm, &mut s, Size::new(100., 200.), 100.);
         assert!(
             !vm.change(
                 &mut s,
@@ -173,6 +173,48 @@ fn native_scrollbar_numeric_input_uses_target_property_without_callback_tasks() 
         };
         assert!(!view.live);
         assert!(view.range().is_none());
+    }
+}
+#[test]
+fn scroll_range_properties_follow_accepted_layout_and_enabled_axes() {
+    let code = r#"fn opening() {
+        let viewport = scroll(width: 100, height: 100) { text("content"); };
+        let bar = scrollbar(viewport, visible: derive(|| viewport.max_scroll_y > 0));
+        stage.replace(column {
+            viewport;
+            bar;
+            button("bottom", on_click: || {
+                if viewport.max_scroll_x != 0 || viewport.max_scroll_y != 400 {
+                    throw "vertical scroll range";
+                }
+                viewport.scroll_y = viewport.max_scroll_y;
+            });
+            button("horizontal", on_click: || { viewport.axis = "horizontal"; });
+            button("right", on_click: || {
+                if viewport.max_scroll_x != 50 || viewport.max_scroll_y != 0 {
+                    throw "horizontal scroll range";
+                }
+                viewport.scroll_x = viewport.max_scroll_x;
+            });
+        });
+    }"#;
+    for encoded in [false, true] {
+        let (mut s, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut s, true);
+        let (bar, scroll) = ids(&vm);
+        assert!(!vm.stage().node(bar).unwrap().props.visible);
+
+        let overflow = Size::new(150., 500.);
+        metrics(&mut vm, &mut s, overflow, 0.);
+        assert!(vm.stage().node(bar).unwrap().props.visible);
+        click(&mut vm, &mut s, "bottom");
+        assert_eq!(value(&vm, scroll), 400.);
+
+        click(&mut vm, &mut s, "horizontal");
+        vm.sync_stage(&s).unwrap();
+        metrics(&mut vm, &mut s, overflow, 0.);
+        assert!(!vm.stage().node(bar).unwrap().props.visible);
+        click(&mut vm, &mut s, "right");
     }
 }
 #[test]

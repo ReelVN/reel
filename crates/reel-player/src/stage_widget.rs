@@ -1117,7 +1117,7 @@ struct SceneWidget {
     scroll: ScrollState,
     scroll_laid_out: bool,
     scroll_request: Option<Vec2>,
-    scroll_feedback: Option<(Size, Size)>,
+    scroll_feedback: Option<(Size, Size, ScrollAxis)>,
     scroll_baseline: Vec2,
     scroll_input: bool,
     virtual_list: Option<Box<VirtualListState>>,

@@ -401,7 +401,11 @@ fn run_story_on(
     // Code must leave at least 24 MiB for mutable state. The ledger admits
     // actual allocations up to the shared 80 MiB VM allowance; it does not
     // preallocate the allowance or cap a larger live UI at that minimum.
-    let bytes = story.program.execution_capacity_bytes() as u64 + (24 << 20);
+    let visual_plan_bytes = story
+        .visual_plan
+        .as_ref()
+        .map_or(0, |plan| plan.as_bytes().len() as u64);
+    let bytes = story.program.execution_capacity_bytes() as u64 + visual_plan_bytes + (24 << 20);
     if bytes > 80 << 20 {
         return Err(format!(
             "VM needs {} MiB for code and working memory; Vita allows 80 MiB",
@@ -410,7 +414,7 @@ fn run_story_on(
         .into());
     }
     let mut limits = VmLimits::default();
-    limits.heap.max_bytes = 80 << 20;
+    limits.heap.max_bytes = (80 << 20) - visual_plan_bytes;
     limits.slots.initial_capacity = 4096;
     limits.slots.max_capacity = 65_536;
     limits.max_tasks = 256;

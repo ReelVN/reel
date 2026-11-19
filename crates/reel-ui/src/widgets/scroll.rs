@@ -59,6 +59,21 @@ impl ScrollAxis {
     pub fn vertical(self) -> bool {
         self != Self::Horizontal
     }
+    /// Maximum logical offsets accepted for these content and viewport sizes.
+    pub fn maximum(self, viewport: Size, content: Size) -> Vec2 {
+        Vec2::new(
+            if self.horizontal() {
+                (content.width - viewport.width).max(0.)
+            } else {
+                0.
+            },
+            if self.vertical() {
+                (content.height - viewport.height).max(0.)
+            } else {
+                0.
+            },
+        )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -133,18 +148,7 @@ impl ScrollState {
         self.offset
     }
     fn maximum(&self) -> Vec2 {
-        Vec2::new(
-            if self.axis.horizontal() {
-                (self.content.width - self.viewport.width).max(0.)
-            } else {
-                0.
-            },
-            if self.axis.vertical() {
-                (self.content.height - self.viewport.height).max(0.)
-            } else {
-                0.
-            },
-        )
+        self.axis.maximum(self.viewport, self.content)
     }
     fn clamped(&self, offset: Vec2) -> Vec2 {
         let max = self.maximum();

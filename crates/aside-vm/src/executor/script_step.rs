@@ -429,7 +429,11 @@ impl Vm {
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
-            Opcode::LoadConst => (1, self.constant_allocation_bytes(ConstId(b))),
+            Opcode::LoadConst => {
+                let load = self.plan_constant(ConstId(b));
+                *plan = InstructionPlan::Constant(load);
+                (1, load.allocation_bytes(&self.heap))
+            }
             Opcode::Clear2 => (2, 0),
             Opcode::Clear3 => (3, 0),
             Opcode::BindInit | Opcode::BindWrite => {
@@ -445,7 +449,25 @@ impl Vm {
                     0,
                 )
             }
-            Opcode::Is => (1 + self.type_checks.extra(TypeId(c)), 0),
+            Opcode::Is => match &self.program.package().types[c as usize] {
+                TypeDef::StringLiteral(text) => {
+                    // Only equal-length strings can inspect payload bytes.
+                    // No collector or script runs between this check and execution.
+                    let subject = self.read(s.regs, Reg(b)).map(|value| {
+                        types::string_matches_length(&self.heap, value, text.len())
+                            .unwrap_or(false)
+                            .then_some(value)
+                    });
+                    let bytes = if matches!(subject, Ok(Some(_))) {
+                        text.len() as u64
+                    } else {
+                        0
+                    };
+                    *plan = InstructionPlan::StringLiteral(subject);
+                    (2 + bytes, 0)
+                }
+                _ => (1 + self.type_checks.extra(TypeId(c)), 0),
+            },
             Opcode::CheckType => (1 + self.type_checks.extra(TypeId(b)), 0),
             Opcode::Return => (
                 1 + self

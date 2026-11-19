@@ -265,8 +265,11 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
             &read.program().encode(Default::default()).unwrap(),
             m,
             None,
-            read.effects(),
-            read.resume().table(),
+            rp::Products {
+                effects: read.effects(),
+                resume: read.resume().table(),
+                visual_plan: read.visual_plan(),
+            },
             reel_engine::aside::source::types(),
             Limits::default()
         )
@@ -300,6 +303,64 @@ fn entry_is_optional_and_only_real_module_functions_can_be_selected() {
         assert_eq!(error.stage, "entry");
         assert!(!error.diagnostics.is_empty());
     }
+}
+
+#[test]
+fn visual_preparation_section_is_optional_integrity_checked_and_bounded() {
+    let original = artifact("fn main() {}", Some("main::main"));
+    let types = reel_engine::aside::source::types();
+    let limits = Limits::default();
+    let package = rp::decode(&original.bytes, types, limits).unwrap();
+    assert!(package.visual_plan().is_empty());
+    let code = package.program().encode(Default::default()).unwrap();
+    let encode = |visual_plan: &[u8]| {
+        rp::encode(
+            &code,
+            package.metadata(),
+            None,
+            rp::Products {
+                effects: package.effects(),
+                resume: package.resume().table(),
+                visual_plan,
+            },
+            types,
+            limits,
+        )
+    };
+    let plan = vec![0xA5; 8192];
+    let mut bytes = encode(&plan).unwrap();
+    let index_at = u64_at(&bytes, 24);
+    let plan_entry = bytes[index_at..]
+        .chunks_exact(rp::INDEX_ENTRY_LEN)
+        .find(|entry| entry[..4] == 6u32.to_le_bytes())
+        .unwrap();
+    assert_eq!(plan_entry[4..8], [0; 4]);
+    let plan_at = u64_at(plan_entry, 8);
+    assert_eq!(
+        &*rp::decode(&bytes, types, limits)
+            .unwrap()
+            .take_visual_plan(),
+        plan
+    );
+    let tight = Limits {
+        max_metadata_bytes: plan.len() - 1,
+        ..limits
+    };
+    assert_eq!(
+        rp::decode(&bytes, types, tight).unwrap_err().kind,
+        ErrorKind::Limit
+    );
+    assert_eq!(
+        encode(&vec![0; rp::MAX_VISUAL_PLAN_BYTES + 1])
+            .unwrap_err()
+            .kind,
+        ErrorKind::Limit
+    );
+    bytes[plan_at] ^= 1;
+    assert_eq!(
+        rp::decode(&bytes, types, limits).unwrap_err().kind,
+        ErrorKind::Integrity
+    );
 }
 
 #[test]
@@ -614,8 +675,11 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
         &package.program().encode(Default::default()).unwrap(),
         package.metadata(),
         Some(&manifest),
-        package.effects(),
-        package.resume().table(),
+        rp::Products {
+            effects: package.effects(),
+            resume: package.resume().table(),
+            visual_plan: package.visual_plan(),
+        },
         reel_engine::aside::source::types(),
         Limits::default(),
     )

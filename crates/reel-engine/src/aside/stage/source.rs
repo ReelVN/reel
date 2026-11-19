@@ -194,13 +194,13 @@ pub(in crate::aside) fn describe(api: &mut Api) {
                     .clone()
                     .bound("reveal_child"),
             ));
-            for name in scroll::METRICS {
+            for (name, documentation) in scroll::METRICS {
                 members.push(Member::field(
                     type_name,
                     name,
                     TypeHint::Float,
                     None,
-                    "The accepted scroll viewport or content size in logical pixels.",
+                    documentation,
                     Some(aside_vm::bytecode::Const::FloatBits(0f64.to_bits())),
                 ));
             }

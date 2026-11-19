@@ -4,13 +4,15 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
-- Start image preparation during dialogue reveal and look through translated lines and local table literals when the next image path is known.
+- Compile a visual preparation plan into ASB so dialogue and transitions can prepare known images without walking bytecode during playback.
+- Expose measured scroll limits as `max_scroll_x` and `max_scroll_y` for custom navigation and scrollbar visibility.
+- Reuse each admitted literal lookup when executing the instruction or assigning a default argument.
+- Use the VM's direct string-literal check for short patterns in large string matches.
 - Return desktop transition textures to scratch reuse after all prepared and submitted readers have released them.
 - Use queued video timestamps to schedule media updates closer to when pictures are due.
 - Skip desktop upload color conversion outside decoded images' nonzero-alpha bounds.
 - Reuse spare desktop viewport textures for large cropped groups during multisampled rendering.
 - Raise existing image and shared atlas requests to visible priority when a scene needs them, including reads that are already in progress.
-- Look ahead through upcoming dialogue and statically known transition callbacks to prepare their pictures earlier.
 - Reuse recently uploaded images across story restarts and save loads in the same game without keeping a second copy of the pixels on the CPU.
 - Start loading packed resources from their mounted lengths and versions without waiting for a separate metadata request when the index is immediately available.
 - Record desktop event loop waits separately from frame preparation and GPU submission.

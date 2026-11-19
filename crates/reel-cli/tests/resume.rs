@@ -72,8 +72,11 @@ fn stable_stack_is_available_after_debug_release_and_external_text_reencoding() 
             &encoded,
             package.metadata(),
             package.distribution(),
-            package.effects(),
-            package.resume().table(),
+            rp::Products {
+                effects: package.effects(),
+                resume: package.resume().table(),
+                visual_plan: package.visual_plan(),
+            },
             reel_engine::aside::source::types(),
             Default::default(),
         )
@@ -146,8 +149,11 @@ fn asb_writer_rejects_a_resume_pc_from_another_layout() {
         &package.program().encode(Default::default()).unwrap(),
         package.metadata(),
         None,
-        package.effects(),
-        &invalid,
+        rp::Products {
+            effects: package.effects(),
+            resume: &invalid,
+            visual_plan: package.visual_plan(),
+        },
         reel_engine::aside::source::types(),
         Default::default(),
     )
@@ -189,8 +195,11 @@ fn state_declarations_survive_asb_without_story_flows() {
             &package.program().encode(Default::default()).unwrap(),
             package.metadata(),
             package.distribution(),
-            package.effects(),
-            package.resume().table(),
+            rp::Products {
+                effects: package.effects(),
+                resume: package.resume().table(),
+                visual_plan: package.visual_plan(),
+            },
             reel_engine::aside::source::types(),
             Default::default(),
         )

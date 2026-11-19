@@ -2,25 +2,36 @@
 //! belong to this query and never come from the running VM's registers or heap.
 
 use arrayvec::ArrayVec;
-use aside_vm::{
-    bytecode::{self as bc, Opcode},
-    executor::HostCallSite,
-};
+use aside_vm::bytecode::{self as bc, Opcode};
 
-const INSTRUCTION_LIMIT: usize = 512;
 const NESTING_LIMIT: usize = 8;
-const CALLER_LIMIT: usize = 16;
 const ARGUMENT_LIMIT: usize = 32;
 const FACT_LIMIT: usize = 32;
 const PATH_LIMIT: usize = 1024;
 const LAYER_LIMIT: usize = 8;
 const GROUP_LIMIT: usize = 8;
 const FIELD_LIMIT: usize = 64;
-const DIALOGUE_LIMIT: usize = 2;
 const CLOSURE_LIMIT: usize = 8;
 const CAPTURE_LIMIT: usize = 8;
+const BUILD_INSTRUCTION_LIMIT: usize = 1024;
+const BUILD_DIALOGUE_LIMIT: usize = 6;
 
-type Paths<'p> = ArrayVec<&'p str, LAYER_LIMIT>;
+pub(super) const IMAGE_LIMIT: usize = LAYER_LIMIT;
+pub(super) const RESUME_LOOKUP_LIMIT: usize = 16;
+
+type Paths<'p> = ArrayVec<ImagePath<'p>, LAYER_LIMIT>;
+
+#[derive(Clone, Copy)]
+pub(super) struct ImagePath<'p> {
+    pub(super) constant: bc::ConstId,
+    pub(super) text: &'p str,
+}
+
+impl PartialEq for ImagePath<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fact {
@@ -68,40 +79,35 @@ enum Outcome<'p> {
     Return(Fact),
 }
 
-/// Examine ordinary suspended callers, starting with the innermost one. A
-/// successful return can expose the next caller. An unresolved path cannot.
-pub(super) fn next_images(
-    program: &bc::VerifiedProgram,
-    sites: impl Iterator<Item = HostCallSite>,
-) -> Option<Paths<'_>> {
-    let mut walk = Walk {
-        program,
-        remaining: INSTRUCTION_LIMIT,
-        dialogue_remaining: DIALOGUE_LIMIT,
-        code: bc::ResidentCodeReader::default(),
-        layers: ArrayVec::new(),
-        closures: ArrayVec::new(),
-        fields: ArrayVec::new(),
-    };
-    for site in sites.take(CALLER_LIMIT) {
-        if site.code.version != program.package().content_version {
-            return None;
-        }
-        let function = program
-            .package()
-            .functions
-            .get(site.code.function.index())?;
-        let (call, next) = walk.instruction(function, site.pc.index())?;
-        let opcode = bc::instruction_spec(call.opcode)?.opcode;
-        if !matches!(opcode, Opcode::Call | Opcode::CallNoWait | Opcode::Await) {
-            return None;
-        }
-        match walk.function(function, next, Facts::default(), 0)? {
-            Outcome::Images(paths) => return Some(paths),
-            Outcome::Return(_) => {}
-        }
+/// Analyze a continuation using build-time work. `Some` with zero paths is a
+/// proven ordinary return and allows the player to look at the outer caller.
+pub(super) fn compile_site<'p>(
+    program: &'p bc::VerifiedProgram,
+    function: &bc::RuntimeFunction,
+    next: usize,
+    budget: &mut usize,
+) -> Option<Paths<'p>> {
+    let available = (*budget).min(BUILD_INSTRUCTION_LIMIT);
+    let mut walk = Walk::new(program, available, BUILD_DIALOGUE_LIMIT);
+    let result = walk.function(function, next, Facts::default(), 0);
+    *budget -= available - walk.remaining;
+    match result? {
+        Outcome::Images(paths) => Some(paths),
+        Outcome::Return(_) => Some(Paths::new()),
     }
-    None
+}
+
+pub(super) fn image_path(program: &bc::VerifiedProgram, id: bc::ConstId) -> Option<&str> {
+    let candidate = program.package().constants.get(id.index())?;
+    let length = match candidate {
+        bc::Const::Utf8(text) => text.len(),
+        bc::Const::Text { len, .. } => *len as usize,
+        _ => return None,
+    };
+    if !(1..=PATH_LIMIT).contains(&length) {
+        return None;
+    }
+    std::str::from_utf8(program.constant_bytes(id)?).ok()
 }
 
 struct Walk<'p> {
@@ -115,6 +121,18 @@ struct Walk<'p> {
 }
 
 impl<'p> Walk<'p> {
+    fn new(program: &'p bc::VerifiedProgram, remaining: usize, dialogue_remaining: usize) -> Self {
+        Self {
+            program,
+            remaining,
+            dialogue_remaining,
+            code: bc::ResidentCodeReader::default(),
+            layers: ArrayVec::new(),
+            closures: ArrayVec::new(),
+            fields: ArrayVec::new(),
+        }
+    }
+
     fn instruction(
         &mut self,
         function: &bc::RuntimeFunction,
@@ -212,6 +230,20 @@ impl<'p> Walk<'p> {
                             Fact::Bool(equal == (op == Opcode::Eq))
                         }),
                     );
+                }
+                Opcode::Is => {
+                    let bc::TypeDef::StringLiteral(pattern) =
+                        &self.program.package().types[c as usize]
+                    else {
+                        return None;
+                    };
+                    let matches = match facts.get(b) {
+                        Fact::Constant(id) => self.text(id).and_then(|text| {
+                            (text.len().max(pattern.len()) <= PATH_LIMIT).then(|| text == pattern)
+                        }),
+                        _ => None,
+                    };
+                    facts.set(a, matches.map_or(Fact::Unknown, Fact::Bool));
                 }
                 Opcode::Jump => {
                     pc = forward(pc, a)?;
@@ -429,9 +461,11 @@ impl<'p> Walk<'p> {
         std::str::from_utf8(self.program.constant_bytes(id)?).ok()
     }
 
-    fn path(&self, id: bc::ConstId) -> Option<&'p str> {
-        let path = self.text(id)?;
-        (!path.is_empty() && path.len() <= PATH_LIMIT).then_some(path)
+    fn path(&self, id: bc::ConstId) -> Option<ImagePath<'p>> {
+        Some(ImagePath {
+            constant: id,
+            text: image_path(self.program, id)?,
+        })
     }
 
     fn table(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<Fact> {
@@ -658,8 +692,21 @@ fn update_facts(
 
 #[cfg(test)]
 mod tests {
+    use super::super::visual_plan::VisualPlan;
     use super::*;
-    use aside_vm::{bytecode::InstructionSequence, executor::CodeRef};
+    use aside_vm::{
+        bytecode::InstructionSequence,
+        executor::{CodeRef, HostCallSite},
+    };
+
+    fn next_images(
+        program: &bc::VerifiedProgram,
+        sites: impl Iterator<Item = HostCallSite>,
+    ) -> Option<ArrayVec<&str, IMAGE_LIMIT>> {
+        let prepared = VisualPlan::compile(program, 64 * 1024)?;
+        let decoded = VisualPlan::decode(prepared.as_bytes().into(), program).unwrap();
+        decoded.next_images(program, sites)
+    }
 
     fn next_image(
         program: &bc::VerifiedProgram,
@@ -862,7 +909,10 @@ mod tests {
                 Some("outer.png"),
             ),
             (
-                "narrator(\"wait\"); narrator(\"one\"); narrator(\"two\"); narrator(\"three\");",
+                concat!(
+                    "narrator(\"wait\"); narrator(\"one\"); narrator(\"two\"); narrator(\"three\");",
+                    "narrator(\"four\"); narrator(\"five\"); narrator(\"six\"); narrator(\"seven\");"
+                ),
                 None,
             ),
             ("narrator(\"wait\"); choose([{text: \"Next\"}]);", None),
@@ -911,6 +961,27 @@ mod tests {
     }
 
     #[test]
+    fn compiled_plan_reaches_a_cut_through_multiple_dialogue_lines() {
+        let program = compile(
+            r#"fn opening() {
+                narrator("wait");
+                narrator("first");
+                narrator("second");
+                narrator("third");
+                narrator("fourth");
+                let _ = image("next.png");
+            }"#,
+        );
+        let site = first_call(&program, "opening");
+        assert_eq!(next_image(&program, [site].into_iter()), Some("next.png"));
+        let prepared = VisualPlan::compile(&program, 1024).unwrap();
+        let mut bytes = prepared.as_bytes().to_vec();
+        // The decoder must reject a record outside the verified function table.
+        bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(VisualPlan::decode(bytes.into_boxed_slice(), &program).is_none());
+    }
+
+    #[test]
     fn stops_at_unknown_callee_or_work_limit() {
         let program = compile(
             r#"fn opening(callee: fn() -> null = || {}) {
@@ -926,15 +997,7 @@ mod tests {
         let site = first_call(&program, "opening");
         let function = &program.package().functions[site.code.function.index()];
         let next = function.code.next_pc(site.pc.index()).unwrap().unwrap();
-        let mut walk = Walk {
-            program: &program,
-            remaining: 1,
-            dialogue_remaining: DIALOGUE_LIMIT,
-            code: bc::ResidentCodeReader::default(),
-            layers: ArrayVec::new(),
-            closures: ArrayVec::new(),
-            fields: ArrayVec::new(),
-        };
+        let mut walk = Walk::new(&program, 1, BUILD_DIALOGUE_LIMIT);
         assert!(walk.function(function, next, Facts::default(), 0).is_none());
         assert_eq!(walk.remaining, 0);
     }

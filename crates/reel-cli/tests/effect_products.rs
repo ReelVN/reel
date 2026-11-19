@@ -83,8 +83,11 @@ fn source_function_bindings_survive_debug_release_and_reencoding() {
             &package.program().encode(Default::default()).unwrap(),
             package.metadata(),
             Some(&distribution),
-            package.effects(),
-            package.resume().table(),
+            package::Products {
+                effects: package.effects(),
+                resume: package.resume().table(),
+                visual_plan: package.visual_plan(),
+            },
             reel_engine::aside::source::types(),
             Default::default(),
         )
@@ -174,8 +177,11 @@ fn package_and_engine_validate_distinct_effect_boundaries() {
             &bytecode,
             loaded.metadata(),
             None,
-            products,
-            loaded.resume().table(),
+            package::Products {
+                effects: products,
+                resume: loaded.resume().table(),
+                visual_plan: loaded.visual_plan(),
+            },
             reel_engine::aside::source::types(),
             Default::default(),
         )
