@@ -556,6 +556,9 @@ impl reel_core::io::AssetIo for ControlledIo {
     {
         self.0.borrow_mut().replace_save(request)
     }
+    fn promote_visible(&mut self, id: reel_core::identity::IoId) {
+        self.0.borrow_mut().promote_visible(id);
+    }
     fn cancel(&mut self, id: reel_core::identity::IoId) {
         self.0.borrow_mut().cancel(id);
     }

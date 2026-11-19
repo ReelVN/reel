@@ -449,7 +449,7 @@ impl Assets {
             limit,
         )
     }
-    /// Keep admitted work and use visible priority and budgets for its next steps.
+    /// Raise the existing request to visible priority and keep its admitted work.
     pub(crate) fn promote_prefetch(&self, id: LoadId) -> bool {
         self.0.borrow_mut().promote_prefetch(id)
     }

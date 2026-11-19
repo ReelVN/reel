@@ -26,16 +26,33 @@ impl Service {
             Phase::Done(Err(_)) => return false,
             Phase::AtlasWait(view) => {
                 let page = self.atlas_pages.0[&view.manifest.page].load;
-                let backing = self.loads.get_mut(&page).expect("active atlas page");
+                let backing = &self.loads[&page];
                 if matches!(backing.phase, Phase::Done(Err(_))) {
                     return false;
                 }
-                backing.priority = Priority::Visible;
+                self.promote_load(page);
             }
             _ => {}
         }
-        self.loads.get_mut(&id).unwrap().priority = Priority::Visible;
+        self.promote_load(id);
         true
+    }
+
+    fn promote_load(&mut self, id: LoadId) {
+        let load = self.loads.get_mut(&id).unwrap();
+        if load.priority >= Priority::Visible {
+            return;
+        }
+        load.priority = Priority::Visible;
+        match load.phase {
+            Phase::Describing(id) | Phase::Reading(id) => {
+                self.io.as_mut().unwrap().promote_visible(id)
+            }
+            Phase::Probing(id) | Phase::Decoding(id) => {
+                self.executor.as_mut().unwrap().promote_visible(id)
+            }
+            _ => {}
+        }
     }
 
     /// Remove one waiter. The shared IO/work request is cancelled only at zero.
@@ -127,10 +144,11 @@ impl Service {
             return Err("atlas page cannot reference another atlas view".into());
         }
         if let Some(page) = self.atlas_pages.0.get_mut(path) {
-            if let Some(load) = self.loads.get_mut(&page.load) {
-                load.priority = load.priority.max(priority);
-            }
+            let backing = page.load;
             page.waiters = page.waiters.checked_add(1).ok_or("atlas waiter capacity")?;
+            if priority == Priority::Visible {
+                self.promote_load(backing);
+            }
             return Ok(());
         }
         let storage = self

@@ -227,6 +227,9 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
             }),
         }
     }
+    fn promote_visible(&mut self, id: WorkId) {
+        self.queue.promote_visible(id.0);
+    }
     fn cancel(&mut self, id: WorkId) {
         if let Some(entry) = self.queue.take(id.0) {
             let Job {

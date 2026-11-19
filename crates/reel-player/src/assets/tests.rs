@@ -168,6 +168,9 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
             self.1.fetch_add(1, Ordering::Relaxed);
             self.0.submit(request)
         }
+        fn promote_visible(&mut self, id: WorkId) {
+            self.0.promote_visible(id);
+        }
         fn cancel(&mut self, id: WorkId) {
             self.0.cancel(id);
         }

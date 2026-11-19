@@ -385,6 +385,9 @@ impl AssetIo for MemoryAssetIo {
             self.writes.accept(id.0, r, bytes, Priority::Normal)
         })
     }
+    fn promote_visible(&mut self, id: IoId) {
+        self.reads.promote_visible(id.0);
+    }
     fn cancel(&mut self, id: IoId) {
         if let Some(entry) = self.reads.take(id.0) {
             let (scope, completion) = match entry.request {

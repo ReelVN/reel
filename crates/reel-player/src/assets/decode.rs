@@ -222,6 +222,9 @@ impl WorkExecutor for ImageExecutor {
                 })
         })
     }
+    fn promote_visible(&mut self, id: WorkId) {
+        self.worker.promote_visible(id.0);
+    }
     fn cancel(&mut self, id: WorkId) {
         self.worker.cancel(id.0);
     }

@@ -227,6 +227,9 @@ pub trait AssetIo {
     fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>>;
     fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>>;
     fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>>;
+    /// Raise a pending ordinary read or describe request to visible priority. Running
+    /// reads use it on their next chunk. The request identity and reservations stay owned.
+    fn promote_visible(&mut self, id: IoId);
     /// If unsettled, settle Cancelled once and suppress later business output.
     /// If already settled/queued, preserve that terminal; cancellation is a no-op.
     /// A caller must first revoke its business wait, even if the IO cannot abort.

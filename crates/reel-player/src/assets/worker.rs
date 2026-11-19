@@ -16,14 +16,19 @@ use std::{
 
 struct Task<R> {
     request: R,
-    cancelled: Arc<AtomicBool>,
+    control: Arc<Control>,
+}
+#[derive(Default)]
+struct Control {
+    cancelled: AtomicBool,
+    promoted: AtomicBool,
 }
 struct Event<E> {
     client: u64,
     event: E,
 }
 struct Active {
-    cancelled: Arc<AtomicBool>,
+    control: Arc<Control>,
     client: u64,
 }
 #[derive(Clone)]
@@ -207,15 +212,22 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                             observed_quantum != Duration::ZERO
                                 && deadline.saturating_duration_since(started) > observed_quantum
                         });
-                        let step =
-                            handler(entry.request.request, &entry.request.cancelled, read_ahead);
+                        let step = handler(
+                            entry.request.request,
+                            &entry.request.control.cancelled,
+                            read_ahead,
+                        );
                         observed_quantum = observed_quantum.max(started.elapsed());
                         let mut event = match step {
                             Step::Complete(event) => event,
                             Step::Continue(request) => {
                                 entry.request.request = request;
                                 let mut state = shared.0.lock().unwrap();
-                                state.queue.requeue(entry);
+                                if entry.request.control.promoted.load(Ordering::Relaxed) {
+                                    state.queue.requeue_visible(entry);
+                                } else {
+                                    state.queue.requeue(entry);
+                                }
                                 continue;
                             }
                         };
@@ -223,7 +235,7 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                         let mut state = shared.0.lock().unwrap();
                         let active = state.active.remove(&entry.slot.id).unwrap();
                         drop(state);
-                        if active.cancelled.load(Ordering::Acquire) {
+                        if active.control.cancelled.load(Ordering::Acquire) {
                             cancel_event(&mut event);
                         }
                         let mut state = shared.0.lock().unwrap();
@@ -269,14 +281,14 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                 Err(_) => state.handler = None,
             }
         }
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let control = Arc::new(Control::default());
         state
             .queue
             .accept_before(
                 id,
                 Task {
                     request,
-                    cancelled: cancelled.clone(),
+                    control: control.clone(),
                 },
                 bytes,
                 priority,
@@ -296,7 +308,7 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         state.active.insert(
             id,
             Active {
-                cancelled,
+                control,
                 client: self.client,
             },
         );
@@ -307,11 +319,20 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
     pub fn is_idle(&self) -> bool {
         self.state.0.lock().unwrap().queue.usage().requests == 0
     }
+    pub fn promote_visible(&mut self, id: u64) {
+        let mut state = self.state.0.lock().unwrap();
+        if let Some(active) = state.active.get(&id)
+            && active.client == self.client
+        {
+            active.control.promoted.store(true, Ordering::Relaxed);
+            state.queue.promote_visible(id);
+        }
+    }
     pub fn cancel(&mut self, id: u64) {
         if let Some(active) = self.state.0.lock().unwrap().active.get(&id)
             && active.client == self.client
         {
-            active.cancelled.store(true, Ordering::Release);
+            active.control.cancelled.store(true, Ordering::Release);
         }
     }
     pub fn drain(&mut self, events: &mut Vec<E>, limit: usize) {
@@ -349,7 +370,7 @@ impl<R, E> Drop for Worker<R, E> {
         state.wakes = state.clients.values().cloned().collect();
         for active in state.active.values() {
             if state.closed || active.client == self.client {
-                active.cancelled.store(true, Ordering::Release);
+                active.control.cancelled.store(true, Ordering::Release);
             }
         }
         // Drop terminal payloads outside the lane lock. Pending owners keep

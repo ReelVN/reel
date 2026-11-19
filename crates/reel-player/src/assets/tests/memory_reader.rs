@@ -136,6 +136,11 @@ impl AssetIo for MemoryReader {
         let id = self.io.lock().unwrap().replace_save(request)?;
         Ok(self.accepted(id))
     }
+    fn promote_visible(&mut self, id: IoId) {
+        if self.owned.contains(&id) {
+            self.io.lock().unwrap().promote_visible(id);
+        }
+    }
     fn cancel(&mut self, id: IoId) {
         if self.owned.contains(&id) {
             self.io.lock().unwrap().cancel(id);

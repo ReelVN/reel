@@ -6,6 +6,8 @@ use crate::{
 };
 use std::{collections::VecDeque, time::Instant};
 
+const VISIBLE_LANE: usize = Priority::Visible as usize;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QueueUsage {
     /// Includes undrained terminal records, not just pending operations.
@@ -97,12 +99,7 @@ impl<R, E> Queue<R, E> {
         priority: Priority,
         deadline: Option<ReadDeadline>,
     ) -> Result<(), Rejected<R>> {
-        let priority = match priority {
-            Priority::Prefetch => 0,
-            Priority::Normal => 1,
-            Priority::Visible => 2,
-            Priority::Realtime => 3,
-        };
+        let priority = priority as usize;
         let next = self
             .usage
             .bytes
@@ -231,9 +228,36 @@ impl<R, E> Queue<R, E> {
         }
         None
     }
+    /// Move an ordinary queued request into visible FIFO order without changing its slot.
+    pub fn promote_visible(&mut self, id: u64) {
+        let Some((lane, index)) =
+            self.pending[..VISIBLE_LANE]
+                .iter()
+                .enumerate()
+                .find_map(|(lane, queue)| {
+                    let index = queue.iter().position(|entry| entry.slot.id == id)?;
+                    Some((lane, index))
+                })
+        else {
+            return;
+        };
+        if self.pending[VISIBLE_LANE].try_reserve(1).is_ok() {
+            let mut entry = self.pending[lane].remove(index).unwrap();
+            self.deadline_handles[lane] -= u32::from(entry.deadline.is_some());
+            entry.priority = VISIBLE_LANE;
+            self.requeue(entry);
+        }
+    }
     pub fn requeue(&mut self, entry: Entry<R>) {
         self.deadline_handles[entry.priority] += u32::from(entry.deadline.is_some());
         self.pending[entry.priority].push_back(entry);
+    }
+    /// Put a running continuation back at visible priority if it was promoted in flight.
+    pub fn requeue_visible(&mut self, mut entry: Entry<R>) {
+        if entry.priority < VISIBLE_LANE && self.pending[VISIBLE_LANE].try_reserve(1).is_ok() {
+            entry.priority = VISIBLE_LANE;
+        }
+        self.requeue(entry);
     }
     pub fn finish(&mut self, event: E, slot: CompletionSlot) {
         // The slot was reserved at accept, before any ID or effect was published.

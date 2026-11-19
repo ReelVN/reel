@@ -410,12 +410,13 @@ fn packed_reads_preserve_priority_cancel_queue_backpressure_and_budget_ownership
         .unwrap_err();
     assert_eq!(rejected.reason.code, RejectCode::Busy);
     drop(rejected);
-    io.cancel(low);
+    io.promote_visible(low);
+    io.cancel(normal);
     resume.send(()).unwrap();
     let completed = events(&mut io, &wake, &receiver, 5);
     assert_eq!(
         completed.iter().map(|e| e.id).collect::<Vec<_>>(),
-        [media_a, media_b, visible, normal, low]
+        [media_a, media_b, visible, low, normal]
     );
     assert_eq!(bytes(&completed[0]), b"data");
     assert_eq!(bytes(&completed[1]), b"data");
@@ -508,12 +509,12 @@ fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
         completion: completion.reserve(512).unwrap(),
     };
     let large = io
-        .read(read(large_key, large_length, Priority::Visible))
+        .read(read(large_key, large_length, Priority::Prefetch))
         .unwrap();
     started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
     // Fill all ordinary slots while the first large quantum owns its one buffer.
     let other = io
-        .read(read(media_key, media_length, Priority::Visible))
+        .read(read(media_key, media_length, Priority::Normal))
         .unwrap();
     let rejected = io
         .read(read(media_key, media_length, Priority::Visible))
@@ -523,15 +524,16 @@ fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
     let media = io
         .read(read(media_key, media_length, Priority::Realtime))
         .unwrap();
+    io.promote_visible(large);
     resume_tx.send(()).unwrap();
     let result = events(&mut io, &wake, &receiver, 3);
     assert_eq!(
         result.iter().map(|event| event.id).collect::<Vec<_>>(),
-        [media, other, large]
+        [media, large, other]
     );
     assert_eq!(bytes(&result[0]), expected_media);
     assert_eq!(
-        blake3::hash(bytes(&result[2])).as_bytes(),
+        blake3::hash(bytes(&result[1])).as_bytes(),
         &large_entry.version
     );
     let observations = observations.lock().unwrap();

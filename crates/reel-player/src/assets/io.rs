@@ -514,6 +514,9 @@ impl AssetIo for FileIo {
             reason: RejectReason::new(RejectCode::Unsupported, "asset storage is read-only"),
         })
     }
+    fn promote_visible(&mut self, id: IoId) {
+        self.worker.promote_visible(id.0);
+    }
     fn cancel(&mut self, id: IoId) {
         self.worker.cancel(id.0);
     }
@@ -552,6 +555,9 @@ macro_rules! forward_asset_io {
             }
             fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
                 self.0.replace_save(request)
+            }
+            fn promote_visible(&mut self, id: IoId) {
+                self.0.promote_visible(id);
             }
             fn cancel(&mut self, id: IoId) {
                 self.0.cancel(id);

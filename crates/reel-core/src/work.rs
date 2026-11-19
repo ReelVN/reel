@@ -95,6 +95,8 @@ pub struct WorkEvent {
 pub trait WorkExecutor {
     fn capabilities(&self) -> WorkCaps;
     fn submit(&mut self, work: WorkRequest) -> Result<WorkId, Rejected<WorkRequest>>;
+    /// Raise queued ordinary work to visible priority without resubmitting it.
+    fn promote_visible(&mut self, id: WorkId);
     /// Unsettled work produces Cancelled once, even if underlying work cannot stop
     /// immediately. An already queued terminal keeps its actual result; it must
     /// not resume a revoked business wait. Repeated cancellation is a no-op.
