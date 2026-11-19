@@ -248,6 +248,7 @@ pub struct VideoPlayback {
     worker: Option<JoinHandle<()>>,
     cancel_source: Box<dyn Fn() + Send>,
     position: f64,
+    next_frame_pts: Option<f64>,
     audio_clock: bool,
     options: VideoOptions,
 }
@@ -352,6 +353,7 @@ impl VideoPlayback {
             worker: Some(worker),
             cancel_source: Box::new(cancel_source),
             position,
+            next_frame_pts: None,
             audio_clock: false,
             options,
         })
@@ -456,12 +458,39 @@ impl VideoPlayback {
             }
             frame = state.frames.pop_front();
         }
+        self.next_frame_pts = state
+            .frames
+            .front()
+            .filter(|_| {
+                self.audio_clock
+                    || state
+                        .info
+                        .as_ref()
+                        .is_some_and(|info| info.audio_sample_rate.is_none())
+            })
+            .map(|next| next.frame.pts);
         drop(state);
         if frame.is_some() {
             reel_core::profile::count(reel_core::profile::Phase::VideoSelected);
             self.shared.signal();
         }
         frame
+    }
+    /// Estimated host delay to the next queued picture, sampled by [`Self::take_frame`].
+    /// PCM consumption remains authoritative when the host selects a picture.
+    pub fn next_frame_after(&self) -> Option<Duration> {
+        let pts = self.next_frame_pts?;
+        let transport = &self.shared.transport;
+        if self.options.poster
+            || transport.paused.load(Ordering::Acquire)
+            || transport.cancelled.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        let remaining = Duration::try_from_secs_f64(pts - self.position).ok()?;
+        // PCM time advances in blocks. Recheck a near deadline without spinning
+        // when the mixer has yet to consume the remaining samples.
+        Some(remaining.max(Duration::from_millis(1)))
     }
     pub fn terminal(&self) -> Option<VideoTerminal> {
         self.shared.state.lock().unwrap().terminal.clone()

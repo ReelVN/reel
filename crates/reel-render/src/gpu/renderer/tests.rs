@@ -555,12 +555,12 @@ fn rectangle_clips_share_targets_and_preserve_group_opacity() {
     });
     let mut renderer = renderer(Default::default());
     let prepared = renderer.prepare(&frame(scene, &pool)).unwrap();
-    let target =
-        crate::gpu::targets::target_bytes([64, 48], renderer.gpu.quality([64, 48]).unwrap())
-            .unwrap();
+    let quality = renderer.gpu.quality([64, 48]).unwrap();
+    let viewport = crate::gpu::targets::target_bytes([64, 48], quality).unwrap();
+    let cropped_group = crate::gpu::targets::target_bytes([32, 32], quality).unwrap();
     assert_eq!(
         renderer.usage().targets,
-        2 * target,
+        viewport + cropped_group,
         "only output and isolated opacity group need targets"
     );
     let pixels = renderer.readback(prepared).unwrap();
@@ -583,6 +583,7 @@ fn rectangle_clips_share_targets_and_preserve_group_opacity() {
             "pixel {x},{y}: {pixel:?}"
         );
     }
+    *renderer.white.lock().unwrap() = None;
     empty(&renderer);
 }
 

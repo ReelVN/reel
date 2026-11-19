@@ -54,6 +54,12 @@ impl Movies {
             ),
         }
     }
+    pub(super) fn next_frame_after(&self) -> Option<Duration> {
+        self.entries
+            .values()
+            .filter_map(|movie| movie.playback.as_ref()?.next_frame_after())
+            .min()
+    }
     fn retire(&mut self, mut playback: VideoPlayback) {
         playback.cancel();
         if !playback.worker_finished() {

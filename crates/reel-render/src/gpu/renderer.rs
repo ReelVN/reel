@@ -772,6 +772,7 @@ impl Renderer {
                         Some(crate::common::offscreen::ResidentTargets {
                             direct: &resident,
                             sampled: &resident,
+                            borrow_viewport: true,
                         }),
                         |schedule, bytes| {
                             Context::collect_effect_inputs(

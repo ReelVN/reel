@@ -21,6 +21,7 @@ pub(crate) use schedule::ParentStep;
 pub(crate) struct ResidentTargets<'a> {
     pub direct: &'a super::target_plan::Requirements,
     pub sampled: &'a super::target_plan::Requirements,
+    pub borrow_viewport: bool,
 }
 #[cfg(test)]
 #[path = "offscreen_blend_tests.rs"]
@@ -218,7 +219,9 @@ impl Plan {
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, u64, Vec<R>, T), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::OffscreenPlan);
-        let padding = super::target_storage::Padding::for_samples(samples);
+        let padding = super::target_storage::Padding::for_samples(samples).with_viewport_reuse(
+            samples > 1 && resident.is_some_and(|targets| targets.borrow_viewport),
+        );
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],

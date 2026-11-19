@@ -141,9 +141,21 @@ fn future_picture_backpressure_keeps_pcm_advancing_and_retires_partial_packet() 
     wait(|| audio.consumer.slots() == 2);
     assert_eq!(movie.shared.state.lock().unwrap().frames.len(), 2);
     assert!(movie.take_frame().is_none());
+    assert_eq!(movie.next_frame_after(), Some(Duration::from_millis(500)));
+    movie.pause(true);
+    assert_eq!(movie.next_frame_after(), None);
+    movie.pause(false);
     assert!(!movie.shared.transport.audio_end.load(Ordering::Acquire));
     let mut pictures = Vec::new();
     for expected in 1..=8 {
+        if expected == 2 {
+            // A near deadline requests another host tick without selecting a
+            // picture until the mixer publishes the rest of its PCM position.
+            movie.shared.transport.clock.store(0.499_999);
+            movie.tick(Duration::ZERO);
+            assert!(movie.take_frame().is_none());
+            assert_eq!(movie.next_frame_after(), Some(Duration::from_millis(1)));
+        }
         let mut sample = None;
         wait(|| {
             sample = audio.consumer.pop().ok();
@@ -173,6 +185,7 @@ fn future_picture_backpressure_keeps_pcm_advancing_and_retires_partial_packet() 
         .store(true, Ordering::Release);
     movie.tick(Duration::ZERO);
     assert_eq!(movie.terminal(), Some(VideoTerminal::Completed));
+    assert_eq!(movie.next_frame_after(), None);
     drop(audio);
     drop(movie);
     assert_eq!(budget.usage().bytes, 0);

@@ -1,6 +1,7 @@
 use super::{Gpu, GpuError};
 pub(super) use crate::common::resources::ResourceSource;
 use crate::common::resources::TextureUploadLayout;
+use reel_core::image_coverage::IMAGE_COVERAGE_BANDS;
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 use reel_ui::frame::RecordLocation;
 use reel_ui::peniko::ImageFormat;
@@ -165,12 +166,21 @@ pub(super) fn image_rows(
                 Rgba8LinearF16::new(image.encoding, image.alpha_type)
             };
             let (pixels, _) = pixels.bytes().as_chunks::<4>();
+            let support = lease
+                .image_coverage()
+                .filter(|coverage| !coverage.is_full());
+            let bands = support.map(|coverage| {
+                coverage
+                    .rectangles()
+                    .collect::<smallvec::SmallVec<[[u32; 4]; IMAGE_COVERAGE_BANDS]>>()
+            });
             convert_rows(
                 gpu,
                 buffer,
                 image.width,
                 rows,
                 32 * 1024,
+                bands.as_deref(),
                 &|first, output| {
                     convert_rgba8_chunk(&pixels[first..first + output.len()], output, &conversion);
                 },
@@ -611,6 +621,7 @@ fn convert_rows(
     width: u32,
     rows: std::ops::Range<u32>,
     batch_pixels: u32,
+    alpha_bands: Option<&[[u32; 4]]>,
     chunk: &(impl Fn(usize, &mut [[u16; 4]]) + Sync),
 ) -> Result<(), GpuError> {
     let row = row_bytes(width) as u32;
@@ -636,6 +647,7 @@ fn convert_rows(
             width as usize,
             row as usize,
             (rows.start + first) as usize,
+            alpha_bands,
             chunk,
         );
         Ok::<_, GpuError>(())
@@ -657,18 +669,43 @@ fn write_rows(
     width: usize,
     stride: usize,
     first_row: usize,
+    mut alpha_bands: Option<&[[u32; 4]]>,
     chunk: &impl Fn(usize, &mut [[u16; 4]]),
 ) {
     let height = mapped.len() / stride;
     let mut batch = [[0u16; 4]; 128];
     for y in 0..height {
-        for x in (0..width).step_by(batch.len()) {
-            let count = batch.len().min(width - x);
-            let source = (y + first_row) * width + x;
-            chunk(source, &mut batch[..count]);
-            let start = y * stride + x * 8;
-            mapped
-                .slice(start..start + count * 8)
+        let source_row = y + first_row;
+        let mut row = mapped.slice(y * stride..y * stride + width * 8);
+        let [start, end] = if let Some(bands) = &mut alpha_bands {
+            while let Some([_, _, _, bottom]) = bands.first()
+                && *bottom as usize <= source_row
+            {
+                *bands = &bands[1..];
+            }
+            let [start, end] = match bands.first() {
+                Some([left, top, right, _]) if *top as usize <= source_row => {
+                    [*left as usize, *right as usize]
+                }
+                _ => [0, 0],
+            };
+            // The remapped buffer can still contain a prior image's texels.
+            // Alpha-zero input always produces four zero channels.
+            if start != 0 {
+                row.slice(..start * 8).fill(0);
+            }
+            if end != width {
+                row.slice(end * 8..).fill(0);
+            }
+            [start, end]
+        } else {
+            [0, width]
+        };
+        for x in (start..end).step_by(batch.len()) {
+            let count = batch.len().min(end - x);
+            chunk(source_row * width + x, &mut batch[..count]);
+            let at = x * 8;
+            row.slice(at..at + count * 8)
                 .copy_from_slice(bytemuck::cast_slice(&batch[..count]));
         }
     }
@@ -697,6 +734,7 @@ mod tests {
         let pixels: Vec<_> = (0..rows.end * width)
             .map(|index| {
                 let x = index % width;
+                let y = index / width;
                 let sample = match x {
                     0..=127 => index - x,
                     128..=254 => index - x + 128,
@@ -707,10 +745,20 @@ mod tests {
                     sample as u8,
                     (sample >> 8) as u8,
                     (sample * 17) as u8,
-                    (sample >> 4) as u8,
+                    if (64..344).contains(&y) && (64..640).contains(&x) {
+                        (sample >> 4) as u8
+                    } else {
+                        0
+                    },
                 ]
             })
             .collect();
+        let coverage = reel_core::image_coverage::ImageCoverage::rgba8(
+            [width as u32, rows.end as u32],
+            bytemuck::cast_slice(&pixels),
+        )
+        .unwrap();
+        let bands: Vec<_> = coverage.rectangles().collect();
         let mut actual = vec![0xa7; (rows.end - rows.start) * stride];
         let mut expected = actual.clone();
         for encoding in [ColorEncoding::Srgb, ColorEncoding::Linear] {
@@ -724,20 +772,24 @@ mod tests {
                         row[x * 8..x * 8 + 8].copy_from_slice(bytemuck::bytes_of(&bits));
                     }
                 }
-                write_rows(
-                    (&mut actual[..]).into(),
-                    width,
-                    stride,
-                    rows.start,
-                    &|first, output| {
-                        convert_rgba8_chunk(
-                            &pixels[first..first + output.len()],
-                            output,
-                            &conversion,
-                        );
-                    },
-                );
-                assert_eq!(actual, expected, "{encoding:?} {alpha_type:?}");
+                for support in [None, Some(bands.as_slice())] {
+                    actual.fill(0xa7);
+                    write_rows(
+                        (&mut actual[..]).into(),
+                        width,
+                        stride,
+                        rows.start,
+                        support,
+                        &|first, output| {
+                            convert_rgba8_chunk(
+                                &pixels[first..first + output.len()],
+                                output,
+                                &conversion,
+                            );
+                        },
+                    );
+                    assert_eq!(actual, expected, "{encoding:?} {alpha_type:?}");
+                }
             }
         }
     }

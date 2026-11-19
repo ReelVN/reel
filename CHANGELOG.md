@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Use queued video timestamps to schedule media updates closer to when pictures are due.
+- Skip desktop upload color conversion outside decoded images' nonzero-alpha bounds.
+- Reuse spare desktop viewport textures for large cropped groups during multisampled rendering.
 - Raise existing image and shared atlas requests to visible priority when a scene needs them, including reads that are already in progress.
 - Look ahead through upcoming dialogue and statically known transition callbacks to prepare their pictures earlier.
 - Reuse recently uploaded images across story restarts and save loads in the same game without keeping a second copy of the pixels on the CPU.

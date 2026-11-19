@@ -7,6 +7,7 @@ pub(crate) struct Padding {
     min_alignment: u32,
     alignment_divisor: u32,
     extra_divisor: u64,
+    borrow_viewport: bool,
 }
 
 impl Padding {
@@ -16,14 +17,21 @@ impl Padding {
                 min_alignment: 64,
                 alignment_divisor: 16,
                 extra_divisor: 4,
+                borrow_viewport: false,
             }
         } else {
             Self {
                 min_alignment: 32,
                 alignment_divisor: 32,
                 extra_divisor: 8,
+                borrow_viewport: false,
             }
         }
+    }
+
+    pub(crate) fn with_viewport_reuse(mut self, enabled: bool) -> Self {
+        self.borrow_viewport = enabled;
+        self
     }
 }
 
@@ -252,7 +260,12 @@ fn resident_capacities(
                 continue;
             }
             let bytes = cost(capacity)?;
-            if bytes.saturating_sub(original_bytes) > original_bytes / padding.extra_divisor {
+            let extra = bytes.saturating_sub(original_bytes);
+            let larger_viewport = padding.borrow_viewport
+                && capacity == root
+                && available >= count
+                && extra <= original_bytes;
+            if !larger_viewport && extra > original_bytes / padding.extra_divisor {
                 continue;
             }
             let total = plan.bytes - previous_bytes * count;
@@ -365,6 +378,43 @@ mod tests {
     }
     fn cost(size: [u32; 2]) -> Result<u64, GpuError> {
         Ok(area(size) * 4)
+    }
+
+    #[test]
+    fn viewport_reuse_borrows_only_existing_spare_capacity_inside_the_frame_budget() {
+        let root = [1280, 720];
+        let large = [704, 704];
+        let small = [384, 320];
+        let viewport_bytes = cost(root).unwrap();
+        for (logical, warm, budget, borrowed) in [
+            (large, 2, 2 * viewport_bytes, true),
+            (large, 1, 2 * viewport_bytes, false),
+            (large, 2, 2 * viewport_bytes - 1, false),
+            (small, 2, 2 * viewport_bytes, false),
+        ] {
+            let inputs = required(&[(root, 1), (logical, 1)]);
+            let resident = required(&[(root, warm)]);
+            let plan = Plan::capacities(
+                &inputs,
+                root,
+                4096,
+                budget,
+                &cost,
+                &resident,
+                Padding::for_samples(4).with_viewport_reuse(true),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(
+                plan.as_ref()
+                    .is_some_and(|(plan, _)| plan.storage_size(logical) == root),
+                borrowed
+            );
+            if let Some((plan, _)) = plan {
+                assert_eq!(plan.storage_size(root), root);
+                assert!(plan.bytes() <= budget);
+            }
+        }
     }
 
     #[test]

@@ -1202,18 +1202,26 @@ impl MediaBackend for MediaPlayer {
         })
     }
     fn poll_after(&self) -> Option<Duration> {
-        (self.output_idle.quiet.is_some()
+        let active = self.output_idle.quiet.is_some()
             || self.video_pending()
             || !self.entries.is_empty()
             || self.cleanup_pending()
             || self.reclaim_pending
             || self.service.as_ref().is_some_and(|s| s.occupied() != 0)
-            || self.pcm.usage().bytes != 0)
-            .then_some(if self.wake.is_pending() {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(10)
-            })
+            || self.pcm.usage().bytes != 0;
+        if !active {
+            return None;
+        }
+        if self.wake.is_pending() {
+            return Some(Duration::ZERO);
+        }
+        let interval = Duration::from_millis(10);
+        #[cfg(feature = "video")]
+        let interval = self
+            .movies
+            .next_frame_after()
+            .map_or(interval, |frame| frame.min(interval));
+        Some(interval)
     }
     fn suspend(&mut self) {
         self.suspended = true;

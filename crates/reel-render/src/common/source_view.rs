@@ -52,14 +52,18 @@ impl SourceView {
         // Buckets use 32 physical pixels, independent of author canvas scale.
         // Keeping adjacent extents in one bucket avoids rebuilding targets for
         // subpixel motion. The pool retains both buckets when an edge crosses it.
-        let extent = |value: u32| {
+        let extent = |value: u32, parent: u32| {
             value
                 .max(1)
                 .div_ceil(32)
                 .saturating_mul(32)
+                .min(parent)
                 .min(max_dimension)
         };
-        let storage_size = [extent(parent_rect.width), extent(parent_rect.height)];
+        let storage_size = [
+            extent(parent_rect.width, parent_size[0]),
+            extent(parent_rect.height, parent_size[1]),
+        ];
         if u64::from(storage_size[0]) * u64::from(storage_size[1])
             >= u64::from(parent_size[0]) * u64::from(parent_size[1])
         {
@@ -185,6 +189,24 @@ mod tests {
             effect_to_target: Affine::IDENTITY,
             ink_bounds: InkBounds::Empty,
         }
+    }
+
+    #[test]
+    fn cropped_source_rounding_stays_within_parent_axes() {
+        let parent = [1280, 720];
+        let view = SourceView::group(
+            &group(),
+            InkBounds::Rect(Rect::new(27., -8., 720., 728.)),
+            Affine::IDENTITY,
+            parent,
+            Scissor::full(parent),
+            false,
+            4096,
+        )
+        .unwrap();
+        assert_eq!(view.storage_size, [704, 720]);
+        assert_eq!(view.source_rect.height, 720);
+        assert_eq!(view.origin(), [26, 0]);
     }
 
     #[test]

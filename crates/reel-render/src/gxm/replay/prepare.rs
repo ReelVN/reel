@@ -161,6 +161,7 @@ pub(in crate::gxm) fn prepare(
                 Some(crate::common::offscreen::ResidentTargets {
                     direct: &direct,
                     sampled: sampled.as_ref().unwrap_or(&direct),
+                    borrow_viewport: false,
                 }),
                 |schedule, bytes| {
                     context.collect_effect_inputs(frame, schedule, bytes, effect_results_enabled)
