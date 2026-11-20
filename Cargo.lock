@@ -1675,6 +1675,7 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png",
+ "qoi",
  "zune-core",
  "zune-jpeg",
 ]
@@ -3250,6 +3251,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "qoi"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3543,6 +3553,7 @@ dependencies = [
  "png",
  "pollster",
  "postcard",
+ "qoi",
  "reel-core",
  "reel-engine",
  "reel-media",

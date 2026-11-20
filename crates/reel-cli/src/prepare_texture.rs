@@ -73,7 +73,7 @@ impl Options {
     }
 }
 
-/// Prepare PNG, JPEG or static WebP and atomically publish a new texture file.
+/// Prepare PNG, JPEG, static WebP or QOI and publish a new texture file atomically.
 /// Filtering uses linear-premultiplied colors; padding repeats the content edge.
 /// Pixel and BC payloads are stored ready for upload. Release archives compress
 /// these bytes in independently readable blocks. Existing output files are preserved.

@@ -39,8 +39,9 @@ reel-media = { path = "../reel-media", default-features = false }
 reel-ui.workspace = true
 reel-engine = { path = "../reel-engine" }
 blake3 = { version = "=1.8.7" }
-image = { workspace = true, features = ["png", "jpeg", "webp"] }
+image = { workspace = true, features = ["png", "jpeg", "webp", "qoi"] }
 png = "=0.18.1"
+qoi = "=0.4.1"
 reel-core = { path = "../reel-core" }
 reel-render = { path = "../reel-render" }
 winit = { version = "=0.30.13", optional = true }

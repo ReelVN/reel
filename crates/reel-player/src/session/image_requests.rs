@@ -66,14 +66,17 @@ impl SessionUi {
                 self.image_demand_dirty = false;
                 return Ok(true);
             }
-            if !self.images.requests_ready(&requests) {
+            if !self.images.layout_ready(&requests) {
                 self.images.request_stage_images(requests);
                 self.image_layout_pending = true;
             }
         }
         if self.image_layout_pending {
             self.images.poll()?;
-            if !self.images.metadata_ready() {
+            if !self
+                .images
+                .layout_ready(&candidate.layout_image_requests(self.images.shader_format))
+            {
                 return Ok(false);
             }
         }

@@ -46,7 +46,7 @@ reel-engine = { path = "../reel-engine" }
 reel-render = { path = "../reel-render" }
 reel-ui = { path = "../reel-ui" }
 reel-core = { path = "../reel-core" }
-image = { workspace = true, features = ["png", "jpeg", "webp"] }
+image = { workspace = true, features = ["png", "jpeg", "webp", "qoi"] }
 rgbcx = { version = "=0.1.2", features = ["parallel"] }
 reel-player = { path = "../reel-player" }
 reel-storage = { path = "../reel-storage" }

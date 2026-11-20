@@ -410,17 +410,84 @@ fn pngs_with_fixed_metadata_decode_without_a_worker_probe() {
         let assets = Assets::directory(AssetOptions::default());
         let id = assets.request_encoded("test".into(), &encoded).unwrap();
         assets.maintain();
+        assert_eq!(assets.pending_image_size(id), Some([19, 5]));
         {
             let service = assets.0.borrow();
             let load = &service.loads[&id];
             assert!(matches!(load.phase, Phase::Decoding(_)));
             assert_eq!(load.output, expected.len() as u64);
             assert!(load.input.is_none());
-            assert_eq!(service.pending_pngs.len(), 1);
+            assert_eq!(service.pending_bounded_decodes.len(), 1);
         }
         let lease = load_until_done(&assets, id).unwrap();
         assert_eq!(lease.read_pixels().unwrap().bytes(), expected);
     }
+}
+
+#[test]
+fn qoi_decodes_into_reserved_pixels_without_a_worker_probe() {
+    let expected = (0..19 * 5)
+        .flat_map(|sample: u8| [25 + sample, 50 + sample, 75 + sample, sample])
+        .collect::<Vec<_>>();
+    for channels in [3, 4] {
+        let pixels = expected
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|pixel| pixel[..channels].iter().copied())
+            .collect::<Vec<_>>();
+        let encoded = qoi::encode_to_vec(&pixels, 19, 5).unwrap();
+        let assets = Assets::directory(AssetOptions {
+            decode_bytes: 0,
+            resident_bytes: expected.len() as u64,
+            ..Default::default()
+        });
+        let id = assets
+            .request_encoded("artwork.png".into(), &encoded)
+            .unwrap();
+        assets.maintain();
+        {
+            let service = assets.0.borrow();
+            let load = &service.loads[&id];
+            assert!(matches!(load.phase, Phase::Decoding(_)));
+            assert_eq!(load.size, [19, 5]);
+            assert!(load.input.is_none());
+            assert_eq!(service.pending_bounded_decodes.len(), 1);
+        }
+        let lease = load_until_done(&assets, id).unwrap();
+        let decoded = lease.read_pixels().unwrap();
+        for (&out, &source) in decoded
+            .bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<4>().0)
+        {
+            assert_eq!(&out[..3], &source[..3]);
+            assert_eq!(out[3], if channels == 3 { 255 } else { source[3] });
+        }
+        assert_eq!(assets.temporary_pool().usage().bytes, 0);
+        assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+    }
+
+    let linear = qoi::Encoder::new(&expected, 19, 5)
+        .unwrap()
+        .with_colorspace(qoi::ColorSpace::Linear)
+        .encode_to_vec()
+        .unwrap();
+    let shared = crate::artwork::decoder(std::io::Cursor::new(&linear), linear.len() as u64, 0);
+    assert_eq!(
+        shared.err().unwrap(),
+        "QOI artwork requires sRGB color channels"
+    );
+    let assets = Assets::directory(AssetOptions::default());
+    let id = assets
+        .request_encoded("linear.qoi".into(), &linear)
+        .unwrap();
+    assert_eq!(
+        load_until_done(&assets, id).err().unwrap(),
+        "QOI artwork requires sRGB color channels"
+    );
 }
 
 #[test]
@@ -497,7 +564,7 @@ fn png_color_keys_and_palettes_decode_without_a_worker_probe() {
         assets.maintain();
         let service = assets.0.borrow();
         assert!(matches!(service.loads[&id].phase, Phase::Decoding(_)));
-        assert_eq!(service.pending_pngs.len(), 1);
+        assert_eq!(service.pending_bounded_decodes.len(), 1);
         drop(service);
         let lease = load_until_done(&assets, id).unwrap();
         assert_eq!(
@@ -536,16 +603,16 @@ fn independent_pngs_share_decode_workspace_and_cancellation_releases_the_slot() 
         assert!(matches!(service.loads[&second].phase, Phase::Decoding(_)));
         assert!(matches!(
             service.loads[&same].phase,
-            Phase::DecodeBoundedPng
+            Phase::DecodeBoundedImage
         ));
-        assert_eq!(service.pending_pngs.len(), 2);
+        assert_eq!(service.pending_bounded_decodes.len(), 2);
     }
     assets.cancel(first);
     for id in [second, same] {
         let image = load_until_done(&assets, id).unwrap();
         assert_eq!(image.read_pixels().unwrap().bytes(), pixels);
     }
-    assert!(assets.0.borrow().pending_pngs.is_empty());
+    assert!(assets.0.borrow().pending_bounded_decodes.is_empty());
     assert_eq!(assets.temporary_pool().usage().bytes, 0);
 }
 

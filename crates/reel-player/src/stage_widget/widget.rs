@@ -474,7 +474,7 @@ impl Widget for SceneWidget {
         if reel_ui::layout::flow::is_flow(&self.node.kind) {
             return self.measure_flow(ctx, axis, request, cross);
         }
-        if self.image.is_some() {
+        if self.image.is_some() || self.projection.images.layout_size.is_some() {
             let other = if props.stretch.axis(axis.cross()) {
                 cross.map(Length::get)
             } else if axis == Axis::Horizontal {

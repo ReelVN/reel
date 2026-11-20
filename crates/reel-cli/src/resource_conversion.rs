@@ -2,7 +2,8 @@
 //!
 //! An optional project-root `resources.toml` contains ordered `[[targets.NAME]]`
 //! rules. The first matching logical path selects `convert = "texture"`, `"tiles"`,
-//! `"atlas"`, `"webp"`, `"opus"`, `"video"`, or `"copy"`; unmatched resources retain their selected source file.
+//! `"atlas"`, `"webp"`, `"qoi"`, `"opus"`, `"video"`, `"font"`, or `"copy"`.
+//! Unmatched resources retain their selected source file.
 //! `match` is a case-sensitive glob with `/` separators (`*` stays within one
 //! component; `**` crosses directories). Source target selection runs first.
 //! Texture `scale` changes texel density while preserving logical coordinates;
@@ -37,6 +38,7 @@
 //! Payloads remain on disk; hashing uses a fixed 64 KiB buffer. A complete index
 //! is atomically published only after all selected resources are ready.
 mod atlas;
+mod qoi;
 mod webp;
 use crate::prepare_texture;
 use globset::{GlobBuilder, GlobMatcher};
@@ -116,6 +118,7 @@ struct RuleInput {
 enum Convert {
     Copy,
     Webp,
+    Qoi,
     Texture,
     Atlas,
     Tiles,
@@ -135,6 +138,7 @@ enum TextureFallback {
 enum Recipe {
     Copy,
     Webp,
+    Qoi,
     Texture {
         scale: f64,
         size: Option<[u32; 2]>,
@@ -277,17 +281,20 @@ impl RuleInput {
                     power_of_two: self.power_of_two.unwrap_or(false),
                 }
             }
-            Convert::Copy | Convert::Webp => {
+            Convert::Copy | Convert::Webp | Convert::Qoi => {
                 if self.scale.is_some()
                     || self.size.is_some()
                     || self.format.is_some()
                     || self.power_of_two.is_some()
                     || self.bitrate.is_some()
                 {
-                    return Err(invalid("copy and webp rules only accept match and convert"));
+                    return Err(invalid(
+                        "copy, webp and qoi rules only accept match and convert",
+                    ));
                 }
                 match self.convert {
                     Convert::Webp => Recipe::Webp,
+                    Convert::Qoi => Recipe::Qoi,
                     _ => Recipe::Copy,
                 }
             }
@@ -497,9 +504,9 @@ fn rules(root: &Path, target: &ResourceTarget) -> io::Result<Vec<Rule>> {
                     index + 1
                 ))
             })?;
-            if name == "vita" && matches!(rule.recipe, Recipe::Webp) {
+            if name == "vita" && matches!(rule.recipe, Recipe::Webp | Recipe::Qoi) {
                 return Err(invalid(
-                    "Vita image rules prepare textures, tiles or atlases instead of WebP",
+                    "Vita image rules prepare textures, tiles or atlases instead of WebP or QOI",
                 ));
             }
             selected.push(rule);
@@ -586,6 +593,7 @@ fn converter_identity(recipe: &Recipe) -> &'static str {
     match recipe {
         Recipe::Copy => unreachable!(),
         Recipe::Webp => identity::for_kind("webp"),
+        Recipe::Qoi => identity::for_kind("qoi"),
         Recipe::Texture { .. } => identity::for_kind("texture"),
         Recipe::Atlas { .. } => identity::for_kind("atlas"),
         Recipe::Tiles { .. } => identity::for_kind("tiles"),
@@ -688,6 +696,7 @@ fn prepare_with_rules<'a>(
             Some(
                 recipe @ (Recipe::Texture { .. }
                 | Recipe::Webp
+                | Recipe::Qoi
                 | Recipe::Tiles { .. }
                 | Recipe::Opus { .. }
                 | Recipe::Video { .. }
@@ -724,6 +733,7 @@ fn prepare_with_rules<'a>(
                 let object = objects.join(key);
                 let output_name = match recipe {
                     Recipe::Webp => "resource.webp",
+                    Recipe::Qoi => "resource.qoi",
                     Recipe::Texture { .. } => "resource.reel-texture",
                     Recipe::Tiles { .. } => "resource.reel-image",
                     Recipe::Opus { .. } => "resource.opus",
@@ -831,6 +841,7 @@ fn convert(
 ) -> io::Result<u64> {
     match recipe {
         Recipe::Webp => webp::prepare(source, output, memory_bytes),
+        Recipe::Qoi => qoi::prepare(source, output, memory_bytes),
         Recipe::Font { characters } => {
             crate::prepare_font::prepare(source, output, characters, memory_bytes)
         }

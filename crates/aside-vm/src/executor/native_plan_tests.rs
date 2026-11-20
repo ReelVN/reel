@@ -188,6 +188,56 @@ fn planned_and_generic_native_binding_agree() {
         assert!(matches!(next(&mut vm, task), RunOutcome::Returned(_)));
     }
 }
+
+#[test]
+fn native_parameter_batch_retains_the_cursor_and_default_at_a_work_yield() {
+    let (mut vm, _) = load(false, true, 1);
+    let task = vm
+        .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+        .unwrap();
+    review_tests::reach(&mut vm, task, |vm| {
+        matches!(vm.active.frames.data.last(), Some(Frame::Native(n))
+            if matches!(n.phase, NativePhase::Defaults { parameter: 0 }))
+    });
+
+    // Inspect and check parameter 0, then publish parameter 1's literal.
+    let type_work = vm.type_checks.extra(TypeId(0));
+    let work = 8 + (4 + type_work) + (10 + type_work);
+    let RunOutcome::BudgetYield(usage) = vm
+        .run_slice(
+            task,
+            SliceBudget {
+                work,
+                ..review_tests::tiny()
+            },
+            || 0,
+        )
+        .unwrap()
+    else {
+        panic!("the next parameter needs more work");
+    };
+    assert_eq!(usage.work, work);
+    assert_eq!(usage.required_work, 8);
+    let Some(Frame::Native(n)) = vm.active.frames.data.last() else {
+        panic!("the native frame is still preparing arguments");
+    };
+    assert!(matches!(n.phase, NativePhase::Defaults { parameter: 2 }));
+    assert_eq!(vm.value(n.bound, 1).unwrap().as_int(), Some(1));
+    review_tests::collect(&mut vm);
+
+    let RunOutcome::HostCall(ticket) = next(&mut vm, task) else {
+        panic!("native");
+    };
+    assert_eq!(
+        vm.host_arguments(ticket)
+            .unwrap()
+            .iter()
+            .map(|v| v.as_int())
+            .collect::<Vec<_>>(),
+        [Some(41), Some(1), Some(1), None]
+    );
+}
+
 #[test]
 fn planned_binding_type_fault_keeps_the_generic_call_location() {
     let mut observed = Vec::new();

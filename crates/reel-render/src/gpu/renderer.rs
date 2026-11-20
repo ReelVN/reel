@@ -618,7 +618,7 @@ impl Renderer {
                 self.retained.inputs.retain(&selection);
             }
             let preferred = cached_quality.filter(|_| selection.has_cached());
-            let plan = super::image_plan::collect(
+            let mut plan = super::image_plan::collect(
                 std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
                 self.gpu.device.limits().max_texture_dimension_2d,
                 capture,
@@ -670,7 +670,7 @@ impl Renderer {
             // preparing glyphs so retries cannot discard and rerasterize their work.
             let mut images = self.images.prepare(
                 &self.gpu,
-                &plan.images,
+                &mut plan.images,
                 &self.budgets,
                 &budget_scope,
                 &self.admission,

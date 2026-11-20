@@ -206,10 +206,19 @@ impl Images {
         self.reconcile_requests();
         false
     }
-    pub(crate) fn requests_ready(&self, requests: &crate::stage_widget::ImageRequests) -> bool {
+    pub(crate) fn layout_ready(&self, requests: &crate::stage_widget::ImageRequests) -> bool {
         requests.required().all(|(source, _)| {
-            self.loaded.contains_key(source) || self.manifests.contains_key(source)
+            self.loaded.contains_key(source)
+                || self.manifests.contains_key(source)
+                || self.pending_image_size(source).is_some()
         })
+    }
+    pub(crate) fn pending_image_size(&self, source: &str) -> Option<[u32; 2]> {
+        let pending = self
+            .pending
+            .iter()
+            .find(|pending| pending.source == source)?;
+        self.assets.pending_image_size(pending.id)
     }
     pub(crate) fn is_required(&self, source: &str) -> bool {
         self.wanted.contains_key(source)

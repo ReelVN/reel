@@ -164,6 +164,9 @@ fn decode_artwork(
     if !probe && let Some(decoded) = crate::artwork::decode_rgb_png_rows(input, temporary, output) {
         return decoded;
     }
+    if !probe && let Some(decoded) = crate::artwork::decode_qoi(input, output) {
+        return decoded;
+    }
     let (decoder, workspace) =
         crate::artwork::decoder(Cursor::new(input), input.len() as u64, temporary)?;
     let (width, height) = decoder.dimensions();

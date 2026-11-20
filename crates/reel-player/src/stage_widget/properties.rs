@@ -674,7 +674,7 @@ impl SceneWidget {
         }
         let old_size = this.widget.image_size;
         let new_size = view.image_size();
-        if has_image
+        if matches!(&view.node.kind, NodeKind::Image { .. })
             && [old_size.width as f32, old_size.height as f32]
                 != [new_size.width as f32, new_size.height as f32]
         {

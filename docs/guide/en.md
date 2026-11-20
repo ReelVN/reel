@@ -65,7 +65,7 @@ Copy the exported directory to `ux0:/data/reel/GameName/`. The launcher lists di
 
 In the launcher, Circle confirms and Cross goes back. Press SELECT to choose the language and theme, and START to refresh the library after copying a new game. Preferences are saved in `ux0:/data/reel/launcher.json`.
 
-During desktop development, `reel dev` reads PNG, JPEG and static WebP directly. Add `resources.toml` at the project root to prepare assets for each release target:
+During desktop development, `reel dev` reads PNG, JPEG, static WebP and sRGB QOI directly. Add `resources.toml` at the project root to prepare assets for each release target:
 
 ```toml
 [[targets.vita]]
@@ -91,9 +91,13 @@ The first matching rule applies; unmatched files retain their original content. 
 
 Set `fallback = "source"` on a BC texture rule to keep the original image when the chosen encoding exceeds the display-error threshold against the resized image. A Vita export reports the asset if its original exceeds the device's decode budget.
 
-`targets.desktop` supplies shared conversion rules for Windows, Linux and macOS. Rules for the exact OS match first, followed by the shared desktop rules. Use `--resource-target desktop` to preview the shared target on its own. These rules convert 8-bit PNG to lossless WebP and selected audio to Opus. Existing WebP and Opus assets pass through.
+`targets.desktop` supplies shared conversion rules for Windows, Linux and macOS. Rules for the exact OS match first, followed by the shared desktop rules. Use `--resource-target desktop` to preview the shared target on its own. These rules convert selected 8-bit UI art to QOI, remaining 8-bit PNG art to lossless WebP, and selected audio to Opus. QOI preserves the pixels and may trade a larger package entry for faster decoding.
 
 ```toml
+[[targets.desktop]]
+match = "images/ui/**/*.png"
+convert = "qoi"
+
 [[targets.desktop]]
 match = "**/*.png"
 convert = "webp"

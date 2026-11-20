@@ -96,9 +96,14 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
 fn raster_uploads_share_one_mapped_buffer_without_overwriting_spans() {
     use reel_ui::resources::ColorEncoding;
 
-    for (encoding, row_bytes) in [(ColorEncoding::Linear, 512), (ColorEncoding::Srgb, 256)] {
-        for (warm_rows, creations) in [(12, [3, 2, 3]), (2, [3, 4, 4])] {
-            let (frame, _, _) = image_restore_fixture_with_encoding([64, 4], true, encoding);
+    for (encoding, row_bytes, packed) in [
+        (ColorEncoding::Linear, 512, None),
+        (ColorEncoding::Srgb, 256, None),
+        (ColorEncoding::Srgb, 256, Some(2)),
+    ] {
+        for (warm_rows, creations) in [(12, [3, 2, 3]), (2, [3, 4, 4]), (5, [3, 3, 5])] {
+            let (frame, _, _) =
+                image_restore_fixture_with_packed([[64, 4]; 3], true, encoding, packed);
             let mut renderer = renderer(Default::default());
             renderer
                 .images
@@ -116,6 +121,103 @@ fn raster_uploads_share_one_mapped_buffer_without_overwriting_spans() {
                     .all(|(actual, channel)| (*actual - channel).abs() < 0.006)
             }));
         }
+    }
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn smallest_cold_images_take_whole_spans_before_large_images_split() {
+    let (frame, _, _) = image_restore_fixture_with_packed(
+        [[64, 24], [64, 2], [64, 2]],
+        true,
+        reel_ui::resources::ColorEncoding::Srgb,
+        Some(2),
+    );
+    let mut renderer = renderer(Default::default());
+    renderer
+        .images
+        .prepare_staging(&renderer.gpu, &renderer.budgets, 6 * 256)
+        .unwrap();
+    let prepared = renderer.prepare(&frame).unwrap();
+    // One copy per thumbnail, then two remaining warm spans and a fresh allocation.
+    assert_eq!(renderer.gpu.upload_creations.snapshot(), [3, 3, 5]);
+    renderer.submit(prepared).unwrap();
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter and pixel readback"]
+fn sparse_raster_rows_are_zero_on_fresh_and_recycled_storage() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{Extend, ImageAlphaType, ImageFormat, ImageQuality, ImageSampler},
+        resources::{ColorEncoding, ResourceRegistry},
+    };
+
+    let size = [64, 48];
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(2, 65536).unwrap();
+    let mut renderer = renderer(crate::gpu::GpuLimits {
+        image_upload_bytes_per_prepare: 8 * 64 * 8,
+        ..Default::default()
+    });
+    for (index, active) in [(0, 8..12), (1, 30..34)] {
+        let version = ResourceVersion {
+            key: AssetKey(format!("sparse-raster-{index}")),
+            version: ContentVersion([index; 32]),
+        };
+        let bytes: Vec<u8> = (0..size[1])
+            .flat_map(|y| [255, 0, 0, if active.contains(&y) { 255 } else { 0 }].repeat(64))
+            .collect();
+        let ticket = pool.reserve(bytes.capacity() as u64).unwrap();
+        let handle = registry
+            .register_image(
+                version.clone(),
+                OwnedBytes::new(bytes, ticket).unwrap(),
+                size,
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Linear,
+            )
+            .unwrap();
+        let mut widget = RecordWidget::new(Scene::new());
+        widget.resource_draws.push((
+            registry.acquire(handle).unwrap(),
+            Rect::new(0., 0., 64., 48.),
+            Affine::scale(6.25),
+            // Keep the full quad so pixel readback sees every skipped row.
+            ImageSampler {
+                y_extend: Extend::Repeat,
+                quality: ImageQuality::Low,
+                ..Default::default()
+            },
+        ));
+        let frame = frame_from_widget(widget, registry.freeze(&[handle], &pool).unwrap(), &pool);
+
+        // Fresh storage stages the six covered rows once. Existing storage
+        // must overwrite all 48 rows because the visible band moved.
+        let deferrals = if index == 0 { 0 } else { 5 };
+        for _ in 0..deferrals {
+            assert!(matches!(renderer.prepare(&frame), Err(GpuError::Preparing)));
+            renderer
+                .gpu
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            renderer.poll().unwrap();
+        }
+        let prepared = renderer.prepare(&frame).unwrap();
+        assert_eq!(renderer.gpu.upload_creations.snapshot()[0], 1);
+        let pixels = renderer.readback(prepared).unwrap();
+        for (y, row) in pixels.chunks_exact(64).enumerate() {
+            let red = if active.contains(&(y as u32)) { 1. } else { 0. };
+            assert!(row.iter().all(|pixel| pixel[0] == red), "row {y}");
+        }
+        renderer.retire(&[version]);
+        registry.retire(handle);
+        drop(frame);
     }
 }
 

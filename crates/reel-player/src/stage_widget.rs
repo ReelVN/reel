@@ -143,6 +143,7 @@ struct SceneImages {
     mask_effect: Option<ResolvedEffect>,
     image_resource: Option<ResourceLease>,
     mask_images: Arc<[ResourceLease]>,
+    layout_size: Option<Size>,
     tiled_size: Option<Size>,
     tiles: Vec<reel_ui::widgets::ImageTile>,
 }
@@ -157,6 +158,7 @@ impl PartialEq for SceneImages {
                 .iter()
                 .map(ResourceLease::handle)
                 .eq(other.mask_images.iter().map(ResourceLease::handle))
+            && self.layout_size == other.layout_size
             && self.tiled_size == other.tiled_size
             && self.tiles.len() == other.tiles.len()
             && self.tiles.iter().zip(&other.tiles).all(|(a, b)| {
@@ -201,6 +203,7 @@ impl SceneNode {
             .and_then(|r| r.image_size())
             .map(|[w, h]| Size::new(w.into(), h.into()))
             .or(self.images.tiled_size)
+            .or(self.images.layout_size)
             .unwrap_or(Size::ZERO);
         match &self.node.kind {
             NodeKind::Image { alpha_layout, .. } => alpha_layout.size(size),
@@ -699,6 +702,12 @@ impl StageView {
                     if resources.insert(lease.handle()) {
                         leases.push(lease.clone());
                     }
+                } else if !required_only
+                    && matches!(&node.node.kind, NodeKind::Image { .. })
+                    && !node.has_fixed_image_size()
+                    && let Some([width, height]) = images.pending_image_size(source)
+                {
+                    resolved.layout_size = Some(Size::new(width.into(), height.into()));
                 }
             }
             if let Some(mask) = &node.node.props.mask {

@@ -16,6 +16,44 @@ pub type ArtworkDecoder<'a> = (Box<dyn ImageDecoder + 'a>, u64);
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const PNG_HEADER_BYTES: usize = 33;
+const QOI_SIGNATURE: [u8; 4] = qoi::consts::QOI_MAGIC.to_be_bytes();
+
+fn check_qoi_colorspace(header: &qoi::Header) -> Result<(), String> {
+    if header.colorspace == qoi::ColorSpace::Srgb {
+        Ok(())
+    } else {
+        Err("QOI artwork requires sRGB color channels".into())
+    }
+}
+
+/// Read the fixed QOI header without allocating a decoder or pixel buffer.
+pub(crate) fn qoi_shape(bytes: &[u8]) -> Option<([u32; 2], u64)> {
+    if !bytes.starts_with(&QOI_SIGNATURE) {
+        return None;
+    }
+    let header = qoi::decode_header(bytes).ok()?;
+    let size = [header.width, header.height];
+    let output = u64::from(header.width) * u64::from(header.height) * 4;
+    Some((size, output))
+}
+
+/// Decode QOI directly into the resident RGBA8 allocation. The codec's pixel
+/// index is fixed-size stack storage.
+pub(crate) fn decode_qoi(bytes: &[u8], output: u64) -> Option<Result<Vec<u8>, String>> {
+    if !bytes.starts_with(&QOI_SIGNATURE) {
+        return None;
+    }
+    Some((|| {
+        let mut decoder = qoi::Decoder::new(bytes)
+            .map_err(|error| error.to_string())?
+            .with_channels(qoi::Channels::Rgba);
+        check_qoi_colorspace(decoder.header())?;
+        if decoder.required_buf_len() as u64 > output {
+            return Err("image decode reservation too small".into());
+        }
+        decoder.decode_to_vec().map_err(|error| error.to_string())
+    })())
+}
 
 /// A PNG whose output size can be determined without a worker probe.
 pub(crate) struct PngShape {
@@ -204,6 +242,21 @@ pub fn decoder<'a>(
             let decoder = reader.into_decoder().map_err(|error| error.to_string())?;
             Ok((Box::new(decoder), 0))
         }
+        Some(ImageFormat::Qoi) => {
+            let mut source = reader.into_inner();
+            let mut bytes = [0; qoi::consts::QOI_HEADER_SIZE];
+            source
+                .read_exact(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            let header = qoi::decode_header(bytes).map_err(|error| error.to_string())?;
+            check_qoi_colorspace(&header)?;
+            source
+                .seek_relative(-(bytes.len() as i64))
+                .map_err(|error| error.to_string())?;
+            let decoder =
+                image::codecs::qoi::QoiDecoder::new(source).map_err(|error| error.to_string())?;
+            Ok((Box::new(decoder), 0))
+        }
         Some(ImageFormat::WebP) => {
             let decoder = image::codecs::webp::WebPDecoder::new(reader.into_inner())
                 .map_err(|error| error.to_string())?;
@@ -218,6 +271,6 @@ pub fn decoder<'a>(
             let workspace = padded * 8 + source_bytes + (128 << 10);
             Ok((Box::new(decoder), workspace))
         }
-        _ => Err("expected PNG, JPEG or static WebP artwork".into()),
+        _ => Err("expected PNG, JPEG, static WebP or QOI artwork".into()),
     }
 }

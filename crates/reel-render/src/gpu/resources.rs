@@ -116,6 +116,26 @@ impl Image {
         })
     }
 }
+
+/// A fresh raster texture starts at zero. Upload only the conservative alpha
+/// span when doing so avoids at least half of the CPU copy and conversion.
+pub(super) fn fresh_raster_rows(source: &ResourceLease, height: u32) -> std::ops::Range<u32> {
+    let full = 0..height;
+    let Some(coverage) = source.image_coverage() else {
+        return full;
+    };
+    let mut bands = coverage.rectangles();
+    let Some([_, start, _, end]) = bands.next() else {
+        return full;
+    };
+    let end = bands.last().map_or(end, |bounds| bounds[3]);
+    if end - start <= height / 2 {
+        start..end
+    } else {
+        full
+    }
+}
+
 pub(super) fn image_rows(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
@@ -461,7 +481,7 @@ pub(super) fn texture_rows(
     target: &Image,
     upload: TextureUploadLayout,
     rows: std::ops::Range<u32>,
-    reusable: Option<&super::upload::Buffer>,
+    reusable: Option<super::upload::Span<'_>>,
 ) -> Result<(), GpuError> {
     let (source, pixels) = source;
     let Some(descriptor) = source.texture_descriptor() else {
@@ -477,8 +497,8 @@ pub(super) fn texture_rows(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let owned;
-    let staging = if let Some(buffer) = reusable {
-        &buffer.buffer
+    let staging = if let Some(span) = reusable {
+        span
     } else {
         let _timing = Scope::new(Phase::ImageStagingCreate);
         owned = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -487,13 +507,17 @@ pub(super) fn texture_rows(
             usage: wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
         });
-        &owned
+        super::upload::Span {
+            buffer: &owned,
+            offset: 0,
+        }
     };
     gpu.check()?;
     let _transfer = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageTransfer);
     {
         let mut mapping = staging
-            .slice(..)
+            .buffer
+            .slice(staging.offset..staging.offset + row * u64::from(count))
             .get_mapped_range_mut()
             .map_err(|e| GpuError::Device(e.to_string()))?;
         let mut mapping = mapping.slice(..);
@@ -521,7 +545,9 @@ pub(super) fn texture_rows(
             }
         }
     }
-    staging.unmap();
+    if reusable.is_none() {
+        staging.buffer.unmap();
+    }
     #[cfg(test)]
     gpu.upload_creations
         .copies
@@ -529,9 +555,9 @@ pub(super) fn texture_rows(
     let edge = descriptor.format.block_size();
     encoder.copy_buffer_to_texture(
         wgpu::TexelCopyBufferInfo {
-            buffer: staging,
+            buffer: staging.buffer,
             layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
+                offset: staging.offset,
                 bytes_per_row: Some(row as u32),
                 rows_per_image: None,
             },
@@ -552,9 +578,6 @@ pub(super) fn texture_rows(
             depth_or_array_layers: 1,
         },
     );
-    if let Some(reusable) = reusable {
-        reusable.remap(encoder);
-    }
     gpu.check()
 }
 

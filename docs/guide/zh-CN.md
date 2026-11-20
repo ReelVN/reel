@@ -65,7 +65,7 @@ reel export --release --resource-target vita --data-only
 
 启动器用圆圈确认、叉键返回。按 SELECT 设置语言和主题，复制新作品后按 START 刷新列表。设置保存在 `ux0:/data/reel/launcher.json`。
 
-桌面开发时，`reel dev` 可直接读取 PNG、JPEG 和静态 WebP。在项目根添加 `resources.toml`，按发行目标生成资源副本：
+桌面开发时，`reel dev` 可直接读取 PNG、JPEG、静态 WebP 和 sRGB QOI。在项目根添加 `resources.toml`，按发行目标生成资源副本：
 
 ```toml
 [[targets.vita]]
@@ -91,9 +91,13 @@ bitrate = 4000000
 
 需要优先保住画质时，给 BC 纹理规则设置 `fallback = "source"`。Reel 会比较所选编码与缩放后的图像，超过显示误差阈值时打包原图。Vita 上若原图超出解码预算，导出会指出该资源。
 
-`targets.desktop` 为 Windows、Linux 和 macOS 提供通用转换规则。具体系统的规则先匹配，再用桌面通用规则。`--resource-target desktop` 可以单独预览这组规则。下面的规则把 8 位 PNG 无损转为 WebP，把选中的音频转为 Opus。已有 WebP 和 Opus 直接打包。
+`targets.desktop` 为 Windows、Linux 和 macOS 提供通用转换规则。具体系统的规则先匹配，再用桌面通用规则。`--resource-target desktop` 可以单独预览这组规则。下面的规则把选中的 8 位界面图片转为 QOI，其余 8 位 PNG 无损转为 WebP，再把选中的音频转为 Opus。QOI 保留像素，部分资源会用更大的打包体积换取更快的解码。
 
 ```toml
+[[targets.desktop]]
+match = "images/ui/**/*.png"
+convert = "qoi"
+
 [[targets.desktop]]
 match = "**/*.png"
 convert = "webp"

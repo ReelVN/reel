@@ -2,8 +2,9 @@
 //! its GPU fence and map-on-submit callback have completed.
 use super::{Gpu, GpuError, renderer::Budgets};
 use reel_core::budget::BudgetTicket;
+use std::ops::Range;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicU8, Ordering},
 };
 const MAPPED: u8 = 0;
@@ -37,7 +38,7 @@ impl Buffer {
             0
         }
     }
-    /// Raster spans are whole padded rows, so every offset stays copy-aligned.
+    /// Image spans are whole padded rows, so every offset stays copy-aligned.
     pub fn allocate_span(&mut self, bytes: u64) -> Option<Span<'_>> {
         if bytes > self.remaining() {
             return None;
@@ -66,6 +67,140 @@ impl Buffer {
         });
     }
 }
+
+/// Owns all staging charged to one submission, including its in-flight mappings.
+pub(super) struct Batch {
+    #[allow(
+        clippy::vec_box,
+        reason = "the cache and submissions move the same buffer boxes"
+    )]
+    pub buffers: Vec<Box<Buffer>>,
+    /// The bounded metadata reservation may only cover one additional buffer per image.
+    split: bool,
+    _one_off: Vec<BudgetTicket>,
+}
+
+impl Batch {
+    pub fn new(images: usize, slots: usize) -> Self {
+        Self {
+            buffers: Vec::with_capacity(slots),
+            split: slots > images,
+            _one_off: Vec::with_capacity(images),
+        }
+    }
+
+    pub fn one_off(&mut self, ticket: BudgetTicket) {
+        self._one_off.push(ticket);
+    }
+
+    pub fn reusable_row_bytes(&self, cache: &Cache, stride: u64) -> u64 {
+        let open = self
+            .buffers
+            .iter()
+            .map(|buffer| buffer.remaining() / stride);
+        let rows = if self.split {
+            open.sum::<u64>() + cache.rows_available(stride)
+        } else {
+            open.max().unwrap_or(0).max(cache.capacity() / stride)
+        };
+        rows * stride
+    }
+
+    pub fn new_bytes(&self, requested: u64, reusable: u64) -> u64 {
+        if self.split {
+            requested.saturating_sub(reusable)
+        } else if requested <= reusable {
+            0
+        } else {
+            requested
+        }
+    }
+
+    pub fn row_capacity(&self, cache: &Cache, stride: u64, unallocated: u64) -> u64 {
+        let reusable = self.reusable_row_bytes(cache, stride);
+        if self.split {
+            reusable.saturating_add(unallocated)
+        } else {
+            reusable.max(unallocated)
+        }
+    }
+
+    pub fn copy_rows(
+        &mut self,
+        gpu: &Gpu,
+        budgets: &Budgets,
+        cache: &Mutex<Cache>,
+        (rows, stride): (Range<u32>, u64),
+        mut copy: impl FnMut(Range<u32>, Option<Span<'_>>) -> Result<(), GpuError>,
+    ) -> Result<(), GpuError> {
+        let bytes = u64::from(rows.end - rows.start) * stride;
+        if let Some(span) = self
+            .buffers
+            .iter_mut()
+            .find_map(|buffer| buffer.allocate_span(bytes))
+        {
+            return copy(rows, Some(span));
+        }
+        let mut cache = cache.lock().unwrap();
+        if let Some(mut buffer) = cache.take(bytes) {
+            drop(cache);
+            copy(rows, buffer.allocate_span(bytes))?;
+            self.buffers.push(buffer);
+            return Ok(());
+        }
+
+        // Admit the uncovered rows before using any reusable ranges. If this
+        // fails, the caller can still submit the preceding complete copies.
+        let missing = self.new_bytes(bytes, self.reusable_row_bytes(&cache, stride));
+        let mut tail = if missing == 0 {
+            None
+        } else {
+            Buffer::allocate(gpu, budgets, missing)?
+        };
+        if missing != 0 && tail.is_none() {
+            self.one_off(reserve(gpu, budgets, missing)?);
+        }
+        let mapped = bytes - missing;
+        let mut open = self
+            .buffers
+            .iter()
+            .map(|buffer| buffer.remaining() / stride * stride)
+            .sum::<u64>();
+        while open < mapped {
+            let buffer = cache.take_largest();
+            open += buffer.capacity / stride * stride;
+            self.buffers.push(buffer);
+        }
+        drop(cache);
+
+        let mapped_end = rows.start + (mapped / stride) as u32;
+        let mut row = rows.start;
+        for buffer in &mut self.buffers {
+            let count = (buffer.remaining() / stride).min(u64::from(mapped_end - row)) as u32;
+            if count != 0 {
+                copy(
+                    row..row + count,
+                    buffer.allocate_span(u64::from(count) * stride),
+                )?;
+                row += count;
+            }
+            if row == mapped_end {
+                break;
+            }
+        }
+        debug_assert_eq!(row, mapped_end);
+        if missing != 0 {
+            copy(
+                row..rows.end,
+                tail.as_mut()
+                    .and_then(|buffer| buffer.allocate_span(missing)),
+            )?;
+            self.buffers.extend(tail);
+        }
+        Ok(())
+    }
+}
+
 pub(super) struct Cache {
     slots: [Option<Box<Buffer>>; 16],
     warmed: bool,
@@ -134,21 +269,21 @@ impl Cache {
     pub fn mapped_count(&self) -> usize {
         self.slots.iter().flatten().count()
     }
-    pub fn rows_available(&self, row_bytes: u64) -> u64 {
+    fn rows_available(&self, row_bytes: u64) -> u64 {
         self.slots
             .iter()
             .flatten()
             .map(|buffer| buffer.capacity / row_bytes)
             .sum()
     }
-    pub fn take_largest(&mut self) -> Box<Buffer> {
+    fn take_largest(&mut self) -> Box<Buffer> {
         let (index, _) = self
             .slots
             .iter()
             .enumerate()
             .filter_map(|(index, slot)| Some((index, slot.as_ref()?.capacity)))
             .max_by_key(|&(_, capacity)| capacity)
-            .expect("enough mapped raster rows");
+            .expect("enough mapped image rows");
         self.slots[index].take().unwrap()
     }
     pub fn clear(&mut self) {
@@ -181,7 +316,14 @@ impl Cache {
         budgets: &Budgets,
         bytes: u64,
     ) -> Result<Option<Box<Buffer>>, GpuError> {
-        if let Some(index) = self
+        if let Some(buffer) = self.take(bytes) {
+            return Ok(Some(buffer));
+        }
+        Buffer::allocate(gpu, budgets, bytes)
+    }
+
+    fn take(&mut self, bytes: u64) -> Option<Box<Buffer>> {
+        let index = self
             .slots
             .iter()
             .enumerate()
@@ -190,10 +332,27 @@ impl Cache {
                 (b.capacity >= bytes).then_some((i, b.capacity))
             })
             .min_by_key(|(_, n)| *n)
-            .map(|(i, _)| i)
-        {
-            return Ok(self.slots[index].take());
-        }
+            .map(|(i, _)| i)?;
+        self.slots[index].take()
+    }
+}
+
+pub(super) fn reserve(gpu: &Gpu, budgets: &Budgets, bytes: u64) -> Result<BudgetTicket, GpuError> {
+    budgets
+        .resources
+        .reserve(bytes)
+        .map_err(|_| GpuError::Pressure {
+            domain: "image upload",
+            requested: bytes,
+            available: gpu
+                .limits
+                .resource_bytes
+                .saturating_sub(budgets.resources.usage().bytes),
+        })
+}
+
+impl Buffer {
+    fn allocate(gpu: &Gpu, budgets: &Budgets, bytes: u64) -> Result<Option<Box<Self>>, GpuError> {
         let state_bytes = (2 * size_of::<usize>() + size_of::<AtomicU8>())
             .div_ceil(align_of::<usize>())
             * align_of::<usize>();
@@ -202,17 +361,7 @@ impl Cache {
         let Ok(metadata) = budgets.transient.reserve(metadata) else {
             return Ok(None);
         };
-        let ticket = budgets
-            .resources
-            .reserve(bytes)
-            .map_err(|_| GpuError::Pressure {
-                domain: "image upload",
-                requested: bytes,
-                available: gpu
-                    .limits
-                    .resource_bytes
-                    .saturating_sub(budgets.resources.usage().bytes),
-            })?;
+        let ticket = reserve(gpu, budgets, bytes)?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageStagingCreate);
         let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reusable image upload"),

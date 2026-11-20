@@ -32,20 +32,16 @@ struct Partial {
     image: Arc<Image>,
     pixels: ResourcePixels,
     next_row: u32,
-    total_rows: u32,
+    end_row: u32,
     _storage: Reservation,
 }
-
-// Each buffer is a separately charged allocation reused by the cache.
-type UploadBuffers = Vec<Box<super::upload::Buffer>>;
 
 struct Upload {
     done: Arc<AtomicBool>,
     copies: Vec<Copy>,
-    _staging: Vec<BudgetTicket>,
     _admission: BudgetTicket,
     _storage: Reservation,
-    buffers: UploadBuffers,
+    staging: super::upload::Batch,
 }
 struct Copy {
     image: Arc<Image>,
@@ -68,25 +64,6 @@ impl ImageCache {
     pub(super) fn submitted(&self) {
         self.images.lock().unwrap().submitted();
         self.retired.lock().unwrap().submitted();
-    }
-    fn collect_mapped_rows(
-        &self,
-        buffers: &mut UploadBuffers,
-        row_bytes: u64,
-        needed: u32,
-    ) -> bool {
-        let mut rows: u64 = buffers.iter().map(|b| b.remaining() / row_bytes).sum();
-        let mut staging = self.staging.lock().unwrap();
-        let needed = u64::from(needed);
-        if rows + staging.rows_available(row_bytes) < needed {
-            return false;
-        }
-        while rows < needed {
-            let buffer = staging.take_largest();
-            rows += buffer.capacity / row_bytes;
-            buffers.push(buffer);
-        }
-        true
     }
     pub(super) fn usage(&self) -> [u64; 3] {
         let bytes = |image: &Arc<Image>| image.residency.as_ref().map_or(0, BudgetTicket::bytes);
@@ -142,7 +119,7 @@ impl ImageCache {
     pub(super) fn prepare(
         &self,
         gpu: &Gpu,
-        required: &[image_plan::Required<'_>],
+        required: &mut [image_plan::Required<'_>],
         budgets: &Budgets,
         local: &Budgets,
         admission: &BudgetPool,
@@ -159,7 +136,7 @@ impl ImageCache {
         let mut images = HashMap::with_capacity(required.len());
         {
             let mut cache = self.images.lock().unwrap();
-            for item in required {
+            for item in required.iter() {
                 if let Some(image) = cache.touch(&item.source.handle()) {
                     if item.source.pixel_discard_pending() {
                         image.discard_pending.store(true, Ordering::Relaxed);
@@ -221,21 +198,23 @@ impl ImageCache {
             buffer_slots = capacity;
             reserve_storage(capacity)
         })?;
+        if capacity > 1 && buffer_slots > capacity {
+            // All these uploads gate the same frame. Complete a previously
+            // started image first, then use single spans for smaller images
+            // before spending the remaining mapped rows on larger uploads.
+            required.sort_unstable_by_key(|item| {
+                let handle = item.source.handle();
+                (!partial.contains_key(&handle), item.staging, handle)
+            });
+        }
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("image upload batch"),
             });
         let mut uploaded = Vec::with_capacity(capacity);
-        let mut staging = Vec::with_capacity(capacity);
-        let mut buffers = UploadBuffers::with_capacity(buffer_slots);
-        let reserve_gpu = |bytes| {
-            pool.reserve(bytes).map_err(|_| GpuError::Pressure {
-                domain: "image upload",
-                requested: bytes,
-                available: limit.saturating_sub(pool.usage().bytes),
-            })
-        };
+        let mut staging = super::upload::Batch::new(capacity, buffer_slots);
+        let reserve_gpu = |bytes| super::upload::reserve(gpu, budgets, bytes);
         let mut deferred = None;
         let mut work_remaining = gpu.limits.image_upload_bytes_per_prepare;
         let mut converted = false;
@@ -258,46 +237,58 @@ impl ImageCache {
             } else {
                 item.staging
             };
-            let mut recycled = if partial.contains_key(&handle) {
+            let pending = partial.get(&handle);
+            let mut recycled = if pending.is_some() {
                 None
             } else {
                 self.recycle(item)
             };
-            let resident = if recycled.is_some() || partial.contains_key(&handle) {
+            let resident = if recycled.is_some() || pending.is_some() {
                 0
             } else {
                 item.resident
             };
-            let cached_staging = self.staging.lock().unwrap().capacity();
-            let open_staging = if item.raster_format.is_some() {
-                buffers
-                    .iter()
-                    .map(|buffer| buffer.remaining())
-                    .max()
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            let cached_staging = cached_staging.max(open_staging);
-            let minimum = resident
-                + if cached_staging >= item.minimum_staging {
+            let raster = item.raster_format.map(|format| {
+                let source = item
+                    .source
+                    .image_descriptor()
+                    .expect("planned raster image");
+                let rows = if let Some(pending) = pending {
+                    pending.next_row..pending.end_row
+                } else if recycled.is_some() {
+                    // Reused storage may hold pixels in otherwise transparent rows.
+                    0..source.height
+                } else {
+                    resources::fresh_raster_rows(item.source, source.height)
+                };
+                (format, source, rows)
+            });
+            let new_staging = |requested| {
+                let cache = self.staging.lock().unwrap();
+                if let Some(row) = row {
+                    staging.new_bytes(requested, staging.reusable_row_bytes(&cache, row))
+                } else if cache.capacity() >= requested {
                     0
                 } else {
-                    item.minimum_staging
-                };
+                    requested
+                }
+            };
+            let minimum_staging = new_staging(item.minimum_staging);
+            let minimum = resident + minimum_staging;
             // Evict for this slice, rather than a whole-image staging buffer.
             // Only the minimum row is an admission requirement.
-            let preferred_upload = item.staging.min(staging_limit);
-            let preferred = resident
-                + if cached_staging >= preferred_upload {
-                    0
-                } else {
-                    preferred_upload
-                };
+            let preferred_upload = raster
+                .as_ref()
+                .map_or(item.staging, |(_, _, rows)| {
+                    item.minimum_staging * u64::from(rows.end - rows.start)
+                })
+                .min(staging_limit);
+            let preferred_upload = row.map_or(preferred_upload, |row| preferred_upload / row * row);
+            let preferred = resident + new_staging(preferred_upload);
             glyphs.make_room(pool, preferred, limit);
             self.make_room(pool, preferred, limit);
             let mut available = limit.saturating_sub(pool.usage().bytes);
-            if minimum > available && cached_staging < item.minimum_staging {
+            if minimum > available && minimum_staging != 0 {
                 self.staging.lock().unwrap().clear();
                 available = limit.saturating_sub(pool.usage().bytes);
             }
@@ -309,11 +300,7 @@ impl ImageCache {
                 });
                 break;
             }
-            if let Some(format) = item.raster_format {
-                let source = item
-                    .source
-                    .image_descriptor()
-                    .expect("planned raster image");
+            if let Some((format, source, rows)) = raster {
                 let row_bytes = item.minimum_staging;
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
@@ -348,19 +335,21 @@ impl ImageCache {
                             &budgets.transient,
                             gpu.limits.transient_bytes,
                         )?,
-                        next_row: 0,
-                        total_rows: source.height,
+                        next_row: rows.start,
+                        end_row: rows.end,
                         _storage: storage,
                     });
                 }
                 let pending = &partial[&handle];
                 let count = resources::rows_per_upload(
-                    source.height,
+                    pending.end_row,
                     pending.next_row,
-                    limit
-                        .saturating_sub(pool.usage().bytes)
-                        .max(self.staging.lock().unwrap().capacity())
-                        .max(open_staging)
+                    staging
+                        .row_capacity(
+                            &self.staging.lock().unwrap(),
+                            row_bytes,
+                            limit.saturating_sub(pool.usage().bytes),
+                        )
                         .min(staging_limit),
                     row_bytes,
                 );
@@ -374,78 +363,29 @@ impl ImageCache {
                 }
                 let next_row = pending.next_row + count;
                 let upload_bytes = row_bytes * u64::from(count);
-                let mut upload_rows = |rows, span| {
-                    resources::image_rows(
-                        gpu,
-                        &mut encoder,
-                        (item.source, &pending.pixels),
-                        item.at,
-                        &pending.image,
-                        rows,
-                        span,
-                    )
-                };
-                if buffer_slots > capacity
-                    && upload_bytes > cached_staging
-                    && self.collect_mapped_rows(&mut buffers, row_bytes, count)
-                {
-                    // The current mapping tails cover all requested rows.
-                    // Record their copies in one submission and avoid a new allocation.
-                    let mut row = pending.next_row;
-                    for buffer in &mut buffers {
-                        let rows = resources::rows_per_upload(
-                            next_row,
-                            row,
-                            buffer.remaining(),
-                            row_bytes,
-                        );
-                        if rows != 0 {
-                            let bytes = row_bytes * u64::from(rows);
-                            let span = buffer.allocate_span(bytes).expect("reserved mapped rows");
-                            upload_rows(row..row + rows, Some(span))?;
-                            row += rows;
-                        }
-                        if row == next_row {
-                            break;
-                        }
+                match staging.copy_rows(
+                    gpu,
+                    budgets,
+                    &self.staging,
+                    (pending.next_row..next_row, row_bytes),
+                    |rows, span| {
+                        resources::image_rows(
+                            gpu,
+                            &mut encoder,
+                            (item.source, &pending.pixels),
+                            item.at,
+                            &pending.image,
+                            rows,
+                            span,
+                        )
+                    },
+                ) {
+                    Ok(()) => (),
+                    Err(error @ GpuError::Pressure { .. }) => {
+                        deferred = Some(error);
+                        break;
                     }
-                } else {
-                    let mut new_buffer = None;
-                    let mut upload = buffers
-                        .iter_mut()
-                        .find_map(|buffer| buffer.allocate_span(upload_bytes));
-                    if upload.is_none() {
-                        new_buffer =
-                            match self
-                                .staging
-                                .lock()
-                                .unwrap()
-                                .acquire(gpu, budgets, upload_bytes)
-                            {
-                                Ok(buffer) => buffer,
-                                Err(error) => {
-                                    deferred = Some(error);
-                                    break;
-                                }
-                            };
-                        upload = new_buffer.as_mut().map(|buffer| {
-                            buffer
-                                .allocate_span(upload_bytes)
-                                .expect("admitted raster upload capacity")
-                        });
-                    }
-                    let one_off = if upload.is_none() {
-                        Some(reserve_gpu(upload_bytes)?)
-                    } else {
-                        None
-                    };
-                    upload_rows(pending.next_row..next_row, upload)?;
-                    if let Some(buffer) = new_buffer {
-                        buffers.push(buffer);
-                    }
-                    if let Some(one_off) = one_off {
-                        staging.push(one_off);
-                    }
+                    Err(error) => return Err(error),
                 }
                 work_remaining = work_remaining.saturating_sub(upload_bytes);
                 converted = true;
@@ -454,7 +394,7 @@ impl ImageCache {
                     source: item.source.clone(),
                     next_row: Some(next_row),
                 });
-                if next_row == source.height {
+                if next_row == pending.end_row {
                     images.insert(handle, pending.image.clone());
                 } else {
                     deferred = Some(GpuError::Preparing);
@@ -496,19 +436,25 @@ impl ImageCache {
                             gpu.limits.transient_bytes,
                         )?,
                         next_row: 0,
-                        total_rows: layout.rows,
+                        end_row: layout.rows,
                         _storage: storage,
                     });
                 }
                 let pending = &partial[&handle];
                 let (level, level_row) = layout.at_row(descriptor, pending.next_row);
                 let row_bytes = resources::texture_row_bytes(level);
-                let count = (limit
-                    .saturating_sub(pool.usage().bytes)
-                    .max(self.staging.lock().unwrap().capacity())
-                    .min(staging_limit)
-                    / row_bytes)
-                    .min(u64::from(level.rows - level_row)) as u32;
+                let count = resources::rows_per_upload(
+                    level.rows,
+                    level_row,
+                    staging
+                        .row_capacity(
+                            &self.staging.lock().unwrap(),
+                            row_bytes,
+                            limit.saturating_sub(pool.usage().bytes),
+                        )
+                        .min(staging_limit),
+                    row_bytes,
+                );
                 if count == 0 {
                     deferred = Some(GpuError::Pressure {
                         domain: "texture upload",
@@ -518,33 +464,30 @@ impl ImageCache {
                     break;
                 }
                 let next_row = pending.next_row + count;
-                let upload_bytes = row_bytes * u64::from(count);
-                let upload = match self
-                    .staging
-                    .lock()
-                    .unwrap()
-                    .acquire(gpu, budgets, upload_bytes)
-                {
-                    Ok(ticket) => ticket,
-                    Err(error) => {
+                match staging.copy_rows(
+                    gpu,
+                    budgets,
+                    &self.staging,
+                    (level_row..level_row + count, row_bytes),
+                    |rows, span| {
+                        resources::texture_rows(
+                            gpu,
+                            &mut encoder,
+                            (item.source, &pending.pixels),
+                            &pending.image,
+                            level,
+                            rows,
+                            span,
+                        )
+                    },
+                ) {
+                    Ok(()) => (),
+                    Err(error @ GpuError::Pressure { .. }) => {
                         deferred = Some(error);
                         break;
                     }
-                };
-                let one_off = if upload.is_none() {
-                    Some(reserve_gpu(upload_bytes)?)
-                } else {
-                    None
-                };
-                resources::texture_rows(
-                    gpu,
-                    &mut encoder,
-                    (item.source, &pending.pixels),
-                    &pending.image,
-                    level,
-                    level_row..level_row + count,
-                    upload.as_deref(),
-                )?;
+                    Err(error) => return Err(error),
+                }
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
                 converted = true;
                 uploaded.push(Copy {
@@ -552,13 +495,7 @@ impl ImageCache {
                     source: item.source.clone(),
                     next_row: Some(next_row),
                 });
-                if let Some(upload) = upload {
-                    buffers.push(upload);
-                }
-                if let Some(one_off) = one_off {
-                    staging.push(one_off);
-                }
-                if next_row == pending.total_rows {
+                if next_row == pending.end_row {
                     images.insert(handle, pending.image.clone());
                 } else {
                     deferred = Some(GpuError::Preparing);
@@ -583,11 +520,11 @@ impl ImageCache {
                     }
                 };
                 if upload.is_none() {
-                    staging.push(reserve_gpu(item.staging)?);
+                    staging.one_off(reserve_gpu(item.staging)?);
                 }
                 let mut image =
                     super::video::upload(gpu, &mut encoder, source, recycled, upload.as_deref())?;
-                buffers.extend(upload);
+                staging.buffers.extend(upload);
                 image.residency = Some(residency);
                 image.source = Some(resources::ResourceSource {
                     version: item.source.version().clone(),
@@ -603,7 +540,7 @@ impl ImageCache {
             }
         }
         if !uploaded.is_empty() {
-            for buffer in &buffers {
+            for buffer in &staging.buffers {
                 buffer.finish_spans(&mut encoder);
             }
             let done = Arc::new(AtomicBool::new(false));
@@ -616,7 +553,7 @@ impl ImageCache {
                     let handle = copy.source.handle();
                     if let Some(next_row) = copy.next_row {
                         let pending = partial.get_mut(&handle).unwrap();
-                        if next_row != pending.total_rows {
+                        if next_row != pending.end_row {
                             pending.next_row = next_row;
                             continue;
                         }
@@ -631,10 +568,9 @@ impl ImageCache {
             uploads.push(Upload {
                 done,
                 copies: uploaded,
-                _staging: staging,
                 _admission: admitted,
                 _storage: storage,
-                buffers,
+                staging,
             });
             gpu.check()?;
         }
@@ -715,11 +651,11 @@ impl ImageCache {
         let mut index = 0;
         while index < uploads.len() {
             if uploads[index].done.load(Ordering::Acquire)
-                && uploads[index].buffers.iter().all(|b| b.settled())
+                && uploads[index].staging.buffers.iter().all(|b| b.settled())
             {
                 let mut upload = uploads.swap_remove(index);
                 let mut cache = self.staging.lock().unwrap();
-                for buffer in upload.buffers.drain(..) {
+                for buffer in upload.staging.buffers.drain(..) {
                     cache.put(buffer);
                 }
             } else {

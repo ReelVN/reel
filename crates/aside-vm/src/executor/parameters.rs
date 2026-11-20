@@ -91,16 +91,16 @@ impl Vm {
                 }
             }
             NativePhase::Defaults { parameter } => {
-                let literal = sig
-                    .parameters
-                    .get(parameter as usize)
-                    .filter(|_| self.slots.read_vm(at(n.bound, parameter)).is_err())
-                    .and_then(|p| match p.default {
-                        Some(ParameterDefault::Constant(id)) => {
-                            Some((id, p.ty, self.plan_constant(id)))
-                        }
-                        _ => None,
-                    });
+                let total = count + u32::from(sig.rest.is_some());
+                let supplied =
+                    parameter < total && self.slots.read_vm(at(n.bound, parameter)).is_ok();
+                let unsupplied = sig.parameters.get(parameter as usize).filter(|_| !supplied);
+                let literal = unsupplied.and_then(|p| match p.default {
+                    Some(ParameterDefault::Constant(id)) => {
+                        Some((id, p.ty, self.plan_constant(id)))
+                    }
+                    _ => None,
+                });
                 let literal_work = literal.map_or(0, |(_, ty, _)| 2 + self.type_checks.extra(ty));
                 let layout_work = if n.bindings.is_some() {
                     self.native_layout_work()
@@ -112,20 +112,16 @@ impl Vm {
                 if !m.take(0, layout_work + 8 + literal_work, allocation) {
                     return Ok(false);
                 }
-                if parameter == count + u32::from(sig.rest.is_some()) {
+                if parameter == total {
                     n.phase = NativePhase::Resume(NativeInput::Entry);
-                } else if self.slots.read_vm(at(n.bound, parameter)).is_ok() {
+                } else if supplied {
                     let storage = if n.bindings.is_some() {
                         self.native_storage(n.native, parameter)?
                     } else {
                         BindingStorage::Value(Reg(parameter))
                     };
                     n.phase = NativePhase::Parameter { parameter, storage };
-                } else if let Some(default) = sig
-                    .parameters
-                    .get(parameter as usize)
-                    .and_then(|p| p.default)
-                {
+                } else if let Some(default) = unsupplied.and_then(|p| p.default) {
                     if let Some((constant, ty, load)) = literal {
                         match self.start_constant(load, n.roots, [0, 1]) {
                             Ok(Some(value)) => match self.check_type(ty, value) {
@@ -178,20 +174,25 @@ impl Vm {
                 if !m.take(0, 4 + self.type_checks.extra(p.ty), bytes) {
                     return Ok(false);
                 }
-                let contract = self.contract(ModuleId(n.module.0), p.ty, p.mutable);
                 let input = self.value(n.bound, parameter)?;
-                match self.parameter_value(contract, input, storage, false) {
-                    Ok(value) => {
-                        self.put(n.bindings.unwrap_or(n.bound), parameter, value)?;
-                        if matches!(storage, BindingStorage::Cell(_)) {
-                            self.clear(n.bound, parameter)?;
+                // Only a separate binding window needs another root write.
+                if let Some(bindings) = n.bindings {
+                    let contract = self.contract(ModuleId(n.module.0), p.ty, p.mutable);
+                    match self.parameter_value(contract, input, storage, false) {
+                        Ok(value) => {
+                            self.put(bindings, parameter, value)?;
+                            if matches!(storage, BindingStorage::Cell(_)) {
+                                self.clear(n.bound, parameter)?;
+                            }
                         }
-                        n.phase = NativePhase::Defaults {
-                            parameter: parameter + 1,
-                        };
+                        Err(kind) => return self.native_fault(n, kind).map(|()| true),
                     }
-                    Err(kind) => self.native_fault(n, kind)?,
+                } else if let Err(kind) = self.check_type(p.ty, input) {
+                    return self.native_fault(n, kind).map(|()| true);
                 }
+                n.phase = NativePhase::Defaults {
+                    parameter: parameter + 1,
+                };
             }
             NativePhase::DefaultCall {
                 parameter,

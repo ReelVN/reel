@@ -4,6 +4,11 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Add the `qoi` desktop resource conversion for faster lossless decoding of selected 8-bit images.
+- Start preparing visible fixed-size images once headers supply the dimensions needed by layout.
+- Use remaining space in mapped desktop upload buffers for raster and prepared texture rows before allocating the rest.
+- Skip transparent outer rows when uploading a mostly empty image to a new desktop texture.
+- Keep native argument preparation on the same VM frame until the work budget or deadline requires a yield.
 - Claim the desktop frame submission slot before preparing glyphs and draw resources.
 - Index long runs of short literal string tests in verified Aside bytecode.
 - Account bounded PNG decoder workspace separately from its resident pixel buffer.

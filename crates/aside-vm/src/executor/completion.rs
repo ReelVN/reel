@@ -852,9 +852,24 @@ impl Vm {
                     }
                 }
             }
+            NativePhase::Defaults { .. } | NativePhase::Parameter { .. } => loop {
+                if !self.native_parameter_step(&mut n, m)? {
+                    self.active.frames.data[top] = Frame::Native(n);
+                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                // Leave the batch before a clock check or a different phase
+                // that can suspend, run script code, or deliver a fault.
+                if !matches!(
+                    n.phase,
+                    NativePhase::Defaults { .. } | NativePhase::Parameter { .. }
+                ) || !m.next_short_step()
+                {
+                    break;
+                }
+                #[cfg(feature = "execution-counts")]
+                self.execution_counts.native_step(&n.phase);
+            },
             NativePhase::Rest
-            | NativePhase::Defaults { .. }
-            | NativePhase::Parameter { .. }
             | NativePhase::DefaultCall { .. }
             | NativePhase::DefaultConstant { .. }
             | NativePhase::Project { .. } => {

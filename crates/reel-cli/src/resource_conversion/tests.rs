@@ -81,6 +81,49 @@ fallback = "source"
 }
 
 #[test]
+fn qoi_conversion_keeps_straight_pixels_under_logical_paths() {
+    let (directory, tool, _) = fixture();
+    let root = directory.path();
+    let source = root.join("resources/images");
+    let rgb = image::RgbImage::from_fn(16, 16, |x, y| {
+        image::Rgb([(x * 17) as u8, (y * 17) as u8, 200])
+    });
+    let rgba = image::RgbaImage::from_fn(16, 16, |x, y| {
+        image::Rgba([(x * 17) as u8, (y * 17) as u8, 200, ((x ^ y) * 17) as u8])
+    });
+    rgb.save(source.join("rgb.png")).unwrap();
+    rgba.save(source.join("rgba.png")).unwrap();
+    fs::write(
+        root.join("resources.toml"),
+        r#"
+[[targets.desktop]]
+match = "images/{rgb,rgba}.png"
+convert = "qoi"
+"#,
+    )
+    .unwrap();
+
+    let desktop = ResourceTarget::parse("desktop").unwrap();
+    let prepared = prepare(root, &tool, &desktop, MEMORY_BYTES).unwrap();
+    assert_eq!(prepared.report.converted, 2);
+    for (path, expected) in [
+        ("images/rgb.png", image::DynamicImage::ImageRgb8(rgb)),
+        ("images/rgba.png", image::DynamicImage::ImageRgba8(rgba)),
+    ] {
+        let physical = &prepared.files[path];
+        assert_eq!(physical.extension().unwrap(), "qoi");
+        let (decoder, _) = reel_player::artwork::open(physical, MEMORY_BYTES).unwrap();
+        assert_eq!(
+            image::DynamicImage::from_decoder(decoder).unwrap(),
+            expected
+        );
+    }
+    let repeated = prepare(root, &tool, &desktop, MEMORY_BYTES).unwrap();
+    assert_eq!(repeated.files, prepared.files);
+    assert_eq!(repeated.report.reused, 2);
+}
+
+#[test]
 fn ordered_dither_is_validated_and_part_of_the_texture_cache_recipe() {
     let (directory, tool, target) = fixture();
     let root = directory.path();

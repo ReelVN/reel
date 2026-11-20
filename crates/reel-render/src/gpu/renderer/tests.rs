@@ -611,54 +611,79 @@ fn image_restore_fixture_with_encoding(
     reel_ui::resources::ResourceRegistry,
     Vec<reel_ui::resources::ResourceHandle>,
 ) {
+    image_restore_fixture_with_packed([size; 3], capture_included, encoding, None)
+}
+
+fn image_restore_fixture_with_packed(
+    sizes: [[u32; 2]; 3],
+    capture_included: bool,
+    encoding: reel_ui::resources::ColorEncoding,
+    packed: Option<usize>,
+) -> (
+    RenderFrame,
+    reel_ui::resources::ResourceRegistry,
+    Vec<reel_ui::resources::ResourceHandle>,
+) {
     use reel_core::{
         budget::OwnedBytes,
         identity::{AssetKey, ContentVersion, ResourceVersion},
+        texture::{
+            TextureDescriptor, TextureFormat, TextureLayout, TexturePayload, TextureStorageLayout,
+        },
     };
     use reel_ui::{
-        peniko::{ImageAlphaType, ImageBrush, ImageFormat},
+        peniko::{ImageAlphaType, ImageFormat},
         resources::ResourceRegistry,
     };
     let pool = pool();
     let mut registry = ResourceRegistry::new(3, 65264).unwrap();
     let mut handles = Vec::new();
-    let mut scene = Scene::new();
-    for (index, pixel) in [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]
+    let mut widget = RecordWidget::new(Scene::new());
+    for (index, (size, pixel)) in sizes
         .into_iter()
+        .zip([[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]])
         .enumerate()
     {
         let bytes = pixel.repeat((size[0] * size[1]) as usize);
         let ticket = pool.reserve(bytes.len() as u64).unwrap();
-        let handle = registry
-            .register_image(
-                ResourceVersion {
-                    key: AssetKey(format!("cache-{index}")),
-                    version: ContentVersion([index as u8; 32]),
-                },
-                OwnedBytes::new(bytes, ticket).unwrap(),
+        let version = ResourceVersion {
+            key: AssetKey(format!("cache-{index}")),
+            version: ContentVersion([index as u8; 32]),
+        };
+        let bytes = OwnedBytes::new(bytes, ticket).unwrap();
+        let handle = if packed == Some(index) {
+            let descriptor = TextureDescriptor {
+                format: TextureFormat::Rgba8,
+                layout: TextureLayout::identity(size),
+                mip_count: 1,
+                source_encoding: encoding,
+                storage_layout: TextureStorageLayout::Linear,
+            };
+            registry.register_texture(version, TexturePayload::new(descriptor, bytes).unwrap())
+        } else {
+            registry.register_image(
+                version,
+                bytes,
                 size,
                 ImageFormat::Rgba8,
                 ImageAlphaType::Alpha,
                 encoding,
             )
-            .unwrap();
+        }
+        .unwrap();
         let lease = registry.acquire(handle).unwrap();
-        let image = crate::test_support::image_data(&lease);
         // Keep all three resources visible so occlusion culling cannot remove
         // the uploads and retirement work exercised by this fixture.
         let left = index as f64 * 125.;
         let right = if index == 2 { 400. } else { left + 125. };
-        scene.draw(Draw::Fill {
-            transform: Affine::IDENTITY,
-            fill_rule: Default::default(),
-            brush: Brush::Image(ImageBrush::new(image.clone())),
-            brush_transform: None,
-            shape: Geometry::Rect(Rect::new(left, 0., right, 300.)),
-            composite: Composite::default(),
-        });
+        widget.resource_draws.push((
+            lease,
+            Rect::new(left, 0., right, 300.),
+            Affine::IDENTITY,
+            Default::default(),
+        ));
         handles.push(handle);
     }
-    let mut widget = RecordWidget::new(scene);
     widget.capture_included = capture_included;
     let frame = frame_from_widget(widget, registry.freeze(&handles, &pool).unwrap(), &pool);
     (frame, registry, handles)

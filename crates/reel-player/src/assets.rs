@@ -105,7 +105,7 @@ enum Phase {
     Probe,
     Probing(WorkId),
     Decode,
-    DecodeBoundedPng,
+    DecodeBoundedImage,
     Decoding(WorkId),
     Done(Result<ResourceLease, String>),
     Bytes(ResourceVersion, Arc<OwnedBytes>),
@@ -153,9 +153,9 @@ struct Service {
     streams: stream::Streams,
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
-    pending_pngs: Vec<(WorkId, AssetSource)>,
-    // The built-in executor understands the workspace for direct PNG output.
-    direct_png_workspace: bool,
+    pending_bounded_decodes: Vec<(WorkId, AssetSource)>,
+    // Only the built-in decoder supports direct PNG and QOI output.
+    builtin_image_decoder: bool,
     #[cfg(test)]
     pumps: usize,
 }
@@ -246,7 +246,7 @@ impl Assets {
     }
     fn try_with_adapters<E>(
         options: AssetOptions,
-        direct_png_workspace: bool,
+        builtin_image_decoder: bool,
         create: impl FnOnce(
             WakeSignal,
             &BudgetPool,
@@ -314,8 +314,8 @@ impl Assets {
             streams: stream::Streams::default(),
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
-            pending_pngs: Vec::new(),
-            direct_png_workspace,
+            pending_bounded_decodes: Vec::new(),
+            builtin_image_decoder,
             #[cfg(test)]
             pumps: 0,
         }))))
@@ -342,7 +342,7 @@ impl Assets {
     pub fn close(&self) {
         let mut service = self.0.borrow_mut();
         service.loads.clear();
-        service.pending_pngs.clear();
+        service.pending_bounded_decodes.clear();
         service.atlas_pages.clear();
         service.recent_images = Default::default();
         service.origins.clear();
@@ -590,6 +590,11 @@ impl Assets {
         self.take_ready(id)
             .map(|value| value.map(ImageAsset::Raster))
     }
+    pub(crate) fn pending_image_size(&self, id: LoadId) -> Option<[u32; 2]> {
+        let service = self.0.borrow();
+        let load = service.loads.get(&id)?;
+        (load.kind == AssetKind::Image && load.size != [0; 2]).then_some(load.size)
+    }
     /// Take raw bytes after calling maintain; does not re-run the shared pump.
     pub fn poll_bytes(
         &self,
@@ -742,7 +747,8 @@ impl Service {
             if event.scope != Scope::Process {
                 continue;
             }
-            self.pending_pngs.retain(|(id, _)| *id != event.id);
+            self.pending_bounded_decodes
+                .retain(|(id, _)| *id != event.id);
             let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Probing(id) | Phase::Decoding(id) if id == event.id)) else { continue; };
             let result = match event.result {
                 Terminal::Completed(data) if matches!(load.phase, Phase::Probing(_)) => {
@@ -898,7 +904,7 @@ impl Service {
                 }
                 load.phase = Phase::Done(result);
             }
-            Phase::Probe | Phase::Decode | Phase::DecodeBoundedPng => {
+            Phase::Probe | Phase::Decode | Phase::DecodeBoundedImage => {
                 let mut probe = matches!(load.phase, Phase::Probe);
                 if probe
                     && load
@@ -949,13 +955,24 @@ impl Service {
                     load.output = png.output;
                     load.temporary = png.temporary(
                         self.options.decode_bytes - self.io_workspace_bytes,
-                        self.direct_png_workspace,
+                        self.builtin_image_decoder,
                     );
                     load.phase = if png.bounded_metadata {
-                        Phase::DecodeBoundedPng
+                        Phase::DecodeBoundedImage
                     } else {
                         Phase::Decode
                     };
+                    probe = false;
+                }
+                if probe
+                    && self.builtin_image_decoder
+                    && let Some((size, output)) =
+                        crate::artwork::qoi_shape(load.input.as_ref().unwrap().as_slice())
+                {
+                    load.size = size;
+                    load.output = output;
+                    load.temporary = 0;
+                    load.phase = Phase::DecodeBoundedImage;
                     probe = false;
                 }
                 if probe
@@ -1023,16 +1040,16 @@ impl Service {
                 if !probe && load.temporary > decode_bytes {
                     return Err("image decode limit exceeded".into());
                 }
-                let bounded_png = matches!(load.phase, Phase::DecodeBoundedPng);
-                let workspace = if bounded_png || load.texture.is_some() {
+                let bounded_image = matches!(load.phase, Phase::DecodeBoundedImage);
+                let workspace = if bounded_image || load.texture.is_some() {
                     load.temporary
                 } else {
                     decode_bytes
                 };
-                if bounded_png {
-                    if self.pending_pngs.len() >= decode::MAX_IMAGE_WORKERS
+                if bounded_image {
+                    if self.pending_bounded_decodes.len() >= decode::MAX_IMAGE_WORKERS
                         || self
-                            .pending_pngs
+                            .pending_bounded_decodes
                             .iter()
                             .any(|(_, source)| source == &load.source)
                         || self.temporary.available_bytes() < workspace
@@ -1057,7 +1074,7 @@ impl Service {
                 };
                 let output = match self.output.reserve(output_bytes) {
                     Ok(ticket) => ticket,
-                    Err(_) if !self.pending_pngs.is_empty() => return Ok(()),
+                    Err(_) if !self.pending_bounded_decodes.is_empty() => return Ok(()),
                     Err(error) => return Err(format!("image resident budget: {}", error.message)),
                 };
                 let temporary = self
@@ -1087,8 +1104,8 @@ impl Service {
                 };
                 match self.executor.as_mut().unwrap().submit(request) {
                     Ok(id) => {
-                        if bounded_png {
-                            self.pending_pngs.push((id, load.source.clone()));
+                        if bounded_image {
+                            self.pending_bounded_decodes.push((id, load.source.clone()));
                         }
                         load.phase = if probe {
                             Phase::Probing(id)
