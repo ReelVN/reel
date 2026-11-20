@@ -8,6 +8,7 @@ pub(super) enum InstructionPlan {
     NamedRead(named_reads::NamedRead),
     Constant(constants::ConstantLoad),
     StringLiteral(Result<Option<Value>, FaultKind>),
+    TextMatch { branch: Pc, accepted: bool },
 }
 
 /// Values remain reachable through the caller's original target register until

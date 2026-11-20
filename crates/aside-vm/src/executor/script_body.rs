@@ -142,7 +142,12 @@ impl Vm {
             }
         }
         let mut plan = InstructionPlan::None;
-        let (work, allocation) =
+        let (work, allocation) = if op == Opcode::Is
+            && let Some((branch, accepted, work)) = self.indexed_text_test(s, Reg(b), m)
+        {
+            plan = InstructionPlan::TextMatch { branch, accepted };
+            (work, 0)
+        } else {
             match step_cost!(self, Cost, self.instruction_cost(s, op, a, b, c, &mut plan)) {
                 Ok((work, allocation)) => (work + index_work, allocation),
                 Err(error) => {
@@ -169,7 +174,8 @@ impl Vm {
                     self.publish_body_frame(top, s);
                     return Ok(true);
                 }
-            };
+            }
+        };
         let mut cost = (work, allocation);
         if matches!(op, Opcode::Call | Opcode::CallNoWait)
             && step_cost!(
@@ -295,6 +301,13 @@ impl Vm {
                     s.pc = next;
                     Ok(false)
                 }),
+                InstructionPlan::TextMatch { branch, accepted } => {
+                    self.write(s.regs, Reg(a), Value::bool(accepted)).map(|()| {
+                        s.pc = branch;
+                        s.instruction_end = branch;
+                        false
+                    })
+                }
                 InstructionPlan::None => self.execute(s, op, a, b, c, Pc(next_pc as u32)),
             }
         );
@@ -331,5 +344,37 @@ impl Vm {
         }
         self.publish_body_frame(top, s);
         Ok(true)
+    }
+
+    fn indexed_text_test(
+        &self,
+        s: &ScriptFrame,
+        source: Reg,
+        meter: &mut Meter,
+    ) -> Option<(Pc, bool, u64)> {
+        let index = self.program.text_match(s.code.function, s.pc)?;
+        let subject = self.read(s.regs, source).ok()?;
+        let length = (subject.tag() == ValueTag::Object)
+            .then(|| self.heap.read_object(subject).ok())
+            .flatten()
+            .filter(|object| object.kind() == ObjectKind::String)
+            .map(|object| object.len() as usize)
+            .filter(|&len| index.accepts_length(len));
+        let work = length.map_or(3, |len| index.work(len));
+        // Tight slices still admit the original test one instruction at a time.
+        if !meter.admits(1, work, 0) {
+            return None;
+        }
+        let bytes = if let Some(length) = length {
+            let bytes = self.heap.byte_segment(subject, 0).ok()?;
+            if bytes.len() != length {
+                return None;
+            }
+            Some(bytes)
+        } else {
+            None
+        };
+        let (branch, accepted) = index.select(bytes);
+        Some((branch, accepted, work))
     }
 }

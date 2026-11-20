@@ -47,7 +47,11 @@ pub enum CleanupDestination {
 }
 /// Construction is restricted to the verifier. Accessors only borrow immutable data.
 #[derive(Clone, Debug)]
-pub struct VerifiedProgram(std::sync::Arc<VerifiedData>, Option<TextPool>);
+pub struct VerifiedProgram(
+    std::sync::Arc<VerifiedData>,
+    Option<TextPool>,
+    Option<std::sync::Arc<text_matches::TextMatches>>,
+);
 
 #[derive(Debug)]
 struct VerifiedData {
@@ -103,6 +107,7 @@ struct DerivedLayouts {
     #[cfg(any(test, feature = "vm-validation-oracle"))]
     scalar_suffixes: scalar_suffixes::ScalarSuffixes,
     scalar_entries: scalar_entry::ScalarEntries,
+    match_functions: text_matches::MatchFunctions,
 }
 impl VerifiedProgram {
     pub(crate) fn shared_header_bytes(&self) -> usize {
@@ -206,6 +211,7 @@ impl VerifiedProgram {
     /// Capacity reserved by execution admission, including pages not yet loaded.
     pub fn execution_capacity_bytes(&self) -> usize {
         let actual = self.0.stats.owned_capacity_bytes
+            + self.text_match_capacity_bytes()
             + self.1.as_ref().map_or(0, |pool| pool.capacity_bytes());
         self.code_cache_stats().map_or(actual, |code| {
             actual + code.hot_limit_bytes + code.construction_scratch_bytes
@@ -213,6 +219,9 @@ impl VerifiedProgram {
     }
     pub fn stats(&self) -> PackageStats {
         let mut stats = self.0.stats;
+        let match_bytes = self.text_match_capacity_bytes();
+        stats.derived_capacity_bytes += match_bytes;
+        stats.owned_capacity_bytes += match_bytes;
         if let Some(code) = self.code_cache_stats() {
             stats.owned_capacity_bytes += code.resident_capacity_bytes;
             stats.instruction_bytes += code.resident_capacity_bytes;
@@ -323,8 +332,15 @@ impl VerifiedProgram {
             ErrorKind::Encoding,
             "text pool identity does not match bytecode",
         )?;
-        let unbound_capacity =
+        let mut unbound_capacity =
             self.execution_capacity_bytes() - self.1.as_ref().map_or(0, TextPool::capacity_bytes);
+        if unbound_capacity
+            .checked_add(pool.capacity_bytes())
+            .is_none_or(|bytes| bytes > self.0.limits.max_allocation_bytes)
+        {
+            unbound_capacity -= self.text_match_capacity_bytes();
+            self.disable_text_matches();
+        }
         check(
             unbound_capacity
                 .checked_add(pool.capacity_bytes())
@@ -499,9 +515,8 @@ impl VerifiedProgram {
         // Typed Opcode entries share the frozen u16 domain. Normalize once;
         // dispatch admission does not rescan the host list per instruction.
         let opcode_slots = INSTRUCTION_SPECS.last().expect("opcode table").opcode as usize + 1;
-        let mut supported = b.vec::<bool>(opcode_slots)?;
-        supported.resize(opcode_slots, false);
-        b.work(opcodes.len() as u64)?;
+        let mut supported = [false; 256];
+        b.work(opcode_slots as u64 + opcodes.len() as u64)?;
         for opcode in opcodes {
             supported[*opcode as usize] = true;
         }
@@ -522,7 +537,6 @@ impl VerifiedProgram {
                 ));
             }
         }
-        b.release(supported);
         Ok(())
     }
 }
@@ -543,7 +557,7 @@ impl VerifiablePackage for BytecodePackage {
             limits,
         )?;
         let identity = super::codec::identity(&package, limits)?;
-        Ok(publish(package, stats, layouts, limits, identity))
+        publish(package, stats, layouts, limits, identity)
     }
 }
 impl VerifiablePackage for RuntimePackage {
@@ -556,12 +570,18 @@ pub fn verify(package: impl VerifiablePackage, limits: Limits) -> Result<Verifie
 }
 fn publish(
     package: RuntimePackage,
-    stats: PackageStats,
+    mut stats: PackageStats,
     layouts: DerivedLayouts,
     limits: Limits,
     identity: [u8; 32],
-) -> VerifiedProgram {
-    VerifiedProgram(
+) -> Result<VerifiedProgram, Error> {
+    let mut budget = Budget::new(limits, stats.owned_capacity_bytes);
+    budget.peak = stats.validation_scratch_peak;
+    budget.work = stats.validation_work;
+    let text_matches = layouts.match_functions.build(&package, &mut budget)?;
+    stats.validation_scratch_peak = budget.peak;
+    stats.validation_work = budget.work;
+    Ok(VerifiedProgram(
         std::sync::Arc::new(VerifiedData {
             identity,
             package,
@@ -579,7 +599,8 @@ fn publish(
             scalar_entries: layouts.scalar_entries,
         }),
         None,
-    )
+        text_matches,
+    ))
 }
 fn verify_runtime_with_identity(
     package: RuntimePackage,
@@ -597,7 +618,7 @@ fn verify_runtime_with_identity(
             .max(store.cache_stats().construction_scratch_bytes + package.modules.capacity() * 4);
     }
     let identity = identity(&package)?;
-    Ok(publish(package, stats, layouts, limits, identity))
+    publish(package, stats, layouts, limits, identity)
 }
 fn compact_package(
     p: BytecodePackage,
@@ -761,6 +782,7 @@ fn compact_package(
         });
     Ok(package)
 }
+#[derive(Clone, Copy)]
 struct Budget {
     limits: Limits,
     work: u64,
@@ -1346,6 +1368,7 @@ mod native_calls;
 mod scalar_entry;
 #[cfg(any(test, feature = "vm-validation-oracle"))]
 mod scalar_suffixes;
+mod text_matches;
 use functions::validate_function;
 
 mod control_flow;

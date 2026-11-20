@@ -11,7 +11,7 @@ impl Vm {
         Self::load_initial(program, support, limits, epoch, true)
     }
     pub(super) fn load_initial(
-        program: VerifiedProgram,
+        mut program: VerifiedProgram,
         support: RuntimeSupport,
         limits: VmLimits,
         epoch: SessionEpoch,
@@ -79,9 +79,10 @@ impl Vm {
         })?;
         program.require_text_pool()?;
         let type_checks = types::TypeChecks::new(p, &usage, &support.host_types)?;
-        let program_charge = Reservation::new(
+        let optional_index = program.text_match_capacity_bytes() as u64;
+        let mut program_charge = Reservation::new(
             &usage,
-            program.execution_capacity_bytes() as u64
+            program.execution_capacity_bytes() as u64 - optional_index
                 + (std::mem::size_of::<CodeLease>() + program.shared_header_bytes()
                     - std::mem::size_of::<BytecodePackage>()
                     + std::mem::size_of::<types::TypeChecks>()
@@ -250,6 +251,24 @@ impl Vm {
             .iter()
             .position(|name| name == "init")
             .map(|i| SymbolId(i as u32));
+        let task_index = ChargedVec::new(&usage, 1)?;
+        #[cfg(feature = "profiling")]
+        let step_costs = step_costs::State::new(&usage, p.functions.len())?;
+        #[cfg(any(test, feature = "vm-validation-oracle"))]
+        let residual_body = scalars::ResidualState::new(
+            &usage,
+            std::env::var_os("ASIDE_VM_RESIDUAL_BODY").is_some_and(|value| value == "1"),
+        )?;
+        // Pay for accelerators only after required roots and slots are ready.
+        // Snapshot restoration still needs this quota for its incoming data.
+        if optional_index != 0
+            && (!initialize
+                || program_charge
+                    .resize(program_charge.bytes() + optional_index)
+                    .is_err())
+        {
+            program.disable_text_matches();
+        }
         let type_checks = Rc::new(type_checks);
         let program = Rc::new(CodeLease {
             program,
@@ -259,20 +278,13 @@ impl Vm {
         heap.code = Some(program.clone());
         #[cfg(feature = "execution-counts")]
         slots.reset_execution_counts();
-        #[cfg(feature = "profiling")]
-        let step_costs = step_costs::State::new(&usage, program.package().functions.len())?;
-        #[cfg(any(test, feature = "vm-validation-oracle"))]
-        let residual_body = scalars::ResidualState::new(
-            &usage,
-            std::env::var_os("ASIDE_VM_RESIDUAL_BODY").is_some_and(|value| value == "1"),
-        )?;
         Ok(Self {
             program,
             code_window: crate::bytecode::CodeWindow::default(),
             slots,
             active,
             tasks,
-            task_index: ChargedVec::new(&usage, 1)?,
+            task_index,
             active_slot: None,
             wait_revision: 0,
             scratch,

@@ -8,7 +8,7 @@ pub(super) fn validate_function(
     parameter_layouts: &ParameterLayouts,
     uses: &mut InstructionUses,
     b: &mut Budget,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     get(&p.modules, f.module.0, "function module")?;
     symbol(p, f.name)?;
     let s = get(&p.signatures, f.signature.0, "function signature")?;
@@ -26,7 +26,7 @@ pub(super) fn validate_function(
             ErrorKind::Signature,
             "native callable uses the registration's preparation contract",
         )?;
-        return validate_source_map(p, f, true);
+        return validate_source_map(p, f, true).map(|()| 0);
     }
     b.work(s.parameters.len() as u64)?;
     for (i, param) in s.parameters.iter().enumerate() {
@@ -67,10 +67,14 @@ pub(super) fn validate_function(
     }
     validate_source_map(p, f, false)?;
     validate_regions(f, b)?;
+    let mut literal_checks = 0;
     for item in f.code.ranged_iter() {
         let (range, i) = item?;
         let pc = range.start;
         validate_instruction(p, f, range, &i, b).map_err(|e| located(p, fi, pc, e))?;
+        if f.regions.is_empty() && text_matches::is_case(&p.types, i) {
+            literal_checks += 1;
+        }
         if matches!(i.opcode, op if op == Opcode::MemberGet as u16 || op == Opcode::MemberSet as u16)
         {
             let symbol = i.operands[2] as usize;
@@ -85,7 +89,7 @@ pub(super) fn validate_function(
             });
         }
     }
-    Ok(())
+    Ok(literal_checks)
 }
 pub(super) fn validate_source_map(
     p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,

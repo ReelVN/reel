@@ -676,6 +676,9 @@ impl Renderer {
                 &self.admission,
                 &self.glyphs,
             )?;
+            // Image uploads own a separate submission slot. Claim the frame's
+            // slot after they submit, before building anything a busy retry drops.
+            let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
             if !plan.aliases.is_empty() {
                 let bytes = (plan.aliases.len() * 128) as u64;
                 tickets.push(reserve(
@@ -901,9 +904,6 @@ impl Renderer {
                     )?,
                 });
             }
-            // Upload batches own their own admission. Reserving this earlier would
-            // deadlock cold frames on a host configured for one in-flight submission.
-            let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
             target_cache.configure(size, quality);
             let coverage_quality = self.gpu.coverage_quality(quality);
             if let Some(coverage_quality) = coverage_quality {

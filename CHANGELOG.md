@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Claim the desktop frame submission slot before preparing glyphs and draw resources.
+- Index long runs of short literal string tests in verified Aside bytecode.
+- Account bounded PNG decoder workspace separately from its resident pixel buffer.
 - Reuse mapped upload buffer space across raster row ranges within one submission and report staging allocations separately.
 - Decode bounded noninterlaced RGB8 PNGs directly into the resident RGBA buffer one row at a time.
 - Skip model and property observer bookkeeping for ordinary VM table writes.

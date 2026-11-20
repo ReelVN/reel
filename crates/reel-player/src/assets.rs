@@ -154,6 +154,8 @@ struct Service {
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
     pending_pngs: Vec<(WorkId, AssetSource)>,
+    // The built-in executor understands the workspace for direct PNG output.
+    direct_png_workspace: bool,
     #[cfg(test)]
     pumps: usize,
 }
@@ -167,22 +169,19 @@ impl Assets {
     pub fn directory(options: AssetOptions) -> Self {
         let limits = options.queue_limits();
         let root = options.root.clone();
-        Self::with_adapters(options, |wake| {
-            (
-                Box::new(DirectoryIo::new(root, limits, wake.clone())),
-                Box::new(ImageExecutor::new(limits, wake)),
-            )
+        Self::with_image_executor(options, |wake, _temporary, _metadata| {
+            Ok::<_, std::convert::Infallible>(Box::new(DirectoryIo::new(root, limits, wake)))
         })
+        .unwrap()
     }
     /// Uses a resource target overlay with the current platform's image decoder.
     pub fn directory_for_target(options: AssetOptions, target: String) -> Result<Self, IoError> {
         let limits = options.queue_limits();
         let root = options.root.clone();
-        Self::try_with_adapters(options, |wake, _temporary, _metadata| {
-            Ok((
-                Box::new(DirectoryIo::for_target(root, target, limits, wake.clone())?),
-                Box::new(ImageExecutor::new(limits, wake)),
-            ))
+        Self::with_image_executor(options, |wake, _temporary, _metadata| {
+            Ok(Box::new(DirectoryIo::for_target(
+                root, target, limits, wake,
+            )?))
         })
     }
     /// Uses prepared logical resources directly from their physical files.
@@ -193,19 +192,14 @@ impl Assets {
         packages: Option<Vec<PathBuf>>,
     ) -> Result<Self, IoError> {
         let limits = options.queue_limits();
-        Self::try_with_adapters(options, |wake, temporary, metadata| {
+        Self::with_image_executor(options, |wake, temporary, metadata| {
             let io: Box<dyn AssetIo> = match packages {
                 Some(paths) => Box::new(PackIo::selected(
-                    paths,
-                    files,
-                    temporary,
-                    metadata,
-                    limits,
-                    wake.clone(),
+                    paths, files, temporary, metadata, limits, wake,
                 )?),
-                None => Box::new(DirectoryIo::selected(files, limits, wake.clone())),
+                None => Box::new(DirectoryIo::selected(files, limits, wake)),
             };
-            Ok((io, Box::new(ImageExecutor::new(limits, wake))))
+            Ok(io)
         })
     }
     /// Release archives are the sole source unless a loose-file overlay is explicit.
@@ -224,32 +218,35 @@ impl Assets {
         target: String,
     ) -> Result<Self, IoError> {
         let limits = options.queue_limits();
-        Self::try_with_adapters(options, |wake, temporary, metadata| {
-            Ok((
-                Box::new(PackIo::open(
-                    paths,
-                    overlay,
-                    target,
-                    temporary,
-                    metadata,
-                    limits,
-                    wake.clone(),
-                )?),
-                Box::new(ImageExecutor::new(limits, wake)),
-            ))
+        Self::with_image_executor(options, |wake, temporary, metadata| {
+            Ok(Box::new(PackIo::open(
+                paths, overlay, target, temporary, metadata, limits, wake,
+            )?))
         })
     }
+    fn with_image_executor<E>(
+        options: AssetOptions,
+        open_io: impl FnOnce(WakeSignal, &BudgetPool, &BudgetPool) -> Result<Box<dyn AssetIo>, E>,
+    ) -> Result<Self, E> {
+        let limits = options.queue_limits();
+        Self::try_with_adapters(options, true, |wake, temporary, metadata| {
+            let io = open_io(wake.clone(), temporary, metadata)?;
+            Ok((io, Box::new(ImageExecutor::new(limits, wake))))
+        })
+    }
+
     pub fn with_adapters(
         options: AssetOptions,
         create: impl FnOnce(WakeSignal) -> (Box<dyn AssetIo>, Box<dyn WorkExecutor>),
     ) -> Self {
-        Self::try_with_adapters(options, |wake, _temporary, _metadata| {
+        Self::try_with_adapters(options, false, |wake, _temporary, _metadata| {
             Ok::<_, std::convert::Infallible>(create(wake))
         })
         .unwrap()
     }
     fn try_with_adapters<E>(
         options: AssetOptions,
+        direct_png_workspace: bool,
         create: impl FnOnce(
             WakeSignal,
             &BudgetPool,
@@ -277,19 +274,6 @@ impl Assets {
             },
         );
         let (io, executor) = create(wake.clone(), &temporary, &metadata)?;
-        Ok(Self::assemble(
-            options, io, executor, wake, notify, temporary, metadata,
-        ))
-    }
-    fn assemble(
-        options: AssetOptions,
-        io: Box<dyn AssetIo>,
-        executor: Box<dyn WorkExecutor>,
-        wake: WakeSignal,
-        notify: Notify,
-        temporary: BudgetPool,
-        metadata: BudgetPool,
-    ) -> Self {
         let pool = |category, bytes| {
             BudgetPool::new(
                 category,
@@ -309,7 +293,7 @@ impl Assets {
                 },
             )
         };
-        Self(Rc::new(RefCell::new(Service {
+        Ok(Self(Rc::new(RefCell::new(Service {
             io: Some(io),
             executor: Some(executor),
             wake,
@@ -331,9 +315,10 @@ impl Assets {
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
             pending_pngs: Vec::new(),
+            direct_png_workspace,
             #[cfg(test)]
             pumps: 0,
-        })))
+        }))))
     }
     pub fn set_waker(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         *self.0.borrow().notify.lock().unwrap() = notify;
@@ -960,10 +945,12 @@ impl Service {
                     && let Some(png) =
                         crate::artwork::png_shape(load.input.as_ref().unwrap().as_slice())
                 {
-                    // Reserve the same storage as the decoder's full probe.
                     load.size = png.size;
                     load.output = png.output;
-                    load.temporary = png.temporary;
+                    load.temporary = png.temporary(
+                        self.options.decode_bytes - self.io_workspace_bytes,
+                        self.direct_png_workspace,
+                    );
                     load.phase = if png.bounded_metadata {
                         Phase::DecodeBoundedPng
                     } else {
@@ -1037,11 +1024,7 @@ impl Service {
                     return Err("image decode limit exceeded".into());
                 }
                 let bounded_png = matches!(load.phase, Phase::DecodeBoundedPng);
-                let workspace = if bounded_png {
-                    // Decoded pixels plus fixed inflater/row workspace.
-                    // Small user budgets retain their existing decoder limit.
-                    load.temporary.saturating_add(128 << 10).min(decode_bytes)
-                } else if load.texture.is_some() {
+                let workspace = if bounded_png || load.texture.is_some() {
                     load.temporary
                 } else {
                     decode_bytes

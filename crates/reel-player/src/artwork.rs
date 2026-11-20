@@ -21,8 +21,48 @@ const PNG_HEADER_BYTES: usize = 33;
 pub(crate) struct PngShape {
     pub size: [u32; 2],
     pub output: u64,
-    pub temporary: u64,
     pub bounded_metadata: bool,
+    pixel_workspace: u64,
+    direct_output: bool,
+}
+
+impl PngShape {
+    pub(crate) fn temporary(&self, available: u64, allow_direct: bool) -> u64 {
+        if !self.bounded_metadata {
+            return self.pixel_workspace;
+        }
+        let full_image = self
+            .pixel_workspace
+            .saturating_add(128 << 10)
+            .min(available)
+            .max(self.pixel_workspace);
+        if allow_direct && self.direct_output {
+            full_image.min(direct_png_workspace(self.size[0]))
+        } else {
+            full_image
+        }
+    }
+}
+
+pub(crate) fn direct_png_workspace(width: u32) -> u64 {
+    // png 0.18.1 retains a 32 KiB lookback and grows its row window in 8 KiB
+    // steps. Reserve room for its 128 KiB or four-row compaction threshold,
+    // old/new allocation overlap, fdeflate 0.3.7's tables and bounded chunks.
+    (576 << 10) + 26 * (u64::from(width) * 4 + 1)
+}
+
+fn png_header_has_color(header: &[u8], color: png::ColorType) -> bool {
+    header.starts_with(PNG_SIGNATURE)
+        && header[24] == png::BitDepth::Eight as u8
+        && header[25] == color as u8
+}
+
+pub(crate) fn is_bounded_rgba8_png(bytes: &[u8]) -> bool {
+    bytes.get(..PNG_HEADER_BYTES).is_some_and(|header| {
+        png_header_has_color(header, png::ColorType::Rgba)
+            && header[28] == 0
+            && bounded_png_transparency(&bytes[PNG_HEADER_BYTES..]).is_some()
+    })
 }
 
 pub(crate) fn png_shape(bytes: &[u8]) -> Option<PngShape> {
@@ -48,8 +88,11 @@ pub(crate) fn png_shape(bytes: &[u8]) -> Option<PngShape> {
     Some(PngShape {
         size: [info.width, info.height],
         output: pixels.checked_mul(4)?,
-        temporary: pixels.checked_mul(4 + channels)?,
+        pixel_workspace: pixels.checked_mul(4 + channels)?,
         bounded_metadata: transparency.is_some(),
+        direct_output: !info.interlaced
+            && (info.color_type == png::ColorType::Rgba
+                || (info.color_type == png::ColorType::Rgb && transparency == Some(false))),
     })
 }
 
@@ -60,9 +103,7 @@ pub(crate) fn decode_rgb_png_rows(
     output: u64,
 ) -> Option<Result<Vec<u8>, String>> {
     let header = bytes.get(..PNG_HEADER_BYTES)?;
-    if !header.starts_with(PNG_SIGNATURE)
-        || header[24] != png::BitDepth::Eight as u8
-        || header[25] != png::ColorType::Rgb as u8
+    if !png_header_has_color(header, png::ColorType::Rgb)
         || header[28] != 0
         || bounded_png_transparency(&bytes[PNG_HEADER_BYTES..]) != Some(false)
     {
@@ -79,11 +120,15 @@ pub(crate) fn decode_rgb_png_rows(
         let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
         let (width, height) = reader.info().size();
         let pixels = u64::from(width) * u64::from(height);
-        // Preserve the same decode admission limits as the image adapter.
-        if pixels.checked_mul(7).is_none_or(|bytes| bytes > temporary) || pixels * 4 > output {
+        let rgba = pixels.checked_mul(4).ok_or("image size overflow")?;
+        let workspace = pixels.saturating_mul(7).min(direct_png_workspace(width));
+        if workspace > temporary || rgba > output {
             return Err("image decode reservation too small".into());
         }
-        let length = usize::try_from(pixels * 4).map_err(|_| "image size overflow")?;
+        let length = usize::try_from(rgba)
+            .ok()
+            .filter(|&len| len <= isize::MAX as usize)
+            .ok_or("image size overflow")?;
         let stride = u64::from(width) * 4;
         let mut rgba = vec![0; length];
         for destination in rgba.chunks_exact_mut(stride as usize) {

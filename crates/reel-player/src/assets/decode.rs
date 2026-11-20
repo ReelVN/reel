@@ -180,7 +180,13 @@ fn decode_artwork(
         data.extend_from_slice(&decoded.to_le_bytes());
         return Ok(data);
     }
-    if rgba > output || decoded.checked_add(rgba).is_none_or(|n| n > temporary) {
+    let full_image_fits = decoded
+        .checked_add(rgba)
+        .is_some_and(|bytes| bytes <= temporary);
+    let direct_fits = !full_image_fits
+        && crate::artwork::direct_png_workspace(width) <= temporary
+        && crate::artwork::is_bounded_rgba8_png(input);
+    if rgba > output || !(full_image_fits || direct_fits) {
         return Err("image decode reservation too small".into());
     }
     Ok(DynamicImage::from_decoder(decoder)

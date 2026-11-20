@@ -373,11 +373,15 @@ pub(super) fn validate_program(
         members: b.vec::<u32>(p.symbols.len().div_ceil(32))?,
     };
     uses.members.resize(p.symbols.len().div_ceil(32), 0);
+    let mut match_functions = text_matches::MatchFunctions::new();
     for (fi, f) in p.functions.iter().enumerate() {
-        validate_function(p, fi, f, &parameter_layouts, &mut uses, &mut b).map_err(|mut e| {
-            e.function = Some(FunctionId(fi as u32));
-            e
-        })?;
+        let function = FunctionId(fi as u32);
+        let literal_checks = validate_function(p, fi, f, &parameter_layouts, &mut uses, &mut b)
+            .map_err(|mut e| {
+                e.function = Some(function);
+                e
+            })?;
+        match_functions.note(function, literal_checks);
         instruction_bytes = instruction_bytes
             .checked_add(f.code.capacity_bytes())
             .ok_or_else(|| Error::new(ErrorKind::Limit, "instruction byte count"))?;
@@ -452,6 +456,7 @@ pub(super) fn validate_program(
             #[cfg(any(test, feature = "vm-validation-oracle"))]
             scalar_suffixes,
             scalar_entries,
+            match_functions,
         },
     ))
 }

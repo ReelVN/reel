@@ -424,6 +424,53 @@ fn pngs_with_fixed_metadata_decode_without_a_worker_probe() {
 }
 
 #[test]
+fn bounded_pngs_separate_resident_pixels_from_codec_workspace() {
+    let (width, height) = (640, 360);
+    let expected = (0..width * height)
+        .flat_map(|sample| {
+            let shade = (sample % 95) as u8;
+            [25 + shade, 50 + shade, 75 + shade, 255]
+        })
+        .collect::<Vec<_>>();
+    for (color, channels) in [(png::ColorType::Rgb, 3), (png::ColorType::Rgba, 4)] {
+        let pixels = expected
+            .chunks_exact(4)
+            .flat_map(|pixel| pixel[..channels].iter().copied())
+            .collect::<Vec<_>>();
+        let mut encoded = Vec::new();
+        let mut encoder = png::Encoder::new(&mut encoded, width, height);
+        encoder.set_color(color);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+
+        for (decode_bytes, succeeds) in [(768 << 10, true), (128 << 10, false)] {
+            let resident_bytes = expected.len() as u64;
+            let assets = Assets::directory(AssetOptions {
+                resident_bytes,
+                decode_bytes,
+                ..Default::default()
+            });
+            let id = assets
+                .request_encoded("bounded.png".into(), &encoded)
+                .unwrap();
+            let result = load_until_done(&assets, id);
+            if succeeds {
+                let image = result.unwrap();
+                assert_eq!(image.read_pixels().unwrap().bytes(), expected);
+                assert_eq!(assets.output_pool().usage().bytes, resident_bytes);
+            } else {
+                assert_eq!(result.err().unwrap(), "image decode limit exceeded");
+            }
+            assert_eq!(assets.temporary_pool().usage().bytes, 0);
+            assert_eq!(assets.output_pool().usage().bytes, 0);
+        }
+    }
+}
+
+#[test]
 fn png_color_keys_and_palettes_decode_without_a_worker_probe() {
     let colors = [25, 50, 75, 1, 2, 3];
     for indexed in [false, true] {

@@ -70,6 +70,7 @@ fn parameter_layout_bytes(program: &VerifiedProgram) -> usize {
         - program.compact_derived_capacity_bytes()
         - program.scalar_suffix_capacity_bytes()
         - program.scalar_entry_capacity_bytes()
+        - program.text_match_capacity_bytes()
 }
 
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
