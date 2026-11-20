@@ -4,6 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Align only row width for single-level Vita RGBA8 textures unless power-of-two padding is requested.
 - Prepare known upcoming images during finite animation and delay waits.
 - Admit simple lossy WebP images directly to the bounded decode queue.
 - Batch ordinary scalar defaults in the VM and construct stage property tables in one pass.

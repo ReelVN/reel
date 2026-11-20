@@ -52,7 +52,7 @@ pub struct Options {
     pub power_of_two: bool,
     /// Generate a complete mip chain in linear premultiplied color; default is one level.
     pub mipmaps: bool,
-    /// Prepare BC blocks in GXM Morton order for a Vita target package.
+    /// Prepare storage with GXM row alignment or Morton order for Vita.
     pub gxm_layout: bool,
     pub format: Format,
     /// Stable RGB dithering for RGBA8 texture conversion; disabled by default.
@@ -129,20 +129,11 @@ pub(crate) fn prepare_scaled_bounded(
     let dimensions = decoder.dimensions();
     let logical = [dimensions.0, dimensions.1];
     let content = scaled_content_size(logical, options.max_size, scale)?;
-    let mut storage = content;
-    for axis in &mut storage {
-        *axis = if options.power_of_two || options.gxm_layout {
-            (*axis)
-                .max(8)
-                .checked_next_power_of_two()
-                .ok_or("stored image dimensions overflow")?
-        } else {
-            axis.checked_add(3)
-                .ok_or("stored image dimensions overflow")?
-                / 4
-                * 4
-        };
-    }
+    let budget_format = match options.format {
+        Format::Rgba8 => TextureFormat::Rgba8,
+        _ => TextureFormat::Bc3Rgba,
+    };
+    let storage = texture_storage_size(content, options, budget_format)?;
     // Pinned image 0.25.10: into_rgba32f holds at most the PNG16 source (8 B/px)
     // and float destination (16 B/px); apply_color_space then works in place.
     // Triangle resize keeps original float pixels, width*new_height float
@@ -305,6 +296,35 @@ fn prepare_pixels(
     Ok((descriptor, pixels))
 }
 
+fn texture_storage_size(
+    content: [u32; 2],
+    options: Options,
+    format: TextureFormat,
+) -> Result<[u32; 2], String> {
+    let mut storage = content;
+    if options.power_of_two || (options.gxm_layout && (format.is_compressed() || options.mipmaps)) {
+        for axis in &mut storage {
+            *axis = (*axis)
+                .max(8)
+                .checked_next_power_of_two()
+                .ok_or("stored image dimensions overflow")?;
+        }
+    } else {
+        // sceGxmTextureInitLinear aligns the row pitch to eight texels.
+        let alignment = if options.gxm_layout {
+            [8, 1]
+        } else {
+            [format.block_size(); 2]
+        };
+        for (axis, alignment) in storage.iter_mut().zip(alignment) {
+            *axis = axis
+                .checked_next_multiple_of(alignment)
+                .ok_or("stored image dimensions overflow")?;
+        }
+    }
+    Ok(storage)
+}
+
 pub(crate) fn prepare_linear(
     original: DynamicImage,
     options: Options,
@@ -344,20 +364,7 @@ pub(crate) fn prepare_linear(
             imageops::FilterType::Triangle,
         );
     }
-    let mut storage_size = content_size;
-    for axis in &mut storage_size {
-        *axis = if options.power_of_two || options.gxm_layout {
-            (*axis)
-                .max(8)
-                .checked_next_power_of_two()
-                .ok_or("stored image dimensions overflow")?
-        } else {
-            axis.checked_add(format.block_size() - 1)
-                .ok_or("stored image dimensions overflow")?
-                / format.block_size()
-                * format.block_size()
-        };
-    }
+    let storage_size = texture_storage_size(content_size, options, format)?;
     let descriptor = TextureDescriptor {
         storage_layout: if options.gxm_layout && format.is_compressed() {
             reel_core::texture::TextureStorageLayout::GxmBcMorton
@@ -650,6 +657,31 @@ mod tests {
             .unwrap_err();
             assert!(error.contains("requires format rgba8"), "{error}");
         }
+    }
+
+    #[test]
+    fn gxm_single_level_rgba8_aligns_rows_without_padding_height() {
+        let original = RgbaImage::from_pixel(29, 13, image::Rgba([255, 0, 0, 255]));
+        let options = Options {
+            max_size: Some([17, 9]),
+            gxm_layout: true,
+            format: Format::Rgba8,
+            ..Default::default()
+        };
+        let (descriptor, pixels) = prepare_pixels(original.clone().into(), options, 1.).unwrap();
+        assert_eq!(descriptor.layout.logical_size, [29, 13]);
+        assert_eq!(descriptor.layout.content_size, [17, 7]);
+        assert_eq!(descriptor.layout.storage_size, [24, 7]);
+        assert_eq!(descriptor.byte_len().unwrap(), 24 * 7 * 4);
+        assert!(pixels.pixels().all(|pixel| pixel.0 == [255, 0, 0, 255]));
+
+        let full_resolution = Options {
+            max_size: None,
+            ..options
+        };
+        let (descriptor, _) = prepare_pixels(original.into(), full_resolution, 1.).unwrap();
+        assert_eq!(descriptor.layout.storage_size, [32, 13]);
+        assert_eq!(descriptor.byte_len().unwrap(), 32 * 13 * 4);
     }
 
     #[test]
