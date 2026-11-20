@@ -4,6 +4,19 @@ use action::Kind;
 use graph::{Job, Phase, Slot, Track, get, int, kind, node, phase, set, track, track_source};
 
 impl Activities {
+    pub fn recent_completion_waits(&self) -> (Option<WaitId>, impl Iterator<Item = WaitId> + '_) {
+        // The VM revision invalidates completed waits. New registrations are
+        // identified separately by the last subscription in this activity list.
+        let newest = self.waits.last().map(|&(wait, _, _)| wait);
+        let completions = self
+            .waits
+            .iter()
+            .rev()
+            .take(8)
+            .filter_map(|&(wait, _, tick)| tick.is_none().then_some(wait));
+        (newest, completions)
+    }
+
     pub fn set_skipping(&mut self, skipping: bool) {
         self.skipping = skipping;
     }

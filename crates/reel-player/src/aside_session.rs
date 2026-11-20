@@ -687,8 +687,7 @@ impl AsideSessionUi {
                 self.ui.request_presentation(self.vm.presentation_request());
             }
         }
-        self.ui
-            .set_story_prediction(self.vm.predicted_dialogue_images());
+        self.ui.set_story_prediction(self.vm.predicted_images());
         self.sync_input(bridge, root)?;
         if SessionUi::stage_widget(bridge, root).is_some() {
             self.transitions

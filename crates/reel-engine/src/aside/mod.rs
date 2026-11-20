@@ -254,6 +254,14 @@ pub enum SessionStep {
     Idle,
 }
 
+#[derive(Default)]
+struct ImagePrediction {
+    revision: u64,
+    dialogue: Option<WaitId>,
+    newest_activity: Option<WaitId>,
+    sources: Box<[Box<str>]>,
+}
+
 /// Owns the story and node callback tasks, their waits and retirement obligations.
 /// Native tickets must belong to an admitted live task; dispatch never selects
 /// work by the VM's most recently active task.
@@ -287,7 +295,7 @@ pub struct SessionVm {
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
     visual_plan: Option<std::sync::Arc<visual_plan::VisualPlan>>,
-    predicted_images: Option<(WaitId, Box<[Box<str>]>)>,
+    predicted_images: Option<ImagePrediction>,
     choice_reader: Option<choice::ChoiceReader>,
     dialogue_reader: Option<dialogue::DialogueReader>,
     // Constructed speech handles and their VM objects, without production counters.
@@ -1005,9 +1013,12 @@ impl SessionVm {
     }
 
     /// Paths from the next statically known image or layered image after a
-    /// pending dialogue reveal or advance, in preparation order.
-    pub fn predicted_dialogue_images(&mut self) -> &[Box<str>] {
-        let Some(wait) = self
+    /// pending dialogue or a finite activity completion, in preparation order.
+    pub fn predicted_images(&mut self) -> &[Box<str>] {
+        let Some(plan) = self.visual_plan.as_ref() else {
+            return &[];
+        };
+        let dialogue = self
             .pending
             .as_ref()
             .filter(|pending| {
@@ -1017,35 +1028,33 @@ impl SessionVm {
                 ) && pending.keys.is_none()
                     && self.vm.wait_is_pending(pending.wait)
             })
-            .map(|pending| pending.wait)
-        else {
-            self.predicted_images = None;
-            return &[];
-        };
-        if self
-            .predicted_images
-            .as_ref()
-            .is_none_or(|(last, _)| *last != wait)
-        {
+            .map(|pending| pending.wait);
+        let revision = self.vm.wait_revision();
+        let (newest_activity, completions) = self.activities.recent_completion_waits();
+        if self.predicted_images.as_ref().is_none_or(|last| {
+            last.revision != revision
+                || last.dialogue != dialogue
+                || last.newest_activity != newest_activity
+        }) {
             let program = self.vm.program();
-            let sites = self.vm.wait_call_sites(wait);
-            let sources = self
-                .visual_plan
-                .as_ref()
-                .and_then(|plan| plan.next_images(program, sites));
-            if let Some((last, previous)) = &mut self.predicted_images
-                && previous
-                    .iter()
-                    .map(Box::as_ref)
-                    .eq(sources.iter().flatten().copied())
+            let sources = dialogue
+                .into_iter()
+                .chain(completions)
+                .find_map(|wait| plan.next_images(program, self.vm.wait_call_sites(wait)));
+            let prediction = self.predicted_images.get_or_insert_with(Default::default);
+            prediction.revision = revision;
+            prediction.dialogue = dialogue;
+            prediction.newest_activity = newest_activity;
+            if !prediction
+                .sources
+                .iter()
+                .map(Box::as_ref)
+                .eq(sources.iter().flatten().copied())
             {
-                *last = wait;
-                return &self.predicted_images.as_ref().unwrap().1;
+                prediction.sources = sources.into_iter().flatten().map(Box::from).collect();
             }
-            let sources = sources.into_iter().flatten().map(Box::from).collect();
-            self.predicted_images = Some((wait, sources));
         }
-        &self.predicted_images.as_ref().unwrap().1
+        &self.predicted_images.as_ref().unwrap().sources
     }
 
     fn deliver_completion(&mut self, session: &mut Session) -> Result<(), AdapterError> {

@@ -239,6 +239,69 @@ fn native_parameter_batch_retains_the_cursor_and_default_at_a_work_yield() {
 }
 
 #[test]
+fn scalar_defaults_fill_only_the_omitted_slots_within_the_clock_batch() {
+    for (clock_steps, expected) in [(0, 2), (1, 3)] {
+        let (mut package, mut support) = fixture(1);
+        let signature = &mut package.signatures[0];
+        for parameter in &mut signature.parameters[2..] {
+            parameter.default = Some(ParameterDefault::Constant(ConstId(1)));
+        }
+        support.natives[0].signature = signature.clone();
+        let Descriptor::Call(call) = &mut package.functions[0].descriptors[0] else {
+            unreachable!();
+        };
+        call.arguments = Arguments::Window(RegWindow {
+            start: Reg(0),
+            len: 2,
+        });
+        call.names.truncate(1);
+        let mut vm = Vm::load(
+            verify(package, Limits::default()).unwrap(),
+            support,
+            VmLimits::default(),
+            SessionEpoch(1),
+        )
+        .unwrap();
+        let task = vm
+            .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+            .unwrap();
+        review_tests::reach(&mut vm, task, |vm| {
+            matches!(vm.active.frames.data.last(), Some(Frame::Native(n))
+                if matches!(n.phase, NativePhase::Defaults { parameter: 1 }))
+        });
+        let Some(Frame::Native(n)) = vm.active.frames.data.last().copied() else {
+            unreachable!();
+        };
+        let mut meter = Meter::new(SliceBudget {
+            deadline_ns: Some(1),
+            work: 30,
+            ..review_tests::tiny()
+        });
+        meter.clock_steps = clock_steps;
+        assert!(vm.native_step(n, &mut meter).unwrap().is_none());
+        assert_eq!(meter.clock_steps, 0);
+        assert_eq!(meter.usage.work, 10 * u64::from(expected - 1));
+        assert!(
+            matches!(vm.active.frames.data.last(), Some(Frame::Native(n))
+            if matches!(n.phase, NativePhase::Defaults { parameter } if parameter == expected))
+        );
+        assert_eq!(vm.value(n.bound, 3).unwrap().as_int(), None);
+        review_tests::collect(&mut vm);
+        let RunOutcome::HostCall(ticket) = next(&mut vm, task) else {
+            panic!("native")
+        };
+        assert_eq!(
+            vm.host_arguments(ticket)
+                .unwrap()
+                .iter()
+                .map(|value| value.as_int())
+                .collect::<Vec<_>>(),
+            [Some(41), Some(1), Some(41), None]
+        );
+    }
+}
+
+#[test]
 fn planned_binding_type_fault_keeps_the_generic_call_location() {
     let mut observed = Vec::new();
     for generic in [true, false] {

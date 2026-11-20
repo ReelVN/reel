@@ -55,6 +55,49 @@ pub(crate) fn decode_qoi(bytes: &[u8], output: u64) -> Option<Result<Vec<u8>, St
     })())
 }
 
+/// Read a single, opaque VP8 frame's fixed header for bounded worker admission.
+/// The worker still validates the frame and produces pixels with the normal decoder.
+pub(crate) fn simple_webp_shape(bytes: &[u8]) -> Option<([u32; 2], u64, u64)> {
+    let header = bytes.get(..30)?;
+    if &header[..4] != b"RIFF"
+        || &header[8..16] != b"WEBPVP8 "
+        || header[20] & 1 != 0
+        || header[23..26] != [0x9d, 0x01, 0x2a]
+    {
+        return None;
+    }
+    let length = bytes.len() as u64;
+    let riff = u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap()));
+    let chunk = u64::from(u32::from_le_bytes(header[16..20].try_into().unwrap()));
+    let tag = u32::from_le_bytes([header[20], header[21], header[22], 0]);
+    if riff + 8 != length
+        || chunk.next_multiple_of(2) + 20 != length
+        || chunk < 10 + u64::from(tag >> 5)
+    {
+        return None;
+    }
+    let size = [26, 28].map(|start| {
+        u32::from(u16::from_le_bytes(header[start..start + 2].try_into().unwrap()) & 0x3fff)
+    });
+    if size.contains(&0) {
+        return None;
+    }
+    let pixels = u64::from(size[0]) * u64::from(size[1]);
+    // In image-webp 0.2.4 the last partition can hold both the growing
+    // read buffer and its aligned copy. At most one malformed 24-bit
+    // partition length can allocate before its read fails.
+    let encoded_workspace = (length * 4).max(length + (1 << 24));
+    let workspace = webp_workspace(size, encoded_workspace) + pixels * 7;
+    Some((size, pixels * 4, workspace))
+}
+
+fn webp_workspace([width, height]: [u32; 2], encoded_workspace: u64) -> u64 {
+    // Account for padded VP8 planes, alpha or VP8L transform buffers,
+    // compressed partitions and decoder tables alongside the pixel output.
+    let padded = u64::from(width.next_multiple_of(16)) * u64::from(height.next_multiple_of(16));
+    padded * 8 + encoded_workspace + (128 << 10)
+}
+
 /// A PNG whose output size can be determined without a worker probe.
 pub(crate) struct PngShape {
     pub size: [u32; 2],
@@ -264,11 +307,7 @@ pub fn decoder<'a>(
                 return Err("animated WebP is not supported for artwork".into());
             }
             let (width, height) = decoder.dimensions();
-            // Account for padded VP8 planes, alpha or VP8L transform buffers,
-            // compressed partitions and decoder tables alongside the pixel output.
-            let padded =
-                u64::from(width.next_multiple_of(16)) * u64::from(height.next_multiple_of(16));
-            let workspace = padded * 8 + source_bytes + (128 << 10);
+            let workspace = webp_workspace([width, height], source_bytes);
             Ok((Box::new(decoder), workspace))
         }
         _ => Err("expected PNG, JPEG, static WebP or QOI artwork".into()),

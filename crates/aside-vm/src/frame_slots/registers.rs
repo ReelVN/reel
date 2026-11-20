@@ -55,6 +55,12 @@ impl FrameSlots {
 }
 
 impl RegisterWindow<'_> {
+    pub(crate) fn is_initialized(&self, register: u32) -> bool {
+        let index = register as usize;
+        let bit = self.first_bit + index;
+        index < self.values.len() && self.bitmap[bit / 64].contains(bit)
+    }
+
     fn read_value(&self, register: u32) -> Result<Value, HeapError> {
         let index = register as usize;
         let value = self.values.get(index).ok_or(HeapError::OutOfBounds)?;
@@ -102,6 +108,33 @@ impl RegisterWindow<'_> {
         #[cfg(feature = "execution-counts")]
         self.counts.add(SlotCounter::Writes, 1);
         self.put(register, value, true)
+    }
+
+    /// Publish a span of immediate values, which carry no GC edges.
+    pub(crate) fn write_immediates(
+        &mut self,
+        start: u32,
+        values: &[Value],
+    ) -> Result<(), HeapError> {
+        debug_assert!(
+            values
+                .iter()
+                .all(|value| value.tag() != crate::ValueTag::Object)
+        );
+        let start = start as usize;
+        let end = start
+            .checked_add(values.len())
+            .ok_or(HeapError::OutOfBounds)?;
+        self.values
+            .get_mut(start..end)
+            .ok_or(HeapError::OutOfBounds)?
+            .copy_from_slice(values);
+        for bit in self.first_bit + start..self.first_bit + end {
+            self.bitmap[bit / 64].set(bit, true);
+        }
+        #[cfg(feature = "execution-counts")]
+        self.counts.add(SlotCounter::Writes, values.len() as u64);
+        Ok(())
     }
 
     /// Clear operands in order; a later invalid operand retains the valid prefix.

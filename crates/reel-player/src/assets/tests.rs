@@ -645,6 +645,60 @@ fn static_webp_decodes_by_content_with_reserved_workspace() {
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[test]
+fn simple_webp_shares_bounded_decode_lanes_without_a_probe() {
+    // Red 2 × 2 image encoded by FFmpeg's libwebp encoder.
+    const VP8: &[u8] = &[
+        0x52, 0x49, 0x46, 0x46, 0x3c, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
+        0x20, 0x30, 0x00, 0x00, 0x00, 0xd0, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x02, 0x00, 0x02, 0x00,
+        0x02, 0x00, 0x34, 0x25, 0xa0, 0x02, 0x74, 0xba, 0x01, 0xf8, 0x00, 0x03, 0xb0, 0x00, 0xfe,
+        0xf0, 0xe8, 0xf7, 0xff, 0x20, 0xb9, 0x61, 0x75, 0xc8, 0xd7, 0xff, 0x20, 0x3f, 0xe4, 0x07,
+        0xfc, 0x80, 0xff, 0xf8, 0xf2, 0x00, 0x00, 0x00,
+    ];
+    let expected = image::load_from_memory_with_format(VP8, image::ImageFormat::WebP)
+        .unwrap()
+        .into_rgba8();
+    let assets = Assets::directory(AssetOptions::default());
+    let first = assets.request_encoded("first".into(), VP8).unwrap();
+    let second = assets.request_encoded("second".into(), VP8).unwrap();
+    assets.maintain();
+    {
+        let service = assets.0.borrow();
+        for id in [first, second] {
+            let load = &service.loads[&id];
+            assert!(matches!(load.phase, Phase::Decoding(_)));
+            assert_eq!(load.size, [2, 2]);
+        }
+        assert_eq!(service.pending_bounded_decodes.len(), 2);
+        assert!(service.temporary.usage().bytes < service.options.decode_bytes);
+    }
+    for id in [first, second] {
+        let lease = load_until_done(&assets, id).unwrap();
+        assert_eq!(
+            lease.read_pixels().unwrap().bytes(),
+            expected.as_raw().as_slice()
+        );
+    }
+    assert_eq!(assets.temporary_pool().usage().bytes, 0);
+
+    let small = Assets::directory(AssetOptions {
+        decode_bytes: 256 << 10,
+        ..Default::default()
+    });
+    let id = small.request_encoded("small".into(), VP8).unwrap();
+    small.maintain();
+    assert!(matches!(
+        small.0.borrow().loads[&id].phase,
+        Phase::Probing(_)
+    ));
+    let lease = load_until_done(&small, id).unwrap();
+    assert_eq!(
+        lease.read_pixels().unwrap().bytes(),
+        expected.as_raw().as_slice()
+    );
+}
+
 pub(super) fn load_until_done(assets: &Assets, id: LoadId) -> Result<ResourceLease, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {

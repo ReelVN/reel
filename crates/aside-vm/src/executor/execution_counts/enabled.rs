@@ -202,6 +202,9 @@ macro_rules! fields {
                 cell.set(cell.get() + 1);
             }
             pub(in crate::executor) fn native_step(&self, phase: &NativePhase) {
+                self.native_steps(phase, 1);
+            }
+            pub(in crate::executor) fn native_steps(&self, phase: &NativePhase, count: u64) {
                 let index = match phase {
                     NativePhase::PlannedCheck { .. } | NativePhase::PlannedCopy { .. } => 0,
                     NativePhase::Copy { .. } => 1,
@@ -218,7 +221,7 @@ macro_rules! fields {
                     _ => 10,
                 };
                 let cell = &self.native_steps[index];
-                cell.set(cell.get() + 1);
+                cell.set(cell.get() + count);
             }
             fn snapshot(&self) -> ExecutionCounts {
                 ExecutionCounts {

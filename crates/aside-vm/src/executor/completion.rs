@@ -853,9 +853,22 @@ impl Vm {
                 }
             }
             NativePhase::Defaults { .. } | NativePhase::Parameter { .. } => loop {
-                if !self.native_parameter_step(&mut n, m)? {
+                let batched = if n.has_defaults
+                    && n.bindings.is_none()
+                    && let NativePhase::Defaults { parameter } = n.phase
+                {
+                    self.native_scalar_defaults(&mut n, m, parameter)?
+                } else {
+                    0
+                };
+                if batched == 0 && !self.native_parameter_step(&mut n, m)? {
                     self.active.frames.data[top] = Frame::Native(n);
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                #[cfg(feature = "execution-counts")]
+                if batched > 1 {
+                    self.execution_counts
+                        .native_steps(&n.phase, u64::from(batched - 1));
                 }
                 // Leave the batch before a clock check or a different phase
                 // that can suspend, run script code, or deliver a fault.

@@ -118,8 +118,13 @@ impl Image {
 }
 
 /// A fresh raster texture starts at zero. Upload only the conservative alpha
-/// span when doing so avoids at least half of the CPU copy and conversion.
-pub(super) fn fresh_raster_rows(source: &ResourceLease, height: u32) -> std::ops::Range<u32> {
+/// span when a full upload would already need to initialize the texture before
+/// its first partial copy, or when at least half of the rows can be omitted.
+pub(super) fn fresh_raster_rows(
+    source: &ResourceLease,
+    height: u32,
+    split_full_upload: impl FnOnce() -> bool,
+) -> std::ops::Range<u32> {
     let full = 0..height;
     let Some(coverage) = source.image_coverage() else {
         return full;
@@ -129,7 +134,7 @@ pub(super) fn fresh_raster_rows(source: &ResourceLease, height: u32) -> std::ops
         return full;
     };
     let end = bands.last().map_or(end, |bounds| bounds[3]);
-    if end - start <= height / 2 {
+    if end - start < height && (end - start <= height / 2 || split_full_upload()) {
         start..end
     } else {
         full

@@ -37,18 +37,27 @@ impl ConstantLoad {
     }
 }
 
+pub(super) fn scalar_constant(constant: &Const) -> Option<Value> {
+    Some(match constant {
+        Const::Null => Value::NULL,
+        Const::Bool(value) => Value::bool(*value),
+        Const::Int(value) => Value::int(*value),
+        Const::FloatBits(bits) => Value::float(f64::from_bits(*bits)),
+        _ => return None,
+    })
+}
+
 impl Vm {
     pub(super) fn plan_constant(&self, id: ConstId) -> ConstantLoad {
-        let missing = match &self.program.package().constants[id.index()] {
-            Const::Null => return ConstantLoad::Ready(Value::NULL),
-            Const::Bool(value) => return ConstantLoad::Ready(Value::bool(*value)),
-            Const::Int(value) => return ConstantLoad::Ready(Value::int(*value)),
-            Const::FloatBits(bits) => {
-                return ConstantLoad::Ready(Value::float(f64::from_bits(*bits)));
-            }
+        let constant = &self.program.package().constants[id.index()];
+        if let Some(value) = scalar_constant(constant) {
+            return ConstantLoad::Ready(value);
+        }
+        let missing = match constant {
             Const::Utf8(_) | Const::Text { .. } => ConstantLoad::Bytes(id, ObjectKind::String),
             Const::Bytes(_) => ConstantLoad::Bytes(id, ObjectKind::Bytes),
             Const::Tuple(_) => ConstantLoad::Tuple(id),
+            _ => unreachable!("immediate constants return above"),
         };
         let value = self.constant_cache.data[id.index()];
         // Resolve the full handle, including liveness after the collection cutoff.

@@ -156,68 +156,89 @@ fn sparse_raster_rows_are_zero_on_fresh_and_recycled_storage() {
         resources::{ColorEncoding, ResourceRegistry},
     };
 
-    let size = [64, 48];
-    let pool = pool();
-    let mut registry = ResourceRegistry::new(2, 65536).unwrap();
-    let mut renderer = renderer(crate::gpu::GpuLimits {
-        image_upload_bytes_per_prepare: 8 * 64 * 8,
-        ..Default::default()
-    });
-    for (index, active) in [(0, 8..12), (1, 30..34)] {
-        let version = ResourceVersion {
-            key: AssetKey(format!("sparse-raster-{index}")),
-            version: ContentVersion([index; 32]),
-        };
-        let bytes: Vec<u8> = (0..size[1])
-            .flat_map(|y| [255, 0, 0, if active.contains(&y) { 255 } else { 0 }].repeat(64))
-            .collect();
-        let ticket = pool.reserve(bytes.capacity() as u64).unwrap();
-        let handle = registry
-            .register_image(
-                version.clone(),
-                OwnedBytes::new(bytes, ticket).unwrap(),
-                size,
-                ImageFormat::Rgba8,
-                ImageAlphaType::Alpha,
-                ColorEncoding::Linear,
-            )
-            .unwrap();
-        let mut widget = RecordWidget::new(Scene::new());
-        widget.resource_draws.push((
-            registry.acquire(handle).unwrap(),
-            Rect::new(0., 0., 64., 48.),
-            Affine::scale(6.25),
-            // Keep the full quad so pixel readback sees every skipped row.
-            ImageSampler {
-                y_extend: Extend::Repeat,
-                quality: ImageQuality::Low,
-                ..Default::default()
-            },
-        ));
-        let frame = frame_from_widget(widget, registry.freeze(&[handle], &pool).unwrap(), &pool);
-
-        // Fresh storage stages the six covered rows once. Existing storage
-        // must overwrite all 48 rows because the visible band moved.
-        let deferrals = if index == 0 { 0 } else { 5 };
-        for _ in 0..deferrals {
-            assert!(matches!(renderer.prepare(&frame), Err(GpuError::Preparing)));
+    for (stage_rows, mapped_rows, active_rows) in [
+        (8, None, [8..12, 30..34]),
+        (28, None, [2..28, 20..46]),
+        (48, Some(14), [2..28, 20..46]),
+    ] {
+        let size = [64, 48];
+        let pool = pool();
+        let mut registry = ResourceRegistry::new(2, 65536).unwrap();
+        let mut renderer = renderer(crate::gpu::GpuLimits {
+            image_upload_bytes_per_prepare: u64::from(stage_rows) * 64 * 8,
+            ..Default::default()
+        });
+        if let Some(mapped_rows) = mapped_rows {
             renderer
-                .gpu
-                .device
-                .poll(wgpu::PollType::wait_indefinitely())
+                .images
+                .prepare_staging(&renderer.gpu, &renderer.budgets, mapped_rows * 64 * 8)
                 .unwrap();
-            renderer.poll().unwrap();
         }
-        let prepared = renderer.prepare(&frame).unwrap();
-        assert_eq!(renderer.gpu.upload_creations.snapshot()[0], 1);
-        let pixels = renderer.readback(prepared).unwrap();
-        for (y, row) in pixels.chunks_exact(64).enumerate() {
-            let red = if active.contains(&(y as u32)) { 1. } else { 0. };
-            assert!(row.iter().all(|pixel| pixel[0] == red), "row {y}");
+        for (index, active) in (0..).zip(active_rows) {
+            let version = ResourceVersion {
+                key: AssetKey(format!("sparse-raster-{index}")),
+                version: ContentVersion([index; 32]),
+            };
+            let bytes: Vec<u8> = (0..size[1])
+                .flat_map(|y| [255, 0, 0, if active.contains(&y) { 255 } else { 0 }].repeat(64))
+                .collect();
+            let ticket = pool.reserve(bytes.capacity() as u64).unwrap();
+            let handle = registry
+                .register_image(
+                    version.clone(),
+                    OwnedBytes::new(bytes, ticket).unwrap(),
+                    size,
+                    ImageFormat::Rgba8,
+                    ImageAlphaType::Alpha,
+                    ColorEncoding::Linear,
+                )
+                .unwrap();
+            let mut widget = RecordWidget::new(Scene::new());
+            widget.resource_draws.push((
+                registry.acquire(handle).unwrap(),
+                Rect::new(0., 0., 64., 48.),
+                Affine::scale(6.25),
+                // Keep the full quad so pixel readback sees every skipped row.
+                ImageSampler {
+                    y_extend: Extend::Repeat,
+                    quality: ImageQuality::Low,
+                    ..Default::default()
+                },
+            ));
+            let frame =
+                frame_from_widget(widget, registry.freeze(&[handle], &pool).unwrap(), &pool);
+
+            // The effective full upload exceeds the work quota or the warm space.
+            // Existing storage still must overwrite all rows when the band moves.
+            let deferrals = if index == 0 {
+                0
+            } else {
+                (size[1] - 1) / stage_rows
+            };
+            for _ in 0..deferrals {
+                assert!(matches!(renderer.prepare(&frame), Err(GpuError::Preparing)));
+                renderer
+                    .gpu
+                    .device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .unwrap();
+                renderer.poll().unwrap();
+            }
+            let prepared = renderer.prepare(&frame).unwrap();
+            let creations = renderer.gpu.upload_creations.snapshot();
+            assert_eq!(creations[0], 1);
+            if index == 0 && mapped_rows.is_some() {
+                assert_eq!(creations, [1, 2, 2]);
+            }
+            let pixels = renderer.readback(prepared).unwrap();
+            for (y, row) in pixels.chunks_exact(64).enumerate() {
+                let red = if active.contains(&(y as u32)) { 1. } else { 0. };
+                assert!(row.iter().all(|pixel| pixel[0] == red), "row {y}");
+            }
+            renderer.retire(&[version]);
+            registry.retire(handle);
+            drop(frame);
         }
-        renderer.retire(&[version]);
-        registry.retire(handle);
-        drop(frame);
     }
 }
 

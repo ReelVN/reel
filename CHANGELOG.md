@@ -4,6 +4,10 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Prepare known upcoming images during finite animation and delay waits.
+- Admit simple lossy WebP images directly to the bounded decode queue.
+- Batch ordinary scalar defaults in the VM and construct stage property tables in one pass.
+- Skip transparent outer rows for new desktop textures that already need split uploads.
 - Add the `qoi` desktop resource conversion for faster lossless decoding of selected 8-bit images.
 - Start preparing visible fixed-size images once headers supply the dimensions needed by layout.
 - Use remaining space in mapped desktop upload buffers for raster and prepared texture rows before allocating the rest.

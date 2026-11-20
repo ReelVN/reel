@@ -175,6 +175,42 @@ impl Heap {
         self.ensure_object_slot()?;
         Ok(self.allocate(ObjectKind::Table, Payload::Table(Table::default()), None, 0))
     }
+
+    /// Allocate a private table from entries already resolved by the host.
+    /// Keys must be valid and unique under Aside key equality. Positions and
+    /// initial versions match appending each pair in order with `table_store`.
+    pub fn alloc_ordered_table(&mut self, entries: &[(Value, Value)]) -> Result<Value, HeapError> {
+        let count = u32::try_from(entries.len()).map_err(|_| HeapError::OutOfBounds)?;
+        let slots = count.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
+        self.ensure_object_slot()?;
+        let bytes = Values::allocation_bytes(u64::from(slots));
+        self.ensure_bytes(bytes)?;
+        for &(key, value) in entries {
+            self.barrier(key)?;
+            self.barrier(value)?;
+        }
+        let mut values = Values::default();
+        for &(key, value) in entries {
+            values.push(key);
+            values.push(value);
+        }
+        // The barriers above have handled every edge. Publish with the same
+        // GC queue state as an empty table followed by ordered appends.
+        let table = self.allocate(ObjectKind::Table, Payload::Table(Table::default()), None, 0);
+        self.charge(bytes, values.owned_chunks());
+        let key = self.key(table)?;
+        let object = self.objects.get_mut(key).unwrap();
+        object.payload = Payload::Table(Table {
+            values,
+            index: None,
+        });
+        object.charged = bytes;
+        object.content_version = u64::from(count);
+        object.structure_version = u64::from(count);
+        self.mutation_revision = self.mutation_revision.wrapping_add(u64::from(count));
+        Ok(table)
+    }
+
     pub fn table_entry(&self, table: Value, position: u32) -> Result<(Value, Value), HeapError> {
         self.table_read(table)?.entry(position)
     }
@@ -529,6 +565,56 @@ mod tests {
         );
         let array = heap.alloc_array(&[]).unwrap();
         assert!(matches!(heap.table_read(array), Err(HeapError::WrongKind)));
+    }
+
+    #[test]
+    fn ordered_table_construction_matches_appends_during_marking() {
+        let mut measurements = Vec::new();
+        for bulk in [false, true] {
+            let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+            let text = heap.alloc_string("field").unwrap();
+            let child = heap.alloc_array(&[Value::int(42)]).unwrap();
+            let mut entries: Vec<_> = (0..crate::VALUE_CHUNK_LEN as i64)
+                .map(|index| (Value::int(index), Value::NULL))
+                .collect();
+            entries.push((text, child));
+
+            heap.begin_collection().unwrap();
+            let revision = heap.mutation_revision();
+            let before = heap.stats();
+            let table = if bulk {
+                heap.alloc_ordered_table(&entries).unwrap()
+            } else {
+                let table = heap.alloc_table().unwrap();
+                for (index, &(key, value)) in entries.iter().enumerate() {
+                    heap.table_store(table, index as u32, key, value).unwrap();
+                }
+                table
+            };
+            let after = heap.stats();
+            let info = heap.info(table).unwrap();
+            measurements.push((
+                heap.mutation_revision() - revision,
+                info.content_version,
+                info.structure_version,
+                after.gray_len,
+                after.payload_bytes - before.payload_bytes,
+                after.chunk_allocations - before.chunk_allocations,
+            ));
+            heap.add_root(RootOwner(1), RootKind::Host, table).unwrap();
+            while heap.phase() != GcPhase::Idle {
+                heap.gc_step(crate::GcBudget::default()).unwrap();
+            }
+            let view = heap.table_read(table).unwrap();
+            for (index, &(key, value)) in entries.iter().enumerate() {
+                let (actual_key, actual_value) = view.entry(index as u32).unwrap();
+                assert!(actual_key.same_bits(key));
+                assert!(actual_value.same_bits(value));
+            }
+            assert_eq!(heap.sequence_get(child, 0).unwrap().as_int(), Some(42));
+            assert_eq!(heap.info(text).unwrap().kind, ObjectKind::String);
+        }
+        assert_eq!(measurements[0], measurements[1]);
     }
 
     #[test]

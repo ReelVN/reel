@@ -710,17 +710,26 @@ impl StageBinding {
         }
         let args = resolved.as_ref();
         let prefix = registry::node_prefix(symbol);
-        let fields = heap.alloc_table()?;
         let field_count = prefix.len() + NodeProperty::PROPERTIES.len();
-        for (index, argument) in args.iter().take(field_count).enumerate() {
-            let name = if index < prefix.len() {
-                prefix[index]
-            } else {
-                NodeProperty::PROPERTIES[index - prefix.len()].name
-            };
-            let key = self.property_key(heap, name)?;
-            heap.table_store(fields, index as u32, key, *argument)?;
-        }
+        let fields = {
+            let count = args.len().min(field_count);
+            let bytes = size_of::<(Value, Value)>();
+            let mut charge = heap.budget_usage().reserve((count * bytes) as u64)?;
+            let mut entries = Vec::new();
+            entries
+                .try_reserve_exact(count)
+                .map_err(|_| AdapterError::Allocation)?;
+            charge.resize((entries.capacity() * bytes) as u64)?;
+            let names = prefix.iter().copied().chain(
+                NodeProperty::PROPERTIES
+                    .iter()
+                    .map(|property| property.name),
+            );
+            for (name, &argument) in names.zip(args) {
+                entries.push((self.property_key(heap, name)?, argument));
+            }
+            heap.alloc_ordered_table(&entries)?
+        };
         let shape = snapshot::Shape::from_symbol(symbol);
         let appearance_origin = origin.as_deref().map(Arc::from);
         let (mut kind, input_declaration) = if shape == snapshot::Shape::Input {

@@ -101,9 +101,24 @@ impl Batch {
         let rows = if self.split {
             open.sum::<u64>() + cache.rows_available(stride)
         } else {
-            open.max().unwrap_or(0).max(cache.capacity() / stride)
+            self.largest_span(cache) / stride
         };
         rows * stride
+    }
+
+    fn largest_span(&self, cache: &Cache) -> u64 {
+        self.buffers
+            .iter()
+            .map(|buffer| buffer.remaining())
+            .max()
+            .unwrap_or(0)
+            .max(cache.capacity())
+    }
+
+    /// A whole image still becomes several copies when only shorter spans
+    /// are mapped and the batch can reuse them.
+    pub fn splits_rows(&self, cache: &Cache, stride: u64, bytes: u64) -> bool {
+        self.split && (stride..bytes).contains(&self.largest_span(cache))
     }
 
     pub fn new_bytes(&self, requested: u64, reusable: u64) -> u64 {

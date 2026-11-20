@@ -1,6 +1,9 @@
 //! Shared sequential parameter preparation and native author-value projection.
 use super::*;
 
+const DEFAULT_INSPECTION_WORK: u64 = 8;
+const LITERAL_DEFAULT_WORK: u64 = 2;
+
 impl Vm {
     pub(super) fn check_cell_type(
         &self,
@@ -70,6 +73,64 @@ impl Vm {
             .checked_ilog2()
             .unwrap_or(0) as u64
     }
+
+    /// Apply a short run of omitted, immediate defaults through one root
+    /// window. The first parameter outside this run is handled by the
+    /// resumable binder, including its original required-work and faults.
+    pub(super) fn native_scalar_defaults(
+        &mut self,
+        n: &mut NativeFrame,
+        m: &mut Meter,
+        parameter: u32,
+    ) -> Result<u8, VmError> {
+        const WORK: u64 = DEFAULT_INSPECTION_WORK + LITERAL_DEFAULT_WORK;
+        const BATCH: usize = 32;
+        let p = self.program.package();
+        let parameters = &p.signatures[n.signature.index()].parameters;
+        // Every builtin scalar default previously used one 10-work admission.
+        // Two or more defaults are needed to save repeated admission.
+        let available_work = ((m.budget.work - m.usage.work) / WORK).min(BATCH as u64) as usize;
+        let available_clock = if m.budget.deadline_ns.is_some() {
+            usize::from(m.clock_steps) + 1
+        } else {
+            BATCH
+        };
+        let limit = available_work.min(available_clock);
+        let start = parameter as usize;
+        if limit < 2 || parameters.len().saturating_sub(start) < 2 {
+            return Ok(0);
+        }
+        let mut window = self.slots.registers_vm(&mut self.heap, n.bound)?;
+        let mut values = [Value::NULL; BATCH];
+        let mut count = 0;
+        for parameter in parameters[start..].iter().take(limit) {
+            let (Some(ParameterDefault::Constant(id)), TypeDef::Builtin(ty)) =
+                (parameter.default, &p.types[parameter.ty.index()])
+            else {
+                break;
+            };
+            let Some(value) = constants::scalar_constant(&p.constants[id.index()]) else {
+                break;
+            };
+            if window.is_initialized((start + count) as u32)
+                || !window.heap_read().accepts_builtin(*ty, value)?
+            {
+                break;
+            }
+            values[count] = value;
+            count += 1;
+        }
+        if count < 2 {
+            return Ok(0);
+        }
+        assert!(m.take_short_sequence(WORK * count as u64, count as u8));
+        window.write_immediates(parameter, &values[..count])?;
+        n.phase = NativePhase::Defaults {
+            parameter: parameter + count as u32,
+        };
+        Ok(count as u8)
+    }
+
     pub(super) fn native_parameter_step(
         &mut self,
         n: &mut NativeFrame,
@@ -101,7 +162,9 @@ impl Vm {
                     }
                     _ => None,
                 });
-                let literal_work = literal.map_or(0, |(_, ty, _)| 2 + self.type_checks.extra(ty));
+                let literal_work = literal.map_or(0, |(_, ty, _)| {
+                    LITERAL_DEFAULT_WORK + self.type_checks.extra(ty)
+                });
                 let layout_work = if n.bindings.is_some() {
                     self.native_layout_work()
                 } else {
@@ -109,7 +172,11 @@ impl Vm {
                 };
                 let allocation =
                     literal.map_or(0, |(_, _, load)| load.allocation_bytes(&self.heap));
-                if !m.take(0, layout_work + 8 + literal_work, allocation) {
+                if !m.take(
+                    0,
+                    layout_work + DEFAULT_INSPECTION_WORK + literal_work,
+                    allocation,
+                ) {
                     return Ok(false);
                 }
                 if parameter == total {

@@ -259,7 +259,14 @@ impl ImageCache {
                     // Reused storage may hold pixels in otherwise transparent rows.
                     0..source.height
                 } else {
-                    resources::fresh_raster_rows(item.source, source.height)
+                    resources::fresh_raster_rows(item.source, source.height, || {
+                        item.staging > staging_limit
+                            || staging.splits_rows(
+                                &self.staging.lock().unwrap(),
+                                item.minimum_staging,
+                                item.staging,
+                            )
+                    })
                 };
                 (format, source, rows)
             });

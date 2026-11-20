@@ -154,7 +154,7 @@ struct Service {
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
     pending_bounded_decodes: Vec<(WorkId, AssetSource)>,
-    // Only the built-in decoder supports direct PNG and QOI output.
+    // Only the built-in decoder shares these codec workspace estimates.
     builtin_image_decoder: bool,
     #[cfg(test)]
     pumps: usize,
@@ -906,6 +906,7 @@ impl Service {
             }
             Phase::Probe | Phase::Decode | Phase::DecodeBoundedImage => {
                 let mut probe = matches!(load.phase, Phase::Probe);
+                let decode_bytes = self.options.decode_bytes - self.io_workspace_bytes;
                 if probe
                     && load
                         .input
@@ -953,10 +954,7 @@ impl Service {
                 {
                     load.size = png.size;
                     load.output = png.output;
-                    load.temporary = png.temporary(
-                        self.options.decode_bytes - self.io_workspace_bytes,
-                        self.builtin_image_decoder,
-                    );
+                    load.temporary = png.temporary(decode_bytes, self.builtin_image_decoder);
                     load.phase = if png.bounded_metadata {
                         Phase::DecodeBoundedImage
                     } else {
@@ -972,6 +970,19 @@ impl Service {
                     load.size = size;
                     load.output = output;
                     load.temporary = 0;
+                    load.phase = Phase::DecodeBoundedImage;
+                    probe = false;
+                }
+                if probe
+                    && self.builtin_image_decoder
+                    && decode::MAX_IMAGE_WORKERS > 1
+                    && let Some((size, output, temporary)) =
+                        crate::artwork::simple_webp_shape(load.input.as_ref().unwrap().as_slice())
+                    && temporary <= decode_bytes
+                {
+                    load.size = size;
+                    load.output = output;
+                    load.temporary = temporary;
                     load.phase = Phase::DecodeBoundedImage;
                     probe = false;
                 }
@@ -1036,7 +1047,6 @@ impl Service {
                 if !probe {
                     self.admit_prefetch(load)?;
                 }
-                let decode_bytes = self.options.decode_bytes - self.io_workspace_bytes;
                 if !probe && load.temporary > decode_bytes {
                     return Err("image decode limit exceeded".into());
                 }

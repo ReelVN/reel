@@ -3,6 +3,28 @@ mod chains;
 mod tween_from;
 
 #[test]
+fn picture_prediction_follows_a_finite_activity_wait() {
+    let (mut session, mut vm) = models::prepared(
+        r#"fn opening() {
+            stage.replace(stack());
+            await delay(0.25).run();
+            stage.replace(image("next.png"));
+            narrator("ready");
+        }"#,
+        true,
+    );
+    vm.visual_plan =
+        visual_plan::VisualPlan::compile(vm.vm.program(), 64 * 1024).map(std::sync::Arc::new);
+    assert!(vm.predicted_images().is_empty());
+    models::drive(&mut vm, &mut session, false);
+    assert_eq!(vm.predicted_images(), &[Box::<str>::from("next.png")]);
+
+    vm.advance_time(&session, 1., 4096).unwrap();
+    models::drive(&mut vm, &mut session, false);
+    assert!(vm.predicted_images().is_empty());
+}
+
+#[test]
 fn initially_paused_activity_restores_before_first_activation() {
     use aside_vm::snapshot::SnapshotBudget;
     let source = r#"fn opening() {
