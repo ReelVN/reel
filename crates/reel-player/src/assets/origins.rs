@@ -9,6 +9,7 @@ use reel_ui::resources::{ResourceHandle, ResourceLease, ResourceWeak};
 use std::{
     collections::{BTreeMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
+    num::NonZeroUsize,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -22,36 +23,31 @@ struct Index {
 }
 // Recently used images keep their identity through a story replacement. Only
 // a small share of the existing output budget may hold decoded pixel payloads.
+#[derive(Default)]
 pub(super) struct RecentImages {
-    slots: [Option<RecentImage>; 64],
-    next: usize,
+    entries: Option<lru::LruCache<String, RecentImage>>,
+    decoded_bytes: u64,
 }
 
 struct RecentImage {
-    source: String,
     lease: ResourceLease,
-    admitted_decoded_bytes: u64,
+    decoded_bytes: u64,
 }
 
-impl RecentImage {
-    fn decoded_bytes(&self) -> u64 {
-        if self.admitted_decoded_bytes != 0 && self.lease.pixels_resident() {
-            self.admitted_decoded_bytes
-        } else {
-            0
-        }
-    }
-}
-
-impl Default for RecentImages {
-    fn default() -> Self {
-        Self {
-            slots: [const { None }; 64],
-            next: 0,
-        }
-    }
-}
 impl RecentImages {
+    const CAPACITY: NonZeroUsize = NonZeroUsize::new(
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
+            256
+        } else {
+            64
+        },
+    )
+    .unwrap();
+
     pub(super) fn insert(&mut self, source: String, lease: ResourceLease, decoded_limit: u64) {
         let backing = lease.image_backing();
         let Some(pixel_bytes) = backing.pixel_byte_len() else {
@@ -60,7 +56,7 @@ impl RecentImages {
         if lease.is_retired() {
             return;
         }
-        let admitted_decoded_bytes = if backing.pixels_resident() {
+        let decoded_bytes = if backing.pixels_resident() {
             let bytes = pixel_bytes as u64;
             // Atlas views can share one physical allocation with visible views.
             if bytes > decoded_limit || lease.handle() != backing.handle() {
@@ -71,71 +67,58 @@ impl RecentImages {
             0
         };
 
-        drop(self.remove(&source));
-        self.slots[self.next] = None;
-        if admitted_decoded_bytes != 0 {
-            let mut remaining = self.decoded_bytes();
-            let limit = decoded_limit - admitted_decoded_bytes;
-            for slot in self.oldest_first() {
-                if remaining <= limit {
-                    break;
-                }
-                let bytes = slot.as_ref().map_or(0, RecentImage::decoded_bytes);
-                if bytes != 0 {
-                    *slot = None;
-                    remaining -= bytes;
-                }
-            }
+        drop(self.take(&source));
+        if decoded_bytes != 0 {
+            while self.decoded_bytes > decoded_limit - decoded_bytes && self.evict_decoded() {}
         }
-        self.slots[self.next] = Some(RecentImage {
+        let cache = self
+            .entries
+            .get_or_insert_with(|| lru::LruCache::new(Self::CAPACITY));
+        if let Some((_, old)) = cache.push(
             source,
-            lease,
-            admitted_decoded_bytes,
-        });
-        self.next = (self.next + 1) % self.slots.len();
+            RecentImage {
+                lease,
+                decoded_bytes,
+            },
+        ) {
+            self.decoded_bytes -= old.decoded_bytes;
+        }
+        self.decoded_bytes += decoded_bytes;
     }
 
     pub(super) fn take(&mut self, source: &str) -> Option<ResourceLease> {
-        self.remove(source)
-            .map(|image| image.lease)
-            .filter(|lease| !lease.is_retired())
+        let image = self.entries.as_mut()?.pop(source)?;
+        self.decoded_bytes -= image.decoded_bytes;
+        (!image.lease.is_retired()).then_some(image.lease)
     }
 
     pub(super) fn decoded_bytes(&self) -> u64 {
-        self.slots
-            .iter()
-            .flatten()
-            .map(RecentImage::decoded_bytes)
-            .sum()
+        self.decoded_bytes
     }
 
     pub(super) fn make_room(&mut self, output: &BudgetPool, bytes: u64) {
-        if bytes <= output.available_bytes() {
-            return;
-        }
-        for slot in self.oldest_first() {
-            if slot
-                .as_ref()
-                .is_some_and(|image| image.decoded_bytes() != 0)
-            {
-                *slot = None;
-                if bytes <= output.available_bytes() {
-                    break;
-                }
+        while self.decoded_bytes != 0 && bytes > output.available_bytes() && self.evict_decoded() {}
+    }
+
+    fn evict_decoded(&mut self) -> bool {
+        let Some(entries) = &mut self.entries else {
+            return false;
+        };
+        // A submitted upload can finish after its source leaves the stage.
+        // Release its conservative charge while keeping its texture identity.
+        for (source, image) in entries.iter_mut().rev() {
+            if image.decoded_bytes == 0 {
+                continue;
+            }
+            let bytes = std::mem::take(&mut image.decoded_bytes);
+            self.decoded_bytes -= bytes;
+            if image.lease.pixels_resident() {
+                let source = source.clone();
+                entries.pop(&source);
+                return true;
             }
         }
-    }
-
-    fn remove(&mut self, source: &str) -> Option<RecentImage> {
-        self.slots
-            .iter_mut()
-            .find(|slot| slot.as_ref().is_some_and(|image| image.source == source))?
-            .take()
-    }
-
-    fn oldest_first(&mut self) -> impl Iterator<Item = &mut Option<RecentImage>> {
-        let (newer, older) = self.slots.split_at_mut(self.next);
-        older.iter_mut().chain(newer)
+        false
     }
 }
 
@@ -143,6 +126,7 @@ pub(super) struct Origins {
     items: BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
     index: Option<Index>,
     metadata: BudgetPool,
+    sweep_at: usize,
 }
 fn kind(kind: AssetKind) -> Option<RetainedAssetKind> {
     match kind {
@@ -193,6 +177,7 @@ impl Origins {
                 ticket: None,
             }),
             metadata,
+            sweep_at: 64,
         }
     }
     pub(super) fn clear(&mut self) {
@@ -238,20 +223,40 @@ impl Origins {
         if kind == RetainedAssetKind::Image {
             lease.permit_pixel_reload();
         }
-        self.items.retain(|_, (weak, _)| !weak.is_released());
-        if let Some(index) = &mut self.index {
-            index.entries.retain(|entry| {
-                entry.handle != lease.handle() && self.items.contains_key(&entry.handle)
-            });
-            let item = Entry {
-                hash: fingerprint(&lease.version().key, lease.version().version, kind),
-                handle: lease.handle(),
-            };
-            if !index.push(item, &self.metadata) {
+        let handle = lease.handle();
+        if self
+            .items
+            .insert(handle, (lease.downgrade(), kind))
+            .is_some()
+        {
+            return;
+        }
+        if self.items.len() >= self.sweep_at {
+            self.prune_released();
+        }
+        let Some(index) = &mut self.index else {
+            return;
+        };
+        let item = Entry {
+            hash: fingerprint(&lease.version().key, lease.version().version, kind),
+            handle,
+        };
+        if !index.push(item, &self.metadata) {
+            self.prune_released();
+            if !self.index.as_mut().unwrap().push(item, &self.metadata) {
                 self.index = None;
             }
         }
-        self.items.insert(lease.handle(), (lease.downgrade(), kind));
+    }
+
+    fn prune_released(&mut self) {
+        self.items.retain(|_, (weak, _)| !weak.is_released());
+        if let Some(index) = &mut self.index {
+            index
+                .entries
+                .retain(|entry| self.items.contains_key(&entry.handle));
+        }
+        self.sweep_at = self.items.len() + self.items.len().max(64);
     }
 }
 
