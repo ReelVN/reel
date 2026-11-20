@@ -41,6 +41,8 @@ impl BoundedColor {
                     Some(
                         TextureFormat::Rgba8
                             | TextureFormat::Bgra8
+                            | TextureFormat::Rgb8
+                            | TextureFormat::Indexed8Rgba
                             | TextureFormat::Bc1Rgb
                             | TextureFormat::Bc3Rgba
                     )

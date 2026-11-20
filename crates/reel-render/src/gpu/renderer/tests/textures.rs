@@ -948,6 +948,139 @@ fn atlas_views_match_standalone_crop_repeat_slices_alpha_and_mask() {
 }
 
 #[test]
+#[ignore = "requires a graphics adapter for bounded upload and pixel readback"]
+fn packed_color_matches_rgba_after_row_bounded_uploads() {
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 128,
+            max_bytes: 8 << 20,
+        },
+    );
+    let mut registry = ResourceRegistry::new(4, 65536).unwrap();
+    let mut renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(1),
+            GpuLimits {
+                image_upload_bytes_per_prepare: 512,
+                ..Default::default()
+            },
+        ))
+        .unwrap(),
+    );
+    let register = |registry: &mut ResourceRegistry, descriptor, name: String, bytes: Vec<u8>| {
+        let ticket = pool.reserve(bytes.capacity() as u64).unwrap();
+        let owned = OwnedBytes::new(bytes, ticket).unwrap();
+        let handle = registry
+            .register_texture(
+                ResourceVersion {
+                    key: AssetKey(name),
+                    version: ContentVersion([0; 32]),
+                },
+                TexturePayload::new(descriptor, owned).unwrap(),
+            )
+            .unwrap();
+        registry.acquire(handle).unwrap()
+    };
+
+    for format in [TextureFormat::Rgb8, TextureFormat::Indexed8Rgba] {
+        let descriptor = TextureDescriptor {
+            storage_layout: TextureStorageLayout::Linear,
+            mip_count: 1,
+            format,
+            layout: TextureLayout {
+                logical_size: [64, 48],
+                content_size: [68, 3],
+                storage_size: [72, 3],
+            },
+            source_encoding: ColorEncoding::Srgb,
+        };
+        let mut colors = [[0, 0, 0, 64], [22, 56, 23, 128], [230, 210, 190, 255]];
+        if format == TextureFormat::Rgb8 {
+            for color in &mut colors {
+                color[3] = 255;
+            }
+        }
+        let [w, h] = descriptor.layout.storage_size;
+        let mut rgba = Vec::new();
+        let mut packed = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let color = ((x / 6 + y) % 3) as usize;
+                rgba.extend(colors[color]);
+                if format == TextureFormat::Rgb8 {
+                    packed.extend_from_slice(&colors[color][..3]);
+                } else {
+                    packed.push([1, 127, 255][color]);
+                }
+            }
+        }
+        if let Some(offset) = descriptor.palette_offset() {
+            packed.resize(descriptor.byte_len().unwrap() as usize, 0);
+            for (index, color) in [1, 127, 255].into_iter().zip(colors) {
+                let entry = offset as usize + index * 4;
+                packed[entry..entry + 4].copy_from_slice(&color);
+            }
+        }
+        let compact = register(&mut registry, descriptor, format!("{format:?}"), packed);
+        let control = register(
+            &mut registry,
+            TextureDescriptor {
+                format: TextureFormat::Rgba8,
+                ..descriptor
+            },
+            format!("{format:?}-control"),
+            rgba,
+        );
+        for variant in [0, 5, 10] {
+            let render = |renderer: &mut Renderer, lease: &ResourceLease| {
+                let frame = frame(lease.clone(), variant, &pool);
+                let mut prepared = None;
+                for _ in 0..8 {
+                    match renderer.prepare(&frame) {
+                        Ok(p) => {
+                            prepared = Some(p);
+                            break;
+                        }
+                        Err(error) if error.is_retryable() => {
+                            renderer
+                                .gpu
+                                .device
+                                .poll(wgpu::PollType::wait_indefinitely())
+                                .unwrap();
+                            renderer.poll().unwrap();
+                        }
+                        Err(error) => panic!("prepare failed: {error:?}"),
+                    }
+                }
+                let prepared = prepared.expect("three upload rows become ready");
+                let image = &prepared.images[&lease.handle()];
+                assert_eq!(image.texture.format(), wgpu::TextureFormat::Rgba8Unorm);
+                assert_eq!(
+                    image.residency.as_ref().unwrap().bytes(),
+                    u64::from(w * h) * 4
+                );
+                renderer.readback(prepared).unwrap()
+            };
+            let expected = render(&mut renderer, &control);
+            assert!(
+                expected
+                    .iter()
+                    .any(|pixel| pixel[0..3].iter().any(|&v| v > 0.05)),
+                "{format:?} control variant {variant} did not sample visible color"
+            );
+            assert_eq!(
+                render(&mut renderer, &compact),
+                expected,
+                "{format:?} variant {variant}"
+            );
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires graphics adapter; compares synthetic numeric textures"]
 fn odd_atlas_views_match_standalone_sampling() {
     use reel_core::texture::ImageView;

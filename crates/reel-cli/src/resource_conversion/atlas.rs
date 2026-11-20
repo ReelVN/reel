@@ -216,6 +216,21 @@ pub(super) fn prepare(
         };
         let payload = match blocks {
             Some(blocks) => blocks,
+            None if !matches!(descriptor.format, TextureFormat::Rgba8) && fallback.is_some() => {
+                let (selected, payload) = prepare_texture::encode_fallback(
+                    &atlas,
+                    descriptor.layout,
+                    prepare_texture::Options {
+                        gxm_layout: vita,
+                        dither,
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .map_err(invalid)?;
+                descriptor = selected;
+                payload
+            }
             None => {
                 descriptor.format = TextureFormat::Rgba8;
                 descriptor.storage_layout = TextureStorageLayout::Linear;

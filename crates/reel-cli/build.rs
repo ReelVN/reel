@@ -67,9 +67,21 @@ fn main() -> io::Result<()> {
     for (kind, sources, dependency_roots) in [
         ("WEBP", webp.as_slice(), ["image"].as_slice()),
         ("QOI", qoi.as_slice(), ["image"].as_slice()),
-        ("TEXTURE", texture.as_slice(), ["image", "rgbcx"].as_slice()),
-        ("ATLAS", atlas.as_slice(), ["image", "rgbcx"].as_slice()),
-        ("TILES", tiles.as_slice(), ["image", "rgbcx"].as_slice()),
+        (
+            "TEXTURE",
+            texture.as_slice(),
+            ["image", "rgbcx", "libimgquant"].as_slice(),
+        ),
+        (
+            "ATLAS",
+            atlas.as_slice(),
+            ["image", "rgbcx", "libimgquant"].as_slice(),
+        ),
+        (
+            "TILES",
+            tiles.as_slice(),
+            ["image", "rgbcx", "libimgquant"].as_slice(),
+        ),
         (
             "OPUS",
             opus.as_slice(),

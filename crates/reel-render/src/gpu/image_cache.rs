@@ -448,7 +448,8 @@ impl ImageCache {
                     });
                 }
                 let pending = &partial[&handle];
-                let (level, level_row) = layout.at_row(descriptor, pending.next_row);
+                let (level, level_row) =
+                    resources::texture_upload_level(descriptor, layout, pending.next_row);
                 let row_bytes = resources::texture_row_bytes(level);
                 let count = resources::rows_per_upload(
                     level.rows,

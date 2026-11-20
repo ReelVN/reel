@@ -116,6 +116,33 @@ impl ImageCoverage {
             TextureFormat::Rgba8 | TextureFormat::Bgra8 => {
                 Self::uncompressed(size, storage[0] as usize * 4, bytes, false)
             }
+            TextureFormat::Indexed8Rgba => {
+                let palette = bytes[descriptor.palette_offset()? as usize..]
+                    .as_chunks::<4>()
+                    .0;
+                let samples: [u8; 256] = std::array::from_fn(|i| match palette[i] {
+                    [_, _, _, 255] => 2,
+                    [0, 0, 0, 0] => 0,
+                    _ => 1,
+                });
+                let mut coverage = Self::empty(size);
+                coverage.opaque = true;
+                let active = |&index: &u8| samples[index as usize] != 0;
+                for y in 0..size[1] {
+                    let start = y as usize * storage[0] as usize;
+                    let row = &bytes[start..start + size[0] as usize];
+                    if coverage.opaque && row.iter().all(|&index| samples[index as usize] == 2) {
+                        coverage.include([0, y, size[0], y + 1]);
+                        continue;
+                    }
+                    coverage.opaque = false;
+                    if let Some(first) = row.iter().position(active) {
+                        let last = row.iter().rposition(active).unwrap();
+                        coverage.include([first as u32, y, last as u32 + 1, y + 1]);
+                    }
+                }
+                Some(coverage)
+            }
             TextureFormat::Bc3Rgba => {
                 let mut coverage = Self::empty(size);
                 for y in 0..size[1].div_ceil(4) {
@@ -135,7 +162,7 @@ impl ImageCoverage {
                 }
                 Some(coverage)
             }
-            TextureFormat::Bc1Rgb | TextureFormat::LinearRgba16Float => None,
+            TextureFormat::Bc1Rgb | TextureFormat::Rgb8 | TextureFormat::LinearRgba16Float => None,
         }
     }
 

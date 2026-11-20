@@ -1956,6 +1956,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
+name = "libimgquant"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b034377c96f8cc8d3baaeb3779d44056f448ca080d26e7004b191444e13784c"
+dependencies = [
+ "rgb",
+]
+
+[[package]]
 name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3425,6 +3434,7 @@ dependencies = [
  "guillotiere",
  "image",
  "libc",
+ "libimgquant",
  "lsp-server",
  "lsp-types",
  "pollster",
@@ -3687,6 +3697,12 @@ dependencies = [
  "mp4ra-rust",
  "mpeg4-audio-const",
 ]
+
+[[package]]
+name = "rgb"
+version = "0.8.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 
 [[package]]
 name = "rgbcx"
@@ -4860,7 +4876,7 @@ dependencies = [
 [[package]]
 name = "vita-native"
 version = "1.0.0"
-source = "git+https://github.com/jhq223/vita-native.git?rev=bbf2bf6080d55eaf82e42e2c025def6dae1d3b4b#bbf2bf6080d55eaf82e42e2c025def6dae1d3b4b"
+source = "git+https://github.com/jhq223/vita-native.git?rev=cb491bdd378d76aea9c7aac02f280203cdac9eb0#cb491bdd378d76aea9c7aac02f280203cdac9eb0"
 dependencies = [
  "cc",
  "vitasdk-sys",

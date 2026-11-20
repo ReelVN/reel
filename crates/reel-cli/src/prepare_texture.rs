@@ -6,6 +6,7 @@ use reel_core::texture::{
 };
 use std::path::Path;
 pub(crate) mod mips;
+mod palette;
 pub(crate) mod quality;
 
 /// `Auto` uses BC1 for opaque images and BC3 for images with transparency.
@@ -24,7 +25,7 @@ pub enum Format {
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Fallback {
-    /// Store the resized image as linear-premultiplied RGBA8 pixels.
+    /// Preserve the resized image, with RGBA8 as the final fallback.
     Rgba8,
 }
 
@@ -63,7 +64,7 @@ pub struct Options {
     /// Prepare storage with GXM row alignment or Morton order for Vita.
     pub gxm_layout: bool,
     pub format: Format,
-    /// Keep a GPU-ready RGBA8 texture when BC exceeds the visible error limit.
+    /// Keep GPU-ready pixels when BC exceeds the visible error limit.
     pub fallback: Option<Fallback>,
     /// Stable RGB dithering for RGBA8 texture conversion; disabled by default.
     /// Coordinates refer to the complete resized image, with edge-repeated padding.
@@ -169,6 +170,7 @@ pub(crate) fn prepare_scaled_bounded(
     } else {
         0
     };
+    let indexed = indexed_workspace(content, fallback_storage, options);
     let mip_workspace = if options.mipmaps {
         stored_pixels.max(fallback_pixels) * 48 + bc_workspace(storage, storage)
     } else {
@@ -179,6 +181,7 @@ pub(crate) fn prepare_scaled_bounded(
             .max(resize)
             .max(quantize)
             .max(encode)
+            .max(indexed)
             .max(mip_workspace)
             + (1 << 20),
     )
@@ -209,6 +212,16 @@ pub(crate) fn bc_workspace(content: [u32; 2], storage: [u32; 2]) -> u128 {
     content_pixels * 16 + stored_pixels * 7 + quality::scratch_bytes(content[0])
 }
 
+pub(crate) fn indexed_workspace(content: [u32; 2], storage: [u32; 2], options: Options) -> u128 {
+    if options.gxm_layout && !options.mipmaps && options.fallback.is_some() {
+        u128::from(content[0]) * u128::from(content[1]) * 16
+            + palette::workspace_bytes(content, storage, true)
+            + quality::scratch_bytes(content[0])
+    } else {
+        0
+    }
+}
+
 /// Encode already decoded artwork with the same filtering, block and publication
 /// rules as `prepare`, without an intermediate image file.
 pub(crate) fn prepare_decoded(
@@ -228,14 +241,90 @@ fn encode_texture(
 ) -> Result<(TextureDescriptor, Vec<u8>), String> {
     let (blocks, meets_quality) = mips::encode(linear, descriptor, options.dither)?;
     if meets_quality || options.fallback.is_none() {
+        if options.fallback.is_some()
+            && options.gxm_layout
+            && descriptor.mip_count == 1
+            && descriptor.format.is_compressed()
+            && let Some(packed) = indexed_texture(
+                linear,
+                descriptor.layout,
+                options,
+                blocks.len() as u64,
+                false,
+            )?
+        {
+            return Ok(packed);
+        }
         validate_target_extent(descriptor, options.gxm_layout)?;
         return Ok((descriptor, blocks));
     }
     drop(blocks);
-    let fallback = texture_descriptor(descriptor.layout, options, TextureFormat::Rgba8)?;
+    encode_fallback(linear, descriptor.layout, options, true)
+}
+
+pub(crate) fn encode_fallback(
+    linear: &image::Rgba32FImage,
+    layout: TextureLayout,
+    options: Options,
+    allow_lossy_palette: bool,
+) -> Result<(TextureDescriptor, Vec<u8>), String> {
+    let format = if options.gxm_layout
+        && !options.mipmaps
+        && linear
+            .pixels()
+            .all(|pixel| (pixel[3] * 255.).round() >= 255.)
+    {
+        TextureFormat::Rgb8
+    } else {
+        TextureFormat::Rgba8
+    };
+    let fallback = texture_descriptor(layout, options, format)?;
+    if options.gxm_layout
+        && !options.mipmaps
+        && let Some(packed) = indexed_texture(
+            linear,
+            layout,
+            options,
+            fallback.byte_len().map_err(|error| error.to_string())?,
+            allow_lossy_palette,
+        )?
+    {
+        return Ok(packed);
+    }
     validate_target_extent(fallback, options.gxm_layout)?;
+    if format == TextureFormat::Rgb8 {
+        let [width, height] = fallback.layout.storage_size;
+        let [content_width, content_height] = fallback.layout.content_size;
+        let pixels = image::RgbImage::from_fn(width, height, |x, y| {
+            let at = [x.min(content_width - 1), y.min(content_height - 1)];
+            let [r, g, b, _] = quantize(linear.get_pixel(at[0], at[1]).0, options.dither, at);
+            image::Rgb([r, g, b])
+        });
+        return Ok((fallback, pixels.into_raw()));
+    }
     let (pixels, _) = mips::encode(linear, fallback, options.dither)?;
     Ok((fallback, pixels))
+}
+
+fn indexed_texture(
+    linear: &image::Rgba32FImage,
+    layout: TextureLayout,
+    options: Options,
+    max_bytes: u64,
+    allow_lossy: bool,
+) -> Result<Option<(TextureDescriptor, Vec<u8>)>, String> {
+    let indexed = texture_descriptor(layout, options, TextureFormat::Indexed8Rgba)?;
+    let bytes = indexed.byte_len().map_err(|error| error.to_string())?;
+    if bytes >= max_bytes {
+        return Ok(None);
+    }
+    if let Some(payload) = palette::encode(linear, indexed, allow_lossy)?
+        && (!allow_lossy || quality::indexed_acceptable(linear, indexed, &payload))
+    {
+        validate_target_extent(indexed, options.gxm_layout)?;
+        return Ok(Some((indexed, payload)));
+    }
+    Ok(None)
 }
 
 pub(crate) fn validate_target_extent(

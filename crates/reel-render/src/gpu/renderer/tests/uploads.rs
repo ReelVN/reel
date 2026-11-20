@@ -231,7 +231,7 @@ fn sparse_raster_rows_are_zero_on_fresh_and_recycled_storage() {
                 assert_eq!(creations, [1, 2, 2]);
             }
             let pixels = renderer.readback(prepared).unwrap();
-            for (y, row) in pixels.chunks_exact(64).enumerate() {
+            for (y, row) in pixels.as_chunks::<64>().0.iter().enumerate() {
                 let red = if active.contains(&(y as u32)) { 1. } else { 0. };
                 assert!(row.iter().all(|pixel| pixel[0] == red), "row {y}");
             }

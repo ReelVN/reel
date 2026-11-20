@@ -148,7 +148,9 @@ impl Images {
                     TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => !caps.bc,
                     TextureFormat::Bgra8 => !caps.bgra,
                     TextureFormat::LinearRgba16Float => !caps.half_float,
-                    TextureFormat::Rgba8 => false,
+                    TextureFormat::Rgba8 | TextureFormat::Rgb8 | TextureFormat::Indexed8Rgba => {
+                        false
+                    }
                 } {
                     return Err(GpuError::Unsupported {
                         at: item.at,
@@ -565,6 +567,8 @@ fn native_format(format: TextureFormat) -> native::TextureFormat {
         TextureFormat::LinearRgba16Float => native::TextureFormat::Rgba16Float,
         TextureFormat::Bc1Rgb => native::TextureFormat::Bc1Rgb,
         TextureFormat::Bc3Rgba => native::TextureFormat::Bc3Rgba,
+        TextureFormat::Rgb8 => native::TextureFormat::Rgb8,
+        TextureFormat::Indexed8Rgba => native::TextureFormat::Indexed8Rgba,
     }
 }
 
@@ -716,6 +720,24 @@ fn progress(
                 unreachable!()
             };
         if pending.row == size[1] {
+            if let Some(palette) = pending
+                .source
+                .texture_descriptor()
+                .and_then(|descriptor| descriptor.palette_offset())
+            {
+                if *quota == 0 {
+                    return Ok(false);
+                }
+                let entries = pixels[palette as usize..]
+                    .try_into()
+                    .expect("indexed texture palette");
+                let _transfer =
+                    reel_core::profile::Scope::new(reel_core::profile::Phase::ImageTransfer);
+                gpu.upload_indexed_palette(&pending.image.texture, entries)?;
+                *quota = quota
+                    .saturating_sub(reel_core::texture::TextureDescriptor::PALETTE_BYTES as u64);
+                return Ok(true);
+            }
             if pending.image.kind != 0. || pending.source.texture_descriptor().is_some() {
                 pending.plane += 1;
                 pending.row = 0;

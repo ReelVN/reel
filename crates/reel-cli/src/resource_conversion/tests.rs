@@ -855,7 +855,7 @@ fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
     assert_eq!(view.image, noise_bc.image);
     let page = fs::read(&prepared.files[&view.page]).unwrap();
     let (header, _) = TextureHeader::parse(&page).unwrap();
-    assert_eq!(header.descriptor().format, TextureFormat::Rgba8);
+    assert_eq!(header.descriptor().format, TextureFormat::Indexed8Rgba);
     assert_eq!(
         header.descriptor().storage_layout,
         reel_core::texture::TextureStorageLayout::Linear

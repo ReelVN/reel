@@ -35,8 +35,17 @@ pub(super) fn collect<'a>(
         .images
         .into_iter()
         .map(|item| {
+            let texture = item
+                .texture
+                .map(|upload| {
+                    resources::texture_upload_layout(
+                        item.source.texture_descriptor().expect("planned texture"),
+                        upload,
+                    )
+                })
+                .transpose()?;
             let mut raster_format = None;
-            let (resident, staging, minimum_staging) = if let Some(upload) = item.texture {
+            let (resident, staging, minimum_staging) = if let Some(upload) = texture {
                 let (resident, staging) = resources::texture_costs(upload);
                 (resident, staging, resources::texture_row_bytes(upload))
             } else if let Some(image) = item.source.image_descriptor() {
@@ -70,7 +79,7 @@ pub(super) fn collect<'a>(
                 staging,
                 minimum_staging,
                 raster_format,
-                texture: item.texture,
+                texture,
             })
         })
         .collect::<Result<_, GpuError>>()?;

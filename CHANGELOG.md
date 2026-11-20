@@ -4,6 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Choose native P8 or RGB888 for single-level Vita textures when they preserve the intended appearance and reduce resident bytes. Keep RGBA8 available for translucent artwork and mip chains.
 - Select the release runtime by export target. Vita defaults to the shared launcher data bundle, and cross-OS desktop exports require a runtime directory or data-only output.
 - Keep GXM texture layouts separate from desktop conversion cache entries and store MP4 resources as contiguous archive ranges for direct seeking.
 - Refine difficult BC3 alpha blocks during export. Use `fallback = "rgba8"` to keep scaled, upload-ready pixels for textures, tiles and atlas pages that exceed the BC quality limit. Use `convert = "copy"` to ship original files.

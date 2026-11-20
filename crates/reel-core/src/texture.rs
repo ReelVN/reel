@@ -24,6 +24,10 @@ pub enum TextureFormat {
     Bc1Rgb,
     /// Linear-premultiplied RGBA in standard sixteen-byte BC3 blocks.
     Bc3Rgba,
+    /// Three linear unsigned normalized channels in RGB order. Alpha is one.
+    Rgb8,
+    /// One byte per texel indexing the texture's linear-premultiplied RGBA8 palette.
+    Indexed8Rgba,
 }
 impl TextureFormat {
     /// Width and height of one independently stored unit.
@@ -36,6 +40,8 @@ impl TextureFormat {
             Self::Rgba8 | Self::Bgra8 => 4,
             Self::LinearRgba16Float | Self::Bc1Rgb => 8,
             Self::Bc3Rgba => 16,
+            Self::Rgb8 => 3,
+            Self::Indexed8Rgba => 1,
         }
     }
     /// Compressed formats have no per-pixel byte stride.
@@ -68,6 +74,8 @@ impl TextureFormat {
             Self::LinearRgba16Float => 2,
             Self::Bc1Rgb => 3,
             Self::Bc3Rgba => 4,
+            Self::Rgb8 => 5,
+            Self::Indexed8Rgba => 6,
         }
     }
     fn from_code(code: u32) -> Result<Self, TextureError> {
@@ -77,6 +85,8 @@ impl TextureFormat {
             2 => Ok(Self::LinearRgba16Float),
             3 => Ok(Self::Bc1Rgb),
             4 => Ok(Self::Bc3Rgba),
+            5 => Ok(Self::Rgb8),
+            6 => Ok(Self::Indexed8Rgba),
             _ => Err(TextureError::Format),
         }
     }
@@ -221,6 +231,9 @@ impl std::fmt::Display for TextureError {
 }
 impl std::error::Error for TextureError {}
 impl TextureDescriptor {
+    /// Byte length of a complete indexed RGBA8 palette.
+    pub const PALETTE_BYTES: usize = 256 * 4;
+
     /// Validate dimensions and return the exact unwrapped byte extent.
     pub fn byte_len(self) -> Result<u64, TextureError> {
         let l = self.layout;
@@ -243,6 +256,13 @@ impl TextureDescriptor {
         {
             return Err(TextureError::Dimensions);
         }
+        if matches!(
+            self.format,
+            TextureFormat::Rgb8 | TextureFormat::Indexed8Rgba
+        ) && self.mip_count != 1
+        {
+            return Err(TextureError::Dimensions);
+        }
         if l.logical_size.contains(&0)
             || l.content_size.contains(&0)
             || l.storage_size.contains(&0)
@@ -253,6 +273,13 @@ impl TextureDescriptor {
         {
             return Err(TextureError::Dimensions);
         }
+        if self.format == TextureFormat::Indexed8Rgba {
+            return self
+                .palette_offset()
+                .and_then(|offset| offset.checked_add(Self::PALETTE_BYTES as u64))
+                .filter(|&bytes| bytes <= isize::MAX as u64)
+                .ok_or(TextureError::Length);
+        }
         (0..self.mip_count)
             .try_fold(0u64, |total, level| {
                 total
@@ -260,6 +287,16 @@ impl TextureDescriptor {
                     .filter(|&n| n <= isize::MAX as u64)
             })
             .ok_or(TextureError::Length)
+    }
+
+    /// Offset of the indexed texture's RGBA8 palette after its padded index plane.
+    pub fn palette_offset(self) -> Option<u64> {
+        if self.format != TextureFormat::Indexed8Rgba {
+            return None;
+        }
+        self.format
+            .byte_len(self.layout.storage_size)?
+            .checked_next_multiple_of(64)
     }
     /// Stored texel extent at a level; each axis halves with a minimum of one.
     pub fn mip_size(self, level: u32) -> [u32; 2] {

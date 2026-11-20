@@ -48,6 +48,7 @@ reel-ui = { path = "../reel-ui" }
 reel-core = { path = "../reel-core" }
 image = { workspace = true, features = ["png", "jpeg", "webp", "qoi"] }
 rgbcx = { version = "=0.1.2", features = ["parallel"] }
+libimgquant = { version = "=3.0.0", default-features = false }
 reel-player = { path = "../reel-player" }
 reel-storage = { path = "../reel-storage" }
 reel-media = { path = "../reel-media", default-features = false, features = ["encode", "video-inspect"] }

@@ -174,9 +174,9 @@ fn plan_drawing(
         if lease
             .image_coverage()
             .is_some_and(|coverage| coverage.is_opaque())
-            || lease
-                .texture_descriptor()
-                .is_some_and(|desc| desc.format == TextureFormat::Bc1Rgb)
+            || lease.texture_descriptor().is_some_and(|desc| {
+                matches!(desc.format, TextureFormat::Bc1Rgb | TextureFormat::Rgb8)
+            })
         {
             opaque_images.push((
                 lease.handle(),

@@ -202,6 +202,29 @@ pub(super) fn scratch_bytes(width: u32) -> u128 {
 }
 
 fn measure(reference: &image::Rgba32FImage, decoded: &[u8], stride: u32) -> Stats {
+    measure_samples(reference, |x, y| {
+        let at = (y as usize * stride as usize + x as usize) * 4;
+        decoded[at..at + 4].try_into().unwrap()
+    })
+}
+
+pub(super) fn indexed_acceptable(
+    reference: &image::Rgba32FImage,
+    descriptor: TextureDescriptor,
+    payload: &[u8],
+) -> bool {
+    let stride = descriptor.layout.storage_size[0] as usize;
+    let palette = payload[descriptor.palette_offset().unwrap() as usize..]
+        .as_chunks::<4>()
+        .0;
+    !measure_samples(reference, |x, y| {
+        palette[usize::from(payload[y as usize * stride + x as usize])]
+    })
+    .finish()
+    .needs_refinement()
+}
+
+fn measure_samples(reference: &image::Rgba32FImage, sample: impl Fn(u32, u32) -> [u8; 4]) -> Stats {
     // Compare displayed colors after compositing, including translucent edges.
     // Region means capture banding that a pixel-only average can hide. Padding
     // contributes no samples because its repeated edge is outside the content.
@@ -216,13 +239,11 @@ fn measure(reference: &image::Rgba32FImage, decoded: &[u8], stride: u32) -> Stat
             let mut count = 0;
             for y in block_y..(block_y + 8).min(reference.height()) {
                 for x in block_x..(block_x + 8).min(reference.width()) {
-                    // Compare the extra error from BC against the pixels the
+                    // Compare the extra error against the pixels the
                     // RGBA8 fallback would actually present, including roundoff.
                     let original = quantize(reference.get_pixel(x, y).0, Dither::None, [x, y])
                         .map(|value| f32::from(value) / 255.);
-                    let at = ((u64::from(y) * u64::from(stride) + u64::from(x)) * 4) as usize;
-                    let sample: [f32; 4] =
-                        std::array::from_fn(|channel| f32::from(decoded[at + channel]) / 255.);
+                    let sample = sample(x, y).map(|value| f32::from(value) / 255.);
                     let mut squared = 0.;
                     let mut max_error = 0f64;
                     let mut luma = [0.; 2];

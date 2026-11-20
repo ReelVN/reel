@@ -382,13 +382,51 @@ pub(super) fn create_image(
 
 pub(super) fn texture_format(format: TextureFormat) -> wgpu::TextureFormat {
     match format {
-        TextureFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+        TextureFormat::Rgba8 | TextureFormat::Rgb8 | TextureFormat::Indexed8Rgba => {
+            wgpu::TextureFormat::Rgba8Unorm
+        }
         TextureFormat::Bgra8 => wgpu::TextureFormat::Bgra8Unorm,
         TextureFormat::LinearRgba16Float => wgpu::TextureFormat::Rgba16Float,
         TextureFormat::Bc1Rgb => wgpu::TextureFormat::Bc1RgbaUnorm,
         TextureFormat::Bc3Rgba => wgpu::TextureFormat::Bc3RgbaUnorm,
     }
 }
+
+pub(super) fn texture_upload_layout(
+    descriptor: TextureDescriptor,
+    source: TextureUploadLayout,
+) -> Result<TextureUploadLayout, GpuError> {
+    if !matches!(
+        descriptor.format,
+        TextureFormat::Rgb8 | TextureFormat::Indexed8Rgba
+    ) {
+        return Ok(source);
+    }
+    let target = TextureUploadLayout::new(TextureDescriptor {
+        format: TextureFormat::Rgba8,
+        ..descriptor
+    })?;
+    Ok(TextureUploadLayout {
+        source_row_bytes: source.source_row_bytes,
+        ..target
+    })
+}
+
+pub(super) fn texture_upload_level(
+    descriptor: TextureDescriptor,
+    upload: TextureUploadLayout,
+    row: u32,
+) -> (TextureUploadLayout, u32) {
+    let (mut level, level_row) = upload.at_row(descriptor, row);
+    if matches!(
+        descriptor.format,
+        TextureFormat::Rgb8 | TextureFormat::Indexed8Rgba
+    ) {
+        level.row_bytes = u64::from(level.layout.storage_size[0]) * 4;
+    }
+    (level, level_row)
+}
+
 pub(super) fn texture_row_bytes(upload: TextureUploadLayout) -> u64 {
     upload.row_bytes.div_ceil(256) * 256
 }
@@ -478,7 +516,7 @@ fn create_sampled_storage(
     Ok((texture, view))
 }
 
-/// Copy whole format block rows, retaining compressed bytes throughout staging.
+/// Copy native format rows or expand compact color into the same bounded staging.
 pub(super) fn texture_rows(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
@@ -495,6 +533,10 @@ pub(super) fn texture_rows(
     let row = texture_row_bytes(upload);
     let packed = upload.row_bytes;
     let count = rows.end - rows.start;
+    let palette = descriptor.palette_offset().map(|offset| {
+        let (entries, _) = pixels.bytes()[offset as usize..].as_chunks::<4>();
+        entries
+    });
     #[cfg(test)]
     if reusable.is_none() {
         gpu.upload_creations
@@ -532,7 +574,22 @@ pub(super) fn texture_rows(
             if descriptor.storage_layout == reel_core::texture::TextureStorageLayout::Linear {
                 let src =
                     (upload.offset + u64::from(rows.start + y) * upload.source_row_bytes) as usize;
-                output.copy_from_slice(&pixels.bytes()[src..src + packed as usize]);
+                let width = upload.layout.storage_size[0] as usize;
+                match descriptor.format {
+                    TextureFormat::Rgb8 => {
+                        let (colors, _) = pixels.bytes()[src..src + width * 3].as_chunks::<3>();
+                        output.write_iter(colors.iter().flat_map(|&[r, g, b]| [r, g, b, 255]));
+                    }
+                    TextureFormat::Indexed8Rgba => {
+                        let entries = palette.expect("validated indexed texture palette");
+                        output.write_iter(
+                            pixels.bytes()[src..src + width]
+                                .iter()
+                                .flat_map(|&index| entries[usize::from(index)]),
+                        );
+                    }
+                    _ => output.copy_from_slice(&pixels.bytes()[src..src + packed as usize]),
+                }
             } else {
                 let n = descriptor.format.block_bytes() as usize;
                 for x in 0..upload.layout.storage_size[0].div_ceil(4) {

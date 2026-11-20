@@ -192,6 +192,9 @@ fn workspace(
                         crate::prepare_texture::bc_workspace(content, storage)
                     },
                 )
+                .max(crate::prepare_texture::indexed_workspace(
+                    content, storage, options,
+                ))
                 .max(stored_pixels * 16)
         }
     };
