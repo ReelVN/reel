@@ -211,6 +211,7 @@ pub enum TextureError {
     Format,
     Dimensions,
     Length,
+    /// The prepared texture uses an unsupported file codec.
     Codec,
 }
 impl std::fmt::Display for TextureError {
@@ -302,21 +303,12 @@ impl TexturePayload {
         (self.descriptor, self.bytes)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// File storage codec; unwrapping BcCrunch produces BC blocks rather than pixels.
-pub enum TextureCodec {
-    /// The file stores the descriptor's exact packed pixel/block extent.
-    Raw,
-    /// bc-crunch range coding; accepts one linear BC1/BC3 level.
-    /// Mip chains use Raw storage and the enclosing archive compression.
-    BcCrunch,
-}
 /// REELTEX1: fixed little-endian metadata followed by exactly payload_len bytes.
+/// Both length fields store the exact packed pixel or block extent.
 /// The container/asset version provides integrity; no native layout is implicit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureHeader {
     descriptor: TextureDescriptor,
-    codec: TextureCodec,
     payload_len: u64,
 }
 impl TextureHeader {
@@ -325,45 +317,24 @@ impl TextureHeader {
     /// Identifies the portable prepared-texture file envelope.
     pub const MAGIC: &'static [u8; 8] = b"REELTEX1";
     /// Validate a descriptor and its on-disk payload extent before serialization.
-    pub fn new(
-        descriptor: TextureDescriptor,
-        codec: TextureCodec,
-        payload_len: u64,
-    ) -> Result<Self, TextureError> {
-        let decoded = descriptor.byte_len()?;
-        if payload_len == 0
+    pub fn new(descriptor: TextureDescriptor, payload_len: u64) -> Result<Self, TextureError> {
+        if payload_len != descriptor.byte_len()?
             || payload_len
                 .checked_add(Self::LEN as u64)
                 .is_none_or(|n| n > isize::MAX as u64)
         {
             return Err(TextureError::Length);
         }
-        match codec {
-            TextureCodec::Raw if payload_len != decoded => return Err(TextureError::Length),
-            TextureCodec::BcCrunch
-                if !descriptor.format.is_compressed()
-                    || descriptor.mip_count != 1
-                    || descriptor.storage_layout != TextureStorageLayout::Linear =>
-            {
-                return Err(TextureError::Codec);
-            }
-            _ => {}
-        }
         Ok(Self {
             descriptor,
-            codec,
             payload_len,
         })
     }
-    /// Validated decoded storage metadata.
+    /// Validated storage metadata.
     pub fn descriptor(self) -> TextureDescriptor {
         self.descriptor
     }
-    /// Codec used only by the file payload.
-    pub fn codec(self) -> TextureCodec {
-        self.codec
-    }
-    /// Exact encoded payload extent, excluding the header.
+    /// Exact payload extent, excluding the header.
     pub fn payload_len(self) -> u64 {
         self.payload_len
     }
@@ -373,10 +344,7 @@ impl TextureHeader {
         out[..8].copy_from_slice(Self::MAGIC);
         let words = [
             self.descriptor.format.code(),
-            match self.codec {
-                TextureCodec::Raw => 0,
-                TextureCodec::BcCrunch => 1,
-            },
+            0, // The v1 codec word must be zero for direct pixel or block storage.
             match self.descriptor.source_encoding {
                 ColorEncoding::Srgb => 0,
                 ColorEncoding::Linear => 1,
@@ -391,14 +359,9 @@ impl TextureHeader {
         for (chunk, value) in out[8..44].as_chunks_mut::<4>().0.iter_mut().zip(words) {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
-        out[44..52].copy_from_slice(
-            &self
-                .descriptor
-                .byte_len()
-                .expect("validated descriptor")
-                .to_le_bytes(),
-        );
-        out[52..60].copy_from_slice(&self.payload_len.to_le_bytes());
+        let payload_len = self.payload_len.to_le_bytes();
+        out[44..52].copy_from_slice(&payload_len);
+        out[52..60].copy_from_slice(&payload_len);
         let layout: u32 = match self.descriptor.storage_layout {
             TextureStorageLayout::Linear => 0,
             TextureStorageLayout::GxmBcMorton => 1,
@@ -413,6 +376,9 @@ impl TextureHeader {
             return Err(TextureError::Header);
         }
         let word = |at| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+        if word(12) != 0 {
+            return Err(TextureError::Codec);
+        }
         let descriptor = TextureDescriptor {
             storage_layout: match word(60) {
                 0 => TextureStorageLayout::Linear,
@@ -432,18 +398,12 @@ impl TextureHeader {
                 storage_size: [word(36), word(40)],
             },
         };
-        if descriptor.byte_len()? != u64::from_le_bytes(header[44..52].try_into().unwrap()) {
+        let payload_len = u64::from_le_bytes(header[52..60].try_into().unwrap());
+        let texture = Self::new(descriptor, payload_len)?;
+        if payload_len != u64::from_le_bytes(header[44..52].try_into().unwrap()) {
             return Err(TextureError::Length);
         }
-        Self::new(
-            descriptor,
-            match word(12) {
-                0 => TextureCodec::Raw,
-                1 => TextureCodec::BcCrunch,
-                _ => return Err(TextureError::Codec),
-            },
-            u64::from_le_bytes(header[52..60].try_into().unwrap()),
-        )
+        Ok(texture)
     }
     /// Parse the file envelope, validating its exact payload extent before allocation.
     pub fn parse(bytes: &[u8]) -> Result<(Self, &[u8]), TextureError> {
@@ -481,12 +441,8 @@ mod tests {
             source_encoding: ColorEncoding::Linear,
             layout: TextureLayout::identity([16, 8]),
         };
-        let h = TextureHeader::new(d, TextureCodec::Raw, 64).unwrap();
+        let h = TextureHeader::new(d, 64).unwrap();
         assert_eq!(TextureHeader::decode(&h.encode()), Ok(h));
-        assert_eq!(
-            TextureHeader::new(d, TextureCodec::BcCrunch, 10),
-            Err(TextureError::Codec)
-        );
         d.layout.storage_size = [12, 8];
         assert_eq!(d.byte_len(), Err(TextureError::Dimensions));
         let mut bytes = h.encode();
@@ -510,12 +466,25 @@ mod tests {
         assert_eq!(d.byte_len(), Ok(1 << 20));
         assert_eq!(d.format.row_bytes(1024), Some(4096));
         assert_eq!(d.layout.uv_scale(), [1. / 2048., 1. / 2048.]);
-        let h = TextureHeader::new(d, TextureCodec::Raw, 1 << 20).unwrap();
-        assert_eq!(TextureHeader::decode(&h.encode()), Ok(h));
+        let h = TextureHeader::new(d, 1 << 20).unwrap();
+        let header = h.encode();
+        assert_eq!(TextureHeader::decode(&header), Ok(h));
+        assert_eq!(header[12..16], [0; 4]);
+        let mut bad_header = header;
+        bad_header[12] = 1;
+        assert_eq!(TextureHeader::decode(&bad_header), Err(TextureError::Codec));
+        for index in [44, 52] {
+            let mut bad_header = header;
+            bad_header[index] = 1;
+            assert_eq!(
+                TextureHeader::decode(&bad_header),
+                Err(TextureError::Length)
+            );
+        }
         let mut bad = d;
         bad.layout.storage_size[1] = 1023;
         assert_eq!(bad.byte_len(), Err(TextureError::Dimensions));
-        let mut file = h.encode().to_vec();
+        let mut file = header.to_vec();
         assert_eq!(TextureHeader::parse(&file), Err(TextureError::Length));
         file.resize(TextureHeader::LEN + (1 << 20), 0);
         assert_eq!(TextureHeader::parse(&file).unwrap().1.len(), 1 << 20);
@@ -540,7 +509,7 @@ mod mip_tests {
                 source_encoding: ColorEncoding::Linear,
             };
             assert_eq!(d.byte_len().unwrap(), expected);
-            let h = TextureHeader::new(d, TextureCodec::Raw, expected).unwrap();
+            let h = TextureHeader::new(d, expected).unwrap();
             assert_eq!(TextureHeader::decode(&h.encode()).unwrap().descriptor(), d);
             let mut offset = 0;
             for level in 0..count {

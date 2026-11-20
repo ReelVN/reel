@@ -2,7 +2,7 @@
 use image::{ColorType, DynamicImage, RgbaImage, imageops, metadata::Cicp};
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::texture::{
-    ColorEncoding, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
+    ColorEncoding, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
 use std::{fs, path::Path};
 pub(crate) mod mips;
@@ -236,8 +236,7 @@ fn publish_texture(
     descriptor: TextureDescriptor,
     blocks: &[u8],
 ) -> Result<TextureHeader, String> {
-    let header = TextureHeader::new(descriptor, TextureCodec::Raw, blocks.len() as u64)
-        .map_err(|e| e.to_string())?;
+    let header = TextureHeader::new(descriptor, blocks.len() as u64).map_err(|e| e.to_string())?;
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -549,7 +548,6 @@ mod tests {
             .unwrap();
             let bytes = std::fs::read(path).unwrap();
             let (header, payload) = TextureHeader::parse(&bytes).unwrap();
-            assert_eq!(header.codec(), TextureCodec::Raw);
             assert_eq!(header.descriptor().format, expected);
             assert_eq!(
                 payload.len() as u64,

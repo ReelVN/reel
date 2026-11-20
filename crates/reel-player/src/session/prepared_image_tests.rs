@@ -80,12 +80,8 @@ fn fixture_with_encoding(
                             storage_size: [w.div_ceil(4) * 4, h.div_ceil(4) * 4],
                         },
                     };
-                    let header = TextureHeader::new(
-                        descriptor,
-                        TextureCodec::Raw,
-                        descriptor.byte_len().unwrap(),
-                    )
-                    .unwrap();
+                    let header =
+                        TextureHeader::new(descriptor, descriptor.byte_len().unwrap()).unwrap();
                     let mut bytes = header.encode().to_vec();
                     bytes.resize(bytes.len() + descriptor.byte_len().unwrap() as usize, 0);
                     fs::write(path, bytes).unwrap();

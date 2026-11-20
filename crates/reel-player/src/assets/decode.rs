@@ -1,6 +1,6 @@
 use super::worker::{Worker, check_completion};
 use image::DynamicImage;
-use reel_core::texture::{TextureCodec, TextureFormat, TextureHeader};
+use reel_core::texture::TextureHeader;
 use reel_core::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
     identity::WorkId,
@@ -11,12 +11,6 @@ use reel_core::{
     work::*,
 };
 use std::{io::Cursor, sync::atomic::Ordering};
-/// Fixed-model decode-work allowance for bc-crunch 0.1.2. range::Model uses
-/// fixed CDF/count/lookup arrays; alpha::Models plus a 256-entry u64 dictionary
-/// and color::decode's fixed models/256-entry u32 dictionary do not grow with
-/// image size. This allowance is independent of the separately owned worker
-/// thread stack; it is not a measurement of that stack or the output block buffer.
-pub(super) const BC_CRUNCH_WORKSPACE_BYTES: u64 = 64 * 1024;
 pub(super) const MAX_IMAGE_WORKERS: usize = if cfg!(any(
     target_os = "windows",
     target_os = "linux",
@@ -85,36 +79,10 @@ impl ImageExecutor {
                             let data = if probe {
                                 header.encode().to_vec()
                             } else {
-                                let descriptor = header.descriptor();
-                                let length = descriptor.byte_len().map_err(|e| e.to_string())?;
-                                if length > output.bytes() {
-                                    return Err("texture decode reservation too small".into());
+                                if header.payload_len() > output.bytes() {
+                                    return Err("texture output reservation too small".into());
                                 }
-                                match header.codec() {
-                                    TextureCodec::Raw => payload.to_vec(),
-                                    TextureCodec::BcCrunch => {
-                                        if temporary.bytes() < BC_CRUNCH_WORKSPACE_BYTES {
-                                            return Err(
-                                                "BC decoder workspace reservation too small".into(),
-                                            );
-                                        }
-                                        let mut blocks = vec![0; length as usize];
-                                        let format = match descriptor.format {
-                                            TextureFormat::Bc1Rgb => bc_crunch::Format::Bc1,
-                                            TextureFormat::Bc3Rgba => bc_crunch::Format::Bc3,
-                                            _ => return Err("bc-crunch requires BC1 or BC3".into()),
-                                        };
-                                        bc_crunch::decompress_into(
-                                            descriptor.layout.storage_size[0],
-                                            descriptor.layout.storage_size[1],
-                                            format,
-                                            payload,
-                                            &mut blocks,
-                                        )
-                                        .map_err(|e| e.to_string())?;
-                                        blocks
-                                    }
-                                }
+                                payload.to_vec()
                             };
                             output
                                 .resize(data.capacity() as u64)

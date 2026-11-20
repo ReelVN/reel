@@ -4,8 +4,8 @@ use image::{DynamicImage, Rgba32FImage};
 use reel_core::{
     prepared_atlas::PreparedAtlasView,
     texture::{
-        ColorEncoding, ImageView, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader,
-        TextureLayout, TextureStorageLayout,
+        ColorEncoding, ImageView, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
+        TextureStorageLayout,
     },
 };
 use std::io::Write;
@@ -192,8 +192,7 @@ pub(super) fn prepare(
                 .map_err(invalid)?
                 .0
         };
-        let header = TextureHeader::new(descriptor, TextureCodec::Raw, payload.len() as u64)
-            .map_err(invalid)?;
+        let header = TextureHeader::new(descriptor, payload.len() as u64).map_err(invalid)?;
         let mut file = File::create(staging.path().join("page.reel-texture"))?;
         file.write_all(&header.encode())?;
         file.write_all(&payload)?;

@@ -12,7 +12,6 @@ use std::{
 
 const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
-mod cost;
 pub(crate) mod memory_reader;
 mod packed;
 mod streaming;
@@ -79,7 +78,7 @@ pub(crate) fn prepared_effect_assets(
 }
 
 #[test]
-fn prepared_texture_preserves_blocks_and_uses_bounded_workspace() {
+fn prepared_texture_preserves_blocks_without_decode_workspace() {
     use reel_core::texture::*;
     for format in [
         TextureFormat::Rgba8,
@@ -98,60 +97,33 @@ fn prepared_texture_preserves_blocks_and_uses_bounded_workspace() {
             },
         };
         let blocks = vec![0; descriptor.byte_len().unwrap() as usize];
-        for codec in [TextureCodec::Raw, TextureCodec::BcCrunch] {
-            if codec == TextureCodec::BcCrunch && !format.is_compressed() {
-                continue;
-            }
-            let payload = if codec == TextureCodec::Raw {
-                blocks.clone()
-            } else {
-                bc_crunch::compress(
-                    128,
-                    64,
-                    if format == TextureFormat::Bc1Rgb {
-                        bc_crunch::Format::Bc1
-                    } else {
-                        bc_crunch::Format::Bc3
-                    },
-                    &blocks,
-                )
-                .unwrap()
-            };
-            let mut bytes = TextureHeader::new(descriptor, codec, payload.len() as u64)
-                .unwrap()
-                .encode()
-                .to_vec();
-            bytes.extend(payload);
-            let assets = Assets::directory(AssetOptions {
-                resident_bytes: 65536,
-                input_bytes: 65536,
-                decode_bytes: if codec == TextureCodec::Raw { 0 } else { 65536 },
-                ..Default::default()
-            });
-            let id = assets
-                .request_encoded("prepared.reel-texture".into(), &bytes)
-                .unwrap();
-            let lease = load_until_done(&assets, id).unwrap();
-            let actual = lease.texture_descriptor().expect("prepared texture");
-            let data = lease.read_pixels().expect("prepared texture bytes");
-            assert_eq!(actual, descriptor);
-            assert_eq!(data.bytes(), blocks);
-            assert_eq!(lease.image_size(), Some([192, 108]));
-            assert!(assets.temporary_pool().usage().peak_bytes <= 65536);
-            assert_eq!(
-                assets.output_pool().usage().bytes,
-                if codec == TextureCodec::Raw {
-                    bytes.capacity() as u64
-                } else {
-                    blocks.len() as u64
-                }
-            );
-            drop(data);
-            drop(lease);
-            assets.cancel(id);
-            assets.maintain();
-            assert_eq!(assets.output_pool().usage().bytes, 0);
-        }
+        let mut bytes = TextureHeader::new(descriptor, blocks.len() as u64)
+            .unwrap()
+            .encode()
+            .to_vec();
+        bytes.extend_from_slice(&blocks);
+        let assets = Assets::directory(AssetOptions {
+            resident_bytes: 65536,
+            input_bytes: 65536,
+            decode_bytes: 0,
+            ..Default::default()
+        });
+        let id = assets
+            .request_encoded("prepared.reel-texture".into(), &bytes)
+            .unwrap();
+        let lease = load_until_done(&assets, id).unwrap();
+        let actual = lease.texture_descriptor().expect("prepared texture");
+        let data = lease.read_pixels().expect("prepared texture bytes");
+        assert_eq!(actual, descriptor);
+        assert_eq!(data.bytes(), blocks);
+        assert_eq!(lease.image_size(), Some([192, 108]));
+        assert_eq!(assets.temporary_pool().usage().peak_bytes, 0);
+        assert_eq!(assets.output_pool().usage().bytes, bytes.len() as u64);
+        drop(data);
+        drop(lease);
+        assets.cancel(id);
+        assets.maintain();
+        assert_eq!(assets.output_pool().usage().bytes, 0);
     }
 }
 
@@ -189,21 +161,12 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
         layout: TextureLayout::identity([64, 64]),
     };
     let blocks = vec![0; descriptor.byte_len().unwrap() as usize];
-    for (codec, exact_budget, expected_jobs) in [
-        (TextureCodec::Raw, false, 0),
-        (TextureCodec::Raw, true, 1),
-        (TextureCodec::BcCrunch, false, 1),
-    ] {
-        let payload = if codec == TextureCodec::Raw {
-            blocks.clone()
-        } else {
-            bc_crunch::compress(64, 64, bc_crunch::Format::Bc3, &blocks).unwrap()
-        };
-        let mut file = TextureHeader::new(descriptor, codec, payload.len() as u64)
-            .unwrap()
-            .encode()
-            .to_vec();
-        file.extend(payload);
+    let mut file = TextureHeader::new(descriptor, blocks.len() as u64)
+        .unwrap()
+        .encode()
+        .to_vec();
+    file.extend_from_slice(&blocks);
+    for (exact_budget, expected_jobs) in [(false, 0), (true, 1)] {
         let jobs = Arc::new(AtomicUsize::new(0));
         let assets = Assets::with_adapters(
             AssetOptions {
@@ -245,7 +208,7 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
         let bytes = lease.read_pixels().expect("prepared texture bytes");
         assert_eq!(bytes.bytes(), blocks);
         assert_eq!(jobs.load(Ordering::Relaxed), expected_jobs);
-        if codec == TextureCodec::Raw && !exact_budget {
+        if !exact_budget {
             assert_eq!(
                 bytes.bytes().as_ptr(),
                 address.wrapping_add(TextureHeader::LEN),
@@ -254,7 +217,7 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
             assert_eq!(assets.0.borrow().input.usage().bytes, 0);
         }
         eprintln!(
-            "prepared texture {codec:?} exact_budget={exact_budget}: worker_jobs={expected_jobs} retained_bytes={}",
+            "prepared texture exact_budget={exact_budget}: worker_jobs={expected_jobs} retained_bytes={}",
             assets.output_pool().usage().bytes
         );
     }
@@ -271,7 +234,7 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
         layout: TextureLayout::identity([8, 8]),
     };
     let payload = vec![3; descriptor.byte_len().unwrap() as usize];
-    let mut encoded = TextureHeader::new(descriptor, TextureCodec::Raw, payload.len() as u64)
+    let mut encoded = TextureHeader::new(descriptor, payload.len() as u64)
         .unwrap()
         .encode()
         .to_vec();

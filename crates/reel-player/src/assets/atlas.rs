@@ -227,9 +227,7 @@ mod tests {
     use reel_core::{
         identity::ContentVersion,
         test_support::{MemoryAsset, MemoryAssetIo},
-        texture::{
-            ImageView, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
-        },
+        texture::{ImageView, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout},
     };
 
     #[test]
@@ -249,7 +247,7 @@ mod tests {
                 source_encoding: ColorEncoding::Srgb,
                 layout: TextureLayout::identity([16, 8]),
             };
-            let mut data = TextureHeader::new(descriptor, TextureCodec::Raw, 512)
+            let mut data = TextureHeader::new(descriptor, 512)
                 .unwrap()
                 .encode()
                 .to_vec();

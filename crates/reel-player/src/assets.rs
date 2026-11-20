@@ -13,7 +13,7 @@ pub(crate) mod tests;
 pub(crate) mod worker;
 pub use decode::ImageExecutor;
 pub use io::{DirectoryIo, PackIo};
-use reel_core::texture::{TextureCodec, TextureDescriptor, TextureHeader, TexturePayload};
+use reel_core::texture::{TextureDescriptor, TextureHeader, TexturePayload};
 use reel_core::{
     budget::{BudgetCategory, BudgetGroup, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetKey, AssetSource, IoId, Priority, ResourceVersion, Scope, WorkId},
@@ -760,13 +760,8 @@ impl Service {
                                 let descriptor = header.descriptor();
                                 load.texture = Some(descriptor);
                                 load.size = descriptor.layout.logical_size;
-                                load.output =
-                                    descriptor.byte_len().expect("validated texture header");
-                                load.temporary = if header.codec() == TextureCodec::BcCrunch {
-                                    decode::BC_CRUNCH_WORKSPACE_BYTES
-                                } else {
-                                    0
-                                };
+                                load.output = header.payload_len();
+                                load.temporary = 0;
                                 load.phase = Phase::Decode;
                             })
                     } else if bytes.len() != 24 {
@@ -994,34 +989,23 @@ impl Service {
                         .as_slice()
                         .starts_with(TextureHeader::MAGIC)
                 {
-                    // A prepared header is fixed-size, already bounded by the
-                    // completed read, and contains every allocation decision.
-                    // Keep real codec work on the worker; avoid its probe trip.
+                    // The prepared header describes the upload-ready payload.
                     let (header, _) = TextureHeader::parse(load.input.as_ref().unwrap().as_slice())
                         .map_err(|e| e.to_string())?;
                     let descriptor = header.descriptor();
                     load.texture = Some(descriptor);
                     load.size = descriptor.layout.logical_size;
-                    load.output = descriptor
-                        .byte_len()
-                        .expect("validated prepared descriptor");
-                    load.temporary = if header.codec() == TextureCodec::BcCrunch {
-                        decode::BC_CRUNCH_WORKSPACE_BYTES
-                    } else {
-                        0
-                    };
+                    load.output = header.payload_len();
+                    load.temporary = 0;
                     load.phase = Phase::Decode;
                     probe = false;
                     self.admit_prefetch(load)?;
-                    if header.codec() == TextureCodec::Raw
-                        && let Some(lease) = self.origins.shared(load)
-                    {
+                    if let Some(lease) = self.origins.shared(load) {
                         load.input = None;
                         load.phase = Phase::Done(Ok(lease));
                         return Ok(());
                     }
-                    if header.codec() == TextureCodec::Raw
-                        && let Some(input) = Arc::get_mut(load.input.as_mut().unwrap())
+                    if let Some(input) = Arc::get_mut(load.input.as_mut().unwrap())
                         && input.transfer_to(&self.output).is_ok()
                     {
                         // Preserve the original allocation and expose its
