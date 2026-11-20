@@ -5,8 +5,35 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const MAX_REGISTERS: u32 = 4096;
 const MAX_FIELDS: usize = 32_768;
+const TABLE_ALIASES: u8 = 0b11;
+const LOOKUP_ALIAS: u8 = 1 << 2;
+const LOOKUP_RESULT_SHIFT: u8 = 3;
 
 type Table<'p> = BTreeMap<&'p str, Value>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Lookup {
+    Get,
+    HasOwn,
+}
+
+impl Lookup {
+    pub(super) fn named(name: &str) -> Option<Self> {
+        match name {
+            "get" => Some(Self::Get),
+            "has_own" => Some(Self::HasOwn),
+            _ => None,
+        }
+    }
+
+    fn alias(self, receiver: u8) -> u8 {
+        let result = match self {
+            Self::Get => receiver >> 1,
+            Self::HasOwn => 0,
+        };
+        LOOKUP_ALIAS | (result << LOOKUP_RESULT_SHIFT)
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum Value {
@@ -106,6 +133,22 @@ impl<'p> Catalogs<'p> {
                         return None;
                     };
                     if !captures.is_empty() {
+                        return None;
+                    }
+                    registers[a] = None;
+                }
+                Opcode::GlobalRead => registers[a] = None,
+                Opcode::MakeClass => {
+                    let bc::Descriptor::Class(class) = &function.descriptors[b] else {
+                        return None;
+                    };
+                    spend(budget, class.fields.len() + class.methods.len())?;
+                    if class.fields.iter().any(|field| !field.captures.is_empty())
+                        || class
+                            .methods
+                            .iter()
+                            .any(|method| !method.captures.is_empty())
+                    {
                         return None;
                     }
                     registers[a] = None;
@@ -323,26 +366,61 @@ impl<'p> Catalogs<'p> {
                         None
                     }
                 }
-                Opcode::IndexGet if aliases[c] == 0 => {
+                Opcode::IndexGet if aliases[c] == 0 && aliases[b] & LOOKUP_ALIAS == 0 => {
                     copy = Some((a, aliases[b] >> 1));
                     Some(b)
                 }
-                Opcode::MemberGet if aliases[b] != 0 => {
+                Opcode::MemberGet if aliases[b] != 0 && aliases[b] & LOOKUP_ALIAS == 0 => {
                     let key = program.package().symbols[c].as_str();
-                    let root_misses = aliases[b] & root.depth() != 0
-                        && !self.tables[root.table].contains_key(key);
-                    let row_misses = aliases[b] & 1 != 0
-                        && root
-                            .row_members
-                            .as_ref()
-                            .is_some_and(|fields| !fields.contains(key));
-                    // Missing table members can produce a bound builtin rather
-                    // than a field. It would retain the mutable receiver.
-                    if root_misses || row_misses {
-                        return false;
-                    }
-                    copy = Some((a, aliases[b] >> 1));
+                    let table = &self.tables[root.table];
+                    let root_alias = aliases[b] & root.depth() != 0;
+                    let row_alias = aliases[b] & 1 != 0 && root.row_members.is_some();
+                    let root_owns = root_alias && table.contains_key(key);
+                    let all_rows_own = root
+                        .row_members
+                        .as_ref()
+                        .is_some_and(|fields| fields.contains(key));
+                    let result = if (!root_alias || root_owns) && (!row_alias || all_rows_own) {
+                        aliases[b] >> 1
+                    } else {
+                        // A missing key can bind a builtin to the mutable receiver.
+                        // Accept readonly methods only if no possible receiver
+                        // has an own key that could shadow the builtin.
+                        let Some(lookup) = Lookup::named(key) else {
+                            return false;
+                        };
+                        if root_owns {
+                            return false;
+                        }
+                        if row_alias
+                            && (spend(budget, table.len()).is_none()
+                                || table.values().any(|value| match value {
+                                    Value::Table(row) => self.tables[*row].contains_key(key),
+                                    Value::Constant(_) => false,
+                                }))
+                        {
+                            return false;
+                        }
+                        lookup.alias(aliases[b])
+                    };
+                    copy = Some((a, result));
                     Some(b)
+                }
+                Opcode::Call | Opcode::CallNoWait => {
+                    let bc::Descriptor::Call(call) = &function.descriptors[b] else {
+                        return false;
+                    };
+                    match (call.target, call.arguments) {
+                        (bc::CallTarget::Register(target), bc::Arguments::Window(args))
+                            if aliases[target.index()] & LOOKUP_ALIAS != 0
+                                && aliases[target.index()] & TABLE_ALIASES == 0
+                                && !(args.start.0..args.start.0 + args.len).contains(&target.0) =>
+                        {
+                            copy = Some((a, aliases[target.index()] >> LOOKUP_RESULT_SHIFT));
+                            Some(target.index())
+                        }
+                        _ => None,
+                    }
                 }
                 Opcode::CheckType | Opcode::BranchNull => Some(a),
                 _ => None,

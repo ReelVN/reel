@@ -1,6 +1,6 @@
 //! Build-time image candidates indexed by the suspended call's bytecode PC.
 use super::visual_prediction::{
-    Catalogs, IMAGE_LIMIT, RESUME_LOOKUP_LIMIT, compile_site, image_path,
+    Catalogs, Classes, IMAGE_LIMIT, RESUME_LOOKUP_LIMIT, compile_site, image_path,
 };
 use arrayvec::ArrayVec;
 use aside_vm::{
@@ -13,7 +13,7 @@ const HEADER_BYTES: usize = 4;
 const RECORD_BYTES: usize = 16;
 const ID_BYTES: usize = 4;
 const BUILD_WORK: usize = 8_000_000;
-const CATALOG_BUILD_WORK: usize = BUILD_WORK / 4;
+const METADATA_BUILD_WORK: usize = BUILD_WORK / 4;
 
 #[derive(Clone, Copy)]
 struct Record {
@@ -38,9 +38,10 @@ impl VisualPlan {
         let mut records = Vec::new();
         let mut ids = Vec::new();
         let mut groups = HashMap::<ArrayVec<u32, IMAGE_LIMIT>, u32>::new();
-        let mut catalog_budget = CATALOG_BUILD_WORK;
-        let catalogs = Catalogs::compile(program, &mut catalog_budget);
-        let mut budget = BUILD_WORK - CATALOG_BUILD_WORK + catalog_budget;
+        let mut metadata_budget = METADATA_BUILD_WORK;
+        let classes = Classes::compile(program, &mut metadata_budget);
+        let catalogs = Catalogs::compile(program, &mut metadata_budget);
+        let mut budget = BUILD_WORK - METADATA_BUILD_WORK + metadata_budget;
         'functions: for (function_index, function) in program.package().functions.iter().enumerate()
         {
             if function.kind != bc::FunctionKind::Plain
@@ -49,6 +50,9 @@ impl VisualPlan {
             {
                 continue;
             }
+            let Some(parameters) = classes.stable_parameters(function, &mut budget) else {
+                break 'functions;
+            };
             for (pc, instruction) in function.code.indexed_iter().flatten() {
                 let Some(remaining) = budget.checked_sub(1) else {
                     break 'functions;
@@ -60,8 +64,15 @@ impl VisualPlan {
                 let Some(next) = function.code.next_pc(pc).ok().flatten() else {
                     continue;
                 };
-                let Some(paths) = compile_site(program, &catalogs, function, next, &mut budget)
-                else {
+                let Some(paths) = compile_site(
+                    program,
+                    &catalogs,
+                    &classes,
+                    function,
+                    next,
+                    &parameters,
+                    &mut budget,
+                ) else {
                     continue;
                 };
                 let group: ArrayVec<_, IMAGE_LIMIT> =

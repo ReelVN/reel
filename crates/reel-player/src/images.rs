@@ -32,14 +32,21 @@ struct PrefetchSources {
 
 impl PrefetchSources {
     fn contains(&self, source: &str) -> bool {
-        self.story.iter().any(|path| path.as_ref() == source) || self.stage.contains(source)
+        self.predicted(source) || self.stage.contains(source)
     }
 
-    fn candidates(&self) -> impl Iterator<Item = &str> {
-        self.story
-            .iter()
-            .map(Box::as_ref)
-            .chain(self.stage.iter().map(String::as_str))
+    fn predicted(&self, source: &str) -> bool {
+        self.story.iter().any(|path| path.as_ref() == source)
+    }
+
+    fn candidates(&self, include_stage: bool) -> impl Iterator<Item = &str> {
+        self.story.iter().map(Box::as_ref).chain(
+            include_stage
+                .then_some(&self.stage)
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
+        )
     }
 }
 
@@ -443,13 +450,14 @@ impl Images {
             false
         };
         self.assets.maintain();
-        while ready
-            && !self.pending.iter().any(|pending| pending.prefetch)
-            && self.free_slots() != 0
-        {
+        while ready && self.free_slots() != 0 {
+            let in_flight = self.pending.iter().position(|pending| pending.prefetch);
+            if in_flight.is_some_and(|index| self.prefetch.predicted(&self.pending[index].source)) {
+                break;
+            }
             let Some(source) = self
                 .prefetch
-                .candidates()
+                .candidates(in_flight.is_none())
                 .find(|source| {
                     !self.wanted.contains_key(*source)
                         && !self.loaded.contains_key(*source)
@@ -464,6 +472,11 @@ impl Images {
             if let Some(lease) = self.assets.take_recent_image(&source) {
                 self.loaded.insert(source, lease);
                 continue;
+            }
+            // Follow the active dialogue ahead of unrelated stage speculation.
+            // A pending image that the dialogue also predicts keeps its work.
+            if let Some(index) = in_flight {
+                self.assets.cancel(self.pending.remove(index).id);
             }
             let kind = if self.shader_sources.contains(&source) {
                 AssetKind::EffectShader

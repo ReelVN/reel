@@ -179,6 +179,45 @@ fn dialogue_prediction_yields_to_a_visible_request_in_the_same_update() {
 }
 
 #[test]
+fn dialogue_prefetch_reuses_matching_work_and_replaces_unrelated_stage_work() {
+    use reel_core::{budget::QueueLimits, test_support::MemoryAssetIo};
+    let assets = Assets::with_adapters(Default::default(), |wake| {
+        let limits = QueueLimits {
+            max_requests: 8,
+            max_bytes: 1 << 20,
+        };
+        (
+            Box::new(MemoryAssetIo::new(limits, limits, wake.clone())),
+            Box::new(crate::assets::ImageExecutor::new(limits, wake)),
+        )
+    });
+    let mut images = Images::new(assets);
+    let skin = "skin.png";
+    let story = "story.png";
+    images.request_paths(BTreeMap::new(), BTreeSet::from([skin.into()]));
+    assert!(images.poll().unwrap());
+    let skin_id = images.pending[0].id;
+
+    images.set_story_prediction(&[skin.into()]);
+    assert!(images.poll().unwrap());
+    assert_eq!(images.pending.len(), 1);
+    assert_eq!(images.pending[0].id, skin_id);
+    assert!(images.pending[0].prefetch);
+
+    images.set_story_prediction(&[story.into()]);
+    assert!(images.poll().unwrap());
+    assert_eq!(images.pending.len(), 1);
+    assert_eq!(images.pending[0].source, story);
+    assert_ne!(images.pending[0].id, skin_id);
+
+    images.set_story_prediction(&[]);
+    assert!(images.poll().unwrap());
+    assert_eq!(images.pending.len(), 1);
+    assert_eq!(images.pending[0].source, skin);
+    assert_ne!(images.pending[0].id, skin_id);
+}
+
+#[test]
 fn superseded_candidate_cannot_lend_its_foreground_allocation_to_prediction() {
     let (mut images, wake) = configured(3 * 160 * 90 * 4, 256 << 20);
     let source = "assets/panels.png";

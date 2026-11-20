@@ -4,6 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Predict images through proven method dispatch and read-only catalog lookups, and give dialogue predictions priority over unrelated stage prefetch.
 - Keep reusable image sources with their resident textures on desktop and Vita, using byte budgets for decoded images and source metadata.
 - Reuse PNG row buffers and copy only the inflate lookback between packets.
 - Batch cleanup of released asset records.

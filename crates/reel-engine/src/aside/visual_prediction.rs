@@ -4,7 +4,11 @@
 use arrayvec::ArrayVec;
 use aside_vm::bytecode::{self as bc, Opcode};
 mod catalogs;
+mod classes;
 pub(super) use catalogs::Catalogs;
+use catalogs::Lookup;
+pub(super) use classes::Classes;
+use classes::Member;
 
 const NESTING_LIMIT: usize = 8;
 const ARGUMENT_LIMIT: usize = 32;
@@ -38,12 +42,16 @@ impl PartialEq for ImagePath<'_> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fact {
     Unknown,
+    Null,
     Bool(bool),
     Constant(bc::ConstId),
     Function(bc::FunctionId),
     Closure(u8),
+    Instance(bc::TypeId),
+    Method(bc::FunctionId, bc::TypeId),
     Table { start: u8, end: u8 },
     Catalog(usize),
+    CatalogLookup(usize, Lookup),
     Layers(u8),
 }
 
@@ -87,13 +95,19 @@ enum Outcome<'p> {
 pub(super) fn compile_site<'p>(
     program: &'p bc::VerifiedProgram,
     catalogs: &Catalogs<'p>,
+    classes: &Classes,
     function: &bc::RuntimeFunction,
     next: usize,
+    parameters: &[(bc::Reg, bc::TypeId)],
     budget: &mut usize,
 ) -> Option<Paths<'p>> {
     let available = (*budget).min(BUILD_INSTRUCTION_LIMIT);
-    let mut walk = Walk::new(program, catalogs, available, BUILD_DIALOGUE_LIMIT);
-    let result = walk.function(function, next, Facts::default(), 0);
+    let mut walk = Walk::new(program, catalogs, classes, available, BUILD_DIALOGUE_LIMIT);
+    let mut facts = Facts::default();
+    for &(register, ty) in parameters {
+        facts.set(register.0, Fact::Instance(ty));
+    }
+    let result = walk.function(function, next, facts, 0);
     *budget -= available - walk.remaining;
     match result? {
         Outcome::Images(paths) => Some(paths),
@@ -127,6 +141,7 @@ fn text(program: &bc::VerifiedProgram, id: bc::ConstId) -> Option<&str> {
 struct Walk<'p, 'c> {
     program: &'p bc::VerifiedProgram,
     catalogs: &'c Catalogs<'p>,
+    classes: &'c Classes,
     remaining: usize,
     dialogue_remaining: usize,
     code: bc::ResidentCodeReader,
@@ -139,12 +154,14 @@ impl<'p, 'c> Walk<'p, 'c> {
     fn new(
         program: &'p bc::VerifiedProgram,
         catalogs: &'c Catalogs<'p>,
+        classes: &'c Classes,
         remaining: usize,
         dialogue_remaining: usize,
     ) -> Self {
         Self {
             program,
             catalogs,
+            classes,
             remaining,
             dialogue_remaining,
             code: bc::ResidentCodeReader::default(),
@@ -210,6 +227,20 @@ impl<'p, 'c> Walk<'p, 'c> {
                     facts.set(a, table.unwrap_or(Fact::Unknown));
                 }
                 Opcode::IndexGet | Opcode::MemberGet => {
+                    if op == Opcode::MemberGet
+                        && let Fact::Instance(ty) = facts.get(b)
+                    {
+                        let member =
+                            self.classes
+                                .member(ty, bc::SymbolId(c), &mut self.remaining)?;
+                        let value = match member {
+                            Member::Method(id) => Fact::Method(id, ty),
+                            Member::Field(ty) => self.instance(ty),
+                        };
+                        facts.set(a, value);
+                        pc = next;
+                        continue;
+                    }
                     let key = if op == Opcode::IndexGet {
                         let Fact::Constant(key) = facts.get(c) else {
                             return None;
@@ -218,7 +249,28 @@ impl<'p, 'c> Walk<'p, 'c> {
                     } else {
                         self.program.package().symbols[c as usize].as_str()
                     };
-                    let value = self.field(facts.get(b), key)?;
+                    let table = facts.get(b);
+                    let value = self.field(table, key).or_else(|| {
+                        if op == Opcode::MemberGet
+                            && let Fact::Catalog(table) = table
+                        {
+                            return Some(Fact::CatalogLookup(table, Lookup::named(key)?));
+                        }
+                        None
+                    })?;
+                    facts.set(a, value);
+                }
+                Opcode::BindRead => {
+                    let binding = &function.bindings[b as usize];
+                    let value = match binding.storage {
+                        bc::BindingStorage::Value(reg) => facts.get(reg.0),
+                        bc::BindingStorage::Cell(_) => Fact::Unknown,
+                    };
+                    let value = if value == Fact::Unknown {
+                        self.instance(binding.ty)
+                    } else {
+                        value
+                    };
                     facts.set(a, value);
                 }
                 Opcode::MakeArray => {
@@ -241,6 +293,10 @@ impl<'p, 'c> Walk<'p, 'c> {
                 }
                 Opcode::Eq | Opcode::Ne => {
                     let equal = match (facts.get(b), facts.get(c)) {
+                        (Fact::Null, Fact::Null) => Some(true),
+                        (Fact::Null, Fact::Constant(id)) | (Fact::Constant(id), Fact::Null) => {
+                            Some(self.program.package().constants[id.index()] == bc::Const::Null)
+                        }
                         (Fact::Constant(left), Fact::Constant(right)) => self
                             .text(left)
                             .zip(self.text(right))
@@ -303,15 +359,27 @@ impl<'p, 'c> Walk<'p, 'c> {
         }
     }
 
+    fn instance(&self, ty: bc::TypeId) -> Fact {
+        if self.classes.has(ty) {
+            Fact::Instance(ty)
+        } else {
+            Fact::Unknown
+        }
+    }
+
     fn branch(&self, opcode: Opcode, fact: Fact) -> Option<Option<bool>> {
         let constant = match fact {
             Fact::Unknown => return Some(None),
+            Fact::Null => return (opcode == Opcode::BranchNull).then_some(Some(true)),
             Fact::Bool(value) => return Some(Some(opcode == Opcode::BranchBool && value)),
             Fact::Constant(id) => Some(&self.program.package().constants[id.index()]),
             Fact::Function(_)
             | Fact::Closure(_)
+            | Fact::Method(_, _)
+            | Fact::Instance(_)
             | Fact::Table { .. }
             | Fact::Catalog(_)
+            | Fact::CatalogLookup(_, _)
             | Fact::Layers(_) => None,
         };
         match (opcode, constant) {
@@ -323,12 +391,22 @@ impl<'p, 'c> Walk<'p, 'c> {
 
     fn call(&mut self, call: &bc::CallDesc, facts: &Facts, nesting: usize) -> Option<Outcome<'p>> {
         let package = self.program.package();
-        let (target, captures) = match call.target {
-            bc::CallTarget::Register(reg) => {
-                let (id, captures) = self.resolve_closure(facts.get(reg.0))?;
-                (bc::CallTarget::Function(id), captures)
-            }
-            target => (target, Captures::new()),
+        let (target, captures, receiver) = match call.target {
+            bc::CallTarget::Register(reg) => match facts.get(reg.0) {
+                Fact::CatalogLookup(table, lookup) => {
+                    return self.catalog_lookup(table, lookup, call, facts);
+                }
+                Fact::Method(id, ty) => (
+                    bc::CallTarget::Function(id),
+                    Captures::new(),
+                    Some(Fact::Instance(ty)),
+                ),
+                fact => {
+                    let (id, captures) = self.resolve_closure(fact)?;
+                    (bc::CallTarget::Function(id), captures, None)
+                }
+            },
+            target => (target, Captures::new(), None),
         };
         let native = match target {
             bc::CallTarget::Native(native) => Some(native),
@@ -341,7 +419,10 @@ impl<'p, 'c> Walk<'p, 'c> {
         if let Some(native) = native {
             let native = &package.natives[native.index()];
             let symbol = package.symbols[native.symbol.index()].as_str();
-            if symbol == "reel::tr" {
+            if matches!(
+                symbol,
+                "reel::tr" | "reel::stack" | "reel::row" | "reel::column" | "reel::text"
+            ) {
                 return Some(Outcome::Return(Fact::Unknown));
             }
             if matches!(
@@ -357,7 +438,7 @@ impl<'p, 'c> Walk<'p, 'c> {
             }
             let signature = &package.signatures[native.signature.index()];
             if symbol == "reel::stage::transition" {
-                let arguments = self.arguments(signature, call, facts)?;
+                let arguments = self.arguments(signature, call, facts, None)?;
                 let change = signature
                     .parameters
                     .iter()
@@ -403,8 +484,47 @@ impl<'p, 'c> Walk<'p, 'c> {
         };
         let function = &package.functions[id.index()];
         let signature = &package.signatures[function.signature.index()];
-        let arguments = self.arguments(signature, call, facts)?;
+        let arguments = self.arguments(signature, call, facts, receiver)?;
         self.invoke(id, arguments, captures, nesting)
+    }
+
+    fn catalog_lookup(
+        &mut self,
+        table: usize,
+        lookup: Lookup,
+        call: &bc::CallDesc,
+        facts: &Facts,
+    ) -> Option<Outcome<'p>> {
+        let bc::Arguments::Window(window) = call.arguments else {
+            return None;
+        };
+        if !call.names.is_empty()
+            || !matches!(
+                (lookup, window.len),
+                (Lookup::Get, 1 | 2) | (Lookup::HasOwn, 1)
+            )
+        {
+            return None;
+        }
+        let Fact::Constant(key) = facts.get(window.start.0) else {
+            return None;
+        };
+        let key = self.text(key)?;
+        if key.len() > PATH_LIMIT {
+            return None;
+        }
+        self.remaining = self.remaining.checked_sub(1)?;
+        let value = self.catalogs.field(table, key);
+        let fact = match lookup {
+            Lookup::HasOwn => Fact::Bool(value.is_some()),
+            Lookup::Get => match value {
+                Some(catalogs::Value::Constant(id)) => Fact::Constant(id),
+                Some(catalogs::Value::Table(table)) => Fact::Catalog(table),
+                None if window.len == 2 => facts.get(window.start.0 + 1),
+                None => Fact::Null,
+            },
+        };
+        Some(Outcome::Return(fact))
     }
 
     fn invoke(
@@ -433,7 +553,14 @@ impl<'p, 'c> Walk<'p, 'c> {
             } else {
                 return None;
             };
-            parameters.set(index as u32, fact);
+            parameters.set(
+                index as u32,
+                if fact == Fact::Unknown {
+                    self.instance(parameter.ty)
+                } else {
+                    fact
+                },
+            );
         }
         self.function(function, 0, parameters, nesting + 1)
     }
@@ -584,6 +711,7 @@ impl<'p, 'c> Walk<'p, 'c> {
         signature: &bc::Signature,
         call: &bc::CallDesc,
         facts: &Facts,
+        receiver: Option<Fact>,
     ) -> Option<[Option<Fact>; ARGUMENT_LIMIT]> {
         let bc::Arguments::Window(window) = call.arguments else {
             return None;
@@ -597,11 +725,13 @@ impl<'p, 'c> Walk<'p, 'c> {
             return None;
         }
         let positional = len.checked_sub(call.names.len())?;
-        if positional > signature.parameters.len() {
+        let first = usize::from(receiver.is_some());
+        if first + positional > signature.parameters.len() {
             return None;
         }
         let mut arguments = [None; ARGUMENT_LIMIT];
-        for (index, argument) in arguments.iter_mut().take(positional).enumerate() {
+        arguments[0] = receiver;
+        for (index, argument) in arguments[first..first + positional].iter_mut().enumerate() {
             *argument = Some(facts.get(window.start.0 + index as u32));
         }
         for named in &call.names {
@@ -1087,8 +1217,69 @@ mod tests {
         let function = &program.package().functions[site.code.function.index()];
         let next = function.code.next_pc(site.pc.index()).unwrap().unwrap();
         let catalogs = Catalogs::default();
-        let mut walk = Walk::new(&program, &catalogs, 1, BUILD_DIALOGUE_LIMIT);
+        let classes = Classes::default();
+        let mut walk = Walk::new(&program, &catalogs, &classes, 1, BUILD_DIALOGUE_LIMIT);
         assert!(walk.function(function, next, Facts::default(), 0).is_none());
         assert_eq!(walk.remaining, 0);
+    }
+
+    #[test]
+    fn predicts_typed_non_overridden_methods_and_catalog_queries() {
+        let program = compile(
+            r#"
+                let rooms = {hall: {source: "hall.png"}, cafe: {source: "cafe.png"}};
+                class Backdrop {
+                    fn paint(self, key: string) -> Node {
+                        if rooms.has_own(key) {
+                            let row = rooms.get(key);
+                            return image(row.source);
+                        }
+                        stack(width: 1280, height: 720)
+                    }
+                }
+                class Room {
+                    let backdrop: Backdrop = Backdrop();
+                    fn paint(self, key: string) -> Node {
+                        self.backdrop.paint(key)
+                    }
+                }
+                class SideRoom: Room { let side = true; }
+                fn opening() { enter(Room()); }
+                fn enter(room: Room) {
+                    narrator("wait");
+                    let _ = room.paint(key: "hall");
+                }
+                fn missing(room: Room) {
+                    narrator("wait");
+                    let _ = room.paint("missing");
+                    let _ = image("fallback.png");
+                }
+            "#,
+        );
+        for (name, expected) in [("enter", "hall.png"), ("missing", "fallback.png")] {
+            let site = first_call(&program, name);
+            assert_eq!(next_image(&program, [site].into_iter()), Some(expected));
+        }
+    }
+
+    #[test]
+    fn a_class_contract_does_not_pick_a_virtual_override() {
+        let program = compile(
+            r#"
+                class Scene {
+                    fn paint(self) -> Node { image("regular.png") }
+                }
+                class Variant: Scene {
+                    fn paint(self) -> Node { image("variant.png") }
+                }
+                fn opening() { enter(Scene()); }
+                fn enter(scene: Scene) {
+                    narrator("wait");
+                    let _ = scene.paint();
+                }
+            "#,
+        );
+        let site = first_call(&program, "enter");
+        assert_eq!(next_image(&program, [site].into_iter()), None);
     }
 }
