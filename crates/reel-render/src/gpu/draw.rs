@@ -510,7 +510,7 @@ impl Context<'_> {
         let mut page: Option<Arc<super::glyph_cache::Page>> = None;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         let density = super::glyph::raster_density(outer * run.transform);
-        let run_key = Arc::new(super::glyph_cache::RunKey::new(run, density));
+        let mut key = super::glyph_cache::Key::for_run(run, density);
         let dependency = crate::common::recording_cache::GlyphDependency {
             transform: outer * run.transform,
             size: self.size,
@@ -527,7 +527,7 @@ impl Context<'_> {
             && cached.value().leases.iter().all(|(id, lease)| {
                 self.glyphs
                     .entries
-                    .get(&super::glyph_cache::Key::new(run_key.clone(), *id))
+                    .get(key.lookup(*id))
                     .is_some_and(|current| Arc::ptr_eq(current, lease))
             })
         {
@@ -561,11 +561,10 @@ impl Context<'_> {
         };
 
         for index in 0..run.glyphs.len() {
-            let key = super::glyph_cache::Key::new(run_key.clone(), run.glyphs[index].id);
             let glyph = self
                 .glyphs
                 .entries
-                .get(&key)
+                .get(key.lookup(run.glyphs[index].id))
                 .cloned()
                 .ok_or(GpuError::Unsupported {
                     at,

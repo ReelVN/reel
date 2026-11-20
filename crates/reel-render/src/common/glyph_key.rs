@@ -78,8 +78,17 @@ impl Hash for RunKey {
     }
 }
 impl Key {
-    pub fn new(run: Arc<RunKey>, glyph: u32) -> Self {
-        Self { run, glyph }
+    pub fn for_run(run: &FrameGlyphRun, density: f64) -> Self {
+        Self {
+            run: Arc::new(RunKey::new(run, density)),
+            glyph: 0,
+        }
+    }
+
+    /// Reuse the run's owned key for lookups. Clone only when storing a key.
+    pub fn lookup(&mut self, glyph: u32) -> &Self {
+        self.glyph = glyph;
+        self
     }
 }
 

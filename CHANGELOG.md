@@ -4,6 +4,12 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+## 0.4.0-dev.3 — 2026-11-20
+
+- Skip pixel scans when an indexed texture's palette is fully opaque, and test BC3 alpha selectors together when finding image coverage.
+- Quantize each visible texture pixel once and copy its edge values into storage padding.
+- Reuse font and glyph lookup state across cached text runs in both renderers.
+- Resolve the source of an observed Aside property once per read.
 - Choose native P8 or RGB888 for single-level Vita textures when they preserve the intended appearance and reduce resident bytes. Keep RGBA8 available for translucent artwork and mip chains.
 - Select the release runtime by export target. Vita defaults to the shared launcher data bundle, and cross-OS desktop exports require a runtime directory or data-only output.
 - Keep GXM texture layouts separate from desktop conversion cache entries and store MP4 resources as contiguous archive ranges for direct seeking.

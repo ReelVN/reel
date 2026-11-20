@@ -17,7 +17,9 @@ use std::{
 };
 mod upload;
 
-pub(super) use crate::common::glyph_key::{Key, RunKey};
+pub(super) use crate::common::glyph_key::Key;
+#[cfg(test)]
+pub(super) use crate::common::glyph_key::RunKey;
 pub(super) struct Page {
     pub view: wgpu::TextureView,
     pub(super) brush: super::draw::BrushCache,
@@ -111,29 +113,34 @@ impl crate::common::glyph_plan::Prepare for Preparation<'_> {
         at: RecordLocation,
         measure_ink: bool,
     ) -> Result<InkBounds, GpuError> {
-        let key = Arc::new(RunKey::new(run, density));
-        let raster = glyph::RasterRun::new(drawing, run, density, at)?;
+        let mut key = Key::for_run(run, density);
+        let mut raster = None;
         let mut ink = InkBounds::Empty;
         for (chunk_index, positions) in run.glyphs.chunks(32).enumerate() {
             let mut missing: smallvec::SmallVec<[(Key, usize); 32]> = Default::default();
             for (offset, position) in positions.iter().enumerate() {
-                let key = Key::new(key.clone(), position.id);
-                if self.frame.entries.contains_key(&key) {
+                let lookup = key.lookup(position.id);
+                if self.frame.entries.contains_key(lookup) {
                     continue;
                 }
-                if let Some(glyph) = self.cache.get(&key) {
-                    self.insert(key, glyph)?;
-                } else if !missing.iter().any(|(pending, _)| *pending == key) {
-                    missing.push((key, chunk_index * 32 + offset));
+                if let Some(glyph) = self.cache.get(lookup) {
+                    self.insert(lookup.clone(), glyph)?;
+                } else if !missing.iter().any(|(pending, _)| pending == lookup) {
+                    missing.push((lookup.clone(), chunk_index * 32 + offset));
                 }
             }
-            self.prepare_missing(&raster, &missing)?;
+            if !missing.is_empty() {
+                let raster = match &mut raster {
+                    Some(raster) => raster,
+                    None => raster.insert(glyph::RasterRun::new(drawing, run, density, at)?),
+                };
+                self.prepare_missing(raster, &missing)?;
+            }
             if !measure_ink {
                 continue;
             }
             for position in positions {
-                let key = Key::new(key.clone(), position.id);
-                let glyph = &self.frame.entries[&key];
+                let glyph = &self.frame.entries[key.lookup(position.id)];
                 if let Glyph::Image { offset, size, .. } = glyph.as_ref() {
                     ink = crate::common::glyph_plan::union(
                         ink,
@@ -157,9 +164,6 @@ impl Preparation<'_> {
         raster: &glyph::RasterRun<'_>,
         missing: &[(Key, usize)],
     ) -> Result<(), GpuError> {
-        if missing.is_empty() {
-            return Ok(());
-        }
         let indices: smallvec::SmallVec<[usize; 32]> =
             missing.iter().map(|(_, index)| *index).collect();
         let bitmaps = raster.batch(

@@ -74,6 +74,7 @@ fn exact(linear: &Rgba32FImage, indices: &mut [u8], stride: usize, palette: &mut
             };
         }
     }
+    repeat_unused_entries(palette, colors.len());
     true
 }
 
@@ -105,11 +106,18 @@ fn quantize_opaque(
     for (row, source) in index_plane.chunks_mut(stride).zip(indices.chunks(width)) {
         row[..width].copy_from_slice(source);
     }
-    palette.fill(0);
+    let count = entries.len();
     for (entry, color) in palette.as_chunks_mut::<4>().0.iter_mut().zip(entries) {
         *entry = [color.r, color.g, color.b, color.a];
     }
+    repeat_unused_entries(palette, count);
     Ok(true)
+}
+
+fn repeat_unused_entries(palette: &mut [u8], used: usize) {
+    let entries = palette.as_chunks_mut::<4>().0;
+    let first = entries[0];
+    entries[used..].fill(first);
 }
 
 #[cfg(test)]
@@ -141,5 +149,22 @@ mod tests {
             assert_eq!(rgba[usize::from(*pixel)], [content_x, content_y, 0, 128]);
         }
         assert_eq!(&indices[48..], &[0; 16]);
+
+        let opaque = Rgba32FImage::from_fn(9, 2, |x, y| {
+            image::Rgba([x as f32 / 255., y as f32 / 255., 0., 1.])
+        });
+        let payload = encode(&opaque, descriptor, false).unwrap().unwrap();
+        let coverage =
+            reel_core::image_coverage::ImageCoverage::texture(descriptor, &payload).unwrap();
+        assert!(coverage.is_opaque());
+        assert_eq!(coverage.rectangles().collect::<Vec<_>>(), [[0, 0, 9, 2]]);
+        let palette = &payload[descriptor.palette_offset().unwrap() as usize..];
+        assert!(
+            palette
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|color| color[3] == 255)
+        );
     }
 }

@@ -120,6 +120,12 @@ impl ImageCoverage {
                 let palette = bytes[descriptor.palette_offset()? as usize..]
                     .as_chunks::<4>()
                     .0;
+                if palette.iter().all(|color| color[3] == 255) {
+                    let mut coverage = Self::empty(size);
+                    coverage.include([0, 0, size[0], size[1]]);
+                    coverage.opaque = true;
+                    return Some(coverage);
+                }
                 let samples: [u8; 256] = std::array::from_fn(|i| match palette[i] {
                     [_, _, _, 255] => 2,
                     [0, 0, 0, 0] => 0,
@@ -254,23 +260,22 @@ fn active_span(blocks: &[[u8; 16]], tail: &[[u8; 4]], mask: u128) -> Option<[u32
 
 fn bc3_has_alpha(block: &[u8; 16]) -> bool {
     let [a, b] = [block[0], block[1]];
-    let mut codes = u64::from_le_bytes(block[..8].try_into().unwrap()) >> 16;
-    for _ in 0..16 {
-        let code = codes & 7;
-        codes >>= 3;
-        let nonzero = match code {
-            0 => a != 0,
-            1 => b != 0,
-            6 if a <= b => false,
-            7 if a <= b => true,
-            // Every interpolated entry has a positive weight for both ends.
-            _ => a != 0 || b != 0,
-        };
-        if nonzero {
-            return true;
-        }
+    if a > b && b != 0 {
+        return true;
     }
-    false
+    let codes = u64::from_le_bytes(block[..8].try_into().unwrap()) >> 16;
+    const SELECTOR_LOW_BITS: u64 = ((1 << 48) - 1) / 7;
+    match (a, b) {
+        // With both endpoints zero, only selector 7 is active.
+        (0, 0) => codes & (codes >> 1) & (codes >> 2) & SELECTOR_LOW_BITS != 0,
+        // Selectors 0 and 6 are the zero values. All other selectors are
+        // odd, or differ between their two high bits.
+        (0, _) => (codes | ((codes >> 1) ^ (codes >> 2))) & SELECTOR_LOW_BITS != 0,
+        // These modes each have one zero selector. Test the packed value
+        // against that selector repeated across the whole block.
+        (_, 0) => codes != SELECTOR_LOW_BITS,
+        _ => codes != 6 * SELECTOR_LOW_BITS,
+    }
 }
 
 #[cfg(test)]
@@ -371,5 +376,34 @@ mod tests {
         bytes[block] = 1;
         bytes[block + 2] = 2;
         assert!(bc3_has_alpha(bytes[block..block + 16].try_into().unwrap()));
+    }
+
+    #[test]
+    fn bc3_packed_selectors_preserve_every_alpha_mode() {
+        let cases = [
+            (0, 0, &[0, 1, 2, 3, 4, 5, 6][..]),
+            (0, 150, &[0, 6][..]),
+            (150, 0, &[1][..]),
+            (150, 150, &[6][..]),
+            (1, 150, &[6][..]),
+            (150, 1, &[][..]),
+        ];
+        for (a, b, zeros) in cases {
+            let mut block = [0; 16];
+            block[..2].copy_from_slice(&[a, b]);
+            for background in 0..8u64 {
+                let uniform =
+                    (0..16).fold(0, |bits, position| bits | (background << (3 * position)));
+                for position in 0..16 {
+                    for selector in 0..8u64 {
+                        let shift = 3 * position;
+                        let bits = (uniform & !(7 << shift)) | (selector << shift);
+                        block[2..8].copy_from_slice(&bits.to_le_bytes()[..6]);
+                        let active = !zeros.contains(&background) || !zeros.contains(&selector);
+                        assert_eq!(bc3_has_alpha(&block), active);
+                    }
+                }
+            }
+        }
     }
 }

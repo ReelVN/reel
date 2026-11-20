@@ -5,12 +5,7 @@ use super::{
 };
 #[cfg(feature = "profiling")]
 use crate::common::scissor::Scissor;
-use crate::common::{
-    appearance::appearance_uniform,
-    glyph,
-    glyph_key::{Key, RunKey},
-    mesh,
-};
+use crate::common::{appearance::appearance_uniform, glyph, glyph_key::Key, mesh};
 use guillotiere::{AllocId, AtlasAllocator, size2};
 use reel_ui::{
     frame::{
@@ -20,7 +15,7 @@ use reel_ui::{
     kurbo::{Affine, Rect},
     peniko::{Brush, Extend, Fill, ImageQuality, color::LinearSrgb},
 };
-use std::{cell::RefCell, rc::Weak, sync::Arc};
+use std::{cell::RefCell, rc::Weak};
 #[path = "draw_instances.rs"]
 mod instances;
 pub(super) use instances::InstanceBatch;
@@ -298,14 +293,18 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
         at: RecordLocation,
         measure_ink: bool,
     ) -> Result<InkBounds, GpuError> {
-        let key = Arc::new(RunKey::new(run, density));
-        let raster = glyph::RasterRun::new(frame, run, density, at)?;
+        let mut key = Key::for_run(run, density);
+        let mut raster = None;
         let mut ink = InkBounds::Empty;
         for (index, position) in run.glyphs.iter().enumerate() {
-            let key = Key::new(key.clone(), position.id);
-            let glyph = if let Some(glyph) = self.glyph_cache.entries.get(&key) {
+            let lookup = key.lookup(position.id);
+            let glyph = if let Some(glyph) = self.glyph_cache.entries.get(lookup) {
                 glyph.clone()
             } else {
+                let raster = match &mut raster {
+                    Some(raster) => raster,
+                    None => raster.insert(glyph::RasterRun::new(frame, run, density, at)?),
+                };
                 let bitmap = raster.glyph(
                     &mut self.glyph_cache.raster,
                     index,
@@ -328,7 +327,9 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
                     bitmap,
                     &mut self.glyph_uploads,
                 )?;
-                self.glyph_cache.entries.insert(key, glyph.clone());
+                self.glyph_cache
+                    .entries
+                    .insert(lookup.clone(), glyph.clone());
                 glyph
             };
             if measure_ink && let Some(image) = &glyph.image {
@@ -857,7 +858,7 @@ impl Context<'_> {
             }
         };
         let density = glyph::raster_density(outer * run.transform);
-        let key = Arc::new(RunKey::new(run, density));
+        let mut key = Key::for_run(run, density);
         let dependency = crate::common::recording_cache::GlyphDependency {
             transform: outer * run.transform,
             size: self.size,
@@ -869,7 +870,7 @@ impl Context<'_> {
             && cached.value().leases.iter().all(|(id, lease)| {
                 self.glyph_cache
                     .entries
-                    .get(&Key::new(key.clone(), *id))
+                    .get(key.lookup(*id))
                     .is_some_and(|current| Rc::ptr_eq(current, lease))
             })
         {
@@ -896,16 +897,15 @@ impl Context<'_> {
         let mut page: Option<Rc<Page>> = None;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         for index in 0..run.glyphs.len() {
-            let key = Key::new(key.clone(), run.glyphs[index].id);
-            let glyph =
-                self.glyph_cache
-                    .entries
-                    .get(&key)
-                    .cloned()
-                    .ok_or(GpuError::Unsupported {
-                        at,
-                        record: "glyph missing from preparation",
-                    })?;
+            let glyph = self
+                .glyph_cache
+                .entries
+                .get(key.lookup(run.glyphs[index].id))
+                .cloned()
+                .ok_or(GpuError::Unsupported {
+                    at,
+                    record: "glyph missing from preparation",
+                })?;
             crate::common::recording_cache::Glyphs::lease(
                 &mut captured,
                 run.glyphs[index].id,

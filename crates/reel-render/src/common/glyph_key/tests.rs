@@ -35,8 +35,14 @@ fn hash_collisions_preserve_full_raster_identity() {
     changed.normalized_coords[15] += 1;
     let mut second = RunKey::new(&changed, 1.);
     second.hash = first.hash;
-    let first = Key::new(Arc::new(first), 42);
-    let second = Key::new(Arc::new(second), 42);
+    let first = Key {
+        run: Arc::new(first),
+        glyph: 42,
+    };
+    let second = Key {
+        run: Arc::new(second),
+        glyph: 42,
+    };
     assert!(first != second);
     let cache = HashMap::from([(first.clone(), 1), (second.clone(), 2)]);
     assert_eq!(cache.len(), 2);

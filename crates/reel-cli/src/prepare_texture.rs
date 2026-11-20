@@ -535,11 +535,33 @@ pub(crate) fn quantized_pixels(
         storage_size,
         ..
     } = descriptor.layout;
-    RgbaImage::from_fn(storage_size[0], storage_size[1], |x, y| {
-        let coordinates = [x.min(content_size[0] - 1), y.min(content_size[1] - 1)];
-        let pixel = linear.get_pixel(coordinates[0], coordinates[1]);
-        image::Rgba(quantize(pixel.0, dither, coordinates))
-    })
+    let [content_width, content_height] = content_size.map(|axis| axis as usize);
+    let stride = storage_size[0] as usize;
+    let mut pixels = RgbaImage::new(storage_size[0], storage_size[1]);
+    let (content, padding) = pixels
+        .as_flat_samples_mut()
+        .samples
+        .as_chunks_mut::<4>()
+        .0
+        .split_at_mut(stride * content_height);
+    let source = linear.as_raw().as_chunks::<4>().0;
+    let source_rows = source.chunks_exact(linear.width() as usize);
+    for (y, (row, source)) in content
+        .chunks_exact_mut(stride)
+        .zip(source_rows)
+        .enumerate()
+    {
+        let (row, padding) = row.split_at_mut(content_width);
+        for (x, (output, &input)) in row.iter_mut().zip(source).enumerate() {
+            *output = quantize(input, dither, [x as u32, y as u32]);
+        }
+        padding.fill(row[content_width - 1]);
+    }
+    let last_row = &content[content.len() - stride..];
+    for row in padding.chunks_exact_mut(stride) {
+        row.copy_from_slice(last_row);
+    }
+    pixels
 }
 
 fn ordered_offset([x, y]: [u32; 2]) -> f32 {

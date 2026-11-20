@@ -187,13 +187,16 @@ impl Heap {
             return Ok(());
         }
         let object = self.object(self.key(value)?)?;
-        let mut source = value;
-        if let Some(owner) = object.property_owner {
-            source = Value::object(self.id, owner.data().as_ffi());
-        } else if !object.model && object.observable_fields == 0 {
+        let (source, object) = if let Some(owner) = object.property_owner {
+            (
+                Value::object(self.id, owner.data().as_ffi()),
+                self.object(owner)?,
+            )
+        } else if object.model || object.observable_fields != 0 {
+            (value, object)
+        } else {
             return Ok(());
-        }
-        let object = self.object(self.key(source)?)?;
+        };
         // Private construction reads do not subscribe a component to its own
         // newborn nodes. Read-only host services may be initialized lazily here;
         // their observable identity is shared and must still be tracked.
@@ -207,9 +210,7 @@ impl Heap {
         {
             return Ok(());
         }
-        if let Some(index) = field
-            && index >= self.object(self.key(source)?)?.observable_fields
-        {
+        if field.is_some_and(|index| index >= object.observable_fields) {
             return Ok(());
         }
         self.capture_dependency(dependencies, source, field)?;
