@@ -252,7 +252,7 @@ impl Activities {
                     });
                 }
             }
-            self.begin_round(vm.heap(), self.time)?;
+            self.begin_round(self.time);
         }
         self.pump_native(vm, stage, root_owner, ticket, budget)
     }
@@ -290,6 +290,7 @@ impl Activities {
                     root_set(heap, first, RootSlot::Previous, activity)?;
                 }
                 heap.set_root(self.head.unwrap(), activity)?;
+                self.reconciled_hosts = None;
                 operation.build = None;
                 if state(heap, activity)? == State::Running {
                     self.queue(
@@ -300,7 +301,7 @@ impl Activities {
                         false,
                     )?;
                 }
-                self.begin_round(heap, self.time)?;
+                self.begin_round(self.time);
             }
             let progress = self.drain(vm, budget - work)?;
             work += progress.work;
@@ -476,6 +477,7 @@ impl Activities {
         self.cleanup = None;
         self.control = None;
         self.round = None;
+        self.reconciled_hosts = None;
         self.waits.clear();
         Ok(())
     }

@@ -80,11 +80,10 @@ impl Activities {
 
     /// Script turns may retire targets or write properties while every producer
     /// is paused. Settle those changes even when no clock wake is scheduled.
-    pub fn after_script(&mut self, heap: &Heap) -> Result<(), AdapterError> {
+    pub fn after_script(&mut self) {
         if self.has_active() {
-            self.begin_round(heap, self.time)?;
+            self.begin_round(self.time);
         }
-        Ok(())
     }
 
     pub(super) fn first(&self, heap: &Heap) -> Result<Value, AdapterError> {
@@ -710,17 +709,12 @@ impl Activities {
         Ok(())
     }
 
-    pub(super) fn begin_round(&mut self, heap: &Heap, target: f64) -> Result<(), AdapterError> {
+    pub(super) fn begin_round(&mut self, target: f64) {
         if self.round.is_none() {
             self.clock_round = false;
             self.target_time = target;
-            let first = self.first(heap)?;
-            self.round = Some(Round::Reconcile(present(first).then_some(Scan {
-                activity: first,
-                index: 0,
-            })));
+            self.round = Some(Round::CheckHosts);
         }
-        Ok(())
     }
 
     fn scan_next(heap: &Heap, scan: Scan) -> Result<Option<Scan>, AdapterError> {
@@ -794,11 +788,30 @@ impl Activities {
                 self.cleanup_one(heap)?;
                 continue;
             }
-            if self.control.is_some() && !matches!(self.round, Some(Round::Reconcile(_))) {
+            if self.control.is_some()
+                && !matches!(self.round, Some(Round::CheckHosts | Round::Reconcile(_)))
+            {
                 self.control_one(heap)?;
                 continue;
             }
             match self.round.unwrap() {
+                Round::CheckHosts => {
+                    let revisions = (heap.host_retirement_revision(), heap.host_write_revision());
+                    self.round = Some(
+                        if !self.skipping && self.reconciled_hosts == Some(revisions) {
+                            Round::Events
+                        } else {
+                            let first = self.first(heap)?;
+                            // A host change during a budgeted scan still triggers a
+                            // check next round, including work already visited.
+                            self.reconciled_hosts = Some(revisions);
+                            Round::Reconcile(present(first).then_some(Scan {
+                                activity: first,
+                                index: 0,
+                            }))
+                        },
+                    );
+                }
                 Round::Reconcile(Some(scan)) => {
                     let current = node(heap, scan.activity, i64::from(scan.index))?;
                     self.round = Some(Round::Reconcile(Self::scan_next(heap, scan)?));
@@ -843,6 +856,16 @@ impl Activities {
                                 Job::Activate => self.activate(heap, current, time)?,
                                 Job::Complete => self.complete(heap, current, time)?,
                             }
+                        }
+                    } else if self.events.len() <= 1 {
+                        // Only running leaves are scheduled. The lone leaf can
+                        // sample here without holding a cursor between slices.
+                        self.round = Some(Round::Sample(None));
+                        if let Some((_, &leaf)) = self.events.first_key_value()
+                            && Self::sample(heap, leaf, self.target_time, false).is_err()
+                        {
+                            let activity = get(heap, leaf, Slot::Activity)?;
+                            self.begin_cleanup(heap, activity, State::Failed, None)?;
                         }
                     } else {
                         let first = self.first(heap)?;
@@ -922,7 +945,7 @@ impl Activities {
                     woke: woke | self.maintain(vm)?,
                 });
             }
-            self.begin_round(vm.heap(), seconds)?;
+            self.begin_round(seconds);
             self.clock_round = true;
         }
         let progress = self.drain(vm, budget - work)?;

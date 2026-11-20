@@ -637,8 +637,8 @@ fn many_activities_use_bounded_time_slices_and_release_terminal_graphs() {
         }
     }
     assert!(
-        (320..=328).contains(&work),
-        "one reconciliation and one sample per graph node: {work}"
+        (160..=168).contains(&work),
+        "one sample per graph node when hosts haven't changed: {work}"
     );
     vm.sync_stage(&session).unwrap();
     for node in vm
@@ -666,6 +666,37 @@ fn many_activities_use_bounded_time_slices_and_release_terminal_graphs() {
         RunOutcome::Returned(_)
     ));
     assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
+}
+
+#[test]
+fn a_long_sequence_samples_only_its_scheduled_leaf() {
+    let source = r#"fn opening() {
+        let moving = stack();
+        let future = stack();
+        stage.replace(stack(children: [moving, future]));
+        let mut steps = [tween(moving, x: 50, duration: 10)];
+        for i in 0..32 { steps.append(tween(future, x: i, duration: 2)); }
+        let motion = run(sequence(...steps));
+        narrator("moving");
+        if moving.x != 5 { throw "active leaf did not sample"; }
+        future.remove();
+        let mut cancelled = false;
+        try { await motion; } catch error { cancelled = true; }
+        if !cancelled { throw "future retirement did not cancel the sequence"; }
+        narrator("cancelled");
+    }"#;
+    let (mut session, mut vm) = setup(source, Context::Ordinary);
+    assert!(matches!(
+        drive(&mut vm, &mut session),
+        RunOutcome::Waiting(_)
+    ));
+    let step = advance_clock(&mut vm, &session, 1., 1);
+    assert!(step.work <= 4, "future leaves were visited: {}", step.work);
+    advance_dialogue(&mut vm, &mut session);
+    assert!(matches!(
+        session.view().interaction,
+        Some(crate::InteractionView::Dialogue(dialogue)) if dialogue.text() == "cancelled"
+    ));
 }
 
 #[test]

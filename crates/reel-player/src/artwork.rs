@@ -20,7 +20,6 @@ pub type ArtworkDecoder<'a> = (Box<dyn ImageDecoder + 'a>, u64);
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const PNG_HEADER_BYTES: usize = 33;
-const PNG_PIPELINE_MIN_OUTPUT: u64 = 4 << 20;
 const QOI_SIGNATURE: [u8; 4] = qoi::consts::QOI_MAGIC.to_be_bytes();
 
 fn check_qoi_colorspace(header: &qoi::Header) -> Result<(), String> {
@@ -113,7 +112,12 @@ pub(crate) struct PngShape {
 }
 
 impl PngShape {
-    pub(crate) fn temporary(&self, available: u64, allow_direct: bool) -> u64 {
+    pub(crate) fn temporary(
+        &self,
+        available: u64,
+        allow_direct: bool,
+        pipeline_workspace_limit: Option<u64>,
+    ) -> u64 {
         if !self.bounded_metadata {
             return self.pixel_workspace;
         }
@@ -127,12 +131,18 @@ impl PngShape {
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let workspace = {
                 let pipeline = png_pipeline::workspace(self.size[0]);
-                if self.output >= PNG_PIPELINE_MIN_OUTPUT && pipeline <= available {
+                // Parallel decoding is worthwhile once the parallel row buffers fit
+                // within the existing full-image allocation bound.
+                if pipeline <= full_image
+                    && pipeline_workspace_limit.is_some_and(|limit| pipeline <= limit)
+                {
                     workspace.max(pipeline)
                 } else {
                     workspace
                 }
             };
+            #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+            let _ = pipeline_workspace_limit;
             full_image.min(workspace)
         } else {
             full_image
@@ -202,7 +212,12 @@ pub(crate) fn decode_png_rows(
 ) -> Option<Result<Vec<u8>, String>> {
     let header = bytes.get(..PNG_HEADER_BYTES)?;
     let rgb = png_header_has_color(header, png::ColorType::Rgb);
-    let pipeline = allow_pipeline && output >= PNG_PIPELINE_MIN_OUTPUT;
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    let width = u32::from_be_bytes(header[16..20].try_into().unwrap());
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    let pipeline = allow_pipeline && png_pipeline::workspace(width) <= temporary;
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    let pipeline = false;
     if header[28] != 0 || !(rgb || pipeline && png_header_has_color(header, png::ColorType::Rgba)) {
         return None;
     }
@@ -212,10 +227,7 @@ pub(crate) fn decode_png_rows(
     }
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     if pipeline {
-        let [width, height] = [
-            u32::from_be_bytes(header[16..20].try_into().unwrap()),
-            u32::from_be_bytes(header[20..24].try_into().unwrap()),
-        ];
+        let height = u32::from_be_bytes(header[20..24].try_into().unwrap());
         if let Some(decoded) = png_pipeline::decode(
             bytes,
             [width, height],
@@ -228,7 +240,7 @@ pub(crate) fn decode_png_rows(
         }
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    let _ = cancelled;
+    let _ = (allow_pipeline, cancelled);
     if !rgb {
         return None;
     }

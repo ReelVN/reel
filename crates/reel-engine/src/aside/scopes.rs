@@ -295,7 +295,7 @@ impl SessionVm {
         self.scopes.live.remove(index);
         self.results.owners_changed();
         self.particles.owners_changed();
-        self.activities.after_script(self.vm.heap())?;
+        self.activities.after_script();
         Ok(())
     }
 
@@ -599,7 +599,7 @@ impl SessionVm {
     ) -> Result<(), AdapterError> {
         let token = self.vm.host_arguments(ticket)?[0];
         self.stage.remove_layer(self.vm.heap_mut(), token)?;
-        self.activities.after_script(self.vm.heap())?;
+        self.activities.after_script();
         self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
         self.issued = None;
         Ok(())

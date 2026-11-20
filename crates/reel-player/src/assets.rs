@@ -219,6 +219,7 @@ struct Service {
     pending_bounded_decodes: Vec<(WorkId, AssetSource)>,
     // Only the built-in decoder shares these codec workspace estimates.
     builtin_image_decoder: bool,
+    allow_png_pipeline: bool,
     #[cfg(test)]
     pumps: usize,
 }
@@ -292,9 +293,13 @@ impl Assets {
         open_io: impl FnOnce(WakeSignal, &BudgetPool, &BudgetPool) -> Result<Box<dyn AssetIo>, E>,
     ) -> Result<Self, E> {
         let limits = options.queue_limits();
-        Self::try_with_adapters(options, true, |wake, temporary, metadata| {
+        let threads = decode::available_image_threads();
+        Self::try_with_adapters(options, Some(threads), |wake, temporary, metadata| {
             let io = open_io(wake.clone(), temporary, metadata)?;
-            Ok((io, Box::new(ImageExecutor::new(limits, wake))))
+            Ok((
+                io,
+                Box::new(ImageExecutor::with_threads(limits, wake, threads)),
+            ))
         })
     }
 
@@ -302,14 +307,14 @@ impl Assets {
         options: AssetOptions,
         create: impl FnOnce(WakeSignal) -> (Box<dyn AssetIo>, Box<dyn WorkExecutor>),
     ) -> Self {
-        Self::try_with_adapters(options, false, |wake, _temporary, _metadata| {
+        Self::try_with_adapters(options, None, |wake, _temporary, _metadata| {
             Ok::<_, std::convert::Infallible>(create(wake))
         })
         .unwrap()
     }
     fn try_with_adapters<E>(
         options: AssetOptions,
-        builtin_image_decoder: bool,
+        image_threads: Option<usize>,
         create: impl FnOnce(
             WakeSignal,
             &BudgetPool,
@@ -380,7 +385,9 @@ impl Assets {
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
             pending_bounded_decodes: Vec::new(),
-            builtin_image_decoder,
+            builtin_image_decoder: image_threads.is_some(),
+            allow_png_pipeline: image_threads
+                .is_some_and(|threads| threads > decode::MAX_IMAGE_WORKERS),
             #[cfg(test)]
             pumps: 0,
         }))))
@@ -1065,7 +1072,12 @@ impl Service {
                 {
                     load.size = png.size;
                     load.output = png.output;
-                    load.temporary = png.temporary(decode_bytes, self.builtin_image_decoder);
+                    load.temporary = png.temporary(
+                        decode_bytes,
+                        self.builtin_image_decoder,
+                        self.allow_png_pipeline
+                            .then_some(decode_bytes / decode::MAX_IMAGE_WORKERS as u64),
+                    );
                     load.phase = if png.bounded_metadata {
                         Phase::DecodeBoundedImage
                     } else {

@@ -853,7 +853,7 @@ impl SessionVm {
                 self.retire_callback(session, index - 1)?;
                 self.reactive_ready = true;
                 self.sync_narrative(session)?;
-                self.activities.after_script(self.vm.heap())?;
+                self.activities.after_script();
                 return Ok(SessionStep::Progress);
             }
             Err(error) => return Err(error.into()),
@@ -929,7 +929,8 @@ impl SessionVm {
         self.media.finish_batch(task, commit);
         self.reactive_ready = true;
         self.sync_narrative(session)?;
-        self.activities.after_script(self.vm.heap())
+        self.activities.after_script();
+        Ok(())
     }
 
     /// Rebuild only derived presentation values; no story/callback task is run.

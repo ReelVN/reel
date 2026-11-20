@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Continue saved-game restoration as soon as the next slice is ready to run.
+- Skip repeated animation checks when targets are unchanged, and sample the active step of a sequence directly when it is the only scheduled step.
+- Use parallel PNG decoding for more desktop images when each decode worker has enough workspace.
 - Traverse shaped glyph runs once when splitting text into painting styles.
 - Reuse one resource-handle lookup across frame validation, image planning, glyphs and effects.
 - Route asset I/O and decoder completions directly to their owning requests.

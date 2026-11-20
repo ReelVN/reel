@@ -366,6 +366,14 @@ impl StoryRuntime {
         if !self.needs_tick() {
             return None;
         }
+        if self.suspended_at.is_none()
+            && self.retiring.is_none()
+            && let Some(saves) = &self.saves
+            && let (Some(restore), Some(candidate)) = (&saves.restore, &saves.candidate)
+            && restore.ready(candidate.driver.adapter())
+        {
+            return Some(now);
+        }
         if self.starting.is_none()
             && self.capture.is_none()
             && self.saves.as_ref().is_none_or(|s| !s.busy())

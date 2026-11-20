@@ -26,6 +26,14 @@ pub(super) const MAX_IMAGE_WORKERS: usize = if cfg!(any(
     1
 };
 
+pub(super) fn available_image_threads() -> usize {
+    if MAX_IMAGE_WORKERS > 1 {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    } else {
+        1
+    }
+}
+
 const IMAGE_PROBE_NAME: &str = "image.probe";
 
 pub fn image_probe() -> WorkKind {
@@ -49,11 +57,10 @@ pub struct ImageExecutor {
 }
 impl ImageExecutor {
     pub fn new(limits: QueueLimits, wake: WakeSignal) -> Self {
-        let threads = if MAX_IMAGE_WORKERS > 1 {
-            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-        } else {
-            1
-        };
+        Self::with_threads(limits, wake, available_image_threads())
+    }
+
+    pub(super) fn with_threads(limits: QueueLimits, wake: WakeSignal, threads: usize) -> Self {
         let parallelism = threads.min(MAX_IMAGE_WORKERS);
         let allow_png_pipeline = threads > parallelism;
         Self {

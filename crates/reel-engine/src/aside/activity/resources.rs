@@ -386,6 +386,7 @@ impl Activities {
                 root_set(heap, first, RootSlot::Previous, value)?;
             }
             heap.set_root(self.head.unwrap(), value)?;
+            self.reconciled_hosts = None;
             self.logical.entries.get_mut(&handle.key).unwrap().admitted = true;
         }
         Ok(true)

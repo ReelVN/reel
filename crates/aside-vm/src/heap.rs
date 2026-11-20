@@ -388,6 +388,7 @@ pub struct Heap {
     pub(crate) mutation_revision: u64,
     pub(crate) changes: changes::Changes,
     host_retirement_revision: u64,
+    host_write_revision: u64,
     property_proposal: Option<Value>,
     pub(crate) limits: HeapLimits,
     reserved: u64,
@@ -490,6 +491,7 @@ impl Heap {
             mutation_revision: 0,
             changes: Default::default(),
             host_retirement_revision: 0,
+            host_write_revision: 0,
             property_proposal: None,
             limits,
             reserved: estimate,
@@ -962,6 +964,12 @@ impl Heap {
         self.host_retirement_revision
     }
 
+    /// Revision of writes recorded by per-field host write tracking.
+    /// Samples published by host services do not record script writes.
+    pub fn host_write_revision(&self) -> u64 {
+        self.host_write_revision
+    }
+
     /// Opt into per-field script write tracking. Storage is a traced, budgeted
     /// array; a host's own table_store updates do not count as script writes.
     pub fn track_host_writes(&mut self, host: Value) -> Result<(), HeapError> {
@@ -1000,6 +1008,7 @@ impl Heap {
             }
             let version = self.sequence_get(versions, field)?.as_int().unwrap();
             self.set_field(versions, field, Value::int(version.wrapping_add(1)))?;
+            self.host_write_revision = self.host_write_revision.wrapping_add(1);
         }
         Ok(())
     }

@@ -338,6 +338,7 @@ struct Scan {
 }
 #[derive(Clone, Copy)]
 enum Round {
+    CheckHosts,
     Reconcile(Option<Scan>),
     Events,
     Sample(Option<Scan>),
@@ -395,6 +396,8 @@ pub(super) struct Activities {
     control: Option<Control>,
     #[serde(skip)]
     round: Option<Round>,
+    #[serde(skip)]
+    reconciled_hosts: Option<(u64, u64)>,
     clock_round: bool,
     time: f64,
     observed_time: f64,
