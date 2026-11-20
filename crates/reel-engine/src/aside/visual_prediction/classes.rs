@@ -129,6 +129,17 @@ impl Classes {
         &self,
         function: &bc::RuntimeFunction,
         budget: &mut usize,
+    ) -> Vec<(bc::Reg, bc::TypeId)> {
+        if self.descendants.is_none() || self.definitions.is_empty() || *budget == 0 {
+            return Vec::new();
+        }
+        self.prove_parameters(function, budget).unwrap_or_default()
+    }
+
+    fn prove_parameters(
+        &self,
+        function: &bc::RuntimeFunction,
+        budget: &mut usize,
     ) -> Option<Vec<(bc::Reg, bc::TypeId)>> {
         spend(budget, function.bindings.len())?;
         let mut parameters: Vec<_> = function

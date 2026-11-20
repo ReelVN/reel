@@ -39,9 +39,9 @@ impl VisualPlan {
         let mut ids = Vec::new();
         let mut groups = HashMap::<ArrayVec<u32, IMAGE_LIMIT>, u32>::new();
         let mut metadata_budget = METADATA_BUILD_WORK;
-        let classes = Classes::compile(program, &mut metadata_budget);
         let catalogs = Catalogs::compile(program, &mut metadata_budget);
-        let mut budget = BUILD_WORK - METADATA_BUILD_WORK + metadata_budget;
+        let classes = Classes::compile(program, &mut metadata_budget);
+        let mut budget = BUILD_WORK - METADATA_BUILD_WORK;
         'functions: for (function_index, function) in program.package().functions.iter().enumerate()
         {
             if function.kind != bc::FunctionKind::Plain
@@ -50,27 +50,28 @@ impl VisualPlan {
             {
                 continue;
             }
-            let Some(parameters) = classes.stable_parameters(function, &mut budget) else {
-                break 'functions;
-            };
+            let mut parameters = None;
             for (pc, instruction) in function.code.indexed_iter().flatten() {
                 let Some(remaining) = budget.checked_sub(1) else {
                     break 'functions;
                 };
                 budget = remaining;
-                if !is_resume_call(instruction) {
+                if !may_resume_here(program, function, instruction) {
                     continue;
                 }
                 let Some(next) = function.code.next_pc(pc).ok().flatten() else {
                     continue;
                 };
+                let parameters = parameters.get_or_insert_with(|| {
+                    classes.stable_parameters(function, &mut metadata_budget)
+                });
                 let Some(paths) = compile_site(
                     program,
                     &catalogs,
                     &classes,
                     function,
                     next,
-                    &parameters,
+                    parameters,
                     &mut budget,
                 ) else {
                     continue;
@@ -204,6 +205,31 @@ fn is_resume_call(instruction: bc::Instruction) -> bool {
         bc::instruction_spec(instruction.opcode).map(|spec| spec.opcode),
         Some(Opcode::Call | Opcode::CallNoWait | Opcode::Await)
     )
+}
+
+fn may_resume_here(
+    program: &bc::VerifiedProgram,
+    function: &bc::RuntimeFunction,
+    instruction: bc::Instruction,
+) -> bool {
+    match bc::instruction_spec(instruction.opcode).map(|spec| spec.opcode) {
+        Some(Opcode::Await) => true,
+        Some(Opcode::Call) => {
+            let bc::Descriptor::Call(call) =
+                &function.descriptors[instruction.operands[1] as usize]
+            else {
+                return false;
+            };
+            let package = program.package();
+            let signature = match call.target {
+                bc::CallTarget::Native(id) => package.natives[id.index()].signature,
+                bc::CallTarget::Function(id) => package.functions[id.index()].signature,
+                bc::CallTarget::Register(_) => return true,
+            };
+            package.signatures[signature.index()].effects.0 & bc::Effects::WAIT != 0
+        }
+        _ => false,
+    }
 }
 
 fn read_id(bytes: &[u8]) -> u32 {
