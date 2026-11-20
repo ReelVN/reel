@@ -256,10 +256,10 @@ impl Images {
     fn reconcile_requests(&mut self) {
         self.story_prediction_changed = false;
         self.settled = false;
-        // A returning GPU image already satisfies foreground demand.
+        // Reuse recent decoded pixels or an uploaded image before requesting IO.
         for source in self.wanted.keys() {
             if !self.loaded.contains_key(source)
-                && let Some(lease) = self.assets.take_uploaded_image(source)
+                && let Some(lease) = self.assets.take_recent_image(source)
             {
                 self.loaded.insert(source.clone(), lease);
                 self.content_revision = self.content_revision.wrapping_add(1);
@@ -306,7 +306,7 @@ impl Images {
                 || self.tiles.contains_key(source)
                 || (!loading && (self.mounted.contains(source) || self.prefetch.contains(source))))
         }) {
-            self.assets.remember_uploaded_image(source, lease);
+            self.assets.remember_stage_image(source, lease, true);
         }
         self.trim_hidden_prefetch();
     }
@@ -460,7 +460,7 @@ impl Images {
             else {
                 break;
             };
-            if let Some(lease) = self.assets.take_uploaded_image(&source) {
+            if let Some(lease) = self.assets.take_recent_image(&source) {
                 self.loaded.insert(source, lease);
                 continue;
             }
@@ -540,7 +540,7 @@ impl Images {
                 && !self.wanted.contains_key(key)
                 && !self.displayed.contains(key)
         }) {
-            self.assets.remember_uploaded_image(key.clone(), lease);
+            self.assets.remember_stage_image(key.clone(), lease, false);
             self.skipped.insert(key);
         }
     }
@@ -662,7 +662,7 @@ impl Images {
                 || self.tiles.contains_key(source)
                 || (self.metadata_ready && self.prefetch.contains(source)))
         }) {
-            self.assets.remember_uploaded_image(source, lease);
+            self.assets.remember_stage_image(source, lease, false);
         }
     }
     fn poll_tiles(&mut self) -> bool {
@@ -751,7 +751,8 @@ impl Images {
                 && !self.prefetch.contains(source)
                 && !self.tiles.contains_key(source)
         }) {
-            self.assets.remember_uploaded_image(source, lease);
+            self.assets
+                .remember_stage_image(source, lease, !self.closed);
         }
     }
     pub fn close(&mut self) {

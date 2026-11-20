@@ -20,12 +20,29 @@ struct Index {
     entries: HashTable<Entry>,
     ticket: Option<BudgetTicket>,
 }
-// Recently used GPU images can keep their identity through a story replacement.
-// GPU pressure can still evict their pixels and request exact-version IO.
+// Recently used images keep their identity through a story replacement. Only
+// a small share of the existing output budget may hold decoded pixel payloads.
 pub(super) struct RecentImages {
-    slots: [Option<(String, ResourceLease)>; 64],
+    slots: [Option<RecentImage>; 64],
     next: usize,
 }
+
+struct RecentImage {
+    source: String,
+    lease: ResourceLease,
+    admitted_decoded_bytes: u64,
+}
+
+impl RecentImage {
+    fn decoded_bytes(&self) -> u64 {
+        if self.admitted_decoded_bytes != 0 && self.lease.pixels_resident() {
+            self.admitted_decoded_bytes
+        } else {
+            0
+        }
+    }
+}
+
 impl Default for RecentImages {
     fn default() -> Self {
         Self {
@@ -35,29 +52,90 @@ impl Default for RecentImages {
     }
 }
 impl RecentImages {
-    pub(super) fn insert(&mut self, source: String, lease: ResourceLease) {
+    pub(super) fn insert(&mut self, source: String, lease: ResourceLease, decoded_limit: u64) {
         let backing = lease.image_backing();
-        if lease.is_retired() || backing.pixel_byte_len().is_none() || backing.pixels_resident() {
+        let Some(pixel_bytes) = backing.pixel_byte_len() else {
+            return;
+        };
+        if lease.is_retired() {
             return;
         }
-        let slot = self
-            .slots
-            .iter_mut()
-            .find(|slot| slot.as_ref().is_some_and(|(key, _)| key == &source));
-        if let Some(slot) = slot {
-            *slot = Some((source, lease));
+        let admitted_decoded_bytes = if backing.pixels_resident() {
+            let bytes = pixel_bytes as u64;
+            // Atlas views can share one physical allocation with visible views.
+            if bytes > decoded_limit || lease.handle() != backing.handle() {
+                return;
+            }
+            bytes
         } else {
-            self.slots[self.next] = Some((source, lease));
-            self.next = (self.next + 1) % self.slots.len();
+            0
+        };
+
+        drop(self.remove(&source));
+        self.slots[self.next] = None;
+        if admitted_decoded_bytes != 0 {
+            let mut remaining = self.decoded_bytes();
+            let limit = decoded_limit - admitted_decoded_bytes;
+            for slot in self.oldest_first() {
+                if remaining <= limit {
+                    break;
+                }
+                let bytes = slot.as_ref().map_or(0, RecentImage::decoded_bytes);
+                if bytes != 0 {
+                    *slot = None;
+                    remaining -= bytes;
+                }
+            }
+        }
+        self.slots[self.next] = Some(RecentImage {
+            source,
+            lease,
+            admitted_decoded_bytes,
+        });
+        self.next = (self.next + 1) % self.slots.len();
+    }
+
+    pub(super) fn take(&mut self, source: &str) -> Option<ResourceLease> {
+        self.remove(source)
+            .map(|image| image.lease)
+            .filter(|lease| !lease.is_retired())
+    }
+
+    pub(super) fn decoded_bytes(&self) -> u64 {
+        self.slots
+            .iter()
+            .flatten()
+            .map(RecentImage::decoded_bytes)
+            .sum()
+    }
+
+    pub(super) fn make_room(&mut self, output: &BudgetPool, bytes: u64) {
+        if bytes <= output.available_bytes() {
+            return;
+        }
+        for slot in self.oldest_first() {
+            if slot
+                .as_ref()
+                .is_some_and(|image| image.decoded_bytes() != 0)
+            {
+                *slot = None;
+                if bytes <= output.available_bytes() {
+                    break;
+                }
+            }
         }
     }
-    pub(super) fn take(&mut self, source: &str) -> Option<ResourceLease> {
+
+    fn remove(&mut self, source: &str) -> Option<RecentImage> {
         self.slots
             .iter_mut()
-            .find(|slot| slot.as_ref().is_some_and(|(key, _)| key == source))?
+            .find(|slot| slot.as_ref().is_some_and(|image| image.source == source))?
             .take()
-            .map(|(_, lease)| lease)
-            .filter(|lease| !lease.is_retired())
+    }
+
+    fn oldest_first(&mut self) -> impl Iterator<Item = &mut Option<RecentImage>> {
+        let (newer, older) = self.slots.split_at_mut(self.next);
+        older.iter_mut().chain(newer)
     }
 }
 

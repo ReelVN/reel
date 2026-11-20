@@ -468,6 +468,38 @@ fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
 }
 
 #[test]
+fn decoded_stage_images_are_reused_until_visible_loads_need_the_budget() {
+    let (mut images, wake) = configured(2 << 20, 256 << 20);
+    let source = "assets/panels.png";
+    images.request(wanted(&[source]));
+    ready(&mut images, &wake).unwrap();
+    let handle = images.loaded[source].handle();
+    let weak = images.loaded[source].downgrade();
+    images.commit();
+
+    images.request(wanted(&[]));
+    images.commit();
+    assert!(!weak.is_released());
+    images.request(wanted(&[source]));
+    assert!(images.poll().unwrap());
+    assert_eq!(images.loaded[source].handle(), handle);
+    assert_eq!(images.loads, 1);
+    images.commit();
+
+    images.request(wanted(&[]));
+    images.commit();
+    let competing = images
+        .pool
+        .reserve(images.pool.available_bytes() - 1)
+        .unwrap();
+    images.request(wanted(&["assets/sun.jpg"]));
+    ready(&mut images, &wake).unwrap();
+    assert!(weak.is_released());
+    assert_eq!(images.loads, 2);
+    drop(competing);
+}
+
+#[test]
 fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resurrect() {
     for (source, resident, decode, expected) in [
         ("assets/missing.png", 1 << 20, 1 << 20, "image"),
@@ -475,7 +507,7 @@ fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resu
             "author_images/src/main.aside",
             1 << 20,
             1 << 20,
-            "expected PNG, JPEG or static WebP artwork",
+            "expected PNG, JPEG, static WebP or QOI artwork",
         ),
         ("assets/panels.png", 1, 1 << 20, "resident budget"),
         ("assets/panels.png", 1 << 20, 1, "limit"),

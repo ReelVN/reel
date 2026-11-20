@@ -412,13 +412,25 @@ impl Assets {
         service.io_events.clear();
         service.work_events.clear();
     }
-    pub(crate) fn remember_uploaded_image(&self, source: String, lease: ResourceLease) {
+    pub(crate) fn remember_stage_image(
+        &self,
+        source: String,
+        lease: ResourceLease,
+        keep_decoded: bool,
+    ) {
         let mut service = self.0.borrow_mut();
         if service.io.is_some() {
-            service.recent_images.insert(source, lease);
+            let decoded_limit = if keep_decoded
+                && service.origins.kind(lease.handle()) == Some(RetainedAssetKind::Image)
+            {
+                (service.options.resident_bytes / 32).min(16 << 20)
+            } else {
+                0
+            };
+            service.recent_images.insert(source, lease, decoded_limit);
         }
     }
-    pub(crate) fn take_uploaded_image(&self, source: &str) -> Option<ResourceLease> {
+    pub(crate) fn take_recent_image(&self, source: &str) -> Option<ResourceLease> {
         self.0.borrow_mut().recent_images.take(source)
     }
     /// Create a media reader using this service's adapters and budgets.
@@ -734,7 +746,10 @@ impl Assets {
         self.0.borrow().output.clone()
     }
     pub(crate) fn prefetch_available(&self, hidden_bytes: u64) -> u64 {
-        (self.0.borrow().options.resident_bytes / 4).saturating_sub(hidden_bytes)
+        let service = self.0.borrow();
+        (service.options.resident_bytes / 4)
+            .saturating_sub(service.recent_images.decoded_bytes())
+            .saturating_sub(hidden_bytes)
     }
     pub(crate) fn resident_available(&self) -> u64 {
         let service = self.0.borrow();
@@ -894,8 +909,13 @@ impl Service {
             self.wake.wake();
         }
     }
+    fn reclaim_decoded_for(&mut self, priority: Priority, bytes: u64) {
+        if priority != Priority::Prefetch {
+            self.recent_images.make_room(&self.output, bytes);
+        }
+    }
     fn advance(&mut self, load: &mut Load) -> Result<(), String> {
-        let completion = || self.completion.reserve(512).map_err(|e| e.message);
+        let completion = |pool: &BudgetPool| pool.reserve(512).map_err(|e| e.message);
         if matches!(load.phase, Phase::Describe)
             && let Some(info) = self.io.as_ref().unwrap().indexed_info(&load.source)
         {
@@ -906,7 +926,7 @@ impl Service {
                 resource: load.source.clone(),
                 priority: load.priority,
                 scope: Scope::Process,
-                completion: completion()?,
+                completion: completion(&self.completion)?,
             }) {
                 Ok(id) => load.phase = Phase::Describing(id),
                 Err(error) if error.reason.retryable() => {}
@@ -937,7 +957,7 @@ impl Service {
                     priority: load.priority,
                     scope: Scope::Process,
                     output,
-                    completion: completion()?,
+                    completion: completion(&self.completion)?,
                 }) {
                     Ok(id) => load.phase = Phase::Reading(id),
                     Err(error) if error.reason.retryable() => {}
@@ -965,6 +985,7 @@ impl Service {
                 let input = load.input.take().unwrap();
                 let mut bytes =
                     Arc::try_unwrap(input).expect("undecoded resource input has one owner");
+                self.reclaim_decoded_for(load.priority, bytes.ticket().bytes());
                 bytes
                     .transfer_to(&self.output)
                     .map_err(|e| format!("asset resident budget: {}", e.message))?;
@@ -1071,7 +1092,9 @@ impl Service {
                         load.phase = Phase::Done(Ok(lease));
                         return Ok(());
                     }
-                    if let Some(input) = Arc::get_mut(load.input.as_mut().unwrap())
+                    let input = load.input.as_mut().unwrap();
+                    self.reclaim_decoded_for(load.priority, input.ticket().bytes());
+                    if let Some(input) = Arc::get_mut(input)
                         && input.transfer_to(&self.output).is_ok()
                     {
                         // Preserve the original allocation and expose its
@@ -1132,6 +1155,7 @@ impl Service {
                 } else {
                     load.output
                 };
+                self.reclaim_decoded_for(load.priority, output_bytes);
                 let output = match self.output.reserve(output_bytes) {
                     Ok(ticket) => ticket,
                     Err(_) if !self.pending_bounded_decodes.is_empty() => return Ok(()),
@@ -1141,7 +1165,7 @@ impl Service {
                     .temporary
                     .reserve(workspace)
                     .map_err(|e| format!("image decode limit: {}", e.message))?;
-                let completion = completion()?;
+                let completion = completion(&self.completion)?;
                 let input = if probe {
                     load.input.as_ref().unwrap().clone()
                 } else {

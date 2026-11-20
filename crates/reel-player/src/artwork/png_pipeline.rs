@@ -153,6 +153,7 @@ fn reconstruct(
     let mut previous = vec![0; stride - 1];
     for mut packet in packets {
         check_cancelled(cancelled)?;
+        let mut previous_in_packet: Option<&[u8]> = None;
         for row in packet.chunks_exact_mut(stride) {
             let filter = match row[0] {
                 0 => png::Filter::NoFilter,
@@ -164,8 +165,13 @@ fn reconstruct(
             };
             let data = &mut row[1..];
             // png 0.18.1 exposes its ordinary row filters behind this feature.
-            png::benchable_apis::unfilter(filter, channels as u8, &previous, data);
-            previous.copy_from_slice(data);
+            png::benchable_apis::unfilter(
+                filter,
+                channels as u8,
+                previous_in_packet.unwrap_or(&previous),
+                data,
+            );
+            previous_in_packet = Some(data);
             let output = remaining.next().ok_or("PNG has too many rows")?;
             if channels == 4 {
                 output.copy_from_slice(data);
@@ -179,6 +185,9 @@ fn reconstruct(
                     *pixel = [red, green, blue, 255];
                 }
             }
+        }
+        if let Some(last_row) = previous_in_packet {
+            previous.copy_from_slice(last_row);
         }
     }
     if remaining.len() != 0 {
@@ -201,36 +210,44 @@ mod tests {
     #[test]
     fn reconstructed_png_is_exact_and_rejects_corrupt_or_incomplete_data() {
         let size = [1100, 1000];
-        let expected: Vec<u8> = (0..size[0] * size[1])
-            .flat_map(|index| {
-                let sample = (index % 241) as u8;
-                [sample, sample ^ 97, 240 - sample, sample]
-            })
-            .collect();
         let temporary = workspace(size[0]);
-        let output = expected.len() as u64;
         let cancelled = AtomicBool::new(false);
-        let run = |input: &[u8], limit: u64| decode(input, size, 4, limit, output, &cancelled);
+        for (color, channels) in [(png::ColorType::Rgb, 3), (png::ColorType::Rgba, 4)] {
+            let expected: Vec<u8> = (0..size[0] * size[1])
+                .flat_map(|index| {
+                    let sample = (index % 241) as u8;
+                    let alpha = if channels == 4 { sample } else { 255 };
+                    [sample, sample ^ 97, 240 - sample, alpha]
+                })
+                .collect();
+            let source: Vec<u8> = expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|pixel| pixel[..channels].iter().copied())
+                .collect();
+            let output = expected.len() as u64;
+            let run =
+                |input: &[u8], limit: u64| decode(input, size, channels, limit, output, &cancelled);
+            let mut encoded = Vec::new();
+            let mut encoder = png::Encoder::new(&mut encoded, size[0], size[1]);
+            encoder.set_color(color);
+            encoder.set_filter(png::Filter::Paeth);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&source)
+                .unwrap();
+            assert!(run(&encoded, temporary - 1).is_none());
+            assert_eq!(run(&encoded, temporary).unwrap().unwrap(), expected);
 
-        let mut encoded = Vec::new();
-        let mut encoder = png::Encoder::new(&mut encoded, size[0], size[1]);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_filter(png::Filter::Paeth);
-        encoder
-            .write_header()
-            .unwrap()
-            .write_image_data(&expected)
-            .unwrap();
-        assert!(run(&encoded, temporary - 1).is_none());
-        assert_eq!(run(&encoded, temporary).unwrap().unwrap(), expected);
-
-        // The first chunk after IHDR is IDAT in this fixture. Alter only its
-        // checksum so the filtered bytes are valid until the parser checks it.
-        assert_eq!(&encoded[37..41], b"IDAT");
-        let idat_bytes = u32::from_be_bytes(encoded[33..37].try_into().unwrap()) as usize;
-        let crc = 41 + idat_bytes;
-        assert!(run(&encoded[..crc - 1], temporary).unwrap().is_err());
-        encoded[crc] ^= 1;
-        assert!(run(&encoded, temporary).unwrap().is_err());
+            // Alter only the first IDAT checksum, leaving filtered bytes valid.
+            assert_eq!(&encoded[37..41], b"IDAT");
+            let idat_bytes = u32::from_be_bytes(encoded[33..37].try_into().unwrap()) as usize;
+            let crc = 41 + idat_bytes;
+            assert!(run(&encoded[..crc - 1], temporary).unwrap().is_err());
+            encoded[crc] ^= 1;
+            assert!(run(&encoded, temporary).unwrap().is_err());
+        }
     }
 }

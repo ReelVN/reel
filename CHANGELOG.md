@@ -4,6 +4,8 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Reuse recently decoded picture pixels across page and scene changes, with immediate reclamation when visible resources need the space.
+- Avoid copying every reconstructed PNG row into a second filter buffer.
 - Predict picture paths selected from read-only module catalogs during story waits.
 - Prepare configured fonts together, and start fixed-size scene image requests without waiting for appearance resources.
 - Overlap inflation and row reconstruction for large PNGs on desktop when a spare worker and workspace are available.
