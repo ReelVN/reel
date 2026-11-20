@@ -1278,26 +1278,29 @@ impl StageBinding {
     ) -> Result<Value, AdapterError> {
         let parent_id = self.id(heap, receiver)?;
         let child_id = self.id(heap, child)?;
-        let node = self.scene.node(parent_id).unwrap();
+        let child_count = self.scene.node(parent_id).unwrap().children.len();
         let index = match index {
             Some(i) => usize::try_from(i)
                 .map_err(|_| AdapterError::Input("child index must be nonnegative"))?,
-            None => node.children.len(),
+            None => child_count,
         };
-        // Prepare replacement traced edges before committing either tree.
-        let previous = heap.host_payload(receiver, 1)?;
-        let next = heap.alloc_array(&[])?;
-        for i in 0..heap.sequence_len(previous)? {
-            if i as usize == index {
-                heap.array_push(next, child)?;
-            }
-            heap.array_push(next, heap.sequence_get(previous, i)?)?;
-        }
-        if index == node.children.len() {
-            heap.array_push(next, child)?;
-        }
-        self.scene.add(parent_id, child_id, index)?;
-        heap.set_host_payload(receiver, 1, next)?;
+        let children = heap.host_payload(receiver, 1)?;
+        self.scene
+            .add_with::<AdapterError>(parent_id, child_id, index, || {
+                if index == child_count {
+                    heap.array_push(children, child)?;
+                } else {
+                    let next = heap.alloc_array(&[])?;
+                    for i in 0..heap.sequence_len(children)? {
+                        if i as usize == index {
+                            heap.array_push(next, child)?;
+                        }
+                        heap.array_push(next, heap.sequence_get(children, i)?)?;
+                    }
+                    heap.set_host_payload(receiver, 1, next)?;
+                }
+                Ok(())
+            })?;
         heap.set_host_payload(child, 2, receiver)?;
         if matches!(self.scene.node(child_id).unwrap().kind, NodeKind::Popup(view) if view.hint.is_some())
         {

@@ -3499,6 +3499,7 @@ dependencies = [
  "reel-ui",
  "self_cell",
  "serde",
+ "smallvec",
  "stats_alloc",
  "unic-langid",
  "unicode-segmentation",

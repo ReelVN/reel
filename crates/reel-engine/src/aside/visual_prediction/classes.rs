@@ -153,7 +153,7 @@ impl Classes {
                 }
                 _ => None,
             })
-            .take(super::FACT_LIMIT)
+            .take(super::ARGUMENT_LIMIT)
             .collect();
         if parameters.is_empty() {
             return Some(parameters);

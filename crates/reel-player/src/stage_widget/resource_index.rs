@@ -292,6 +292,10 @@ impl ImageRequests {
             approaching: Vec::new(),
         }
     }
+    pub(crate) fn is_provisional_layout(&self) -> bool {
+        self.index.has_fixed_images && matches!(self.selection, Selection::Layout)
+    }
+
     pub fn preloaded(&self) -> impl Iterator<Item = &str> {
         self.index.entries.iter().filter_map(|(source, entry)| {
             (entry.preload

@@ -77,6 +77,16 @@ fn failed_structure_changes_preserve_component_roots_and_revision() {
     assert!(matches!(stage.add(child, outer, 0), Err(StageError::Cycle)));
     assert!(matches!(stage.add(root, spare, 1), Err(StageError::Index)));
     assert!(matches!(
+        stage.add_with(root, spare, 1, || -> Result<(), StageError> {
+            panic!("invalid insertion must skip preparation");
+        }),
+        Err(StageError::Index)
+    ));
+    assert!(matches!(
+        stage.add_with(root, spare, 0, || Err(StageError::IdentityExhausted)),
+        Err(StageError::IdentityExhausted)
+    ));
+    assert!(matches!(
         stage.reconcile_children(root, vec![spare, spare]),
         Err(StageError::DuplicateChild)
     ));

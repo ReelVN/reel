@@ -68,6 +68,7 @@ pub(crate) struct Images {
     encoded: BTreeMap<String, Arc<[u8]>>,
     shader_sources: BTreeSet<String>,
     request_index: Option<Arc<crate::stage_widget::ResourceIndex>>,
+    provisional_layout: bool,
     pub(crate) shader_format: EffectShaderFormat,
     /// Advances when newly prepared content can affect the current projection.
     pub(crate) content_revision: u64,
@@ -110,6 +111,7 @@ impl Images {
             encoded: BTreeMap::new(),
             shader_sources: BTreeSet::new(),
             request_index: None,
+            provisional_layout: false,
             shader_format: if cfg!(target_os = "vita") {
                 EffectShaderFormat::Gxp
             } else {
@@ -162,7 +164,9 @@ impl Images {
             .as_ref()
             .is_some_and(|old| Arc::ptr_eq(old, &requests.index));
         let same_approach = self.approaching == requests.approaching;
+        let provisional_layout = requests.is_provisional_layout();
         let same_prefetch = same_index
+            && self.provisional_layout == provisional_layout
             && same_approach
             && (!requests.index.has_skin_paths
                 || requests
@@ -188,6 +192,7 @@ impl Images {
             self.prefetch.stage = requests.preloaded().map(str::to_owned).collect();
             self.approaching.clone_from(&requests.approaching);
         }
+        self.provisional_layout = provisional_layout;
         if !same_index {
             self.encoded = requests
                 .index
@@ -251,6 +256,7 @@ impl Images {
             return;
         }
         self.request_index = None;
+        self.provisional_layout = false;
         self.mounted = wanted.keys().cloned().collect();
         self.wanted = wanted;
         self.prefetch = PrefetchSources {
@@ -273,10 +279,16 @@ impl Images {
                 self.content_revision = self.content_revision.wrapping_add(1);
             }
         }
-        let foreground_ready = self
-            .wanted
-            .keys()
-            .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source));
+        self.update_metadata_ready();
+        let foreground_ready = self.metadata_ready;
+        // The intrinsic-size request omits fixed images until viewport layout.
+        // Keep work already started for those visible nodes through the handoff.
+        let provisional = self
+            .request_index
+            .as_deref()
+            .filter(|_| self.provisional_layout);
+        let awaits_viewport =
+            |source: &str| provisional.is_some_and(|index| index.has_visible_use(source));
         self.pending.retain_mut(|pending| {
             let wanted = self.wanted.contains_key(&pending.source);
             if pending.prefetch && wanted && self.assets.promote_prefetch(pending.id) {
@@ -285,7 +297,9 @@ impl Images {
                 return true;
             }
             let retain = if pending.prefetch {
-                foreground_ready && self.prefetch.contains(&pending.source) && !wanted
+                !wanted
+                    && ((foreground_ready && self.prefetch.contains(&pending.source))
+                        || awaits_viewport(&pending.source))
             } else {
                 wanted
                     || self
@@ -303,16 +317,18 @@ impl Images {
         self.skipped
             .retain(|source| foreground_ready && self.prefetch.contains(source));
         self.manifests.retain(|source, _| {
-            self.wanted.contains_key(source) || (foreground_ready && self.prefetch.contains(source))
+            self.wanted.contains_key(source)
+                || (foreground_ready && self.prefetch.contains(source))
+                || awaits_viewport(source)
         });
         self.failure = None;
-        self.update_metadata_ready();
-        let loading = !self.metadata_ready;
         for (source, lease) in self.loaded.extract_if(.., |source, _| {
             !(self.wanted.contains_key(source)
                 || self.displayed.contains(source)
                 || self.tiles.contains_key(source)
-                || (!loading && (self.mounted.contains(source) || self.prefetch.contains(source))))
+                || awaits_viewport(source)
+                || (foreground_ready
+                    && (self.mounted.contains(source) || self.prefetch.contains(source))))
         }) {
             self.assets.remember_stage_image(source, lease);
         }
@@ -450,7 +466,7 @@ impl Images {
             false
         };
         self.assets.maintain();
-        while ready && self.free_slots() != 0 {
+        while ready && !self.provisional_layout && self.free_slots() != 0 {
             let in_flight = self.pending.iter().position(|pending| pending.prefetch);
             if in_flight.is_some_and(|index| self.prefetch.predicted(&self.pending[index].source)) {
                 break;

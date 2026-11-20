@@ -3,6 +3,7 @@
 
 use arrayvec::ArrayVec;
 use aside_vm::bytecode::{self as bc, Opcode};
+use smallvec::SmallVec;
 use std::collections::HashMap;
 mod catalogs;
 mod classes;
@@ -13,10 +14,11 @@ use classes::Member;
 
 const NESTING_LIMIT: usize = 8;
 const ARGUMENT_LIMIT: usize = 32;
-const FACT_LIMIT: usize = 32;
+const INLINE_FACTS: usize = 32;
+const COMPUTED_TEXT_LIMIT: usize = 32;
 const PATH_LIMIT: usize = 1024;
 const LAYER_LIMIT: usize = 8;
-const GROUP_LIMIT: usize = 8;
+const ARRAY_ENTRY_LIMIT: usize = 64;
 const FIELD_LIMIT: usize = 64;
 const CLOSURE_LIMIT: usize = 8;
 const CAPTURE_LIMIT: usize = 8;
@@ -54,14 +56,14 @@ enum Fact {
     Table { start: u8, end: u8 },
     Catalog(usize),
     CatalogLookup(usize, Lookup),
-    Layers(u8),
+    Array { start: u8, end: u8 },
 }
 
 type Captures = ArrayVec<Fact, CAPTURE_LIMIT>;
 
 #[derive(Clone, Default)]
 struct Facts {
-    registers: ArrayVec<(u32, Fact), FACT_LIMIT>,
+    registers: SmallVec<[(u32, Fact); INLINE_FACTS]>,
     captures: Captures,
 }
 
@@ -81,8 +83,7 @@ impl Facts {
                 self.registers[index].1 = fact;
             }
         } else if fact != Fact::Unknown {
-            // Excess registers stay unknown for this walk.
-            let _ = self.registers.try_push((register, fact));
+            self.registers.push((register, fact));
         }
     }
 }
@@ -168,7 +169,7 @@ struct Walk<'p, 'c> {
     remaining: usize,
     dialogue_remaining: usize,
     code: bc::ResidentCodeReader,
-    layers: ArrayVec<ArrayVec<bc::ConstId, LAYER_LIMIT>, GROUP_LIMIT>,
+    array_entries: ArrayVec<Fact, ARRAY_ENTRY_LIMIT>,
     closures: ArrayVec<(bc::FunctionId, Captures), CLOSURE_LIMIT>,
     fields: ArrayVec<(bc::ConstId, Fact), FIELD_LIMIT>,
     page_paths: Option<&'c PagePaths<'p>>,
@@ -190,7 +191,7 @@ impl<'p, 'c> Walk<'p, 'c> {
             remaining,
             dialogue_remaining,
             code: bc::ResidentCodeReader::default(),
-            layers: ArrayVec::new(),
+            array_entries: ArrayVec::new(),
             closures: ArrayVec::new(),
             fields: ArrayVec::new(),
             page_paths: None,
@@ -246,8 +247,9 @@ impl<'p, 'c> Walk<'p, 'c> {
                     facts.set(a, table.unwrap_or(Fact::Unknown));
                 }
                 Opcode::IndexGet | Opcode::MemberGet => {
+                    let receiver = facts.get(b);
                     if op == Opcode::MemberGet
-                        && let Fact::Instance(ty) = facts.get(b)
+                        && let Fact::Instance(ty) = receiver
                     {
                         let member =
                             self.classes
@@ -260,6 +262,23 @@ impl<'p, 'c> Walk<'p, 'c> {
                         pc = next;
                         continue;
                     }
+                    if op == Opcode::IndexGet
+                        && let Fact::Array { start, end } = receiver
+                    {
+                        let Fact::Constant(index) = facts.get(c) else {
+                            return None;
+                        };
+                        let bc::Const::Int(index) = self.program.package().constants[index.index()]
+                        else {
+                            return None;
+                        };
+                        let index = usize::try_from(index).ok()?;
+                        let value =
+                            *self.array_entries[usize::from(start)..usize::from(end)].get(index)?;
+                        facts.set(a, value);
+                        pc = next;
+                        continue;
+                    }
                     let key = if op == Opcode::IndexGet {
                         let Fact::Constant(key) = facts.get(c) else {
                             return None;
@@ -268,10 +287,9 @@ impl<'p, 'c> Walk<'p, 'c> {
                     } else {
                         self.program.package().symbols[c as usize].as_str()
                     };
-                    let table = facts.get(b);
-                    let value = self.field(table, key).or_else(|| {
+                    let value = self.field(receiver, key).or_else(|| {
                         if op == Opcode::MemberGet
-                            && let Fact::Catalog(table) = table
+                            && let Fact::Catalog(table) = receiver
                         {
                             return Some(Fact::CatalogLookup(table, Lookup::named(key)?));
                         }
@@ -293,8 +311,8 @@ impl<'p, 'c> Walk<'p, 'c> {
                     facts.set(a, value);
                 }
                 Opcode::MakeArray => {
-                    let group = self.layer_group(&function.descriptors[b as usize], &facts);
-                    facts.set(a, group.map_or(Fact::Unknown, Fact::Layers));
+                    let array = self.array(&function.descriptors[b as usize], &facts);
+                    facts.set(a, array.unwrap_or(Fact::Unknown));
                 }
                 Opcode::MakeClosure => {
                     let closure = self.closure(function, &function.descriptors[b as usize], &facts);
@@ -321,12 +339,20 @@ impl<'p, 'c> Walk<'p, 'c> {
                         (Fact::Null, Fact::Constant(id)) | (Fact::Constant(id), Fact::Null) => {
                             Some(self.program.package().constants[id.index()] == bc::Const::Null)
                         }
-                        (Fact::Constant(left), Fact::Constant(right)) => self
-                            .text(left)
-                            .zip(self.text(right))
-                            .and_then(|(left, right)| {
-                                (left.len().max(right.len()) <= PATH_LIMIT).then(|| left == right)
-                            }),
+                        (Fact::Constant(left), Fact::Constant(right)) => {
+                            let constants = &self.program.package().constants;
+                            match (&constants[left.index()], &constants[right.index()]) {
+                                (bc::Const::Int(left), bc::Const::Int(right)) => {
+                                    Some(left == right)
+                                }
+                                _ => self.text(left).zip(self.text(right)).and_then(
+                                    |(left, right)| {
+                                        (left.len().max(right.len()) <= PATH_LIMIT)
+                                            .then(|| left == right)
+                                    },
+                                ),
+                            }
+                        }
                         _ => None,
                     };
                     facts.set(
@@ -405,7 +431,7 @@ impl<'p, 'c> Walk<'p, 'c> {
             | Fact::Table { .. }
             | Fact::Catalog(_)
             | Fact::CatalogLookup(_, _)
-            | Fact::Layers(_) => None,
+            | Fact::Array { .. } => None,
         };
         match (opcode, constant) {
             (Opcode::BranchBool, Some(bc::Const::Bool(value))) => Some(Some(*value)),
@@ -500,13 +526,8 @@ impl<'p, 'c> Walk<'p, 'c> {
                     };
                     paths.push(self.path(id)?);
                 }
-                ("reel::layered_image", Fact::Layers(group)) => {
-                    for &id in &self.layers[usize::from(group)] {
-                        let path = self.path(id)?;
-                        if !paths.contains(&path) {
-                            paths.push(path);
-                        }
-                    }
+                ("reel::layered_image", Fact::Array { start, end }) => {
+                    paths = self.layer_paths(start, end)?;
                 }
                 _ => return None,
             };
@@ -713,31 +734,50 @@ impl<'p, 'c> Walk<'p, 'c> {
             .find_map(|&(name, value)| (self.text(name) == Some(key)).then_some(value))
     }
 
-    fn layer_group(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<u8> {
+    fn array(&mut self, descriptor: &bc::Descriptor, facts: &Facts) -> Option<Fact> {
         let bc::Descriptor::Sequence(window) = descriptor else {
             return None;
         };
-        if window.len as usize > LAYER_LIMIT {
+        let start = self.array_entries.len();
+        if window.len as usize > ARRAY_ENTRY_LIMIT - start {
             return None;
         }
         self.remaining = self.remaining.checked_sub(window.len as usize)?;
-        let mut group = ArrayVec::new();
         for offset in 0..window.len {
-            match facts.get(window.start.0 + offset) {
+            self.array_entries.push(facts.get(window.start.0 + offset));
+        }
+        Some(Fact::Array {
+            start: start as u8,
+            end: self.array_entries.len() as u8,
+        })
+    }
+
+    fn layer_paths(&mut self, start: u8, end: u8) -> Option<Paths<'p>> {
+        if usize::from(end - start) > LAYER_LIMIT {
+            return None;
+        }
+        let mut paths = Paths::new();
+        for index in usize::from(start)..usize::from(end) {
+            let id = match self.array_entries[index] {
                 table @ Fact::Table { .. } => {
                     let Fact::Constant(id) = self.field(table, "source")? else {
                         return None;
                     };
-                    group.push(id);
+                    id
                 }
                 Fact::Constant(id)
-                    if self.program.package().constants[id.index()] == bc::Const::Null => {}
+                    if self.program.package().constants[id.index()] == bc::Const::Null =>
+                {
+                    continue;
+                }
                 _ => return None,
+            };
+            let path = self.path(id)?;
+            if !paths.contains(&path) {
+                paths.push(path);
             }
         }
-        let index = self.layers.len() as u8;
-        self.layers.try_push(group).ok()?;
-        Some(index)
+        Some(paths)
     }
 
     fn arguments(
@@ -843,7 +883,7 @@ impl<'p, 'c> Walk<'p, 'c> {
         builder: u32,
         facts: &mut Facts,
     ) -> Option<usize> {
-        if self.computed_texts.len() == FACT_LIMIT {
+        if self.computed_texts.len() == COMPUTED_TEXT_LIMIT {
             return None;
         }
         facts.set(builder, Fact::Unknown);
@@ -1350,6 +1390,51 @@ mod tests {
             .page_images(&program, bc::FunctionId(factory as u32))
             .unwrap();
         assert_eq!(images.as_slice(), ["ui/settings/detail.png"]);
+    }
+
+    #[test]
+    fn page_factories_select_images_from_layout_records() {
+        let program = compile(
+            r#"
+                fn layout(index: int) -> table {
+                    match index {
+                        3 => ({
+                            key: "background", index: 3, asset: "text", x: 0, y: 0, width: 1024,
+                            height: 768, frames: 1, source: 43, group: 3, hover_sound: "",
+                            click_sound: "", visible: true, opacity: 1.0,
+                            paths: ["text-hover.png", "text.png", "text-down.png", "text-off.png"],
+                        }),
+                        5 => ({paths: ["voice-hover.png", "voice.png"], width: 1024}),
+                        _ => { throw "Unknown page"; },
+                    }
+                }
+                fn background(index: int) -> Node {
+                    let properties = layout(index);
+                    image(properties.paths[1], width: properties.width)
+                }
+                fn opening() {
+                    fn text_page() -> Node { background(3) }
+                    fn voice_page() -> Node { background(5) }
+                    stage.replace(page_stack(value: "text", items: [
+                        {key: "text", build: text_page}, {key: "voice", build: voice_page}
+                    ]));
+                }
+            "#,
+        );
+        let plan = VisualPlan::compile(&program, 1024).unwrap();
+        let plan = VisualPlan::decode(plan.as_bytes().into(), &program).unwrap();
+        let package = program.package();
+        for (name, expected) in [("text_page", "text.png"), ("voice_page", "voice.png")] {
+            let factory = package
+                .functions
+                .iter()
+                .position(|function| package.symbols[function.name.index()] == name)
+                .unwrap();
+            let images = plan
+                .page_images(&program, bc::FunctionId(factory as u32))
+                .unwrap();
+            assert_eq!(images.as_slice(), [expected]);
+        }
     }
 
     #[test]

@@ -913,6 +913,18 @@ impl Stage {
 
     /// Insert one detached component, keeping every existing node identity.
     pub fn add(&mut self, parent: NodeId, child: NodeId, index: usize) -> Result<(), StageError> {
+        self.add_with(parent, child, index, || Ok(()))
+    }
+
+    /// Validate the insertion, prepare the caller's ownership edge, then attach.
+    /// A preparation failure leaves the stage unchanged.
+    pub fn add_with<E: From<StageError>>(
+        &mut self,
+        parent: NodeId,
+        child: NodeId,
+        index: usize,
+        prepare: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
         let container = self.nodes.get(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             container.kind,
@@ -933,22 +945,23 @@ impl Stage {
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
         ) {
-            return Err(StageError::NotContainer);
+            return Err(StageError::NotContainer.into());
         }
         if index > container.children.len() {
-            return Err(StageError::Index);
+            return Err(StageError::Index.into());
         }
         let node = self.nodes.get(&child).ok_or(StageError::RetiredNode)?;
         if node.parent.is_some() || self.root == Some(child) {
-            return Err(StageError::AlreadyParented);
+            return Err(StageError::AlreadyParented.into());
         }
         let mut ancestor = Some(parent);
         while let Some(id) = ancestor {
             if id == child {
-                return Err(StageError::Cycle);
+                return Err(StageError::Cycle.into());
             }
             ancestor = self.nodes[&id].parent;
         }
+        prepare()?;
         self.nodes
             .get_mut(&parent)
             .unwrap()

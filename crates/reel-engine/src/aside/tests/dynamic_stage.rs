@@ -73,6 +73,7 @@ fn bound_node_methods_edit_the_same_tree_and_retire_owned_activities() {
         let part = column() { text("nested"); };
         let moving = run(tween(part, x: 100), owner: part);
         if insert(index: 0, child: part) != part { throw "identity"; }
+        narrator("indexed");
         let last = root.add(text("last"));
         let mut rejected = 0;
         try { root.add(first); } catch error { rejected += 1; }
@@ -103,10 +104,12 @@ fn bound_node_methods_edit_the_same_tree_and_retire_owned_activities() {
     }"#;
     let (mut session, mut vm) = setup(code, Context::Ordinary);
     let mut root = None;
-    for (labels, count) in [
-        (vec!["nested", "first", "last"], 5),
-        (vec!["retained", "last"], 3),
-        (vec!["replacement"], 2),
+    let mut children = None;
+    for (labels, count, retains_children) in [
+        (vec!["nested", "first"], 4, true),
+        (vec!["nested", "first", "last"], 5, true),
+        (vec!["retained", "last"], 3, true),
+        (vec!["replacement"], 2, false),
     ] {
         let outcome = drive(&mut vm, &mut session);
         assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
@@ -114,6 +117,19 @@ fn bound_node_methods_edit_the_same_tree_and_retire_owned_activities() {
         vm.sync_stage(&session).unwrap();
         let id = vm.stage().root().unwrap();
         assert_eq!(*root.get_or_insert(id), id);
+        let heap = vm.vm.heap();
+        let value = vm.stage.value(heap, id).unwrap();
+        let edges = heap.host_payload(value, 1).unwrap();
+        let children_handle = heap.handle(edges).unwrap();
+        if retains_children {
+            assert_eq!(*children.get_or_insert(children_handle), children_handle);
+        }
+        let direct = &vm.stage().node(id).unwrap().children;
+        assert_eq!(heap.sequence_len(edges).unwrap() as usize, direct.len());
+        for (index, &child) in direct.iter().enumerate() {
+            let edge = heap.sequence_get(edges, index as u32).unwrap();
+            assert_eq!(vm.stage.id(heap, edge).unwrap(), child);
+        }
         // Traverse in authored order instead of the registry's allocation order.
         let mut pending = vec![id];
         let mut texts = Vec::new();

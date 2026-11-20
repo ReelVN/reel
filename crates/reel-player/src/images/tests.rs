@@ -179,6 +179,61 @@ fn dialogue_prediction_yields_to_a_visible_request_in_the_same_update() {
 }
 
 #[test]
+fn predicted_fixed_image_survives_intrinsic_layout_before_viewport_demand() {
+    use crate::stage_widget::StageView;
+    use reel_ui::stage::{NodeKind, NodeProps, Stage};
+
+    let (mut images, wake) = loader();
+    let source = "assets/panels.png";
+    images.set_image_prediction(&[source.into()]);
+    assert!(images.poll().unwrap());
+    let prefetch = images.pending[0].id;
+    images.set_image_prediction(&[]);
+
+    let (sample, id) = preload_stage(source);
+    let mut kind = sample.node(id).unwrap().kind.clone();
+    let mut stage = Stage::default();
+    let fixed = stage
+        .create(
+            kind.clone(),
+            NodeProps {
+                width: Some(160.),
+                height: Some(90.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let NodeKind::Image { source, .. } = &mut kind else {
+        unreachable!()
+    };
+    *source = "assets/sun.jpg".into();
+    let intrinsic = stage.create(kind, NodeProps::default(), vec![]).unwrap();
+    let root = stage
+        .create(
+            NodeKind::Stack,
+            NodeProps::default(),
+            vec![fixed, intrinsic],
+        )
+        .unwrap();
+    stage.replace(root).unwrap();
+    let view = StageView::capture(&stage);
+    let format = images.shader_format;
+
+    images.request_stage_images(view.layout_image_requests(format));
+    assert!(!images.metadata_ready());
+    assert_eq!(images.pending[0].id, prefetch);
+    assert!(images.pending[0].prefetch);
+    ready(&mut images, &wake).unwrap();
+
+    images.request_stage_images(view.viewport_image_requests(vec![], vec![], format));
+    ready(&mut images, &wake).unwrap();
+    assert!(images.loaded.contains_key("assets/panels.png"));
+    assert!(images.loaded.contains_key("assets/sun.jpg"));
+    assert_eq!(images.loads, 2);
+}
+
+#[test]
 fn dialogue_prefetch_reuses_matching_work_and_replaces_unrelated_stage_work() {
     use reel_core::{budget::QueueLimits, test_support::MemoryAssetIo};
     let assets = Assets::with_adapters(Default::default(), |wake| {
