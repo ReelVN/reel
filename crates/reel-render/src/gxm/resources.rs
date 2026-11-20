@@ -1,6 +1,6 @@
 pub(super) use super::programs::Target;
 use super::*;
-use crate::common::resources::ResourceSource;
+use crate::common::resources::{ResidentImage, ResourceSource};
 use reel_core::texture::{TextureFormat, TextureLayout};
 use reel_ui::{
     peniko::{ImageAlphaType, ImageFormat},
@@ -83,9 +83,15 @@ struct Pending {
     plane: usize,
     row: u32,
 }
+
+pub(super) struct UploadImage {
+    image: Rc<Image>,
+    complete: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Images {
-    pub entries: HashMap<ResourceHandle, Rc<Image>>,
+    entries: HashMap<ResourceHandle, ResidentImage<Rc<Image>>>,
     pending: HashMap<ResourceHandle, Pending>,
     white: Option<Rc<Image>>,
     failures: Vec<super::ownership::NativeTicket>,
@@ -100,7 +106,14 @@ impl Images {
         let cached = self
             .entries
             .values()
-            .map(|image| image._storage.as_ref().expect("physical image").bytes())
+            .map(|entry| {
+                entry
+                    .image
+                    ._storage
+                    .as_ref()
+                    .expect("physical image")
+                    .bytes()
+            })
             .sum();
         let mut retired = 0;
         let mut readers = 0;
@@ -119,8 +132,8 @@ impl Images {
         [cached, retired, readers]
     }
     pub fn retain_demand(&mut self, required: &[crate::common::image_plan::Required<'_>]) {
-        self.entries.retain(|handle, image| {
-            Rc::strong_count(image) > 1
+        self.entries.retain(|handle, entry| {
+            Rc::strong_count(&entry.image) > 1
                 || required.iter().any(|item| item.source.handle() == *handle)
         });
         self.retired.clear();
@@ -202,12 +215,15 @@ impl Images {
             .ok_or(GpuError::InvalidSize)
     }
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
-        for (_, image) in self.entries.extract_if(|_, image| {
-            !image
-                .source
-                .as_ref()
-                .is_some_and(|source| source.retained(versions))
+        for (_, entry) in self.entries.extract_if(|_, entry| {
+            entry.source_retired()
+                || !entry
+                    .image
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.retained(versions))
         }) {
+            let image = entry.image;
             if !image.coverage && !image.native_import {
                 let uses = image.reuse_count;
                 self.retired.put(image, uses);
@@ -223,7 +239,50 @@ impl Images {
     fn make_room(&mut self, budget: &BudgetPool, cost: u64, limit: u64) {
         if cost > limit.saturating_sub(budget.usage().bytes) {
             self.retired.clear();
-            self.entries.retain(|_, image| Rc::strong_count(image) > 1);
+            self.entries
+                .retain(|_, entry| Rc::strong_count(&entry.image) > 1);
+        }
+    }
+    fn cached(&self, handle: &ResourceHandle) -> Option<&Rc<Image>> {
+        self.entries.get(handle).map(|entry| &entry.image)
+    }
+    pub(super) fn complete_uploads(&mut self, uploads: &[UploadImage]) {
+        for upload in uploads {
+            if upload.complete {
+                self.complete_upload(&upload.image);
+            }
+        }
+    }
+    pub(super) fn complete_upload(&mut self, image: &Rc<Image>) {
+        if !image.discard_pending.get() {
+            return;
+        }
+        let Some(source) = image
+            .source
+            .as_ref()
+            .and_then(|source| source.lease.upgrade())
+        else {
+            image.discard_pending.set(false);
+            return;
+        };
+        let Some(entry) = self
+            .entries
+            .get_mut(&source.handle())
+            .filter(|entry| Rc::ptr_eq(&entry.image, image))
+        else {
+            return;
+        };
+        let discarded = if source.pixel_discard_pending() {
+            if !source.discard_uploaded_pixels() {
+                return;
+            }
+            true
+        } else {
+            !source.pixels_resident()
+        };
+        image.discard_pending.set(false);
+        if discarded {
+            entry.retain_source(source);
         }
     }
     pub fn after_drain(&mut self) {
@@ -482,7 +541,7 @@ impl Images {
         required: &[crate::common::image_plan::Required<'_>],
         quota: &mut u64,
         output: &mut HashMap<ResourceHandle, Rc<Image>>,
-        touched: &mut Vec<Rc<Image>>,
+        touched: &mut Vec<UploadImage>,
     ) -> Result<bool, GpuError> {
         let DeviceResources {
             gpu,
@@ -495,7 +554,7 @@ impl Images {
         // Pin all demanded cached textures before an allocation evicts idle entries.
         for item in required {
             let source = item.source;
-            if let Some(image) = self.entries.get(&source.handle()) {
+            if let Some(image) = self.cached(&source.handle()) {
                 if source.pixel_discard_pending() {
                     image.discard_pending.set(true);
                 }
@@ -539,19 +598,28 @@ impl Images {
                             .expect("physical image")
                             .bytes(),
                     );
-                    touched.push(pending.image.clone());
-                    self.entries.insert(source.handle(), pending.image.clone());
+                    touched.push(UploadImage {
+                        image: pending.image.clone(),
+                        complete: true,
+                    });
+                    self.entries
+                        .insert(source.handle(), ResidentImage::new(pending.image.clone()));
                     output.insert(source.handle(), pending.image);
                     continue;
                 }
                 self.pending.insert(source.handle(), pending);
             }
             let pending = self.pending.get_mut(&source.handle()).unwrap();
-            touched.push(pending.image.clone());
+            touched.push(UploadImage {
+                image: pending.image.clone(),
+                complete: false,
+            });
             let complete = progress(gpu, budgets, limits, pending, quota, &mut self.scratch)?;
             if complete {
+                touched.last_mut().unwrap().complete = true;
                 let pending = self.pending.remove(&source.handle()).unwrap();
-                self.entries.insert(source.handle(), pending.image.clone());
+                self.entries
+                    .insert(source.handle(), ResidentImage::new(pending.image.clone()));
                 output.insert(source.handle(), pending.image);
             } else {
                 ready = false;

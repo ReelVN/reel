@@ -635,7 +635,14 @@ fn submitted_cached_images_release_and_restore_before_reupload() {
     };
     let handle = create(&mut registry);
     let lease = registry.acquire(handle).unwrap();
-    lease.permit_pixel_reload();
+    let metadata = BudgetPool::new(
+        BudgetCategory::Metadata,
+        QueueLimits {
+            max_requests: u32::MAX,
+            max_bytes: 65536,
+        },
+    );
+    lease.permit_pixel_reload(Some(&metadata));
     let mut widget = RecordWidget::new(Scene::new());
     widget.resource_draws.push((
         lease.clone(),
@@ -694,4 +701,13 @@ fn submitted_cached_images_release_and_restore_before_reupload() {
         .unwrap();
     renderer.poll().unwrap();
     assert!(!lease.pixels_resident());
+    let weak = lease.downgrade();
+    drop(frame);
+    drop(lease);
+    drop(registry);
+    assert!(weak.upgrade().is_some());
+    assert!(metadata.usage().bytes > 0);
+    renderer.images.retain_demand(&[]);
+    assert!(weak.is_released());
+    assert_eq!(metadata.usage().bytes, 0);
 }

@@ -127,7 +127,7 @@ fn shared_page_reloads_once_after_gpu_eviction() {
         .unwrap()
         .image_backing()
         .clone();
-    page.permit_pixel_reload();
+    page.permit_pixel_reload(None);
     let mut renderer = renderer(Default::default());
     let prepared = loop {
         match renderer.prepare(&frame) {

@@ -221,7 +221,7 @@ fn missing_pixel_demand_retains_only_absent_sources_and_charges_capacity() {
             .is_none()
     );
     assert_eq!(pool.usage().bytes, before);
-    missing.permit_pixel_reload();
+    missing.permit_pixel_reload(None);
     assert!(missing.discard_uploaded_pixels());
     let before = pool.usage().bytes;
     let Err(GpuError::PixelsNeeded(single)) = required_pixels(&missing, &pool, u64::MAX) else {

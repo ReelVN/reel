@@ -33,8 +33,13 @@ impl<T> CachedImages<T> {
         self.entries.values().map(|(_, image)| image)
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, handle: &ResourceHandle) -> Option<&T> {
         self.entries.get(handle).map(|(_, image)| image)
+    }
+
+    pub(crate) fn get_mut(&mut self, handle: &ResourceHandle) -> Option<&mut T> {
+        self.entries.get_mut(handle).map(|(_, image)| image)
     }
 
     pub(crate) fn touch(&mut self, handle: &ResourceHandle) -> Option<&T> {
@@ -84,6 +89,33 @@ impl<T> CachedImages<T> {
                 drop(image);
             }
         }
+    }
+}
+
+/// A usable device cache entry can own the source identity after pixel release.
+pub(crate) struct ResidentImage<T> {
+    pub(crate) image: T,
+    source: Option<reel_ui::resources::UploadedImageSource>,
+}
+
+impl<T> ResidentImage<T> {
+    pub(crate) fn new(image: T) -> Self {
+        Self {
+            image,
+            source: None,
+        }
+    }
+
+    pub(crate) fn retain_source(&mut self, source: reel_ui::resources::ResourceLease) {
+        if self.source.is_none() {
+            self.source = source.retain_uploaded_image();
+        }
+    }
+
+    pub(crate) fn source_retired(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|source| source.is_retired())
     }
 }
 

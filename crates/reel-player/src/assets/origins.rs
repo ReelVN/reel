@@ -1,15 +1,11 @@
 //! Weak provenance and a budgeted lookup accelerator for immutable resources.
 use super::{AssetKind, Load, RetainedAssetKind};
 use hashbrown::HashTable;
-use reel_core::{
-    budget::{BudgetPool, BudgetTicket},
-    identity::{AssetKey, ContentVersion},
-};
+use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::resources::{ResourceHandle, ResourceLease, ResourceWeak};
 use std::{
     collections::{BTreeMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
-    num::NonZeroUsize,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,75 +17,53 @@ struct Index {
     entries: HashTable<Entry>,
     ticket: Option<BudgetTicket>,
 }
-// Recently used images keep their identity through a story replacement. Only
-// a small share of the existing output budget may hold decoded pixel payloads.
-#[derive(Default)]
+// The CPU cache keeps only decoded images. Uploaded sources stay addressable
+// through their device cache entries and the ordinary weak origin index.
 pub(super) struct RecentImages {
-    entries: Option<lru::LruCache<String, RecentImage>>,
+    entries: lru::LruCache<String, RecentImage>,
     decoded_bytes: u64,
 }
 
 struct RecentImage {
     lease: ResourceLease,
-    decoded_bytes: u64,
+    bytes: u64,
+}
+
+impl Default for RecentImages {
+    fn default() -> Self {
+        Self {
+            entries: lru::LruCache::unbounded(),
+            decoded_bytes: 0,
+        }
+    }
 }
 
 impl RecentImages {
-    const CAPACITY: NonZeroUsize = NonZeroUsize::new(
-        if cfg!(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "macos"
-        )) {
-            256
-        } else {
-            64
-        },
-    )
-    .unwrap();
-
     pub(super) fn insert(&mut self, source: String, lease: ResourceLease, decoded_limit: u64) {
-        let backing = lease.image_backing();
-        let Some(pixel_bytes) = backing.pixel_byte_len() else {
-            return;
-        };
         if lease.is_retired() {
             return;
         }
-        let decoded_bytes = if backing.pixels_resident() {
-            let bytes = pixel_bytes as u64;
-            // Atlas views can share one physical allocation with visible views.
-            if bytes > decoded_limit || lease.handle() != backing.handle() {
-                return;
-            }
-            bytes
-        } else {
-            0
+        let Some(pixel_bytes) = lease.pixel_byte_len().filter(|_| lease.pixels_resident()) else {
+            return;
         };
-
-        drop(self.take(&source));
-        if decoded_bytes != 0 {
-            while self.decoded_bytes > decoded_limit - decoded_bytes && self.evict_decoded() {}
+        let bytes = pixel_bytes as u64
+            + lease.descriptor_bytes()
+            + (source.capacity() + size_of::<(String, RecentImage)>()) as u64;
+        if bytes > decoded_limit {
+            return;
         }
-        let cache = self
-            .entries
-            .get_or_insert_with(|| lru::LruCache::new(Self::CAPACITY));
-        if let Some((_, old)) = cache.push(
-            source,
-            RecentImage {
-                lease,
-                decoded_bytes,
-            },
-        ) {
-            self.decoded_bytes -= old.decoded_bytes;
+        self.take(&source);
+        while self.decoded_bytes > decoded_limit - bytes {
+            self.evict_decoded();
         }
-        self.decoded_bytes += decoded_bytes;
+        self.entries.put(source, RecentImage { lease, bytes });
+        self.decoded_bytes += bytes;
     }
 
     pub(super) fn take(&mut self, source: &str) -> Option<ResourceLease> {
-        let image = self.entries.as_mut()?.pop(source)?;
-        self.decoded_bytes -= image.decoded_bytes;
-        (!image.lease.is_retired()).then_some(image.lease)
+        let image = self.entries.pop(source)?;
+        self.decoded_bytes -= image.bytes;
+        (!image.lease.is_retired() && image.lease.pixels_resident()).then_some(image.lease)
     }
 
     pub(super) fn decoded_bytes(&self) -> u64 {
@@ -97,28 +71,14 @@ impl RecentImages {
     }
 
     pub(super) fn make_room(&mut self, output: &BudgetPool, bytes: u64) {
-        while self.decoded_bytes != 0 && bytes > output.available_bytes() && self.evict_decoded() {}
+        while self.decoded_bytes != 0 && bytes > output.available_bytes() {
+            self.evict_decoded();
+        }
     }
 
-    fn evict_decoded(&mut self) -> bool {
-        let Some(entries) = &mut self.entries else {
-            return false;
-        };
-        // A submitted upload can finish after its source leaves the stage.
-        // Release its conservative charge while keeping its texture identity.
-        for (source, image) in entries.iter_mut().rev() {
-            if image.decoded_bytes == 0 {
-                continue;
-            }
-            let bytes = std::mem::take(&mut image.decoded_bytes);
-            self.decoded_bytes -= bytes;
-            if image.lease.pixels_resident() {
-                let source = source.clone();
-                entries.pop(&source);
-                return true;
-            }
-        }
-        false
+    fn evict_decoded(&mut self) {
+        let (_, image) = self.entries.pop_lru().expect("bytes own a decoded image");
+        self.decoded_bytes -= image.bytes;
     }
 }
 
@@ -136,10 +96,9 @@ fn kind(kind: AssetKind) -> Option<RetainedAssetKind> {
         AssetKind::Bytes => None,
     }
 }
-fn fingerprint(key: &AssetKey, version: ContentVersion, kind: RetainedAssetKind) -> u64 {
+fn fingerprint(key: &str, kind: RetainedAssetKind) -> u64 {
     let mut hash = DefaultHasher::new();
     key.hash(&mut hash);
-    version.hash(&mut hash);
     (match kind {
         RetainedAssetKind::Image => 0_u8,
         RetainedAssetKind::Font => 1,
@@ -193,22 +152,38 @@ impl Origins {
         }
         let version = load.source.version?;
         let kind = kind(load.kind)?;
+        self.by_source(&load.source.key.0, kind, |lease| {
+            lease.version().version == version
+                && (kind != RetainedAssetKind::Image
+                    || load.reuse_uploaded_image
+                    || lease.pixels_resident())
+        })
+    }
+
+    /// The mounted stage sees fixed source paths. A texture that has already
+    /// released its decoded pixels can reenter the stage before requesting IO.
+    pub(super) fn stage_image(&self, source: &str) -> Option<ResourceLease> {
+        self.by_source(source, RetainedAssetKind::Image, |lease| {
+            !lease.pixels_resident()
+        })
+    }
+
+    fn by_source(
+        &self,
+        key: &str,
+        kind: RetainedAssetKind,
+        accepts: impl Fn(&ResourceLease) -> bool,
+    ) -> Option<ResourceLease> {
         let candidate = |(weak, candidate_kind): &(ResourceWeak, RetainedAssetKind)| {
             (*candidate_kind == kind)
                 .then(|| weak.upgrade())
                 .flatten()
-                .filter(|lease| {
-                    lease.version().key == load.source.key
-                        && lease.version().version == version
-                        && (kind != RetainedAssetKind::Image
-                            || load.reuse_uploaded_image
-                            || lease.pixels_resident())
-                })
+                .filter(|lease| lease.version().key.0 == key && accepts(lease))
         };
         if self.items.len() >= 16
             && let Some(index) = &self.index
         {
-            let hash = fingerprint(&load.source.key, version, kind);
+            let hash = fingerprint(key, kind);
             index
                 .entries
                 .iter_hash(hash)
@@ -221,7 +196,7 @@ impl Origins {
     pub(super) fn remember(&mut self, asset_kind: AssetKind, lease: &ResourceLease) {
         let kind = kind(asset_kind).expect("bytes do not have resource leases");
         if kind == RetainedAssetKind::Image {
-            lease.permit_pixel_reload();
+            lease.permit_pixel_reload(Some(&self.metadata));
         }
         let handle = lease.handle();
         if self
@@ -238,7 +213,7 @@ impl Origins {
             return;
         };
         let item = Entry {
-            hash: fingerprint(&lease.version().key, lease.version().version, kind),
+            hash: fingerprint(&lease.version().key.0, kind),
             handle,
         };
         if !index.push(item, &self.metadata) {
@@ -267,7 +242,7 @@ mod tests {
     use reel_core::budget::OwnedBytes;
     use reel_core::{
         budget::{BudgetCategory, QueueLimits},
-        identity::{AssetSource, ResourceVersion},
+        identity::{AssetKey, AssetSource, ContentVersion, ResourceVersion},
     };
     use reel_ui::{
         peniko::{ImageAlphaType, ImageFormat},
@@ -342,11 +317,7 @@ mod tests {
             expected.handle()
         );
         let index = origins.index.as_mut().unwrap();
-        let hash = fingerprint(
-            &request.source.key,
-            request.source.version.unwrap(),
-            RetainedAssetKind::Image,
-        );
+        let hash = fingerprint(&request.source.key.0, RetainedAssetKind::Image);
         index
             .entries
             .retain(|entry| entry.handle != leases[0].handle());

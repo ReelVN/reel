@@ -188,6 +188,7 @@ struct PixelState {
     metadata: BudgetPool,
     weak_storage: Option<BudgetTicket>,
     reloadable: bool,
+    cache_metadata: Option<BudgetPool>,
 }
 impl PixelState {
     fn new(blob: Blob<u8>, metadata: BudgetPool) -> Self {
@@ -198,6 +199,7 @@ impl PixelState {
             metadata,
             weak_storage: None,
             reloadable: false,
+            cache_metadata: None,
         }
     }
     fn matches(&self, blob: &Blob<u8>) -> bool {
@@ -232,6 +234,19 @@ struct Resource {
 }
 #[derive(Clone, Debug)]
 pub struct ResourceLease(Arc<Resource>);
+
+/// Keeps a reloadable source addressable while its uploaded texture is cached.
+pub struct UploadedImageSource {
+    lease: ResourceLease,
+    _metadata: BudgetTicket,
+}
+
+impl UploadedImageSource {
+    /// Whether the owning asset service has retired this source.
+    pub fn is_retired(&self) -> bool {
+        self.lease.is_retired()
+    }
+}
 
 /// An owned reader for immutable image pixels. Clones share the producer's
 /// allocation and its budget until the last reader drops.
@@ -496,14 +511,40 @@ impl ResourceLease {
     }
     /// Mark pixels as reconstructible from this resource's fixed asset version.
     /// The asset owner must retain a path that can asynchronously restore them.
-    pub fn permit_pixel_reload(&self) {
+    /// A shared metadata pool allows the device cache to retain the source
+    /// after releasing its CPU pixels.
+    pub fn permit_pixel_reload(&self, cache_metadata: Option<&BudgetPool>) {
         if let Some(pixels) = &self.0.pixels {
             let mut pixels = pixels.lock().expect("image pixels poisoned");
             pixels.reloadable = true;
+            pixels.cache_metadata = cache_metadata.cloned();
             self.0
                 .pixel_discard_pending
                 .store(pixels.resident.is_some(), Ordering::Release);
         }
+    }
+    /// Descriptor storage excluding any retained pixel backing.
+    pub fn descriptor_bytes(&self) -> u64 {
+        self.0.descriptor_ticket.bytes()
+    }
+    /// Admit the identity of a completely uploaded image to the device cache.
+    /// Each cache owner releases its metadata ticket on eviction.
+    pub fn retain_uploaded_image(&self) -> Option<UploadedImageSource> {
+        let pixels = self
+            .0
+            .pixels
+            .as_ref()?
+            .lock()
+            .expect("image pixels poisoned");
+        if pixels.resident.is_some() || self.is_retired() {
+            return None;
+        }
+        let metadata = pixels.cache_metadata.as_ref()?;
+        let bytes = self.descriptor_bytes() + pixels.weak_storage.as_ref()?.bytes();
+        Some(UploadedImageSource {
+            lease: self.clone(),
+            _metadata: metadata.reserve(bytes).ok()?,
+        })
     }
     /// Whether a completed consumer should attempt to release these pixels.
     pub fn pixel_discard_pending(&self) -> bool {

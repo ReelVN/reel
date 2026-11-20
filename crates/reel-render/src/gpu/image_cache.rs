@@ -6,7 +6,7 @@ use super::{
     renderer::{Budgets, Reservation, reserve},
     resources::{self, Image},
 };
-use crate::common::resources::CachedImages;
+use crate::common::resources::{CachedImages, ResidentImage};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::resources::{
     ResourceHandle, ResourceLease, ResourcePixels, ResourceVersion, ResourceView,
@@ -21,7 +21,7 @@ use std::{
 
 #[derive(Default)]
 pub(super) struct ImageCache {
-    images: Mutex<CachedImages<Arc<Image>>>,
+    images: Mutex<CachedImages<ResidentImage<Arc<Image>>>>,
     uploads: Mutex<Vec<Upload>>,
     partial: Mutex<HashMap<ResourceHandle, Partial>>,
     staging: Mutex<super::upload::Cache>,
@@ -67,7 +67,13 @@ impl ImageCache {
     }
     pub(super) fn usage(&self) -> [u64; 3] {
         let bytes = |image: &Arc<Image>| image.residency.as_ref().map_or(0, BudgetTicket::bytes);
-        let cached = self.images.lock().unwrap().values().map(bytes).sum();
+        let cached = self
+            .images
+            .lock()
+            .unwrap()
+            .values()
+            .map(|entry| bytes(&entry.image))
+            .sum();
         let mut retired = 0;
         let mut readers = 0;
         for image in self.retired.lock().unwrap().iter() {
@@ -80,8 +86,8 @@ impl ImageCache {
         [cached, retired, readers]
     }
     pub(super) fn retain_demand(&self, required: &[image_plan::Required<'_>]) {
-        self.images.lock().unwrap().retain(|handle, image| {
-            Arc::strong_count(image) > 1
+        self.images.lock().unwrap().retain(|handle, entry| {
+            Arc::strong_count(&entry.image) > 1
                 || required.iter().any(|item| item.source.handle() == *handle)
         });
         self.retired.lock().unwrap().clear();
@@ -109,7 +115,10 @@ impl ImageCache {
         });
         let mut cache = self.images.lock().unwrap();
         let mut retired = self.retired.lock().unwrap();
-        for image in cache.retire(|image| !image.source.as_ref().unwrap().retained(versions)) {
+        for entry in cache.retire(|entry| {
+            entry.source_retired() || !entry.image.source.as_ref().unwrap().retained(versions)
+        }) {
+            let image = entry.image;
             let uses = image.reuse_count;
             retired.put(image, uses);
         }
@@ -137,7 +146,8 @@ impl ImageCache {
         {
             let mut cache = self.images.lock().unwrap();
             for item in required.iter() {
-                if let Some(image) = cache.touch(&item.source.handle()) {
+                if let Some(entry) = cache.touch(&item.source.handle()) {
+                    let image = &entry.image;
                     if item.source.pixel_discard_pending() {
                         image.discard_pending.store(true, Ordering::Relaxed);
                     }
@@ -557,7 +567,7 @@ impl ImageCache {
             // retries the same rows; no half-uploaded image enters the cache.
             {
                 let mut cache = self.images.lock().unwrap();
-                for copy in &uploaded {
+                for copy in &mut uploaded {
                     let handle = copy.source.handle();
                     if let Some(next_row) = copy.next_row {
                         let pending = partial.get_mut(&handle).unwrap();
@@ -566,8 +576,9 @@ impl ImageCache {
                             continue;
                         }
                         partial.remove(&handle);
+                        copy.next_row = None;
                     }
-                    cache.insert(handle, copy.image.clone());
+                    cache.insert(handle, ResidentImage::new(copy.image.clone()));
                 }
             }
             let signal = done.clone();
@@ -594,27 +605,37 @@ impl ImageCache {
     }
 
     pub(super) fn discard_uploaded_pixels(&self, submitted: &HashMap<ResourceHandle, Arc<Image>>) {
-        let cached = self.images.lock().unwrap();
+        let mut cached = self.images.lock().unwrap();
         for (handle, image) in submitted {
-            if !image.discard_pending.load(Ordering::Relaxed) {
-                continue;
-            }
-            if !cached
-                .get(handle)
-                .is_some_and(|current| Arc::ptr_eq(current, image))
-            {
-                continue;
-            }
-            let source = image
-                .source
-                .as_ref()
-                .and_then(|source| source.lease.upgrade());
-            if source.is_none_or(|source| {
-                !source.pixel_discard_pending() || source.discard_uploaded_pixels()
-            }) {
-                image.discard_pending.store(false, Ordering::Relaxed);
-            }
+            Self::complete_upload(&mut cached, handle, image);
         }
+    }
+
+    fn complete_upload(
+        cached: &mut CachedImages<ResidentImage<Arc<Image>>>,
+        handle: &ResourceHandle,
+        image: &Arc<Image>,
+    ) {
+        if !image.discard_pending.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(entry) = cached
+            .get_mut(handle)
+            .filter(|entry| Arc::ptr_eq(&entry.image, image))
+        else {
+            return;
+        };
+        if let Some(source) = image
+            .source
+            .as_ref()
+            .and_then(|source| source.lease.upgrade())
+        {
+            if source.pixel_discard_pending() && !source.discard_uploaded_pixels() {
+                return;
+            }
+            entry.retain_source(source);
+        }
+        image.discard_pending.store(false, Ordering::Relaxed);
     }
 
     pub(super) fn has_pending(&self) -> bool {
@@ -662,6 +683,14 @@ impl ImageCache {
                 && uploads[index].staging.buffers.iter().all(|b| b.settled())
             {
                 let mut upload = uploads.swap_remove(index);
+                {
+                    let mut images = self.images.lock().unwrap();
+                    for copy in &upload.copies {
+                        if copy.next_row.is_none() {
+                            Self::complete_upload(&mut images, &copy.source.handle(), &copy.image);
+                        }
+                    }
+                }
                 let mut cache = self.staging.lock().unwrap();
                 for buffer in upload.staging.buffers.drain(..) {
                     cache.put(buffer);
@@ -684,7 +713,9 @@ impl ImageCache {
             self.images
                 .lock()
                 .unwrap()
-                .reclaim(pool, cost, limit, |image| Arc::strong_count(image) == 1);
+                .reclaim(pool, cost, limit, |entry| {
+                    Arc::strong_count(&entry.image) == 1
+                });
         }
     }
 }

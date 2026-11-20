@@ -24,7 +24,7 @@ use crate::common::GpuError;
 use crate::common::renderer::Budgets;
 use crate::*;
 use reel_core::budget::BudgetGroup;
-use resources::{Image, Images};
+use resources::{Image, Images, UploadImage};
 use std::{
     collections::{HashMap, VecDeque},
     rc::Rc,
@@ -67,7 +67,7 @@ struct Flight {
     submission: Option<(SubmissionId, FrameId)>,
     _frame: RenderFrame,
     _prepared: Option<Rc<replay::Prepared>>,
-    _images: Vec<Rc<Image>>,
+    uploads: Vec<UploadImage>,
     upload: bool,
     retained: Option<usize>,
     #[cfg(feature = "profiling")]
@@ -100,7 +100,7 @@ pub struct Backend {
     events: VecDeque<RenderEvent<GpuError>>,
     failed_work: Vec<replay::Work>,
     failed_prepared: Vec<Rc<replay::Prepared>>,
-    failed_images: Vec<Rc<Image>>,
+    failed_images: Vec<UploadImage>,
     drain_failed: bool,
 }
 impl Backend {
@@ -590,7 +590,7 @@ impl Backend {
                 submission: None,
                 _frame: frame.clone(),
                 _prepared: None,
-                _images: touched,
+                uploads: touched,
                 upload: true,
                 retained: None,
                 #[cfg(feature = "profiling")]
@@ -683,7 +683,9 @@ impl Backend {
                         drop(work);
                         self.check_native()?;
                         let fence = self.context.fence().map_err(native_error)?;
-                        if !fence.poll().map_err(native_error)? {
+                        if fence.poll().map_err(native_error)? {
+                            self.images.complete_uploads(&touched);
+                        } else {
                             // Give pending uploads the normal completion wakeup
                             // needed for pressure reclamation and another attempt.
                             self.flights.push_back(Flight {
@@ -691,7 +693,7 @@ impl Backend {
                                 submission: None,
                                 _frame: frame.clone(),
                                 _prepared: None,
-                                _images: Vec::new(),
+                                uploads: touched,
                                 upload: true,
                                 retained: None,
                                 #[cfg(feature = "profiling")]
@@ -745,7 +747,7 @@ impl Backend {
             submission,
             _frame: frame.clone(),
             _prepared: Some(prepared.clone()),
-            _images: Vec::new(),
+            uploads: Vec::new(),
             upload: false,
             retained: prepared.retained,
             #[cfg(feature = "profiling")]
@@ -985,30 +987,12 @@ impl RenderBackend for Backend {
                 crate::profiling::trace_completed(link, data);
             }
             if let Some(prepared) = &flight._prepared {
-                for (handle, image) in prepared.images() {
-                    if !image.discard_pending.get() {
-                        continue;
-                    }
-                    if !self
-                        .images
-                        .entries
-                        .get(handle)
-                        .is_some_and(|current| Rc::ptr_eq(current, image))
-                    {
-                        continue;
-                    }
-                    let source = image
-                        .source
-                        .as_ref()
-                        .and_then(|source| source.lease.upgrade());
-                    if source.is_none_or(|source| {
-                        !source.pixel_discard_pending() || source.discard_uploaded_pixels()
-                    }) {
-                        image.discard_pending.set(false);
-                    }
+                for image in prepared.images().values() {
+                    self.images.complete_upload(image);
                 }
                 prepared.recycle_geometry(&mut self.geometry);
             }
+            self.images.complete_uploads(&flight.uploads);
             if let Some(token) = flight.retained {
                 self.retained.complete(token);
             }

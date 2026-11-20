@@ -517,7 +517,7 @@ fn pixel_demand_retains_the_exact_candidate_and_accepted_geometry() {
         )
         .unwrap();
     let source = registry.acquire(h).unwrap();
-    source.permit_pixel_reload();
+    source.permit_pixel_reload(None);
     assert!(source.discard_uploaded_pixels());
     let resources = vec![source.clone()];
     let ticket = f

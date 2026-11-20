@@ -256,7 +256,8 @@ impl Images {
     fn reconcile_requests(&mut self) {
         self.story_prediction_changed = false;
         self.settled = false;
-        // Reuse recent decoded pixels or an uploaded image before requesting IO.
+        // Reuse completed CPU work before requesting IO. Uploaded textures keep
+        // their source addressable through the ordinary asset lookup.
         for source in self.wanted.keys() {
             if !self.loaded.contains_key(source)
                 && let Some(lease) = self.assets.take_recent_image(source)
@@ -306,7 +307,7 @@ impl Images {
                 || self.tiles.contains_key(source)
                 || (!loading && (self.mounted.contains(source) || self.prefetch.contains(source))))
         }) {
-            self.assets.remember_stage_image(source, lease, true);
+            self.assets.remember_stage_image(source, lease);
         }
         self.trim_hidden_prefetch();
     }
@@ -535,12 +536,11 @@ impl Images {
         {
             return;
         }
-        for (key, lease) in self.loaded.extract_if(.., |key, _| {
+        for (key, _) in self.loaded.extract_if(.., |key, _| {
             self.prefetch.contains(key)
                 && !self.wanted.contains_key(key)
                 && !self.displayed.contains(key)
         }) {
-            self.assets.remember_stage_image(key.clone(), lease, false);
             self.skipped.insert(key);
         }
     }
@@ -656,14 +656,12 @@ impl Images {
         changed
     }
     fn retain_loaded(&mut self) {
-        for (source, lease) in self.loaded.extract_if(.., |source, _| {
-            !(self.wanted.contains_key(source)
+        self.loaded.retain(|source, _| {
+            self.wanted.contains_key(source)
                 || self.displayed.contains(source)
                 || self.tiles.contains_key(source)
-                || (self.metadata_ready && self.prefetch.contains(source)))
-        }) {
-            self.assets.remember_stage_image(source, lease, false);
-        }
+                || (self.metadata_ready && self.prefetch.contains(source))
+        });
     }
     fn poll_tiles(&mut self) -> bool {
         let required = self
@@ -751,8 +749,7 @@ impl Images {
                 && !self.prefetch.contains(source)
                 && !self.tiles.contains_key(source)
         }) {
-            self.assets
-                .remember_stage_image(source, lease, !self.closed);
+            self.assets.remember_stage_image(source, lease);
         }
     }
     pub fn close(&mut self) {
@@ -772,7 +769,8 @@ impl Images {
         self.request_index = None;
         self.skipped.clear();
         self.failure = None;
-        self.commit();
+        self.displayed.clear();
+        self.loaded.clear();
         // Assets belongs to the host. A replacement session and other consumers
         // keep using it after this stage has released its own requests and leases.
     }

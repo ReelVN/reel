@@ -374,7 +374,7 @@ mod tests {
             )
             .unwrap();
         let source = registry.acquire(handle).unwrap();
-        source.permit_pixel_reload();
+        source.permit_pixel_reload(None);
         assert!(source.discard_uploaded_pixels());
         let session = crate::session::tests::session();
         let session_id = session.identity();

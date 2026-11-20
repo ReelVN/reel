@@ -1,15 +1,24 @@
 //! Overlap PNG inflate with reconstruction of complete scanlines on desktop.
 
 use super::direct_png_workspace;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc::{Receiver, SyncSender, sync_channel},
+use std::{
+    ops::Range,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, SyncSender, sync_channel},
+    },
 };
 
 const PACKET_BYTES: usize = 128 << 10;
 const INFLATE_SLACK: usize = 40 << 10;
 const QUEUE_PACKETS: usize = 2;
+const BUFFERS: usize = QUEUE_PACKETS + 3;
 static HELPER_BUSY: AtomicBool = AtomicBool::new(false);
+
+struct Packet {
+    bytes: Vec<u8>,
+    rows: Range<usize>,
+}
 
 struct HelperPermit;
 
@@ -32,12 +41,9 @@ pub(super) fn workspace(width: u32) -> u64 {
     let stride = u64::from(width) * 4 + 1;
     let packet = (PACKET_BYTES as u64).max(stride);
     // The ordinary parser allowance also covers fdeflate's tables. In addition,
-    // count the inflate window, queued packets, each thread's active packet and
-    // the previous reconstructed row. The output retains its separate ticket.
-    direct_png_workspace(width)
-        + packet * (QUEUE_PACKETS as u64 + 3)
-        + INFLATE_SLACK as u64
-        + stride * 2
+    // count both producer buffers during a swap, queued packets, the consumer
+    // buffer and its previous row. The output retains its separate ticket.
+    direct_png_workspace(width) + (packet + INFLATE_SLACK as u64 + stride) * BUFFERS as u64 + stride
 }
 
 pub(super) fn decode(
@@ -66,14 +72,17 @@ pub(super) fn decode(
     let packet = (PACKET_BYTES / stride).max(1) * stride;
     std::thread::scope(|scope| {
         let (send, recv) = sync_channel(QUEUE_PACKETS);
+        let (recycle, recycled) = sync_channel(BUFFERS);
         // If the platform cannot start a helper, resume on the ordinary decoder.
         let inflater = std::thread::Builder::new()
             .name("reel-png-inflate".into())
             .spawn_scoped(scope, move || {
-                inflate(input, stride, packet, padded, send, cancelled)
+                inflate(input, stride, packet, padded, send, recycled, cancelled)
             })
             .ok()?;
-        let pixels = reconstruct(recv, stride, channels, output_row, output_len, cancelled);
+        let pixels = reconstruct(
+            recv, recycle, stride, channels, output_row, output_len, cancelled,
+        );
         let inflated = inflater
             .join()
             .map_err(|_| "PNG inflate helper panicked".to_owned());
@@ -86,12 +95,14 @@ fn inflate(
     stride: usize,
     packet: usize,
     mut remaining: usize,
-    send: SyncSender<Vec<u8>>,
+    send: SyncSender<Packet>,
+    recycled: Receiver<Vec<u8>>,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let mut decoder = png::StreamingDecoder::new();
     let mut region = png::UnfilterRegion::default();
-    let mut raw = vec![0; packet + INFLATE_SLACK + stride];
+    let buffer_len = packet + INFLATE_SLACK + stride;
+    let mut raw = vec![0; buffer_len];
     let mut sent = 0;
     while !input.is_empty() {
         check_cancelled(cancelled)?;
@@ -104,34 +115,42 @@ fn inflate(
         if complete - sent > remaining {
             return Err("PNG has more data than its dimensions allow".into());
         }
-        let prior_sent = sent;
-        while complete - sent >= packet || finished && complete > sent {
-            let end = complete.min(sent + packet);
-            // Only the copy can be reconstructed. The inflator may still refer
-            // back to the original filtered bytes in its lookback window.
-            if send.send(raw[sent..end].to_vec()).is_err() {
-                return Ok(());
-            }
-            remaining -= end - sent;
-            sent = end;
-        }
         if finished {
-            return if remaining == 0 && complete == region.filled {
-                Ok(())
-            } else {
-                Err("PNG ended before its last row".into())
-            };
+            if remaining != complete - sent || complete != region.filled {
+                return Err("PNG ended before its last row".into());
+            }
+            if complete > sent {
+                let _ = send.send(Packet {
+                    bytes: raw,
+                    rows: sent..complete,
+                });
+            }
+            return Ok(());
         }
-        let discard = if sent > prior_sent {
-            region.available.min(sent) / stride * stride
+        let discard = if complete - sent >= packet {
+            region.available.min(complete) / stride * stride
         } else {
             0
         };
         if discard != 0 {
-            raw.copy_within(discard..region.filled, 0);
+            // Reconstruction consumes the whole buffer. Preserve only the
+            // filtered lookback and partial row in the next reusable buffer.
+            let mut next = recycled.try_recv().unwrap_or_else(|_| vec![0; buffer_len]);
+            next[..region.filled - discard].copy_from_slice(&raw[discard..region.filled]);
+            let bytes = std::mem::replace(&mut raw, next);
+            if send
+                .send(Packet {
+                    bytes,
+                    rows: sent..complete,
+                })
+                .is_err()
+            {
+                return Ok(());
+            }
+            remaining -= complete - sent;
             region.available -= discard;
             region.filled -= discard;
-            sent -= discard;
+            sent = complete - discard;
         }
         if consumed == 0 && matches!(decoded, png::Decoded::Nothing) && discard == 0 {
             return Err("PNG inflator could not advance".into());
@@ -141,7 +160,8 @@ fn inflate(
 }
 
 fn reconstruct(
-    packets: Receiver<Vec<u8>>,
+    packets: Receiver<Packet>,
+    recycle: SyncSender<Vec<u8>>,
     stride: usize,
     channels: usize,
     output_row: usize,
@@ -151,10 +171,10 @@ fn reconstruct(
     let mut pixels = vec![0; output_len];
     let mut remaining = pixels.chunks_exact_mut(output_row);
     let mut previous = vec![0; stride - 1];
-    for mut packet in packets {
+    for Packet { mut bytes, rows } in packets {
         check_cancelled(cancelled)?;
         let mut previous_in_packet: Option<&[u8]> = None;
-        for row in packet.chunks_exact_mut(stride) {
+        for row in bytes[rows].chunks_exact_mut(stride) {
             let filter = match row[0] {
                 0 => png::Filter::NoFilter,
                 1 => png::Filter::Sub,
@@ -189,6 +209,7 @@ fn reconstruct(
         if let Some(last_row) = previous_in_packet {
             previous.copy_from_slice(last_row);
         }
+        let _ = recycle.send(bytes);
     }
     if remaining.len() != 0 {
         return Err("PNG ended before its last row".into());

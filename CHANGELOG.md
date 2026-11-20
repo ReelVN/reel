@@ -4,7 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
-- Retain more reusable texture identities on desktop, and batch cleanup of released asset records.
+- Keep reusable image sources with their resident textures on desktop and Vita, using byte budgets for decoded images and source metadata.
+- Reuse PNG row buffers and copy only the inflate lookback between packets.
+- Batch cleanup of released asset records.
 - Reuse recently decoded picture pixels across page and scene changes, with immediate reclamation when visible resources need the space.
 - Avoid copying every reconstructed PNG row into a second filter buffer.
 - Predict picture paths selected from read-only module catalogs during story waits.

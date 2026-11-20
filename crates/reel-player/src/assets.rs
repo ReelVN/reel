@@ -412,26 +412,21 @@ impl Assets {
         service.io_events.clear();
         service.work_events.clear();
     }
-    pub(crate) fn remember_stage_image(
-        &self,
-        source: String,
-        lease: ResourceLease,
-        keep_decoded: bool,
-    ) {
+    pub(crate) fn remember_stage_image(&self, source: String, lease: ResourceLease) {
         let mut service = self.0.borrow_mut();
-        if service.io.is_some() {
-            let decoded_limit = if keep_decoded
-                && service.origins.kind(lease.handle()) == Some(RetainedAssetKind::Image)
-            {
-                (service.options.resident_bytes / 32).min(16 << 20)
-            } else {
-                0
-            };
+        if service.io.is_some()
+            && service.origins.kind(lease.handle()) == Some(RetainedAssetKind::Image)
+        {
+            let decoded_limit = service.options.resident_bytes / 32;
             service.recent_images.insert(source, lease, decoded_limit);
         }
     }
     pub(crate) fn take_recent_image(&self, source: &str) -> Option<ResourceLease> {
-        self.0.borrow_mut().recent_images.take(source)
+        let mut service = self.0.borrow_mut();
+        service
+            .recent_images
+            .take(source)
+            .or_else(|| service.origins.stage_image(source))
     }
     /// Create a media reader using this service's adapters and budgets.
     /// Read/seek may block a decoder worker or native media callback. Its reader
@@ -520,7 +515,7 @@ impl Assets {
             kind,
             Priority::Prefetch,
             limit,
-            false,
+            kind == AssetKind::Image,
         )
     }
     /// Raise the existing request to visible priority and keep its admitted work.

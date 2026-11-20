@@ -218,6 +218,7 @@ fn returning_gpu_image_does_not_cancel_unrelated_prefetch() {
     images.request(wanted(&[visible]));
     ready(&mut images, &wake).unwrap();
     assert!(images.loaded[visible].discard_uploaded_pixels());
+    let _gpu_source = images.loaded[visible].retain_uploaded_image().unwrap();
     images.commit();
     images.request(wanted(&[]));
     images.commit();
@@ -428,9 +429,11 @@ fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
     let (mut images, wake) = loader();
     images.request(wanted(&["assets/panels.png"]));
     ready(&mut images, &wake).unwrap();
-    let first = images.loaded["assets/panels.png"].handle();
-    let weak = images.loaded["assets/panels.png"].downgrade();
-    assert!(images.loaded["assets/panels.png"].discard_uploaded_pixels());
+    let panel = &images.loaded["assets/panels.png"];
+    let first = panel.handle();
+    let weak = panel.downgrade();
+    assert!(panel.discard_uploaded_pixels());
+    let gpu_source = panel.retain_uploaded_image().unwrap();
     images.commit();
 
     images.request(wanted(&["assets/sun.jpg"]));
@@ -442,26 +445,32 @@ fn returning_uploaded_images_reuses_identity_without_reading_pixels_again() {
 
     images.prefetch.stage.insert("assets/panels.png".to_owned());
     images.settled = false;
-    assert!(images.poll().unwrap());
+    while !images.loaded.contains_key("assets/panels.png") {
+        assert!(images.poll().unwrap());
+        if !images.loaded.contains_key("assets/panels.png") {
+            wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
     assert_eq!(images.loaded["assets/panels.png"].handle(), first);
     assert!(images.pending.is_empty());
+    let loads = images.loads;
 
     images.request(wanted(&["assets/panels.png"]));
     assert!(images.poll().unwrap());
     assert_eq!(images.loaded["assets/panels.png"].handle(), first);
     assert!(!images.loaded["assets/panels.png"].pixels_resident());
     assert_eq!(
-        images.loads, 2,
-        "a resident GPU identity needs no source reload"
+        images.loads, loads,
+        "a prefetched GPU identity needs no additional lookup"
     );
     images.close();
     assert!(!weak.is_released());
     let mut replacement = Images::new(images.assets.clone());
     replacement.request(wanted(&["assets/panels.png"]));
-    assert!(replacement.poll().unwrap());
+    ready(&mut replacement, &wake).unwrap();
     assert_eq!(replacement.loaded["assets/panels.png"].handle(), first);
-    assert_eq!(replacement.loads, 0);
     replacement.close();
+    drop(gpu_source);
     images.assets.close();
     assert!(weak.is_released());
     assert_eq!(images.pool.usage().bytes, 0);

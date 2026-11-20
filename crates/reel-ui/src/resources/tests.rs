@@ -326,7 +326,7 @@ fn reloadable_pixels_release_only_after_readers_and_restore_identity() {
         !image.discard_uploaded_pixels(),
         "generated content remains resident"
     );
-    image.permit_pixel_reload();
+    image.permit_pixel_reload(None);
     let reader = image.read_pixels().unwrap();
     let id = reader.blob().id();
     assert!(
