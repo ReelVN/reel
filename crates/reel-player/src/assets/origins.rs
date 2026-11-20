@@ -214,7 +214,7 @@ mod tests {
             phase: Phase::Describe,
             input: None,
             size: [0, 0],
-            texture: None,
+            prepared: None,
             output: 0,
             temporary: 0,
         }

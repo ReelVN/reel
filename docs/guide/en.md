@@ -110,6 +110,8 @@ bitrate = 96000
 
 For smooth gradients, place a texture rule with `format = "rgba8"` and `dither = "ordered"` before the general texture rule. Dithering distributes color quantization error and preserves alpha; RGBA8 uses eight times the texture memory of BC1. For a single file, run `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`.
 
+Use `convert = "raster"` for large backgrounds that are slow to load on first use. Preparation decodes 8-bit artwork and keeps its original dimensions and exact RGBA8 playback samples. RPK still compresses these pixels, and the release can grow. Place a narrowly matched rule before general image rules. `image` uses the original resource paths. Use `convert = "copy"` when `assets.read` needs the original file bytes.
+
 To pack small images used together into an atlas, add this before the general texture rule:
 
 ```toml

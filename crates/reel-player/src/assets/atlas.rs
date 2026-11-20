@@ -176,7 +176,7 @@ impl Service {
                 phase: Phase::Describe,
                 input: None,
                 size: [0; 2],
-                texture: None,
+                prepared: None,
                 output: 0,
                 temporary: 0,
             },

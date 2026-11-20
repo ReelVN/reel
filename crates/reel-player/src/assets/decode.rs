@@ -1,6 +1,8 @@
-use super::worker::{Worker, check_completion};
+use super::{
+    PreparedPixels,
+    worker::{Worker, check_completion},
+};
 use image::DynamicImage;
-use reel_core::texture::TextureHeader;
 use reel_core::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
     identity::WorkId,
@@ -73,16 +75,17 @@ impl ImageExecutor {
                             return Err("decode cancelled".into());
                         }
                         let probe = kind.name == IMAGE_PROBE_NAME;
-                        if input.as_slice().starts_with(TextureHeader::MAGIC) {
-                            let (header, payload) = TextureHeader::parse(input.as_slice())
-                                .map_err(|e| e.to_string())?;
+                        if let Some(prepared) = PreparedPixels::parse(input.as_slice()) {
+                            let prepared = prepared?;
                             let data = if probe {
-                                header.encode().to_vec()
+                                input.as_slice()[..prepared.header_len()].to_vec()
                             } else {
-                                if header.payload_len() > output.bytes() {
-                                    return Err("texture output reservation too small".into());
+                                if prepared.payload_len() > output.bytes() {
+                                    return Err(
+                                        "prepared image output reservation too small".into()
+                                    );
                                 }
-                                payload.to_vec()
+                                input.as_slice()[prepared.header_len()..].to_vec()
                             };
                             output
                                 .resize(data.capacity() as u64)

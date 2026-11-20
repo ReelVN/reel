@@ -2,8 +2,9 @@
 //!
 //! An optional project-root `resources.toml` contains ordered `[[targets.NAME]]`
 //! rules. The first matching logical path selects `convert = "texture"`, `"tiles"`,
-//! `"atlas"`, `"webp"`, `"qoi"`, `"opus"`, `"video"`, `"font"`, or `"copy"`.
+//! `"atlas"`, `"webp"`, `"qoi"`, `"raster"`, `"opus"`, `"video"`, `"font"`, or `"copy"`.
 //! Unmatched resources retain their selected source file.
+//! Raster rules store the decoded 8-bit sRGB samples with straight alpha.
 //! `match` is a case-sensitive glob with `/` separators (`*` stays within one
 //! component; `**` crosses directories). Source target selection runs first.
 //! Texture `scale` changes texel density while preserving logical coordinates;
@@ -39,6 +40,7 @@
 //! is atomically published only after all selected resources are ready.
 mod atlas;
 mod qoi;
+mod raster;
 mod webp;
 use crate::prepare_texture;
 use globset::{GlobBuilder, GlobMatcher};
@@ -119,6 +121,7 @@ enum Convert {
     Copy,
     Webp,
     Qoi,
+    Raster,
     Texture,
     Atlas,
     Tiles,
@@ -133,6 +136,7 @@ enum Recipe {
     Copy,
     Webp,
     Qoi,
+    Raster,
     Texture {
         scale: f64,
         size: Option<[u32; 2]>,
@@ -287,7 +291,7 @@ impl RuleInput {
                     fallback: self.fallback,
                 }
             }
-            Convert::Copy | Convert::Webp | Convert::Qoi => {
+            Convert::Copy | Convert::Webp | Convert::Qoi | Convert::Raster => {
                 if self.scale.is_some()
                     || self.size.is_some()
                     || self.format.is_some()
@@ -295,12 +299,13 @@ impl RuleInput {
                     || self.bitrate.is_some()
                 {
                     return Err(invalid(
-                        "copy, webp and qoi rules only accept match and convert",
+                        "copy, webp, qoi and raster rules only accept match and convert",
                     ));
                 }
                 match self.convert {
                     Convert::Webp => Recipe::Webp,
                     Convert::Qoi => Recipe::Qoi,
+                    Convert::Raster => Recipe::Raster,
                     _ => Recipe::Copy,
                 }
             }
@@ -601,6 +606,7 @@ fn converter_identity(recipe: &Recipe) -> &'static str {
         Recipe::Copy => unreachable!(),
         Recipe::Webp => identity::for_kind("webp"),
         Recipe::Qoi => identity::for_kind("qoi"),
+        Recipe::Raster => identity::for_kind("raster"),
         Recipe::Texture { .. } => identity::for_kind("texture"),
         Recipe::Atlas { .. } => identity::for_kind("atlas"),
         Recipe::Tiles { .. } => identity::for_kind("tiles"),
@@ -705,6 +711,7 @@ fn prepare_with_rules<'a>(
                 recipe @ (Recipe::Texture { .. }
                 | Recipe::Webp
                 | Recipe::Qoi
+                | Recipe::Raster
                 | Recipe::Tiles { .. }
                 | Recipe::Opus { .. }
                 | Recipe::Video { .. }
@@ -745,6 +752,7 @@ fn prepare_with_rules<'a>(
                 let output_name = match recipe {
                     Recipe::Webp => "resource.webp",
                     Recipe::Qoi => "resource.qoi",
+                    Recipe::Raster => "resource.reel-raster",
                     Recipe::Texture { .. } => "resource.reel-texture",
                     Recipe::Tiles { .. } => "resource.reel-image",
                     Recipe::Opus { .. } => "resource.opus",
@@ -753,7 +761,16 @@ fn prepare_with_rules<'a>(
                     Recipe::Atlas { .. } | Recipe::Copy => unreachable!(),
                 };
                 let output = object.join(output_name);
-                if output.is_file() {
+                let conversion_error = |error: io::Error| {
+                    io::Error::other(format!("resource {name:?} ({}): {error}", source.display()))
+                };
+                if let Ok(metadata) = fs::metadata(&output)
+                    && metadata.is_file()
+                {
+                    if matches!(recipe, Recipe::Raster) {
+                        raster::check_input_len(metadata.len(), gxm_layout)
+                            .map_err(conversion_error)?;
+                    }
                     prepared.report.reused += 1;
                 } else {
                     fs::create_dir_all(&objects)?;
@@ -763,12 +780,7 @@ fn prepare_with_rules<'a>(
                     let staged_output = staging.path().join(output_name);
                     let workspace =
                         convert(&source, &staged_output, recipe, memory_bytes, gxm_layout)
-                            .map_err(|error| {
-                                io::Error::other(format!(
-                                    "resource {name:?} ({}): {error}",
-                                    source.display()
-                                ))
-                            })?;
+                            .map_err(conversion_error)?;
                     prepared.report.workspace_bytes =
                         prepared.report.workspace_bytes.max(workspace);
                     if hash_file(&source)? != source_hash {
@@ -848,6 +860,7 @@ fn convert(
     match recipe {
         Recipe::Webp => webp::prepare(source, output, memory_bytes),
         Recipe::Qoi => qoi::prepare(source, output, memory_bytes),
+        Recipe::Raster => raster::prepare(source, output, memory_bytes, gxm_layout),
         Recipe::Font { characters } => {
             crate::prepare_font::prepare(source, output, characters, memory_bytes)
         }

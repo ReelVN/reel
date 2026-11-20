@@ -17,6 +17,7 @@ pub mod image_coverage;
 pub mod io;
 pub mod prepared_atlas;
 pub mod prepared_image;
+pub mod prepared_raster;
 pub mod profile;
 pub mod queue;
 pub mod request_ids;

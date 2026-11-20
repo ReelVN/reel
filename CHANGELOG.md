@@ -4,6 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Add a raster export rule that stores exact decoded RGBA8 pixels in the resource archive. The player can load those pixels without running an image codec.
 - Reuse live textures across saved-game restoration by matching the original asset version.
 - Scan leading opaque image rows in groups and record their coverage together.
 - Keep the same atlas page across consecutive glyphs and retain glyph leases only for recorded geometry.

@@ -110,6 +110,8 @@ bitrate = 96000
 
 给渐变素材单独配置 `format = "rgba8"` 与 `dither = "ordered"`，并把该规则放在通用纹理规则之前。抖动分散颜色量化误差，alpha 保持不变；RGBA8 的纹理内存是 BC1 的八倍。单个文件可运行 `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`。
 
+冷加载较慢的大背景可用 `convert = "raster"`。它在准备时解码 8 位图片，保留原尺寸和普通播放路径的每个 RGBA8 像素。RPK 仍压缩这些像素，包体可能增大。将窄范围的规则放在通用图片规则之前，`image` 继续使用原路径。需要用 `assets.read` 取得原文件字节时，用 `convert = "copy"`。
+
 把同时使用的小图片合入图集，可在通用纹理规则前添加：
 
 ```toml

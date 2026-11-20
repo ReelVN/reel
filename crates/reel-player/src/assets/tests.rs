@@ -128,6 +128,53 @@ fn prepared_texture_preserves_blocks_without_decode_workspace() {
 }
 
 #[test]
+fn prepared_raster_moves_its_exact_pixels_into_the_ordinary_image_path() {
+    let header = RasterHeader::new([2, 1]).unwrap();
+    let pixels = [200, 44, 81, 127, 8, 17, 250, 0];
+    let mut file = header.encode().to_vec();
+    file.extend_from_slice(&pixels);
+    let assets = memory_assets();
+    let id = assets.request_encoded("source.png".into(), &file).unwrap();
+    let address = assets.0.borrow().loads[&id]
+        .input
+        .as_ref()
+        .unwrap()
+        .as_slice()
+        .as_ptr();
+    let lease = load_until_done(&assets, id).unwrap();
+    let descriptor = lease.image_descriptor().unwrap();
+    assert_eq!([descriptor.width, descriptor.height], header.size());
+    assert_eq!(descriptor.encoding, ColorEncoding::Srgb);
+    assert_eq!(descriptor.alpha_type, ImageAlphaType::Alpha);
+    let data = lease.read_pixels().unwrap();
+    assert_eq!(data.bytes(), pixels);
+    assert_eq!(
+        data.bytes().as_ptr(),
+        address.wrapping_add(RasterHeader::LEN)
+    );
+    assert_eq!(assets.temporary_pool().usage().peak_bytes, 0);
+    assert_eq!(assets.output_pool().usage().bytes, file.len() as u64);
+
+    let short = assets
+        .request_encoded("short.png".into(), &file[..file.len() - 1])
+        .unwrap();
+    assert!(
+        load_until_done(&assets, short)
+            .unwrap_err()
+            .contains("prepared raster")
+    );
+
+    let tight = Assets::directory(AssetOptions {
+        resident_bytes: header.byte_len(),
+        ..Default::default()
+    });
+    let id = tight.request_encoded("source.png".into(), &file).unwrap();
+    let copied = load_until_done(&tight, id).unwrap().read_pixels().unwrap();
+    assert_eq!(copied.bytes(), pixels);
+    assert_eq!(tight.output_pool().usage().bytes, header.byte_len());
+}
+
+#[test]
 fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
     use reel_core::{texture::*, work::*};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -288,7 +335,7 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
             OwnedBytes::new(content, service.input.reserve(128).unwrap()).unwrap(),
         )),
         size: [0, 0],
-        texture: None,
+        prepared: None,
         output: 0,
         temporary: 0,
     };

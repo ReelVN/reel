@@ -50,6 +50,11 @@ fn main() -> io::Result<()> {
     let font = ["crates/reel-cli/src/prepare_font.rs"];
     let webp = ["crates/reel-cli/src/resource_conversion/webp.rs", artwork];
     let qoi = ["crates/reel-cli/src/resource_conversion/qoi.rs", artwork];
+    let raster = [
+        "crates/reel-cli/src/resource_conversion/raster.rs",
+        "crates/reel-core/src/prepared_raster.rs",
+        artwork,
+    ];
     let effects = [
         "crates/reel-cli/src/prepare_effects.rs",
         "crates/reel-render/src/common/effect.rs",
@@ -67,6 +72,7 @@ fn main() -> io::Result<()> {
     for (kind, sources, dependency_roots) in [
         ("WEBP", webp.as_slice(), ["image"].as_slice()),
         ("QOI", qoi.as_slice(), ["image"].as_slice()),
+        ("RASTER", raster.as_slice(), ["image"].as_slice()),
         (
             "TEXTURE",
             texture.as_slice(),

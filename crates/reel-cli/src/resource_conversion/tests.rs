@@ -102,7 +102,9 @@ fallback = "rgba8"
 }
 
 #[test]
-fn qoi_conversion_keeps_straight_pixels_under_logical_paths() {
+fn lossless_artwork_conversion_keeps_straight_pixels_under_logical_paths() {
+    use reel_core::prepared_raster::RasterHeader;
+
     let (directory, tool, _) = fixture();
     let root = directory.path();
     let source = root.join("resources/images");
@@ -114,34 +116,65 @@ fn qoi_conversion_keeps_straight_pixels_under_logical_paths() {
     });
     rgb.save(source.join("rgb.png")).unwrap();
     rgba.save(source.join("rgba.png")).unwrap();
+    let desktop = ResourceTarget::parse("desktop").unwrap();
+    let artwork = [
+        ("images/rgb.png", image::DynamicImage::ImageRgb8(rgb)),
+        ("images/rgba.png", image::DynamicImage::ImageRgba8(rgba)),
+    ];
+    for conversion in ["qoi", "raster"] {
+        fs::write(
+            root.join("resources.toml"),
+            format!(
+                "[[targets.desktop]]\nmatch = 'images/{{rgb,rgba}}.png'\nconvert = '{conversion}'\n"
+            ),
+        )
+        .unwrap();
+        let prepared = prepare(root, &tool, &desktop, MEMORY_BYTES).unwrap();
+        assert_eq!(prepared.report.converted, artwork.len());
+        for (path, expected) in &artwork {
+            let physical = &prepared.files[*path];
+            if conversion == "raster" {
+                assert_eq!(physical.extension().unwrap(), "reel-raster");
+                let bytes = fs::read(physical).unwrap();
+                let (header, pixels) = RasterHeader::parse(&bytes).unwrap();
+                assert_eq!(header.size(), [expected.width(), expected.height()]);
+                assert_eq!(pixels, expected.to_rgba8().as_raw());
+            } else {
+                assert_eq!(physical.extension().unwrap(), "qoi");
+                let (decoder, _) = reel_player::artwork::open(physical, MEMORY_BYTES).unwrap();
+                assert_eq!(
+                    &image::DynamicImage::from_decoder(decoder).unwrap(),
+                    expected
+                );
+            }
+        }
+        let repeated = prepare(root, &tool, &desktop, MEMORY_BYTES).unwrap();
+        assert_eq!(repeated.files, prepared.files);
+        assert_eq!(repeated.report.reused, artwork.len());
+    }
+}
+
+#[test]
+fn raster_conversion_rejects_assets_above_target_input_limit() {
+    let (directory, tool, vita) = fixture();
+    let root = directory.path();
+    let desktop = ResourceTarget::parse("desktop").unwrap();
+    image::GrayImage::new(2520, 2520)
+        .save(root.join("resources/images/large.png"))
+        .unwrap();
     fs::write(
         root.join("resources.toml"),
-        r#"
-[[targets.desktop]]
-match = "images/{rgb,rgba}.png"
-convert = "qoi"
-"#,
+        "[[targets.desktop]]\nmatch = 'images/large.png'\nconvert = 'raster'\n\
+         [[targets.vita]]\nmatch = 'images/large.png'\nconvert = 'raster'\n",
     )
     .unwrap();
 
-    let desktop = ResourceTarget::parse("desktop").unwrap();
+    let fresh_error = prepare(root, &tool, &vita, MEMORY_BYTES).err().unwrap();
+    assert!(fresh_error.to_string().contains("target player limit"));
     let prepared = prepare(root, &tool, &desktop, MEMORY_BYTES).unwrap();
-    assert_eq!(prepared.report.converted, 2);
-    for (path, expected) in [
-        ("images/rgb.png", image::DynamicImage::ImageRgb8(rgb)),
-        ("images/rgba.png", image::DynamicImage::ImageRgba8(rgba)),
-    ] {
-        let physical = &prepared.files[path];
-        assert_eq!(physical.extension().unwrap(), "qoi");
-        let (decoder, _) = reel_player::artwork::open(physical, MEMORY_BYTES).unwrap();
-        assert_eq!(
-            image::DynamicImage::from_decoder(decoder).unwrap(),
-            expected
-        );
-    }
-    let repeated = prepare(root, &tool, &desktop, MEMORY_BYTES).unwrap();
-    assert_eq!(repeated.files, prepared.files);
-    assert_eq!(repeated.report.reused, 2);
+    assert_eq!(prepared.report.converted, 1);
+    let cached_error = prepare(root, &tool, &vita, MEMORY_BYTES).err().unwrap();
+    assert_eq!(fresh_error.to_string(), cached_error.to_string());
 }
 
 #[test]
@@ -389,6 +422,7 @@ fn configuration_diagnostics_reject_typos_and_conflicting_parameters() {
         "convert = 'tiles'\nscale = 0.5",
         "convert = 'tiles'\ntile_size = 0",
         "convert = 'copy'\nscale = 0.5",
+        "convert = 'raster'\nscale = 0.5",
         "convert = 'opus'\nformat = 'auto'",
         "convert = 'opus'\nbitrate = 0",
         "convert = 'video'",

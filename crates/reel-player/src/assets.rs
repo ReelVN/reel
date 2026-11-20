@@ -13,7 +13,6 @@ pub(crate) mod tests;
 pub(crate) mod worker;
 pub use decode::ImageExecutor;
 pub use io::{DirectoryIo, PackIo};
-use reel_core::texture::{TextureDescriptor, TextureHeader, TexturePayload};
 use reel_core::{
     budget::{BudgetCategory, BudgetGroup, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetKey, AssetSource, IoId, Priority, ResourceVersion, Scope, WorkId},
@@ -21,6 +20,10 @@ use reel_core::{
     result::Terminal,
     wake::WakeSignal,
     work::{WorkBudget, WorkEvent, WorkExecutor, WorkRequest, WorkReservations},
+};
+use reel_core::{
+    prepared_raster::RasterHeader,
+    texture::{TextureHeader, TexturePayload},
 };
 use reel_ui::{
     frame::{RetainedAsset, RetainedAssetKind},
@@ -119,6 +122,52 @@ pub(crate) enum ImageAsset {
     Raster(ResourceLease),
     Tiled(reel_core::prepared_image::PreparedImage),
 }
+
+#[derive(Clone, Copy)]
+enum PreparedPixels {
+    Raster(RasterHeader),
+    Texture(TextureHeader),
+}
+impl PreparedPixels {
+    fn parse(bytes: &[u8]) -> Option<Result<Self, String>> {
+        if bytes.starts_with(RasterHeader::MAGIC) {
+            return Some(
+                RasterHeader::parse(bytes)
+                    .map(|(header, _)| Self::Raster(header))
+                    .ok_or_else(|| "invalid prepared raster dimensions or payload".into()),
+            );
+        }
+        if bytes.starts_with(TextureHeader::MAGIC) {
+            return Some(
+                TextureHeader::parse(bytes)
+                    .map(|(header, _)| Self::Texture(header))
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        None
+    }
+
+    fn size(self) -> [u32; 2] {
+        match self {
+            Self::Raster(header) => header.size(),
+            Self::Texture(header) => header.descriptor().layout.logical_size,
+        }
+    }
+
+    fn header_len(self) -> usize {
+        match self {
+            Self::Raster(_) => RasterHeader::LEN,
+            Self::Texture(_) => TextureHeader::LEN,
+        }
+    }
+
+    fn payload_len(self) -> u64 {
+        match self {
+            Self::Raster(header) => header.byte_len(),
+            Self::Texture(header) => header.payload_len(),
+        }
+    }
+}
 struct Load {
     source: AssetSource,
     reloadable: bool,
@@ -129,9 +178,18 @@ struct Load {
     phase: Phase,
     input: Option<Arc<OwnedBytes>>,
     size: [u32; 2],
-    texture: Option<TextureDescriptor>,
+    prepared: Option<PreparedPixels>,
     output: u64,
     temporary: u64,
+}
+impl Load {
+    fn prepare_pixels(&mut self, prepared: PreparedPixels) {
+        self.prepared = Some(prepared);
+        self.size = prepared.size();
+        self.output = prepared.payload_len();
+        self.temporary = 0;
+        self.phase = Phase::Decode;
+    }
 }
 type Notify = Arc<Mutex<Arc<dyn Fn() + Send + Sync>>>;
 struct Service {
@@ -488,7 +546,7 @@ impl Assets {
                 phase,
                 input: None,
                 size: [0; 2],
-                texture: None,
+                prepared: None,
                 output: 0,
                 temporary: 0,
             },
@@ -565,7 +623,7 @@ impl Assets {
                 phase: Phase::Probe,
                 input: Some(Arc::new(input)),
                 size: [0; 2],
-                texture: None,
+                prepared: None,
                 output: 0,
                 temporary: 0,
             },
@@ -778,14 +836,11 @@ impl Service {
                     if bytes.len() == TextureHeader::LEN {
                         TextureHeader::decode(bytes)
                             .map_err(|e| e.to_string())
-                            .map(|header| {
-                                let descriptor = header.descriptor();
-                                load.texture = Some(descriptor);
-                                load.size = descriptor.layout.logical_size;
-                                load.output = header.payload_len();
-                                load.temporary = 0;
-                                load.phase = Phase::Decode;
-                            })
+                            .map(|header| load.prepare_pixels(PreparedPixels::Texture(header)))
+                    } else if let Ok(bytes) = <&[u8; RasterHeader::LEN]>::try_from(bytes) {
+                        RasterHeader::decode(bytes)
+                            .ok_or_else(|| "invalid prepared raster probe result".into())
+                            .map(|header| load.prepare_pixels(PreparedPixels::Raster(header)))
                     } else if bytes.len() != 24 {
                         Err("invalid image probe result".into())
                     } else {
@@ -1004,22 +1059,11 @@ impl Service {
                     probe = false;
                 }
                 if probe
-                    && load
-                        .input
-                        .as_ref()
-                        .unwrap()
-                        .as_slice()
-                        .starts_with(TextureHeader::MAGIC)
+                    && let Some(prepared) =
+                        PreparedPixels::parse(load.input.as_ref().unwrap().as_slice())
                 {
-                    // The prepared header describes the upload-ready payload.
-                    let (header, _) = TextureHeader::parse(load.input.as_ref().unwrap().as_slice())
-                        .map_err(|e| e.to_string())?;
-                    let descriptor = header.descriptor();
-                    load.texture = Some(descriptor);
-                    load.size = descriptor.layout.logical_size;
-                    load.output = header.payload_len();
-                    load.temporary = 0;
-                    load.phase = Phase::Decode;
+                    let prepared = prepared?;
+                    load.prepare_pixels(prepared);
                     probe = false;
                     self.admit_prefetch(load)?;
                     if let Some(lease) = self.origins.shared(load) {
@@ -1038,7 +1082,7 @@ impl Service {
                             .expect("raw prepared input has one owner");
                         let end = input.as_slice().len();
                         let data = input
-                            .into_slice(TextureHeader::LEN..end)
+                            .into_slice(prepared.header_len()..end)
                             .map_err(|e| e.reason.message)?;
                         let result = register(load, data);
                         if load.reloadable
@@ -1057,7 +1101,7 @@ impl Service {
                     return Err("image decode limit exceeded".into());
                 }
                 let bounded_image = matches!(load.phase, Phase::DecodeBoundedImage);
-                let workspace = if bounded_image || load.texture.is_some() {
+                let workspace = if bounded_image || load.prepared.is_some() {
                     load.temporary
                 } else {
                     decode_bytes
@@ -1145,7 +1189,9 @@ impl Service {
 
 impl Service {
     fn admit_prefetch(&self, load: &Load) -> Result<(), String> {
-        let header = u64::from(load.texture.is_some()) * TextureHeader::LEN as u64;
+        let header = load
+            .prepared
+            .map_or(0, |prepared| prepared.header_len() as u64);
         if load.priority == Priority::Prefetch
             && load.output.saturating_add(header) > load.prefetch_limit
         {
@@ -1212,15 +1258,17 @@ fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {
         1024 + version.key.0.capacity() as u64 + schema_bytes as u64,
     )
     .map_err(|e| format!("asset descriptor: {e:?}"))?;
-    let handle = match load.kind {
-        AssetKind::Bytes => return Err("raw bytes do not use the UI registry".into()),
-        AssetKind::Font => registry.register_font(version, data),
-        AssetKind::EffectShader => registry.register_effect_shader(version, shader.unwrap(), data),
-        AssetKind::Image if load.texture.is_some() => registry.register_texture(
+    let handle = match (load.kind, load.prepared) {
+        (AssetKind::Bytes, _) => return Err("raw bytes do not use the UI registry".into()),
+        (AssetKind::Font, _) => registry.register_font(version, data),
+        (AssetKind::EffectShader, _) => {
+            registry.register_effect_shader(version, shader.unwrap(), data)
+        }
+        (AssetKind::Image, Some(PreparedPixels::Texture(texture))) => registry.register_texture(
             version,
-            TexturePayload::new(load.texture.unwrap(), data).map_err(|e| e.to_string())?,
+            TexturePayload::new(texture.descriptor(), data).map_err(|e| e.to_string())?,
         ),
-        AssetKind::Image => registry.register_image(
+        (AssetKind::Image, _) => registry.register_image(
             version,
             data,
             load.size,
