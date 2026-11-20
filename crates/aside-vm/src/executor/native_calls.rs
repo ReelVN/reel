@@ -199,14 +199,20 @@ impl Vm {
         Ok(())
     }
 
+    /// Read the verified function identity of a script closure. Its captures
+    /// still belong to the current VM and are not inspected by this query.
+    pub fn plain_closure_function(&self, value: Value) -> Result<FunctionId, VmError> {
+        if self.heap.read_object(value)?.kind() != ObjectKind::Closure {
+            return Err(VmError::Contract("expected a script closure"));
+        }
+        self.closure_function(value)
+    }
+
     /// Resolve a function value that carries no receiver or captured environment.
     /// The identity belongs to this verified program; no heap value crosses into
     /// a replacement VM. Hosts validate the entry's signature and context.
     pub fn unbound_function(&self, value: Value) -> Result<FunctionId, VmError> {
-        if self.heap.read_object(value)?.kind() != ObjectKind::Closure {
-            return Err(VmError::Contract("entry must be an unbound function"));
-        }
-        let function = self.closure_function(value)?;
+        let function = self.plain_closure_function(value)?;
         if !self.program.package().functions[function.index()]
             .captures
             .is_empty()

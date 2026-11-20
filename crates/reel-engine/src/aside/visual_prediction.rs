@@ -3,6 +3,7 @@
 
 use arrayvec::ArrayVec;
 use aside_vm::bytecode::{self as bc, Opcode};
+use std::collections::HashMap;
 mod catalogs;
 mod classes;
 pub(super) use catalogs::Catalogs;
@@ -45,6 +46,7 @@ enum Fact {
     Null,
     Bool(bool),
     Constant(bc::ConstId),
+    Text(u8),
     Function(bc::FunctionId),
     Closure(u8),
     Instance(bc::TypeId),
@@ -115,6 +117,27 @@ pub(super) fn compile_site<'p>(
     }
 }
 
+pub(super) type PagePaths<'p> = HashMap<&'p str, bc::ConstId>;
+
+pub(super) fn compile_page<'p>(
+    program: &'p bc::VerifiedProgram,
+    catalogs: &Catalogs<'p>,
+    classes: &Classes,
+    function: &bc::RuntimeFunction,
+    page_paths: &PagePaths<'p>,
+    budget: &mut usize,
+) -> Option<Paths<'p>> {
+    let available = (*budget).min(BUILD_INSTRUCTION_LIMIT);
+    let mut walk = Walk::new(program, catalogs, classes, available, 0);
+    walk.page_paths = Some(page_paths);
+    let result = walk.function(function, 0, Facts::default(), 0);
+    *budget -= available - walk.remaining;
+    match result? {
+        Outcome::Images(paths) => Some(paths),
+        Outcome::Return(_) => None,
+    }
+}
+
 pub(super) fn image_path(program: &bc::VerifiedProgram, id: bc::ConstId) -> Option<&str> {
     let candidate = program.package().constants.get(id.index())?;
     let length = match candidate {
@@ -148,6 +171,8 @@ struct Walk<'p, 'c> {
     layers: ArrayVec<ArrayVec<bc::ConstId, LAYER_LIMIT>, GROUP_LIMIT>,
     closures: ArrayVec<(bc::FunctionId, Captures), CLOSURE_LIMIT>,
     fields: ArrayVec<(bc::ConstId, Fact), FIELD_LIMIT>,
+    page_paths: Option<&'c PagePaths<'p>>,
+    computed_texts: Vec<String>,
 }
 
 impl<'p, 'c> Walk<'p, 'c> {
@@ -168,6 +193,8 @@ impl<'p, 'c> Walk<'p, 'c> {
             layers: ArrayVec::new(),
             closures: ArrayVec::new(),
             fields: ArrayVec::new(),
+            page_paths: None,
+            computed_texts: Vec::new(),
         }
     }
 
@@ -208,19 +235,11 @@ impl<'p, 'c> Walk<'p, 'c> {
                     }
                 }
                 Opcode::GlobalRead => {
-                    let bc::Descriptor::Global { module, global } =
-                        function.descriptors[b as usize]
-                    else {
-                        return None;
-                    };
-                    let binding = self.program.global_binding(module, global).ok()?;
-                    let value = if let Some(table) = self.catalogs.get(binding.offset) {
-                        Fact::Catalog(table)
-                    } else {
-                        self.global_function(module, global)
-                            .map_or(Fact::Unknown, Fact::Function)
-                    };
-                    facts.set(a, value);
+                    facts.set(a, self.read_global(function, b).unwrap_or(Fact::Unknown));
+                }
+                Opcode::TextNew if self.page_paths.is_some() => {
+                    pc = self.interpolate(function, next, a, &mut facts)?;
+                    continue;
                 }
                 Opcode::MakeTable => {
                     let table = self.table(&function.descriptors[b as usize], &facts);
@@ -290,6 +309,11 @@ impl<'p, 'c> Walk<'p, 'c> {
                             .copied()
                             .unwrap_or(Fact::Unknown),
                     );
+                }
+                Opcode::CellRead if self.page_paths.is_some() => {
+                    // A factory may read an unknown capture for layout or
+                    // appearance while choosing a resource independently.
+                    facts.set(a, Fact::Unknown);
                 }
                 Opcode::Eq | Opcode::Ne => {
                     let equal = match (facts.get(b), facts.get(c)) {
@@ -373,7 +397,8 @@ impl<'p, 'c> Walk<'p, 'c> {
             Fact::Null => return (opcode == Opcode::BranchNull).then_some(Some(true)),
             Fact::Bool(value) => return Some(Some(opcode == Opcode::BranchBool && value)),
             Fact::Constant(id) => Some(&self.program.package().constants[id.index()]),
-            Fact::Function(_)
+            Fact::Text(_)
+            | Fact::Function(_)
             | Fact::Closure(_)
             | Fact::Method(_, _)
             | Fact::Instance(_)
@@ -465,7 +490,16 @@ impl<'p, 'c> Walk<'p, 'c> {
             };
             let mut paths = Paths::new();
             match (symbol, facts.get(window.start.0 + offset)) {
-                ("reel::image", Fact::Constant(id)) => paths.push(self.path(id)?),
+                ("reel::image", value) => {
+                    let id = match value {
+                        Fact::Constant(id) => id,
+                        Fact::Text(index) => *self
+                            .page_paths?
+                            .get(self.computed_texts[usize::from(index)].as_str())?,
+                        _ => return None,
+                    };
+                    paths.push(self.path(id)?);
+                }
                 ("reel::layered_image", Fact::Layers(group)) => {
                     for &id in &self.layers[usize::from(group)] {
                         let path = self.path(id)?;
@@ -747,11 +781,15 @@ impl<'p, 'c> Walk<'p, 'c> {
         Some(arguments)
     }
 
-    fn global_function(
-        &mut self,
-        module: bc::ModuleId,
-        global: bc::GlobalId,
-    ) -> Option<bc::FunctionId> {
+    fn read_global(&mut self, function: &bc::RuntimeFunction, descriptor: u32) -> Option<Fact> {
+        let bc::Descriptor::Global { module, global } = function.descriptors[descriptor as usize]
+        else {
+            return None;
+        };
+        let binding = self.program.global_binding(module, global).ok()?;
+        if let Some(table) = self.catalogs.get(binding.offset) {
+            return Some(Fact::Catalog(table));
+        }
         let package = self.program.package();
         let owner = &package.modules[module.index()];
         let declaration = owner.globals.get(global.index())?;
@@ -759,7 +797,7 @@ impl<'p, 'c> Walk<'p, 'c> {
             return None;
         }
         if let Some(function) = declaration.linked_function {
-            return Some(function);
+            return Some(Fact::Function(function));
         }
         // Reel finishes module initialization before executing story tasks.
         // Prove a closure in the unconditional prefix of its owning initializer.
@@ -784,12 +822,70 @@ impl<'p, 'c> Walk<'p, 'c> {
                 };
                 if (target, slot) == (module, global) {
                     return match facts.get(a) {
-                        Fact::Function(function) => Some(function),
+                        value @ Fact::Function(_) => Some(value),
+                        value @ Fact::Constant(_) if self.page_paths.is_some() => Some(value),
                         _ => None,
                     };
                 }
             } else {
                 update_facts(initializer, op, [a, b, c], &mut facts)?;
+            }
+            pc = next;
+        }
+    }
+
+    /// Fold the straight-line sequence the compiler emits for a string
+    /// interpolation. The temporary builder remains local to this sequence.
+    fn interpolate(
+        &mut self,
+        function: &bc::RuntimeFunction,
+        mut pc: usize,
+        builder: u32,
+        facts: &mut Facts,
+    ) -> Option<usize> {
+        if self.computed_texts.len() == FACT_LIMIT {
+            return None;
+        }
+        facts.set(builder, Fact::Unknown);
+        let mut result = String::new();
+        loop {
+            let (instruction, next) = self.instruction(function, pc)?;
+            let opcode = bc::instruction_spec(instruction.opcode)?.opcode;
+            let [a, b, c] = instruction.operands;
+            match opcode {
+                Opcode::TextPush if a == builder => {
+                    let part = match facts.get(b) {
+                        Fact::Constant(id) => self.text(id)?,
+                        Fact::Text(index) => &self.computed_texts[usize::from(index)],
+                        _ => return None,
+                    };
+                    if result.len().checked_add(part.len())? > PATH_LIMIT {
+                        return None;
+                    }
+                    self.remaining = self.remaining.checked_sub(part.len().div_ceil(16))?;
+                    result.push_str(part);
+                }
+                Opcode::TextFinish if b == builder => {
+                    let index = self.computed_texts.len() as u8;
+                    self.computed_texts.push(result);
+                    facts.set(a, Fact::Text(index));
+                    return Some(next);
+                }
+                Opcode::GlobalRead if a != builder => {
+                    facts.set(a, self.read_global(function, b).unwrap_or(Fact::Unknown));
+                }
+                _ => {
+                    let touches_builder = match opcode {
+                        Opcode::LoadConst | Opcode::Clear => a == builder,
+                        Opcode::Move | Opcode::Clear2 => [a, b].contains(&builder),
+                        Opcode::Clear3 => [a, b, c].contains(&builder),
+                        _ => return None,
+                    };
+                    if touches_builder {
+                        return None;
+                    }
+                    update_facts(function, opcode, [a, b, c], facts)?;
+                }
             }
             pc = next;
         }
@@ -1221,6 +1317,39 @@ mod tests {
         let mut walk = Walk::new(&program, &catalogs, &classes, 1, BUILD_DIALOGUE_LIMIT);
         assert!(walk.function(function, next, Facts::default(), 0).is_none());
         assert_eq!(walk.remaining, 0);
+    }
+
+    #[test]
+    fn page_factories_predict_paths_without_evaluating_captures() {
+        let program = compile(
+            r#"
+                let prefix = "ui";
+                fn known_size(asset: string) -> int {
+                    if asset == "ui/settings/detail.png" { 1920 } else { 0 }
+                }
+                fn background(alpha: float) -> Node {
+                    let folder = f"{prefix}/settings";
+                    stack { image(f"{folder}/detail.png", opacity: alpha); }
+                }
+                fn opening() {
+                    let alpha = 0.6;
+                    fn detail() -> Node { background(alpha) }
+                    stage.replace(page_stack(value: "detail", items: [{key: "detail", build: detail}]));
+                }
+            "#,
+        );
+        let package = program.package();
+        let factory = package
+            .functions
+            .iter()
+            .position(|function| package.symbols[function.name.index()] == "detail")
+            .unwrap();
+        let plan = VisualPlan::compile(&program, 1024).unwrap();
+        let plan = VisualPlan::decode(plan.as_bytes().into(), &program).unwrap();
+        let images = plan
+            .page_images(&program, bc::FunctionId(factory as u32))
+            .unwrap();
+        assert_eq!(images.as_slice(), ["ui/settings/detail.png"]);
     }
 
     #[test]

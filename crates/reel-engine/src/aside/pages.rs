@@ -6,9 +6,11 @@ use aside_vm::{Heap, ObjectKind, PropertyId, ValueTag};
 use reel_ui::stage::{NodeKind, NodeProps, NodeSemantics};
 
 mod api;
+mod prediction;
 mod stack;
 mod tabs;
 pub(super) use api::{contracts, describe, documentation};
+pub(super) use prediction::NavigationPrediction;
 
 #[derive(aside_host::Properties)]
 pub(super) enum PageField {

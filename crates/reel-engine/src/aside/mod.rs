@@ -259,6 +259,7 @@ struct ImagePrediction {
     revision: u64,
     dialogue: Option<WaitId>,
     newest_activity: Option<WaitId>,
+    page: Option<aside_vm::bytecode::FunctionId>,
     sources: Box<[Box<str>]>,
 }
 
@@ -296,6 +297,7 @@ pub struct SessionVm {
     pending: Option<PendingInteraction>,
     visual_plan: Option<std::sync::Arc<visual_plan::VisualPlan>>,
     predicted_images: Option<ImagePrediction>,
+    page_navigation: pages::NavigationPrediction,
     choice_reader: Option<choice::ChoiceReader>,
     dialogue_reader: Option<dialogue::DialogueReader>,
     // Constructed speech handles and their VM objects, without production counters.
@@ -433,6 +435,7 @@ impl SessionVm {
             pending: None,
             visual_plan: None,
             predicted_images: None,
+            page_navigation: pages::NavigationPrediction::default(),
             choice_reader: None,
             dialogue_reader: None,
             #[cfg(test)]
@@ -1012,8 +1015,7 @@ impl SessionVm {
         Ok(())
     }
 
-    /// Paths from the next statically known image or layered image after a
-    /// pending dialogue or a finite activity completion, in preparation order.
+    /// Images for the current navigation target or the next known story image.
     pub fn predicted_images(&mut self) -> &[Box<str>] {
         let Some(plan) = self.visual_plan.as_ref() else {
             return &[];
@@ -1030,21 +1032,27 @@ impl SessionVm {
             })
             .map(|pending| pending.wait);
         let revision = self.vm.wait_revision();
+        let page = self.focused_page_factory();
         let (newest_activity, completions) = self.activities.recent_completion_waits();
         if self.predicted_images.as_ref().is_none_or(|last| {
             last.revision != revision
                 || last.dialogue != dialogue
                 || last.newest_activity != newest_activity
+                || last.page != page
         }) {
             let program = self.vm.program();
-            let sources = dialogue
-                .into_iter()
-                .chain(completions)
-                .find_map(|wait| plan.next_images(program, self.vm.wait_call_sites(wait)));
+            let sources =
+                page.and_then(|factory| plan.page_images(program, factory))
+                    .or_else(|| {
+                        dialogue.into_iter().chain(completions).find_map(|wait| {
+                            plan.next_images(program, self.vm.wait_call_sites(wait))
+                        })
+                    });
             let prediction = self.predicted_images.get_or_insert_with(Default::default);
             prediction.revision = revision;
             prediction.dialogue = dialogue;
             prediction.newest_activity = newest_activity;
+            prediction.page = page;
             if !prediction
                 .sources
                 .iter()

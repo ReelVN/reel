@@ -163,6 +163,7 @@ impl SessionVm {
         for event in events {
             match event {
                 reel_ui::stage::NodeEvent::Interaction(event) => {
+                    self.observe_page_navigation(event);
                     if self.stage.interaction(self.vm.heap_mut(), event)? {
                         changed = true;
                         if let Some((target, callback)) = self
@@ -686,6 +687,7 @@ impl SessionVm {
         }
         self.schedule_cursor %= self.tasks.len() + 1;
         if let Some(root) = callback.result {
+            self.forget_page_selection(root);
             if callback.cancelling {
                 let object = self.vm.heap().root_value(root)?;
                 super::results::finish_task(

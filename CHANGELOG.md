@@ -4,6 +4,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Prepare known images for focused tabs and pending page-stack selections through the existing asset queue.
 - Skip calls that cannot suspend when building image predictions, and preserve continuation analysis after typed-parameter discovery runs out of work.
 - Predict images through proven method dispatch and read-only catalog lookups, and give dialogue predictions priority over unrelated stage prefetch.
 - Keep reusable image sources with their resident textures on desktop and Vita, using byte budgets for decoded images and source metadata.

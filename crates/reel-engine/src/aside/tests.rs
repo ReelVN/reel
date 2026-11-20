@@ -34,6 +34,7 @@ mod media_positions;
 mod models;
 mod native_pages;
 mod native_scrollbar;
+mod page_prediction;
 mod particles;
 mod persistent;
 mod popups;

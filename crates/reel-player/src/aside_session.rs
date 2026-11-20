@@ -659,6 +659,9 @@ impl AsideSessionUi {
             self.transitions
                 .gate(&self.vm, bridge, root, self.ui.projection_stamp())?;
         }
+        // Start resource preparation while a navigation factory is still
+        // constructing its page. Its stage changes keep the usual commit gate.
+        self.ui.set_image_prediction(self.vm.predicted_images());
         if self.vm.activities_pending() {
             return Ok(());
         }
@@ -687,7 +690,6 @@ impl AsideSessionUi {
                 self.ui.request_presentation(self.vm.presentation_request());
             }
         }
-        self.ui.set_story_prediction(self.vm.predicted_images());
         self.sync_input(bridge, root)?;
         if SessionUi::stage_widget(bridge, root).is_some() {
             self.transitions

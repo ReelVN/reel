@@ -1089,7 +1089,7 @@ impl StageBinding {
         self.mounted_in_scope(heap, id, self.modal_scope(heap)?)
     }
 
-    fn mounted_in_scope(
+    pub(super) fn mounted_in_scope(
         &self,
         heap: &Heap,
         id: NodeId,
@@ -1130,7 +1130,7 @@ impl StageBinding {
     /// Inspect current script flags, including writes not yet projected to the UI.
     /// Reverse paint order stops at the first visible modal; no strings or full
     /// node properties are copied on the activation path.
-    fn modal_scope(&self, heap: &Heap) -> Result<Option<NodeId>, AdapterError> {
+    pub(super) fn modal_scope(&self, heap: &Heap) -> Result<Option<NodeId>, AdapterError> {
         if self.scene.has_popups()
             && let Some(modal) = self.popup_modal_scope(heap)?
         {

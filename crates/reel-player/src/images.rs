@@ -27,7 +27,7 @@ struct Pending {
 #[derive(Default)]
 struct PrefetchSources {
     stage: BTreeSet<String>,
-    story: Box<[Box<str>]>,
+    predicted: Box<[Box<str>]>,
 }
 
 impl PrefetchSources {
@@ -36,11 +36,11 @@ impl PrefetchSources {
     }
 
     fn predicted(&self, source: &str) -> bool {
-        self.story.iter().any(|path| path.as_ref() == source)
+        self.predicted.iter().any(|path| path.as_ref() == source)
     }
 
     fn candidates(&self, include_stage: bool) -> impl Iterator<Item = &str> {
-        self.story.iter().map(Box::as_ref).chain(
+        self.predicted.iter().map(Box::as_ref).chain(
             include_stage
                 .then_some(&self.stage)
                 .into_iter()
@@ -62,7 +62,7 @@ pub(crate) struct Images {
     skipped: BTreeSet<String>,
     wanted: BTreeMap<String, Option<String>>,
     prefetch: PrefetchSources,
-    story_prediction_changed: bool,
+    prediction_changed: bool,
     approaching: Vec<reel_ui::stage::NodeId>,
     mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
@@ -104,7 +104,7 @@ impl Images {
             skipped: BTreeSet::new(),
             wanted: BTreeMap::new(),
             prefetch: PrefetchSources::default(),
-            story_prediction_changed: false,
+            prediction_changed: false,
             approaching: Vec::new(),
             mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
@@ -230,12 +230,12 @@ impl Images {
     pub(crate) fn is_required(&self, source: &str) -> bool {
         self.wanted.contains_key(source)
     }
-    pub(crate) fn set_story_prediction(&mut self, sources: &[Box<str>]) {
-        if self.prefetch.story.as_ref() != sources {
-            self.prefetch.story = sources.into();
+    pub(crate) fn set_image_prediction(&mut self, sources: &[Box<str>]) {
+        if self.prefetch.predicted.as_ref() != sources {
+            self.prefetch.predicted = sources.into();
             // Apply alongside the next visible demand so it can take over
-            // an in-flight read when the dialogue advances directly to the image.
-            self.story_prediction_changed = true;
+            // an in-flight read when the next view makes its predicted image visible.
+            self.prediction_changed = true;
         }
     }
     #[cfg(test)]
@@ -255,13 +255,13 @@ impl Images {
         self.wanted = wanted;
         self.prefetch = PrefetchSources {
             stage: prefetch,
-            story: Box::default(),
+            predicted: Box::default(),
         };
         self.approaching.clear();
         self.reconcile_requests();
     }
     fn reconcile_requests(&mut self) {
-        self.story_prediction_changed = false;
+        self.prediction_changed = false;
         self.settled = false;
         // Reuse completed CPU work before requesting IO. Uploaded textures keep
         // their source addressable through the ordinary asset lookup.
@@ -326,7 +326,7 @@ impl Images {
         if let Some(failure) = &self.failure {
             return Err(failure.clone());
         }
-        if self.story_prediction_changed {
+        if self.prediction_changed {
             self.reconcile_requests();
         }
         if self.settled {
@@ -473,8 +473,8 @@ impl Images {
                 self.loaded.insert(source, lease);
                 continue;
             }
-            // Follow the active dialogue ahead of unrelated stage speculation.
-            // A pending image that the dialogue also predicts keeps its work.
+            // Follow the current prediction ahead of unrelated stage prefetch.
+            // A matching pending request keeps its work.
             if let Some(index) = in_flight {
                 self.assets.cancel(self.pending.remove(index).id);
             }
@@ -544,7 +544,7 @@ impl Images {
             .sum()
     }
     fn trim_hidden_prefetch(&mut self) {
-        if (self.prefetch.story.is_empty() && self.prefetch.stage.is_empty())
+        if (self.prefetch.predicted.is_empty() && self.prefetch.stage.is_empty())
             || self.hidden_prefetch_bytes() <= self.assets.prefetch_available(0)
         {
             return;

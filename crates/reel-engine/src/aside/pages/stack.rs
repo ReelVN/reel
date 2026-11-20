@@ -147,6 +147,7 @@ impl SessionVm {
             Context::Ordinary,
         )?;
         put(self.vm.heap_mut(), s, S::SelectionRequest, serial)?;
+        self.remember_page_selection(root, e, task);
         Ok(task)
     }
 
@@ -298,6 +299,9 @@ impl SessionVm {
             let task = self.page_task(session, root, selected, false)?;
             self.vm.heap_mut().observe_read(task, Some(0))?;
             let pending = field(self.vm.heap(), task, 0)?.as_bool().unwrap();
+            if pending {
+                self.remember_page_selection(root, selected, task);
+            }
             ready = !pending;
             if !pending && get(self.vm.heap(), selected, E::Node)?.tag() == ValueTag::Null {
                 self.vm.heap_mut().end_derived(output)?;

@@ -66,6 +66,71 @@ fn text_id(vm: &SessionVm, label: &str) -> reel_ui::stage::NodeId {
 }
 
 #[test]
+fn focused_tab_predicts_the_lazy_page_without_building_it() {
+    use reel_ui::stage::{ControlValue, InteractionState, NodeChange, NodeEvent, NodeInteraction};
+
+    let code = r#"fn opening() {
+        let items = [
+            {key: "one", label: "One", build: || text("First page")},
+            {key: "two", label: "Two", build: || stack {
+                image("second.png", width: 100, height: 100);
+                text("Second page");
+            }},
+        ];
+        let pages = page_stack(value: "one", items: items);
+        let tabs = tab_bar(value: bind(pages.value), items: items, activation: "manual");
+        stage.replace(column { tabs; pages; });
+    }"#;
+    let (mut session, mut vm) = prepared(code, false);
+    vm.visual_plan =
+        visual_plan::VisualPlan::compile(vm.vm.program(), 64 * 1024).map(std::sync::Arc::new);
+    drive(&mut vm, &mut session, true);
+    let (node, revision) = vm
+        .stage()
+        .nodes()
+        .find_map(|node| match &node.kind {
+            NodeKind::Radio {
+                label: Some(label),
+                revision,
+                ..
+            } if label == "Two" => Some((node.id, *revision)),
+            _ => None,
+        })
+        .unwrap();
+
+    let feedback = |focused| {
+        [NodeEvent::Interaction(NodeInteraction {
+            node,
+            state: InteractionState {
+                focused,
+                focus_visible: focused,
+                ..Default::default()
+            },
+        })]
+    };
+    vm.interactions(&mut session, &feedback(true)).unwrap();
+    assert_eq!(&*vm.predicted_images()[0], "second.png");
+    assert!(vm.stage().nodes().all(|node| !matches!(
+        &node.kind,
+        NodeKind::Text(label) if label.as_ref() == "Second page"
+    )));
+
+    vm.interactions(&mut session, &feedback(false)).unwrap();
+    assert!(vm.predicted_images().is_empty());
+    vm.change(
+        &mut session,
+        &NodeChange {
+            node,
+            value: ControlValue::Selection(revision),
+            range: None,
+        },
+    )
+    .unwrap();
+    drive(&mut vm, &mut session, true);
+    text_id(&vm, "Second page");
+}
+
+#[test]
 fn latest_page_selection_commits_after_shared_construction() {
     let code = r#"fn opening() {
         let settings = model({page: "one"});
