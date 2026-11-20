@@ -896,43 +896,27 @@ impl Context<'_> {
 
         let mut page: Option<Rc<Page>> = None;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
-        for index in 0..run.glyphs.len() {
+        for position in &run.glyphs {
             let glyph = self
                 .glyph_cache
                 .entries
-                .get(key.lookup(run.glyphs[index].id))
-                .cloned()
+                .get(key.lookup(position.id))
                 .ok_or(GpuError::Unsupported {
                     at,
                     record: "glyph missing from preparation",
                 })?;
             crate::common::recording_cache::Glyphs::lease(
                 &mut captured,
-                run.glyphs[index].id,
-                glyph.clone(),
+                position.id,
+                glyph,
                 self.budgets,
                 self.limits.transient_bytes,
             );
             let Some(image) = &glyph.image else {
                 continue;
             };
-            if let Some(previous) = &page
-                && !Rc::ptr_eq(previous, &image.page)
-            {
-                mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
-                crate::common::recording_cache::Glyphs::capture(
-                    &mut captured,
-                    &mut batch,
-                    previous.clone(),
-                    self.budgets,
-                    self.limits.transient_bytes,
-                );
-                self.paint_glyph_mesh(target, batch, previous, paint)?;
-                batch = mesh::Mesh::new(self.mesh_allocation());
-            }
-            page = Some(image.page.clone());
             let bounds = crate::common::glyph_plan::bitmap_bounds(
-                [run.glyphs[index].x, run.glyphs[index].y],
+                [position.x, position.y],
                 image.offset,
                 image.size,
                 density,
@@ -943,6 +927,24 @@ impl Context<'_> {
                 f64::from(image.origin[0] + image.size[0]) / f64::from(image.page.size[0]),
                 f64::from(image.origin[1] + image.size[1]) / f64::from(image.page.size[1]),
             );
+            let next_page = (!page
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(current, &image.page)))
+            .then(|| image.page.clone());
+            if let Some(next_page) = next_page
+                && let Some(previous) = page.replace(next_page)
+            {
+                mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
+                crate::common::recording_cache::Glyphs::capture(
+                    &mut captured,
+                    &mut batch,
+                    &previous,
+                    self.budgets,
+                    self.limits.transient_bytes,
+                );
+                self.paint_glyph_mesh(target, batch, &previous, paint)?;
+                batch = mesh::Mesh::new(self.mesh_allocation());
+            }
             batch.quad(bounds, uv)?;
         }
         if let Some(page) = page {
@@ -950,7 +952,7 @@ impl Context<'_> {
             crate::common::recording_cache::Glyphs::capture(
                 &mut captured,
                 &mut batch,
-                page.clone(),
+                &page,
                 self.budgets,
                 self.limits.transient_bytes,
             );

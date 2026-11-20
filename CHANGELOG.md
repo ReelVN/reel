@@ -4,6 +4,11 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Reuse live textures across saved-game restoration by matching the original asset version.
+- Scan leading opaque image rows in groups and record their coverage together.
+- Keep the same atlas page across consecutive glyphs and retain glyph leases only for recorded geometry.
+- Resolve the host once when the Aside VM reads a host property.
+
 ## 0.4.0-dev.3 — 2026-11-20
 
 - Skip pixel scans when an indexed texture's palette is fully opaque, and test BC3 alpha selectors together when finding image coverage.

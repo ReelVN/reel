@@ -137,7 +137,9 @@ impl Origins {
                 .filter(|lease| {
                     lease.version().key == load.source.key
                         && lease.version().version == version
-                        && (kind != RetainedAssetKind::Image || lease.pixels_resident())
+                        && (kind != RetainedAssetKind::Image
+                            || load.reuse_uploaded_image
+                            || lease.pixels_resident())
                 })
         };
         if self.items.len() >= 16
@@ -205,6 +207,7 @@ mod tests {
                 version: Some(version.version),
             },
             reloadable: true,
+            reuse_uploaded_image: false,
             kind: AssetKind::Image,
             priority: reel_core::identity::Priority::Visible,
             prefetch_limit: u64::MAX,

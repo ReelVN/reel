@@ -57,7 +57,7 @@ impl<P, G> StorageSize for Glyphs<P, G> {
                 .sum::<u64>()
     }
 }
-impl<P, G> Glyphs<P, G> {
+impl<P: Clone, G: Clone> Glyphs<P, G> {
     pub fn new(budgets: &Budgets, limit: u64) -> Option<Self> {
         let ticket = admit(budgets, limit, 0)?;
         Some(Self {
@@ -66,7 +66,7 @@ impl<P, G> Glyphs<P, G> {
             _ticket: ticket,
         })
     }
-    pub fn lease(capture: &mut Option<Self>, id: u32, glyph: G, budgets: &Budgets, limit: u64) {
+    pub fn lease(capture: &mut Option<Self>, id: u32, glyph: &G, budgets: &Budgets, limit: u64) {
         let Some(value) = capture else {
             return;
         };
@@ -77,12 +77,12 @@ impl<P, G> Glyphs<P, G> {
             *capture = None;
             return;
         }
-        value.leases.insert(index, (id, glyph));
+        value.leases.insert(index, (id, glyph.clone()));
     }
     pub fn capture(
         capture: &mut Option<Self>,
         mesh: &mut mesh::Mesh,
-        page: P,
+        page: &P,
         budgets: &Budgets,
         limit: u64,
     ) {
@@ -97,7 +97,7 @@ impl<P, G> Glyphs<P, G> {
             *capture = None;
             return;
         }
-        value.segments.push((cached, page));
+        value.segments.push((cached, page.clone()));
     }
 }
 fn grow<T>(

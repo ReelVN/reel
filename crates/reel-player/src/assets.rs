@@ -122,6 +122,7 @@ pub(crate) enum ImageAsset {
 struct Load {
     source: AssetSource,
     reloadable: bool,
+    reuse_uploaded_image: bool,
     kind: AssetKind,
     priority: Priority,
     prefetch_limit: u64,
@@ -410,6 +411,21 @@ impl Assets {
             kind,
             Priority::Visible,
             u64::MAX,
+            false,
+        )
+    }
+    /// Stage presentation can share an uploaded raster's identity while the
+    /// renderer retains its pixels. A miss uses ordinary exact-version recovery.
+    pub(crate) fn request_stage_asset(&self, source: String, kind: AssetKind) -> LoadId {
+        self.request_source(
+            AssetSource {
+                key: AssetKey(source),
+                version: None,
+            },
+            kind,
+            Priority::Visible,
+            u64::MAX,
+            kind == AssetKind::Image,
         )
     }
     /// Restore a retained asset from the selected fixed source.
@@ -422,6 +438,7 @@ impl Assets {
             kind,
             Priority::Visible,
             u64::MAX,
+            false,
         )
     }
     pub(crate) fn prefetch(&self, source: String, kind: AssetKind, limit: u64) -> LoadId {
@@ -433,6 +450,7 @@ impl Assets {
             kind,
             Priority::Prefetch,
             limit,
+            false,
         )
     }
     /// Raise the existing request to visible priority and keep its admitted work.
@@ -445,6 +463,7 @@ impl Assets {
         kind: AssetKind,
         priority: Priority,
         prefetch_limit: u64,
+        reuse_uploaded_image: bool,
     ) -> LoadId {
         let mut service = self.0.borrow_mut();
         service.next = service
@@ -462,6 +481,7 @@ impl Assets {
             Load {
                 source,
                 reloadable: true,
+                reuse_uploaded_image,
                 kind,
                 priority,
                 prefetch_limit,
@@ -538,6 +558,7 @@ impl Assets {
                     version: Some(reel_core::identity::ContentVersion([0; 32])),
                 },
                 reloadable: false,
+                reuse_uploaded_image: false,
                 kind: AssetKind::Image,
                 priority,
                 prefetch_limit,

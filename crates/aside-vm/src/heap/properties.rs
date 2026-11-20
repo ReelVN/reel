@@ -165,16 +165,18 @@ impl Heap {
     }
 
     pub fn host_property(&self, property: PropertyId) -> Result<Value, HeapError> {
-        if self.is_model_cell(property.host)? {
-            self.property_access(property)?;
-            return self.cell_read(property.host);
-        }
-        Ok(self
-            .table_entry(
-                self.property_fields(property.host)?,
-                self.model_position(property)?,
-            )?
-            .1)
+        let receiver = self.read_object(property.host)?;
+        let (table, position) = match receiver.kind() {
+            ObjectKind::Cell if receiver.is_model() => {
+                self.property_access(property)?;
+                return self.cell_read(property.host);
+            }
+            ObjectKind::Table if receiver.is_model() => {
+                (property.host, self.model_position(property)?)
+            }
+            _ => (receiver.host_fields()?, property.field),
+        };
+        self.table_read(table)?.value(position)
     }
 
     fn property_metadata(&self, property: PropertyId) -> Result<Value, HeapError> {

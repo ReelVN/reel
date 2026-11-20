@@ -279,6 +279,7 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
             version: Some(ContentVersion([1; 32])),
         },
         reloadable: false,
+        reuse_uploaded_image: false,
         kind: AssetKind::Font,
         priority: Priority::Visible,
         prefetch_limit: u64::MAX,
@@ -353,7 +354,9 @@ fn pngs_with_fixed_metadata_decode_without_a_worker_probe() {
             .flat_map(|sample: u8| [25 + sample, 50 + sample, 75 + sample, 255])
             .collect::<Vec<_>>();
         let pixels = expected
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|pixel| pixel[..channels].iter().copied())
             .collect::<Vec<_>>();
         let mut encoded = Vec::new();
@@ -464,7 +467,9 @@ fn bounded_pngs_separate_resident_pixels_from_codec_workspace() {
         .collect::<Vec<_>>();
     for (color, channels) in [(png::ColorType::Rgb, 3), (png::ColorType::Rgba, 4)] {
         let pixels = expected
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|pixel| pixel[..channels].iter().copied())
             .collect::<Vec<_>>();
         let mut encoded = Vec::new();
@@ -757,8 +762,32 @@ fn prepared_versions_share_only_live_matching_kinds_and_respect_explicit_retirem
     assert_ne!(first.handle(), replacement.handle());
     assert_eq!(first.version(), replacement.version());
     assert!(!replacement.is_retired());
-    drop((first, shared, font, replacement));
+    drop((first, shared, font));
     assert!(weak.is_released());
+
+    // The accepted frame still owns this identity while another stage prepares.
+    assert!(replacement.discard_uploaded_pixels());
+    let stage = assets.request_stage_asset("assets/panels.png".into(), AssetKind::Image);
+    assets.maintain(); // Submit the description.
+    assets.maintain(); // Resolve the fixed version without a second payload read.
+    let stage = assets.take_ready(stage).unwrap().unwrap();
+    assert_eq!(stage.handle(), replacement.handle());
+    assert!(!stage.pixels_resident());
+    assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+    assert_eq!(assets.output_pool().usage().bytes, 0);
+
+    // The renderer may have to recover the pixels after GPU cache eviction.
+    let recovered = load_until_done(
+        &assets,
+        assets.request_version(stage.version().clone(), AssetKind::Image),
+    )
+    .unwrap();
+    assert_ne!(recovered.handle(), stage.handle());
+    assert_eq!(recovered.version(), stage.version());
+    assert!(recovered.pixels_resident());
+    stage.restore_pixels(&recovered).unwrap();
+    assert!(stage.pixels_resident());
+    drop((stage, recovered, replacement));
     assert_eq!(assets.output_pool().usage().bytes, 0);
 }
 

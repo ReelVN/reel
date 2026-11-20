@@ -420,7 +420,7 @@ impl Images {
                 };
                 id
             } else {
-                self.assets.request(
+                self.assets.request_stage_asset(
                     source.clone(),
                     if self.shader_sources.contains(&source) {
                         AssetKind::EffectShader

@@ -169,6 +169,7 @@ impl Service {
                     version: None,
                 },
                 reloadable: true,
+                reuse_uploaded_image: false,
                 kind: AssetKind::Image,
                 priority,
                 prefetch_limit,

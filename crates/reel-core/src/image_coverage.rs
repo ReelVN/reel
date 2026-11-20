@@ -74,24 +74,25 @@ impl ImageCoverage {
         {
             return None;
         }
-        let mut coverage = Self::empty(size);
-        coverage.opaque = true;
-        let active_mask = if alpha_only { ALPHA_BLOCK } else { u128::MAX };
-        for y in 0..size[1] {
+        let row = |y: u32| {
             let start = y as usize * stride;
-            let row = &bytes[start..start + size[0] as usize * 4];
-            let (blocks, tail) = row.as_chunks::<16>();
+            bytes[start..start + size[0] as usize * 4].as_chunks::<16>()
+        };
+        let opaque_rows = (0..size[1])
+            .find(|&y| {
+                let (blocks, tail) = row(y);
+                !opaque_row(blocks, tail)
+            })
+            .unwrap_or(size[1]);
+        let mut coverage = Self::empty(size);
+        coverage.opaque = opaque_rows == size[1];
+        if opaque_rows != 0 {
+            coverage.include([0, 0, size[0], opaque_rows]);
+        }
+        let active_mask = if alpha_only { ALPHA_BLOCK } else { u128::MAX };
+        for y in opaque_rows..size[1] {
+            let (blocks, tail) = row(y);
             let tail = tail.as_chunks::<4>().0;
-            if coverage.opaque
-                && blocks
-                    .iter()
-                    .all(|block| u128::from_le_bytes(*block) & ALPHA_BLOCK == ALPHA_BLOCK)
-                && tail.iter().all(|pixel| pixel[3] == 255)
-            {
-                coverage.include([0, y, size[0], y + 1]);
-                continue;
-            }
-            coverage.opaque = false;
             if let Some([first, end]) = active_span(blocks, tail, active_mask) {
                 coverage.include([first, y, end, y + 1]);
             }
@@ -223,6 +224,20 @@ impl ImageCoverage {
             None
         })
     }
+}
+
+fn opaque_row(blocks: &[[u8; 16]], tail: &[u8]) -> bool {
+    let (groups, remainder) = blocks.as_chunks::<8>();
+    // Combine 32 pixels before the branch. RGB bits cannot change the proof.
+    groups.iter().all(|group| {
+        let present = group
+            .iter()
+            .fold(u128::MAX, |bits, block| bits & u128::from_le_bytes(*block));
+        present & ALPHA_BLOCK == ALPHA_BLOCK
+    }) && remainder
+        .iter()
+        .all(|block| u128::from_le_bytes(*block) & ALPHA_BLOCK == ALPHA_BLOCK)
+        && tail.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255)
 }
 
 fn active_span(blocks: &[[u8; 16]], tail: &[[u8; 4]], mask: u128) -> Option<[u32; 2]> {

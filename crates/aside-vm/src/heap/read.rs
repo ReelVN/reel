@@ -25,6 +25,11 @@ impl ObjectRead<'_> {
     }
 
     #[inline]
+    pub(crate) fn is_model(self) -> bool {
+        self.object.model
+    }
+
+    #[inline]
     pub(crate) fn len(self) -> u32 {
         match &self.object.payload {
             Payload::Table(table) => table.values.len / 2,
