@@ -90,6 +90,15 @@ impl Collector {
 }
 
 impl Heap {
+    /// Revision of object liveness from garbage collection. Advances where
+    /// unmarked handles first become invalid, before their storage is swept.
+    /// Pair with the heap identity and epoch when caching handle checks.
+    pub fn collection_liveness_revision(&self) -> u64 {
+        // A cycle's number is reserved at start, while all handles still
+        // follow the preceding cycle's liveness until marking completes.
+        self.gc.cycle - u64::from(self.gc.phase == GcPhase::Mark)
+    }
+
     /// Cumulative work units for each category in [GC_WORK_NAMES].
     #[cfg(feature = "execution-counts")]
     pub fn gc_work_units(&self) -> [u64; GC_WORK_NAMES.len()] {

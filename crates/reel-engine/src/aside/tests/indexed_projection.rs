@@ -62,6 +62,106 @@ fn unrelated_writes_and_single_node_changes_preserve_projection_locality() {
 }
 
 #[test]
+fn detached_roots_are_checked_at_the_collection_cutoff() {
+    let code = r#"fn abandon() {
+        let unused = stack() { stack(); };
+        unused.x;
+    }
+    fn opening() {
+        let retained = [];
+        for i in 0..128 { retained.append(stack(x: i)); }
+        stage.replace(stack());
+        narrator("ready");
+        retained[0].remove();
+        abandon();
+        narrator("settled");
+        if retained[1].x != 1 { throw "detached root lost"; }
+    }"#;
+    let (mut session, mut vm) = models::prepared(code, false);
+    models::drive(&mut vm, &mut session, false);
+    let first = vm.stage().detached_roots().next().unwrap();
+    assert_eq!(vm.stage().detached_roots().len(), 128);
+    let x = property(&vm, vm.stage().root().unwrap(), stage::NodeProperty::X);
+    let checks = vm.stage.detached_root_checks;
+    for frame in 1..=512 {
+        vm.vm
+            .heap_mut()
+            .write_host_property(x, Value::int(frame), true)
+            .unwrap();
+        vm.sync_stage(&session).unwrap();
+    }
+    assert_eq!(vm.stage.detached_root_checks, checks);
+
+    let interaction = session.view().interaction.unwrap().id();
+    for _ in 0..2 {
+        session
+            .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+            .unwrap();
+    }
+    vm.sync_reading(&session).unwrap();
+    models::drive(&mut vm, &mut session, false);
+    let abandoned = vm.stage().detached_roots().next_back().unwrap();
+    let abandoned_child = vm.stage().node(abandoned).unwrap().children[0];
+    assert!(vm.stage().node(first).is_none());
+    assert_eq!(vm.stage().detached_roots().len(), 128);
+    assert_eq!(vm.stage.detached_root_checks, checks);
+
+    let step = GcBudget {
+        units: 1,
+        ..Default::default()
+    };
+    vm.begin_collection().unwrap();
+    vm.vm
+        .heap_mut()
+        .write_host_property(x, Value::int(513), true)
+        .unwrap();
+    vm.sync_stage(&session).unwrap();
+    assert!(vm.stage().node(abandoned).is_some());
+    assert_eq!(vm.stage.detached_root_checks, checks);
+    while vm.vm.heap().phase() == aside_vm::GcPhase::Mark {
+        vm.gc_step(step).unwrap();
+    }
+    assert_ne!(vm.vm.heap().phase(), aside_vm::GcPhase::Idle);
+    vm.sync_stage(&session).unwrap();
+    assert!(vm.stage().node(abandoned).is_none());
+    assert!(vm.stage().node(abandoned_child).is_none());
+    assert_eq!(vm.stage().detached_roots().len(), 127);
+    assert_eq!(vm.stage.detached_root_checks - checks, 128);
+    while vm.vm.heap().phase() != aside_vm::GcPhase::Idle {
+        vm.gc_step(step).unwrap();
+    }
+    vm.sync_stage(&session).unwrap();
+    assert_eq!(vm.stage.detached_root_checks - checks, 128);
+
+    let snapshot_budget = aside_vm::snapshot::SnapshotBudget { units: 32 };
+    let program = vm.vm.program().clone();
+    let previous_heap = vm.vm.heap().id();
+    let mut capture = vm.snapshot_begin(&session).unwrap();
+    while !capture.step(snapshot_budget).unwrap().complete {}
+    let bytes = capture.finish().unwrap().encode().unwrap();
+    let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+    let mut restore = SessionVm::restore_begin(
+        &mut image,
+        program,
+        VmLimits::default(),
+        SessionIdentity {
+            session_id: SessionId(41),
+            epoch: Epoch(10),
+        },
+        crate::ReadProgress::default(),
+        None,
+        None,
+    )
+    .unwrap();
+    while !restore.step(snapshot_budget).unwrap().complete {}
+    let (restored_session, mut restored) = restore.finish().unwrap();
+    assert_ne!(restored.vm.heap().id(), previous_heap);
+    assert_eq!(restored.stage().detached_roots().len(), 127);
+    restored.sync_stage(&restored_session).unwrap();
+    assert_eq!(restored.stage.detached_root_checks, 127);
+}
+
+#[test]
 fn shared_effect_changes_reach_each_dependent_node() {
     let code = r#"
 use reel::types::Fragment;

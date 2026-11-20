@@ -6,7 +6,7 @@ use reel_ui::frame::{FrameGlyphRun, RecordLocation};
 use reel_ui::resources::ResourceView;
 use reel_ui::{kurbo, peniko};
 use swash::{
-    scale::{ScaleContext, outline::Outline},
+    scale::{ScaleContext, Scaler, outline::Outline},
     zeno,
 };
 
@@ -124,70 +124,79 @@ pub fn rasterize(
     RasterRun::new(frame, run, density, at)?.glyph(context, index, limits)
 }
 
-fn rasterize_resource(
-    context: &mut Rasterizer,
-    resource: &reel_ui::resources::ResourceLease,
+struct PreparedRasterizer<'a> {
+    scaler: Scaler<'a>,
+    outline: &'a mut Outline,
+    scratch: &'a mut zeno::Scratch,
+}
+
+impl Rasterizer {
+    fn prepare<'a>(
+        &'a mut self,
+        resource: &'a reel_ui::resources::ResourceLease,
+        run: &FrameGlyphRun,
+        density: f64,
+    ) -> Result<PreparedRasterizer<'a>, &'static str> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphOutline);
+        let ResourceView::Font(font) = resource.view() else {
+            return Err("font resource type");
+        };
+        // Blob identity survives fallback-font switches and resource re-registration.
+        // The collection index distinguishes faces sharing the same immutable bytes.
+        let scaler_id = [font.id(), u64::from(run.font_index)];
+        let (offset, key) = match self.face {
+            Some((handle, index, offset, key)) if handle == run.font && index == run.font_index => {
+                (offset, key)
+            }
+            _ => {
+                let face = swash::FontRef::from_index(font.data(), run.font_index as usize)
+                    .ok_or("font collection index")?;
+                self.face = Some((run.font, run.font_index, face.offset, face.key));
+                (face.offset, face.key)
+            }
+        };
+        let font = swash::FontRef {
+            data: font.data(),
+            offset,
+            key,
+        };
+        let scaler = self
+            .scale
+            .builder_with_id(font, scaler_id)
+            .size(run.font_size * density as f32)
+            .hint(run.hint)
+            .normalized_coords(run.normalized_coords.iter().copied())
+            .build();
+        Ok(PreparedRasterizer {
+            scaler,
+            outline: &mut self.outline,
+            scratch: &mut self.scratch,
+        })
+    }
+}
+
+fn rasterize_glyph(
+    prepared: &mut PreparedRasterizer<'_>,
     run: &FrameGlyphRun,
     density: f64,
     index: usize,
     at: RecordLocation,
-    RasterLimits {
-        available,
-        max_dimension,
-        budget,
-    }: RasterLimits,
+    limits: RasterLimits,
 ) -> Result<Option<GlyphBitmap>, GpuError> {
-    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
     let outline_timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphOutline);
-    let ResourceView::Font(font) = resource.view() else {
-        return Err(GpuError::Unsupported {
-            at,
-            record: "font resource type",
-        });
-    };
-    // Blob identity survives fallback-font switches and resource re-registration.
-    // The collection index distinguishes faces sharing the same immutable bytes.
-    let scaler_id = [font.id(), u64::from(run.font_index)];
-    let (offset, key) = match context.face {
-        Some((handle, index, offset, key)) if handle == run.font && index == run.font_index => {
-            (offset, key)
-        }
-        _ => {
-            let face = swash::FontRef::from_index(font.data(), run.font_index as usize).ok_or(
-                GpuError::Unsupported {
-                    at,
-                    record: "font collection index",
-                },
-            )?;
-            context.face = Some((run.font, run.font_index, face.offset, face.key));
-            (face.offset, face.key)
-        }
-    };
-    let font = swash::FontRef {
-        data: font.data(),
-        offset,
-        key,
-    };
     let glyph = &run.glyphs[index];
     let id = u16::try_from(glyph.id).map_err(|_| GpuError::Unsupported {
         at,
         record: "glyph id",
     })?;
-    let mut scaler = context
-        .scale
-        .builder_with_id(font, scaler_id)
-        .size(run.font_size * density as f32)
-        .hint(run.hint)
-        .normalized_coords(run.normalized_coords.iter().copied())
-        .build();
-    if scaler.scale_color_outline(id).is_some() {
+    if prepared.scaler.scale_color_outline(id).is_some() {
         return Err(GpuError::Unsupported {
             at,
             record: "color glyph layers",
         });
     }
-    let outline = &mut context.outline;
-    if !scaler.scale_outline_into(id, outline) {
+    let outline = &mut *prepared.outline;
+    if !prepared.scaler.scale_outline_into(id, outline) {
         return Err(GpuError::Unsupported {
             at,
             record: "missing glyph outline",
@@ -276,16 +285,11 @@ fn rasterize_resource(
             })
         }
     };
-    let limits = RasterLimits {
-        available,
-        max_dimension,
-        budget,
-    };
     if matches!(style, zeno::Style::Stroke(_)) {
         let stroke_timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphStroke);
         // Zeno otherwise expands the stroke once for bounds and again for pixels.
         let mut path = stroke::StrokePath::new(&limits.budget, limits.available)?;
-        let fill = context
+        let fill = prepared
             .scratch
             .apply(outline.path(), style, None, &mut path);
         path.finish()?;
@@ -294,7 +298,7 @@ fn rasterize_resource(
         raster_mask(
             path.commands(),
             fill.into(),
-            &mut context.scratch,
+            prepared.scratch,
             None,
             at,
             RasterLimits {
@@ -306,7 +310,7 @@ fn rasterize_resource(
         raster_mask(
             outline.path(),
             style,
-            &mut context.scratch,
+            prepared.scratch,
             Some(outline.bounds()),
             at,
             limits,

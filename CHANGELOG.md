@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Reuse font scaling setup across each batch of uncached glyphs.
+- Check detached stage components for collection when the VM invalidates unreachable handles.
+- Admit RGB8 and RGBA8 PNGs with fixed-size display metadata directly to image decoding and share the available worker budget across them.
 - Reuse the verified bytecode size at encoding time and compress debug source once when writing it.
 - Share target branch selection among translation, effect, and mask compilation.
 - Place raster uploads from the same desktop batch in available spans of the same staging buffer.

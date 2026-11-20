@@ -391,7 +391,10 @@ pub(super) struct StageBinding {
     pub(super) sync_count: u64,
     #[cfg(test)]
     pub(super) projection_visits: u64,
+    #[cfg(test)]
+    pub(super) detached_root_checks: u64,
     last_sync: Option<(aside_vm::HeapId, aside_vm::SessionEpoch, u64, u64)>,
+    checked_detached_roots: Option<(aside_vm::HeapId, aside_vm::SessionEpoch, u64)>,
     projection_index: projection::Index,
     pub(super) types: super::source::HostTypes,
     pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
@@ -476,7 +479,10 @@ impl StageBinding {
             sync_count: 0,
             #[cfg(test)]
             projection_visits: 0,
+            #[cfg(test)]
+            detached_root_checks: 0,
             last_sync: None,
+            checked_detached_roots: None,
             projection_index: projection::Index::new(heap)?,
             types: super::source::HostTypes::new(heap)?,
             text_filter_function: None,

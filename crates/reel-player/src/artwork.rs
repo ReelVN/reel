@@ -14,16 +14,15 @@ pub const VITA_DECODE_BYTES: u64 = 12 << 20;
 /// An inspected source image and its codec workspace estimate, excluding decoded pixels.
 pub type ArtworkDecoder<'a> = (Box<dyn ImageDecoder + 'a>, u64);
 
-/// An RGBA8 PNG's first chunk contains its exact decoded shape.
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-pub(crate) struct Rgba8Png {
+/// A PNG whose output size can be determined without a worker probe.
+pub(crate) struct PngShape {
     pub size: [u32; 2],
-    pub bytes: u64,
-    pub data_only: bool,
+    pub output: u64,
+    pub temporary: u64,
+    pub bounded_metadata: bool,
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-pub(crate) fn rgba8_png_shape(bytes: &[u8]) -> Option<Rgba8Png> {
+pub(crate) fn png_shape(bytes: &[u8]) -> Option<PngShape> {
     const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     const HEADER_BYTES: usize = 33;
     if !bytes.starts_with(SIGNATURE) {
@@ -31,30 +30,45 @@ pub(crate) fn rgba8_png_shape(bytes: &[u8]) -> Option<Rgba8Png> {
     }
     let mut header = png::Decoder::new(std::io::Cursor::new(bytes.get(..HEADER_BYTES)?));
     let info = header.read_header_info().ok()?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+    if info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    let channels = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        _ => return None,
+    };
+    let bounded_metadata = png_has_fixed_metadata(&bytes[HEADER_BYTES..]);
+    // A tRNS chunk can turn RGB into RGBA during decoding.
+    if channels == 3 && !bounded_metadata {
         return None;
     }
     let pixels = u64::from(info.width) * u64::from(info.height);
-    Some(Rgba8Png {
+    Some(PngShape {
         size: [info.width, info.height],
-        bytes: pixels.checked_mul(4)?,
-        data_only: png_has_only_image_data(&bytes[HEADER_BYTES..]),
+        output: pixels.checked_mul(4)?,
+        temporary: pixels.checked_mul(4 + channels)?,
+        bounded_metadata,
     })
 }
 
-/// Data-only PNGs have no variable-size metadata to claim the decoder's full
-/// allowance. Walk chunk headers only. Unusual inputs use the ordinary budget.
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-fn png_has_only_image_data(mut chunks: &[u8]) -> bool {
+/// Fixed-size display metadata does not expand the decoder's workspace or
+/// change its output channels. The worker still validates and decodes the file.
+fn png_has_fixed_metadata(mut chunks: &[u8]) -> bool {
     for _ in 0..256 {
         let Some(header) = chunks.get(..8) else { break };
-        if &header[4..] == b"IEND" {
-            return header[..4] == [0; 4] && chunks.len() == 12;
-        }
-        if &header[4..] != b"IDAT" {
-            break;
-        }
         let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        match (&header[4..], length) {
+            (b"IEND", 0) => return chunks.len() == 12,
+            (b"IDAT", _)
+            | (b"pHYs", 9)
+            | (b"sRGB", 1)
+            | (b"gAMA", 4)
+            | (b"cHRM", 32)
+            | (b"bKGD", 6)
+            | (b"tIME", 7) => {}
+            _ => break,
+        }
         let Some(rest) = length.checked_add(12).and_then(|end| chunks.get(end..)) else {
             break;
         };

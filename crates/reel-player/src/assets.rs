@@ -105,7 +105,7 @@ enum Phase {
     Probe,
     Probing(WorkId),
     Decode,
-    DecodePlainPng,
+    DecodeBoundedPng,
     Decoding(WorkId),
     Done(Result<ResourceLease, String>),
     Bytes(ResourceVersion, Arc<OwnedBytes>),
@@ -914,7 +914,7 @@ impl Service {
                 }
                 load.phase = Phase::Done(result);
             }
-            Phase::Probe | Phase::Decode | Phase::DecodePlainPng => {
+            Phase::Probe | Phase::Decode | Phase::DecodeBoundedPng => {
                 let mut probe = matches!(load.phase, Phase::Probe);
                 if probe
                     && load
@@ -957,18 +957,16 @@ impl Service {
                     load.phase = Phase::ImageManifest(manifest);
                     return Ok(());
                 }
-                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 if probe
                     && let Some(png) =
-                        crate::artwork::rgba8_png_shape(load.input.as_ref().unwrap().as_slice())
-                    && let Some(temporary) = png.bytes.checked_mul(2)
+                        crate::artwork::png_shape(load.input.as_ref().unwrap().as_slice())
                 {
                     // Reserve the same storage as the decoder's full probe.
                     load.size = png.size;
-                    load.output = png.bytes;
-                    load.temporary = temporary;
-                    load.phase = if png.data_only {
-                        Phase::DecodePlainPng
+                    load.output = png.output;
+                    load.temporary = png.temporary;
+                    load.phase = if png.bounded_metadata {
+                        Phase::DecodeBoundedPng
                     } else {
                         Phase::Decode
                     };
@@ -1039,9 +1037,9 @@ impl Service {
                 if !probe && load.temporary > decode_bytes {
                     return Err("image decode limit exceeded".into());
                 }
-                let plain_png = matches!(load.phase, Phase::DecodePlainPng);
-                let workspace = if plain_png {
-                    // Ordinary RGBA8 rows plus fixed inflater/row workspace.
+                let bounded_png = matches!(load.phase, Phase::DecodeBoundedPng);
+                let workspace = if bounded_png {
+                    // Decoded pixels plus fixed inflater/row workspace.
                     // Small user budgets retain their existing decoder limit.
                     load.temporary.saturating_add(128 << 10).min(decode_bytes)
                 } else if load.texture.is_some() {
@@ -1049,7 +1047,7 @@ impl Service {
                 } else {
                     decode_bytes
                 };
-                if plain_png {
+                if bounded_png {
                     if self.pending_pngs.len() >= decode::MAX_IMAGE_WORKERS
                         || self
                             .pending_pngs
@@ -1101,7 +1099,7 @@ impl Service {
                 };
                 match self.executor.as_mut().unwrap().submit(request) {
                     Ok(id) => {
-                        if plain_png {
+                        if bounded_png {
                             self.pending_pngs.push((id, load.source.clone()));
                         }
                         load.phase = if probe {

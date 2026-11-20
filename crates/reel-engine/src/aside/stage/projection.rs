@@ -415,16 +415,26 @@ impl StageBinding {
         } else if let Some(root) = self.scene.root() {
             self.sync_tree(heap, root, read_limit)?;
         }
-        // Every node keeps its complete component alive. A collected detached
-        // root therefore means the whole component has lost script ownership.
-        let lost = self
-            .scene
-            .detached_roots()
-            .filter(|id| heap.import_handle(self.handles[id].handle).is_err())
-            .collect::<Vec<_>>();
-        for root in lost {
-            let retired = self.scene.discard(root)?;
-            self.retire(heap, retired)?;
+        let liveness = (heap.id(), heap.epoch(), heap.collection_liveness_revision());
+        if self.checked_detached_roots != Some(liveness) {
+            // Every node keeps its component alive. GC can invalidate its weak
+            // handle, while explicit removal updates the stage immediately.
+            let lost = self
+                .scene
+                .detached_roots()
+                .filter(|id| {
+                    #[cfg(test)]
+                    {
+                        self.detached_root_checks += 1;
+                    }
+                    heap.import_handle(self.handles[id].handle).is_err()
+                })
+                .collect::<Vec<_>>();
+            for root in lost {
+                let retired = self.scene.discard(root)?;
+                self.retire(heap, retired)?;
+            }
+            self.checked_detached_roots = Some(liveness);
         }
         if self.projection_index.invalid || !incremental {
             self.projection_index

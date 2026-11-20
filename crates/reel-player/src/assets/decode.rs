@@ -17,7 +17,15 @@ use std::{io::Cursor, sync::atomic::Ordering};
 /// image size. This allowance is independent of the separately owned worker
 /// thread stack; it is not a measurement of that stack or the output block buffer.
 pub(super) const BC_CRUNCH_WORKSPACE_BYTES: u64 = 64 * 1024;
-pub(super) const MAX_IMAGE_WORKERS: usize = 3;
+pub(super) const MAX_IMAGE_WORKERS: usize = if cfg!(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos"
+)) {
+    3
+} else {
+    1
+};
 
 pub fn image_probe() -> WorkKind {
     WorkKind {
@@ -40,11 +48,7 @@ pub struct ImageExecutor {
 }
 impl ImageExecutor {
     pub fn new(limits: QueueLimits, wake: WakeSignal) -> Self {
-        let parallelism = if cfg!(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "macos"
-        )) {
+        let parallelism = if MAX_IMAGE_WORKERS > 1 {
             std::thread::available_parallelism()
                 .map_or(1, |threads| threads.get().min(MAX_IMAGE_WORKERS))
         } else {
