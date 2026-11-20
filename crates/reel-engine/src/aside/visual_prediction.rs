@@ -3,6 +3,8 @@
 
 use arrayvec::ArrayVec;
 use aside_vm::bytecode::{self as bc, Opcode};
+mod catalogs;
+pub(super) use catalogs::Catalogs;
 
 const NESTING_LIMIT: usize = 8;
 const ARGUMENT_LIMIT: usize = 32;
@@ -41,6 +43,7 @@ enum Fact {
     Function(bc::FunctionId),
     Closure(u8),
     Table { start: u8, end: u8 },
+    Catalog(usize),
     Layers(u8),
 }
 
@@ -83,12 +86,13 @@ enum Outcome<'p> {
 /// proven ordinary return and allows the player to look at the outer caller.
 pub(super) fn compile_site<'p>(
     program: &'p bc::VerifiedProgram,
+    catalogs: &Catalogs<'p>,
     function: &bc::RuntimeFunction,
     next: usize,
     budget: &mut usize,
 ) -> Option<Paths<'p>> {
     let available = (*budget).min(BUILD_INSTRUCTION_LIMIT);
-    let mut walk = Walk::new(program, available, BUILD_DIALOGUE_LIMIT);
+    let mut walk = Walk::new(program, catalogs, available, BUILD_DIALOGUE_LIMIT);
     let result = walk.function(function, next, Facts::default(), 0);
     *budget -= available - walk.remaining;
     match result? {
@@ -110,8 +114,19 @@ pub(super) fn image_path(program: &bc::VerifiedProgram, id: bc::ConstId) -> Opti
     std::str::from_utf8(program.constant_bytes(id)?).ok()
 }
 
-struct Walk<'p> {
+fn text(program: &bc::VerifiedProgram, id: bc::ConstId) -> Option<&str> {
+    if !matches!(
+        program.package().constants[id.index()],
+        bc::Const::Utf8(_) | bc::Const::Text { .. }
+    ) {
+        return None;
+    }
+    std::str::from_utf8(program.constant_bytes(id)?).ok()
+}
+
+struct Walk<'p, 'c> {
     program: &'p bc::VerifiedProgram,
+    catalogs: &'c Catalogs<'p>,
     remaining: usize,
     dialogue_remaining: usize,
     code: bc::ResidentCodeReader,
@@ -120,10 +135,16 @@ struct Walk<'p> {
     fields: ArrayVec<(bc::ConstId, Fact), FIELD_LIMIT>,
 }
 
-impl<'p> Walk<'p> {
-    fn new(program: &'p bc::VerifiedProgram, remaining: usize, dialogue_remaining: usize) -> Self {
+impl<'p, 'c> Walk<'p, 'c> {
+    fn new(
+        program: &'p bc::VerifiedProgram,
+        catalogs: &'c Catalogs<'p>,
+        remaining: usize,
+        dialogue_remaining: usize,
+    ) -> Self {
         Self {
             program,
+            catalogs,
             remaining,
             dialogue_remaining,
             code: bc::ResidentCodeReader::default(),
@@ -175,9 +196,13 @@ impl<'p> Walk<'p> {
                     else {
                         return None;
                     };
-                    let value = self
-                        .global_function(module, global)
-                        .map_or(Fact::Unknown, Fact::Function);
+                    let binding = self.program.global_binding(module, global).ok()?;
+                    let value = if let Some(table) = self.catalogs.get(binding.offset) {
+                        Fact::Catalog(table)
+                    } else {
+                        self.global_function(module, global)
+                            .map_or(Fact::Unknown, Fact::Function)
+                    };
                     facts.set(a, value);
                 }
                 Opcode::MakeTable => {
@@ -283,7 +308,11 @@ impl<'p> Walk<'p> {
             Fact::Unknown => return Some(None),
             Fact::Bool(value) => return Some(Some(opcode == Opcode::BranchBool && value)),
             Fact::Constant(id) => Some(&self.program.package().constants[id.index()]),
-            Fact::Function(_) | Fact::Closure(_) | Fact::Table { .. } | Fact::Layers(_) => None,
+            Fact::Function(_)
+            | Fact::Closure(_)
+            | Fact::Table { .. }
+            | Fact::Catalog(_)
+            | Fact::Layers(_) => None,
         };
         match (opcode, constant) {
             (Opcode::BranchBool, Some(bc::Const::Bool(value))) => Some(Some(*value)),
@@ -452,13 +481,7 @@ impl<'p> Walk<'p> {
     }
 
     fn text(&self, id: bc::ConstId) -> Option<&'p str> {
-        if !matches!(
-            self.program.package().constants[id.index()],
-            bc::Const::Utf8(_) | bc::Const::Text { .. }
-        ) {
-            return None;
-        }
-        std::str::from_utf8(self.program.constant_bytes(id)?).ok()
+        text(self.program, id)
     }
 
     fn path(&self, id: bc::ConstId) -> Option<ImagePath<'p>> {
@@ -508,12 +531,19 @@ impl<'p> Walk<'p> {
     }
 
     fn field(&mut self, table: Fact, key: &str) -> Option<Fact> {
-        let Fact::Table { start, end } = table else {
-            return None;
-        };
         if key.len() > PATH_LIMIT {
             return None;
         }
+        if let Fact::Catalog(table) = table {
+            self.remaining = self.remaining.checked_sub(1)?;
+            return Some(match self.catalogs.field(table, key)? {
+                catalogs::Value::Constant(value) => Fact::Constant(value),
+                catalogs::Value::Table(table) => Fact::Catalog(table),
+            });
+        }
+        let Fact::Table { start, end } = table else {
+            return None;
+        };
         let fields = &self.fields[start as usize..end as usize];
         self.remaining = self.remaining.checked_sub(fields.len())?;
         fields
@@ -833,6 +863,65 @@ mod tests {
     }
 
     #[test]
+    fn predicts_one_entry_from_a_large_imported_catalog() {
+        use aside_compiler::semantic::SourceModule;
+        let rows = (0..96)
+            .map(|index| format!(r#"room{index}: {{source: "room{index}.png", width: 1280}}"#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let inputs = [
+            SourceModule {
+                canonical_path: "game::rooms".into(),
+                source_path: Some("src/rooms.aside".into()),
+                version: "1".into(),
+                source: format!("pub let rooms = {{{rows}}};").into(),
+            },
+            SourceModule {
+                canonical_path: "game".into(),
+                source_path: Some("src/main.aside".into()),
+                version: "1".into(),
+                source: r#"
+                    use game::rooms::rooms;
+                    fn paint(key: string, wide: bool) {
+                        let part = rooms[key];
+                        if wide {
+                            let _ = image(part.source, width: part.width);
+                        } else {
+                            let _ = image(part.source);
+                        }
+                    }
+                    fn opening() { narrator("wait"); paint("room90", true); }
+                "#
+                .into(),
+            },
+        ];
+        let compiled =
+            super::super::source::compile_project(&inputs, &Default::default(), 1).unwrap();
+        let program = &compiled.compilation.program;
+        let site = first_call(program, "opening");
+        assert_eq!(next_image(program, [site].into_iter()), Some("room90.png"));
+    }
+
+    #[test]
+    fn declines_catalogs_with_other_writers_or_escaping_rows() {
+        for other_use in [
+            "fn change() { let alias = rooms.hall; alias.source = \"changed.png\"; }",
+            "fn capture() -> fn() -> table { let alias = rooms.hall; || alias }",
+            "fn escape() -> table { let alias = rooms.hall; alias }",
+        ] {
+            let program = compile(&format!(
+                r#"
+                    let rooms = {{hall: {{source: "hall.png"}}}};
+                    {other_use}
+                    fn opening() {{ narrator("wait"); let _ = image(rooms.hall.source); }}
+                "#
+            ));
+            let site = first_call(&program, "opening");
+            assert!(next_image(&program, [site].into_iter()).is_none());
+        }
+    }
+
+    #[test]
     fn predicts_layer_sources_forwarded_through_a_helper() {
         let program = compile(
             r#"
@@ -997,7 +1086,8 @@ mod tests {
         let site = first_call(&program, "opening");
         let function = &program.package().functions[site.code.function.index()];
         let next = function.code.next_pc(site.pc.index()).unwrap().unwrap();
-        let mut walk = Walk::new(&program, 1, BUILD_DIALOGUE_LIMIT);
+        let catalogs = Catalogs::default();
+        let mut walk = Walk::new(&program, &catalogs, 1, BUILD_DIALOGUE_LIMIT);
         assert!(walk.function(function, next, Facts::default(), 0).is_none());
         assert_eq!(walk.remaining, 0);
     }

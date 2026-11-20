@@ -221,18 +221,20 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     let mut reads = None;
     let assets = Assets::with_adapters(AssetOptions::default(), |wake| {
         let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
-        io.insert_asset(
-            ResourceVersion {
-                key: AssetKey("body.ttf".into()),
-                version: ContentVersion([1; 32]),
-            },
-            MemoryAsset {
-                bytes: OwnedBytes::new(FONT.to_vec(), pool.reserve(FONT.len() as u64).unwrap())
-                    .unwrap(),
-                media_type: None,
-            },
-        )
-        .unwrap();
+        for path in ["body.ttf", "fallback.ttf"] {
+            io.insert_asset(
+                ResourceVersion {
+                    key: AssetKey(path.into()),
+                    version: ContentVersion([1; 32]),
+                },
+                MemoryAsset {
+                    bytes: OwnedBytes::new(FONT.to_vec(), pool.reserve(FONT.len() as u64).unwrap())
+                        .unwrap(),
+                    media_type: None,
+                },
+            )
+            .unwrap();
+        }
         let io = Rc::new(RefCell::new(io));
         reads = Some(io.clone());
         (
@@ -244,7 +246,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     let mut driver = AsideSessionUi::from_source(
         session(),
         r#"fn main() {
-            game.configure(title: "Portable lifecycle", fonts: ["body.ttf"]);
+            game.configure(title: "Portable lifecycle", fonts: ["body.ttf", "fallback.ttf"]);
             stage.replace(button(width: 180, height: 60, on_click: |event| {
                 await run(tween(event.target, x: 100, duration: 1));
             }));
@@ -263,7 +265,10 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
             break;
         }
     }
-    assert_eq!(driver.adapter().game_settings().fonts, ["body.ttf"]);
+    assert_eq!(
+        driver.adapter().game_settings().fonts,
+        ["body.ttf", "fallback.ttf"]
+    );
     assert!(driver.adapter().stage().root().is_some());
     let limits = ConsumerLimits {
         max_uploads: 1,
@@ -301,7 +306,11 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
         player.tick(&mut host).unwrap();
     }
     assert!(player.settings_pending());
-    assert!(!player.font_requests.is_empty());
+    assert_eq!(
+        player.font_requests.len(),
+        2,
+        "prepare both fonts before waiting"
+    );
     assert!(
         !player.needs_redraw(),
         "pending font IO must not spin redraws"
@@ -325,7 +334,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
         }
     }
     assert!(!player.settings_pending(), "completed font must be applied");
-    assert_eq!(player.active_fonts, ["body.ttf"]);
+    assert_eq!(player.active_fonts, ["body.ttf", "fallback.ttf"]);
     assert!(player.font_requests.is_empty());
     assert!(
         player.needs_redraw(),
@@ -335,19 +344,24 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
 
     // The recording consumer requires explicit upload completion, just as its
     // presentation contract requires explicit completion of submitted frames.
-    let font = player.resources[0].clone();
-    let reel_ui::resources::ResourceView::Font(data) = font.view() else {
-        panic!("font resource");
-    };
-    let bytes = OwnedBytes::new(
-        data.as_ref().to_vec(),
-        pool.reserve(data.len() as u64).unwrap(),
-    )
-    .unwrap();
-    let items = vec![UploadItem {
-        resource: font,
-        payload: UploadPayload::Font { bytes },
-    }];
+    let items: Vec<_> = player
+        .resources
+        .iter()
+        .map(|font| {
+            let reel_ui::resources::ResourceView::Font(data) = font.view() else {
+                panic!("font resource");
+            };
+            let bytes = OwnedBytes::new(
+                data.as_ref().to_vec(),
+                pool.reserve(data.len() as u64).unwrap(),
+            )
+            .unwrap();
+            UploadItem {
+                resource: font.clone(),
+                payload: UploadPayload::Font { bytes },
+            }
+        })
+        .collect();
     let storage = pool
         .reserve((items.capacity() * size_of::<UploadItem>()) as u64)
         .unwrap();
@@ -472,8 +486,16 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     assert_eq!(x(&mut player), 50.);
 
     let frame_pool = player.pool.clone();
-    let font = player.resources[0].downgrade();
-    let font_version = player.resources[0].version().clone();
+    let fonts: Vec<_> = player
+        .resources
+        .iter()
+        .map(|font| font.downgrade())
+        .collect();
+    let font_versions: Vec<_> = player
+        .resources
+        .iter()
+        .map(|font| font.version().clone())
+        .collect();
     let last = player.backend.inner.last_submission().unwrap();
     player.backend.preparing = true;
     player.render(&mut host).unwrap();
@@ -494,11 +516,11 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
         "submitted frame retains its resources"
     );
     assert!(backend.inner.complete_render(last));
-    backend.retire(&[font_version]);
+    backend.retire(&font_versions);
     backend.poll(&mut Vec::new(), 64).unwrap();
     assert_eq!(frame_pool.usage().bytes, 0);
     assert!(
-        font.upgrade().is_none(),
+        fonts.iter().all(|font| font.upgrade().is_none()),
         "departed player's font owners are released"
     );
     // Like GXM reset_session, clear the departed session's surface and caches

@@ -593,13 +593,7 @@ where
         let layout_changed = self.game.as_ref().is_none_or(|old| {
             old.fonts != settings.fonts || old.canvas_size != settings.canvas_size
         });
-        if layout_changed {
-            self.pixel_recovery
-                .cancel_frame(&self.session.as_ref().unwrap().ui().assets());
-            self.presentation.cancel_preparation(&mut self.backend);
-            self.session.as_mut().unwrap().ui_mut()?.clear_presented();
-        }
-        let paths = settings.fonts.clone();
+        let paths = &settings.fonts;
         let assets = self.session.as_ref().unwrap().ui().assets();
         self.font_requests.retain(|path, id| {
             if paths.contains(path) {
@@ -609,37 +603,44 @@ where
                 false
             }
         });
-        if paths != self.active_fonts {
-            let mut data = Vec::with_capacity(paths.len());
-            for path in &paths {
-                let index = if let Some(&index) = self.fonts.get(path) {
-                    index
-                } else {
-                    let request = *self.font_requests.entry(path.clone()).or_insert_with(|| {
-                        assets.request(path.clone(), crate::assets::AssetKind::Font)
-                    });
-                    let lease = assets.poll(request).map_err(|e| {
-                        format!(
-                            "{}: font {}: {e}",
-                            settings.source.as_deref().unwrap_or("game.configure"),
-                            path
-                        )
-                    })?;
-                    let Some(lease) = lease else {
-                        return Ok(false);
-                    };
-                    self.font_requests.remove(path);
-                    let index = self.resources.len();
-                    self.resources.push(lease);
-                    self.fonts.insert(path.clone(), index);
-                    index
-                };
-                let reel_ui::resources::ResourceView::Font(font) = self.resources[index].view()
-                else {
-                    unreachable!()
-                };
-                data.push(font.clone());
+        if *paths != self.active_fonts {
+            for path in paths {
+                if !self.fonts.contains_key(path) && !self.font_requests.contains_key(path) {
+                    let id = assets.request(path.clone(), crate::assets::AssetKind::Font);
+                    self.font_requests.insert(path.clone(), id);
+                }
             }
+            if !self.font_requests.is_empty() {
+                assets.maintain();
+                let source = settings.source.as_deref().unwrap_or("game.configure");
+                for path in paths {
+                    let Some(&request) = self.font_requests.get(path) else {
+                        continue;
+                    };
+                    let lease = assets
+                        .take_ready(request)
+                        .map_err(|e| format!("{source}: font {path}: {e}"))?;
+                    if let Some(lease) = lease {
+                        self.font_requests.remove(path);
+                        self.fonts.insert(path.clone(), self.resources.len());
+                        self.resources.push(lease);
+                    }
+                }
+                if !self.font_requests.is_empty() {
+                    return Ok(false);
+                }
+            }
+            let data = paths
+                .iter()
+                .map(|path| {
+                    let reel_ui::resources::ResourceView::Font(font) =
+                        self.resources[self.fonts[path]].view()
+                    else {
+                        unreachable!()
+                    };
+                    font.clone()
+                })
+                .collect::<Vec<_>>();
             if !self.presentation.bridge.set_default_fonts(&data) {
                 return Err(format!(
                     "{}: configured font files contain no usable font",
@@ -647,7 +648,12 @@ where
                 )
                 .into());
             }
-            self.active_fonts = paths;
+            self.active_fonts.clone_from(paths);
+        }
+        if layout_changed {
+            self.pixel_recovery.cancel_frame(&assets);
+            self.presentation.cancel_preparation(&mut self.backend);
+            self.session.as_mut().unwrap().ui_mut()?.clear_presented();
         }
         host.set_title(&settings.title);
         if self.fit_initial_canvas

@@ -82,6 +82,7 @@ fn viewport_and_animation_share_identities_but_visibility_rebuilds() {
     let first = StageView::capture(&stage);
     let layout = first.layout_image_requests(EffectShaderFormat::Wgsl);
     assert_eq!(layout.required().collect::<Vec<_>>(), [("mask.png", None)]);
+    assert!(layout.intrinsic_sources().next().is_none());
     assert!(layout.index.has_fixed_images);
     let outside = vec![nodes[1]];
     let visible = first.viewport_image_requests(outside, vec![nodes[1]], EffectShaderFormat::Wgsl);
@@ -133,6 +134,10 @@ fn shared_source_uses_visible_origin_and_fixed_size_requirement() {
         layout.required().collect::<Vec<_>>(),
         [("shared.png", Some("auto-size:7"))]
     );
+    assert_eq!(
+        layout.intrinsic_sources().collect::<Vec<_>>(),
+        ["shared.png"]
+    );
     let request =
         view.viewport_image_requests(vec![nodes[1]], Vec::new(), EffectShaderFormat::Wgsl);
     assert_eq!(
@@ -140,6 +145,16 @@ fn shared_source_uses_visible_origin_and_fixed_size_requirement() {
         [("shared.png", Some("shared.png:1"))]
     );
     assert_eq!(request.index.mounted().count(), 1);
+    let node = stage.node(nodes[1]).unwrap();
+    let mut kind = node.kind.clone();
+    if let NodeKind::Image { source_rect, .. } = &mut kind {
+        *source_rect = Some(reel_ui::kurbo::Rect::new(0., 0., 32., 64.));
+    }
+    stage.update(nodes[1], kind, node.props.clone()).unwrap();
+    let clipped = StageView::update(&stage, Some(&view));
+    let layout = clipped.layout_image_requests(EffectShaderFormat::Wgsl);
+    assert!(layout.intrinsic_sources().next().is_none());
+    assert!(layout.required().next().is_none());
 }
 
 #[test]

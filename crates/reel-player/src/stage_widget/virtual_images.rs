@@ -30,10 +30,7 @@ impl StageView {
             if visible {
                 if let Some((source, _)) = image_source(&node.node.kind)
                     && !images.contains_key(source)
-                    && (!in_list
-                        || !matches!(node.node.kind, NodeKind::Image { .. })
-                        || node.node.props.width.is_none()
-                        || node.node.props.height.is_none())
+                    && (!in_list || !node.has_fixed_image_size())
                 {
                     return false;
                 }

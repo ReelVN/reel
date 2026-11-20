@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Predict picture paths selected from read-only module catalogs during story waits.
+- Prepare configured fonts together, and start fixed-size scene image requests without waiting for appearance resources.
+- Overlap inflation and row reconstruction for large PNGs on desktop when a spare worker and workspace are available.
 - Add a raster export rule that stores exact decoded RGBA8 pixels in the resource archive. The player can load those pixels without running an image codec.
 - Reuse live textures across saved-game restoration by matching the original asset version.
 - Scan leading opaque image rows in groups and record their coverage together.

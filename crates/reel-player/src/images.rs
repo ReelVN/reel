@@ -207,7 +207,7 @@ impl Images {
         false
     }
     pub(crate) fn layout_ready(&self, requests: &crate::stage_widget::ImageRequests) -> bool {
-        requests.required().all(|(source, _)| {
+        requests.intrinsic_sources().all(|source| {
             self.loaded.contains_key(source)
                 || self.manifests.contains_key(source)
                 || self.pending_image_size(source).is_some()

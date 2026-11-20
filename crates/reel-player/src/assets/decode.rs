@@ -12,7 +12,10 @@ use reel_core::{
     wake::WakeSignal,
     work::*,
 };
-use std::{io::Cursor, sync::atomic::Ordering};
+use std::{
+    io::Cursor,
+    sync::atomic::{AtomicBool, Ordering},
+};
 pub(super) const MAX_IMAGE_WORKERS: usize = if cfg!(any(
     target_os = "windows",
     target_os = "linux",
@@ -46,17 +49,18 @@ pub struct ImageExecutor {
 }
 impl ImageExecutor {
     pub fn new(limits: QueueLimits, wake: WakeSignal) -> Self {
-        let parallelism = if MAX_IMAGE_WORKERS > 1 {
-            std::thread::available_parallelism()
-                .map_or(1, |threads| threads.get().min(MAX_IMAGE_WORKERS))
+        let threads = if MAX_IMAGE_WORKERS > 1 {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
         } else {
             1
         };
+        let parallelism = threads.min(MAX_IMAGE_WORKERS);
+        let allow_png_pipeline = threads > parallelism;
         Self {
             worker: Worker::new(
                 limits,
                 wake,
-                |(id, request): (WorkId, WorkRequest), cancelled| {
+                move |(id, request): (WorkId, WorkRequest), cancelled| {
                     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Decode);
                     let WorkRequest {
                         kind,
@@ -97,6 +101,8 @@ impl ImageExecutor {
                             probe,
                             temporary.bytes(),
                             output.bytes(),
+                            allow_png_pipeline,
+                            cancelled,
                         )?;
                         output
                             .resize(data.capacity() as u64)
@@ -131,8 +137,13 @@ fn decode_artwork(
     probe: bool,
     temporary: u64,
     output: u64,
+    allow_png_pipeline: bool,
+    cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, String> {
-    if !probe && let Some(decoded) = crate::artwork::decode_rgb_png_rows(input, temporary, output) {
+    if !probe
+        && let Some(decoded) =
+            crate::artwork::decode_png_rows(input, temporary, output, allow_png_pipeline, cancelled)
+    {
         return decoded;
     }
     if !probe && let Some(decoded) = crate::artwork::decode_qoi(input, output) {

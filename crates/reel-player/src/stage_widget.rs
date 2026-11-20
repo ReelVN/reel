@@ -170,9 +170,16 @@ impl PartialEq for SceneImages {
 }
 impl SceneNode {
     fn has_fixed_image_size(&self) -> bool {
-        matches!(self.node.kind, NodeKind::Image { .. })
-            && self.node.props.width.is_some()
-            && self.node.props.height.is_some()
+        match self.node.kind {
+            NodeKind::Image { source_rect, .. } => {
+                source_rect.is_some()
+                    || (self.node.props.width.is_some() && self.node.props.height.is_some())
+            }
+            _ => false,
+        }
+    }
+    fn needs_intrinsic_image_size(&self) -> bool {
+        matches!(self.node.kind, NodeKind::Image { .. }) && !self.has_fixed_image_size()
     }
     fn popup_branch(&self) -> bool {
         matches!(self.node.kind, NodeKind::Popup(_)) || self.children_summary.popup
@@ -703,8 +710,7 @@ impl StageView {
                         leases.push(lease.clone());
                     }
                 } else if !required_only
-                    && matches!(&node.node.kind, NodeKind::Image { .. })
-                    && !node.has_fixed_image_size()
+                    && node.needs_intrinsic_image_size()
                     && let Some([width, height]) = images.pending_image_size(source)
                 {
                     resolved.layout_size = Some(Size::new(width.into(), height.into()));

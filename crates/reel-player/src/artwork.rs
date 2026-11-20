@@ -1,9 +1,13 @@
 //! Source artwork decoding shared by the player and offline resource tools.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod png_pipeline;
+
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::{
     fs::File,
     io::{BufRead, BufReader, Seek},
     path::Path,
+    sync::atomic::AtomicBool,
 };
 
 /// Maximum compressed input for Vita game assets.
@@ -16,6 +20,7 @@ pub type ArtworkDecoder<'a> = (Box<dyn ImageDecoder + 'a>, u64);
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const PNG_HEADER_BYTES: usize = 33;
+const PNG_PIPELINE_MIN_OUTPUT: u64 = 4 << 20;
 const QOI_SIGNATURE: [u8; 4] = qoi::consts::QOI_MAGIC.to_be_bytes();
 
 fn check_qoi_colorspace(header: &qoi::Header) -> Result<(), String> {
@@ -118,7 +123,17 @@ impl PngShape {
             .min(available)
             .max(self.pixel_workspace);
         if allow_direct && self.direct_output {
-            full_image.min(direct_png_workspace(self.size[0]))
+            let workspace = direct_png_workspace(self.size[0]);
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            let workspace = {
+                let pipeline = png_pipeline::workspace(self.size[0]);
+                if self.output >= PNG_PIPELINE_MIN_OUTPUT && pipeline <= available {
+                    workspace.max(pipeline)
+                } else {
+                    workspace
+                }
+            };
+            full_image.min(workspace)
         } else {
             full_image
         }
@@ -177,17 +192,44 @@ pub(crate) fn png_shape(bytes: &[u8]) -> Option<PngShape> {
     })
 }
 
-/// Decode bounded, noninterlaced RGB8 directly into the resident RGBA8 buffer.
-pub(crate) fn decode_rgb_png_rows(
+/// Decode bounded PNG rows into the resident RGBA8 buffer.
+pub(crate) fn decode_png_rows(
     bytes: &[u8],
     temporary: u64,
     output: u64,
+    allow_pipeline: bool,
+    cancelled: &AtomicBool,
 ) -> Option<Result<Vec<u8>, String>> {
     let header = bytes.get(..PNG_HEADER_BYTES)?;
-    if !png_header_has_color(header, png::ColorType::Rgb)
-        || header[28] != 0
-        || bounded_png_transparency(&bytes[PNG_HEADER_BYTES..]) != Some(false)
-    {
+    let rgb = png_header_has_color(header, png::ColorType::Rgb);
+    let pipeline = allow_pipeline && output >= PNG_PIPELINE_MIN_OUTPUT;
+    if header[28] != 0 || !(rgb || pipeline && png_header_has_color(header, png::ColorType::Rgba)) {
+        return None;
+    }
+    let transparency = bounded_png_transparency(&bytes[PNG_HEADER_BYTES..])?;
+    if rgb && transparency {
+        return None;
+    }
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    if pipeline {
+        let [width, height] = [
+            u32::from_be_bytes(header[16..20].try_into().unwrap()),
+            u32::from_be_bytes(header[20..24].try_into().unwrap()),
+        ];
+        if let Some(decoded) = png_pipeline::decode(
+            bytes,
+            [width, height],
+            if rgb { 3 } else { 4 },
+            temporary,
+            output,
+            cancelled,
+        ) {
+            return Some(decoded);
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    let _ = cancelled;
+    if !rgb {
         return None;
     }
     Some((|| {

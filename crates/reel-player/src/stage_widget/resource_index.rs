@@ -30,6 +30,7 @@ struct Entry {
 struct Usage {
     origin: Option<String>,
     image: Option<(NodeId, bool)>,
+    needs_intrinsic_size: bool,
     skin: bool,
 }
 
@@ -136,6 +137,7 @@ impl ResourceIndex {
             let mut add = |source: Cow<'a, str>,
                            origin: Option<&str>,
                            image,
+                           needs_intrinsic_size,
                            shader,
                            encoded: Option<Arc<[u8]>>| {
                 let entry = entries.entry(source).or_default();
@@ -152,6 +154,7 @@ impl ResourceIndex {
                     entry.uses.push(Usage {
                         origin: origin.map(str::to_owned),
                         image,
+                        needs_intrinsic_size,
                         skin: false,
                     });
                 }
@@ -168,6 +171,7 @@ impl ResourceIndex {
                     Cow::Owned(format.asset_path(effect.definition())),
                     node.node.props.appearance_origin.as_deref(),
                     None,
+                    false,
                     true,
                     None,
                 );
@@ -176,6 +180,7 @@ impl ResourceIndex {
                         Cow::Borrowed(source),
                         node.node.props.appearance_origin.as_deref(),
                         None,
+                        false,
                         false,
                         None,
                     );
@@ -191,6 +196,7 @@ impl ResourceIndex {
                     Cow::Borrowed(source),
                     origin.as_deref(),
                     (!cursor).then_some((node.node.id, node.has_fixed_image_size())),
+                    node.needs_intrinsic_image_size(),
                     false,
                     encoded,
                 );
@@ -200,6 +206,7 @@ impl ResourceIndex {
                     Cow::Borrowed(source),
                     node.node.props.appearance_origin.as_deref(),
                     None,
+                    false,
                     false,
                     None,
                 );
@@ -218,6 +225,7 @@ impl ResourceIndex {
                         .push(Usage {
                             origin: None,
                             image: Some((node.node.id, node.has_fixed_image_size())),
+                            needs_intrinsic_size: false,
                             skin: true,
                         });
                 }
@@ -310,6 +318,16 @@ impl ImageRequests {
                 .map(|usage| (source.as_str(), usage.origin.as_deref()))
         })
     }
+    /// Only a size-dependent image can block the provisional viewport layout.
+    pub fn intrinsic_sources(&self) -> impl Iterator<Item = &str> {
+        self.index.entries.iter().filter_map(|(source, entry)| {
+            entry
+                .uses
+                .iter()
+                .any(|usage| usage.needs_intrinsic_size)
+                .then_some(source.as_str())
+        })
+    }
     pub fn origin(&self, source: &str) -> Option<Option<&str>> {
         self.index
             .entry(source)?
@@ -333,6 +351,7 @@ pub(super) fn same_inputs(a: Option<&Arc<SceneNode>>, b: Option<&Arc<SceneNode>>
             let bp = &b.node.props;
             if (ap.visible, ap.enabled, ap.modal, a.has_fixed_image_size())
                 != (bp.visible, bp.enabled, bp.modal, b.has_fixed_image_size())
+                || a.needs_intrinsic_image_size() != b.needs_intrinsic_image_size()
                 || matches!(a.node.kind, NodeKind::Popup(_))
                     != matches!(b.node.kind, NodeKind::Popup(_))
                 || matches!(a.node.kind, NodeKind::Cursor)
