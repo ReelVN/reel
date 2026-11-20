@@ -14,6 +14,9 @@ pub const VITA_DECODE_BYTES: u64 = 12 << 20;
 /// An inspected source image and its codec workspace estimate, excluding decoded pixels.
 pub type ArtworkDecoder<'a> = (Box<dyn ImageDecoder + 'a>, u64);
 
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const PNG_HEADER_BYTES: usize = 33;
+
 /// A PNG whose output size can be determined without a worker probe.
 pub(crate) struct PngShape {
     pub size: [u32; 2],
@@ -23,17 +26,15 @@ pub(crate) struct PngShape {
 }
 
 pub(crate) fn png_shape(bytes: &[u8]) -> Option<PngShape> {
-    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    const HEADER_BYTES: usize = 33;
-    if !bytes.starts_with(SIGNATURE) {
+    if !bytes.starts_with(PNG_SIGNATURE) {
         return None;
     }
-    let mut header = png::Decoder::new(std::io::Cursor::new(bytes.get(..HEADER_BYTES)?));
+    let mut header = png::Decoder::new(std::io::Cursor::new(bytes.get(..PNG_HEADER_BYTES)?));
     let info = header.read_header_info().ok()?;
     if info.bit_depth == png::BitDepth::Sixteen {
         return None;
     }
-    let transparency = bounded_png_transparency(&bytes[HEADER_BYTES..]);
+    let transparency = bounded_png_transparency(&bytes[PNG_HEADER_BYTES..]);
     // The image decoder expands a palette or a tRNS color key before
     // converting the resulting pixels to RGBA8.
     let channels = match (info.color_type, transparency) {
@@ -50,6 +51,60 @@ pub(crate) fn png_shape(bytes: &[u8]) -> Option<PngShape> {
         temporary: pixels.checked_mul(4 + channels)?,
         bounded_metadata: transparency.is_some(),
     })
+}
+
+/// Decode bounded, noninterlaced RGB8 directly into the resident RGBA8 buffer.
+pub(crate) fn decode_rgb_png_rows(
+    bytes: &[u8],
+    temporary: u64,
+    output: u64,
+) -> Option<Result<Vec<u8>, String>> {
+    let header = bytes.get(..PNG_HEADER_BYTES)?;
+    if !header.starts_with(PNG_SIGNATURE)
+        || header[24] != png::BitDepth::Eight as u8
+        || header[25] != png::ColorType::Rgb as u8
+        || header[28] != 0
+        || bounded_png_transparency(&bytes[PNG_HEADER_BYTES..]) != Some(false)
+    {
+        return None;
+    }
+    Some((|| {
+        let mut decoder = png::Decoder::new_with_limits(
+            std::io::Cursor::new(bytes),
+            png::Limits {
+                bytes: usize::try_from(temporary).unwrap_or(usize::MAX),
+            },
+        );
+        decoder.set_transformations(png::Transformations::EXPAND);
+        let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
+        let (width, height) = reader.info().size();
+        let pixels = u64::from(width) * u64::from(height);
+        // Preserve the same decode admission limits as the image adapter.
+        if pixels.checked_mul(7).is_none_or(|bytes| bytes > temporary) || pixels * 4 > output {
+            return Err("image decode reservation too small".into());
+        }
+        let length = usize::try_from(pixels * 4).map_err(|_| "image size overflow")?;
+        let stride = u64::from(width) * 4;
+        let mut rgba = vec![0; length];
+        for destination in rgba.chunks_exact_mut(stride as usize) {
+            let row = reader
+                .next_row()
+                .map_err(|error| error.to_string())?
+                .ok_or("PNG ended before its last row")?;
+            for (&[red, green, blue], pixel) in row
+                .data()
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(destination.as_chunks_mut::<4>().0)
+            {
+                *pixel = [red, green, blue, 255];
+            }
+        }
+        // Flush the current frame's remaining IDAT data, as next_frame does.
+        reader.next_row().map_err(|error| error.to_string())?;
+        Ok(rgba)
+    })())
 }
 
 /// Identify transparency in PNGs with bounded ancillary data. The worker

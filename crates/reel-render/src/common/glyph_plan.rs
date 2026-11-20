@@ -39,17 +39,18 @@ struct Stream<'a> {
     transitions: bool,
 }
 struct Scope<'a> {
-    group: Option<&'a FrameGroup>,
+    group: &'a FrameGroup,
     outer: Affine,
     ink: InkBounds,
     measure: bool,
+    clip_depth: usize,
 }
 
 impl Plan {
     /// Mirror replay's effect-local sampling domains, retained drawings, masks
     /// and capture exclusions without allocating a target or issuing a draw.
     pub(crate) fn collect<'a>(
-        frames: impl Iterator<Item = &'a RenderFrame>,
+        frames: impl DoubleEndedIterator<Item = &'a RenderFrame>,
         outer: Affine,
         max_dimension: u32,
         capture: bool,
@@ -59,36 +60,37 @@ impl Plan {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphPrepare);
         let mut plan = Self::default();
         let mut streams = Vec::new();
-        for frame in frames {
-            let drawing = frame.drawing();
-            // FrameBuild already supplies finite ink for ordinary visual-only
-            // streams. No raster preparation or scope reconstruction is needed
-            // unless glyphs, unknown ink or an auxiliary drawing can add bounds.
-            if drawing.transitions().is_empty()
-                && drawing.masks().is_empty()
-                && drawing.commands().iter().all(|command| match &command.op {
-                    FrameOp::Draw(FrameDraw::GlyphRun(_)) => false,
-                    FrameOp::PushGroup(group) => !matches!(group.ink_bounds, InkBounds::Unbounded),
-                    _ => true,
-                })
-            {
-                continue;
-            }
-            push_stack(
-                &mut streams,
-                Stream {
-                    drawing: frame.drawing(),
+        // Auxiliary mask and transition streams use the work stack. Primary
+        // drawings already have an iterator in the replay's reverse order.
+        let mut frames = frames.rev();
+        while let Some(stream) = streams.pop().or_else(|| {
+            frames.find_map(|frame| {
+                let drawing = frame.drawing();
+                // Visual-only drawings already have finite, compiled ink.
+                if drawing.transitions().is_empty()
+                    && drawing.masks().is_empty()
+                    && drawing.commands().iter().all(|command| match &command.op {
+                        FrameOp::Draw(FrameDraw::GlyphRun(_)) => false,
+                        FrameOp::PushGroup(group) => {
+                            !matches!(group.ink_bounds, InkBounds::Unbounded)
+                        }
+                        _ => true,
+                    })
+                {
+                    return None;
+                }
+                Some(Stream {
+                    drawing,
                     commands: frame.commands(),
                     outer,
                     offset: Some(0),
                     transitions: true,
-                },
-                |bytes| prepare.reserve(bytes),
-            )?;
-        }
-        while let Some(stream) = streams.pop() {
+                })
+            })
+        }) {
             let mut outer = stream.outer;
             let mut scopes: Vec<Scope<'_>> = Vec::new();
+            let mut clip_depth = 0usize;
             let mut next = 0;
             let mut transition = stream.drawing.transitions().partition_point(|definition| {
                 definition.commands.start < stream.offset.unwrap_or(0)
@@ -165,31 +167,31 @@ impl Plan {
                     continue;
                 }
                 match &command.op {
-                    FrameOp::PushClip(_) => {
-                        let measure = scopes.last().is_some_and(|scope| scope.measure);
-                        push_stack(
-                            &mut scopes,
-                            Scope {
-                                group: None,
-                                outer,
-                                ink: InkBounds::Empty,
-                                measure,
-                            },
-                            |bytes| prepare.reserve(bytes),
-                        )?;
+                    // Clips leave raster density and the conservative ink union
+                    // alone. Only their nesting relative to an effect matters.
+                    FrameOp::PushClip(_) => clip_depth += 1,
+                    FrameOp::PopClip => {
+                        clip_depth = clip_depth.checked_sub(1).ok_or(GpuError::InvalidRecord {
+                            at: command.origin.at,
+                            record: "glyph preparation scope",
+                        })?;
                     }
                     FrameOp::PushGroup(group) => {
                         let inherited = super::effect_plan::same_source_domain(
                             group,
-                            scopes.last().and_then(|scope| scope.group),
+                            scopes
+                                .last()
+                                .filter(|scope| scope.clip_depth == clip_depth)
+                                .map(|scope| scope.group),
                         );
                         push_stack(
                             &mut scopes,
                             Scope {
-                                group: Some(group),
+                                group,
                                 outer,
                                 ink: InkBounds::Empty,
                                 measure: matches!(group.ink_bounds, InkBounds::Unbounded),
+                                clip_depth,
                             },
                             |bytes| prepare.reserve(bytes),
                         )?;
@@ -207,7 +209,7 @@ impl Plan {
                             .frame_to_source;
                         }
                     }
-                    FrameOp::PopClip | FrameOp::PopGroup => {
+                    FrameOp::PopGroup => {
                         let Some(scope) = scopes.pop() else {
                             return Err(GpuError::InvalidRecord {
                                 at: command.origin.at,
@@ -215,46 +217,43 @@ impl Plan {
                             });
                         };
                         outer = scope.outer;
+                        let group = scope.group;
                         let mut ink = scope.ink;
-                        if let Some(group) = scope.group {
-                            if !scope.measure {
-                                ink = group.ink_bounds;
-                            } else if let Some(effect) =
-                                group.effect.as_ref().or(group.mask_effect.as_ref())
-                            {
-                                ink = transformed(
-                                    InkBounds::Rect(effect.bounds),
-                                    group.effect_to_target,
-                                );
-                            } else if !group.filters.is_empty() {
-                                ink = InkBounds::Unbounded;
-                            }
-                            if scope.measure {
-                                push_stack(
-                                    &mut plan.groups,
-                                    (group as *const _ as usize, ink),
-                                    |bytes| prepare.reserve(bytes),
-                                )?;
-                            }
-                            if let Some(mask) = group.mask {
-                                let definition = stream.drawing.masks().get(&mask.mask).ok_or(
-                                    GpuError::Unsupported {
-                                        at: command.origin.at,
-                                        record: "missing mask",
-                                    },
-                                )?;
-                                push_stack(
-                                    &mut streams,
-                                    Stream {
-                                        drawing: stream.drawing,
-                                        commands: &definition.commands,
-                                        outer: outer * mask.transform,
-                                        offset: None,
-                                        transitions: false,
-                                    },
-                                    |bytes| prepare.reserve(bytes),
-                                )?;
-                            }
+                        if !scope.measure {
+                            ink = group.ink_bounds;
+                        } else if let Some(effect) =
+                            group.effect.as_ref().or(group.mask_effect.as_ref())
+                        {
+                            ink =
+                                transformed(InkBounds::Rect(effect.bounds), group.effect_to_target);
+                        } else if !group.filters.is_empty() {
+                            ink = InkBounds::Unbounded;
+                        }
+                        if scope.measure {
+                            push_stack(
+                                &mut plan.groups,
+                                (group as *const _ as usize, ink),
+                                |bytes| prepare.reserve(bytes),
+                            )?;
+                        }
+                        if let Some(mask) = group.mask {
+                            let definition = stream.drawing.masks().get(&mask.mask).ok_or(
+                                GpuError::Unsupported {
+                                    at: command.origin.at,
+                                    record: "missing mask",
+                                },
+                            )?;
+                            push_stack(
+                                &mut streams,
+                                Stream {
+                                    drawing: stream.drawing,
+                                    commands: &definition.commands,
+                                    outer: outer * mask.transform,
+                                    offset: None,
+                                    transitions: false,
+                                },
+                                |bytes| prepare.reserve(bytes),
+                            )?;
                         }
                         if let Some(parent) = scopes.last_mut()
                             && parent.measure

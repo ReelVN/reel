@@ -27,9 +27,11 @@ pub(super) const MAX_IMAGE_WORKERS: usize = if cfg!(any(
     1
 };
 
+const IMAGE_PROBE_NAME: &str = "image.probe";
+
 pub fn image_probe() -> WorkKind {
     WorkKind {
-        name: "image.probe".into(),
+        name: IMAGE_PROBE_NAME.into(),
         version: 1,
         operation: WorkOperation::Decode,
     }
@@ -76,10 +78,11 @@ impl ImageExecutor {
                         if cancelled.load(Ordering::Acquire) {
                             return Err("decode cancelled".into());
                         }
+                        let probe = kind.name == IMAGE_PROBE_NAME;
                         if input.as_slice().starts_with(TextureHeader::MAGIC) {
                             let (header, payload) = TextureHeader::parse(input.as_slice())
                                 .map_err(|e| e.to_string())?;
-                            let data = if kind == image_probe() {
+                            let data = if probe {
                                 header.encode().to_vec()
                             } else {
                                 let descriptor = header.descriptor();
@@ -118,37 +121,12 @@ impl ImageExecutor {
                                 .map_err(|e| e.message)?;
                             return OwnedBytes::new(data, output).map_err(|e| e.reason.message);
                         }
-                        let (decoder, workspace) = crate::artwork::decoder(
-                            Cursor::new(input.as_slice()),
-                            input.as_slice().len() as u64,
+                        let data = decode_artwork(
+                            input.as_slice(),
+                            probe,
                             temporary.bytes(),
+                            output.bytes(),
                         )?;
-                        let (width, height) = decoder.dimensions();
-                        let rgba = u64::from(width)
-                            .checked_mul(u64::from(height))
-                            .and_then(|n| n.checked_mul(4))
-                            .ok_or("image size overflow")?;
-                        let decoded = decoder.total_bytes() + workspace;
-                        let data = if kind == image_probe() {
-                            let mut data = Vec::with_capacity(24);
-                            data.extend_from_slice(&width.to_le_bytes());
-                            data.extend_from_slice(&height.to_le_bytes());
-                            data.extend_from_slice(&rgba.to_le_bytes());
-                            data.extend_from_slice(&decoded.to_le_bytes());
-                            data
-                        } else {
-                            if rgba > output.bytes()
-                                || decoded
-                                    .checked_add(rgba)
-                                    .is_none_or(|bytes| bytes > temporary.bytes())
-                            {
-                                return Err("image decode reservation too small".into());
-                            }
-                            DynamicImage::from_decoder(decoder)
-                                .map_err(|e| e.to_string())?
-                                .into_rgba8()
-                                .into_raw()
-                        };
                         output
                             .resize(data.capacity() as u64)
                             .map_err(|e| e.message)?;
@@ -176,6 +154,41 @@ impl ImageExecutor {
         }
     }
 }
+
+fn decode_artwork(
+    input: &[u8],
+    probe: bool,
+    temporary: u64,
+    output: u64,
+) -> Result<Vec<u8>, String> {
+    if !probe && let Some(decoded) = crate::artwork::decode_rgb_png_rows(input, temporary, output) {
+        return decoded;
+    }
+    let (decoder, workspace) =
+        crate::artwork::decoder(Cursor::new(input), input.len() as u64, temporary)?;
+    let (width, height) = decoder.dimensions();
+    let rgba = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("image size overflow")?;
+    let decoded = decoder.total_bytes() + workspace;
+    if probe {
+        let mut data = Vec::with_capacity(24);
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&height.to_le_bytes());
+        data.extend_from_slice(&rgba.to_le_bytes());
+        data.extend_from_slice(&decoded.to_le_bytes());
+        return Ok(data);
+    }
+    if rgba > output || decoded.checked_add(rgba).is_none_or(|n| n > temporary) {
+        return Err("image decode reservation too small".into());
+    }
+    Ok(DynamicImage::from_decoder(decoder)
+        .map_err(|e| e.to_string())?
+        .into_rgba8()
+        .into_raw())
+}
+
 #[allow(
     clippy::result_large_err,
     reason = "rejection returns the owning request without allocating"

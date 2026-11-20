@@ -124,7 +124,7 @@ pub(super) fn upload(
     let staging = if let Some(buffer) = reusable {
         &buffer.buffer
     } else {
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageStagingCreate);
         #[cfg(test)]
         gpu.upload_creations
             .staging

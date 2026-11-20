@@ -719,6 +719,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn storing_in_a_host_field_table_notifies_observers() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let fields = heap.alloc_table().unwrap();
+        let key = heap.alloc_string("value").unwrap();
+        heap.table_store(fields, 0, key, Value::int(0)).unwrap();
+        let host = heap.alloc_host(fields, &[], None).unwrap();
+        heap.observe_host_properties(host, 0, 1).unwrap();
+        let output = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(host, Some(0)).unwrap();
+        heap.commit_derived(output, Value::int(0)).unwrap();
+
+        heap.table_store(fields, 0, key, Value::int(1)).unwrap();
+        assert_eq!(
+            heap.host_property(PropertyId { host, field: 0 })
+                .unwrap()
+                .as_int(),
+            Some(1)
+        );
+        assert!(heap.next_derived().unwrap().unwrap().same_bits(output));
+    }
+
+    #[test]
     fn private_host_payload_keeps_gc_edges_without_invalidating_properties() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
         let fields = heap.alloc_table().unwrap();

@@ -7,7 +7,7 @@ use reel_ui::{
     dpi::PhysicalSize,
     imaging::{
         Composite,
-        record::{Command, Draw, Group, Scene},
+        record::{Clip, Command, Draw, Group, Scene},
     },
     peniko::{Blob, Brush, Color},
     resources::{ResourceData, ResourceRegistry},
@@ -101,6 +101,15 @@ fn recorded_reveal_prepares_only_visible_glyphs_and_bounds_the_group() {
         },
         ..Default::default()
     });
+    let clip = Clip::Fill {
+        transform: Affine::IDENTITY,
+        shape: Geometry::Rect(Rect::new(0., 0., 150., 100.)),
+        fill_rule: Default::default(),
+    };
+    scene.push_clip(clip.clone());
+    let mut clipped = Scene::new();
+    clipped.push_clip(clip.clone());
+    clipped.push_clip(clip);
     let mut recorded = 0;
     for layer in &layers.layers {
         let VisualLayerKind::Scene(source) = &layer.kind else {
@@ -113,6 +122,7 @@ fn recorded_reveal_prepares_only_visible_glyphs_and_bounds_the_group() {
             if let Draw::GlyphRun(run) = source.draw_op(*id) {
                 recorded += run.glyphs.len();
                 scene.draw(Draw::GlyphRun(run.clone()));
+                clipped.draw(Draw::GlyphRun(run.clone()));
             }
         }
     }
@@ -128,6 +138,7 @@ fn recorded_reveal_prepares_only_visible_glyphs_and_bounds_the_group() {
         shape: Geometry::Rect(Rect::new(0., 0., 20., 30.)),
         composite: Default::default(),
     });
+    scene.pop_clip();
     scene.pop_group();
     let mut excluded = r01_fixture::RecordWidget::new(scene.clone());
     excluded.capture_included = false;
@@ -187,6 +198,30 @@ fn recorded_reveal_prepares_only_visible_glyphs_and_bounds_the_group() {
         probe.glyphs, 0,
         "capture exclusions omit the real glyph run"
     );
+
+    clipped.pop_clip();
+    clipped.pop_clip();
+    let mut widget = r01_fixture::RecordWidget::new(clipped);
+    widget.clip = false;
+    let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+    let frame = r01_fixture::build(
+        bridge.record(FrameId(3)).unwrap(),
+        registry.freeze(&[handle], &pool).unwrap(),
+        &pool,
+    );
+    let mut probe = Probe::default();
+    Plan::collect(
+        std::iter::once(&frame),
+        Affine::scale(1.5),
+        4096,
+        false,
+        &Default::default(),
+        &mut probe,
+    )
+    .unwrap();
+    assert_eq!(probe.glyphs, recorded);
+    assert_eq!(probe.densities, [2.]);
+    assert_eq!(probe.reserved, 0);
 }
 
 fn finite_visual_frame(groups: usize) -> RenderFrame {

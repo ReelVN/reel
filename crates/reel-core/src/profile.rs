@@ -209,6 +209,8 @@ profile_phases! {
     ImageNativeAllocate => "image_native_allocate",
     /// Create the shader-visible view of a sampled desktop image.
     ImageNativeView => "image_native_view",
+    /// Allocate a mapped buffer for a desktop image upload.
+    ImageStagingCreate => "image_staging_create",
     /// Shape styled text into positioned font runs.
     UiTextShape => "ui_text_shape",
     /// Break shaped text into lines.
@@ -422,6 +424,7 @@ mod enabled {
                 | Phase::TargetTexture
                 | Phase::TargetFramebuffer
                 | Phase::BufferCreate
+                | Phase::ImageStagingCreate
                 | Phase::GlyphRaster
                 | Phase::VmSlice
                 | Phase::HostCall

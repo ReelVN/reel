@@ -386,8 +386,13 @@ fn small_png_metadata_uses_the_configured_decoder_budget() {
 #[test]
 fn pngs_with_fixed_metadata_decode_without_a_worker_probe() {
     for (color, channels) in [(png::ColorType::Rgb, 3), (png::ColorType::Rgba, 4)] {
-        let expected = [25, 50, 75, 255].repeat(19 * 5);
-        let pixels = expected[..channels].repeat(19 * 5);
+        let expected = (0..19 * 5)
+            .flat_map(|sample: u8| [25 + sample, 50 + sample, 75 + sample, 255])
+            .collect::<Vec<_>>();
+        let pixels = expected
+            .chunks_exact(4)
+            .flat_map(|pixel| pixel[..channels].iter().copied())
+            .collect::<Vec<_>>();
         let mut encoded = Vec::new();
         let mut encoder = png::Encoder::new(&mut encoded, 19, 5);
         encoder.set_color(color);

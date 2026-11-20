@@ -4,6 +4,10 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Reuse mapped upload buffer space across raster row ranges within one submission and report staging allocations separately.
+- Decode bounded noninterlaced RGB8 PNGs directly into the resident RGBA buffer one row at a time.
+- Skip model and property observer bookkeeping for ordinary VM table writes.
+- Use a depth counter for ordinary clips during glyph preparation and allocate work stacks only for scopes that need them.
 - Count archive output positions during export and write each compressed block directory in one batch.
 - Reuse desktop geometry buffers across small changes in vertex and index counts.
 - Index recorded geometry by source and command when draw order changes.

@@ -2,6 +2,7 @@ use super::{Gpu, GpuError};
 pub(super) use crate::common::resources::ResourceSource;
 use crate::common::resources::TextureUploadLayout;
 use reel_core::image_coverage::IMAGE_COVERAGE_BANDS;
+use reel_core::profile::{Phase, Scope};
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 use reel_ui::frame::RecordLocation;
 use reel_ui::peniko::ImageFormat;
@@ -440,7 +441,6 @@ fn create_sampled_storage(
     gpu: &Gpu,
     descriptor: &wgpu::TextureDescriptor<'_>,
 ) -> Result<(wgpu::Texture, wgpu::TextureView), GpuError> {
-    use reel_core::profile::{Phase, Scope};
     let texture = {
         let _timing = Scope::new(Phase::ImageNativeAllocate);
         gpu.device.create_texture(descriptor)
@@ -480,6 +480,7 @@ pub(super) fn texture_rows(
     let staging = if let Some(buffer) = reusable {
         &buffer.buffer
     } else {
+        let _timing = Scope::new(Phase::ImageStagingCreate);
         owned = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bounded texture block upload"),
             size: row * u64::from(count),
@@ -579,6 +580,7 @@ fn upload_rows_with(
     let staging = if let Some(span) = reusable {
         span
     } else {
+        let _timing = Scope::new(Phase::ImageStagingCreate);
         owned = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bounded image upload"),
             size: u64::from(row) * u64::from(height),

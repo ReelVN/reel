@@ -131,6 +131,26 @@ impl Cache {
             .max()
             .unwrap_or(0)
     }
+    pub fn mapped_count(&self) -> usize {
+        self.slots.iter().flatten().count()
+    }
+    pub fn rows_available(&self, row_bytes: u64) -> u64 {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|buffer| buffer.capacity / row_bytes)
+            .sum()
+    }
+    pub fn take_largest(&mut self) -> Box<Buffer> {
+        let (index, _) = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| Some((index, slot.as_ref()?.capacity)))
+            .max_by_key(|&(_, capacity)| capacity)
+            .expect("enough mapped raster rows");
+        self.slots[index].take().unwrap()
+    }
     pub fn clear(&mut self) {
         self.slots.iter_mut().for_each(|slot| *slot = None);
     }
@@ -193,7 +213,7 @@ impl Cache {
                     .resource_bytes
                     .saturating_sub(budgets.resources.usage().bytes),
             })?;
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::ImageStagingCreate);
         let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reusable image upload"),
             size: bytes,

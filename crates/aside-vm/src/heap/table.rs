@@ -255,9 +255,13 @@ impl Heap {
         value: Value,
     ) -> Result<(), HeapError> {
         let key = self.key(table)?;
-        let Payload::Table(Table { values, .. }) = &self.object(key)?.payload else {
+        let object = self.object(key)?;
+        let Payload::Table(Table { values, .. }) = &object.payload else {
             return Err(HeapError::WrongKind);
         };
+        let model = object.model;
+        // A plain field table can still publish changes through its host.
+        let observable = model || object.observable_fields != 0 || object.property_owner.is_some();
         let index = position.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
         if index > values.len {
             return Err(HeapError::OutOfBounds);
@@ -271,17 +275,19 @@ impl Heap {
         if append {
             values.len.checked_add(2).ok_or(HeapError::OutOfBounds)?;
         }
-        let mapping_bytes = if append {
+        let mapping_bytes = if append && model {
             self.model_append_bytes(table)?
         } else {
             0
         };
         self.ensure_bytes(extra + mapping_bytes)?;
         // Both barriers and the complete allocation preflight precede publication.
-        self.adopt_model_value_reserving(table, value, extra + mapping_bytes)?;
+        if model {
+            self.adopt_model_value_reserving(table, value, extra + mapping_bytes)?;
+        }
         self.barrier(key_value)?;
         self.barrier(value)?;
-        if append {
+        if append && model {
             self.append_model_position(table)?;
         }
         self.charge(extra, u64::from(extra != 0));
@@ -304,7 +310,14 @@ impl Heap {
         self.changes.record(key, object.watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         object.charged += extra;
-        self.invalidate_reactive(table, Some(self.model_field(table, position)?))?;
+        if observable {
+            let field = if model {
+                self.model_field(table, position)?
+            } else {
+                position
+            };
+            self.invalidate_reactive(table, Some(field))?;
+        }
         Ok(())
     }
 
