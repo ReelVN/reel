@@ -423,7 +423,7 @@ pub(super) fn write(
     offset: u64,
     compress: bool,
     scratch: &mut WriteScratch,
-) -> io::Result<(u64, u64, EntryStorage)> {
+) -> io::Result<(u64, u64, EntryStorage, u64)> {
     let WriteScratch { raw, encoded } = scratch;
     raw.resize(BLOCK_BYTES, 0);
     if compress {
@@ -476,19 +476,23 @@ pub(super) fn write(
             .checked_add(payload.len() as u64)
             .ok_or_else(|| invalid("archive payload exceeds format width"))?;
     }
-    let storage = if has_compressed {
-        let directory_offset = offset
-            .checked_add(stored_length)
-            .ok_or_else(|| invalid("archive block directory offset overflow"))?;
-        directory_bytes(length)
-            .and_then(|bytes| directory_offset.checked_add(bytes))
+    let payload_end = offset
+        .checked_add(stored_length)
+        .ok_or_else(|| invalid("archive payload offset overflow"))?;
+    let (storage, end) = if has_compressed {
+        let directory = records.as_flattened();
+        let end = payload_end
+            .checked_add(directory.len() as u64)
             .ok_or_else(|| invalid("archive block directory exceeds format width"))?;
-        for record in records {
-            output.write_all(&record)?;
-        }
-        EntryStorage::Blocks { directory_offset }
+        output.write_all(directory)?;
+        (
+            EntryStorage::Blocks {
+                directory_offset: payload_end,
+            },
+            end,
+        )
     } else {
-        EntryStorage::Raw
+        (EntryStorage::Raw, payload_end)
     };
-    Ok((length, stored_length, storage))
+    Ok((length, stored_length, storage, end))
 }

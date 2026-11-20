@@ -30,42 +30,45 @@ pub(crate) fn png_shape(bytes: &[u8]) -> Option<PngShape> {
     }
     let mut header = png::Decoder::new(std::io::Cursor::new(bytes.get(..HEADER_BYTES)?));
     let info = header.read_header_info().ok()?;
-    if info.bit_depth != png::BitDepth::Eight {
+    if info.bit_depth == png::BitDepth::Sixteen {
         return None;
     }
-    let channels = match info.color_type {
-        png::ColorType::Rgba => 4,
-        png::ColorType::Rgb => 3,
+    let transparency = bounded_png_transparency(&bytes[HEADER_BYTES..]);
+    // The image decoder expands a palette or a tRNS color key before
+    // converting the resulting pixels to RGBA8.
+    let channels = match (info.color_type, transparency) {
+        (png::ColorType::Rgba, _) => 4,
+        (png::ColorType::GrayscaleAlpha, Some(_)) => 2,
+        (png::ColorType::Rgb | png::ColorType::Indexed, Some(alpha)) => 3 + u64::from(alpha),
+        (png::ColorType::Grayscale, Some(alpha)) => 1 + u64::from(alpha),
         _ => return None,
     };
-    let bounded_metadata = png_has_fixed_metadata(&bytes[HEADER_BYTES..]);
-    // A tRNS chunk can turn RGB into RGBA during decoding.
-    if channels == 3 && !bounded_metadata {
-        return None;
-    }
     let pixels = u64::from(info.width) * u64::from(info.height);
     Some(PngShape {
         size: [info.width, info.height],
         output: pixels.checked_mul(4)?,
         temporary: pixels.checked_mul(4 + channels)?,
-        bounded_metadata,
+        bounded_metadata: transparency.is_some(),
     })
 }
 
-/// Fixed-size display metadata does not expand the decoder's workspace or
-/// change its output channels. The worker still validates and decodes the file.
-fn png_has_fixed_metadata(mut chunks: &[u8]) -> bool {
+/// Identify transparency in PNGs with bounded ancillary data. The worker
+/// validates the chunks and decodes the image using the same information.
+fn bounded_png_transparency(mut chunks: &[u8]) -> Option<bool> {
+    let mut transparent = false;
     for _ in 0..256 {
         let Some(header) = chunks.get(..8) else { break };
         let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
         match (&header[4..], length) {
-            (b"IEND", 0) => return chunks.len() == 12,
+            (b"IEND", 0) => return (chunks.len() == 12).then_some(transparent),
+            (b"tRNS", 1..=256) => transparent = true,
             (b"IDAT", _)
+            | (b"PLTE", 3..=768)
             | (b"pHYs", 9)
             | (b"sRGB", 1)
             | (b"gAMA", 4)
             | (b"cHRM", 32)
-            | (b"bKGD", 6)
+            | (b"bKGD", 1 | 2 | 6)
             | (b"tIME", 7) => {}
             _ => break,
         }
@@ -74,7 +77,7 @@ fn png_has_fixed_metadata(mut chunks: &[u8]) -> bool {
         };
         chunks = rest;
     }
-    false
+    None
 }
 
 /// Inspect a source file by its contents.

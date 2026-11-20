@@ -4,9 +4,14 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Count archive output positions during export and write each compressed block directory in one batch.
+- Reuse desktop geometry buffers across small changes in vertex and index counts.
+- Index recorded geometry by source and command when draw order changes.
+- Borrow ordinary stage constructor arguments until a property binding changes a value.
+- Release encoded input as soon as final image decoding ends.
 - Reuse font scaling setup across each batch of uncached glyphs.
 - Check detached stage components for collection when the VM invalidates unreachable handles.
-- Admit RGB8 and RGBA8 PNGs with fixed-size display metadata directly to image decoding and share the available worker budget across them.
+- Admit up to 8-bit PNGs with bounded ancillary data, including palettes and transparent color keys, directly to image decoding.
 - Reuse the verified bytecode size at encoding time and compress debug source once when writing it.
 - Share target branch selection among translation, effect, and mask compilation.
 - Place raster uploads from the same desktop batch in available spans of the same staging buffer.

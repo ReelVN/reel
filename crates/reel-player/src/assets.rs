@@ -47,8 +47,8 @@ pub struct AssetOptions {
     /// Total encoded input ceiling. Streaming reserves min(128 KiB, one quarter)
     /// within this ceiling; ordinary resources must fit the remaining capacity.
     pub input_bytes: u64,
-    /// Temporary allowance shared by the archive reader and active image decoder.
-    /// Compressed archives retain a fixed workspace; the decoder uses the remainder.
+    /// Temporary allowance shared by the archive reader and admitted image decodes.
+    /// Compressed archives retain a fixed workspace; decode jobs share the remainder.
     pub decode_bytes: u64,
 }
 impl Default for AssetOptions {
@@ -806,7 +806,6 @@ impl Service {
                         self.origins.remember(load.kind, lease);
                     }
                     load.phase = Phase::Done(result);
-                    load.input = None;
                     Ok(())
                 }
                 Terminal::Failed(error) => Err(error.message),
@@ -1082,19 +1081,25 @@ impl Service {
                     .temporary
                     .reserve(workspace)
                     .map_err(|e| format!("image decode limit: {}", e.message))?;
+                let completion = completion()?;
+                let input = if probe {
+                    load.input.as_ref().unwrap().clone()
+                } else {
+                    load.input.take().unwrap()
+                };
                 let request = WorkRequest {
                     kind: if probe {
                         decode::image_probe()
                     } else {
                         decode::image_decode()
                     },
-                    input: load.input.as_ref().unwrap().clone(),
+                    input,
                     scope: Scope::Process,
                     priority: load.priority,
                     reservations: WorkReservations {
                         output,
                         temporary,
-                        completion: completion()?,
+                        completion,
                     },
                 };
                 match self.executor.as_mut().unwrap().submit(request) {
@@ -1108,7 +1113,11 @@ impl Service {
                             Phase::Decoding(id)
                         }
                     }
-                    Err(error) if error.reason.retryable() => {}
+                    Err(error) if error.reason.retryable() => {
+                        if !probe {
+                            load.input = Some(error.request.input);
+                        }
+                    }
                     Err(error) => return Err(error.reason.message),
                 }
             }

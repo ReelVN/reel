@@ -410,6 +410,7 @@ fn pngs_with_fixed_metadata_decode_without_a_worker_probe() {
             let load = &service.loads[&id];
             assert!(matches!(load.phase, Phase::Decoding(_)));
             assert_eq!(load.output, expected.len() as u64);
+            assert!(load.input.is_none());
             assert_eq!(service.pending_pngs.len(), 1);
         }
         let lease = load_until_done(&assets, id).unwrap();
@@ -418,28 +419,40 @@ fn pngs_with_fixed_metadata_decode_without_a_worker_probe() {
 }
 
 #[test]
-fn rgb_png_with_transparency_uses_the_decoders_output_shape() {
-    let mut encoded = Vec::new();
-    let mut encoder = png::Encoder::new(&mut encoded, 2, 1);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_trns(vec![0, 25, 0, 50, 0, 75]);
-    encoder
-        .write_header()
-        .unwrap()
-        .write_image_data(&[25, 50, 75, 1, 2, 3])
-        .unwrap();
-    let assets = Assets::directory(AssetOptions::default());
-    let id = assets.request_encoded("test".into(), &encoded).unwrap();
-    assets.maintain();
-    assert!(matches!(
-        assets.0.borrow().loads[&id].phase,
-        Phase::Probing(_)
-    ));
-    let lease = load_until_done(&assets, id).unwrap();
-    assert_eq!(
-        lease.read_pixels().unwrap().bytes(),
-        &[25, 50, 75, 0, 1, 2, 3, 255]
-    );
+fn png_color_keys_and_palettes_decode_without_a_worker_probe() {
+    let colors = [25, 50, 75, 1, 2, 3];
+    for indexed in [false, true] {
+        let mut encoded = Vec::new();
+        let mut encoder = png::Encoder::new(&mut encoded, 2, 1);
+        let pixels: &[u8] = if indexed {
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::One);
+            encoder.set_palette(colors.to_vec());
+            encoder.set_trns(vec![0]);
+            &[0b0100_0000]
+        } else {
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_trns(vec![0, 25, 0, 50, 0, 75]);
+            &colors
+        };
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(pixels)
+            .unwrap();
+        let assets = Assets::directory(AssetOptions::default());
+        let id = assets.request_encoded("test".into(), &encoded).unwrap();
+        assets.maintain();
+        let service = assets.0.borrow();
+        assert!(matches!(service.loads[&id].phase, Phase::Decoding(_)));
+        assert_eq!(service.pending_pngs.len(), 1);
+        drop(service);
+        let lease = load_until_done(&assets, id).unwrap();
+        assert_eq!(
+            lease.read_pixels().unwrap().bytes(),
+            &[25, 50, 75, 0, 1, 2, 3, 255]
+        );
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]

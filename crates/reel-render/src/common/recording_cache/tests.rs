@@ -39,11 +39,11 @@ fn frame(count: usize) -> (PresentationBridge, RenderFrame) {
 
 #[test]
 #[ignore = "CPU recording geometry lookup measurement; no graphics adapter"]
-fn ordered_recording_lookup_cost() {
+fn recording_lookup_cost() {
     use std::{hint::black_box, time::Instant};
     for count in [8, 64, 128] {
-        let (_bridge, frame) = frame(count);
-        let origins: Vec<_> = frame
+        let (_bridge, resident) = frame(count);
+        let origins: Vec<_> = resident
             .commands()
             .iter()
             .filter(|command| matches!(command.op, FrameOp::Draw(_)))
@@ -54,7 +54,7 @@ fn ordered_recording_lookup_cost() {
         let mut cache = Cache::default();
         for (index, origin) in origins.iter().enumerate() {
             cache.insert(
-                frame.drawing(),
+                resident.drawing(),
                 *origin,
                 0u32,
                 Payload(index as u32),
@@ -63,25 +63,45 @@ fn ordered_recording_lookup_cost() {
             );
         }
         let before = cache.bytes();
-        let began = Instant::now();
-        let mut checksum = 0;
-        for _ in 0..2000 {
-            cache.begin_replay();
-            for origin in &origins {
-                checksum += u64::from(
-                    cache
-                        .get(black_box(frame.drawing()), *origin, black_box(&0))
-                        .unwrap()
-                        .value()
-                        .0,
-                );
+        let (_miss_bridge, miss_frame) = frame(1);
+        let miss = miss_frame
+            .commands()
+            .iter()
+            .find(|command| matches!(command.op, FrameOp::Draw(_)))
+            .unwrap()
+            .origin;
+        let ordered: Vec<_> = origins
+            .iter()
+            .map(|origin| (resident.drawing(), *origin))
+            .collect();
+        let mixed: Vec<_> = (0..count)
+            .map(|index| {
+                if index % 4 == 3 {
+                    (miss_frame.drawing(), miss)
+                } else {
+                    (resident.drawing(), origins[(index * 13) % count])
+                }
+            })
+            .collect();
+        for (order, queries) in [("ordered", ordered), ("mixed", mixed)] {
+            let began = Instant::now();
+            let mut checksum = 0;
+            for _ in 0..2000 {
+                cache.begin_replay();
+                for &(drawing, origin) in &queries {
+                    checksum += u64::from(
+                        cache
+                            .get(black_box(drawing), origin, black_box(&0))
+                            .map_or(0, |entry| entry.value().0 + 1),
+                    );
+                }
             }
+            assert_eq!(before, cache.bytes());
+            println!(
+                "recording_lookup order={order} entries={count} frames=2000 elapsed_us={} metadata_bytes={before} checksum={checksum}",
+                began.elapsed().as_micros()
+            );
         }
-        assert_eq!(before, cache.bytes());
-        println!(
-            "recording_lookup entries={count} frames=2000 elapsed_us={} metadata_bytes={before} checksum={checksum}",
-            began.elapsed().as_micros()
-        );
     }
 }
 
@@ -129,6 +149,46 @@ fn ordered_lookup_falls_back_for_reordering_and_keeps_inflight_owners() {
     );
     assert_eq!(flight.value().0, 3);
     drop(flight);
+    assert_eq!(budgets.transient.usage().bytes, 0);
+}
+
+#[test]
+fn indexed_lookup_keeps_the_new_recording_when_a_slot_is_replaced() {
+    let (_bridge, drawing) = frame(132);
+    let origins: Vec<_> = drawing
+        .commands()
+        .iter()
+        .filter(|command| matches!(command.op, FrameOp::Draw(_)))
+        .map(|command| command.origin)
+        .collect();
+    let limits = crate::common::GpuLimits::default();
+    let budgets = Budgets::new(limits);
+    let mut cache = Cache::default();
+    let mut charged_bytes = None;
+    for _ in 0..64 {
+        for (index, &origin) in origins.iter().enumerate() {
+            cache.insert(
+                drawing.drawing(),
+                origin,
+                0u32,
+                Payload(index as u32),
+                &budgets,
+                limits.transient_bytes,
+            );
+        }
+        assert_eq!(cache.bytes(), *charged_bytes.get_or_insert(cache.bytes()));
+        assert_eq!(cache.bytes(), budgets.transient.usage().bytes);
+    }
+    cache.begin_replay();
+    for (index, &origin) in origins.iter().enumerate().rev() {
+        assert_eq!(
+            cache
+                .get(drawing.drawing(), origin, &0)
+                .map(|entry| entry.value().0),
+            (index >= 4).then_some(index as u32),
+        );
+    }
+    cache.clear();
     assert_eq!(budgets.transient.usage().bytes, 0);
 }
 

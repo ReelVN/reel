@@ -1,5 +1,5 @@
 //! Stable Aside host nodes projected into Reel's one shared stage model.
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
@@ -699,11 +699,16 @@ impl StageBinding {
     ) -> Result<Value, AdapterError> {
         let heap = vm.heap_mut();
         let raw_args = args;
-        let resolved = args
-            .iter()
-            .map(|&value| heap.property_argument(value))
-            .collect::<Result<Vec<_>, _>>()?;
-        let args = resolved.as_slice();
+        // Resolve values before creating the node. Keep the original references
+        // for binding, and copy the arguments only when resolution changes one.
+        let mut resolved = Cow::Borrowed(raw_args);
+        for (index, &argument) in raw_args.iter().enumerate() {
+            let value = heap.property_argument(argument)?;
+            if !value.same_bits(argument) {
+                resolved.to_mut()[index] = value;
+            }
+        }
+        let args = resolved.as_ref();
         let prefix = registry::node_prefix(symbol);
         let fields = heap.alloc_table()?;
         let field_count = prefix.len() + NodeProperty::PROPERTIES.len();

@@ -297,6 +297,7 @@ pub struct ArchiveWriter<W> {
     kind: ArchiveKind,
     entries: BTreeMap<String, EntryData>,
     index_bytes: u64,
+    payload_end: Option<u64>,
     scratch: blocks::WriteScratch,
 }
 impl<W: Write + Seek> ArchiveWriter<W> {
@@ -308,6 +309,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         Ok(Self {
             output,
             index_bytes: 0,
+            payload_end: Some(HEADER_LEN),
             kind,
             entries: BTreeMap::new(),
             scratch: blocks::WriteScratch::default(),
@@ -316,12 +318,15 @@ impl<W: Write + Seek> ArchiveWriter<W> {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+    fn write_offset(&mut self) -> io::Result<u64> {
+        self.payload_end
+            .map_or_else(|| self.output.stream_position(), Ok)
+    }
     /// Conservative final size for an automatically compressed entry, including
     /// its main-index record and worst-case block directory. Raw storage and
     /// compression may make the completed archive smaller.
     pub fn encoded_len_after(&mut self, path: &str, length: u64) -> io::Result<u64> {
-        self.output
-            .stream_position()?
+        self.write_offset()?
             .checked_add(self.index_bytes)
             .and_then(|n| n.checked_add(ENTRY_FIXED_LEN + path.len() as u64))
             .and_then(|n| n.checked_add(length))
@@ -352,9 +357,11 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         if self.entries.contains_key(path) {
             return Err(invalid(format!("duplicate archive path: {path}")));
         }
-        let offset = self.output.stream_position()?;
+        let offset = self.write_offset()?;
+        // A failed write can advance the stream without completing this entry.
+        self.payload_end = None;
         let mut hash = blake3::Hasher::new();
-        let (length, stored_length, storage) = blocks::write(
+        let (length, stored_length, storage, end) = blocks::write(
             input,
             &mut self.output,
             &mut hash,
@@ -362,6 +369,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             compress,
             &mut self.scratch,
         )?;
+        self.payload_end = Some(end);
         let entry = EntryData {
             offset,
             length,
@@ -378,7 +386,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         Ok(entry.view(path))
     }
     pub fn finish(mut self) -> io::Result<W> {
-        let index_offset = self.output.stream_position()?;
+        let index_offset = self.write_offset()?;
         {
             let mut index = BufWriter::new(&mut self.output);
             for (path, entry) in &self.entries {

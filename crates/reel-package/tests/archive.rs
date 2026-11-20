@@ -201,6 +201,46 @@ fn compressed_fixture() -> (Vec<u8>, Vec<u8>) {
 }
 
 #[test]
+fn failed_append_resumes_at_the_actual_stream_position() {
+    struct FailedRead;
+    impl Read for FailedRead {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    let mut writer = ArchiveWriter::new(Cursor::new(Vec::new()), ArchiveKind::Resources).unwrap();
+    let mut partial = io::repeat(3).take(BLOCK_BYTES as u64).chain(FailedRead);
+    assert_eq!(
+        writer.add_raw("failed", &mut partial).unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe,
+    );
+    let upper_bound = writer
+        .encoded_len_after("kept", BLOCK_BYTES as u64)
+        .unwrap();
+    let data = vec![9; BLOCK_BYTES];
+    let entry = writer.add("kept", &mut data.as_slice()).unwrap();
+    assert_eq!(entry.offset, HEADER_LEN + BLOCK_BYTES as u64);
+    let mut output = writer.finish().unwrap();
+    assert!(output.get_ref().len() as u64 <= upper_bound);
+    let index = ArchiveIndex::read(&mut output).unwrap();
+    assert!(index.get("failed").is_none());
+    let mut decoded = vec![0; BLOCK_BYTES];
+    index
+        .get("kept")
+        .unwrap()
+        .read_range(
+            &mut output,
+            0,
+            &mut decoded,
+            &mut ReadScratch::new(),
+            || false,
+        )
+        .unwrap();
+    assert_eq!(decoded, data);
+}
+
+#[test]
 fn independently_compressed_blocks_preserve_unknown_length_input_and_misaligned_ranges() {
     let (bytes, payload) = compressed_fixture();
     assert_eq!(

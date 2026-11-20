@@ -1,8 +1,10 @@
 //! Bounded immutable geometry keyed by a live source recording.
 use super::{GpuError, mesh, renderer::Budgets};
-use reel_core::budget::BudgetTicket;
+use hashbrown::HashTable;
+use reel_core::budget::{BudgetTicket, collections::reserve_table};
 use reel_ui::frame::{CommandOrigin, FrameDrawing, LocalId, RecordingSource};
 use reel_ui::kurbo::Affine;
+use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -128,6 +130,7 @@ fn grow<T>(
 pub(crate) struct Entry<D, T> {
     source: RecordingSource,
     local: LocalId,
+    hash: u64,
     dependency: D,
     value: Option<T>,
     _ticket: BudgetTicket,
@@ -141,6 +144,8 @@ impl<D, T> Entry<D, T> {
 }
 pub(crate) struct Cache<D, T> {
     entries: [Option<Arc<Entry<D, T>>>; 128],
+    index: HashTable<u8>,
+    index_storage: Option<BudgetTicket>,
     next: usize,
     lookup: usize,
     located: Option<usize>,
@@ -150,6 +155,8 @@ impl<D, T> Default for Cache<D, T> {
     fn default() -> Self {
         Self {
             entries: std::array::from_fn(|_| None),
+            index: HashTable::new(),
+            index_storage: None,
             next: 0,
             lookup: 0,
             located: None,
@@ -157,10 +164,22 @@ impl<D, T> Default for Cache<D, T> {
         }
     }
 }
+
+fn recording_hash(source: &RecordingSource, local: LocalId) -> u64 {
+    BuildHasherDefault::<DefaultHasher>::default().hash_one((source, local))
+}
+
+fn remove_index(index: &mut HashTable<u8>, hash: u64, slot: u8) {
+    index
+        .find_entry(hash, |&candidate| candidate == slot)
+        .expect("resident geometry has an index slot")
+        .remove();
+}
+
 impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
     // Replay visits recordings in order even when their transforms change.
-    // Share identity lookup between get/observe/insert; dependency misses still
-    // advance the cursor, and no hint owns a recording or its geometry.
+    // Keep the ordered cursor for the common case, and probe the bounded
+    // index when recordings are reordered or a new one appears mid-frame.
     fn locate(&mut self, source: &RecordingSource, local: LocalId) -> Option<usize> {
         let matches = |index: usize| {
             self.entries[index]
@@ -170,9 +189,11 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
         let index = if matches(self.lookup) {
             Some(self.lookup)
         } else {
-            self.located
-                .filter(|&index| matches(index))
-                .or_else(|| (0..self.high_water).find(|&index| matches(index)))
+            self.located.filter(|&index| matches(index)).or_else(|| {
+                self.index
+                    .find(recording_hash(source, local), |&slot| matches(slot.into()))
+                    .map(|&slot| usize::from(slot))
+            })
         };
         self.located = index;
         if let Some(index) = index {
@@ -219,13 +240,20 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
     /// Retire expired recordings once before replay, including entries outside
     /// the next draw's search prefix. Frame/flight references keep their payloads.
     pub(crate) fn begin_replay(&mut self) {
-        for entry in &mut self.entries[..self.high_water] {
-            if entry.as_ref().is_some_and(|entry| !entry.source.is_live()) {
+        for (slot, entry) in self.entries[..self.high_water].iter_mut().enumerate() {
+            if let Some(current) = entry.as_ref()
+                && !current.source.is_live()
+            {
+                remove_index(&mut self.index, current.hash, slot as u8);
                 *entry = None;
             }
         }
         while self.high_water != 0 && self.entries[self.high_water - 1].is_none() {
             self.high_water -= 1;
+        }
+        if self.index.is_empty() {
+            self.index = HashTable::new();
+            self.index_storage = None;
         }
         self.lookup = 0;
         self.located = None;
@@ -272,14 +300,59 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
             return;
         };
         let index = existing.unwrap_or(self.next);
+        let hash = recording_hash(source, local);
+        let new_slot = if existing.is_none() {
+            let entries = &self.entries;
+            let slot_hash = |&slot: &u8| entries[usize::from(slot)].as_ref().unwrap().hash;
+            if self.index_storage.is_none()
+                && reserve_table(
+                    &mut self.index,
+                    entries.len(),
+                    &mut self.index_storage,
+                    &budgets.transient,
+                    slot_hash,
+                )
+                .is_err()
+            {
+                return;
+            }
+            let slot = index as u8;
+            if let Some(old) = &entries[index] {
+                remove_index(&mut self.index, old.hash, slot);
+            }
+            // After prolonged replacements, deleted buckets can exhaust the
+            // insertion capacity. Reuse the charged allocation and erase
+            // those buckets before publishing the new slot.
+            if self.index.len() == self.index.capacity() {
+                self.index.clear();
+                for (existing_slot, entry) in entries.iter().enumerate() {
+                    if let Some(entry) = entry
+                        && existing_slot != index
+                    {
+                        self.index
+                            .insert_unique(entry.hash, existing_slot as u8, slot_hash);
+                    }
+                }
+            }
+            Some(slot)
+        } else {
+            None
+        };
         self.high_water = self.high_water.max(index + 1);
         self.entries[index] = Some(Arc::new(Entry {
             source: source.clone(),
             local,
+            hash,
             dependency,
             value,
             _ticket: ticket,
         }));
+        if let Some(slot) = new_slot {
+            let entries = &self.entries;
+            self.index.insert_unique(hash, slot, |&slot| {
+                entries[usize::from(slot)].as_ref().unwrap().hash
+            });
+        }
         self.located = Some(index);
         self.lookup = (index + 1) % self.entries.len();
         if index == self.next {
@@ -288,6 +361,8 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
     }
     pub fn clear(&mut self) {
         self.entries.fill_with(|| None);
+        self.index = HashTable::new();
+        self.index_storage = None;
         self.next = 0;
         self.lookup = 0;
         self.located = None;
@@ -300,7 +375,8 @@ impl<D: PartialEq + Clone, T: StorageSize> Cache<D, T> {
             .map(|entry| {
                 entry._ticket.bytes() + entry.value.as_ref().map_or(0, |value| value.bytes())
             })
-            .sum()
+            .sum::<u64>()
+            + self.index_storage.as_ref().map_or(0, BudgetTicket::bytes)
     }
 }
 

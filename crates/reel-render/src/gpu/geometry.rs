@@ -214,7 +214,6 @@ impl Cache {
         {
             return Ok((storage, ticket));
         }
-        let staging_bytes = requested.bytes().div_ceil(wgpu::MAP_ALIGNMENT) * wgpu::MAP_ALIGNMENT;
         let limit = gpu.limits.transient_bytes;
         // A mesh which only fits the original immutable upload must remain
         // admissible; its one-off buffers simply do not enter the reusable pool.
@@ -222,19 +221,34 @@ impl Cache {
         let state_bytes = (2 * size_of::<usize>() + size_of::<AtomicU8>())
             .div_ceil(align_of::<usize>())
             * align_of::<usize>();
-        let reusable = policy.reuse
-            && requested.bytes()
-                + staging_bytes
-                + size_of::<Allocation<Buffers>>() as u64
-                + state_bytes as u64
-                <= limit.saturating_sub(local.transient.usage().bytes);
-        let bytes = requested.bytes()
-            + if reusable {
-                staging_bytes + state_bytes as u64
-            } else {
-                0
+        let metadata = size_of::<Allocation<Buffers>>() as u64;
+        let staging_size =
+            |capacity: Capacity| capacity.bytes().next_multiple_of(wgpu::MAP_ALIGNMENT);
+        let reusable_bytes = |capacity: Capacity| {
+            capacity.bytes() + staging_size(capacity) + metadata + state_bytes as u64
+        };
+        let local_available = local.transient.available_bytes();
+        let reusable = policy.reuse && reusable_bytes(requested) <= local_available;
+        let mut capacity = requested;
+        if reusable && requested.vertices >= 4096 {
+            // Growing text and menus can reuse the same completed allocation
+            // across small changes. Rounding never evicts storage for padding.
+            let rounded = Capacity {
+                vertices: requested.vertices.next_multiple_of(4096),
+                indices: requested.indices.next_multiple_of(1024),
+                ..requested
+            };
+            if reusable_bytes(rounded) <= local_available.min(budgets.transient.available_bytes())
+                && staging_size(rounded) <= gpu.device.limits().max_buffer_size
+            {
+                capacity = rounded;
             }
-            + size_of::<Allocation<Buffers>>() as u64;
+        }
+        let bytes = if reusable {
+            reusable_bytes(capacity)
+        } else {
+            capacity.bytes() + metadata
+        };
         let local_ticket = local
             .transient
             .reserve(bytes)
@@ -267,19 +281,19 @@ impl Cache {
             (
                 create(
                     "reel reusable vertices",
-                    requested.vertices,
+                    capacity.vertices,
                     wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     false,
                 ),
                 create(
                     "reel reusable indices",
-                    requested.indices,
+                    capacity.indices,
                     wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     false,
                 ),
                 Some(create(
                     "reel geometry upload",
-                    staging_bytes,
+                    staging_size(capacity),
                     wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
                     true,
                 )),
@@ -335,7 +349,7 @@ impl Cache {
         }
         Ok((
             Box::new(Allocation {
-                capacity: requested,
+                capacity,
                 ticket,
                 storage: Buffers {
                     vertices,
