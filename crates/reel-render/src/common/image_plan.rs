@@ -5,7 +5,7 @@ use reel_ui::{
     peniko::{Brush, ImageFormat},
     resources::{ResourceHandle, ResourceLease, ResourceView},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 pub(crate) struct Required<'a> {
     pub(crate) source: &'a ResourceLease,
@@ -61,15 +61,12 @@ pub(crate) fn collect<'a>(
         if !visited_drawings.insert(frame as *const _) {
             continue;
         }
-        let leases = frame.resources().leases();
+        let resources = frame.resources();
         reserve(
-            (leases.len()
-                * (size_of::<Required<'_>>()
-                    + 6 * size_of::<ResourceHandle>()
-                    + 2 * size_of::<&ResourceLease>())
+            (resources.leases().len()
+                * (size_of::<Required<'_>>() + 6 * size_of::<ResourceHandle>())
                 + (frame.masks().len() + frame.transitions().len() + 1) * 96) as u64,
         )?;
-        let sources: HashMap<_, _> = leases.iter().map(|lease| (lease.handle(), lease)).collect();
         let mut visited = HashSet::new();
         let mut used = Vec::new();
         let mut used_handles = HashSet::new();
@@ -188,7 +185,7 @@ pub(crate) fn collect<'a>(
             if !seen.insert(handle) {
                 continue;
             }
-            let source = *sources.get(&handle).ok_or(GpuError::Unsupported {
+            let source = resources.lease(handle).ok_or(GpuError::Unsupported {
                 at,
                 record: "missing image lease",
             })?;

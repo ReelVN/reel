@@ -205,20 +205,10 @@ impl<'a, B: Brush> Cluster<'a, B> {
 
     /// Returns an iterator over the glyphs in the cluster.
     pub fn glyphs(&self) -> impl Iterator<Item = Glyph> + 'a + Clone + use<'a, B> {
-        if self.data.glyph_len == 0xFF {
-            GlyphIter::Single(Some(Glyph {
-                id: self.data.glyph_offset,
-                style_index: self.data.style_index,
-                x: 0.,
-                y: 0.,
-                advance: self.data.advance,
-            }))
-        } else {
-            let start = self.run.data.glyph_start + self.data.glyph_offset as usize;
-            GlyphIter::Slice(
-                self.run.layout.data.glyphs[start..start + self.data.glyph_len as usize].iter(),
-            )
-        }
+        GlyphIter::from_cluster(
+            self.data,
+            &self.run.layout.data.glyphs[self.run.data.glyph_start..],
+        )
     }
 
     /// Returns `true` if this cluster is at the beginning of a line.
@@ -521,9 +511,26 @@ impl ClusterPath {
 }
 
 #[derive(Clone)]
-enum GlyphIter<'a> {
+pub(super) enum GlyphIter<'a> {
     Single(Option<Glyph>),
     Slice(core::slice::Iter<'a, Glyph>),
+}
+
+impl<'a> GlyphIter<'a> {
+    pub(super) fn from_cluster(cluster: &super::data::ClusterData, glyphs: &'a [Glyph]) -> Self {
+        if cluster.glyph_len == 0xFF {
+            Self::Single(Some(Glyph {
+                id: cluster.glyph_offset,
+                style_index: cluster.style_index,
+                x: 0.,
+                y: 0.,
+                advance: cluster.advance,
+            }))
+        } else {
+            let start = cluster.glyph_offset as usize;
+            Self::Slice(glyphs[start..start + cluster.glyph_len as usize].iter())
+        }
+    }
 }
 
 impl Iterator for GlyphIter<'_> {
@@ -536,6 +543,13 @@ impl Iterator for GlyphIter<'_> {
                 let glyph = *iter.next()?;
                 Some(glyph)
             }
+        }
+    }
+
+    fn fold<T, F: FnMut(T, Self::Item) -> T>(self, initial: T, fold: F) -> T {
+        match self {
+            Self::Single(glyph) => glyph.into_iter().fold(initial, fold),
+            Self::Slice(glyphs) => glyphs.copied().fold(initial, fold),
         }
     }
 }

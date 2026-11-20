@@ -12,6 +12,7 @@ pub use stream::{AssetStream, StreamControl};
 pub(crate) mod tests;
 pub(crate) mod worker;
 pub use decode::ImageExecutor;
+use hashbrown::HashMap;
 pub use io::{DirectoryIo, PackIo};
 use reel_core::{
     budget::{BudgetCategory, BudgetGroup, BudgetPool, OwnedBytes, QueueLimits},
@@ -207,6 +208,8 @@ struct Service {
     options: AssetOptions,
     next: u64,
     loads: BTreeMap<LoadId, Load>,
+    io_loads: HashMap<IoId, LoadId>,
+    work_loads: HashMap<WorkId, LoadId>,
     origins: origins::Origins,
     recent_images: origins::RecentImages,
     atlas_pages: atlas::Pages,
@@ -371,6 +374,8 @@ impl Assets {
             options,
             next: 0,
             loads: BTreeMap::new(),
+            io_loads: HashMap::new(),
+            work_loads: HashMap::new(),
             streams: stream::Streams::default(),
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
@@ -402,6 +407,8 @@ impl Assets {
     pub fn close(&self) {
         let mut service = self.0.borrow_mut();
         service.loads.clear();
+        service.io_loads.clear();
+        service.work_loads.clear();
         service.pending_bounded_decodes.clear();
         service.atlas_pages.clear();
         service.recent_images = Default::default();
@@ -717,25 +724,7 @@ impl Assets {
             || service.stream_input.usage().tickets != 0
     }
     pub fn cancel(&self, id: LoadId) {
-        let mut service = self.0.borrow_mut();
-        if let Some(load) = service.loads.remove(&id) {
-            if let Phase::AtlasWait(view) = &load.phase {
-                service.release_atlas(&view.manifest.page);
-            }
-            match load.phase {
-                Phase::Describing(id) | Phase::Reading(id) => {
-                    if let Some(io) = &mut service.io {
-                        io.cancel(id);
-                    }
-                }
-                Phase::Probing(id) | Phase::Decoding(id) => {
-                    if let Some(executor) = &mut service.executor {
-                        executor.cancel(id);
-                    }
-                }
-                _ => {}
-            }
-        }
+        self.0.borrow_mut().cancel_load(id);
     }
     pub fn output_pool(&self) -> BudgetPool {
         self.0.borrow().output.clone()
@@ -763,6 +752,24 @@ impl Assets {
     }
 }
 impl Service {
+    fn cancel_load(&mut self, id: LoadId) {
+        if let Some(load) = self.loads.remove(&id) {
+            if let Phase::AtlasWait(view) = &load.phase {
+                self.release_atlas(&view.manifest.page);
+            }
+            match load.phase {
+                Phase::Describing(id) | Phase::Reading(id) => {
+                    self.io_loads.remove(&id);
+                    self.io.as_mut().unwrap().cancel(id);
+                }
+                Phase::Probing(id) | Phase::Decoding(id) => {
+                    self.work_loads.remove(&id);
+                    self.executor.as_mut().unwrap().cancel(id);
+                }
+                _ => {}
+            }
+        }
+    }
     fn pump(&mut self) {
         if self.io.is_none() {
             return;
@@ -794,7 +801,10 @@ impl Service {
             if event.scope != Scope::Process {
                 continue;
             }
-            let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Describing(id) | Phase::Reading(id) if id == event.id)) else { continue; };
+            let Some(id) = self.io_loads.remove(&event.id) else {
+                continue;
+            };
+            let load = self.loads.get_mut(&id).unwrap();
             let result = match event.result {
                 Terminal::Completed(IoPayload::Described(info)) => {
                     accept_description(&self.origins, load, info)
@@ -839,7 +849,10 @@ impl Service {
             }
             self.pending_bounded_decodes
                 .retain(|(id, _)| *id != event.id);
-            let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Probing(id) | Phase::Decoding(id) if id == event.id)) else { continue; };
+            let Some(id) = self.work_loads.remove(&event.id) else {
+                continue;
+            };
+            let load = self.loads.get_mut(&id).unwrap();
             let result = match event.result {
                 Terminal::Completed(data) if matches!(load.phase, Phase::Probing(_)) => {
                     let bytes = data.as_slice();
@@ -892,14 +905,18 @@ impl Service {
         // Advancing requests borrows the adapters and budgets while retaining
         // the request map's nodes and traversal order.
         let mut loads = std::mem::take(&mut self.loads);
-        for load in loads.values_mut() {
-            if let Err(error) = self.advance(load) {
+        let mut has_atlas = false;
+        for (&id, load) in &mut loads {
+            if let Err(error) = self.advance(id, load) {
                 load.phase = Phase::Done(Err(error));
                 load.input = None;
             }
+            has_atlas |= matches!(load.phase, Phase::AtlasResolve(_) | Phase::AtlasWait(_));
         }
         self.loads = loads;
-        self.advance_atlases();
+        if has_atlas {
+            self.advance_atlases();
+        }
         if progress.has_work || more_completions {
             self.wake.wake();
         }
@@ -909,7 +926,7 @@ impl Service {
             self.recent_images.make_room(&self.output, bytes);
         }
     }
-    fn advance(&mut self, load: &mut Load) -> Result<(), String> {
+    fn advance(&mut self, load_id: LoadId, load: &mut Load) -> Result<(), String> {
         let completion = |pool: &BudgetPool| pool.reserve(512).map_err(|e| e.message);
         if matches!(load.phase, Phase::Describe)
             && let Some(info) = self.io.as_ref().unwrap().indexed_info(&load.source)
@@ -923,7 +940,10 @@ impl Service {
                 scope: Scope::Process,
                 completion: completion(&self.completion)?,
             }) {
-                Ok(id) => load.phase = Phase::Describing(id),
+                Ok(id) => {
+                    self.io_loads.insert(id, load_id);
+                    load.phase = Phase::Describing(id);
+                }
                 Err(error) if error.reason.retryable() => {}
                 Err(error) => return Err(error.reason.message),
             },
@@ -954,7 +974,10 @@ impl Service {
                     output,
                     completion: completion(&self.completion)?,
                 }) {
-                    Ok(id) => load.phase = Phase::Reading(id),
+                    Ok(id) => {
+                        self.io_loads.insert(id, load_id);
+                        load.phase = Phase::Reading(id);
+                    }
                     Err(error) if error.reason.retryable() => {}
                     Err(error) => return Err(error.reason.message),
                 }
@@ -1183,6 +1206,7 @@ impl Service {
                 };
                 match self.executor.as_mut().unwrap().submit(request) {
                     Ok(id) => {
+                        self.work_loads.insert(id, load_id);
                         if bounded_image {
                             self.pending_bounded_decodes.push((id, load.source.clone()));
                         }

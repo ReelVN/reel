@@ -546,6 +546,11 @@ impl Vm {
                 let result = self.check_type(TypeId(c), v).is_ok();
                 self.write(s.regs, r(a), Value::bool(result))?;
             }
+            Opcode::EqNumber => {
+                let subject = self.read(s.regs, r(b))?;
+                let result = number_matches(subject, &self.program.package().constants[c as usize]);
+                self.write(s.regs, r(a), Value::bool(result))?;
+            }
             Opcode::CheckType => self.check_type(TypeId(b), self.read(s.regs, r(a))?)?,
             Opcode::Add
             | Opcode::Sub

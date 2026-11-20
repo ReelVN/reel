@@ -612,6 +612,7 @@ fn readonly(
             | bc::Opcode::Div
             | bc::Opcode::Rem
             | bc::Opcode::Eq
+            | bc::Opcode::EqNumber
             | bc::Opcode::Ne
             | bc::Opcode::Lt
             | bc::Opcode::Le

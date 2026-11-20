@@ -7,7 +7,7 @@ use crate::layout::data::BreakReason;
 use crate::layout::data::{LayoutItemKind, LineData};
 use crate::layout::glyph::Glyph;
 use crate::layout::layout::Layout;
-use crate::layout::run::Run;
+use crate::layout::run::{Run, VisualGlyphs};
 use crate::style::Brush;
 use core::ops::Range;
 
@@ -102,7 +102,8 @@ impl<'a, B: Brush> Line<'a, B> {
         GlyphRunIter {
             line: self.clone(),
             item_index: 0,
-            glyph_start: 0,
+            glyphs: None,
+            next_glyph: None,
             offset: 0.,
         }
     }
@@ -184,7 +185,8 @@ pub struct PositionedInlineBox {
 pub struct GlyphRun<'a, B: Brush> {
     run: Run<'a, B>,
     style: &'a Style<B>,
-    glyph_start: usize,
+    first: Glyph,
+    glyphs: VisualGlyphs<'a>,
     glyph_count: usize,
     offset: f32,
     baseline: f32,
@@ -218,16 +220,12 @@ impl<'a, B: Brush> GlyphRun<'a, B> {
     }
 
     /// Returns an iterator over the glyphs in the run.
-    pub fn glyphs(&'a self) -> impl Iterator<Item = Glyph> + 'a + Clone {
-        self.run
-            .visual_clusters()
-            .flat_map(|cluster| cluster.glyphs())
-            .skip(self.glyph_start)
-            .take(self.glyph_count)
+    pub fn glyphs(&self) -> impl Iterator<Item = Glyph> + 'a + Clone + use<'a, B> {
+        core::iter::once(self.first).chain(self.glyphs.clone().take(self.glyph_count - 1))
     }
 
     /// Returns an iterator over the fully positioned glyphs in the run.
-    pub fn positioned_glyphs(&'a self) -> impl Iterator<Item = Glyph> + 'a + Clone {
+    pub fn positioned_glyphs(&self) -> impl Iterator<Item = Glyph> + 'a + Clone + use<'a, B> {
         let mut offset = self.offset;
         let baseline = self.baseline;
         self.glyphs().map(move |mut g| {
@@ -243,7 +241,8 @@ impl<'a, B: Brush> GlyphRun<'a, B> {
 struct GlyphRunIter<'a, B: Brush> {
     line: Line<'a, B>,
     item_index: usize,
-    glyph_start: usize,
+    glyphs: Option<VisualGlyphs<'a>>,
+    next_glyph: Option<Glyph>,
     offset: f32,
 }
 
@@ -258,7 +257,6 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                     let x = self.offset + self.line.data.metrics.offset;
 
                     self.item_index += 1;
-                    self.glyph_start = 0;
                     self.offset += inline_box.width;
                     return Some(PositionedLayoutItem::InlineBox(PositionedInlineBox {
                         x,
@@ -270,28 +268,39 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                     }));
                 }
                 LineItem::Run(run) => {
-                    let mut iter = run
-                        .visual_clusters()
-                        .flat_map(|c| c.glyphs())
-                        .skip(self.glyph_start);
-
-                    if let Some(first) = iter.next() {
-                        let mut advance = first.advance;
+                    let iter = self.glyphs.get_or_insert_with(|| run.visual_glyphs());
+                    if let Some(first) = self.next_glyph.take().or_else(|| iter.next()) {
+                        let glyphs = iter.clone();
                         let style_index = first.style_index();
-                        let mut glyph_count = 1;
-                        for glyph in iter.take_while(|g| g.style_index() == style_index) {
-                            glyph_count += 1;
-                            advance += glyph.advance;
-                        }
+                        let (glyph_count, advance) = if run.layout.data.styles.len() == 1 {
+                            self.item_index += 1;
+                            self.glyphs = None;
+                            glyphs
+                                .clone()
+                                .fold((1, first.advance), |(count, advance), glyph| {
+                                    (count + 1, advance + glyph.advance)
+                                })
+                        } else {
+                            let mut advance = first.advance;
+                            let mut glyph_count = 1;
+                            for glyph in iter.by_ref() {
+                                if glyph.style_index() != style_index {
+                                    self.next_glyph = Some(glyph);
+                                    break;
+                                }
+                                glyph_count += 1;
+                                advance += glyph.advance;
+                            }
+                            (glyph_count, advance)
+                        };
                         let style = run.layout.data.styles.get(style_index)?;
-                        let glyph_start = self.glyph_start;
-                        self.glyph_start += glyph_count;
                         let offset = self.offset;
                         self.offset += advance;
                         return Some(PositionedLayoutItem::GlyphRun(GlyphRun {
                             run,
                             style,
-                            glyph_start,
+                            first,
+                            glyphs,
                             glyph_count,
                             offset: offset + self.line.data.metrics.offset,
                             baseline: self.line.data.metrics.baseline,
@@ -299,9 +308,56 @@ impl<'a, B: Brush> Iterator for GlyphRunIter<'a, B> {
                         }));
                     }
                     self.item_index += 1;
-                    self.glyph_start = 0;
+                    self.glyphs = None;
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FontContext, LayoutContext, StyleProperty};
+
+    #[test]
+    fn styled_glyph_runs_read_only_their_visual_span() {
+        let mut fonts = FontContext::new();
+        fonts.collection.register_fonts(
+            linebender_resource_handle::Blob::new(alloc::sync::Arc::new(
+                include_bytes!("../../../reel-player/tests/fixtures/font-weight/400.ttf").to_vec(),
+            )),
+            None,
+        );
+        let source = "AAAAAAA";
+        let mut context = LayoutContext::new();
+        let mut builder = context.ranged_builder(&mut fonts, source, 1., true);
+        builder.push(StyleProperty::Brush(1u32), 1..3);
+        builder.push(StyleProperty::Brush(2), 4..6);
+        let mut layout = builder.build(source);
+        layout.break_all_lines(None);
+        let line = layout.get(0).unwrap();
+        let mut expected = alloc::vec::Vec::new();
+        for run in line.runs() {
+            expected.extend(run.visual_clusters().flat_map(|cluster| cluster.glyphs()));
+        }
+        assert_eq!(expected.len(), 7);
+        let mut offset = 0.;
+        let mut glyph_index = 0;
+        let mut brushes = alloc::vec::Vec::new();
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(run) = item else {
+                panic!("plain line contains an inline box");
+            };
+            assert_eq!(run.offset(), offset);
+            brushes.push(run.style().brush);
+            for glyph in run.glyphs() {
+                assert_eq!(glyph, expected[glyph_index]);
+                glyph_index += 1;
+            }
+            offset += run.advance();
+        }
+        assert_eq!(glyph_index, expected.len());
+        assert_eq!(brushes, [0, 1, 0, 2, 0]);
     }
 }

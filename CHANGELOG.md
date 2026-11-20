@@ -4,6 +4,10 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Traverse shaped glyph runs once when splitting text into painting styles.
+- Reuse one resource-handle lookup across frame validation, image planning, glyphs and effects.
+- Route asset I/O and decoder completions directly to their owning requests.
+- Compare numeric match patterns directly against bytecode constants without temporary registers.
 - Prepare known images for focused tabs and pending page-stack selections through the existing asset queue, including images chosen by fixed indices in layout data.
 - Reuse work already started for fixed-size images while intrinsic image sizes are being prepared for layout.
 - Append stage children through the existing ownership array instead of rebuilding the whole child list on every addition.

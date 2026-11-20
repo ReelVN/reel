@@ -1114,11 +1114,15 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         Ok(id)
     }
     fn constant(&mut self, constant: bc::Const, n: h::NodeId) -> Result<bc::Reg, Box<Error>> {
-        let id = bc::ConstId(self.l.package.constants.len() as u32);
-        self.l.b.push(&mut self.l.package.constants, constant)?;
+        let id = self.constant_id(constant)?;
         let out = self.temp()?;
         self.op(bc::Opcode::LoadConst, out.0, id.0, 0, n)?;
         Ok(out)
+    }
+    fn constant_id(&mut self, constant: bc::Const) -> Result<bc::ConstId, Box<Error>> {
+        let id = bc::ConstId(self.l.package.constants.len() as u32);
+        self.l.b.push(&mut self.l.package.constants, constant)?;
+        Ok(id)
     }
     fn local(&mut self, symbol: h::SymbolId) -> Result<Option<bc::BindingId>, Box<Error>> {
         self.l.b.work(usize::BITS as u64)?;

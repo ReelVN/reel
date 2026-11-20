@@ -125,16 +125,12 @@ fn source_inputs(
     let Some(effect) = &group.effect else {
         return None;
     };
-    let footprint = drawing.resources().leases().iter().find_map(|lease| {
-        if lease.handle() != effect.shader {
-            return None;
-        }
-        match lease.view() {
-            ResourceView::EffectShader { descriptor, .. } => descriptor.source_footprint,
-            _ => None,
-        }
-    });
-    let footprint = footprint?;
+    let ResourceView::EffectShader { descriptor, .. } =
+        drawing.resources().lease(effect.shader)?.view()
+    else {
+        return None;
+    };
+    let footprint = descriptor.source_footprint?;
     let mut context = context(effect, to_output, output_size, source_size)?;
     map_storage(&mut context, source_size, source_storage);
     Some((context, footprint))

@@ -652,6 +652,10 @@ impl Block<'_> {
                 .registers
                 .cell_read(self.registers.read(b).map_err(heap_fault)?)
                 .map_err(heap_fault)?,
+            Opcode::EqNumber => Value::bool(number_matches(
+                self.registers.read(b).map_err(heap_fault)?,
+                &self.program.package().constants[c as usize],
+            )),
             Opcode::Neg | Opcode::Pos | Opcode::Not | Opcode::BitNot => {
                 unary(op, self.registers.read(b).map_err(heap_fault)?)?
             }
@@ -673,6 +677,7 @@ fn supported(op: Opcode) -> bool {
             | Opcode::Move
             | Opcode::BindRead
             | Opcode::CellRead
+            | Opcode::EqNumber
             | Opcode::Neg
             | Opcode::Pos
             | Opcode::Not

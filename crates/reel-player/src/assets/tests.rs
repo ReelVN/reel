@@ -339,7 +339,7 @@ fn raw_texture_and_font_move_one_full_group_allocation_without_copy() {
         output: 0,
         temporary: 0,
     };
-    service.advance(&mut load).unwrap();
+    service.advance(LoadId(0), &mut load).unwrap();
     let Phase::Done(Ok(lease)) = load.phase else {
         panic!("font was not prepared")
     };
@@ -997,6 +997,46 @@ fn concurrent_images_share_decode_capacity_and_source_identities() {
 }
 
 #[test]
+fn io_completions_keep_their_request_identity_when_neighbours_are_cancelled() {
+    let assets = memory_assets();
+    let requests = (0..32)
+        .map(|index| {
+            let path = if index % 2 == 0 {
+                "assets/panels.png"
+            } else {
+                "assets/sun.jpg"
+            };
+            (assets.request(path, AssetKind::Bytes), path)
+        })
+        .collect::<Vec<_>>();
+    assets.maintain();
+    assert_eq!(assets.0.borrow().io_loads.len(), requests.len());
+    for (id, _) in requests.iter().copied().step_by(4) {
+        assets.cancel(id);
+    }
+    assets.maintain();
+    for (id, _) in requests.iter().copied().skip(1).step_by(4) {
+        assets.cancel(id);
+    }
+    assets.maintain();
+    for (index, (id, path)) in requests.into_iter().enumerate() {
+        if index % 4 < 2 {
+            continue;
+        }
+        let (version, bytes) = assets.poll_bytes(id).unwrap().unwrap();
+        assert_eq!(version.key.0, path);
+        assert_eq!(
+            bytes.as_slice(),
+            if path.ends_with(".png") { PNG } else { JPEG }
+        );
+    }
+    let service = assets.0.borrow();
+    assert!(service.io_loads.is_empty());
+    assert!(service.loads.is_empty());
+    assert_eq!(service.completion.usage().tickets, 0);
+}
+
+#[test]
 fn concurrent_font_requests_share_one_resident_allocation() {
     const FONT: &[u8] = include_bytes!(
         "../../../../examples/author_arcade/resources/fonts/AtkinsonHyperlegible-Regular.ttf"
@@ -1187,8 +1227,10 @@ fn settled_images_drain_cancelled_worker_completions_and_clear_wake() {
     assets.maintain();
     wake.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(assets.0.borrow().completion.usage().tickets, 1);
+    assert_eq!(assets.0.borrow().work_loads.len(), 1);
     assets.cancel(request);
     assert!(assets.0.borrow().loads.is_empty());
+    assert!(assets.0.borrow().work_loads.is_empty());
     assert!(assets.pending_io());
     assert!(images.has_result_pending());
 

@@ -37,9 +37,7 @@ impl<'a> RasterRun<'a> {
     ) -> Result<Self, GpuError> {
         let source = drawing
             .resources()
-            .leases()
-            .iter()
-            .find(|resource| resource.handle() == run.font)
+            .lease(run.font)
             .ok_or(GpuError::Unsupported {
                 at,
                 record: "missing font lease",

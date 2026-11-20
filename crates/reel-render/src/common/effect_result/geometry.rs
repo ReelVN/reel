@@ -75,11 +75,7 @@ pub(crate) fn image(
     if !(visible.width() > 0. && visible.height() > 0.) {
         return None;
     }
-    let source = drawing
-        .resources()
-        .leases()
-        .iter()
-        .find(|lease| lease.handle() == brush.image.resource)?;
+    let source = drawing.resources().lease(brush.image.resource)?;
     let (layout, origin, atlas) = match source.view() {
         ResourceView::Image { image } if image.format == reel_ui::peniko::ImageFormat::Rgba8 => (
             TextureLayout::identity([image.width, image.height]),

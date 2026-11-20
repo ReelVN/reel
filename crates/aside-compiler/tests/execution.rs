@@ -6,6 +6,8 @@ use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc
 mod binding_reads;
 #[path = "execution/generators.rs"]
 mod generators;
+#[path = "execution/numeric_match.rs"]
+mod numeric_match;
 #[path = "execution/text_match.rs"]
 mod text_match;
 

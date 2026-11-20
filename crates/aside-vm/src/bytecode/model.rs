@@ -79,6 +79,17 @@ pub enum Const {
     Tuple(Vec<ConstId>),
 }
 
+impl Const {
+    /// Read a numeric constant without materializing a heap value.
+    pub fn numeric_value(&self) -> Option<crate::Value> {
+        match *self {
+            Self::Int(value) => Some(crate::Value::int(value)),
+            Self::FloatBits(bits) => Some(crate::Value::float(f64::from_bits(bits))),
+            _ => None,
+        }
+    }
+}
+
 /// Identity of the immutable UTF-8 backing supplied by the host, independently
 /// of its file/container name or the other resources shipped beside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

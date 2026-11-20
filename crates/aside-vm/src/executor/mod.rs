@@ -1361,6 +1361,11 @@ fn unary(op: Opcode, v: Value) -> Result<Value, FaultKind> {
         _ => return Err(FaultKind::Type),
     })
 }
+fn number_matches(subject: Value, literal: &Const) -> bool {
+    subject.numeric_cmp(literal.numeric_value().expect("verified numeric literal"))
+        == Some(Ordering::Equal)
+}
+
 fn binary(op: Opcode, a: Value, b: Value) -> Result<Value, FaultKind> {
     use Opcode::*;
     if matches!(op, Eq | Ne) {

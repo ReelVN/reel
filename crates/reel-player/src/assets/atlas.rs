@@ -65,21 +65,7 @@ impl Service {
             return;
         }
         let page = self.atlas_pages.0.remove(path).unwrap();
-        if let Some(load) = self.loads.remove(&page.load) {
-            match load.phase {
-                Phase::Describing(id) | Phase::Reading(id) => {
-                    if let Some(io) = &mut self.io {
-                        io.cancel(id);
-                    }
-                }
-                Phase::Probing(id) | Phase::Decoding(id) => {
-                    if let Some(worker) = &mut self.executor {
-                        worker.cancel(id);
-                    }
-                }
-                _ => {}
-            }
-        }
+        self.cancel_load(page.load);
     }
     /// Advance only the requests present at entry; page requests run next pump.
     pub(super) fn advance_atlases(&mut self) {

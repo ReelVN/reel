@@ -267,15 +267,11 @@ pub(crate) fn plan(
         reject!(Footprint);
     }
     let effect = group.effect.as_ref()?;
-    let descriptor = drawing.resources().leases().iter().find_map(|lease| {
-        if lease.handle() != effect.shader {
-            return None;
-        }
-        let ResourceView::EffectShader { descriptor, .. } = lease.view() else {
-            return None;
-        };
-        Some(descriptor)
-    })?;
+    let ResourceView::EffectShader { descriptor, .. } =
+        drawing.resources().lease(effect.shader)?.view()
+    else {
+        return None;
+    };
     if descriptor.source_footprint.is_none()
         || !descriptor.source_sampler
         || descriptor.output != EffectType::Vec4

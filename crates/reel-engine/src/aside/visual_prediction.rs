@@ -362,6 +362,21 @@ impl<'p, 'c> Walk<'p, 'c> {
                         }),
                     );
                 }
+                Opcode::EqNumber => {
+                    let constants = &self.program.package().constants;
+                    let equal = match facts.get(b) {
+                        Fact::Constant(id) => {
+                            let expected = constants[c as usize].numeric_value()?;
+                            let actual = constants[id.index()].numeric_value();
+                            Fact::Bool(
+                                actual.and_then(|value| value.numeric_cmp(expected))
+                                    == Some(core::cmp::Ordering::Equal),
+                            )
+                        }
+                        _ => Fact::Unknown,
+                    };
+                    facts.set(a, equal);
+                }
                 Opcode::Is => {
                     let bc::TypeDef::StringLiteral(pattern) =
                         &self.program.package().types[c as usize]

@@ -419,6 +419,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::Shl,
     Opcode::Shr,
     Opcode::Eq,
+    Opcode::EqNumber,
     Opcode::Ne,
     Opcode::Lt,
     Opcode::Le,

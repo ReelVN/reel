@@ -145,10 +145,13 @@ impl State {
                     return;
                 };
                 inputs[0] = input(b, Fact::Scalar(left));
-                let result =
-                    if matches!(op, Opcode::Neg | Opcode::Pos | Opcode::Not | Opcode::BitNot) {
-                        unary(op, left)
-                    } else {
+                let result = match op {
+                    Opcode::EqNumber => Ok(Value::bool(number_matches(
+                        left,
+                        &block.program.package().constants[c as usize],
+                    ))),
+                    Opcode::Neg | Opcode::Pos | Opcode::Not | Opcode::BitNot => unary(op, left),
+                    _ => {
                         let Fact::Scalar(right) = fact(c) else {
                             if a == 0 {
                                 cache.learning = false;
@@ -159,7 +162,8 @@ impl State {
                         };
                         inputs[1] = input(c, Fact::Scalar(right));
                         binary(op, left, right)
-                    };
+                    }
+                };
                 let Ok(value) = result else {
                     cache.learning = false;
                     return;

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::FontData;
-use crate::layout::cluster::{Cluster, ClusterPath};
-use crate::layout::data::{LineItemData, RunData};
+use crate::layout::cluster::{Cluster, ClusterPath, GlyphIter};
+use crate::layout::data::{ClusterData, LineItemData, RunData};
+use crate::layout::glyph::Glyph;
 use crate::layout::layout::Layout;
 use crate::style::Brush;
 use core::ops::Range;
@@ -190,6 +191,15 @@ impl<'a, B: Brush> Run<'a, B> {
             rev: self.is_rtl(),
         }
     }
+
+    pub(super) fn visual_glyphs(&self) -> VisualGlyphs<'a> {
+        VisualGlyphs {
+            rtl: self.is_rtl(),
+            clusters: self.layout.data.clusters[self.cluster_range()].iter(),
+            glyph_data: &self.layout.data.glyphs[self.data.glyph_start..],
+            glyphs: GlyphIter::Single(None),
+        }
+    }
 }
 
 struct Clusters<'a, B: Brush> {
@@ -204,6 +214,45 @@ impl<B: Brush> Clone for Clusters<'_, B> {
             run: self.run,
             range: self.range.clone(),
             rev: self.rev,
+        }
+    }
+}
+
+/// A copyable position within a shaped run, in the same order as its visual clusters.
+#[derive(Clone)]
+pub(super) struct VisualGlyphs<'a> {
+    rtl: bool,
+    clusters: core::slice::Iter<'a, ClusterData>,
+    glyph_data: &'a [Glyph],
+    glyphs: GlyphIter<'a>,
+}
+
+impl Iterator for VisualGlyphs<'_> {
+    type Item = Glyph;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(glyph) = self.glyphs.next() {
+                return Some(glyph);
+            }
+            let cluster = if self.rtl {
+                self.clusters.next_back()?
+            } else {
+                self.clusters.next()?
+            };
+            self.glyphs = GlyphIter::from_cluster(cluster, self.glyph_data);
+        }
+    }
+
+    fn fold<T, F: FnMut(T, Self::Item) -> T>(self, initial: T, mut fold: F) -> T {
+        let initial = self.glyphs.fold(initial, &mut fold);
+        let fold_cluster = |initial, cluster| {
+            GlyphIter::from_cluster(cluster, self.glyph_data).fold(initial, &mut fold)
+        };
+        if self.rtl {
+            self.clusters.rev().fold(initial, fold_cluster)
+        } else {
+            self.clusters.fold(initial, fold_cluster)
         }
     }
 }

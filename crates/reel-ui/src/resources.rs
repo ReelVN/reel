@@ -1061,31 +1061,31 @@ impl ResourceRegistry {
 #[cfg(test)]
 mod tests;
 
+const INDEXED_SNAPSHOT_LEN: usize = 16;
+
+#[derive(Debug)]
+enum HandleOrder {
+    Linear,
+    Sorted,
+    Indexed(Vec<u32>),
+}
+
 #[derive(Debug)]
 pub struct ResourceSnapshot {
     pub(crate) leases: Vec<ResourceLease>,
+    handle_order: HandleOrder,
     _ticket: BudgetTicket,
 }
 impl ResourceSnapshot {
     /// Transfer existing accepted leases; retirement only forbids new admissions.
     pub(crate) fn retain(
-        mut leases: Vec<ResourceLease>,
+        leases: Vec<ResourceLease>,
         pool: &BudgetPool,
     ) -> Result<Self, ResourceError> {
         let ticket = pool
             .reserve((leases.capacity() * size_of::<ResourceLease>()) as u64)
             .map_err(|_| ResourceError::Bytes)?;
-        leases.sort_unstable_by_key(|r| {
-            (
-                r.source_blob_id().is_none(),
-                r.source_blob_id().unwrap_or(0),
-                r.handle(),
-            )
-        });
-        Ok(Self {
-            leases,
-            _ticket: ticket,
-        })
+        Ok(Self::sort(leases, ticket))
     }
 
     /// Capture prepared leases from independent resource producers. Existing
@@ -1101,7 +1101,7 @@ impl ResourceSnapshot {
         let ticket = pool
             .reserve(bytes as u64)
             .map_err(|_| ResourceError::Bytes)?;
-        let indexed = resources.len() >= 16;
+        let indexed = resources.len() >= INDEXED_SNAPSHOT_LEN;
         let mut leases = Vec::with_capacity(resources.len());
         for lease in resources {
             let lease = lease?;
@@ -1131,6 +1131,10 @@ impl ResourceSnapshot {
                 leases.push(lease);
             }
         }
+        Ok(Self::sort(leases, ticket))
+    }
+
+    fn sort(mut leases: Vec<ResourceLease>, mut ticket: BudgetTicket) -> Self {
         leases.sort_unstable_by_key(|r| {
             (
                 r.source_blob_id().is_none(),
@@ -1138,10 +1142,48 @@ impl ResourceSnapshot {
                 r.handle(),
             )
         });
-        Ok(ResourceSnapshot {
+        let handle_order = if leases.len() < INDEXED_SNAPSHOT_LEN {
+            HandleOrder::Linear
+        } else if leases.is_sorted_by_key(ResourceLease::handle) {
+            HandleOrder::Sorted
+        } else if let Ok(count) = u32::try_from(leases.len())
+            && ticket
+                .resize(ticket.bytes() + u64::from(count) * size_of::<u32>() as u64)
+                .is_ok()
+        {
+            let mut order: Vec<_> = (0..count).collect();
+            order.sort_unstable_by_key(|&index| leases[index as usize].handle());
+            HandleOrder::Indexed(order)
+        } else {
+            // Resource ownership still fits when the optional index does not.
+            HandleOrder::Linear
+        };
+        Self {
             leases,
+            handle_order,
             _ticket: ticket,
-        })
+        }
+    }
+
+    /// Resolve a recorded handle within this snapshot, including retired leases
+    /// that were admitted when the snapshot was created.
+    pub fn lease(&self, handle: ResourceHandle) -> Option<&ResourceLease> {
+        let index = match &self.handle_order {
+            HandleOrder::Linear => {
+                return self.leases.iter().find(|lease| lease.handle() == handle);
+            }
+            HandleOrder::Sorted => self
+                .leases
+                .binary_search_by_key(&handle, ResourceLease::handle)
+                .ok()?,
+            HandleOrder::Indexed(order) => {
+                let index = order
+                    .binary_search_by_key(&handle, |&index| self.leases[index as usize].handle())
+                    .ok()?;
+                order[index] as usize
+            }
+        };
+        Some(&self.leases[index])
     }
     fn matching(
         &self,
@@ -1171,9 +1213,8 @@ impl ResourceSnapshot {
         })
     }
     pub(crate) fn contains_image(&self, handle: ResourceHandle) -> bool {
-        self.leases
-            .iter()
-            .any(|lease| lease.handle() == handle && lease.image_size().is_some())
+        self.lease(handle)
+            .is_some_and(|lease| lease.image_size().is_some())
     }
     pub(crate) fn font(&self, font: &FontData) -> Option<ResourceHandle> {
         self.matching(

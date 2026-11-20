@@ -87,8 +87,52 @@ fn linear(values: &[ResourceLease], p: &BudgetPool) -> Result<ResourceSnapshot, 
     });
     Ok(ResourceSnapshot {
         leases,
+        handle_order: HandleOrder::Linear,
         _ticket: ticket,
     })
+}
+
+#[test]
+fn snapshot_resolves_handles_when_source_order_differs() {
+    let p = pool();
+    let mut registry = ResourceRegistry::new(32, 1 << 20).unwrap();
+    let mut leases: Vec<_> = (0..20).map(|i| external(&mut registry, &p, i)).collect();
+    let font = registry
+        .register(
+            version(20),
+            ResourceData::Font(Blob::new(Arc::new([0u8; 4]))),
+            p.reserve(4).unwrap(),
+        )
+        .unwrap();
+    leases.push(registry.acquire(font).unwrap());
+
+    let bytes = (leases.len() * size_of::<ResourceLease>()) as u64;
+    let before = p.usage().bytes;
+    let snapshot = capture(&leases, &p).unwrap();
+    assert!(matches!(snapshot.handle_order, HandleOrder::Indexed(_)));
+    assert_eq!(snapshot.leases()[0].handle(), font);
+    assert_eq!(p.usage().bytes - before, bytes + leases.len() as u64 * 4);
+    let tight = BudgetPool::new(
+        BudgetCategory::Snapshot,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: bytes,
+        },
+    );
+    let unindexed = capture(&leases, &tight).unwrap();
+    assert!(matches!(unindexed.handle_order, HandleOrder::Linear));
+    assert!(registry.retire(font));
+    for snapshot in [snapshot, unindexed] {
+        for lease in &leases {
+            let resolved = snapshot.lease(lease.handle()).unwrap();
+            assert_eq!(resolved.version(), lease.version());
+        }
+        let missing = ResourceHandle {
+            generation: font.generation + 1,
+            ..font
+        };
+        assert!(snapshot.lease(missing).is_none());
+    }
 }
 
 #[test]

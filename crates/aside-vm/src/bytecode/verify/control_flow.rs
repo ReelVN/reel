@@ -136,7 +136,14 @@ pub(super) fn validate_instruction(
             )?,
             ReadReg | WriteReg | ReadWriteReg => reg(f, Reg(value))?,
             Const => {
-                get(&p.constants, value, "instruction constant")?;
+                let constant = get(&p.constants, value, "instruction constant")?;
+                if spec.opcode == Opcode::EqNumber {
+                    check(
+                        constant.numeric_value().is_some(),
+                        ErrorKind::Encoding,
+                        "EqNumber requires a numeric constant",
+                    )?;
+                }
             }
             Symbol => {
                 symbol(p, SymbolId(value))?;

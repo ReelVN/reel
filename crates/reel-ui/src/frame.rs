@@ -1107,8 +1107,8 @@ fn make_op(
                 ..
             } = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
             let prepare_effect = |value: crate::core::PaintEffect, coverage: bool| {
-                let valid = resources.leases().iter().any(|lease| lease.handle() == value.shader.handle()
-                    && matches!(lease.view(), crate::resources::ResourceView::EffectShader { descriptor, .. }
+                let valid = resources.lease(value.shader.handle()).is_some_and(|lease|
+                    matches!(lease.view(), crate::resources::ResourceView::EffectShader { descriptor, .. }
                         if descriptor.matches_instance(&value.instance)
                             && (!coverage || descriptor.output == crate::stage::effect::EffectType::Float)));
                 if !valid
@@ -1116,10 +1116,9 @@ fn make_op(
                     || !(value.resolution_scale > 0. && value.resolution_scale <= 1.)
                     || value.images.len() != value.instance.textures().len()
                     || value.images.iter().any(|image| {
-                        !resources.leases().iter().any(|lease| {
-                            lease.handle() == image.handle()
-                                && (lease.image_descriptor().is_some()
-                                    || lease.texture_descriptor().is_some())
+                        !resources.lease(image.handle()).is_some_and(|lease| {
+                            lease.image_descriptor().is_some()
+                                || lease.texture_descriptor().is_some()
                         })
                     })
                 {

@@ -302,15 +302,16 @@ impl FunctionBuilder<'_, '_> {
                     self.op(bc::Opcode::Is, condition.0, value.0, ty.0, node)?;
                     return self.pattern_branch(node, condition, failed);
                 }
-                let literal = if negative {
-                    let Form::Literal { token } = self.l.m.hir().node(literal).form else {
-                        unreachable!("negative numeric pattern");
-                    };
-                    let constant = self.number(self.l.m.hir().text(token.span), true)?;
-                    self.constant(constant, node)?
-                } else {
-                    self.value(literal, depth)?.expect("literal value")
-                };
+                if let Form::Literal { token } = self.l.m.hir().node(literal).form
+                    && token.kind == K::Number
+                {
+                    let constant = self.number(self.l.m.hir().text(token.span), negative)?;
+                    let constant = self.constant_id(constant)?;
+                    let condition = self.temp()?;
+                    self.op(bc::Opcode::EqNumber, condition.0, value.0, constant.0, node)?;
+                    return self.pattern_branch(node, condition, failed);
+                }
+                let literal = self.value(literal, depth)?.expect("literal value");
                 let condition = self.temp()?;
                 self.op(bc::Opcode::Eq, condition.0, value.0, literal.0, node)?;
                 self.release(literal)?;

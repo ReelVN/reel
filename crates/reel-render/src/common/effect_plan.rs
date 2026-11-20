@@ -291,9 +291,7 @@ pub(crate) fn shader<'a>(
 ) -> Result<Shader<'a>, GpuError> {
     let lease = drawing
         .resources()
-        .leases()
-        .iter()
-        .find(|lease| lease.handle() == effect.shader)
+        .lease(effect.shader)
         .ok_or(GpuError::InvalidRecord {
             at,
             record: "effect shader resource",
@@ -410,21 +408,19 @@ fn coverage_variant(drawing: &FrameDrawing, group: &reel_ui::frame::FrameGroup) 
     let Some(effect) = group.effect.as_ref() else {
         return false;
     };
-    drawing.resources().leases().iter().any(|lease| {
-        if lease.handle() != effect.shader {
-            return false;
-        }
-        let ResourceView::EffectShader { descriptor, .. } = lease.view() else {
-            return false;
-        };
-        effect.resolution_scale == 1.
-            && descriptor.coverage_offset.is_some()
-            && crate::effect::OutputTail::supports_coverage(
-                descriptor.output,
-                descriptor.textures,
-                descriptor.source_sampler,
-            )
-    })
+    let Some(lease) = drawing.resources().lease(effect.shader) else {
+        return false;
+    };
+    let ResourceView::EffectShader { descriptor, .. } = lease.view() else {
+        return false;
+    };
+    effect.resolution_scale == 1.
+        && descriptor.coverage_offset.is_some()
+        && crate::effect::OutputTail::supports_coverage(
+            descriptor.output,
+            descriptor.textures,
+            descriptor.source_sampler,
+        )
 }
 
 /// Explicitly map parent frame pixels to the supplied source storage. Coverage
