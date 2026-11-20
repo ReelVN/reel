@@ -410,6 +410,7 @@ mod tests {
             format: crate::prepare_texture::Format::Rgba8,
             max_size: None,
             dither: crate::prepare_texture::Dither::None,
+            fallback: None,
         };
         let expected = PreparedImage::new(17, 9, 6, TileEncoding::ReelTexture)
             .unwrap()

@@ -35,7 +35,7 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-These commands preview and export the selected assets using the current platform player. Development exports copy selected files; release exports package them under their logical paths.
+`dev` previews the selected assets in the current platform player. `export` prepares the release for the selected target. Development exports copy selected files. Release exports package them under their logical paths.
 
 Use `build.target` to choose platform settings or effects. Set its value with `--resource-target` for `check`, `build`, `dev` and `export`. The compiler checks both branches and generates code for the selected branch and its nested functions.
 
@@ -45,20 +45,20 @@ let particle_count = if build.target == "vita" { 80 } else { 320 };
 
 Keep the logical canvas when sharing a layout; use resource scaling and effect settings to adjust rendering cost. `window.info().platform` reports the player currently running the game.
 
-To export with another platform's runtime, pass its directory with `--runtime`. Its executable, native modules and platform metadata keep their relative paths beside `game.asb`:
+Native desktop releases include the player from the installed tools. The `desktop` and custom resource variants also bundle the host player by default. For a release targeting another desktop OS, supply that platform's runtime directory with `--runtime`, or choose `--data-only` for a separately installed player. Runtime files keep their relative paths beside `game.asb`.
 
 ```sh
-reel export --release --resource-target vita --runtime path/to/vita-runtime
+reel export --release --resource-target linux --runtime path/to/linux-runtime
 ```
 
-Use the platform's packaging tool to turn that directory into an installable package. A Vita runtime consumes prepared Opus audio and block textures; hardware movies use H.264/AAC with even dimensions up to 960 × 544.
+Use the target platform's packaging tool to prepare an installer. A custom Vita runtime directory must contain `eboot.bin` at its root. The Vita player reads prepared Opus audio and textures. Hardware movies use H.264/AAC with even dimensions up to 960 × 544.
 
 Vita exports compile effects to GXP with the official SDK host tool `psp2cgc`. Set `REEL_PSP2CGC` to the compiler executable or `SCE_PSP2_SDK_DIR` to the SDK directory. The runtime embeds its builtin programs and uses the system GXM API.
 
-With the Reel launcher installed, export each game as data:
+Vita release exports contain game data by default. Use this output with the installed Reel launcher.
 
 ```sh
-reel export --release --resource-target vita --data-only
+reel export --release --resource-target vita
 ```
 
 Copy the exported directory to `ux0:/data/reel/GameName/`. The launcher lists directories containing `game.asb`; each game keeps its progress in its own `saves/` directory. Press SELECT + START during a game to return to the list.
@@ -73,7 +73,7 @@ match = "images/**/*.{png,jpg,jpeg,webp}"
 convert = "texture"
 scale = 0.5
 format = "auto"
-power_of_two = true
+fallback = "rgba8"
 
 [[targets.vita]]
 match = "audio/**/*.{wav,ogg,mp3,flac}"
@@ -89,7 +89,7 @@ bitrate = 4000000
 
 The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths. BC textures and tiles choose encoding quality automatically while retaining the selected format's GPU storage size.
 
-Set `fallback = "source"` on a BC texture rule to keep the original image when the chosen encoding exceeds the display-error threshold against the resized image. A Vita export reports the asset if its original exceeds the device's decode budget.
+Set `fallback = "rgba8"` to compare BC candidates against the resized image at export. If the candidates still exceed the display-error threshold, Reel stores upload-ready RGBA8 and keeps the chosen scale and logical coordinates. Single-level Vita RGBA8 aligns only its row width by default. RPK compresses the distribution bytes. Loaded RGBA8 textures use four bytes per pixel. Replace `fallback = "source"` with `"rgba8"` in existing rules. Use `convert = "copy"` for assets that should retain their original files.
 
 `targets.desktop` supplies shared conversion rules for Windows, Linux and macOS. Rules for the exact OS match first, followed by the shared desktop rules. Use `--resource-target desktop` to preview the shared target on its own. These rules convert selected 8-bit UI art to QOI, remaining 8-bit PNG art to lossless WebP, and selected audio to Opus. QOI preserves the pixels and may trade a larger package entry for faster decoding.
 
@@ -122,7 +122,7 @@ format = "auto"
 
 Each rule produces one atlas page that loads and uploads as a whole; use separate rules for images needed at different times. Scripts keep the original image paths, logical dimensions and crop coordinates. The page stores one texture level, with images aligned to compression blocks and padded edges for filtering. If the images do not fit, preparation reports an error; increase `page_size` or split the group. The rule accepts `scale`, `format` and `dither`.
 
-For long images or atlases, place a `convert = "tiles"` rule before the general texture rule. `tile_size = 510` leaves room for gutters in a 512-pixel texture; `first_level = 1` stores half density and smaller levels. The rule also accepts `format` and `power_of_two`. The original logical path and atlas crop coordinates remain usable, while loading follows the visible tiles.
+For long images, place a `convert = "tiles"` rule before the general texture rule. `tile_size = 510` leaves room for gutters in a 512-pixel texture. `first_level = 1` stores half density and smaller levels. The original logical path and crop coordinates remain usable, while loading follows the visible tiles. `fallback = "rgba8"` applies to individual tiles and to whole atlas pages.
 
 ```sh
 reel prepare-resources --resource-target vita

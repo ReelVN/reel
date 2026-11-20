@@ -100,6 +100,16 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
     let json_format = command.format().json();
     let mut progress = progress::Progress::new(json_format);
     let path = "src/main.aside";
+    let runtime = match &command {
+        SourceCommand::Export(args) => match args.resolve_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                failure(json_format, "export", None, &error.to_string())?;
+                return Ok(1);
+            }
+        },
+        _ => None,
+    };
     let cache = if let SourceCommand::Dev(args) = &command {
         progress.phase("Checking development cache");
         let cache = reel_cli::development::Cache::probe(Path::new("."), command.target()).ok();
@@ -289,24 +299,6 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
         SourceCommand::Export(args) => {
             progress.phase("Preparing export");
             let profile = args.settings.profile();
-            let runtime = if let Some(directory) = args.runtime {
-                Some(reel_cli::distribution::Runtime::Directory(directory))
-            } else if profile == BuildProfile::Release && !args.data_only {
-                let player = reel_cli::distribution::player_path(&std::env::current_exe()?);
-                if !player.is_file() {
-                    progress.stop();
-                    failure(
-                        json_format,
-                        "export",
-                        player.to_str(),
-                        "platform player is missing; download the complete Reel tool package, including reel-game",
-                    )?;
-                    return Ok(1);
-                }
-                Some(reel_cli::distribution::Runtime::Executable(player))
-            } else {
-                None
-            };
             progress.phase("Building ASB");
             let artifact = match reel_cli::build_export(&checked, entry, profile) {
                 Ok(artifact) => artifact,
@@ -519,6 +511,7 @@ fn prepare_texture_command(args: commands::PrepareTexture) -> io::Result<u8> {
         power_of_two: args.power_of_two,
         mipmaps: args.mipmaps,
         format: args.format,
+        fallback: None,
         dither: args.dither,
     };
     match reel_cli::prepare_texture::prepare(&args.source, &args.output, options) {

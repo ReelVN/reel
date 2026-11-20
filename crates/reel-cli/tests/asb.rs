@@ -331,7 +331,9 @@ fn visual_preparation_section_is_optional_integrity_checked_and_bounded() {
     let mut bytes = encode(&plan).unwrap();
     let index_at = u64_at(&bytes, 24);
     let plan_entry = bytes[index_at..]
-        .chunks_exact(rp::INDEX_ENTRY_LEN)
+        .as_chunks::<{ rp::INDEX_ENTRY_LEN }>()
+        .0
+        .iter()
         .find(|entry| entry[..4] == 6u32.to_le_bytes())
         .unwrap();
     assert_eq!(plan_entry[4..8], [0; 4]);

@@ -421,6 +421,129 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
 }
 
 #[test]
+fn release_cli_routes_vita_and_foreign_desktop_runtimes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/main.aside"), "fn main() { 1 }").unwrap();
+    let export = |target: &str, extra: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_reel"))
+            .current_dir(root)
+            .args(["export", "--release", "--resource-target", target])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+
+    let vita = export("vita", &[]);
+    assert!(
+        vita.status.success(),
+        "{}",
+        String::from_utf8_lossy(&vita.stderr)
+    );
+    let vita_output = root.join("dist/vita/release");
+    assert!(vita_output.join("game.asb").is_file());
+    assert!(
+        !vita_output
+            .join(distribution::exported_player_name())
+            .exists()
+    );
+
+    fs::create_dir(root.join("runtime")).unwrap();
+    fs::write(root.join("runtime/native-player"), "player fixture").unwrap();
+    let missing_eboot = export("vita", &["--runtime", "runtime"]);
+    assert!(!missing_eboot.status.success());
+    assert!(String::from_utf8_lossy(&missing_eboot.stderr).contains("requires eboot.bin"));
+    fs::write(root.join("runtime/eboot.bin"), "Vita player fixture").unwrap();
+    let with_eboot = export("vita", &["--runtime", "runtime"]);
+    assert!(
+        with_eboot.status.success(),
+        "{}",
+        String::from_utf8_lossy(&with_eboot.stderr)
+    );
+    assert!(vita_output.join("eboot.bin").is_file());
+
+    let foreign = if std::env::consts::OS == "linux" {
+        "windows"
+    } else {
+        "linux"
+    };
+    let missing_runtime = export(foreign, &[]);
+    assert!(!missing_runtime.status.success());
+    assert!(String::from_utf8_lossy(&missing_runtime.stderr).contains("requires --runtime"));
+    let foreign_output = root.join("dist").join(foreign).join("release");
+    assert!(!foreign_output.exists());
+    let data_only = export(foreign, &["--data-only"]);
+    assert!(
+        data_only.status.success(),
+        "{}",
+        String::from_utf8_lossy(&data_only.stderr)
+    );
+    assert!(foreign_output.join("game.asb").is_file());
+    assert!(
+        !foreign_output
+            .join(distribution::exported_player_name())
+            .exists()
+    );
+    let with_runtime = export(foreign, &["--runtime", "runtime"]);
+    assert!(
+        with_runtime.status.success(),
+        "{}",
+        String::from_utf8_lossy(&with_runtime.stderr)
+    );
+    assert!(foreign_output.join("native-player").is_file());
+}
+
+#[test]
+fn release_mp4_keeps_original_bytes_in_a_seekable_raw_entry() {
+    use reel_package::archive::EntryStorage;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/main.aside"), "fn main() { 1 }").unwrap();
+    fs::create_dir(root.join("resources")).unwrap();
+    let clip = include_bytes!("../../reel-media/tests/fixtures/baseline-aac.mp4");
+    fs::write(root.join("resources/clip.mp4"), clip).unwrap();
+    fs::write(root.join("resources/not-a-video.mp4"), [9; 1024]).unwrap();
+
+    let exported = std::process::Command::new(env!("CARGO_BIN_EXE_reel"))
+        .current_dir(root)
+        .args(["export", "--release", "--resource-target", "vita"])
+        .output()
+        .unwrap();
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let mut archive = File::open(root.join("dist/vita/release/resources.rpk")).unwrap();
+    let index = ArchiveIndex::read(&mut archive).unwrap();
+    let entry = index.get("clip.mp4").unwrap();
+    assert_eq!(entry.storage, EntryStorage::Raw);
+    assert_eq!(entry.stored_length, clip.len() as u64);
+    assert_eq!(entry.version, *blake3::hash(clip).as_bytes());
+    let mut scratch = ReadScratch::new();
+    let mut bytes = [0; 128];
+    for offset in [clip.len() - bytes.len(), 23] {
+        entry
+            .read_range(
+                &mut archive,
+                offset as u64,
+                &mut bytes,
+                &mut scratch,
+                || false,
+            )
+            .unwrap();
+        assert_eq!(bytes, clip[offset..offset + bytes.len()]);
+    }
+    assert!(matches!(
+        index.get("not-a-video.mp4").unwrap().storage,
+        EntryStorage::Blocks { .. }
+    ));
+}
+
+#[test]
 fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_manifest() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();

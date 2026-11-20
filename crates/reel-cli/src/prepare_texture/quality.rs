@@ -2,6 +2,8 @@
 use super::*;
 use std::sync::LazyLock;
 
+mod alpha;
+
 struct Metrics {
     display_rmse_codes: f64,
     p99_abs_error_codes: u16,
@@ -13,11 +15,12 @@ struct Metrics {
 
 impl Metrics {
     fn needs_refinement(&self) -> bool {
-        // Keep the fast fit when its displayed error stays within one code on
-        // average, four codes at the tail, and half a code of smooth-region bias.
+        // Require at most one code of total or translucent RMSE, four codes
+        // at the tail, and half a code of smooth-region bias.
         self.display_rmse_codes > 1.
             || self.p99_abs_error_codes > 4
             || self.smooth_bias_rmse_codes > 0.5
+            || self.translucent_rmse_codes > 1.
     }
 
     fn score(&self) -> f64 {
@@ -27,6 +30,9 @@ impl Metrics {
     }
 
     fn improves(&self, baseline: &Self) -> bool {
+        if self.needs_refinement() != baseline.needs_refinement() {
+            return !self.needs_refinement();
+        }
         self.score() < baseline.score()
             && self.p99_abs_error_codes <= baseline.p99_abs_error_codes
             && self.translucent_rmse_codes <= baseline.translucent_rmse_codes
@@ -61,12 +67,48 @@ pub(crate) fn encode(
     }
     // High fitting keeps the same format and payload length. Keep the
     // baseline blocks until displayed colors, tails and translucent edges agree.
-    let refined = candidate(rgbcx::Quality::High)?;
-    let refined_error = assess(&refined)?;
-    if refined_error.improves(&baseline_error) {
-        Ok((refined, !refined_error.needs_refinement()))
+    let high = candidate(rgbcx::Quality::High)?;
+    let high_error = assess(&high)?;
+    if !high_error.needs_refinement() {
+        return Ok((high, true));
+    }
+    let prefer_high = high_error.improves(&baseline_error);
+    let best_error = if prefer_high {
+        &high_error
     } else {
-        Ok((baseline, false))
+        &baseline_error
+    };
+    if format == rgbcx::Format::Bc3
+        && let Some(mut adjusted) = alpha::refine(&baseline, linear, width)
+    {
+        let baseline_adjusted_error = assess(&adjusted)?;
+        if !baseline_adjusted_error.needs_refinement() {
+            return Ok((adjusted, true));
+        }
+        // Both RGB modes start with identical alpha. Fit it once, then compare
+        // both color encodings after the new alpha has been applied.
+        replace_color(&mut adjusted, &high);
+        let high_adjusted_error = assess(&adjusted)?;
+        if high_adjusted_error.improves(&baseline_adjusted_error) {
+            if high_adjusted_error.improves(best_error) {
+                return Ok((adjusted, !high_adjusted_error.needs_refinement()));
+            }
+        } else if baseline_adjusted_error.improves(best_error) {
+            replace_color(&mut adjusted, &baseline);
+            return Ok((adjusted, false));
+        }
+    }
+    Ok((if prefer_high { high } else { baseline }, false))
+}
+
+fn replace_color(destination: &mut [u8], source: &[u8]) {
+    for (dest, source) in destination
+        .as_chunks_mut::<16>()
+        .0
+        .iter_mut()
+        .zip(source.as_chunks::<16>().0)
+    {
+        dest[8..].copy_from_slice(&source[8..]);
     }
 }
 
@@ -174,7 +216,10 @@ fn measure(reference: &image::Rgba32FImage, decoded: &[u8], stride: u32) -> Stat
             let mut count = 0;
             for y in block_y..(block_y + 8).min(reference.height()) {
                 for x in block_x..(block_x + 8).min(reference.width()) {
-                    let original = reference.get_pixel(x, y).0;
+                    // Compare the extra error from BC against the pixels the
+                    // RGBA8 fallback would actually present, including roundoff.
+                    let original = quantize(reference.get_pixel(x, y).0, Dither::None, [x, y])
+                        .map(|value| f32::from(value) / 255.);
                     let at = ((u64::from(y) * u64::from(stride) + u64::from(x)) * 4) as usize;
                     let sample: [f32; 4] =
                         std::array::from_fn(|channel| f32::from(decoded[at + channel]) / 255.);
@@ -245,6 +290,7 @@ mod tests {
         let exact = measure(&reference, &[64, 64, 64, 128, 255, 0, 0, 0], 2);
         let wrong = measure(&reference, &[64, 64, 64, 255, 0, 0, 0, 0], 2);
         assert_eq!(exact.pixels, 1);
+        assert_eq!(exact.display_squared, 0.);
         assert_eq!(wrong.translucent, 1);
         assert!(wrong.display_squared > exact.display_squared * 100.);
         assert!(wrong.alpha_squared > exact.alpha_squared * 100.);
@@ -306,11 +352,55 @@ mod tests {
             } else {
                 baseline
             };
-            assert_eq!(selected, serial);
+            if matches!(codec, rgbcx::Format::Bc1) {
+                assert_eq!(selected, serial);
+            } else if selected != serial {
+                assert!(after.improves(&assess(&serial)));
+            }
             assert!(after.score() <= before.score());
             assert!(after.p99_abs_error_codes <= before.p99_abs_error_codes);
             assert!(after.translucent_rmse_codes <= before.translucent_rmse_codes);
             assert!(after.alpha_rmse_codes <= before.alpha_rmse_codes);
         }
+    }
+
+    #[test]
+    fn bc3_alpha_refines_soft_edges_without_changing_color_blocks() {
+        let edge = [
+            0, 0, 14, 51, 0, 14, 51, 105, 14, 51, 105, 170, 51, 105, 170, 255,
+        ];
+        let original = RgbaImage::from_fn(4, 4, |x, y| {
+            image::Rgba([0, 0, 0, edge[(y * 4 + x) as usize]])
+        });
+        let (descriptor, linear) = prepare_linear(
+            original.into(),
+            Options {
+                format: Format::Bc3,
+                ..Default::default()
+            },
+            1.,
+        )
+        .unwrap();
+        let pixels = quantized_pixels(&linear, descriptor, Dither::None);
+        let baseline = rgbcx::encode(
+            4,
+            4,
+            pixels.as_raw(),
+            rgbcx::Format::Bc3,
+            rgbcx::Quality::High,
+        )
+        .unwrap();
+        let (selected, _) = encode(&linear, descriptor).unwrap();
+        assert_eq!(selected.len(), baseline.len());
+        assert_eq!(selected[8..], baseline[8..]);
+        assert!(selected[0] < selected[1]);
+        let decode = |blocks: &[u8]| rgbcx::decode(4, 4, blocks, rgbcx::Format::Bc3).unwrap();
+        let decoded = decode(&selected);
+        assert_eq!(decoded[3], 0);
+        assert_eq!(decoded[63], 255);
+        let before = measure(&linear, &decode(&baseline), 4).finish();
+        let after = measure(&linear, &decoded, 4).finish();
+        assert!(after.improves(&before));
+        assert!(after.alpha_rmse_codes < 0.35 * before.alpha_rmse_codes);
     }
 }

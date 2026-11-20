@@ -74,7 +74,8 @@ impl AssetOptions {
     fn stream_input_bytes(&self) -> u64 {
         (128 << 10).min(self.input_bytes / 4)
     }
-    fn ordinary_input_bytes(&self) -> u64 {
+    /// Maximum encoded length of an individual non-streamed asset.
+    pub fn ordinary_input_bytes(&self) -> u64 {
         self.input_bytes - self.stream_input_bytes()
     }
     fn queue_limits(&self) -> QueueLimits {

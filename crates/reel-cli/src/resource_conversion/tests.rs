@@ -45,7 +45,8 @@ convert = "webp"
 [[targets.vita]]
 match = "images/{artwork.webp,ui.png}"
 convert = "texture"
-fallback = "source"
+size = [13, 11]
+fallback = "rgba8"
 "#,
     )
     .unwrap();
@@ -60,10 +61,30 @@ fallback = "source"
     assert_eq!(decoded, artwork);
 
     let release = prepare(root, &tool, &vita, MEMORY_BYTES).unwrap();
-    let fallback = &release.files["images/artwork.webp"];
+    let fallback = fs::read(&release.files["images/artwork.webp"]).unwrap();
+    let (header, pixels) = TextureHeader::parse(&fallback).unwrap();
+    let descriptor = header.descriptor();
+    assert_eq!(descriptor.format, TextureFormat::Rgba8);
+    assert_eq!(descriptor.layout.logical_size, [16, 16]);
+    assert_eq!(descriptor.layout.content_size, [11, 11]);
+    assert_eq!(descriptor.layout.storage_size, [16, 11]);
+    let explicit = root.join("explicit.reel-texture");
+    prepare_texture::prepare(
+        &source.join("artwork.webp"),
+        &explicit,
+        prepare_texture::Options {
+            max_size: Some([13, 11]),
+            format: prepare_texture::Format::Rgba8,
+            gxm_layout: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(
-        fs::read(fallback).unwrap(),
-        fs::read(source.join("artwork.webp")).unwrap()
+        pixels,
+        TextureHeader::parse(&fs::read(explicit).unwrap())
+            .unwrap()
+            .1
     );
     let texture = fs::read(&release.files["images/ui.png"]).unwrap();
     assert_eq!(
@@ -396,7 +417,7 @@ fn tiled_recipe_keeps_logical_names_and_publishes_only_stored_levels() {
     use reel_core::prepared_image::PreparedImage;
     let (directory, tool, target) = fixture();
     let root = directory.path();
-    fs::write(root.join("resources.toml"), "[[targets.vita]]\nmatch = 'images/room.png'\nconvert = 'tiles'\ntile_size = 2\nfirst_level = 1\npower_of_two = true\n").unwrap();
+    fs::write(root.join("resources.toml"), "[[targets.vita]]\nmatch = 'images/room.png'\nconvert = 'tiles'\ntile_size = 2\nfirst_level = 1\npower_of_two = true\nfallback = 'rgba8'\n").unwrap();
     let first = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
     let manifest =
         PreparedImage::decode(&fs::read(&first.files["images/room.png"]).unwrap()).unwrap();
@@ -825,6 +846,22 @@ fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
     );
     fs::write(
         root.join("resources.toml"),
+        "[[targets.vita]]\nmatch='images/**'\nconvert='atlas'\nformat='bc3'\npage_size=[64,64]\nfallback='rgba8'\n",
+    )
+    .unwrap();
+    let prepared = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    let view =
+        PreparedAtlasView::decode(&fs::read(&prepared.files["images/noise.png"]).unwrap()).unwrap();
+    assert_eq!(view.image, noise_bc.image);
+    let page = fs::read(&prepared.files[&view.page]).unwrap();
+    let (header, _) = TextureHeader::parse(&page).unwrap();
+    assert_eq!(header.descriptor().format, TextureFormat::Rgba8);
+    assert_eq!(
+        header.descriptor().storage_layout,
+        reel_core::texture::TextureStorageLayout::Linear
+    );
+    fs::write(
+        root.join("resources.toml"),
         "[[targets.vita]]\nmatch='images/**'\nconvert='atlas'\nmipmaps=true\n",
     )
     .unwrap();
@@ -835,4 +872,48 @@ fn atlas_cohort_publishes_one_page_distinct_views_and_reuses_cache() {
             .to_string()
             .contains("one level")
     );
+}
+
+#[test]
+fn texture_cache_reuses_desktop_layout_but_separates_vita_layout() {
+    use reel_core::{prepared_image::PreparedImage, texture::TextureStorageLayout};
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("resources")).unwrap();
+    let pixels = image::RgbaImage::from_pixel(13, 9, image::Rgba([0, 255, 0, 255]));
+    pixels.save(root.join("resources/still.png")).unwrap();
+    pixels.save(root.join("resources/tiled.png")).unwrap();
+    let rules = |target| {
+        format!(
+            "[[targets.{target}]]\nmatch='still.png'\nconvert='texture'\nformat='bc1'\n\
+             [[targets.{target}]]\nmatch='tiled.png'\nconvert='tiles'\ntile_size=6\nfirst_level=0\nformat='bc1'\n"
+        )
+    };
+    fs::write(
+        root.join("resources.toml"),
+        rules("desktop") + &rules("vita"),
+    )
+    .unwrap();
+    let prepare = |name| prepare_project(root, &ResourceTarget::parse(name).unwrap()).unwrap();
+    let windows = prepare("windows");
+    let linux = prepare("linux");
+    assert_eq!(windows.files, linux.files);
+    assert_eq!(linux.report.reused, 2);
+    let vita = prepare("vita");
+    assert_eq!(vita.report.converted, 2);
+
+    for (prepared, layout) in [
+        (&windows, TextureStorageLayout::Linear),
+        (&vita, TextureStorageLayout::GxmBcMorton),
+    ] {
+        let manifest =
+            PreparedImage::decode(&fs::read(&prepared.files["tiled.png"]).unwrap()).unwrap();
+        let tile = manifest.tile_source("tiled.png", 0, 0, 0);
+        for name in ["still.png", &tile] {
+            let bytes = fs::read(&prepared.files[name]).unwrap();
+            let (header, _) = TextureHeader::parse(&bytes).unwrap();
+            assert_eq!(header.descriptor().storage_layout, layout, "{name}");
+        }
+    }
 }

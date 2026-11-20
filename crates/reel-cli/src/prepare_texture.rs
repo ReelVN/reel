@@ -4,7 +4,7 @@ use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::texture::{
     ColorEncoding, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
-use std::{fs, path::Path};
+use std::path::Path;
 pub(crate) mod mips;
 pub(crate) mod quality;
 
@@ -17,6 +17,14 @@ pub enum Format {
     Bc1,
     Bc3,
     /// Uncompressed linear-premultiplied RGBA8, useful for fine UI art and masks.
+    Rgba8,
+}
+
+/// GPU-ready fallback used when block compression exceeds the visible error limit.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Fallback {
+    /// Store the resized image as linear-premultiplied RGBA8 pixels.
     Rgba8,
 }
 
@@ -55,6 +63,8 @@ pub struct Options {
     /// Prepare storage with GXM row alignment or Morton order for Vita.
     pub gxm_layout: bool,
     pub format: Format,
+    /// Keep a GPU-ready RGBA8 texture when BC exceeds the visible error limit.
+    pub fallback: Option<Fallback>,
     /// Stable RGB dithering for RGBA8 texture conversion; disabled by default.
     /// Coordinates refer to the complete resized image, with edge-repeated padding.
     /// Block-compressed formats and tiled-image conversion do not accept ordered dithering.
@@ -99,12 +109,7 @@ pub fn prepare_bounded(
     options: Options,
     memory_bytes: u64,
 ) -> Result<(TextureHeader, u64), String> {
-    let (header, workspace) =
-        prepare_scaled_bounded(source, output, options, 1., memory_bytes, false)?;
-    Ok((
-        header.expect("standalone texture preparation always publishes a texture"),
-        workspace,
-    ))
+    prepare_scaled_bounded(source, output, options, 1., memory_bytes)
 }
 
 pub(crate) fn prepare_scaled_bounded(
@@ -113,8 +118,7 @@ pub(crate) fn prepare_scaled_bounded(
     options: Options,
     scale: f64,
     memory_bytes: u64,
-    fallback_to_source: bool,
-) -> Result<(Option<TextureHeader>, u64), String> {
+) -> Result<(TextureHeader, u64), String> {
     options.validate()?;
     if output
         .extension()
@@ -134,6 +138,11 @@ pub(crate) fn prepare_scaled_bounded(
         _ => TextureFormat::Bc3Rgba,
     };
     let storage = texture_storage_size(content, options, budget_format)?;
+    let fallback_storage = if options.fallback.is_some() {
+        texture_storage_size(content, options, TextureFormat::Rgba8)?
+    } else {
+        storage
+    };
     // Pinned image 0.25.10: into_rgba32f holds at most the PNG16 source (8 B/px)
     // and float destination (16 B/px); apply_color_space then works in place.
     // Triangle resize keeps original float pixels, width*new_height float
@@ -144,6 +153,7 @@ pub(crate) fn prepare_scaled_bounded(
     let content_pixels = u128::from(content[0]) * u128::from(content[1]);
     let intermediate_pixels = u128::from(logical[0]) * u128::from(content[1]);
     let stored_pixels = u128::from(storage[0]) * u128::from(storage[1]);
+    let fallback_pixels = u128::from(fallback_storage[0]) * u128::from(fallback_storage[1]);
     let cast = original_pixels * 24;
     let resize = if content != logical {
         (original_pixels + intermediate_pixels + content_pixels) * 16
@@ -151,7 +161,7 @@ pub(crate) fn prepare_scaled_bounded(
     } else {
         0
     };
-    let quantize = content_pixels * 16 + stored_pixels * 4;
+    let quantize = content_pixels * 16 + stored_pixels.max(fallback_pixels) * 4;
     let encode = if !matches!(options.format, Format::Rgba8) {
         // The float reference and baseline blocks survive one candidate's fit
         // and decode.
@@ -160,7 +170,7 @@ pub(crate) fn prepare_scaled_bounded(
         0
     };
     let mip_workspace = if options.mipmaps {
-        stored_pixels * 48 + bc_workspace(storage, storage)
+        stored_pixels.max(fallback_pixels) * 48 + bc_workspace(storage, storage)
     } else {
         0
     };
@@ -186,37 +196,17 @@ pub(crate) fn prepare_scaled_bounded(
             error.message
         )
     })?;
-    let raw_decode_bytes =
-        u128::from(decoder.total_bytes()) + u128::from(codec_workspace) + original_pixels * 4;
     let pixels = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
     let (descriptor, linear) = prepare_linear(pixels, options, scale)?;
-    let (blocks, meets_quality) = mips::encode(linear, descriptor, options.dither)?;
-    if fallback_to_source && !meets_quality {
-        if options.gxm_layout {
-            let limit = reel_player::artwork::VITA_DECODE_BYTES
-                - reel_package::archive::SCRATCH_BYTES as u64;
-            let length = fs::metadata(source)
-                .map_err(|error| error.to_string())?
-                .len();
-            if raw_decode_bytes > u128::from(limit)
-                || length > reel_player::artwork::VITA_INPUT_BYTES
-            {
-                return Err(format!(
-                    "texture exceeds the quality threshold and its original exceeds the Vita decode budget ({raw_decode_bytes} workspace bytes, {limit} available)"
-                ));
-            }
-        }
-        fs::copy(source, output).map_err(|error| error.to_string())?;
-        return Ok((None, workspace));
-    }
-    publish_texture(output, descriptor, &blocks).map(|header| (Some(header), workspace))
+    let (descriptor, blocks) = encode_texture(&linear, descriptor, options)?;
+    publish_texture(output, descriptor, &blocks).map(|header| (header, workspace))
 }
 
 /// Peak BC fitting, quality measurement and envelope storage after source decode.
 pub(crate) fn bc_workspace(content: [u32; 2], storage: [u32; 2]) -> u128 {
     let content_pixels = u128::from(content[0]) * u128::from(content[1]);
     let stored_pixels = u128::from(storage[0]) * u128::from(storage[1]);
-    content_pixels * 16 + stored_pixels * 6 + quality::scratch_bytes(content[0])
+    content_pixels * 16 + stored_pixels * 7 + quality::scratch_bytes(content[0])
 }
 
 /// Encode already decoded artwork with the same filtering, block and publication
@@ -227,8 +217,46 @@ pub(crate) fn prepare_decoded(
     options: Options,
 ) -> Result<TextureHeader, String> {
     let (descriptor, linear) = prepare_linear(pixels, options, 1.)?;
-    let (blocks, _) = mips::encode(linear, descriptor, options.dither)?;
+    let (descriptor, blocks) = encode_texture(&linear, descriptor, options)?;
     publish_texture(output, descriptor, &blocks)
+}
+
+fn encode_texture(
+    linear: &image::Rgba32FImage,
+    descriptor: TextureDescriptor,
+    options: Options,
+) -> Result<(TextureDescriptor, Vec<u8>), String> {
+    let (blocks, meets_quality) = mips::encode(linear, descriptor, options.dither)?;
+    if meets_quality || options.fallback.is_none() {
+        validate_target_extent(descriptor, options.gxm_layout)?;
+        return Ok((descriptor, blocks));
+    }
+    drop(blocks);
+    let fallback = texture_descriptor(descriptor.layout, options, TextureFormat::Rgba8)?;
+    validate_target_extent(fallback, options.gxm_layout)?;
+    let (pixels, _) = mips::encode(linear, fallback, options.dither)?;
+    Ok((fallback, pixels))
+}
+
+pub(crate) fn validate_target_extent(
+    descriptor: TextureDescriptor,
+    vita: bool,
+) -> Result<(), String> {
+    if vita {
+        let input_bytes = reel_player::assets::AssetOptions {
+            input_bytes: reel_player::artwork::VITA_INPUT_BYTES,
+            ..Default::default()
+        }
+        .ordinary_input_bytes();
+        let length =
+            descriptor.byte_len().map_err(|error| error.to_string())? + TextureHeader::LEN as u64;
+        if length > input_bytes {
+            return Err(format!(
+                "Vita texture would need {length} input bytes, limit {input_bytes}. Set size or scale, or use tiles for large images."
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn publish_texture(
@@ -321,6 +349,9 @@ fn texture_storage_size(
                 .ok_or("stored image dimensions overflow")?;
         }
     }
+    if options.gxm_layout && storage.iter().any(|&axis| axis > 4096) {
+        return Err("Vita texture storage exceeds 4096 texels on one axis. Set size or scale, or use tiles for large images.".into());
+    }
     Ok(storage)
 }
 
@@ -363,7 +394,24 @@ pub(crate) fn prepare_linear(
             imageops::FilterType::Triangle,
         );
     }
-    let storage_size = texture_storage_size(content_size, options, format)?;
+    let descriptor = texture_descriptor(
+        TextureLayout {
+            logical_size,
+            content_size,
+            storage_size: content_size,
+        },
+        options,
+        format,
+    )?;
+    Ok((descriptor, linear))
+}
+
+fn texture_descriptor(
+    layout: TextureLayout,
+    options: Options,
+    format: TextureFormat,
+) -> Result<TextureDescriptor, String> {
+    let storage_size = texture_storage_size(layout.content_size, options, format)?;
     let descriptor = TextureDescriptor {
         storage_layout: if options.gxm_layout && format.is_compressed() {
             reel_core::texture::TextureStorageLayout::GxmBcMorton
@@ -378,15 +426,14 @@ pub(crate) fn prepare_linear(
         format,
         source_encoding: ColorEncoding::Srgb,
         layout: TextureLayout {
-            logical_size,
-            content_size,
             storage_size,
+            ..layout
         },
     };
     descriptor.byte_len().map_err(|e| e.to_string())?;
     // RGB and alpha remain linear premultiplied when quantized. The decoder does
     // not interpret these bytes as an sRGB image or premultiply them a second time.
-    Ok((descriptor, linear))
+    Ok(descriptor)
 }
 
 pub(crate) fn quantized_pixels(
@@ -699,6 +746,7 @@ mod tests {
                 mipmaps: false,
                 power_of_two: true,
                 format: Format::Rgba8,
+                fallback: None,
                 dither: Dither::None,
             },
             1.,

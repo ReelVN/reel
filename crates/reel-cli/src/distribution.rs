@@ -8,7 +8,7 @@ use reel_package::{
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Seek, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
 };
@@ -73,6 +73,36 @@ pub enum Runtime {
     /// Another platform's complete runtime, with relative paths preserved.
     Directory(PathBuf),
 }
+impl Runtime {
+    /// Resolve the implicit runtime for a release resource target. Vita uses the
+    /// shared launcher. Explicit desktop OS targets require a matching player.
+    pub fn default_for_target(target: &str) -> io::Result<Option<Self>> {
+        let host = std::env::consts::OS;
+        match target {
+            "vita" => return Ok(None),
+            "windows" | "linux" | "macos" if target != host => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "exporting for {target} from {host} requires --runtime DIRECTORY or --data-only"
+                    ),
+                ));
+            }
+            _ => {}
+        }
+        let player = player_path(&std::env::current_exe()?);
+        if !player.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "platform player {} is missing; download the complete Reel tool package, including reel-game",
+                    player.display()
+                ),
+            ));
+        }
+        Ok(Some(Self::Executable(player)))
+    }
+}
 
 pub struct ExportOptions {
     pub output: PathBuf,
@@ -107,10 +137,36 @@ fn resource_volumes(
                 ArchiveWriter::new(File::create(staging.join(&volume))?, ArchiveKind::Resources)?;
             names.push(volume);
         }
-        bytes += writer.add(name, &mut file)?.length;
+        let entry = if is_mp4(path, &mut file)? {
+            // H.264/AAC payloads are already compressed. Contiguous storage
+            // lets the player seek without reading an LZ4 block directory.
+            writer.add_raw(name, &mut file)?
+        } else {
+            writer.add(name, &mut file)?
+        };
+        bytes += entry.length;
     }
     writer.finish()?.sync_all()?;
     Ok((names, bytes))
+}
+
+fn is_mp4(path: &Path, file: &mut File) -> io::Result<bool> {
+    if path
+        .extension()
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("mp4"))
+    {
+        return Ok(false);
+    }
+    let mut header = [0; 8];
+    let mp4 = match file.read_exact(&mut header) {
+        Ok(()) => {
+            &header[4..] == b"ftyp" && u32::from_be_bytes(header[..4].try_into().unwrap()) >= 16
+        }
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
+        Err(error) => return Err(error),
+    };
+    file.rewind()?;
+    Ok(mp4)
 }
 
 pub struct Exported {
@@ -223,6 +279,33 @@ pub fn export(
         read_manifest(&output.join(MAIN_PACKAGE))?;
     }
     let target = ResourceTarget::parse(&options.resource_target)?;
+    let mut runtime_files = BTreeMap::new();
+    if artifact.profile == BuildProfile::Release
+        && let Some(runtime) = &options.runtime
+    {
+        match runtime {
+            Runtime::Executable(path) => {
+                runtime_files.insert(exported_player_name(), path.clone());
+            }
+            Runtime::Directory(path) => {
+                let root = path.canonicalize()?;
+                if root.starts_with(&output) || output.starts_with(&root) {
+                    return Err(io::Error::other(
+                        "export output overlaps the runtime directory",
+                    ));
+                }
+                collect(&root, ".", &mut runtime_files)?;
+                if target.as_str() == "vita" && !runtime_files.contains_key("eboot.bin") {
+                    return Err(io::Error::other(
+                        "Vita runtime directory requires eboot.bin at its root",
+                    ));
+                }
+                if runtime_files.is_empty() {
+                    return Err(io::Error::other("runtime directory contains no files"));
+                }
+            }
+        }
+    }
     let mut resources = BTreeMap::new();
     let mut text = BTreeMap::new();
     for (mounts, files, variants) in [
@@ -282,22 +365,6 @@ pub fn export(
             return Err(io::Error::other(format!(
                 "project language catalog conflicts with an explicit resource or text mount: {key}"
             )));
-        }
-    }
-    let mut runtime_files = BTreeMap::new();
-    if artifact.profile == BuildProfile::Release
-        && let Some(runtime) = &options.runtime
-    {
-        match runtime {
-            Runtime::Executable(path) => {
-                runtime_files.insert(exported_player_name(), path.clone());
-            }
-            Runtime::Directory(path) => {
-                collect(&path.canonicalize()?, ".", &mut runtime_files)?;
-                if runtime_files.is_empty() {
-                    return Err(io::Error::other("runtime directory contains no files"));
-                }
-            }
         }
     }
     let candidate = tempfile::Builder::new()

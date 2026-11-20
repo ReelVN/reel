@@ -35,7 +35,7 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-这两个命令使用当前平台播放器预览、导出选定素材。开发版复制所选资源，发布版打包为统一逻辑路径。
+`dev` 用当前平台的播放器预览所选素材。`export` 按选定目标准备发布内容。开发版复制所选资源，发布版打包为统一逻辑路径。
 
 用 `build.target` 选择平台配置或效果。`check`、`build`、`dev` 和 `export` 通过 `--resource-target` 设置它的值。编译器检查两侧源码，生成选中分支及其内部函数的代码。
 
@@ -45,20 +45,20 @@ let particle_count = if build.target == "vita" { 80 } else { 320 };
 
 共用布局时保留逻辑画布，通过素材缩放和效果配置调整绘制成本。`window.info().platform` 报告当前运行游戏的播放器平台。
 
-使用其他平台的运行时导出时，通过 `--runtime` 指定其目录。可执行文件、原生模块与平台元数据保留相对路径，与 `game.asb` 放在一起：
+本机桌面发布包默认使用工具自带的播放器。`desktop` 和自定义资源变体也默认使用宿主播放器。发布到其他桌面系统时，用 `--runtime` 指定目标系统的运行时目录，或用 `--data-only` 供另行安装的播放器读取。运行时文件保留相对路径，与 `game.asb` 一同发布。
 
 ```sh
-reel export --release --resource-target vita --runtime path/to/vita-runtime
+reel export --release --resource-target linux --runtime path/to/linux-runtime
 ```
 
-使用对应平台的打包工具将该目录制成安装包。Vita 运行时读取准备好的 Opus 音频和块压缩纹理；硬解视频使用 H.264/AAC，尺寸为偶数且不超过 960 × 544。
+使用目标平台的打包工具制作安装包。自定义 Vita 运行时目录的根目录必须包含 `eboot.bin`。Vita 播放器读取准备好的 Opus 音频和纹理。硬解视频使用 H.264/AAC，尺寸为偶数且不超过 960 × 544。
 
 Vita 导出使用官方 SDK 主机工具 `psp2cgc` 将效果编译为 GXP。通过 `REEL_PSP2CGC` 指定编译器程序，或通过 `SCE_PSP2_SDK_DIR` 指定 SDK 目录。运行时内嵌基础着色器，通过系统 GXM API 绘制。
 
-安装 Reel 启动器后，每部作品可单独导出数据：
+Vita 发布默认导出游戏数据，可交给已安装的 Reel 启动器运行。
 
 ```sh
-reel export --release --resource-target vita --data-only
+reel export --release --resource-target vita
 ```
 
 将导出目录复制到 `ux0:/data/reel/作品名/`。启动器列出含 `game.asb` 的作品目录；进度保存在各作品的 `saves/` 目录。游戏中按 SELECT + START 返回作品列表。
@@ -73,7 +73,7 @@ match = "images/**/*.{png,jpg,jpeg,webp}"
 convert = "texture"
 scale = 0.5
 format = "auto"
-power_of_two = true
+fallback = "rgba8"
 
 [[targets.vita]]
 match = "audio/**/*.{wav,ogg,mp3,flac}"
@@ -89,7 +89,7 @@ bitrate = 4000000
 
 规则按顺序取首个匹配，未匹配的文件直接使用原内容；`convert = "copy"` 可保留特定文件。先选取公共素材和平台覆盖，再应用转换。纹理缩放保留原有逻辑尺寸和 `source_rect` 坐标；原脚本中的图片、音频路径继续使用。BC 纹理与瓦片自动选择编码质量，保持所选格式的 GPU 存储大小。
 
-需要优先保住画质时，给 BC 纹理规则设置 `fallback = "source"`。Reel 会比较所选编码与缩放后的图像，超过显示误差阈值时打包原图。Vita 上若原图超出解码预算，导出会指出该资源。
+`fallback = "rgba8"` 让 Reel 在发行时比较 BC 候选与缩放后的图像。画质仍未达标时，保留缩放和逻辑坐标，输出 GPU 可直接读取的 RGBA8 纹理。单层 Vita RGBA8 默认只对齐行宽。RPK 继续压缩发行数据，载入后的 RGBA8 纹理按四字节每像素占用内存。以前使用 `fallback = "source"` 的规则可以改用 `"rgba8"`。需要原文件的资源使用 `convert = "copy"`。
 
 `targets.desktop` 为 Windows、Linux 和 macOS 提供通用转换规则。具体系统的规则先匹配，再用桌面通用规则。`--resource-target desktop` 可以单独预览这组规则。下面的规则把选中的 8 位界面图片转为 QOI，其余 8 位 PNG 无损转为 WebP，再把选中的音频转为 Opus。QOI 保留像素，部分资源会用更大的打包体积换取更快的解码。
 
@@ -122,7 +122,7 @@ format = "auto"
 
 每条规则生成一张整页加载和上传的图集；使用时机不同的图片分开配置。脚本沿用原图片路径、逻辑尺寸和裁剪坐标。图集保存一个纹理层级，图片按压缩块对齐，边缘填充用于过滤。图片装不下时，准备过程会报错，可增大 `page_size` 或拆分分组。规则接受 `scale`、`format` 和 `dither`。
 
-长图和图集可在通用纹理规则前配置 `convert = "tiles"`。`tile_size = 510` 为 512 像素纹理留出边缘，`first_level = 1` 保存半尺寸及更小层级；同一规则也接受 `format` 和 `power_of_two`。原有逻辑路径与图集裁剪坐标继续使用，运行时按可见瓦片加载。
+长图可在通用纹理规则前配置 `convert = "tiles"`。`tile_size = 510` 为 512 像素纹理留出边缘，`first_level = 1` 保存半尺寸及更小层级。原有逻辑路径与裁剪坐标继续使用，运行时按可见瓦片加载。`fallback = "rgba8"` 在分块图中可逐块回退，在图集中按整页回退。
 
 ```sh
 reel prepare-resources --resource-target vita

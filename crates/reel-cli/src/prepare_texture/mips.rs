@@ -1,7 +1,9 @@
 //! Generate stored mip levels before quantization, preserving one base UV mapping.
 use super::*;
+use std::borrow::Cow;
+
 pub(crate) fn encode(
-    mut linear: image::Rgba32FImage,
+    linear: &image::Rgba32FImage,
     descriptor: TextureDescriptor,
     dither: Dither,
 ) -> Result<(Vec<u8>, bool), String> {
@@ -10,16 +12,23 @@ pub(crate) fn encode(
         && descriptor.storage_layout == reel_core::texture::TextureStorageLayout::Linear;
     let mut bytes = Vec::with_capacity(if direct { 0 } else { capacity });
     let mut meets_quality = true;
-    if descriptor.mip_count > 1 {
+    let mut linear = if descriptor.mip_count > 1 {
         let size = descriptor.layout.storage_size;
-        linear = image::Rgba32FImage::from_fn(size[0], size[1], |x, y| {
+        Cow::Owned(image::Rgba32FImage::from_fn(size[0], size[1], |x, y| {
             *linear.get_pixel(x.min(linear.width() - 1), y.min(linear.height() - 1))
-        });
-    }
+        }))
+    } else {
+        Cow::Borrowed(linear)
+    };
     for level in 0..descriptor.mip_count {
         let size = descriptor.mip_size(level);
         if level > 0 {
-            linear = imageops::resize(&linear, size[0], size[1], imageops::FilterType::Triangle);
+            linear = Cow::Owned(imageops::resize(
+                linear.as_ref(),
+                size[0],
+                size[1],
+                imageops::FilterType::Triangle,
+            ));
         }
         // BC encoders accept whole blocks, including the repeated edge of tiny mip levels.
         let padded = size.map(|n| n.next_multiple_of(descriptor.format.block_size()));
@@ -82,7 +91,7 @@ mod tests {
                     ..Default::default()
                 };
                 let (d, linear) = prepare_linear(image, options, 1.).unwrap();
-                let (bytes, _) = encode(linear, d, Dither::None).unwrap();
+                let (bytes, _) = encode(&linear, d, Dither::None).unwrap();
                 d.validate(bytes.len()).unwrap();
                 assert_eq!(d.layout.logical_size, [13, 7]);
                 assert_eq!(d.layout.content_size, [13, 7]);
@@ -117,7 +126,7 @@ fn transparent_rgb_does_not_bleed_into_coarser_levels() {
         1.,
     )
     .unwrap();
-    let (bytes, _) = encode(linear, d, Dither::None).unwrap();
+    let (bytes, _) = encode(&linear, d, Dither::None).unwrap();
     assert_eq!(
         &bytes[d.mip_offset(1).unwrap() as usize..],
         &[128, 0, 0, 128]

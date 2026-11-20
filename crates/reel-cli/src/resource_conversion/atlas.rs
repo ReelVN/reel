@@ -39,6 +39,7 @@ pub(super) fn prepare(
         format,
         dither,
         page_size,
+        fallback,
     } = *recipe
     else {
         unreachable!()
@@ -103,8 +104,32 @@ pub(super) fn prepare(
                 origin: [0; 2],
             });
         }
-        let page_size = pack(&mut items, page_size, target.as_str() == "vita")?;
-        let workspace = u128::from(page_size[0]) * u128::from(page_size[1]) * 80
+        let used = pack(&mut items, page_size)?;
+        let vita = target.as_str() == "vita";
+        let rgba_size = if vita {
+            [used[0].next_multiple_of(8), used[1]]
+        } else {
+            used
+        };
+        let bc_size = if vita {
+            used.map(u32::next_power_of_two)
+        } else {
+            used
+        };
+        let fits = |storage: [u32; 2]| {
+            storage
+                .into_iter()
+                .zip(page_size)
+                .all(|(used, limit)| used <= limit)
+        };
+        let try_bc = !matches!(format, prepare_texture::Format::Rgba8) && fits(bc_size);
+        if !fits(rgba_size)
+            || (!matches!(format, prepare_texture::Format::Rgba8) && !try_bc && fallback.is_none())
+        {
+            return Err(invalid("aligned atlas storage exceeds page_size"));
+        }
+        let workspace_size = if try_bc { bc_size } else { rgba_size };
+        let workspace = u128::from(workspace_size[0]) * u128::from(workspace_size[1]) * 80
             + max_source
             + (items.len() as u128 * 2048)
             + (1 << 20);
@@ -120,8 +145,7 @@ pub(super) fn prepare(
         let staging = tempfile::Builder::new()
             .prefix(".atlas-")
             .tempdir_in(objects)?;
-        let mut atlas =
-            Rgba32FImage::from_pixel(page_size[0], page_size[1], image::Rgba([0., 0., 0., 1.]));
+        let mut atlas = Rgba32FImage::from_pixel(used[0], used[1], image::Rgba([0., 0., 0., 1.]));
         let mut opaque = true;
         for item in &items {
             let (decoder, _) =
@@ -170,27 +194,35 @@ pub(super) fn prepare(
             }
             prepare_texture::Format::Rgba8 => TextureFormat::Rgba8,
         };
-        let morton = target.as_str() == "vita" && format.is_compressed();
-        if morton && page_size.iter().any(|n| !n.is_power_of_two()) {
-            return Err(invalid("Vita BC atlas dimensions must be powers of two"));
-        }
-        let descriptor = TextureDescriptor {
-            storage_layout: if morton {
+        let mut descriptor = TextureDescriptor {
+            storage_layout: if vita && try_bc {
                 TextureStorageLayout::GxmBcMorton
             } else {
                 TextureStorageLayout::Linear
             },
             mip_count: 1,
             format,
-            layout: TextureLayout::identity(page_size),
+            layout: TextureLayout {
+                storage_size: if try_bc { bc_size } else { rgba_size },
+                ..TextureLayout::identity(used)
+            },
             source_encoding: ColorEncoding::Srgb,
         };
-        let payload = if format.is_compressed() {
-            encode_independent_blocks(&atlas, descriptor, &items)?
+        let blocks = if try_bc {
+            let (blocks, meets_quality) = encode_independent_blocks(&atlas, descriptor, &items)?;
+            (meets_quality || fallback.is_none()).then_some(blocks)
         } else {
-            prepare_texture::mips::encode(atlas, descriptor, dither)
-                .map_err(invalid)?
-                .0
+            None
+        };
+        let payload = match blocks {
+            Some(blocks) => blocks,
+            None => {
+                descriptor.format = TextureFormat::Rgba8;
+                descriptor.storage_layout = TextureStorageLayout::Linear;
+                descriptor.layout.storage_size = rgba_size;
+                prepare_texture::validate_target_extent(descriptor, vita).map_err(invalid)?;
+                prepare_texture::quantized_pixels(&atlas, descriptor, dither).into_raw()
+            }
         };
         let header = TextureHeader::new(descriptor, payload.len() as u64).map_err(invalid)?;
         let mut file = File::create(staging.path().join("page.reel-texture"))?;
@@ -239,10 +271,11 @@ fn encode_independent_blocks(
     atlas: &Rgba32FImage,
     page: TextureDescriptor,
     items: &[Item<'_>],
-) -> io::Result<Vec<u8>> {
+) -> io::Result<(Vec<u8>, bool)> {
     let size = page.layout.storage_size;
     let block_bytes = page.format.block_bytes() as usize;
     let mut result = vec![0; page.byte_len().map_err(invalid)? as usize];
+    let mut meets_quality = true;
     let format = match page.format {
         TextureFormat::Bc1Rgb => rgbcx::Format::Bc1,
         TextureFormat::Bc3Rgba => rgbcx::Format::Bc3,
@@ -298,8 +331,9 @@ fn encode_independent_blocks(
             },
             ..page
         };
-        let (blocks, _) =
+        let (blocks, acceptable) =
             prepare_texture::quality::encode(&visible, descriptor).map_err(invalid)?;
+        meets_quality &= acceptable;
         for y in 0..storage[1] / 4 {
             for x in 0..storage[0] / 4 {
                 let from = ((y * (storage[0] / 4) + x) as usize) * block_bytes;
@@ -313,12 +347,12 @@ fn encode_independent_blocks(
             }
         }
     }
-    Ok(result)
+    Ok((result, meets_quality))
 }
 
 /// Deterministic guillotiere allocation. Every rectangle has a
 /// four-texel edge gutter and starts on a compression-block boundary.
-fn pack(items: &mut [Item<'_>], size: [u32; 2], power_of_two: bool) -> io::Result<[u32; 2]> {
+fn pack(items: &mut [Item<'_>], size: [u32; 2]) -> io::Result<[u32; 2]> {
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by_key(|&i| {
         let [w, h] = items[i].content.map(|n| n.next_multiple_of(4) + 8);
@@ -347,12 +381,6 @@ fn pack(items: &mut [Item<'_>], size: [u32; 2], power_of_two: bool) -> io::Resul
         for (axis, end) in used.iter_mut().enumerate() {
             *end = (*end).max(item.origin[axis] + item.content[axis].next_multiple_of(4) + 4);
         }
-    }
-    if power_of_two {
-        used = used.map(u32::next_power_of_two);
-    }
-    if (0..2).any(|axis| used[axis] > size[axis]) {
-        return Err(invalid("power-of-two atlas storage exceeds page_size"));
     }
     Ok(used)
 }

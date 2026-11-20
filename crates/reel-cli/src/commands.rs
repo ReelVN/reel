@@ -1,8 +1,12 @@
 //! One command tree owns parsing, validation and generated help.
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use reel_cli::{BuildProfile, distribution::Mount};
+use reel_cli::{
+    BuildProfile,
+    distribution::{Mount, Runtime},
+};
 use std::{
     ffi::{OsStr, OsString},
+    io,
     path::PathBuf,
 };
 
@@ -151,13 +155,13 @@ pub struct Export {
     /// Package translation catalogs under their logical prefix; repeat as needed.
     #[arg(long, value_name = "PREFIX=DIRECTORY", value_parser = Mount::parse)]
     pub text: Vec<Mount>,
-    /// Select @NAME resource variants and conversion rules.
+    /// Select @NAME resource variants, conversion rules and the release destination.
     #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
     pub resource_target: String,
-    /// Runtime directory to include with its original structure instead of the local player.
+    /// Include a native runtime directory, preserving its relative paths.
     #[arg(long, value_name = "DIRECTORY", requires = "release")]
     pub runtime: Option<PathBuf>,
-    /// Export code, text and resources for an already installed shared runtime.
+    /// Export code, text and resources for an installed player. The default for Vita.
     #[arg(long, requires = "release", conflicts_with = "runtime")]
     pub data_only: bool,
     /// Target resource volume size including index; defaults to 2147483648 (2 GiB).
@@ -165,6 +169,17 @@ pub struct Export {
     pub pack_bytes: Option<std::num::NonZeroU64>,
     #[arg(long, value_enum, default_value = "human")]
     pub format: Format,
+}
+impl Export {
+    pub fn resolve_runtime(&self) -> io::Result<Option<Runtime>> {
+        if !self.settings.release || self.data_only {
+            return Ok(None);
+        }
+        match &self.runtime {
+            Some(directory) => Ok(Some(Runtime::Directory(directory.clone()))),
+            None => Runtime::default_for_target(&self.resource_target),
+        }
+    }
 }
 #[derive(Args)]
 pub struct Playback {
@@ -287,6 +302,7 @@ mod tests {
     fn resource_targets_are_shared_by_development_run_and_export() {
         assert!(Cli::try_parse_from(["reel", "export", "--release", "--data-only"]).is_ok());
         assert!(Cli::try_parse_from(["reel", "export", "--data-only"]).is_err());
+        assert!(Cli::try_parse_from(["reel", "export", "--runtime", "runtime"]).is_err());
         assert!(
             Cli::try_parse_from([
                 "reel",

@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Select the release runtime by export target. Vita defaults to the shared launcher data bundle, and cross-OS desktop exports require a runtime directory or data-only output.
+- Keep GXM texture layouts separate from desktop conversion cache entries and store MP4 resources as contiguous archive ranges for direct seeking.
+- Refine difficult BC3 alpha blocks during export. Use `fallback = "rgba8"` to keep scaled, upload-ready pixels for textures, tiles and atlas pages that exceed the BC quality limit. Use `convert = "copy"` to ship original files.
 - Remove BC-Crunch decoding. Re-export texture assets packed by pre-release builds that used it.
 - Align only row width for single-level Vita RGBA8 textures unless power-of-two padding is requested.
 - Prepare known upcoming images during finite animation and delay waits.

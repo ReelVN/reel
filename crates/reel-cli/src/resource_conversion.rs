@@ -12,7 +12,7 @@
 //! linear RGB rounding across a fixed 8x8 pattern; the default is `"none"`.
 //! Texture rules may opt into `mipmaps = true`; the default is a single level.
 //! Texture rules may keep the original bytes when BC fitting exceeds the display
-//! error threshold by setting `fallback = "source"`.
+//! error threshold by setting `fallback = "rgba8"`.
 //! Mips filter the padded linear-premultiplied storage and retain author coordinates.
 //! Tiles own their separate level pyramid and do not accept this option.
 //! Alpha remains undithered. Ordered dithering does not apply to block formats or tiles.
@@ -102,7 +102,7 @@ struct RuleInput {
     format: Option<prepare_texture::Format>,
     dither: Option<prepare_texture::Dither>,
     mipmaps: Option<bool>,
-    fallback: Option<TextureFallback>,
+    fallback: Option<prepare_texture::Fallback>,
     power_of_two: Option<bool>,
     page_size: Option<[u32; 2]>,
     bitrate: Option<u32>,
@@ -127,12 +127,6 @@ enum Convert {
     Font,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum TextureFallback {
-    Source,
-}
-
 #[derive(Serialize)]
 #[serde(tag = "convert", rename_all = "lowercase")]
 enum Recipe {
@@ -147,19 +141,23 @@ enum Recipe {
         dither: prepare_texture::Dither,
         mipmaps: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
-        fallback: Option<TextureFallback>,
+        fallback: Option<prepare_texture::Fallback>,
     },
     Atlas {
         scale: f64,
         format: prepare_texture::Format,
         dither: prepare_texture::Dither,
         page_size: [u32; 2],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fallback: Option<prepare_texture::Fallback>,
     },
     Tiles {
         tile_size: u32,
         first_level: u32,
         format: prepare_texture::Format,
         power_of_two: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fallback: Option<prepare_texture::Fallback>,
     },
     Opus {
         bitrate: u32,
@@ -203,8 +201,15 @@ impl RuleInput {
         if self.dither.is_some() && !matches!(self.convert, Convert::Texture | Convert::Atlas) {
             return Err(invalid("dither belongs to texture rules"));
         }
-        if self.fallback.is_some() && !matches!(self.convert, Convert::Texture) {
-            return Err(invalid("fallback belongs to texture rules"));
+        if self.fallback.is_some()
+            && !matches!(
+                self.convert,
+                Convert::Texture | Convert::Tiles | Convert::Atlas
+            )
+        {
+            return Err(invalid(
+                "fallback belongs to texture, tiles and atlas rules",
+            ));
         }
         if !matches!(self.convert, Convert::Tiles)
             && (self.tile_size.is_some() || self.first_level.is_some())
@@ -279,6 +284,7 @@ impl RuleInput {
                     first_level,
                     format: self.format.unwrap_or_default(),
                     power_of_two: self.power_of_two.unwrap_or(false),
+                    fallback: self.fallback,
                 }
             }
             Convert::Copy | Convert::Webp | Convert::Qoi => {
@@ -301,7 +307,7 @@ impl RuleInput {
             Convert::Atlas => {
                 if self.size.is_some() || self.power_of_two.is_some() || self.bitrate.is_some() {
                     return Err(invalid(
-                        "atlas rules accept scale, format, dither and page_size",
+                        "atlas rules accept scale, format, dither, page_size and fallback",
                     ));
                 }
                 let scale = self.scale.unwrap_or(1.);
@@ -333,6 +339,7 @@ impl RuleInput {
                     format,
                     dither,
                     page_size,
+                    fallback: self.fallback,
                 }
             }
             Convert::Texture => {
@@ -640,6 +647,7 @@ fn prepare_with_rules<'a>(
     identity: impl Fn(&Recipe) -> &'a str,
 ) -> io::Result<Prepared> {
     let root = root.canonicalize()?;
+    let gxm_layout = target.as_str() == "vita";
     let mut prepared = Prepared {
         files: BTreeMap::new(),
         report: Report::default(),
@@ -708,6 +716,9 @@ fn prepare_with_rules<'a>(
                 hash.update(identity(recipe).as_bytes());
                 hash.update(source_hash.as_bytes());
                 hash.update(&serde_json::to_vec(recipe).map_err(io::Error::other)?);
+                if matches!(recipe, Recipe::Texture { .. } | Recipe::Tiles { .. }) {
+                    hash.update(&[u8::from(gxm_layout)]);
+                }
                 if matches!(recipe, Recipe::Video { .. }) {
                     if video_tools.is_none() {
                         video_tools = Some(crate::prepare_video::external_tools_identity()?);
@@ -750,19 +761,14 @@ fn prepare_with_rules<'a>(
                         .prefix(".prepare-")
                         .tempdir_in(&objects)?;
                     let staged_output = staging.path().join(output_name);
-                    let workspace = convert(
-                        &source,
-                        &staged_output,
-                        recipe,
-                        memory_bytes,
-                        target.as_str() == "vita",
-                    )
-                    .map_err(|error| {
-                        io::Error::other(format!(
-                            "resource {name:?} ({}): {error}",
-                            source.display()
-                        ))
-                    })?;
+                    let workspace =
+                        convert(&source, &staged_output, recipe, memory_bytes, gxm_layout)
+                            .map_err(|error| {
+                                io::Error::other(format!(
+                                    "resource {name:?} ({}): {error}",
+                                    source.display()
+                                ))
+                            })?;
                     prepared.report.workspace_bytes =
                         prepared.report.workspace_bytes.max(workspace);
                     if hash_file(&source)? != source_hash {
@@ -864,6 +870,7 @@ fn convert(
             first_level,
             format,
             power_of_two,
+            fallback,
         } => crate::prepare_image::prepare_bounded(
             source,
             output,
@@ -875,6 +882,7 @@ fn convert(
                 gxm_layout,
                 format: *format,
                 power_of_two: *power_of_two,
+                fallback: *fallback,
                 dither: prepare_texture::Dither::None,
                 mipmaps: false,
             },
@@ -898,17 +906,11 @@ fn convert(
                 format: *format,
                 dither: *dither,
                 mipmaps: *mipmaps,
+                fallback: *fallback,
             };
-            prepare_texture::prepare_scaled_bounded(
-                source,
-                output,
-                options,
-                *scale,
-                memory_bytes,
-                fallback.is_some(),
-            )
-            .map(|(_, workspace)| workspace)
-            .map_err(io::Error::other)
+            prepare_texture::prepare_scaled_bounded(source, output, options, *scale, memory_bytes)
+                .map(|(_, workspace)| workspace)
+                .map_err(io::Error::other)
         }
         Recipe::Opus { bitrate } => {
             crate::prepare_audio::prepare(source, output, *bitrate, memory_bytes)
