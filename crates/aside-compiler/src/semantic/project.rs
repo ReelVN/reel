@@ -232,6 +232,7 @@ fn kind(k: K) -> Option<HirKind> {
         K::ClassDecl => H::Class,
         K::EnumDecl => H::Enum,
         K::EnumVariant => H::EnumVariant,
+        K::TypeAliasDecl => H::TypeAlias,
         K::UseDecl => H::Import,
         K::UsePath => H::ImportPath,
         K::UseGroup => H::ImportGroup,

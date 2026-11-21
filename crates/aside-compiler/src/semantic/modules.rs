@@ -181,6 +181,8 @@ pub enum Intrinsic {
     EnumType,
     /// A scalar tag or a known payload constructor within an enum namespace.
     EnumCase,
+    /// A source declaration that names an existing type without a value binding.
+    TypeAlias,
 }
 #[derive(Debug, Clone)]
 pub struct NamespaceRef {
@@ -431,6 +433,10 @@ impl std::fmt::Display for ResolveError {
 }
 impl std::error::Error for ResolveError {}
 pub trait ModuleResolver {
+    /// Expand a canonical source type alias referenced by an interface.
+    fn type_alias(&self, _canonical_name: &str) -> Option<TypeHint> {
+        None
+    }
     /// A declared source enum's structural value contract.
     fn enum_type(&self, _canonical_name: &str) -> Option<TypeHint> {
         None

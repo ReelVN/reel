@@ -74,6 +74,22 @@ pub(crate) enum FrameProduction {
     CandidateRetained,
 }
 
+/// The producer that selected the next host wake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WakeSource {
+    Ready,
+    Maintenance,
+    Save,
+    AssetRead,
+    Transition,
+    Dialogue,
+    Activity,
+    Media,
+    Localization,
+    UiAnimation,
+    Capture,
+}
+
 impl StoryRuntime {
     pub fn new(driver: AsideSessionUi) -> Self {
         Self {
@@ -257,72 +273,88 @@ impl StoryRuntime {
     // VM execution or projection sync afterwards), rather than in step(). Waiting
     // for a retained/accepted drawing must not keep an empty VM clock turn alive.
     fn host_work_pending(&self) -> bool {
-        self.driver().adapter().capture_results_pending()
-            || self.driver().adapter().asset_reads_need_work()
-            || self.driver().transitions_pending()
+        self.host_work_source().is_some()
     }
 
-    fn short_poll(&self) -> bool {
-        self.starting.is_some()
-            || self.retiring.is_some()
-            || self.capture.is_some()
-            || self.saves.as_ref().is_some_and(|s| s.busy())
-            || self.needs_work()
-            || self.host_work_pending()
-    }
-
-    fn media_interval(&self) -> Option<std::time::Duration> {
-        let media = self.driver().adapter().media_poll_after();
-        if self.driver().adapter().localization_pending() {
-            Some(media.map_or(std::time::Duration::from_millis(10), |t| {
-                t.min(std::time::Duration::from_millis(10))
-            }))
+    fn host_work_source(&self) -> Option<WakeSource> {
+        let driver = self.driver();
+        if driver.adapter().capture_results_pending() {
+            Some(WakeSource::Capture)
+        } else if driver.adapter().asset_reads_need_work() {
+            Some(WakeSource::AssetRead)
         } else {
-            media
+            driver
+                .transitions_pending()
+                .then_some(WakeSource::Transition)
         }
+    }
+
+    fn short_poll(&self) -> Option<WakeSource> {
+        if self.capture.is_some() {
+            Some(WakeSource::Capture)
+        } else if self.saves.as_ref().is_some_and(|s| s.busy()) {
+            Some(WakeSource::Save)
+        } else if self.starting.is_some() || self.retiring.is_some() || self.needs_work() {
+            Some(WakeSource::Maintenance)
+        } else {
+            self.host_work_source()
+        }
+    }
+
+    fn media_interval(&self) -> Option<(std::time::Duration, WakeSource)> {
+        let adapter = self.driver().adapter();
+        let media = adapter
+            .media_poll_after()
+            .map(|time| (time, WakeSource::Media));
+        let locale = adapter.localization_pending().then_some((
+            std::time::Duration::from_millis(10),
+            WakeSource::Localization,
+        ));
+        media
+            .into_iter()
+            .chain(locale)
+            .min_by_key(|(time, _)| *time)
     }
 
     fn time_interval(&self) -> std::time::Duration {
-        let reveal = self
-            .driver()
-            .ui()
-            .dialogue_interval(self.driver().adapter().game_settings().text_speed);
-        if let Some(interval) = self.driver().activities_poll_after() {
-            if self.driver().ui().dialogue_needs_time() {
-                reveal.min(interval)
-            } else {
-                interval
-            }
-        } else {
-            reveal
-        }
+        self.frame_time_interval(FrameProduction::Ready)
+            .map_or(std::time::Duration::MAX, |(time, _)| time)
     }
 
-    fn frame_time_interval(&self, production: FrameProduction) -> Option<std::time::Duration> {
-        if production == FrameProduction::Ready {
-            return Some(self.time_interval());
-        }
-        let endpoint = self.driver().activities_deadline_after();
-        if self.driver().ui().dialogue_needs_time() {
-            let reveal = self
-                .driver()
-                .ui()
-                .dialogue_interval(self.driver().adapter().game_settings().text_speed);
-            Some(endpoint.map_or(reveal, |endpoint| endpoint.min(reveal)))
+    fn frame_time_interval(
+        &self,
+        production: FrameProduction,
+    ) -> Option<(std::time::Duration, WakeSource)> {
+        let driver = self.driver();
+        let activity = if production == FrameProduction::Ready {
+            driver.activities_poll_after()
         } else {
-            endpoint
-        }
+            driver.activities_deadline_after()
+        };
+        let dialogue = (production == FrameProduction::Ready || driver.ui().dialogue_needs_time())
+            .then(|| {
+                (
+                    driver
+                        .ui()
+                        .dialogue_interval(driver.adapter().game_settings().text_speed),
+                    WakeSource::Dialogue,
+                )
+            });
+        dialogue
+            .into_iter()
+            .chain(activity.map(|time| (time, WakeSource::Activity)))
+            .min_by_key(|(time, _)| *time)
     }
 
     /// Remaining delay at the latest story-time sample. Hosts should schedule
     /// [`Self::wake_deadline`] so execution and recording time do not rearm timers.
     pub fn tick_interval(&self) -> std::time::Duration {
-        if self.short_poll() {
+        if self.short_poll().is_some() {
             return std::time::Duration::from_millis(1);
         }
         let interval = self.time_interval();
         self.media_interval()
-            .map_or(interval, |media| media.min(interval))
+            .map_or(interval, |(media, _)| media.min(interval))
     }
 
     /// Next absolute host-clock wake, or `None` while idle or suspended.
@@ -334,6 +366,7 @@ impl StoryRuntime {
         now: reel_core::clock::MonoTime,
     ) -> Option<reel_core::clock::MonoTime> {
         self.frame_wake_deadline(now, FrameProduction::Ready)
+            .map(|(deadline, _)| deadline)
     }
 
     /// Share the story's next continuous animation sample with native widgets.
@@ -358,7 +391,7 @@ impl StoryRuntime {
         &self,
         now: reel_core::clock::MonoTime,
         production: FrameProduction,
-    ) -> Option<reel_core::clock::MonoTime> {
+    ) -> Option<(reel_core::clock::MonoTime, WakeSource)> {
         use reel_core::clock::MonoTime;
         let after = |base: u64, interval: std::time::Duration| {
             base.saturating_add(u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX))
@@ -372,7 +405,7 @@ impl StoryRuntime {
             && let (Some(restore), Some(candidate)) = (&saves.restore, &saves.candidate)
             && restore.ready(candidate.driver.adapter())
         {
-            return Some(now);
+            return Some((now, WakeSource::Ready));
         }
         if self.starting.is_none()
             && self.capture.is_none()
@@ -381,19 +414,25 @@ impl StoryRuntime {
             && !self.driver().cleanup_pending()
             && (self.runnable || self.collecting || self.driver().activities_pending())
         {
-            return Some(now);
+            return Some((now, WakeSource::Ready));
         }
-        if self.short_poll() {
-            return Some(MonoTime(after(now.0, std::time::Duration::from_millis(1))));
+        if let Some(source) = self.short_poll() {
+            return Some((
+                MonoTime(after(now.0, std::time::Duration::from_millis(1))),
+                source,
+            ));
         }
         let story = self
             .frame_time_interval(production)
-            .map(|interval| self.sampled_deadline(interval).0);
-        let deadline = story
+            .map(|(interval, source)| (self.sampled_deadline(interval).0, source));
+        let (deadline, source) = story
             .into_iter()
-            .chain(self.media_interval().map(|interval| after(now.0, interval)))
-            .min()?;
-        Some(MonoTime(deadline.max(now.0)))
+            .chain(
+                self.media_interval()
+                    .map(|(interval, source)| (after(now.0, interval), source)),
+            )
+            .min_by_key(|(time, _)| *time)?;
+        Some((MonoTime(deadline.max(now.0)), source))
     }
 
     /// Resume ready callbacks and completed waits after host input or a resource
@@ -540,7 +579,7 @@ impl StoryRuntime {
                 self.driver().continuous_time_pending() || self.driver().ui().dialogue_needs_time();
             let due = self
                 .frame_time_interval(production)
-                .is_some_and(|interval| {
+                .is_some_and(|(interval, _)| {
                     self.logical_time_at(sample)
                         >= self
                             .logical_ns

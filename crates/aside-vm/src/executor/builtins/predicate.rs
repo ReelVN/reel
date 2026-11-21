@@ -1,4 +1,4 @@
-//! Ordered predicate scans borrow the source and retain the active item across slices.
+//! Ordered callback scans borrow the source, rooting the active item and private output.
 use super::*;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -9,6 +9,18 @@ pub(in crate::executor) struct PredicateWork {
     version: u64,
     index: u32,
     waiting: bool,
+}
+
+impl PredicateWork {
+    pub(super) fn argument_slot(self) -> u32 {
+        // Collectors keep the output in slot 2. The return replaces the item
+        // in slot 3, so filter reads the original from the unchanged source.
+        if matches!(self.call.method, Builtin::Map | Builtin::Filter) {
+            3
+        } else {
+            2
+        }
+    }
 }
 
 impl Vm {
@@ -23,6 +35,13 @@ impl Vm {
             .map_err(|_| FaultKind::Type)?;
         let receiver = self.value(s.env, 1).map_err(vm_fault)?;
         let info = self.heap.info(receiver).map_err(heap_fault)?;
+        if matches!(call.method, Builtin::Map | Builtin::Filter) {
+            if s.effects.0 & Effects::ALLOCATE == 0 {
+                return Err(FaultKind::Effect);
+            }
+            let output = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+            self.put(s.env, 2, output).map_err(vm_fault)?;
+        }
         s.phase = ScriptPhase::Predicate(PredicateWork {
             call,
             function,
@@ -44,7 +63,11 @@ impl Vm {
         let changed = self.heap.info(receiver)?.content_version != work.version;
         if !changed && !work.waiting && work.index < work.len {
             let callback = self.builtin_argument(s, work.call, 0)?;
-            self.put(s.env, 2, self.heap.sequence_get(receiver, work.index)?)?;
+            self.put(
+                s.env,
+                work.argument_slot(),
+                self.heap.sequence_get(receiver, work.index)?,
+            )?;
             work.waiting = true;
             return self.push_builtin_callback(
                 s,
@@ -55,38 +78,72 @@ impl Vm {
                 meter,
             );
         }
-        if !meter.take(0, 3, 0) {
+        let method = work.call.method;
+        let returned = if !changed && work.waiting {
+            self.value(s.env, 3)?
+        } else {
+            Value::NULL
+        };
+        let accepted = returned.as_bool();
+        let append = !changed
+            && work.waiting
+            && (method == Builtin::Map || (method == Builtin::Filter && accepted == Some(true)));
+        let (work_units, extra) = if append {
+            (6, Values::growth_bytes(work.call.index.into(), 1))
+        } else {
+            (3, 0)
+        };
+        if !meter.take(0, work_units, extra) {
             return Ok(false);
         }
-        if changed {
-            self.collection_fault(s, FaultKind::ConcurrentModification)?;
-        } else if work.waiting {
-            let result = self.value(s.env, 3)?.as_bool();
-            self.clear(s.env, 3)?;
-            match result {
-                Some(true) => {
-                    let result = if work.call.method == Builtin::Any {
-                        Value::bool(true)
-                    } else {
-                        self.value(s.env, 2)?
-                    };
-                    self.builtin_finish(s, work.call, Ok(result))?;
+        self.clear(s.env, 3)?;
+        let result = if changed {
+            Some(Err(FaultKind::ConcurrentModification))
+        } else if !work.waiting {
+            Some(Ok(match method {
+                Builtin::Any => Value::bool(false),
+                Builtin::All => Value::bool(true),
+                Builtin::Count => Value::int(work.call.index.into()),
+                Builtin::Map | Builtin::Filter => self.value(s.env, 2)?,
+                _ => Value::NULL,
+            }))
+        } else if append {
+            let value = if method == Builtin::Map {
+                returned
+            } else {
+                self.heap.sequence_get(receiver, work.index)?
+            };
+            let output = self.value(s.env, 2)?;
+            match self.heap.array_push(output, value) {
+                Ok(()) => {
+                    work.call.index += 1;
+                    None
                 }
-                Some(false) => {
-                    self.clear(s.env, 2)?;
-                    work.index += 1;
-                    work.waiting = false;
-                    s.phase = ScriptPhase::Predicate(work);
-                }
-                None => self.collection_fault(s, FaultKind::Type)?,
+                Err(error) => Some(Err(heap_fault(error))),
             }
         } else {
-            let result = if work.call.method == Builtin::Any {
-                Value::bool(false)
-            } else {
-                Value::NULL
-            };
-            self.builtin_finish(s, work.call, Ok(result))?;
+            match (method, accepted) {
+                (_, None) => Some(Err(FaultKind::Type)),
+                (Builtin::Any, Some(true)) => Some(Ok(Value::bool(true))),
+                (Builtin::All, Some(false)) => Some(Ok(Value::bool(false))),
+                (Builtin::FirstWhere, Some(true)) => Some(Ok(self.value(s.env, 2)?)),
+                (Builtin::IndexWhere, Some(true)) => Some(Ok(Value::int(work.index.into()))),
+                (Builtin::Count, Some(true)) => {
+                    work.call.index += 1;
+                    None
+                }
+                _ => None,
+            }
+        };
+        if let Some(result) = result {
+            self.builtin_finish(s, work.call, result)?;
+        } else {
+            if work.argument_slot() == 2 {
+                self.clear(s.env, 2)?;
+            }
+            work.index += 1;
+            work.waiting = false;
+            s.phase = ScriptPhase::Predicate(work);
         }
         Ok(true)
     }

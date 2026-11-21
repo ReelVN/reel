@@ -1,5 +1,6 @@
 use super::*;
 mod arguments;
+mod effects;
 mod enumerations;
 mod refinement;
 mod results;
@@ -103,6 +104,8 @@ struct CallSite {
     effect: CallEffect,
     no_wait: bool,
     derived: bool,
+    derived_forbidden: bool,
+    conditional: bool,
     named_callee: Option<NameId>,
 }
 #[derive(Clone)]
@@ -180,6 +183,8 @@ impl std::ops::Deref for ExternalDescriptor {
         &self.symbol
     }
 }
+mod type_aliases;
+
 struct Binder<'a> {
     out: AnalyzedModule,
     options: &'a AnalysisOptions,
@@ -216,6 +221,10 @@ struct Binder<'a> {
     prepared_classes: HashSet<NodeId>,
     enum_types: HashMap<NameId, TypeId>,
     resolving_enums: HashSet<NameId>,
+    type_aliases: HashMap<SymbolId, type_aliases::AliasState>,
+    external_aliases: HashMap<String, Option<TypeId>>,
+    aliases_ready: bool,
+    alias_depth: usize,
     class_bases: HashMap<NodeId, NodeId>,
     derived_functions: HashSet<NodeId>,
     fresh: HashSet<SymbolId>,
@@ -229,7 +238,7 @@ pub(super) fn analyze(
     resolver: &mut dyn ModuleResolver,
 ) -> Analysis {
     let mut result = analyze_editor(hir, options, resolver);
-    if result.diagnostics.is_empty() && result.module.as_ref().is_some_and(super::has_resume_flows)
+    if result.diagnostics.is_empty() && result.module.as_ref().is_some_and(super::needs_source_types)
     {
         super::infer_source_types(&mut result, options, resolver);
     }
@@ -331,6 +340,7 @@ pub(super) fn analyze_editor(
             stats: AnalysisStats::default(),
             external: Vec::new(),
             source_types: SourceTypes::default(),
+            inferred_awaits: Vec::new(),
         },
         options,
         resolver,
@@ -366,6 +376,10 @@ pub(super) fn analyze_editor(
         prepared_classes: HashSet::new(),
         enum_types: HashMap::new(),
         resolving_enums: HashSet::new(),
+        type_aliases: HashMap::new(),
+        external_aliases: HashMap::new(),
+        aliases_ready: false,
+        alias_depth: 0,
         class_bases: HashMap::new(),
         derived_functions: HashSet::new(),
         fresh: HashSet::new(),
@@ -572,16 +586,6 @@ impl Binder<'_> {
             .insert_unique(hash, id, |id| intern_hash(&self.out.types[id.0 as usize]));
         id
     }
-    fn external_type(&mut self, symbol: &ExternalSymbol) -> TypeId {
-        if matches!(symbol.ty, TypeHint::Named(_))
-            && let Some(reference) = &symbol.reference
-            && let Some(export) = &reference.export
-        {
-            let name = self.intern_name(&format!("{}::{export}", reference.module));
-            return self.intern_type(Type::Named(name));
-        }
-        self.hint(&symbol.ty)
-    }
     fn hint(&mut self, t: &TypeHint) -> TypeId {
         match t {
             TypeHint::Any => ANY,
@@ -622,6 +626,9 @@ impl Binder<'_> {
                 self.intern_type(Type::Callable(v, r))
             }
             TypeHint::Named(s) => {
+                if let Some(ty) = self.named_alias_hint(s) {
+                    return ty;
+                }
                 let n = self.intern_name(s);
                 if let Some(ty) = self.enum_types.get(&n) {
                     return *ty;
@@ -783,13 +790,14 @@ impl Binder<'_> {
         let d = self.unwrap(n);
         if matches!(
             self.kind(d),
-            HirKind::Function | HirKind::Let | HirKind::Class | HirKind::Enum
+            HirKind::Function | HirKind::Let | HirKind::Class | HirKind::Enum | HirKind::TypeAlias
         ) && !self.budget(d)
         {
             return;
         }
         match self.kind(d) {
             HirKind::Enum => self.declare_enum(n, d, ctx),
+            HirKind::TypeAlias => self.declare_type_alias(n, d, ctx),
             HirKind::Function => {
                 let receiver = Receiver::None;
                 let f = self.make_function(d, ctx, receiver);
@@ -896,7 +904,9 @@ impl Binder<'_> {
         // Class shape is needed when a forward function body uses an instance.
         // Method and field initializer bodies are still analyzed at the declaration.
         if self.scope == self.root_scope {
+            self.aliases_ready = true;
             self.prepare_enums(&children, ctx);
+            self.prepare_type_aliases(&children);
         }
         for &child in &children {
             let declaration = self.unwrap(child);
@@ -1198,7 +1208,7 @@ impl Binder<'_> {
                 self.error(
                     D::PatternBindings,
                     self.span(n),
-                    "enum case patterns belong in match arms",
+                    "enum case patterns belong in match arms or if let conditions",
                 );
             }
             self.enum_case_type(n, ty, variant, payload, ctx);

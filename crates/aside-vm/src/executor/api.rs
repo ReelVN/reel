@@ -471,6 +471,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::Throw,
     Opcode::MatchFail,
     Opcode::PatternRequire,
+    Opcode::PatternField,
     Opcode::Rethrow,
     Opcode::Leave,
     Opcode::EndFinally,

@@ -241,59 +241,7 @@ impl FunctionBuilder<'_, '_> {
                 unreachable!("analyzed match arm");
             };
             let next = self.block()?;
-            self.enter_scope(arm)?;
-            let scope = self.l.m.facts()[arm.0 as usize].scope.expect("match scope");
-            let symbols = &self.l.m.scopes()[scope.0 as usize].symbols;
-            self.l.b.work(symbols.len() as u64)?;
-            let structured = projects_match_fields(self.l.m.hir(), pattern);
-            let mut projection = MatchProjection::default();
-            let mismatch = if structured {
-                for &symbol in symbols {
-                    let slot = self.temp()?;
-                    self.l.b.push(&mut projection.bindings, (symbol, slot))?;
-                }
-                self.block()?
-            } else {
-                next
-            };
-            self.value_pattern(
-                pattern,
-                source,
-                mismatch,
-                depth,
-                use_text_checks,
-                &mut projection,
-            )?;
-            if structured {
-                // Every successful alternative supplies the same symbols. Commit
-                // only once and release projected values on both pattern edges.
-                for &(symbol, slot) in &projection.bindings {
-                    self.write(symbol, slot, true, pattern)?;
-                    self.release(slot)?;
-                }
-                for &slot in &projection.scratch {
-                    self.release(slot)?;
-                }
-                let matched = self.block()?;
-                self.terminate(Terminator::Jump(matched), arm)?;
-                self.start(mismatch)?;
-                for slot in projection
-                    .bindings
-                    .iter()
-                    .map(|&(_, slot)| slot)
-                    .chain(projection.scratch.iter().copied())
-                {
-                    self.op(bc::Opcode::Clear, slot.0, 0, 0, pattern)?;
-                }
-                self.terminate(Terminator::Jump(next), arm)?;
-                self.start(matched)?;
-                self.l.b.release(projection.bindings);
-                self.l.b.release(projection.scratch);
-            } else {
-                for &symbol in symbols {
-                    self.write(symbol, source, true, pattern)?;
-                }
-            }
+            self.bind_match_pattern(arm, pattern, source, next, depth, use_text_checks)?;
             if let Some(guard) = guard {
                 let no_wait = std::mem::replace(&mut self.no_wait, true);
                 let value = self.value(guard, depth)?;
@@ -333,6 +281,73 @@ impl FunctionBuilder<'_, '_> {
             self.release(out)?;
             Ok(None)
         }
+    }
+
+    pub(super) fn bind_match_pattern(
+        &mut self,
+        scope_node: h::NodeId,
+        pattern: h::NodeId,
+        source: bc::Reg,
+        failed: BlockId,
+        depth: usize,
+        use_text_checks: bool,
+    ) -> Result<(), Box<Error>> {
+        let scope = self.l.m.facts()[scope_node.0 as usize]
+            .scope
+            .expect("pattern scope");
+        let symbols = &self.l.m.scopes()[scope.0 as usize].symbols;
+        self.l.b.work(symbols.len() as u64)?;
+        let structured = projects_match_fields(self.l.m.hir(), pattern);
+        let mut projection = MatchProjection::default();
+        let mismatch = if structured {
+            for &symbol in symbols {
+                let slot = self.temp()?;
+                self.l.b.push(&mut projection.bindings, (symbol, slot))?;
+            }
+            self.block()?
+        } else {
+            failed
+        };
+        self.value_pattern(
+            pattern,
+            source,
+            mismatch,
+            depth,
+            use_text_checks,
+            &mut projection,
+        )?;
+        self.enter_scope(scope_node)?;
+        if structured {
+            // Every successful alternative supplies the same symbols. Commit
+            // once and release projected values on both pattern edges.
+            for &(symbol, slot) in &projection.bindings {
+                self.write(symbol, slot, true, pattern)?;
+                self.release(slot)?;
+            }
+            for &slot in &projection.scratch {
+                self.release(slot)?;
+            }
+            let matched = self.block()?;
+            self.terminate(Terminator::Jump(matched), scope_node)?;
+            self.start(mismatch)?;
+            for slot in projection
+                .bindings
+                .iter()
+                .map(|&(_, slot)| slot)
+                .chain(projection.scratch.iter().copied())
+            {
+                self.op(bc::Opcode::Clear, slot.0, 0, 0, pattern)?;
+            }
+            self.terminate(Terminator::Jump(failed), scope_node)?;
+            self.start(matched)?;
+            self.l.b.release(projection.bindings);
+            self.l.b.release(projection.scratch);
+        } else {
+            for &symbol in symbols {
+                self.write(symbol, source, true, pattern)?;
+            }
+        }
+        Ok(())
     }
 
     fn pattern_branch(
@@ -443,7 +458,7 @@ impl FunctionBuilder<'_, '_> {
                 if let Some(payload) = payload {
                     let part = self.match_part(node, value, bc::Const::Int(1), projection)?;
                     projection.active += 1;
-                    self.match_fields(payload, part, failed, depth, projection)?;
+                    self.match_fields(payload, part, failed, depth, projection, false)?;
                     projection.active -= 1;
                 }
                 Ok(())
@@ -465,15 +480,26 @@ impl FunctionBuilder<'_, '_> {
                 ) =>
             {
                 self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
-                let shape = if self.l.m.hir().node(node).kind == H::TuplePattern {
+                let tuple = self.l.m.hir().node(node).kind == H::TuplePattern;
+                let open = !tuple
+                    && self
+                        .l
+                        .m
+                        .hir()
+                        .children(node)
+                        .last()
+                        .is_some_and(|child| self.l.m.hir().node(child).kind == H::RestPattern);
+                let shape = if tuple {
                     self.tuple_pattern_type(self.l.m.hir().children(node).count())?
+                } else if open {
+                    self.l.builtin(bc::BuiltinType::Table)?
                 } else {
                     self.record_pattern_type(node)?
                 };
                 let condition = self.temp()?;
                 self.op(bc::Opcode::Is, condition.0, value.0, shape.0, node)?;
                 self.pattern_branch(node, condition, failed)?;
-                self.match_fields(node, value, failed, depth, projection)
+                self.match_fields(node, value, failed, depth, projection, open)
             }
             _ => Err(self.l.b.error(
                 ErrorKind::Unsupported,
@@ -489,21 +515,41 @@ impl FunctionBuilder<'_, '_> {
         failed: BlockId,
         depth: usize,
         projection: &mut MatchProjection,
+        open: bool,
     ) -> Result<(), Box<Error>> {
         self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
         for (index, child) in self.l.m.hir().children(node).enumerate() {
+            if self.l.m.hir().node(child).kind == H::RestPattern {
+                break;
+            }
             let (pattern, field) = match self.l.m.hir().node(child).form {
                 Form::PatternField { key, pattern, .. } => (pattern.unwrap_or(child), Some(key)),
                 _ => (child, None),
             };
-            if matches!(self.l.m.hir().node(pattern).form, Form::Wildcard) {
+            let ignore = matches!(self.l.m.hir().node(pattern).form, Form::Wildcard);
+            if ignore && !open {
                 continue;
             }
             let key = match field {
                 Some(field) => bc::Const::Utf8(self.l.b.string(self.l.m.hir().text(field.span))?),
                 None => bc::Const::Int(index as i64),
             };
-            let part = self.match_part(child, value, key, projection)?;
+            let part = if open {
+                let found = self.constant(key, child)?;
+                let part = if ignore {
+                    found
+                } else {
+                    self.match_slot(projection)?
+                };
+                self.op(bc::Opcode::PatternField, found.0, value.0, part.0, child)?;
+                self.pattern_branch(child, found, failed)?;
+                if ignore {
+                    continue;
+                }
+                part
+            } else {
+                self.match_part(child, value, key, projection)?
+            };
             projection.active += 1;
             self.value_pattern(pattern, part, failed, depth, false, projection)?;
             projection.active -= 1;
@@ -518,15 +564,19 @@ impl FunctionBuilder<'_, '_> {
         key: bc::Const,
         projection: &mut MatchProjection,
     ) -> Result<bc::Reg, Box<Error>> {
-        if projection.active == projection.scratch.len() {
-            let slot = self.temp()?;
-            self.l.b.push(&mut projection.scratch, slot)?;
-        }
-        let part = projection.scratch[projection.active];
+        let part = self.match_slot(projection)?;
         let key = self.constant(key, node)?;
         self.op(bc::Opcode::IndexGet, part.0, value.0, key.0, node)?;
         self.release(key)?;
         Ok(part)
+    }
+
+    fn match_slot(&mut self, projection: &mut MatchProjection) -> Result<bc::Reg, Box<Error>> {
+        if projection.active == projection.scratch.len() {
+            let slot = self.temp()?;
+            self.l.b.push(&mut projection.scratch, slot)?;
+        }
+        Ok(projection.scratch[projection.active])
     }
 
     fn short_string_pattern(

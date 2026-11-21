@@ -773,6 +773,7 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
             Form::Name { name } | Form::Parameter { name, .. } | Form::Catch { name, .. } => {
                 name.span == range
             }
+            Form::TypeAlias { name, .. } => name.span == range,
             Form::Function { name, .. } | Form::Class { name, .. } => {
                 name.is_some_and(|name| name.span == range)
             }
@@ -834,7 +835,15 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
                 })
                 .map(|(index, _)| SymbolId(index as u32))
         });
-        if let Some(external) = external(module, Some(node), symbol) {
+        if let Some(external) = external(module, Some(node), symbol)
+            && !(external.intrinsic == Some(Intrinsic::TypeAlias)
+                && symbol.is_some_and(|id| {
+                    !matches!(
+                        module.symbols()[id.0 as usize].kind,
+                        SymbolKind::Import | SymbolKind::Host
+                    )
+                }))
+        {
             return Some((Target::External(external), range));
         }
         if module.source_types().definition(node).is_some() {
@@ -1011,6 +1020,11 @@ fn completion(symbol: &ExternalSymbol, snapshot: &Snapshot, host: &HostIndex) ->
 fn local_label(module: EditorModule<'_>, source: &Source, id: SymbolId) -> String {
     let symbol = &module.symbols()[id.0 as usize];
     let name = module.hir().name(symbol.name);
+    if external(module, None, Some(id))
+        .is_some_and(|binding| binding.intrinsic == Some(Intrinsic::TypeAlias))
+    {
+        return format!("type {name} = {}", type_label(module, symbol.ty));
+    }
     if symbol.kind == SymbolKind::Class {
         let declaration = if matches!(module.types()[symbol.ty.0 as usize], Type::Enum(..)) {
             "enum"
@@ -1094,6 +1108,9 @@ fn external_label(
     {
         return local_label(module, source, id);
     }
+    if symbol.intrinsic == Some(Intrinsic::TypeAlias) {
+        return format!("type {name}");
+    }
     if symbol.class.is_some() || symbol.type_only {
         return format!("class {}", symbol.name);
     }
@@ -1112,12 +1129,17 @@ fn source_completion(
     if let Some(external) = external(module, None, Some(id)) {
         let mut item = completion(external, snapshot, host);
         item.label = name.into();
-        if !matches!(symbol.kind, SymbolKind::Import | SymbolKind::Host)
-            && external.intrinsic != Some(Intrinsic::EnumType)
-        {
+        let is_local = !matches!(symbol.kind, SymbolKind::Import | SymbolKind::Host);
+        if is_local && external.intrinsic != Some(Intrinsic::EnumType) {
             item.kind = Some(symbol_kind(symbol.kind));
         }
-        item.detail = Some(external_label(external, snapshot, host, name));
+        item.detail = Some(
+            if is_local && external.intrinsic == Some(Intrinsic::TypeAlias) {
+                local_label(module, source, id)
+            } else {
+                external_label(external, snapshot, host, name)
+            },
+        );
         return item;
     }
     CompletionItem {
@@ -1457,43 +1479,11 @@ fn import_context(source: &Source, offset: usize) -> Option<ImportCompletion> {
     }
     Some(ImportCompletion::Path(prefix))
 }
-fn type_completion_context(source: &Source, offset: usize) -> bool {
-    let Some(mut token) = completion_token(source, offset) else {
-        return false;
-    };
-    if token.parent_ancestors().any(|node| {
-        matches!(
-            node.kind(),
-            K::TypeName
-                | K::RecordFieldType
-                | K::TupleType
-                | K::UnionType
-                | K::FunctionType
-                | K::GroupType
-        )
-    }) {
-        return true;
-    }
-    while token.kind().is_trivia() {
-        let Some(previous) = token.prev_token() else {
-            return false;
-        };
-        token = previous;
-    }
-    token.kind() == K::Arrow
-        || (token.kind() == K::Colon
-            && token.parent().is_some_and(|node| {
-                matches!(
-                    node.kind(),
-                    K::LetDecl | K::Param | K::ClassDecl | K::RecordFieldType
-                )
-            }))
-}
-
 mod keywords;
 use keywords::keyword_completions;
 
 mod completion;
+use completion::type_completion_context;
 mod enumerations;
 mod navigation;
 

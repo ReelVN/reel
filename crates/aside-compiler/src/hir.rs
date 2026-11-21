@@ -24,6 +24,7 @@ pub enum HirKind {
     Class,
     Enum,
     EnumVariant,
+    TypeAlias,
     Import,
     ImportPath,
     ImportGroup,
@@ -427,6 +428,7 @@ pub struct AnalyzedModule {
     pub(crate) stats: AnalysisStats,
     pub(crate) external: Vec<ExternalBinding>,
     pub(crate) source_types: crate::semantic::SourceTypes,
+    pub(crate) inferred_awaits: Vec<NodeId>,
 }
 /// A local slot is stable within the fixed module content version, rather than
 /// a process pointer or a globally meaningful arena index.
@@ -726,6 +728,10 @@ pub enum Form {
         wildcard: bool,
     },
     TypeName,
+    TypeAlias {
+        name: HirToken,
+        target: NodeId,
+    },
     FunctionType {
         result: NodeId,
     },
@@ -797,6 +803,7 @@ pub enum Form {
         otherwise: Option<NodeId>,
     },
     For {
+        index: Option<NodeId>,
         pattern: NodeId,
         source: NodeId,
         body: NodeId,

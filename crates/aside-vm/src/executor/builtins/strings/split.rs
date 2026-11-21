@@ -1,4 +1,4 @@
-//! Streaming literal splitting over the VM's chunked UTF-8 storage.
+//! Streaming literal matching and splitting over the VM's chunked UTF-8 storage.
 use super::*;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -78,6 +78,67 @@ const PREFIX: u32 = 1;
 const FRAGMENT: u32 = 2;
 
 impl Vm {
+    pub(super) fn literal_prefix_step(
+        &mut self,
+        pattern: Value,
+        prefix: Value,
+        index: u32,
+        mut matched: u32,
+        meter: &mut Meter,
+    ) -> Result<Option<(u32, u32)>, FaultKind> {
+        if !meter.take(0, 4, Values::growth_bytes(index.into(), 1)) {
+            return Ok(None);
+        }
+        if index != 0 {
+            let byte = self.heap.byte_segment(pattern, index).map_err(heap_fault)?[0];
+            let candidate = self
+                .heap
+                .byte_segment(pattern, matched)
+                .map_err(heap_fault)?[0];
+            if byte == candidate {
+                matched += 1;
+            } else if matched != 0 {
+                // KMP shortens a partial match without restarting the scan.
+                return Ok(Some((index, self.literal_fallback(prefix, matched)?)));
+            }
+        }
+        self.heap
+            .array_push(prefix, Value::int(i64::from(matched)))
+            .map_err(heap_fault)?;
+        Ok(Some((index + 1, matched)))
+    }
+
+    pub(super) fn literal_scan_step(
+        &self,
+        source: Value,
+        pattern: Value,
+        prefix: impl FnOnce() -> Result<Value, FaultKind>,
+        offset: u32,
+        matched: u32,
+    ) -> Result<(u32, u32), FaultKind> {
+        let byte = self.heap.byte_segment(source, offset).map_err(heap_fault)?[0];
+        let candidate = self
+            .heap
+            .byte_segment(pattern, matched)
+            .map_err(heap_fault)?[0];
+        if byte == candidate {
+            Ok((offset + 1, matched + 1))
+        } else if matched != 0 {
+            Ok((offset, self.literal_fallback(prefix()?, matched)?))
+        } else {
+            Ok((offset + 1, 0))
+        }
+    }
+
+    fn literal_fallback(&self, prefix: Value, matched: u32) -> Result<u32, FaultKind> {
+        Ok(self
+            .heap
+            .sequence_get(prefix, matched - 1)
+            .map_err(heap_fault)?
+            .as_int()
+            .unwrap() as u32)
+    }
+
     pub(super) fn split_text_step(
         &mut self,
         s: &mut ScriptFrame,
@@ -92,56 +153,26 @@ impl Vm {
         let len = self.heap.info(source).map_err(heap_fault)?.len;
         let separator_len = self.heap.info(separator).map_err(heap_fault)?.len;
         let next = match state {
-            SplitWork::Prefix { index, mut matched } => {
+            SplitWork::Prefix { index, matched } => {
                 let prefix = self.heap.get_field(roots, PREFIX).map_err(heap_fault)?;
-                // KMP's prefix table prevents repeated partial matches from
-                // turning long, repetitive inputs into quadratic work.
-                let extra = Values::growth_bytes(index.into(), 1);
-                if !meter.take(0, 4, extra) {
+                let Some((index, matched)) =
+                    self.literal_prefix_step(separator, prefix, index, matched, meter)?
+                else {
                     return Ok(false);
-                }
-                if index != 0 {
-                    let byte = self
-                        .heap
-                        .byte_segment(separator, index)
-                        .map_err(heap_fault)?[0];
-                    let candidate = self
-                        .heap
-                        .byte_segment(separator, matched)
-                        .map_err(heap_fault)?[0];
-                    if byte == candidate {
-                        matched += 1;
-                    } else if matched != 0 {
-                        let matched = self
-                            .heap
-                            .sequence_get(prefix, matched - 1)
-                            .map_err(heap_fault)?
-                            .as_int()
-                            .unwrap() as u32;
-                        work.mode = TextMode::Split(SplitWork::Prefix { index, matched });
-                        s.phase = ScriptPhase::TextBuiltin(work);
-                        return Ok(true);
-                    }
-                }
-                self.heap
-                    .array_push(prefix, Value::int(i64::from(matched)))
-                    .map_err(heap_fault)?;
-                if index + 1 == separator_len {
+                };
+                if index == separator_len {
                     SplitWork::Scan {
                         offset: 0,
                         matched: 0,
                         begin: 0,
                     }
                 } else {
-                    SplitWork::Prefix {
-                        index: index + 1,
-                        matched,
-                    }
+                    SplitWork::Prefix { index, matched }
                 }
             }
             SplitWork::Scan {
-                mut offset,
-                mut matched,
+                offset,
+                matched,
                 begin,
             } => {
                 if !meter.take(0, 4, 0) {
@@ -157,25 +188,13 @@ impl Vm {
                         resume: Resume::Done,
                     }
                 } else {
-                    let byte = self.heap.byte_segment(source, offset).map_err(heap_fault)?[0];
-                    let candidate = self
-                        .heap
-                        .byte_segment(separator, matched)
-                        .map_err(heap_fault)?[0];
-                    if byte == candidate {
-                        matched += 1;
-                        offset += 1;
-                    } else if matched != 0 {
-                        let prefix = self.heap.get_field(roots, PREFIX).map_err(heap_fault)?;
-                        matched = self
-                            .heap
-                            .sequence_get(prefix, matched - 1)
-                            .map_err(heap_fault)?
-                            .as_int()
-                            .unwrap() as u32;
-                    } else {
-                        offset += 1;
-                    }
+                    let (offset, matched) = self.literal_scan_step(
+                        source,
+                        separator,
+                        || self.heap.get_field(roots, PREFIX).map_err(heap_fault),
+                        offset,
+                        matched,
+                    )?;
                     if matched == separator_len {
                         if !replace {
                             self.split_fragment(roots)?;

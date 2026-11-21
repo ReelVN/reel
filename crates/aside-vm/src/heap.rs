@@ -946,16 +946,25 @@ impl Heap {
         Ok(host.field(1)?.as_int().is_some_and(|flags| flags & 1 != 0))
     }
     pub fn retire_host(&mut self, host: Value) -> Result<(), HeapError> {
+        let key = self.key(host)?;
+        let slots = self.host_payload_len(host)? + 4;
         self.disconnect_reactive_source(host)?;
         self.disconnect_host_properties(host)?;
-        let slots = self.host_payload_len(host)? + 4;
-        self.host_retirement_revision = self.host_retirement_revision.wrapping_add(1);
+        let object = self.objects.get_mut(key).unwrap();
+        let Payload::Values(values) = &mut object.payload else {
+            unreachable!("validated host storage");
+        };
+        // Release the traced edges together. Slot 1 retains the host's flags.
         for index in 0..slots {
             if index != 1 {
-                self.set_field(host, index, Value::NULL)?;
+                values.set(index, Value::NULL);
             }
         }
-        Ok(())
+        object.content_version = object.content_version.wrapping_add(1);
+        self.changes.record(key, object.watched);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
+        self.host_retirement_revision = self.host_retirement_revision.wrapping_add(1);
+        self.invalidate_reactive(host, None)
     }
 
     /// Version of explicit host retirement, including hosts owned by other hosts.

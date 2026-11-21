@@ -846,6 +846,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("loop_end", Some(bc::Const::Null)),
                 parameter("paused", Some(bc::Const::Bool(false))),
                 parameter("rate", Some(bc::Const::Int(1))),
+                parameter("skip", Some(bc::Const::Utf8("keep".into()))),
             ],
             false,
         ),
@@ -911,7 +912,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             read_only_leaf: None,
             rest: None,
             symbol: format!("reel::audio::{name}"),
-            abi_version: 1,
+            abi_version: if name == "play" { 2 } else { 1 },
             parameters,
             result: if name == "position" {
                 BuiltinType::Float

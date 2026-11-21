@@ -10,6 +10,7 @@ mod link;
 mod patterns;
 mod project;
 mod source_types;
+mod type_aliases;
 mod types;
 pub use link::*;
 pub use source_types::{SourceDefinition, SourceMember, SourceShape, SourceType, SourceTypes};
@@ -195,11 +196,12 @@ pub(crate) fn editor_analysis(
     }
 }
 
-fn has_resume_flows(module: &AnalyzedModule) -> bool {
-    module
-        .facts()
-        .iter()
-        .any(|facts| facts.intrinsic == Some(Intrinsic::ResumeFlow))
+fn needs_source_types(module: &AnalyzedModule) -> bool {
+    !module.inferred_awaits.is_empty()
+        || module
+            .facts()
+            .iter()
+            .any(|facts| facts.intrinsic == Some(Intrinsic::ResumeFlow))
 }
 
 fn infer_source_types(
@@ -225,7 +227,17 @@ fn infer_source_types(
         },
     );
     let work = match result {
-        Ok(work) => work,
+        Ok(work) => {
+            let remaining = options
+                .limits
+                .max_diagnostics
+                .max(1)
+                .saturating_sub(analysis.diagnostics.len());
+            analysis
+                .diagnostics
+                .extend(inferred_await_diagnostics(module).take(remaining));
+            work
+        }
         Err(work) => {
             if work
                 > options
@@ -245,6 +257,33 @@ fn infer_source_types(
     };
     analysis.stats.work_units = analysis.stats.work_units.saturating_add(work);
     module.stats.work_units = analysis.stats.work_units;
+}
+
+fn inferred_await_diagnostics(module: &AnalyzedModule) -> impl Iterator<Item = Diagnostic> + '_ {
+    fn non_awaitable(ty: &TypeHint) -> bool {
+        match ty {
+            TypeHint::Union(cases) => !cases.is_empty() && cases.iter().all(non_awaitable),
+            TypeHint::Any
+            | TypeHint::Named(_)
+            | TypeHint::Future
+            | TypeHint::Closure
+            | TypeHint::Callable(..) => false,
+            _ => true,
+        }
+    }
+    module.inferred_awaits.iter().filter_map(|&node| {
+        let crate::hir::Form::Unary { operator, value } = module.hir.node(node).form else {
+            unreachable!("await candidate must be a prefix expression");
+        };
+        let result = module.source_types.value(value)?;
+        non_awaitable(&result.ty).then(|| {
+            Diagnostic::error(
+                crate::DiagnosticCode::TypeMismatch,
+                operator.span,
+                "await requires an Awaitable. Use an ordinary call result directly",
+            )
+        })
+    })
 }
 
 pub(crate) fn editor_interface(

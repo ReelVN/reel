@@ -254,6 +254,8 @@ tuple 适合固定形状的数据。`let` 和 `for` 支持固定长度解构，`
 
 对象也可按字段解构，例如 `let {value: item, index} = row;`。省略字段后的别名时，局部变量沿用字段名。
 
+多处注解共享同一类型时，在模块顶部写 `type Caption = {message: string, color: string};`，随后用 `Caption` 作注解。其他模块也需要这个名字时，声明为 `pub type` 并用 `use` 导入。
+
 ```aside
 let settings = {language: "zh-CN", volume: 0.8};
 for (key, value) in settings.entries() {
@@ -272,23 +274,27 @@ let caption = match mode {
 };
 ```
 
-菜单可以返回 `MenuResult.Back` 或 `MenuResult.Load(slot: 3)`。结果有几种明确选项时，用枚举给每种结果起个名字。有的数据跟着变体传回，例如这里的存档槽。编译器会检查 `match` 是否处理了所有变体。
+菜单可以返回 `MenuResult.Back` 或 `MenuResult.Load(slot: 3, preview: false)`。结果有几种明确选项时，用枚举给每种结果起个名字。有的数据跟着变体传回，例如这里的存档槽。编译器会检查 `match` 是否处理了所有变体。在记录模式末尾加 `..` 可以略过其他字段。只处理一个变体时用 `if let`。
 
 ```aside
 enum MenuResult {
     Back,
-    Load(slot: int),
+    Load(slot: int, preview: bool),
 }
 
 fn selected(result: MenuResult) -> string {
     match result {
         MenuResult.Back => "返回",
-        MenuResult.Load { slot } => f"读取第 {slot} 槽",
+        MenuResult.Load { slot, .. } => f"读取第 {slot} 槽",
     }
+}
+
+fn slot_to_load(result: MenuResult) -> int | null {
+    if let MenuResult.Load { slot, .. } = result { slot } else { null }
 }
 ```
 
-容器的方法直接表达插入、删除、切片和反转。表的 `entries()` 返回 `(key, value)` 对。完整示例见 [collections](../../examples/collections/src/main.aside) 和 [collection_editing](../../examples/collection_editing/src/main.aside)。
+容器的方法直接表达插入、删除、切片和反转。用 `filter` 选出需要的项，用 `map` 生成对应的显示文本。需要序号时，`for index, item in items` 同时取从零开始的索引和当前项。表的 `entries()` 返回 `(key, value)` 对。完整示例见 [collections](../../examples/collections/src/main.aside) 和 [collection_editing](../../examples/collection_editing/src/main.aside)。
 
 ```aside
 let rows = ["序章", "第一章"];
@@ -301,6 +307,13 @@ let names = theme.keys();
 let caption = " · ".join(rows);
 let opening = caption.slice_scalars(0..2);
 let has_opening = caption.starts_with(prefix: "第二章");
+let divider = caption.find(" · ");
+let chapters = rows.filter(|row| row != "序章");
+let labels = chapters.map(|row| f"阅读 {row}");
+let numbered = [];
+for index, label in labels {
+    numbered.append(f"{index + 1}. {label}");
+}
 ```
 
 二进制数据放在 `resources/` 中，用 `assets.read` 按需载入。读取结果是不可变 `Bytes`，支持长度和字节索引。
@@ -1621,6 +1634,8 @@ column(gap: 6) {
 ## 14 音频与视频
 
 `audio.play` 返回可控制、可等待的活动。分组音量用于音乐、语音、音效和 UI；`owner` 把播放绑定到场景生命周期。短音效和长音轨由宿主选择合适的加载方式。
+
+先用 `wait: false` 显示对白，再用 `audio.play(source, group: "voice", skip: "omit")` 启动可跳过的语音，最后等待对白。快进经过允许跳过的对白时，语音直接返回已结束的活动，`await` 得到 `"Stopped"`。先前播放的语音可用 `audio.stop` 停止。手动重播继续用默认的 `skip: "keep"`。
 
 ```aside
 fn main() {

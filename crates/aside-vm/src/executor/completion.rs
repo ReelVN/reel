@@ -583,6 +583,9 @@ impl Vm {
                 };
                 if let Some(info) = error {
                     self.abort_class(&parent)?;
+                    if matches!(ret, ReturnTo::BuiltinCallback { .. }) {
+                        self.clear(parent.env, 3)?;
+                    }
                     self.put(parent.env, 1, value)?;
                     if let Some(c) = cause {
                         self.put(parent.env, 2, c)?;

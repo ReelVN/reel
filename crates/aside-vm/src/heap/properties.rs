@@ -602,8 +602,19 @@ impl Heap {
 
     pub(super) fn disconnect_host_properties(&mut self, host: Value) -> Result<(), HeapError> {
         let count = self.object(self.key(host)?)?.observable_fields;
+        if count == 0 {
+            return Ok(());
+        }
+        self.property_fields(host)?;
+        let metadata = self.property_metadata_array(host)?;
+        if metadata.same_bits(Value::NULL) {
+            return Ok(());
+        }
+        let count = count.min(self.sequence_len(metadata)?);
         for field in 0..count {
-            self.disconnect_property(PropertyId { host, field })?;
+            if !self.sequence_get(metadata, field)?.same_bits(Value::NULL) {
+                self.disconnect_property(PropertyId { host, field })?;
+            }
         }
         Ok(())
     }

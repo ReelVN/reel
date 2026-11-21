@@ -594,12 +594,13 @@ impl State {
     pub(crate) fn is_diagnostic(&self) -> bool {
         self.player.is_diagnostic()
     }
-    pub(crate) fn story_deadline(&self) -> Option<Instant> {
+    pub(crate) fn story_deadline(&self) -> Option<(Instant, crate::story_runtime::WakeSource)> {
         let now = self.host.monotonic_now();
-        let deadline = self.player.story_deadline(now)?;
-        Instant::now().checked_add(std::time::Duration::from_nanos(
+        let (deadline, source) = self.player.story_wake(now)?;
+        let at = Instant::now().checked_add(std::time::Duration::from_nanos(
             deadline.0.saturating_sub(now.0),
-        ))
+        ))?;
+        Some((at, source))
     }
     pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
         self.player.tick(&mut self.host)

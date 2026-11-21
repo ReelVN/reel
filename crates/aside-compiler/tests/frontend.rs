@@ -294,6 +294,25 @@ fn run() {
     rejects("try {}", E::Module, D::ExpectedToken);
 }
 #[test]
+fn indexed_for_keeps_index_and_item_patterns_distinct() {
+    let source = "for index,(left,right) in pairs { use_pair(index,left,right); }";
+    let parsed = ok(source, E::Module);
+    let statement = node(&parsed, K::ForStmt);
+    let mut parts = statement.children();
+    assert_eq!(parts.next().unwrap().kind(), K::NamePattern);
+    assert_eq!(parts.next().unwrap().kind(), K::TuplePattern);
+    let formatted = aside_compiler::format(source).unwrap();
+    assert!(formatted.starts_with("for index, (left, right) in pairs {"));
+    assert_eq!(aside_compiler::format(&formatted).unwrap(), formatted);
+
+    ok("for _, value in values {}", E::Module);
+    rejects(
+        "for (left, right), value in values {}",
+        E::Module,
+        D::ExpectedPattern,
+    );
+}
+#[test]
 fn all_priority_pairs_are_exercised_with_tree_nesting() {
     let groups = ["??", "||", "&&", "==", "<", "|", "^", "&", "<<", "+", "*"];
     for pair in groups.windows(2) {

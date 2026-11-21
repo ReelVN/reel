@@ -4,6 +4,20 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+## 0.4.3 — 2026-11-22
+
+- Name types with module-level `type` aliases. Imports and editor navigation use the same declarations.
+- Add literal substring `contains` and `find` on strings. `find` returns a zero-based Unicode scalar index that can be used with `slice_scalars`.
+- Add `all`, `index_where`, `count`, `map`, and `filter` for arrays and tuples. Callbacks run in collection order under the VM work budget.
+- Add `for index, item in items` to bind a zero-based index alongside each item without copying the sequence.
+- Match selected record fields with `..` and bind the result of a successful pattern with `if let`.
+- Diagnose forbidden effects proved through branches and named helpers. Report `await` on a call result inferred to be non-awaitable.
+- Let voice playback use `skip: "omit"` to avoid reading or decoding audio during fast-forward. Re-export projects that use `audio.play` for its updated native signature.
+- Accept dynamic shader `clamp` bounds with explicit min/max semantics on desktop and Vita.
+- Shape ordinary label text from its existing storage. Ruby layouts keep their position mapping and release their temporary text buffer after shaping.
+- Batch subscription and reference cleanup during stage retirement, skipping unbound properties and interaction updates to retired nodes.
+- Separate geometry transfers from timed geometry passes in performance reports. Desktop traces identify the source of story wakes and time virtual-list preparation and node retirement.
+
 ## 0.4.2 — 2026-11-22
 
 - Diagnose forbidden task starts and derived host calls through named helpers that forward those calls. Editors can display the helper call and the native operation together.

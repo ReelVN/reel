@@ -244,7 +244,9 @@ pub(super) fn preflight(
     b.work(m.hir().nodes.len() as u64)?;
     for (i, node) in m.hir().nodes.iter().enumerate() {
         b.span = node.span;
-        if matches!(node.kind, H::ArrayPattern | H::RestPattern) {
+        if node.kind == H::ArrayPattern
+            || (node.kind == H::RestPattern && matches!(node.form, Form::Name { .. }))
+        {
             return Err(b.error(
                 ErrorKind::Unsupported,
                 format!("{:?} is outside L04 lowering support", node.kind),
@@ -289,14 +291,16 @@ pub(super) fn preflight(
                 ));
             }
         }
-        if let Form::Condition {
-            pattern: Some(_), ..
-        } = node.form
+        if node.kind == H::While
+            && matches!(
+                node.form,
+                Form::Condition {
+                    pattern: Some(_),
+                    ..
+                }
+            )
         {
-            return Err(b.error(
-                ErrorKind::Unsupported,
-                "conditional patterns await later lowering",
-            ));
+            return Err(b.error(ErrorKind::Unsupported, "while let is not supported"));
         }
         if node.kind == H::Member {
             let count = m.external_bindings().len();

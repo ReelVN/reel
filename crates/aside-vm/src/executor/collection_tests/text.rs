@@ -188,3 +188,28 @@ fn text_count_and_join_work_scale_with_bytes_without_copied_prefixes() {
         assert_eq!(vm.heap().stats().chunk_allocations - before, 0);
     }
 }
+
+#[test]
+fn string_lookup_skips_allocation_on_contiguous_and_trivial_inputs() {
+    for (source, pattern, index) in [
+        ("characters/sayori.chr", "/", Some(10)),
+        ("中文🙂尾", "🙂尾", Some(2)),
+        ("中文🙂尾", "", Some(0)),
+        ("中", "中文", None),
+    ] {
+        let mut vm = load(text_method_package("find"));
+        let source = vm.heap_mut().alloc_string(source).unwrap();
+        let pattern = vm.heap_mut().alloc_string(pattern).unwrap();
+        let task = vm
+            .start(
+                FunctionId(0),
+                &[source, pattern],
+                RootOwner(9),
+                Context::Ordinary,
+            )
+            .unwrap();
+        let before = vm.heap().stats().chunk_allocations;
+        assert_eq!(returned(&mut vm, task).as_int(), index);
+        assert_eq!(vm.heap().stats().chunk_allocations, before);
+    }
+}

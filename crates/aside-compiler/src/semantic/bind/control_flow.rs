@@ -27,11 +27,12 @@ impl Binder<'_> {
             self.require(condition, value, BOOL, "condition");
         }
         let previous = self.scope;
-        self.scope = self.new_scope(Some(previous), ctx.function, self.span(n));
+        self.scope = self.new_scope(Some(previous), ctx.function, self.span(body));
         if let Some(p) = pattern {
+            self.out.facts[p.0 as usize].scope = Some(self.scope);
             self.bind_pattern(p, value, &inner, PatternUse::Branch, false);
         }
-        let constant = self.constant_bool(condition);
+        let constant = self.branch_constant(pattern, condition);
         inner.conditional |= constant != Some(true);
         let refinement_mark = self.refinement_undo.len();
         if pattern.is_none() {
@@ -73,14 +74,15 @@ impl Binder<'_> {
         inner.loops.push((n, label, ctx.finally.len()));
         inner.iteration = true;
         inner.conditional |= self.kind(n) == HirKind::For;
-        let (pattern, source, body, asynchronous) = match self.out.hir.node(n).form {
+        let (index, pattern, source, body, asynchronous) = match self.out.hir.node(n).form {
             Form::For {
+                index,
                 pattern,
                 source,
                 body,
                 asynchronous,
-            } => (Some(pattern), Some(source), body, asynchronous),
-            Form::Single { child } => (None, None, child, false),
+            } => (index, Some(pattern), Some(source), body, asynchronous),
+            Form::Single { child } => (None, None, None, child, false),
             _ => return ANY,
         };
         let value = source.map_or(ANY, |c| self.visit(c, ctx));
@@ -102,6 +104,9 @@ impl Binder<'_> {
         }
         let previous = self.scope;
         self.scope = self.new_scope(Some(previous), ctx.function, self.span(n));
+        if let Some(index) = index {
+            self.bind_pattern(index, INT, &inner, PatternUse::Declaration, false);
+        }
         if let Some(p) = pattern {
             let item = match &self.out.types[value.0 as usize] {
                 Type::Tuple(ts) => ts
@@ -342,6 +347,17 @@ impl Binder<'_> {
             _ => None,
         }
     }
+    pub(super) fn branch_constant(
+        &self,
+        pattern: Option<NodeId>,
+        condition: NodeId,
+    ) -> Option<bool> {
+        if pattern.is_some() {
+            None
+        } else {
+            self.constant_bool(condition)
+        }
+    }
     pub(super) fn definitely_nonnull(&self, ty: TypeId) -> bool {
         match &self.out.types[ty.0 as usize] {
             Type::Any | Type::Null => false,
@@ -366,11 +382,11 @@ impl Binder<'_> {
                 self.out.hir.children(n).all(|c| self.falls_through(c))
             }
             Form::Condition {
+                pattern,
                 condition,
                 body,
                 otherwise,
-                ..
-            } if self.kind(n) == HirKind::If => match self.constant_bool(condition) {
+            } if self.kind(n) == HirKind::If => match self.branch_constant(pattern, condition) {
                 Some(true) => self.falls_through(body),
                 Some(false) => otherwise.is_none_or(|body| self.falls_through(body)),
                 None => {
@@ -418,14 +434,14 @@ impl Binder<'_> {
             return false;
         }
         if let Form::Condition {
+            pattern,
             condition,
             body,
             otherwise,
-            ..
         } = self.out.hir.node(n).form
             && self.kind(n) == HirKind::If
         {
-            return match self.constant_bool(condition) {
+            return match self.branch_constant(pattern, condition) {
                 Some(true) => self.can_break_to(body, target),
                 Some(false) => otherwise.is_some_and(|body| self.can_break_to(body, target)),
                 None => {

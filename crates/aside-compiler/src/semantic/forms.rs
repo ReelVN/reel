@@ -124,6 +124,14 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
             wildcard: has(K::Star),
         },
         H::NamedType => Form::TypeName,
+        H::TypeAlias => Form::TypeAlias {
+            name: tokens
+                .iter()
+                .filter(|token| token.name.is_some())
+                .copied()
+                .nth(1)?,
+            target: annotation()?,
+        },
         H::FunctionType => Form::FunctionType { result: body()? },
         H::GroupType
         | H::StringType
@@ -143,7 +151,8 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
             value: None,
             label: name(),
         },
-        H::Name | H::NamePattern | H::RestPattern => Form::Name { name: name()? },
+        H::Name | H::NamePattern => Form::Name { name: name()? },
+        H::RestPattern => name().map_or(Form::Wildcard, |name| Form::Name { name }),
         H::WildcardPattern => Form::Wildcard,
         H::Literal => Form::Literal {
             token: tokens.first().copied()?,
@@ -239,12 +248,20 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
                 otherwise: children.get(first + 2).copied(),
             }
         }
-        H::For => Form::For {
-            pattern: *children.first()?,
-            source: *children.get(1)?,
-            body: *children.get(2)?,
-            asynchronous: has(K::Await),
-        },
+        H::For => {
+            let (index, pattern, source, body) = match *children.as_slice() {
+                [pattern, source, body] => (None, pattern, source, body),
+                [index, pattern, source, body] => (Some(index), pattern, source, body),
+                _ => return None,
+            };
+            Form::For {
+                index,
+                pattern,
+                source,
+                body,
+                asynchronous: has(K::Await),
+            }
+        }
         H::Loop => Form::Single { child: body()? },
         H::Label => Form::Label {
             name: name()?,

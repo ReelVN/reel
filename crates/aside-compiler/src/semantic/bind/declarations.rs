@@ -265,7 +265,11 @@ impl Binder<'_> {
                 for ext in import.bindings {
                     let local = alias.as_deref().unwrap_or(&ext.name);
                     let name = self.intern_name(local);
-                    let ty = self.external_type(&ext);
+                    let ty = if ext.intrinsic == Some(Intrinsic::TypeAlias) {
+                        ANY
+                    } else {
+                        self.external_type(&ext)
+                    };
                     if let Some(s) = self.declare(Declaration {
                         name,
                         span: self.span(n),
@@ -303,7 +307,9 @@ impl Binder<'_> {
                 queue.push_back(FunctionId(i as u32));
             }
         }
-        for call in std::mem::take(&mut self.calls) {
+        let calls = std::mem::take(&mut self.calls);
+        self.check_definite_effects(&calls);
+        for call in calls {
             if let Some(caller) = call.caller {
                 if let Some(callee) = call.callee {
                     if self.out.functions[callee.0 as usize].kind == FunctionKind::Plain {
@@ -323,7 +329,6 @@ impl Binder<'_> {
             if call.no_wait {
                 self.check(call.node, RuntimeChecks::NO_WAIT);
             }
-            self.check_forwarded_effect(&call);
             self.validate_call(&call);
         }
         for (i, f) in self.out.functions.iter().enumerate() {
@@ -341,83 +346,6 @@ impl Binder<'_> {
                     target.dynamic_calls |= dynamic;
                     queue.push_back(caller);
                 }
-            }
-        }
-    }
-
-    fn check_forwarded_effect(&mut self, call: &CallSite) {
-        if call.callee.is_none() || !(call.no_wait || call.derived) {
-            return;
-        }
-        let mut node = call.node;
-        for _ in 0..self.options.limits.max_depth {
-            let Form::Call {
-                callee,
-                optional: false,
-                chain: false,
-                ..
-            } = self.out.hir.node(node).form
-            else {
-                return;
-            };
-            if let Some(signature) = self
-                .external_nodes
-                .get(&callee)
-                .and_then(|descriptor| descriptor.signature.as_ref())
-            {
-                let (code, message) = if call.no_wait && signature.effect == CallEffect::StartsTask
-                {
-                    (
-                        D::NoWait,
-                        "this helper launches a task. In a node block, call it after construction and bind the task to its owner",
-                    )
-                } else if call.derived && signature.derived_safe == Some(false) {
-                    (
-                        D::InvalidEffect,
-                        "this helper calls a host function that is unavailable in derived evaluation. Compute its result before derive",
-                    )
-                } else {
-                    return;
-                };
-                let index = self.diagnostics.len();
-                let origin = self.span(node);
-                self.error(code, self.span(call.node), message);
-                if let Some(diagnostic) = self.diagnostics.get_mut(index) {
-                    diagnostic.related.push(RelatedRange {
-                        range: origin,
-                        message: "host call inside the helper".into(),
-                    });
-                }
-                return;
-            }
-            let facts = &self.out.facts[callee.0 as usize];
-            let Some(symbol) = facts.symbol else { return };
-            if self.out.symbols[symbol.0 as usize].kind != SymbolKind::Function {
-                return;
-            }
-            let Type::Function(function) = self.out.types[facts.ty.0 as usize] else {
-                return;
-            };
-            let function = &self.out.functions[function.0 as usize];
-            if function.kind != FunctionKind::Plain {
-                return;
-            }
-            let only = {
-                let mut statements = self.out.hir.children(function.body);
-                let (Some(only), None) = (statements.next(), statements.next()) else {
-                    return;
-                };
-                only
-            };
-            node = match self.out.hir.node(only).form {
-                Form::Statement { expression, .. } => expression,
-                Form::Transfer {
-                    value: Some(value), ..
-                } if self.out.hir.node(only).kind == HirKind::Return => value,
-                _ => return,
-            };
-            if self.out.hir.node(node).kind != HirKind::Call || !self.budget(node) {
-                return;
             }
         }
     }

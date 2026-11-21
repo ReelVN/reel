@@ -108,8 +108,15 @@ impl ProjectAnalysis {
 struct Overlay<'a> {
     memory: &'a mut MemoryResolver,
     fallback: &'a mut dyn ModuleResolver,
+    aliases: &'a BTreeMap<String, TypeHint>,
 }
 impl ModuleResolver for Overlay<'_> {
+    fn type_alias(&self, canonical_name: &str) -> Option<TypeHint> {
+        self.aliases
+            .get(canonical_name)
+            .cloned()
+            .or_else(|| self.fallback.type_alias(canonical_name))
+    }
     fn enum_type(&self, canonical_name: &str) -> Option<TypeHint> {
         self.memory
             .enum_type(canonical_name)
@@ -254,6 +261,7 @@ fn analyze_project_inner<'a>(
     let mut diagnostics = Vec::new();
     let mut projected = BTreeMap::new();
     let mut memory = MemoryResolver::default();
+    let mut aliases = BTreeMap::new();
     let mut exhausted = false;
     let diagnostic_limit = options.limits.max_diagnostics.max(1);
     let total = inputs.len();
@@ -417,6 +425,7 @@ fn analyze_project_inner<'a>(
             let result = Overlay {
                 memory: &mut memory,
                 fallback: resolver,
+                aliases: &aliases,
             }
             .resolve(request);
             if let Ok(resolved) = result.map(ResolvedImport::retain_references) {
@@ -480,6 +489,7 @@ fn analyze_project_inner<'a>(
             };
             if let Some(name) = match hir.node(declaration).form {
                 Form::Class { name, .. } => name,
+                Form::TypeAlias { name, .. } => Some(name),
                 _ if hir.node(declaration).kind == H::Enum => {
                     hir.tokens(declaration).find(|token| token.name.is_some())
                 }
@@ -506,6 +516,7 @@ fn analyze_project_inner<'a>(
                 if let Ok(resolved) = (Overlay {
                     memory: &mut memory,
                     fallback: resolver,
+                    aliases: &aliases,
                 })
                 .resolve(&request)
                 {
@@ -525,6 +536,23 @@ fn analyze_project_inner<'a>(
         }
         type_names.insert(path.clone(), names);
     }
+    for (path, (hir, _)) in &projected {
+        let names = TypeNames {
+            module: &type_names[path],
+            prelude: &prelude_types,
+        };
+        for node in hir.children(NodeId(0)) {
+            let declaration = match hir.node(node).form {
+                Form::Modified { declaration, .. } => declaration,
+                _ => node,
+            };
+            if let Form::TypeAlias { name, target } = hir.node(declaration).form {
+                let mut hint = type_hint(hir, target);
+                canonical_hint(&mut hint, &|name| names.canonical(name));
+                aliases.insert(format!("{path}::{}", hir.text(name.span)), hint);
+            }
+        }
+    }
     for module in memory.modules.values_mut() {
         for symbol in &mut module.exports {
             let origin = symbol
@@ -541,6 +569,11 @@ fn analyze_project_inner<'a>(
                     }
                     .canonical(name)
                 });
+            }
+            if symbol.intrinsic == Some(Intrinsic::TypeAlias) {
+                aliases
+                    .entry(format!("{}::{}", module.canonical_path, symbol.name))
+                    .or_insert_with(|| symbol.ty.clone());
             }
         }
     }
@@ -618,6 +651,7 @@ fn analyze_project_inner<'a>(
                 &mut Overlay {
                     memory: &mut memory,
                     fallback: resolver,
+                    aliases: &aliases,
                 },
             );
             work = work.saturating_add(result.stats.work_units);
@@ -673,13 +707,14 @@ fn analyze_project_inner<'a>(
             });
         }
     }
-    if !exhausted && (recover || modules.iter().any(super::has_resume_flows)) {
+    if !exhausted && (recover || modules.iter().any(super::needs_source_types)) {
         let remaining = options.limits.max_work.saturating_sub(work);
         let result = super::source_types::analyze(
             &mut modules,
             &mut Overlay {
                 memory: &mut memory,
                 fallback: resolver,
+                aliases: &aliases,
             },
             AnalysisLimits {
                 max_work: options.limits.max_work.saturating_sub(work),
@@ -695,6 +730,15 @@ fn analyze_project_inner<'a>(
                     .stats
                     .work_units
                     .saturating_add(module.source_types.work_units());
+                let remaining = diagnostic_limit.saturating_sub(diagnostics.len());
+                diagnostics.extend(
+                    super::inferred_await_diagnostics(module)
+                        .take(remaining)
+                        .map(|diagnostic| ModuleDiagnostic {
+                            module: module.canonical_path.clone(),
+                            diagnostic,
+                        }),
+                );
             }
         } else if let Some(module) = modules.first_mut() {
             module.stats.work_units = module.stats.work_units.saturating_add(inferred_work);
@@ -761,6 +805,7 @@ pub(super) fn declarations(hir: &Hir, module: &str, version: &str) -> Vec<Extern
             continue;
         };
         match hir.node(d).kind {
+            H::TypeAlias => result.extend(super::type_aliases::descriptor(hir, d, module, version)),
             H::Enum => {
                 result.extend(super::enumerations::descriptor(hir, d, module, version));
             }

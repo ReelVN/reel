@@ -16,7 +16,7 @@ impl Binder<'_> {
             H::Module | H::Block => return self.block_expected(n, ctx, true, expected),
             H::ModifiedDeclaration => children.first().map_or(NULL, |&c| self.visit(c, ctx)),
             H::Function => return self.function(n, ctx, Receiver::None),
-            H::Enum => NULL,
+            H::Enum | H::TypeAlias => NULL,
             H::Closure => return self.function_expected(n, ctx, Receiver::None, expected),
             H::Let => {
                 let pattern = children.iter().copied().find(|&c| is_pattern(self.kind(c)));
@@ -368,6 +368,11 @@ impl Binder<'_> {
                         self.span(n),
                         "await requires an Awaitable. Use an ordinary call result directly",
                     );
+                } else if t == ANY
+                    && let Some(&operand) = children.first()
+                    && self.call_result_can_be_inferred(operand)
+                {
+                    self.out.inferred_awaits.push(n);
                 }
                 self.check(n, RuntimeChecks::TYPE);
                 if let Some(name) = self.nullable_named_type(t) {
@@ -412,6 +417,26 @@ impl Binder<'_> {
             _ => ANY,
         }
     }
+    fn call_result_can_be_inferred(&self, mut operand: NodeId) -> bool {
+        while let (HirKind::Group, Form::Single { child }) =
+            (self.kind(operand), self.out.hir.node(operand).form)
+        {
+            operand = child;
+        }
+        let Form::Call { callee, .. } = self.out.hir.node(operand).form else {
+            return false;
+        };
+        matches!(
+            self.out.types[self.ty(callee).0 as usize],
+            Type::Function(_) | Type::BoundMethod(_)
+        ) || self.external_nodes.get(&callee).is_some_and(|value| {
+            value
+                .reference
+                .as_ref()
+                .is_some_and(|reference| reference.export.is_some())
+        })
+    }
+
     pub(super) fn binary(
         &mut self,
         n: NodeId,

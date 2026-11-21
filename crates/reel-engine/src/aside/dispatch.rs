@@ -23,7 +23,7 @@ impl SessionVm {
             _ => None,
         };
         if let Some(symbol) = media_read {
-            self.dispatch_media(ticket, symbol)?;
+            self.dispatch_media(session, ticket, symbol)?;
             return Ok(NativeDispatch::Ready { work: 1 });
         }
         // Retain the verified program while dispatch mutates the VM. Its immutable
@@ -268,7 +268,7 @@ impl SessionVm {
                 if symbol == "reel::audio::await" {
                     self.check_wait(session, ticket)?;
                 }
-                self.dispatch_media(ticket, symbol)?;
+                self.dispatch_media(session, ticket, symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::game::dialogue"
@@ -476,7 +476,7 @@ impl SessionVm {
                     return Ok(NativeDispatch::Ready { work: 1 });
                 }
                 if media::is_media(self.vm.heap(), self.vm.host_arguments(ticket)?[0]) {
-                    self.dispatch_media(ticket, symbol)?;
+                    self.dispatch_media(session, ticket, symbol)?;
                     return Ok(NativeDispatch::Ready { work: 1 });
                 }
                 let command = match symbol {

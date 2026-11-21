@@ -17,10 +17,11 @@ mod source_inference;
 
 #[test]
 fn enum_declarations_complete_cases_and_preserve_payload_binding_types() {
-    let source = r#"enum Menu { Back, Load(slot: int) }
+    let source = r#"enum Menu { Back, Load(slot: int, note: string) }
 fn main(selection: Menu) {
-    let next = Menu.Load(slot: 3);
-    match selection { Menu.Back => 0, Menu.Load { slot } => slot + 1 }
+    let next = Menu.Load(slot: 3, note: "preview");
+    let loaded = if let Menu.Load { slot, .. } = selection { slot + 2 } else { 0 };
+    match selection { Menu.Back => 0, Menu.Load { slot, note: _ } => slot + 1 }
 }"#;
     let mut workspace = Workspace::new(ServerOptions::default());
     workspace.open(uri(), 1, source.into()).unwrap();
@@ -38,7 +39,7 @@ fn main(selection: Menu) {
     let declaration = workspace
         .definition(
             &uri(),
-            position(source, "Load(slot: 3)", false),
+            position(source, "Load(slot: 3,", false),
             Encoding::Utf16,
         )
         .unwrap();
@@ -57,11 +58,22 @@ fn main(selection: Menu) {
             .any(|signature| signature.label.contains("slot: int")),
         "{help:?}"
     );
-    let binding = workspace
-        .hover(&uri(), position(source, "slot + 1", false), Encoding::Utf16)
+    for use_site in ["slot + 1", "slot + 2"] {
+        let binding = workspace
+            .hover(&uri(), position(source, use_site, false), Encoding::Utf16)
+            .unwrap()
+            .unwrap();
+        assert!(hover_text(binding).contains("slot: int"));
+    }
+    let definition = workspace
+        .definition(&uri(), position(source, "slot + 2", false), Encoding::Utf16)
         .unwrap()
         .unwrap();
-    assert!(hover_text(binding).contains("slot: int"));
+    assert_eq!(definition.range.start, position(source, "slot, ..", false));
+    let outside = workspace
+        .complete(&uri(), position(source, "else { ", true), Encoding::Utf16)
+        .unwrap();
+    assert!(!outside.iter().any(|item| item.label == "slot"));
 }
 
 #[test]

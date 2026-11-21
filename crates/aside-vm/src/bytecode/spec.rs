@@ -196,6 +196,7 @@ instructions! {
     MatchFail = 0x0069 => [Unused, Unused, Unused], Throw, true, None;
     SuperRef = 0x006a => [WriteReg, Unused, Unused], Next, true, None;
     ChildrenSpread = 0x006b => [ReadReg, ReadReg, Unused], Next, true, None;
+    PatternField = 0x006c => [ReadWriteReg, ReadReg, WriteReg], Next, true, None;
     Throw = 0x0070 => [ReadReg, Unused, Unused], Throw, true, None;
     Rethrow = 0x0071 => [Unused, Unused, Unused], Throw, true, None;
     Leave = 0x0072 => [Pc, Unused, Unused], Leave, true, None;

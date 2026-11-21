@@ -129,7 +129,6 @@ fn shade(pixel, weight: float) -> (float, float, float, float) {
         }
     )));
     for (expression, expected) in [
-        ("clamp(x, x, 1)", "ordered constant bounds"),
         ("clamp(x, 1, 0)", "ordered constant bounds"),
         ("modulo(x, 0)", "nonzero divisor"),
     ] {
@@ -137,6 +136,23 @@ fn shade(pixel, weight: float) -> (float, float, float, float) {
             "use std::math::{{clamp, modulo}}; fn shade(pixel, x: float) -> float {{ {expression} }}"
         );
         assert!(compile(&code).err().unwrap().message.contains(expected));
+    }
+    for (minimum, maximum) in [("low", "high"), ("low", "1"), ("0", "high")] {
+        let shader = |expression: &str| {
+            compile(&format!(
+                r#"use std::math::{{clamp, min, max}};
+                fn shade(pixel, low: float, high: float) -> float {{
+                    let (u, _) = pixel.uv;
+                    {expression}
+                }}"#
+            ))
+            .unwrap()
+            .program
+        };
+        assert_eq!(
+            shader(&format!("clamp(u, minimum: {minimum}, maximum: {maximum})")),
+            shader(&format!("min(max(u, {minimum}), {maximum})"))
+        );
     }
 }
 

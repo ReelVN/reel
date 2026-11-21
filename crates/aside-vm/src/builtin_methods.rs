@@ -143,6 +143,20 @@ methods! {
         "Remove the given prefix if it matches. Return null when absent and the original string for an empty prefix.";
     StripSuffix: "strip_suffix" [String] ("suffix":"string"=None), None => "string | null", false,
         "Remove the given suffix if it matches. Return null when absent and the original string for an empty suffix.";
+    IndexWhere: "index_where" [Array,Tuple] ("predicate":"fn(any) -> bool"=None), None => "int | null", false,
+        "Return the zero-based index of the first item accepted by the predicate, or null. The predicate cannot wait or change the source.";
+    All: "all" [Array,Tuple] ("predicate":"fn(any) -> bool"=None), None => "bool", false,
+        "Return whether the predicate accepts every item. Stop at the first rejection. An empty sequence returns true. The predicate cannot wait or change the source.";
+    Count: "count" [Array,Tuple] ("predicate":"fn(any) -> bool"=None), None => "int", false,
+        "Count items accepted by the predicate. Visit items in source order. The predicate cannot wait or change the source.";
+    Map: "map" [Array,Tuple] ("transform":"fn(any) -> any"=None), None => "array", false,
+        "Collect the transform results into a new array in source order. The transform cannot wait or change the source.";
+    Filter: "filter" [Array,Tuple] ("predicate":"fn(any) -> bool"=None), None => "array", false,
+        "Collect the original items accepted by the predicate into a new array in source order. The predicate cannot wait or change the source.";
+    StringContains: "contains" [String] ("pattern":"string"=None), None => "bool", false,
+        "Return whether the string contains a literal substring. The empty pattern always matches.";
+    StringFind: "find" [String] ("pattern":"string"=None), None => "int | null", false,
+        "Return the first match's zero-based Unicode scalar index, or null. The empty pattern matches at zero. Neither string is normalized.";
 }
 
 impl BuiltinMethod {

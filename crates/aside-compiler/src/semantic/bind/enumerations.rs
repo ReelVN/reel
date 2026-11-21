@@ -129,6 +129,12 @@ impl Binder<'_> {
             {
                 return format!("{}::{suffix}", namespace.module);
             }
+            if descriptor.intrinsic == Some(Intrinsic::TypeAlias)
+                && let Some(reference) = &descriptor.reference
+                && let Some(export) = &reference.export
+            {
+                return format!("{}::{export}", reference.module);
+            }
             if let TypeHint::Named(canonical)
             | TypeHint::Enum {
                 name: canonical, ..
@@ -146,7 +152,7 @@ impl Binder<'_> {
         text.into()
     }
 
-    fn find_type_name(&self, source: &str) -> Option<NameId> {
+    pub(super) fn find_type_name(&self, source: &str) -> Option<NameId> {
         self.names
             .find(intern_hash(source), |id| self.out.hir.name(*id) == source)
             .copied()
@@ -248,7 +254,12 @@ impl Binder<'_> {
                 let Type::Record(fields) = &self.out.types[parts[1].0 as usize] else {
                     unreachable!("enum payload record");
                 };
-                let incomplete = self.out.hir.children(payload).count() != fields.len();
+                let open = self
+                    .out
+                    .hir
+                    .children(payload)
+                    .any(|field| self.kind(field) == HirKind::RestPattern);
+                let incomplete = !open && self.out.hir.children(payload).count() != fields.len();
                 let unknown: SmallVec<[_; 4]> = self
                     .out
                     .hir
@@ -264,7 +275,7 @@ impl Binder<'_> {
                     self.error(
                         D::PatternBindings,
                         self.span(payload),
-                        "list every enum payload field, or omit the braces to ignore the payload",
+                        "list every enum payload field or add `..` to ignore the remaining fields",
                     );
                 }
                 for key in unknown {
@@ -345,14 +356,20 @@ impl Binder<'_> {
                     || self.covered_enum_pattern(right, value, covered)
             }
             Form::EnumCase { payload, .. } => {
-                if payload.is_none_or(|payload| self.out.hir.children(payload).all(|field| matches!(
-                    self.out.hir.node(field).form,
-                    Form::PatternField { pattern: None, .. }
-                ) || matches!(
-                    self.out.hir.node(field).form,
-                    Form::PatternField { pattern: Some(part), .. }
-                        if matches!(self.out.hir.node(part).form, Form::Name { .. } | Form::Wildcard)
-                ))) {
+                if payload.is_none_or(|payload| {
+                    self.out.hir.children(payload).all(|field| {
+                        match self.out.hir.node(field).form {
+                            Form::Wildcard => true,
+                            Form::PatternField { pattern, .. } => pattern.is_none_or(|part| {
+                                matches!(
+                                    self.out.hir.node(part).form,
+                                    Form::Name { .. } | Form::Wildcard
+                                )
+                            }),
+                            _ => false,
+                        }
+                    })
+                }) {
                     covered.insert(self.ty(pattern));
                 }
                 false

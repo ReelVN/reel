@@ -577,7 +577,7 @@ impl Recording {
         )?;
         write!(
             out,
-            "kind\tlabel\telapsed_us\tactive_us\tloops\tmax_loop_us\tmax_present_gap_us\tvm_peak_bytes\tgpu_peak_bytes\tgeometry_upload_bytes\tgeometry_upload_calls"
+            "kind\tlabel\telapsed_us\tactive_us\tloops\tmax_loop_us\tmax_present_gap_us\tvm_peak_bytes\tgpu_peak_bytes\tgeometry_upload_bytes\tgeometry_transfer_calls"
         )?;
         for name in NAMES {
             write!(out, "\t{name}_us\t{name}_calls")?;

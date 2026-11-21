@@ -20,6 +20,7 @@ pub(super) struct BuiltinCall {
     dest: Reg,
     method: Builtin,
     count: u32,
+    // Append cursor or count of results built by a callback scan.
     index: u32,
     binding: ArgumentBinding,
     // Fixed by these declarations, not a limit on script function arity.
@@ -76,7 +77,9 @@ impl Vm {
         };
         match s.phase {
             ScriptPhase::Sort(work) => self.sort_argument(&s, work, index),
-            ScriptPhase::Predicate(_) => Ok((Value::int(-1), self.value(s.env, 2)?)),
+            ScriptPhase::Predicate(work) => {
+                Ok((Value::int(-1), self.value(s.env, work.argument_slot())?))
+            }
             _ => Err(VmError::Contract("builtin callback continuation")),
         }
     }
@@ -312,7 +315,13 @@ impl Vm {
                 self.start_search(s, call)?;
                 return Ok(true);
             }
-            Builtin::FirstWhere | Builtin::Any => {
+            Builtin::FirstWhere
+            | Builtin::Any
+            | Builtin::IndexWhere
+            | Builtin::All
+            | Builtin::Count
+            | Builtin::Map
+            | Builtin::Filter => {
                 if let Err(kind) = self.start_predicate(s, call) {
                     self.collection_fault(s, kind)?;
                 }
@@ -401,7 +410,9 @@ impl Vm {
             | Builtin::AsciiUppercase
             | Builtin::Trim
             | Builtin::TrimStart
-            | Builtin::TrimEnd => {
+            | Builtin::TrimEnd
+            | Builtin::StringContains
+            | Builtin::StringFind => {
                 if let Err(kind) = self.start_text_builtin(s, call) {
                     self.collection_fault(s, kind)?;
                 }

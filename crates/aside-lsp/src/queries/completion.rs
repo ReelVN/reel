@@ -1,6 +1,42 @@
 //! Contextual code completion.
 use super::*;
 
+pub(super) fn type_completion_context(source: &Source, offset: usize) -> bool {
+    let Some(mut token) = completion_token(source, offset) else {
+        return false;
+    };
+    if token.parent_ancestors().any(|node| {
+        matches!(
+            node.kind(),
+            K::TypeName
+                | K::RecordFieldType
+                | K::TupleType
+                | K::UnionType
+                | K::FunctionType
+                | K::GroupType
+        )
+    }) {
+        return true;
+    }
+    while token.kind().is_trivia() {
+        let Some(previous) = token.prev_token() else {
+            return false;
+        };
+        token = previous;
+    }
+    token.kind() == K::Arrow
+        || token.parent().is_some_and(|node| {
+            matches!(
+                (token.kind(), node.kind()),
+                (K::Eq, K::TypeAliasDecl)
+                    | (
+                        K::Colon,
+                        K::LetDecl | K::Param | K::ClassDecl | K::RecordFieldType
+                    )
+            )
+        })
+}
+
 impl Workspace {
     pub fn complete(
         &mut self,
@@ -332,6 +368,10 @@ impl Workspace {
         }
         let mut items: Vec<_> = visible(module, offset)
             .into_iter()
+            .filter(|&id| {
+                external(module, None, Some(id))
+                    .is_none_or(|symbol| symbol.intrinsic != Some(Intrinsic::TypeAlias))
+            })
             .map(|id| source_completion(module, source, id, &snapshot, &self.host))
             .collect();
         items.extend(keywords);

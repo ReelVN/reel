@@ -170,6 +170,7 @@ pub enum SyntaxKind {
     EnumDecl,
     EnumVariant,
     EnumPattern,
+    TypeAliasDecl,
 }
 macro_rules! keywords {
     ($($kind:ident => $text:literal),+ $(,)?) => {
@@ -396,6 +397,7 @@ impl Language for AsideLanguage {
             SyntaxKind::EnumDecl,
             SyntaxKind::EnumVariant,
             SyntaxKind::EnumPattern,
+            SyntaxKind::TypeAliasDecl,
         ];
         KINDS
             .get(raw.0 as usize)

@@ -262,7 +262,7 @@ fn coverage_program_frame(
     let descriptor = EffectShaderDescriptor::with_textures(
         [4; 32],
         EffectShaderFormat::Wgsl,
-        vec![],
+        program.parameters().iter().map(|p| p.ty).collect(),
         0,
         true,
         EffectType::Vec4,
@@ -307,8 +307,13 @@ fn coverage_program_frame(
     widget.invert = if materialized { 0.1 } else { 0. };
     widget.inner.clip = bounds;
     widget.opacity = 0.37;
+    let values = program
+        .parameters()
+        .iter()
+        .map(|p| p.default.expect("fixture parameter value"))
+        .collect();
     widget.effect = Some(PaintEffect {
-        instance: EffectInstance::new([4; 32], program, vec![]).unwrap(),
+        instance: EffectInstance::new([4; 32], program, values).unwrap(),
         shader: registry.acquire(handle).unwrap(),
         images: vec![],
         bounds: if materialized {
@@ -996,6 +1001,100 @@ fn full_target_effect_keeps_local_domain_and_initializes_unwritten_pixels() {
         for (a, b) in before.iter().zip(after) {
             assert!((a - b).abs() <= 0.004);
         }
+    }
+}
+
+#[test]
+#[ignore = "requires graphics adapter for dynamic bounds pixel readback"]
+fn dynamic_clamp_uniforms_match_scalar_reference_pixels() {
+    fn program(minimum: f32, maximum: f32, dynamic: bool) -> std::sync::Arc<EffectProgram> {
+        let mut nodes = Vec::new();
+        let mut add = |ty, op| {
+            let id = EffectNodeId(nodes.len() as u32);
+            nodes.push(EffectNode { ty, op });
+            id
+        };
+        let scalar = EffectType::Float;
+        let float = |value: f32| EffectValue::Float(value.to_bits());
+        let uv = add(EffectType::Vec2, EffectOp::Input(EffectInput::Uv));
+        let source = add(EffectType::Vec4, EffectOp::SourceSample { uv });
+        let alpha = add(
+            scalar,
+            EffectOp::Extract {
+                value: source,
+                lane: 3,
+            },
+        );
+        let mut parameters = Vec::new();
+        let bounded = if dynamic {
+            for (name, value) in [("minimum", minimum), ("maximum", maximum)] {
+                parameters.push(EffectParameter {
+                    name: name.into(),
+                    ty: scalar,
+                    default: Some(float(value)),
+                });
+            }
+            let value = add(scalar, EffectOp::Constant(float(0.5)));
+            let minimum = add(scalar, EffectOp::Parameter(0));
+            let maximum = add(scalar, EffectOp::Parameter(1));
+            let raised = add(
+                scalar,
+                EffectOp::Binary {
+                    op: EffectBinary::Max,
+                    left: value,
+                    right: minimum,
+                },
+            );
+            add(
+                scalar,
+                EffectOp::Binary {
+                    op: EffectBinary::Min,
+                    left: raised,
+                    right: maximum,
+                },
+            )
+        } else {
+            add(
+                scalar,
+                EffectOp::Constant(float(0.5_f32.max(minimum).min(maximum))),
+            )
+        };
+        let output = add(
+            EffectType::Vec4,
+            EffectOp::Vec4([bounded, bounded, bounded, alpha]),
+        );
+        EffectProgram::new(parameters, nodes, output).unwrap()
+    }
+    let mut renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(1),
+            Default::default(),
+        ))
+        .unwrap(),
+    );
+    let mut capture = |minimum, maximum, dynamic| {
+        let frame = coverage_program_frame(
+            program(minimum, maximum, dynamic),
+            false,
+            false,
+            true,
+            |_| {},
+        );
+        let prepared = renderer.prepare(&frame).unwrap();
+        renderer.readback(prepared).unwrap()
+    };
+    for (minimum, maximum) in [
+        (0.125, 0.375),
+        (0.375, 0.625),
+        (0.625, 0.875),
+        (0.875, 0.125),
+        (0.625, 0.625),
+    ] {
+        let reference = capture(minimum, maximum, false);
+        assert!(reference.iter().any(|pixel| pixel[0] > 0.04));
+        assert_eq!(capture(minimum, maximum, true), reference);
     }
 }
 

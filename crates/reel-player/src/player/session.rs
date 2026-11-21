@@ -273,16 +273,17 @@ impl PlayerSession {
         &self,
         now: reel_core::clock::MonoTime,
         production: crate::story_runtime::FrameProduction,
-    ) -> Option<reel_core::clock::MonoTime> {
+    ) -> Option<(reel_core::clock::MonoTime, crate::story_runtime::WakeSource)> {
         match self {
             #[cfg(any(feature = "vita", test))]
             Self::Launcher(_) => None,
             Self::Aside { story, .. } => story.frame_wake_deadline(now, production),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => self.needs_tick().then(|| {
-                reel_core::clock::MonoTime(now.0.saturating_add(
+                let deadline = reel_core::clock::MonoTime(now.0.saturating_add(
                     u64::try_from(host.ui.dialogue_interval(30.).as_nanos()).unwrap_or(u64::MAX),
-                ))
+                ));
+                (deadline, crate::story_runtime::WakeSource::Dialogue)
             }),
         }
     }
@@ -405,14 +406,17 @@ mod tests {
                     session.sync(bridge, root).unwrap();
                     let deadline = session
                         .wake_deadline(MonoTime(now), crate::story_runtime::FrameProduction::Ready);
-                    if deadline.is_none_or(|deadline| deadline.0 > now + 1_000_000) {
+                    if deadline.is_none_or(|(deadline, _)| deadline.0 > now + 1_000_000) {
                         return;
                     }
                 }
                 panic!("stage synchronization kept an idle VM runnable");
             };
             settle(&mut session, &mut bridge, 0);
-            let expected = timed.then_some(MonoTime(2_000_000_000));
+            let expected = timed.then_some((
+                MonoTime(2_000_000_000),
+                crate::story_runtime::WakeSource::Activity,
+            ));
             assert_eq!(
                 session.wake_deadline(MonoTime(0), crate::story_runtime::FrameProduction::Ready),
                 expected

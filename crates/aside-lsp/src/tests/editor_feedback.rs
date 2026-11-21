@@ -399,6 +399,52 @@ fn type_and_named_argument_completion_keep_their_language_boundaries() {
 }
 
 #[test]
+fn module_type_aliases_complete_and_navigate_to_their_declaration() {
+    let (_project, root) = project_sources();
+    let model_source = "pub type Context = {caption: string};";
+    std::fs::write(root.join("model.aside"), model_source).unwrap();
+    let main = file_uri(&root.join("main.aside")).unwrap();
+    let mut workspace = Workspace::new(project_options());
+    let source = "use game::model as types; type Local = types::Context; fn show(value: Local) { value.caption; }";
+    workspace.open(main.clone(), 1, source.into()).unwrap();
+    for (needle, expected_uri, declared) in [
+        (
+            "Context",
+            file_uri(&root.join("model.aside")).unwrap(),
+            position(model_source, "Context", false),
+        ),
+        ("Local)", main.clone(), position(source, "Local =", false)),
+    ] {
+        let hover = hover_text(
+            workspace
+                .hover(&main, position(source, needle, false), Encoding::Utf16)
+                .unwrap()
+                .unwrap(),
+        );
+        assert!(
+            hover.contains("type ") && hover.contains("caption: string"),
+            "{hover}"
+        );
+        let location = workspace
+            .definition(&main, position(source, needle, false), Encoding::Utf16)
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.uri, expected_uri);
+        assert_eq!(location.range.start, declared);
+    }
+    let source = "use game::model as types; type Local = types::";
+    workspace.open(main.clone(), 2, source.into()).unwrap();
+    let end = LineIndex::new(source)
+        .position(source, source.len(), Encoding::Utf16)
+        .unwrap();
+    let items = workspace.complete(&main, end, Encoding::Utf16).unwrap();
+    assert!(
+        items.iter().any(|item| item.label == "Context"),
+        "{items:?}"
+    );
+}
+
+#[test]
 fn keyword_candidates_follow_declarations_expressions_and_control_flow() {
     for (source, required, absent) in [
         ("let ", vec!["mut"], vec!["class", "return"]),

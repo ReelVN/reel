@@ -46,6 +46,7 @@ impl FunctionBuilder<'_, '_> {
     pub(super) fn for_node(
         &mut self,
         node: h::NodeId,
+        index: Option<h::NodeId>,
         pattern: h::NodeId,
         source: h::NodeId,
         body: h::NodeId,
@@ -57,6 +58,14 @@ impl FunctionBuilder<'_, '_> {
         let iterator = self.temp()?;
         self.op(bc::Opcode::IterInit, iterator.0, source.0, 0, node)?;
         self.release(source)?;
+        let index_registers = match index {
+            Some(binding) if self.l.m.hir().node(binding).kind == H::NamePattern => Some((
+                binding,
+                self.constant(bc::Const::Int(-1), binding)?,
+                self.constant(bc::Const::Int(1), binding)?,
+            )),
+            _ => None,
+        };
         let region = bc::RegionId(self.ir.regions.len() as u32);
         self.l.b.push(
             &mut self.ir.regions,
@@ -87,6 +96,10 @@ impl FunctionBuilder<'_, '_> {
         )?;
         self.release(done)?;
         self.start(body_block)?;
+        if let Some((binding, index, one)) = index_registers {
+            self.op(bc::Opcode::Add, index.0, index.0, one.0, binding)?;
+            self.bind_value(binding, index, depth, true)?;
+        }
         self.bind_value(pattern, value, depth, true)?;
         self.release(value)?;
         self.l.b.push(
@@ -116,6 +129,10 @@ impl FunctionBuilder<'_, '_> {
         self.terminate(Terminator::EndFinally(region), node)?;
         self.ir.regions[region.index()].finally = Some(begin..self.ir.layout.len() as u32);
         self.start(end)?;
+        if let Some((_, index, one)) = index_registers {
+            self.release(index)?;
+            self.release(one)?;
+        }
         self.release(iterator)?;
         Ok(())
     }

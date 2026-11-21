@@ -379,18 +379,31 @@ where
 
     /// Next story or capture wake in the host's monotonic time domain.
     pub fn story_deadline(&self, now: MonoTime) -> Option<MonoTime> {
+        self.story_wake(now).map(|(deadline, _)| deadline)
+    }
+
+    pub(crate) fn story_wake(
+        &self,
+        now: MonoTime,
+    ) -> Option<(MonoTime, crate::story_runtime::WakeSource)> {
+        use crate::story_runtime::WakeSource;
         if self.captures.busy() {
-            return Some(MonoTime(now.0.saturating_add(8_000_000)));
+            return Some((
+                MonoTime(now.0.saturating_add(8_000_000)),
+                WakeSource::Capture,
+            ));
         }
         let story = self
             .session
             .as_ref()
             .and_then(|session| session.wake_deadline(now, self.frame_production()));
-        let animation = self.ui_animation_deadline(now);
-        match (story, animation) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let animation = self
+            .ui_animation_deadline(now)
+            .map(|deadline| (deadline, WakeSource::UiAnimation));
+        story
+            .into_iter()
+            .chain(animation)
+            .min_by_key(|(deadline, _)| *deadline)
     }
 
     fn frame_production(&self) -> crate::story_runtime::FrameProduction {

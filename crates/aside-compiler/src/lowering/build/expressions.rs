@@ -110,7 +110,7 @@ impl FunctionBuilder<'_, '_> {
             return self.global_reference(global, n).map(Some);
         }
         match (kind, form) {
-            (H::Enum, _) => Ok(None),
+            (H::Enum | H::TypeAlias, _) => Ok(None),
             (
                 H::Member | H::Index | H::Call,
                 Form::Member { chain: true, .. }
@@ -222,12 +222,12 @@ impl FunctionBuilder<'_, '_> {
             (
                 H::If,
                 Form::Condition {
-                    pattern: None,
+                    pattern,
                     condition,
                     body,
                     otherwise,
                 },
-            ) => self.condition(n, condition, body, otherwise, depth, demand),
+            ) => self.condition(n, (pattern, condition), body, otherwise, depth, demand),
             (H::Match, Form::Match { value }) => self.match_value(n, value, depth),
             (H::Call, Form::Call { chain: false, .. }) => self.flat_chain(n, depth),
             (H::Return, Form::Transfer { value, .. }) => self.return_value(n, value, depth),
@@ -276,13 +276,14 @@ impl FunctionBuilder<'_, '_> {
             (
                 H::For,
                 Form::For {
+                    index,
                     pattern,
                     source,
                     body,
                     asynchronous: false,
                 },
             ) => {
-                self.for_node(n, pattern, source, body, depth)?;
+                self.for_node(n, index, pattern, source, body, depth)?;
                 Ok(None)
             }
             (H::Label, Form::Label { body, .. }) => self.expr_use(body, depth, demand),
@@ -653,13 +654,15 @@ impl FunctionBuilder<'_, '_> {
     fn condition(
         &mut self,
         n: h::NodeId,
-        condition: h::NodeId,
+        (pattern, condition): (Option<h::NodeId>, h::NodeId),
         yes: h::NodeId,
         no: Option<h::NodeId>,
         depth: usize,
         demand: Demand,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
-        if let Some(selected) = self.l.constant_condition(condition)? {
+        if pattern.is_none()
+            && let Some(selected) = self.l.constant_condition(condition)?
+        {
             return match if selected { Some(yes) } else { no } {
                 Some(branch) => self.expr_use(branch, depth, demand),
                 None if demand == Demand::Value => self.constant(bc::Const::Null, n).map(Some),
@@ -669,9 +672,20 @@ impl FunctionBuilder<'_, '_> {
         let yes_block = self.block()?;
         let no_block = self.block()?;
         let join = self.block()?;
-        if !self.branch_to(condition, n, yes_block, no_block, depth)? {
-            return Ok(None);
-        }
+        let pattern_input = if let Some(pattern) = pattern {
+            let Some(value) = self.value(condition, depth)? else {
+                return Ok(None);
+            };
+            self.bind_match_pattern(pattern, pattern, value, no_block, depth, false)?;
+            self.release(value)?;
+            self.terminate(Terminator::Jump(yes_block), n)?;
+            Some(value)
+        } else {
+            if !self.branch_to(condition, n, yes_block, no_block, depth)? {
+                return Ok(None);
+            }
+            None
+        };
         let out = if demand == Demand::Value {
             Some(self.temp()?)
         } else {
@@ -680,6 +694,11 @@ impl FunctionBuilder<'_, '_> {
         let mut falls = false;
         for (block, branch) in [(yes_block, Some(yes)), (no_block, no)] {
             self.start(block)?;
+            if let Some(value) = pattern_input
+                && block == no_block
+            {
+                self.op(bc::Opcode::Clear, value.0, 0, 0, n)?;
+            }
             let value = match branch {
                 Some(branch) => self.expr_use(branch, depth, demand)?,
                 None => None,

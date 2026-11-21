@@ -239,6 +239,16 @@ profile_phases! {
     FileMetadata => "file_metadata",
     /// Try to capture a logical history point at an accepted dialogue boundary.
     HistoryCapture => "history_capture",
+    /// Select viewport, buffer, and pinned rows for virtual list preparation.
+    VirtualListPrepare => "virtual_list_prepare",
+    /// Prepare an observable row and invoke its factory.
+    VirtualListRow => "virtual_list_row",
+    /// Publish virtual rows and reconcile the stage children.
+    VirtualListMount => "virtual_list_mount",
+    /// Release bindings outside the new virtual window.
+    VirtualListRetire => "virtual_list_retire",
+    /// Retire removed stage handles and their bindings.
+    StageRetire => "stage_retire",
 }
 
 /// Record an instantaneous event in the phase's call count without a duration.

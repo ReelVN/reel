@@ -393,6 +393,7 @@ impl Parser<'_> {
             K::Semi => self.bump(),
             K::Use | K::Pub | K::Fn | K::Async | K::Gen | K::Enum => self.declaration(false),
             K::Class if self.nth(1) == K::Ident => self.declaration(false),
+            K::Ident if self.type_alias_ahead() => self.declaration(false),
             K::Let => self.let_decl(false),
             K::Ellipsis => {
                 self.start(K::ExprStmt);
@@ -944,6 +945,7 @@ impl Parser<'_> {
             K::Class if !member => self.class_decl(true),
             K::Enum if !member => self.enum_decl(),
             K::Use if !member => self.use_decl(),
+            K::Ident if !member && self.type_alias_ahead() => self.type_alias_decl(),
             K::Let => self.let_decl(member),
             _ => {
                 self.error(
@@ -960,6 +962,18 @@ impl Parser<'_> {
             self.wrap(cp, K::ModifiedDecl);
             self.finish();
         }
+    }
+    fn type_alias_ahead(&self) -> bool {
+        self.text() == "type" && self.nth(1) == K::Ident
+    }
+    fn type_alias_decl(&mut self) {
+        self.start(K::TypeAliasDecl);
+        self.bump();
+        self.expect(K::Ident);
+        self.expect(K::Eq);
+        self.ty();
+        self.semicolon();
+        self.finish();
     }
     fn let_decl(&mut self, field: bool) {
         self.start(K::LetDecl);
@@ -1169,7 +1183,7 @@ impl Parser<'_> {
         }
         self.start(K::IfExpr);
         self.bump();
-        self.condition();
+        self.condition(true);
         self.block();
         let has_else = self.eat(K::Else);
         if has_else {
@@ -1188,9 +1202,13 @@ impl Parser<'_> {
             ..Expr::new(K::IfExpr)
         }
     }
-    fn condition(&mut self) {
+    fn condition(&mut self, allow_variants: bool) {
         if self.eat(K::Let) {
-            self.pattern();
+            if allow_variants {
+                self.match_pattern();
+            } else {
+                self.pattern();
+            }
             self.expect(K::Eq);
         }
         self.expr(0, true, true);
@@ -1204,10 +1222,21 @@ impl Parser<'_> {
         });
         self.bump();
         match keyword {
-            K::While => self.condition(),
+            K::While => self.condition(false),
             K::For => {
                 self.eat(K::Await);
-                self.pattern();
+                let binding_range = self.range();
+                let pattern = self.pattern();
+                if self.eat(K::Comma) {
+                    if !matches!(pattern.kind, Some(K::NamePattern | K::WildcardPattern)) {
+                        self.error_at(
+                            D::ExpectedPattern,
+                            binding_range,
+                            "for index must be a name or '_'",
+                        );
+                    }
+                    self.pattern();
+                }
                 self.expect(K::In);
                 self.expr(0, true, true);
             }

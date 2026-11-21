@@ -1,4 +1,5 @@
 //! Desktop wake and render-completion observations on the recording timeline.
+use crate::story_runtime::WakeSource;
 use reel_render::RenderEvent;
 use std::{
     collections::VecDeque,
@@ -15,7 +16,7 @@ const CAPACITY: usize = 4096;
 pub(crate) enum Reason {
     UploadPoll,
     CompletionPoll,
-    Story,
+    Story(WakeSource),
     Input,
     Notified,
     Idle,
@@ -27,7 +28,19 @@ impl Reason {
         match self {
             Self::UploadPoll => "upload_poll",
             Self::CompletionPoll => "completion_poll",
-            Self::Story => "story",
+            Self::Story(source) => match source {
+                WakeSource::Ready => "story_ready",
+                WakeSource::Maintenance => "story_maintenance",
+                WakeSource::Save => "story_save",
+                WakeSource::AssetRead => "story_asset_read",
+                WakeSource::Transition => "story_transition",
+                WakeSource::Dialogue => "dialogue",
+                WakeSource::Activity => "story_activity",
+                WakeSource::Media => "media",
+                WakeSource::Localization => "localization",
+                WakeSource::UiAnimation => "ui_animation",
+                WakeSource::Capture => "capture",
+            },
             Self::Input => "input",
             Self::Notified => "notified",
             Self::Idle => "idle",
@@ -215,7 +228,7 @@ mod tests {
         let plan = Plan {
             at: at(100),
             deadline: Some(at(1_100)),
-            reason: Reason::Story,
+            reason: Reason::Story(WakeSource::Dialogue),
         };
         trace.wake(
             at(1_140),
@@ -239,7 +252,9 @@ mod tests {
         let mut out = Vec::new();
         trace.report(&mut out).unwrap();
         let report = String::from_utf8(out).unwrap();
-        assert!(report.contains("desktop_wake\t1140\tstory\t100\t1100\tdeadline\t110\t1100\t40\n"));
-        assert!(report.contains("desktop_wake\t1150\tstory\t100\t1200\tevent\t1141\t1200\t-\n"));
+        assert!(
+            report.contains("desktop_wake\t1140\tdialogue\t100\t1100\tdeadline\t110\t1100\t40\n")
+        );
+        assert!(report.contains("desktop_wake\t1150\tdialogue\t100\t1200\tevent\t1141\t1200\t-\n"));
     }
 }

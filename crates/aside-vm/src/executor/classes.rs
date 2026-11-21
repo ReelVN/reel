@@ -119,6 +119,11 @@ impl Vm {
         class_alive_in(&self.heap, value)
     }
     pub(super) fn abort_class(&mut self, s: &ScriptFrame) -> Result<(), VmError> {
+        // Construction can fail inside its initiating instruction before it
+        // publishes Class work. Other continuations use slot 3 as scratch.
+        if !matches!(s.phase, ScriptPhase::Body | ScriptPhase::Class(_)) {
+            return Ok(());
+        }
         let Ok(value) = self.value(s.env, 3) else {
             return Ok(());
         };

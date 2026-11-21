@@ -139,6 +139,111 @@ fn unawaited_sound_completion_requests_sampling_until_the_bounded_batch_is_drain
 }
 
 #[test]
+fn voice_omission_settles_before_transport_and_respects_reading_boundaries() {
+    let source = r#"fn opening() {
+        let node = stack();
+        stage.replace(node);
+        let earlier = audio.play("earlier", group: "voice", skip: "omit", owner: node);
+        let mut skipped = null;
+        for index in 0..2 {
+            let line = narrator("known", wait: false);
+            if index == 1 {
+                game.reading().set_skip(true);
+                skipped = audio.play("omitted", group: "voice", skip: "omit", start: 2, owner: node);
+                if await skipped != "Stopped" || audio.position(skipped) != 2 {
+                    throw "omitted voice did not settle";
+                }
+                if await audio.at(skipped, 3) {
+                    throw "omitted voice moved beyond its start";
+                }
+                let mut rejected = false;
+                try { audio.queue(skipped, "queued"); }
+                catch error { rejected = error == "audio has ended"; }
+                if !rejected || audio.stop(skipped) != skipped || await skipped != "Stopped" {
+                    throw "terminal control changed the result";
+                }
+                audio.play("music", group: "music", skip: "omit");
+                audio.play("replay", group: "voice");
+            }
+            line.wait();
+        }
+        let unread = narrator("unread", wait: false);
+        audio.play("unread", group: "voice", skip: "omit");
+        unread.wait();
+        game.reading().set_skip(true, unread: true);
+        let protected = narrator("protected", wait: false, reveal_skippable: false);
+        audio.play("protected", group: "voice", skip: "omit");
+        protected.wait();
+        game.reading().set_auto(true);
+        let automatic = narrator("automatic", wait: false);
+        audio.play("automatic", group: "voice", skip: "omit");
+        automatic.wait();
+        stage.replace(stack());
+        let mut retired = false;
+        try { await earlier; } catch error { retired = error == "media owner retired"; }
+        if !retired || await skipped != "Stopped" {
+            throw "incorrect retirement result";
+        }
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        let host = Host::default();
+        vm.set_media(Box::new(host.clone())).unwrap();
+        flush(&mut vm, &mut session, 0.);
+        dialogue(&session, "known");
+        say(&mut session);
+        flush(&mut vm, &mut session, 0.);
+        dialogue(&session, "known");
+        assert!(session.reading().skipping());
+        assert_eq!(host.0.borrow().len(), 3);
+        assert!(matches!(
+            &host.0.borrow()[0],
+            MediaPlayback::Audio(audio) if audio.result.is_none()
+        ));
+        for next in ["unread", "protected"] {
+            say(&mut session);
+            flush(&mut vm, &mut session, 0.);
+            dialogue(&session, next);
+        }
+        let protected = session.view().interaction.unwrap().id();
+        session
+            .advance_reveal(session.root_owner(), protected, Duration::from_secs(1), 30.)
+            .unwrap();
+        assert_eq!(
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(protected))
+                .unwrap(),
+            crate::InputOutcome::Completed
+        );
+        flush(&mut vm, &mut session, 1.);
+        dialogue(&session, "automatic");
+        say(&mut session);
+        flush(&mut vm, &mut session, 1.);
+        dialogue(&session, "done");
+        let entries = host.0.borrow();
+        let sources: Vec<_> = entries
+            .iter()
+            .map(|entry| match entry {
+                MediaPlayback::Audio(audio) => audio.request.source.as_str(),
+                MediaPlayback::Video(_) => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                "earlier",
+                "music",
+                "replay",
+                "unread",
+                "protected",
+                "automatic"
+            ]
+        );
+    }
+}
+
+#[test]
 fn source_types_playback_and_position_cues_use_real_audio_and_video_handles() {
     for encoded in [false, true] {
         for video in [false, true] {

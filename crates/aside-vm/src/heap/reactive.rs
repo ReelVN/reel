@@ -559,17 +559,18 @@ impl Heap {
     /// A retired host can no longer be read. Freeze computations that subscribed
     /// to it, including ones already queued by its last interaction update.
     pub(super) fn disconnect_reactive_source(&mut self, source: Value) -> Result<(), HeapError> {
-        let subscribers = self.object(self.key(source)?)?.reactive_subscribers;
+        let key = self.key(source)?;
+        let subscribers = self.object(key)?.reactive_subscribers;
         if subscribers.same_bits(Value::NULL) {
             return Ok(());
         }
-        while self.sequence_len(subscribers)? != 0 {
-            let weak = self.sequence_get(subscribers, 0)?;
-            let selector = self.sequence_get(subscribers, 1)?;
+        // Disconnect the retiring source first. When each output subsequently
+        // removes its input edges, it only needs to update the other sources.
+        self.objects.get_mut(key).unwrap().reactive_subscribers = Value::NULL;
+        for index in (0..self.sequence_len(subscribers)?).step_by(2) {
+            let weak = self.sequence_get(subscribers, index)?;
             if let Some(output) = self.subscriber_target(weak)? {
                 self.disconnect_derived(output)?;
-            } else {
-                self.reactive_remove(source, weak, selector)?;
             }
         }
         Ok(())

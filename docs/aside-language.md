@@ -84,7 +84,9 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 `std::math::min(a, b)` 和 `std::math::max(a, b)` 按数值比较选出较小或较大的入参，保留选中值的类型和精度。两值相等时返回第一个。只有一个入参为 NaN 时返回另一个，两者均为 NaN 时返回 NaN。着色器可用这两个函数比较标量。
 
-`std::math::mix(a, b, weight)` 进行线性插值，权重超出 0 到 1 时外推。`smoothstep(edge0, edge1, value)` 用归一化后的三次曲线过渡，边界反向时坡度反向；边界相等时，`value >= edge0` 返回 1，否则返回 0。`modulo(value, divisor)` 使用 `value - floor(value / divisor) * divisor`，有限有效输入的非零结果与除数同号。普通脚本使用 float64，除数为零或输入非有限时，`modulo` 返回 NaN。着色器用 float32，输入用有限值，`modulo` 的除数须非零。着色器也可用 `clamp`，上下界须是有序常量。
+`std::math::mix(a, b, weight)` 进行线性插值，权重超出 0 到 1 时外推。`smoothstep(edge0, edge1, value)` 用归一化后的三次曲线过渡，边界反向时坡度反向；边界相等时，`value >= edge0` 返回 1，否则返回 0。`modulo(value, divisor)` 使用 `value - floor(value / divisor) * divisor`，有限有效输入的非零结果与除数同号。普通脚本使用 float64，除数为零或输入非有限时，`modulo` 返回 NaN。着色器用 float32，输入用有限值，`modulo` 的除数须非零。
+
+着色器的 `clamp(value, minimum, maximum)` 可接收动态边界。任一边界是动态表达式时，以 `min(max(value, minimum), maximum)` 计算有限输入，运行时边界反序时取 `maximum`。两个常量边界仍须有限且有序。参数准入要求所有分量有限，着色器自身运算产生非有限值时沿现有 GPU 浮点规则。普通脚本的 `clamp` 沿用原有边界检查。
 
 `std::math::clamp(value, minimum, maximum)` 将数值限制在闭区间内，返回输入值或对应端点，保留该值的 int 或 float 类型。混合数值使用普通比较运算的精度。端点逆序或为 NaN 时报告 `Type` 错误。输入值为 NaN 时返回原值。
 
@@ -109,7 +111,9 @@ CellContract 的 type_id 为 Option<TypeId>：语言绑定保存 Some(包内类�
 
 array 为可变有序序列，索引只接受非负 int，越界报错。标准操作包括 len、append、extend、insert、remove、pop、clear、slice、find、contains 与稳定 sort。slice 和数组展开创建新的外层序列，共享元素引用。
 
-array/tuple 的 `first_where(predicate)` 返回第一个使谓词返回 true 的元素，未命中返回 null。`any(predicate)` 返回是否命中。谓词按来源顺序调用并在命中时停止，使用 NoWait 上下文。执行预算可分片，来源在分片间或谓词中发生内容修改时报告 ConcurrentModification。
+array/tuple 的 `first_where(predicate)` 返回第一个使谓词返回 true 的元素，未命中返回 null。`index_where(predicate)` 返回第一个命中位置的从零起索引，未命中返回 null。`any(predicate)` 遇到 true 即返回 true，空集合返回 false。`all(predicate)` 遇到 false 即返回 false，空集合返回 true。`count(predicate)` 返回命中数量。
+
+`map(transform)` 将每项的回调结果收集到新 array。`filter(predicate)` 将命中的原元素按顺序收集到新 array，保留共享引用。来源为 tuple 时也返回 array。回调使用 NoWait 上下文，谓词必须返回 bool。执行可以按预算分片，来源在分片间或回调中发生内容修改时报告 ConcurrentModification。新数组在全部回调成功后才交给调用方。
 
 array/tuple 的 `find(value)` 返回首个按 `==` 相等元素的从零开始索引，未找到返回 null；`contains(value)` 返回是否存在相等元素。两者按顺序查找，使用相同的数值、文本、tuple 和对象身份相等规则。查找及嵌套比较按执行预算推进，不复制来源；数组在查找期间发生内容修改时报告 ConcurrentModification。方法可保存后调用，支持 `value:` 具名参数，derive 追踪来源的内容读取。
 
@@ -179,6 +183,8 @@ to_ascii_lowercase()/to_ascii_uppercase() 返回新字符串，仅转换 ASCII �
 
 `string.split(separator)` 返回 string array，按完整分隔字符串从左至右非重叠切分，保留开头、末尾和连续分隔产生的空项。空 separator 在 Unicode scalar 边界切分并保留首尾空项。`string.replace(pattern, replacement)` 返回替换所有非重叠匹配后的字符串。空 pattern 在首尾及相邻 Unicode scalar 之间插入 replacement。扫描与结果复制按工作量让出，共用线性匹配，不先复制整段输入。临时状态由 VM 根持有并参与 GC、取消和执行快照。
 
+`string.contains(pattern)` 返回是否含有完整子串。`string.find(pattern)` 返回首次匹配开始处的从零起 Unicode 标量索引，可直接用于 `slice_scalars`。找不到返回 `null`，空模式返回 `0`，`contains("")` 为 `true`。匹配按原始 UTF-8 字节进行，区分大小写和组合形式。长文本沿预算分片搜索，只为模式记录匹配状态，无需复制来源。
+
 `string.strip_prefix(prefix)` 和 `string.strip_suffix(suffix)` 按 UTF-8 字节匹配一处指定的前缀或后缀。匹配时返回剩余字符串，无匹配时返回 null，参数为空时共享原字符串。匹配和剩余文本的复制沿现有分片预算推进。
 
 文本范围从零开始，端点规则与 Range 一致；字节切片端点须位于 UTF-8 边界。Reel 的逐字显现使用文字服务提供的字素和排版信息。
@@ -197,7 +203,9 @@ let result = match event {
 
 match 的输入求值一次，按源码顺序匹配；guard 要求 bool，命中后执行该分支并取得其结果。guard 在 NoWait 上下文运行，已经发生的副作用保留。没有分支命中时抛出 MatchError。分支绑定每次进入时创建，闭包保留当次值。源码与 ASB 使用相同执行路径，示例见 [match_values](../examples/match_values/src/main.aside)。
 
-`(left, right)` 匹配两个元素的 tuple，`{score, outcome: "won"}` 匹配恰有两个所列字段的记录，字段顺序不限，可用 `field: _` 忽略字段值。结构不符、字段缺失或子模式失败时继续匹配下一候选，完整命中后才建立绑定并运行 guard。两种模式可嵌套，字段有已知静态类型时分支绑定沿用该类型。
+`(left, right)` 匹配两个元素的 tuple，`{score, outcome: "won"}` 匹配恰有两个所列字段的记录。记录模式末尾的 `..` 允许其他自有字段，例如 `{kind: "card", id, ..}`。匹配直接读取列出的自有字段，略过其他字段。字段顺序不限，可用 `field: _` 忽略仍须存在的字段值。结构不符、字段缺失或子模式失败时继续匹配下一候选，完整命中后才建立绑定并运行 guard。两种模式可嵌套，字段有已知静态类型时分支绑定沿用该类型。
+
+`if let pattern = value { ... } else { ... }` 使用同样的模式匹配，输入只求值一次。命中时进入前一个分支，该分支内可用模式绑定。失败时沿普通 `if` 规则进入 `else` 或结束语句。作为取值表达式仍需要 `else`。例如 `if let Menu.Load { slot } = selection { open(slot); }` 只处理载入选项。
 
 模块级 `enum` 为状态或结果声明有限个变体。无载荷的变体用 `Menu.Back` 直接取值，有载荷的变体用调用传入值。具名参数和位置参数的求值顺序沿普通调用规则，载荷字段在声明时给出类型。其他模块可通过 `pub enum` 导入类型和各变体。
 
@@ -264,6 +272,8 @@ use reel::{stage,text}; 为分组导入，use ui::dialogue::dialogue_view; 为�
 
 `{node: Node, caption: TextNode}` 描述一张具有这些自有字段的 table。字段名和类型必须吻合，字段顺序不影响类型。值仍使用普通 table 及其身份，因而可以解构、传参和组合。通过结构类型读写具名字段时检查其类型，其他 table 别名的改动也会在下一次类型检查时被发现。
 
+在模块级用 `type Context = {scene: Node, caption: TextNode};` 给已有类型命名。别名可用于注解和 `is`，支持前向引用。`pub type` 导出别名，其他模块沿普通 `use` 和 `pub use` 导入、改名或重导出。别名只在编译时展开，展开前后使用相同的类型检查、存档合同和字节码表示。别名没有值或构造器，多个别名之间的循环依赖在源码位置报错。`type` 在声明句之外仍可用作名称。
+
 字符串字面量可以作为类型。例如 `fn menu() -> "back" | "title"` 将结果限制在这两个值。已知字面量不符时在表达式位置报错，动态值沿参数、绑定和返回的普通类型检查处理。字面量类型也可用于 `is`，比较解码后的字符串内容。
 
 直接 lambda 可从调用参数、带类型的 let、赋值和返回位置取得唯一的 Callable 期望，补全未注解的参数与结果类型，再分析正文。可空 Callable 沿用其函数签名；显式参数注解保持作者声明并检查兼容性，歧义 union 与无法静态匹配的展开参数沿动态规则处理。Callable 签名不编码等待效果，NoWait 继续由调用上下文约束。
@@ -327,7 +337,7 @@ Rust 宿主内部弱登记复用 `Heap::peek_weakref`，在不运行 GC 的事�
 
 ## 十三 迭代
 
-`for` 支持 array、tuple、整数区间和生成器。每轮捕获的局部名称建立独立绑定。
+`for` 支持 array、tuple、整数区间和生成器。每轮捕获的局部名称建立独立绑定。`for index, item in values` 同时绑定从零开始的 int 索引和当前项。索引位置是名称或 `_`，第二个位置可用普通循环模式。索引按实际取到的元素递增，`continue` 后仍按原顺序计数。使用与普通 `for` 一样的源求值、迭代、错误和清理规则，无需中间数组或每项创建索引元组。着色器循环继续使用单项绑定。
 
 `gen fn` 调用时按普通函数规则绑定参数和求值缺省值，返回生成器。第一次推进才执行正文；`yield value` 交付一个值并保留局部状态，下次推进从该处继续，`yield` 表达式的结果为 `null`。返回注解 `-> T` 约束最终返回值，逐项产出的类型由 `yield` 推断。生成器函数的 callable 返回类型为 `generator`。实例方法可以使用 `gen fn`，构造方法 `init` 使用普通 `fn`。
 
@@ -475,7 +485,9 @@ reel-engine 直接依赖 aside-compiler；发布工具也接受已编译 ASB。�
 
 静态成员访问使用接收者的已知成员合同：数组、tuple、字符串、完整声明的类和宿主类型访问不存在的成员时，在成员名处报告诊断。table、any、动态索引及成员合同未知的类型继续在运行时解析；普通记录的字段推断用于编辑提示，记录仍可添加字段。
 
-`NoWait` 和派生求值会检查可静态确定的宿主效果。普通函数的正文只包含一次非可选调用时，编译器可沿直接的具名函数调用追踪启动任务或不允许派生的宿主调用。诊断标出受限制位置的调用，并附上函数内的宿主调用位置。包含条件分支或动态分派的函数继续由有效执行上下文检查。
+`NoWait` 和派生求值会检查可静态确定的宿主效果。编译器沿模块内具名普通函数的直接调用，汇总顺序语句和 `if` 分支中确定执行的任务启动或宿主限制。条件的所有路径都触发同一种限制时，可以给出诊断。诊断标出受限制位置的调用，并附上该调用链内触发限制的宿主调用。间接效果只在某条路径上执行时，仍沿实际执行路径检查。可选调用和动态分派也在运行时检查间接效果。
+
+当源码返回值推断确定某个普通调用只会返回不可等待值时，`await` 在编译检查与编辑器中标出。结果仍依赖动态类型的调用沿运行时 Awaitable 合同检查。
 
 `aside-lsp` 通过标准输入输出提供语言服务，复用编译器的无损语法树、符号身份、类型和模块解析。打开文档的内容覆盖磁盘版本；源码使用 UTF-8，编辑器位置按协议协商转换，诊断带文档版本。作用域补全、悬停、定义跳转和参数提示共享一次分析结果。项目宿主注入自己的默认环境与接口说明，Aside 后端保持独立。内置接口的定义视图从 Rust 声明生成，包含英文文档、具名参数、类型、默认值及属性读写权限；定义视图供阅读和导航，运行时仍调用原宿主实现。声明中的 `name?: type` 表示可省略且没有替代默认值的原生参数；显式传入的值仍须符合所列类型。
 

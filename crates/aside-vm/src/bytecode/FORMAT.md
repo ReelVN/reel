@@ -203,6 +203,7 @@ begin at register_count.
 | 0069 | MatchFail | - | throw MatchError | yes | - |
 | 006a | SuperRef | d (captures the current method's receiver and lexical base) | next | yes | - |
 | 006b | ChildrenSpread | x,y | next (capture composable children and skip null) | yes | - |
+| 006c | PatternField | k,x,d | next (read own key `k` of table `x`, replace `k` with presence, and write the field or null to `d`; `d = k` only checks presence) | yes | - |
 | 0070 | Throw | x | throw/unwind | yes | - |
 | 0071 | Rethrow | — | throw (catch only) | yes | - |
 | 0072 | Leave | p | unwind cleanup then target | yes | - |

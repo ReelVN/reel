@@ -746,6 +746,19 @@ impl Vm {
                     return Err(FaultKind::PatternMismatch);
                 }
             }
+            Opcode::PatternField => {
+                let (table, key) = self.read_pair(s.regs, b, a)?;
+                let action = if a == c {
+                    TableAction::HasOwn(r(a))
+                } else {
+                    TableAction::PatternRead {
+                        present: r(a),
+                        dest: r(c),
+                    }
+                };
+                self.start_table(s, table, key, action)?;
+                return Ok(false);
+            }
             Opcode::MatchFail => return Err(FaultKind::MatchError),
             Opcode::Throw => {
                 let v = self.read(s.regs, r(a))?;

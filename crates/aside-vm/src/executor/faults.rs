@@ -205,6 +205,8 @@ impl Vm {
                     _ => None,
                 };
                 s.table_work = None;
+                self.abort_class(&s)?;
+                self.clear(s.env, 3)?;
                 self.put(s.env, 1, Value::NULL)?;
                 if let Some(id) = explicit {
                     self.put(s.env, 2, id.as_value())?;

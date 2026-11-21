@@ -9,6 +9,22 @@ fn input(path: &str, source: &str) -> SourceModule {
 }
 
 #[test]
+fn imported_plain_call_uses_inferred_await_diagnostic_at_the_use() {
+    let source = "use model::load; fn inspect() { await load(); }";
+    let result = analyze_project(
+        &[input("main", source), input("model", "pub fn load() { 42 }")],
+        &AnalysisOptions::default(),
+        &mut NoModules,
+    )
+    .unwrap();
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.module, "main");
+    assert_eq!(diagnostic.diagnostic.code, DiagnosticCode::TypeMismatch);
+    assert_eq!(&source[diagnostic.diagnostic.range], "await");
+}
+
+#[test]
 fn imported_class_member_diagnostics_share_the_export_contract() {
     let code = "use model::Item; fn inspect(item:Item){item.missing();}";
     let result = analyze_project(

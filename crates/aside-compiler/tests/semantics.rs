@@ -42,6 +42,13 @@ fn enum_cases_report_unknown_missing_and_typed_payloads() {
         "enum Menu { Load(slot: int) } fn pick() { Menu.Load(slot: \"four\") }",
         DiagnosticCode::TypeMismatch,
     );
+    valid(
+        "enum Menu { Back, Load(slot: int, details: string) } fn pick(v: Menu) -> int { if let Menu.Load {slot, ..} = v { slot } else { 0 } }",
+    );
+    rejects(
+        "enum Menu { Load(slot: int, details: string) } fn pick(v: Menu) { if let Menu.Load {slto, ..} = v { slto; } }",
+        DiagnosticCode::UnknownMember,
+    );
 }
 
 #[test]
@@ -278,6 +285,114 @@ fn short_circuit_effects_inherit_conditional_execution() {
             .iter()
             .any(|diagnostic| diagnostic.code == DiagnosticCode::InvalidEffect)
     );
+}
+
+#[test]
+fn helper_effects_follow_all_paths_and_preserve_the_host_call_location() {
+    let options = AnalysisOptions {
+        hosts: vec![ExternalSymbol::function(
+            "launch",
+            ExternalSignature {
+                result_parameter: None,
+                result_cases: Vec::new(),
+                parameters: vec![],
+                result: TypeHint::Null,
+                effect: CallEffect::StartsTask,
+                init_safe: Some(false),
+                derived_safe: Some(false),
+            },
+        )],
+        ..Default::default()
+    };
+    let source = "fn open(active) { if active { launch(); } else { launch(); } }
+                  fn helper(active) { let flag = active; open(flag); }
+                  gen fn preview() { helper(true); yield 0; }";
+    let result = analyze_module(source, &options, &mut NoModules).unwrap();
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == DiagnosticCode::NoWait)
+        .unwrap();
+    let text = |range: TextRange| &source[usize::from(range.start())..usize::from(range.end())];
+    assert_eq!(text(diagnostic.range), "helper(true)");
+    assert_eq!(text(diagnostic.related[0].range), "launch()");
+    for source in [
+        "fn guarded(active) { if active { launch(); } } gen fn preview() { guarded(false); yield 0; }",
+        "fn open(active) { if !active { return; } launch(); } gen fn preview() { open(false); yield 0; }",
+        "fn open() { launch(); } gen fn preview() { if false { open(); } yield 0; }",
+        "fn open(callback) { callback(); } gen fn preview() { open(|| null); yield 0; }",
+        "fn one(active) { if active { launch(); } else { two(active); } }
+         fn two(active) { one(active); } gen fn preview() { two(true); yield 0; }",
+    ] {
+        let result = analyze_module(source, &options, &mut NoModules).unwrap();
+        assert!(result.is_ok(), "{source}: {:?}", result.diagnostics);
+    }
+}
+
+#[test]
+fn derived_helpers_report_a_forbidden_host_call_without_rejecting_guarded_paths() {
+    let host_signature = |derived_safe| ExternalSignature {
+        result_parameter: None,
+        result_cases: Vec::new(),
+        parameters: vec![],
+        result: TypeHint::Int,
+        effect: CallEffect::NoWait,
+        init_safe: Some(false),
+        derived_safe: Some(derived_safe),
+    };
+    let mut derive = ExternalSymbol::function("derive", host_signature(true));
+    derive.intrinsic = Some(Intrinsic::Derive);
+    derive
+        .signature
+        .as_mut()
+        .unwrap()
+        .parameters
+        .push(ExternalParameter {
+            name: "expression".into(),
+            ty: TypeHint::Closure,
+            mutable: false,
+            default: false,
+            rest: false,
+        });
+    let options = AnalysisOptions {
+        hosts: vec![
+            derive,
+            ExternalSymbol::function("read_host", host_signature(false)),
+        ],
+        ..Default::default()
+    };
+    let source = "fn read(active) { if active { read_host() } else { read_host() } }
+                  fn build() { derive(|| read(true)) }";
+    let result = analyze_module(source, &options, &mut NoModules).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| { d.code == DiagnosticCode::InvalidEffect && d.related.len() == 1 }),
+        "{:?}",
+        result.diagnostics
+    );
+    let source = "fn read(active) { if active { read_host() } else { 0 } }
+                  fn build() { derive(|| read(false)) }";
+    let result = analyze_module(source, &options, &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+}
+
+#[test]
+fn await_diagnoses_inferred_ordinary_results_and_accepts_unknown_or_future_results() {
+    let source = "fn read() { 4 } fn helper() { read() } fn main() { await helper(); }";
+    let result = analyze_code(source);
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|d| d.code == DiagnosticCode::TypeMismatch)
+        .unwrap();
+    assert_eq!(
+        &source[usize::from(diagnostic.range.start())..usize::from(diagnostic.range.end())],
+        "await"
+    );
+    valid("fn obtain(callback) { callback() } fn main(callback) { await obtain(callback); }");
+    valid("async fn read() { 4 } fn helper() { read() } fn main() { await helper(); }");
 }
 #[test]
 fn shared_large_signatures_are_built_once_and_charge_parameter_work() {

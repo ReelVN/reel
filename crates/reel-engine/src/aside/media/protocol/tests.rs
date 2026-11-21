@@ -330,27 +330,44 @@ fn audio_queue_position_aliases_and_adoption_use_one_typed_graph_source_asb() {
 
 #[test]
 fn terminal_audio_await_returns_its_saved_result_without_starting_transport() {
-    let a =
-        code(r#"state.track=audio.play("old.ogg");point("line");narrator("A");await state.track"#);
     let b = code(
         r#"state.track=audio.play("changed.ogg");point("line");narrator("B");await state.track"#,
     );
-    let old = Backend::default();
-    let (session, mut vm) = start(&a, false, old.clone());
-    old.terminal();
-    let record = capture(&mut vm, &session);
-    let backend = Backend::default();
-    let (mut session, mut vm) = restore(&b, false, record, backend.clone());
-    assert!(backend.0.borrow().entries.is_empty());
-    advance(&mut session);
-    let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
-        panic!("terminal media did not complete")
-    };
-    assert_eq!(
-        crate::aside::text::read_string(vm.vm.heap(), vm.vm.delivery_value(delivery).unwrap(), 64)
+    for omitted in [false, true] {
+        let a = code(if omitted {
+            r#"game.reading().set_skip(true, unread: true);
+                narrator("Skipped", wait: false);
+                state.track=audio.play("omitted.ogg", group: "voice", skip: "omit");
+                game.reading().set_skip(false);
+                point("line");narrator("A");await state.track"#
+        } else {
+            r#"state.track=audio.play("old.ogg");point("line");narrator("A");await state.track"#
+        });
+        let old = Backend::default();
+        let (session, mut vm) = start(&a, false, old.clone());
+        if omitted {
+            assert!(old.0.borrow().entries.is_empty());
+        } else {
+            old.terminal();
+        }
+        let record = capture(&mut vm, &session);
+        let backend = Backend::default();
+        let (mut session, mut vm) = restore(&b, false, record, backend.clone());
+        assert!(backend.0.borrow().entries.is_empty());
+        advance(&mut session);
+        let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
+            panic!("terminal media did not complete")
+        };
+        assert_eq!(
+            crate::aside::text::read_string(
+                vm.vm.heap(),
+                vm.vm.delivery_value(delivery).unwrap(),
+                64,
+            )
             .unwrap(),
-        "Stopped"
-    );
+            "Stopped"
+        );
+    }
 }
 
 #[test]

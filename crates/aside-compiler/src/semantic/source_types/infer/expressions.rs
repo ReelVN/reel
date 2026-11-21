@@ -357,15 +357,20 @@ impl Inference<'_> {
                 }
             }
             Form::Condition {
+                pattern,
                 condition,
                 body,
                 otherwise,
-                ..
             } => {
-                self.visit(m, condition, state, depth + 1);
+                let input = self.visit(m, condition, state, depth + 1);
                 let Some(mut yes) = self.clone_state(state) else {
                     return Value::plain(self.unknown.clone());
                 };
+                if let Some(pattern) = pattern
+                    && module.hir.node(pattern).kind == HirKind::NamePattern
+                {
+                    self.bind_pattern(m, pattern, input, &mut yes);
+                }
                 let a = self.visit(m, body, &mut yes, depth + 1);
                 let a = self.snapshot(&a, &mut yes);
                 let Some(mut no) = self.clone_state(state) else {
@@ -393,6 +398,7 @@ impl Inference<'_> {
                 result = self.materialize(joined, state);
             }
             Form::For {
+                index,
                 pattern,
                 source,
                 body,
@@ -408,6 +414,9 @@ impl Inference<'_> {
                         state,
                     )
                 });
+                if let Some(index) = index {
+                    self.bind_pattern(m, index, Value::plain(self.leaf(TypeHint::Int)), state);
+                }
                 self.bind_pattern(m, pattern, value, state);
                 let Some(before) = self.clone_state(state) else {
                     return Value::plain(self.unknown.clone());

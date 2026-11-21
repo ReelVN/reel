@@ -605,6 +605,7 @@ fn readonly(
             | bc::Opcode::GlobalRead
             | bc::Opcode::MemberGet
             | bc::Opcode::IndexGet
+            | bc::Opcode::PatternField
             | bc::Opcode::CheckType
             | bc::Opcode::Add
             | bc::Opcode::Sub

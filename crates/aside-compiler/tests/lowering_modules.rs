@@ -113,6 +113,103 @@ fn enum_namespaces_import_as_types_and_construct_ordinarily() {
 }
 
 #[test]
+fn type_aliases_share_structural_contracts_through_reexports_and_bytecode() {
+    let compilation = compile(&[
+        (
+            "types",
+            r#"type Mode = "back" | "title";
+            type Scene = {label: string, index: int};
+            pub type Context = (Scene, int);
+            pub type Callback = fn(Mode) -> int;
+            pub fn score(input: Context, callback: Callback) -> int {
+                let (scene, offset) = input;
+                scene.index + offset + callback("back")
+            }"#,
+        ),
+        (
+            "api",
+            "pub use types::{Context as Request, Callback, score};",
+        ),
+        (
+            "main",
+            r#"use api::{Callback as Handler, score};
+            use api as types;
+            type Request = Forward;
+            type Forward = types::Request;
+            fn dispatch(input: Request) -> int {
+                let callback: Handler = |mode| if mode == "back" { 2 } else { 0 };
+                score(input, callback)
+            }
+            fn main() {
+                let type = ({label: "chapter", index: 37}, 3);
+                if type is Request { dispatch(type) } else { 0 }
+            }"#,
+        ),
+    ]);
+    let package = compilation.program.package();
+    for module in &package.modules {
+        assert!(module.globals.iter().all(|global| !matches!(
+            package.symbols[global.name.index()].as_str(),
+            "Mode" | "Scene" | "Context" | "Callback" | "Request" | "Handler" | "Forward"
+        )));
+    }
+    let main = bc::FunctionId(
+        package
+            .functions
+            .iter()
+            .position(|function| package.symbols[function.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let encoded = bc::encode(package, bc::Limits::default()).unwrap();
+    let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
+    let mut vm = Vm::load(
+        program,
+        bc::RuntimeSupport::default(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    value(&mut vm, compilation.initializer);
+    assert_eq!(value(&mut vm, main).as_int(), Some(42));
+}
+
+#[test]
+fn type_alias_cycles_report_the_reference_in_local_and_imported_sources() {
+    let local = aside_compiler::analyze_module(
+        "type A = {child: B}; type B = A;",
+        &AnalysisOptions::default(),
+        &mut NoModules,
+    )
+    .unwrap();
+    let diagnostic = local
+        .diagnostics
+        .iter()
+        .find(|d| d.message == "cyclic type alias")
+        .unwrap();
+    assert_eq!(diagnostic.range.len(), 1.into());
+    let modules = [
+        ("left", "use right::Right; pub type Left = (Right, int);"),
+        ("right", "use left::Left; pub type Right = Left;"),
+    ]
+    .map(|(path, source)| SourceModule {
+        canonical_path: path.into(),
+        source_path: None,
+        version: "1".into(),
+        source: source.into(),
+    });
+    let project = analyze_project(&modules, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(!project.is_ok());
+    assert!(
+        project
+            .diagnostics
+            .iter()
+            .any(|d| d.diagnostic.message == "cyclic type alias" && !d.diagnostic.range.is_empty()),
+        "{:?}",
+        project.diagnostics
+    );
+}
+
+#[test]
 fn completed_signatures_share_across_modules_without_merging_functions_or_defaults() {
     let compilation = compile(&[
         (

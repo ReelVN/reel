@@ -254,6 +254,8 @@ Use tuples for fixed shapes. `let` and `for` support fixed-length destructuring,
 
 Destructure objects by field name with `let {value: item, index} = row;`. A field without an alias binds its own name.
 
+When several annotations share one shape, write `type Caption = {message: string, color: string};` at module scope and use `Caption` in the annotations. Declare it with `pub type` to make the name available to other modules through `use`.
+
 ```aside
 let settings = {language: "zh-CN", volume: 0.8};
 for (key, value) in settings.entries() {
@@ -272,23 +274,27 @@ let caption = match mode {
 };
 ```
 
-The menu can return `MenuResult.Back` or `MenuResult.Load(slot: 3)`. Use an enum when a result has a set of named cases. The compiler checks that a match on the enum has handled all its cases.
+The menu can return `MenuResult.Back` or `MenuResult.Load(slot: 3, preview: false)`. Use an enum when a result has a set of named cases. The compiler checks that a match on the enum has handled all its cases. Put `..` at the end of a record pattern to leave other fields unexamined. Use `if let` when you only need to handle one case.
 
 ```aside
 enum MenuResult {
     Back,
-    Load(slot: int),
+    Load(slot: int, preview: bool),
 }
 
 fn selected(result: MenuResult) -> string {
     match result {
         MenuResult.Back => "返回",
-        MenuResult.Load { slot } => f"读取第 {slot} 槽",
+        MenuResult.Load { slot, .. } => f"读取第 {slot} 槽",
     }
+}
+
+fn slot_to_load(result: MenuResult) -> int | null {
+    if let MenuResult.Load { slot, .. } = result { slot } else { null }
 }
 ```
 
-Container methods express insertion, removal, slicing and reversal directly. Table `entries()` returns `(key, value)` pairs. See [collections](../../examples/collections/src/main.aside) and [collection_editing](../../examples/collection_editing/src/main.aside).
+Container methods express insertion, removal, slicing and reversal directly. Use `filter` to select items and `map` to turn them into display labels. When you need row numbers, `for index, item in items` gives you a zero-based index alongside each item. Table `entries()` returns `(key, value)` pairs. See [collections](../../examples/collections/src/main.aside) and [collection_editing](../../examples/collection_editing/src/main.aside).
 
 ```aside
 let rows = ["序章", "第一章"];
@@ -301,6 +307,13 @@ let names = theme.keys();
 let caption = " · ".join(rows);
 let opening = caption.slice_scalars(0..2);
 let has_opening = caption.starts_with(prefix: "第二章");
+let divider = caption.find(" · ");
+let chapters = rows.filter(|row| row != "序章");
+let labels = chapters.map(|row| f"阅读 {row}");
+let numbered = [];
+for index, label in labels {
+    numbered.append(f"{index + 1}. {label}");
+}
 ```
 
 Keep binary data in `resources/` and load it on demand with `assets.read`. The result is immutable `Bytes`, with length and byte indexing.
@@ -1620,6 +1633,8 @@ column(gap: 6) {
 ## 14 Audio and video
 
 `audio.play` returns a controllable, awaitable activity. Group volumes serve music, voices, effects and UI; `owner` binds playback to a scene lifetime. The host chooses loading appropriate to short sounds or long tracks.
+
+Publish dialogue with `wait: false`, start the voice with `audio.play(source, group: "voice", skip: "omit")`, then wait for the dialogue. When fast-forward can skip that dialogue, the voice returns a terminal activity and `await` yields `"Stopped"`. Use `audio.stop` to stop an earlier voice. Manual replay can use the default `skip: "keep"`.
 
 ```aside
 fn main() {

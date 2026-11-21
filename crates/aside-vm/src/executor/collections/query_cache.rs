@@ -66,7 +66,10 @@ impl Vm {
         if len < 16
             || !matches!(
                 frame.table_work.unwrap().action,
-                TableAction::Get(_) | TableAction::GetDefault { .. } | TableAction::HasOwn(_)
+                TableAction::Get(_)
+                    | TableAction::PatternRead { .. }
+                    | TableAction::GetDefault { .. }
+                    | TableAction::HasOwn(_)
             )
         {
             return Ok(None);

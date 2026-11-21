@@ -23,7 +23,7 @@ pub(super) struct Paragraph {
     mapping: Vec<Mapping>,
     brushes: Vec<Brush>,
     plain: Range<usize>,
-    text: String,
+    shaped_len: usize,
     source: Text,
     emphasis: bool,
     default_color: Option<Brush>,
@@ -113,7 +113,7 @@ impl Paragraph {
         }
         let caret = reel_text::Cursor::from_byte_index(
             &self.layout,
-            self.text.len(),
+            self.shaped_len,
             reel_text::Affinity::Upstream,
         )
         .geometry(&self.layout, 0.);
@@ -176,6 +176,7 @@ impl Paragraph {
             ..Default::default()
         };
         let mut cursor = range.start;
+        let mut shaped_text = String::new();
         // Base and note fragments share the text but create no further ruby boxes.
         let annotations = if ruby { text.ruby() } else { &[] };
         let first_annotation = annotations.partition_point(|r| r.range.start < range.start);
@@ -185,7 +186,7 @@ impl Paragraph {
         {
             let unit = annotation.range.clone();
             let note = annotation.annotation.as_ref();
-            out.append(text, cursor..unit.start);
+            out.append(&mut shaped_text, text, cursor..unit.start);
             let base = Self::fragment(
                 fonts,
                 context,
@@ -254,7 +255,7 @@ impl Paragraph {
             let width = base.width().max(note.width());
             out.boxes.push(Annotation {
                 range: unit.clone(),
-                index: out.text.len(),
+                index: shaped_text.len(),
                 base,
                 note,
                 width,
@@ -263,13 +264,23 @@ impl Paragraph {
             });
             cursor = unit.end;
         }
-        out.append(text, cursor..range.end);
-        let mut builder = context.ranged_builder(fonts, &out.text, scale, quantize);
+        let plain_mapping = Mapping {
+            plain: range.clone(),
+            start: 0,
+        };
+        let (layout_text, mapping): (&str, &[Mapping]) = if out.boxes.is_empty() {
+            (&text[range], std::slice::from_ref(&plain_mapping))
+        } else {
+            out.append(&mut shaped_text, text, cursor..range.end);
+            (&shaped_text, &out.mapping)
+        };
+        out.shaped_len = layout_text.len();
+        let mut builder = context.ranged_builder(fonts, layout_text, scale, quantize);
         builder.set_writing_mode(writing_mode);
         for property in styles.inner().values() {
             builder.push_default(property.clone());
         }
-        for piece in &out.mapping {
+        for piece in mapping {
             let first = text
                 .spans()
                 .partition_point(|s| s.range.end <= piece.plain.start);
@@ -300,7 +311,7 @@ impl Paragraph {
         }
         {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiTextShape);
-            builder.build_into(&mut out.layout, &out.text);
+            builder.build_into(&mut out.layout, layout_text);
         }
         out.wrap(width);
         out
@@ -495,22 +506,25 @@ impl Paragraph {
             .partition_point(|&(top, _)| f64::from(top) <= viewport.y1 + padding);
         start..end
     }
-    fn append(&mut self, source: &str, range: Range<usize>) {
+    fn append(&mut self, text: &mut String, source: &str, range: Range<usize>) {
         if range.is_empty() {
             return;
         }
         self.mapping.push(Mapping {
             plain: range.clone(),
-            start: self.text.len(),
+            start: text.len(),
         });
-        self.text.push_str(&source[range]);
+        text.push_str(&source[range]);
     }
     fn position(&self, plain: usize) -> usize {
         if plain <= self.plain.start {
             return 0;
         }
         if plain >= self.plain.end {
-            return self.text.len();
+            return self.shaped_len;
+        }
+        if self.boxes.is_empty() {
+            return plain - self.plain.start;
         }
         let i = self.mapping.partition_point(|m| m.plain.start <= plain);
         if let Some(piece) = i.checked_sub(1).map(|i| &self.mapping[i]) {
@@ -574,7 +588,7 @@ impl Paragraph {
         let range = self.position(visible.start)..self.position(visible.end);
         let lines = self.visible_lines(viewport, transform, outline);
         if range.start == 0
-            && range.end == self.text.len()
+            && range.end == self.shaped_len
             && fade.is_none_or(|fade| fade.alpha(graphemes, self.plain.clone()) == 1.)
             && inherited_alpha == 1.
         {
@@ -813,6 +827,9 @@ impl Paragraph {
         self.plain_position(cluster.text_range().start)
     }
     fn plain_position(&self, offset: usize) -> Option<usize> {
+        if self.boxes.is_empty() {
+            return (offset < self.shaped_len).then_some(self.plain.start + offset);
+        }
         let i = self
             .mapping
             .partition_point(|m| m.start <= offset)

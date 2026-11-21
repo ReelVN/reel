@@ -103,7 +103,7 @@ pub(super) fn keyword_completions(source: &Source, offset: usize) -> Vec<Complet
                 | K::QuestionQuestion
         )
     );
-    K::KEYWORDS
+    let mut items: Vec<_> = K::KEYWORDS
         .iter()
         .filter(|(kind, _)| match previous {
             _ if *kind == K::Async => false,
@@ -153,5 +153,30 @@ pub(super) fn keyword_completions(source: &Source, offset: usize) -> Vec<Complet
             kind: Some(CompletionItemKind::KEYWORD),
             ..Default::default()
         })
-        .collect()
+        .collect();
+    if module_scope
+        && !type_position
+        && !expression
+        && !matches!(
+            previous,
+            Some(
+                K::Let
+                    | K::Mut
+                    | K::Fn
+                    | K::Class
+                    | K::Enum
+                    | K::As
+                    | K::Static
+                    | K::Async
+                    | K::Gen
+            )
+        )
+    {
+        items.push(CompletionItem {
+            label: "type".into(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        });
+    }
+    items
 }

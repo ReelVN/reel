@@ -168,12 +168,19 @@ impl Compiler<'_> {
                 (
                     H::For,
                     Form::For {
+                        index: index_binding,
                         pattern,
                         source,
                         body,
                         asynchronous: false,
                     },
                 ) => {
+                    if let Some(index) = index_binding {
+                        return Err(self.error(
+                            Site(frame.module, index),
+                            "indexed for is not supported in effects",
+                        ));
+                    }
                     let Form::Binary {
                         left,
                         operator,
@@ -968,11 +975,18 @@ impl Compiler<'_> {
             _ => None,
         };
         let numbers = values.iter().map(number).collect::<Option<Vec<_>>>();
-        if name == "clamp"
-            && !matches!((number(&values[1]), number(&values[2])), (Some(a), Some(b)) if a.is_finite() && b.is_finite() && a <= b)
-        {
-            return Err(self.error(site, "drawing clamp requires ordered constant bounds"));
-        }
+        let dynamic_clamp = name == "clamp"
+            && match (number(&values[1]), number(&values[2])) {
+                (Some(minimum), Some(maximum)) => {
+                    if !minimum.is_finite() || !maximum.is_finite() || minimum > maximum {
+                        return Err(
+                            self.error(site, "drawing clamp requires ordered constant bounds")
+                        );
+                    }
+                    false
+                }
+                _ => true,
+            };
         if name == "modulo" && number(&values[1]) == Some(0.0) {
             return Err(self.error(site, "drawing modulo requires a nonzero divisor"));
         }
@@ -1075,6 +1089,27 @@ impl Compiler<'_> {
             "clamp" | "mix" | "smoothstep" => {
                 let a = self.node(site, first)?;
                 let b = self.node(site, values[1].clone())?;
+                if dynamic_clamp {
+                    let raised = self.push(
+                        site,
+                        Ty::Float,
+                        Op::Binary {
+                            op: Binary::Max,
+                            left: a,
+                            right: b,
+                        },
+                    )?;
+                    let maximum = self.node(site, values[2].clone())?;
+                    return Ok(Value::Node(self.push(
+                        site,
+                        Ty::Float,
+                        Op::Binary {
+                            op: Binary::Min,
+                            left: raised,
+                            right: maximum,
+                        },
+                    )?));
+                }
                 let c = self.node(site, values[2].clone())?;
                 Ok(Value::Node(self.push(
                     site,

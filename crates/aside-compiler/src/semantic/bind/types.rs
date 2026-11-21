@@ -2,6 +2,22 @@
 use super::*;
 
 impl Binder<'_> {
+    pub(super) fn external_type(&mut self, symbol: &ExternalSymbol) -> TypeId {
+        if let TypeHint::Named(name) = &symbol.ty {
+            if let Some(ty) = self.named_alias_hint(name) {
+                return ty;
+            }
+            if symbol.intrinsic != Some(Intrinsic::TypeAlias)
+                && let Some(reference) = &symbol.reference
+                && let Some(export) = &reference.export
+            {
+                let name = self.intern_name(&format!("{}::{export}", reference.module));
+                return self.intern_type(Type::Named(name));
+            }
+        }
+        self.hint(&symbol.ty)
+    }
+
     pub(super) fn coalesced_type(&mut self, node: NodeId, left: TypeId, right: TypeId) -> TypeId {
         if left == NULL {
             return right;
@@ -90,10 +106,20 @@ impl Binder<'_> {
                         let name = t.name.unwrap();
                         if let Some(s) = self.lookup(name) {
                             self.out.facts[n.0 as usize].symbol = Some(s);
+                            if self.type_aliases.contains_key(&s) {
+                                let ty = self.resolve_type_alias(s, t.span);
+                                return self.set_ty(n, ty);
+                            }
                             if let Some(descriptor) = self.external.get(&s).cloned()
-                                && descriptor.intrinsic == Some(Intrinsic::EnumType)
+                                && matches!(
+                                    descriptor.intrinsic,
+                                    Some(Intrinsic::EnumType | Intrinsic::TypeAlias)
+                                )
                             {
                                 let ty = self.hint(&descriptor.ty);
+                                if descriptor.intrinsic == Some(Intrinsic::TypeAlias) {
+                                    self.out.symbols[s.0 as usize].ty = ty;
+                                }
                                 self.external_nodes.insert(n, descriptor);
                                 return self.set_ty(n, ty);
                             }
@@ -234,6 +260,7 @@ impl Binder<'_> {
             let ty = match &descriptor.ty {
                 TypeHint::Named(_) | TypeHint::Enum { .. } => self.external_type(&descriptor),
                 TypeHint::Any => ANY,
+                hint if descriptor.intrinsic == Some(Intrinsic::TypeAlias) => self.hint(hint),
                 _ => {
                     self.error(
                         D::InvalidType,

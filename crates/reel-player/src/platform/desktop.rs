@@ -487,9 +487,12 @@ impl ApplicationHandler for App {
                     8
                 }
             });
+            let completion_deadline =
+                completion_interval.map(|ms| Instant::now() + Duration::from_millis(ms));
+            let story_deadline = state.story_deadline();
             let deadlines = [
-                completion_interval.map(|ms| Instant::now() + Duration::from_millis(ms)),
-                state.story_deadline(),
+                completion_deadline,
+                story_deadline.map(|(deadline, _)| deadline),
                 state.input_deadline(),
                 self.wake.is_pending().then(Instant::now),
             ];
@@ -502,18 +505,18 @@ impl ApplicationHandler for App {
                 drop(_timing);
                 if let Some(capture) = &mut self.capture {
                     use performance::Reason;
-                    let reason = match deadline {
-                        None => Reason::Idle,
-                        Some(_) if deadline == deadlines[0] => {
+                    let reason = match (deadline, story_deadline) {
+                        (None, _) => Reason::Idle,
+                        (Some(_), _) if deadline == deadlines[0] => {
                             if completion_interval == Some(1) {
                                 Reason::UploadPoll
                             } else {
                                 Reason::CompletionPoll
                             }
                         }
-                        Some(_) if deadline == deadlines[1] => Reason::Story,
-                        Some(_) if deadline == deadlines[2] => Reason::Input,
-                        Some(_) => Reason::Notified,
+                        (Some(at), Some((story, source))) if at == story => Reason::Story(source),
+                        (Some(_), _) if deadline == deadlines[2] => Reason::Input,
+                        (Some(_), _) => Reason::Notified,
                     };
                     capture.wait(deadline, reason);
                     self.capture_wait = Some(reel_core::profile::Scope::new(

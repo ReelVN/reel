@@ -213,7 +213,12 @@ impl Parser<'_> {
                     if rest {
                         self.error(D::InvalidRest, "rest pattern must be last");
                     }
-                    if self.peek() == K::Ellipsis {
+                    if allow_variants && self.peek() == K::Range {
+                        rest = true;
+                        self.start(K::RestPattern);
+                        self.bump();
+                        self.finish();
+                    } else if self.peek() == K::Ellipsis {
                         rest = true;
                         self.start(K::RestPattern);
                         self.bump();

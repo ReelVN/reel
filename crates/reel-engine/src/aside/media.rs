@@ -1,7 +1,10 @@
 use super::{AdapterError, HostTicket, SessionVm, observable, stage, text};
-use crate::audio::{AudioGroup, AudioLoopRegion, AudioRequest};
 use crate::media::{
     MediaBackend, MediaCommand, MediaCompletion, MediaId, MediaPlayback, MediaResult,
+};
+use crate::{
+    Interaction, Session,
+    audio::{AudioGroup, AudioLoopRegion, AudioRequest},
 };
 use aside_vm::executor::{Completion, HostResponse, TaskId, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
@@ -411,6 +414,21 @@ fn group(name: &str) -> Result<AudioGroup, AdapterError> {
         )),
     }
 }
+
+fn omit_during_skip(heap: &Heap, policy: Value) -> Result<bool, AdapterError> {
+    let info = heap.info(policy)?;
+    if info.kind == aside_vm::ObjectKind::String && info.len == 4 {
+        let mut bytes = [0; 4];
+        text::read_fixed_bytes(heap, policy, &mut bytes)?;
+        match &bytes {
+            b"keep" => return Ok(false),
+            b"omit" => return Ok(true),
+            _ => {}
+        }
+    }
+    Err(AdapterError::Input("audio skip must be keep or omit"))
+}
+
 impl SessionVm {
     /// Install once before executing author code. No platform dependency enters the VM.
     pub fn set_media(&mut self, backend: Box<dyn MediaBackend>) -> Result<(), AdapterError> {
@@ -657,6 +675,7 @@ impl SessionVm {
     }
     pub(super) fn dispatch_media(
         &mut self,
+        session: &Session,
         ticket: HostTicket,
         symbol: &str,
     ) -> Result<(), AdapterError> {
@@ -672,7 +691,7 @@ impl SessionVm {
             self.issued = None;
             return Ok(());
         }
-        let args = self.vm.host_arguments(ticket)?.to_vec();
+        let args = self.vm.host_arguments(ticket)?;
         if symbol == "reel::audio::group_volume" {
             let name = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
             let group = if name == "master" {
@@ -693,7 +712,6 @@ impl SessionVm {
                 Err(error) => self.media_error(ticket, &error)?,
             }
         } else if symbol == "reel::audio::play" {
-            let source = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
             let volume = volume(args[2])?;
             let owner = if args[3].tag() == ValueTag::Null {
                 self.default_activity_owner(ticket.task)?
@@ -714,29 +732,44 @@ impl SessionVm {
             let paused = args[11]
                 .as_bool()
                 .ok_or(AdapterError::Input("paused must be bool"))?;
-            let request = AudioRequest {
-                source,
-                loop_region,
-                volume,
-                rate: crate::audio::AudioRate::constant(rate(args[12])?),
-                group,
-                pan,
-                fade_in,
-                start_position,
-                end_position,
-            };
-            self.start_media(
-                ticket,
-                MediaPlayback::Audio(crate::audio::AudioPlayback {
-                    request,
-                    queue: Vec::new(),
-                    paused,
-                    result: None,
-                }),
-                owner,
-                None,
-                Value::NULL,
-            )?;
+            let rate = crate::audio::AudioRate::constant(rate(args[12])?);
+            let omit = omit_during_skip(self.vm.heap(), args[13])?
+                && group == AudioGroup::Voice
+                && session.skipping_effects().is_some()
+                && matches!(&session.reading_data.active, Some(Interaction::Dialogue(_)));
+            if omit {
+                if self.vm.heap().info(args[0])?.kind != aside_vm::ObjectKind::String {
+                    return Err(AdapterError::Input("expected immutable string"));
+                }
+                let stopped = self.vm.heap_mut().alloc_string("Stopped")?;
+                let value =
+                    self.playback_value(start_position, Value::NULL, Value::NULL, stopped)?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+            } else {
+                let request = AudioRequest {
+                    source: text::read_string(self.vm.heap(), args[0], self.read_limit)?,
+                    loop_region,
+                    volume,
+                    rate,
+                    group,
+                    pan,
+                    fade_in,
+                    start_position,
+                    end_position,
+                };
+                self.start_media(
+                    ticket,
+                    MediaPlayback::Audio(crate::audio::AudioPlayback {
+                        request,
+                        queue: Vec::new(),
+                        paused,
+                        result: None,
+                    }),
+                    owner,
+                    None,
+                    Value::NULL,
+                )?;
+            }
         } else if symbol == "reel::video::play" {
             let target = self.stage.video_id(self.vm.heap(), args[0])?;
             let fields = self.vm.heap().host_fields(args[0])?;
@@ -800,33 +833,33 @@ impl SessionVm {
                 let start_position = duration(args[2])?;
                 let end_position = audio_end(start_position, args[3])?;
                 let loop_region = audio_loop(args[4], args[5], args[6])?;
-                let id = MediaId(
-                    self.vm
-                        .heap()
-                        .host_payload(value, Slot::Id as u32)?
-                        .as_int()
-                        .unwrap() as u64,
-                );
-                let result = if response(self.vm.heap(), value)?.is_some() {
-                    Err("audio has ended".to_string())
-                } else if !self
-                    .media
-                    .live
-                    .iter()
-                    .any(|live| live.id == id && live.video.is_none() && live.result.is_none())
-                {
-                    Err("queue requires a live audio activity".to_string())
-                } else {
-                    self.media.backend.as_mut().unwrap().queue_audio(
-                        id,
-                        crate::audio::AudioQueueItem {
-                            source,
-                            start_position,
-                            end_position,
-                            loop_region,
-                        },
-                    )
-                };
+                let result =
+                    if response(self.vm.heap(), value)?.is_some() {
+                        Err("audio has ended".to_string())
+                    } else {
+                        let id = MediaId(
+                            self.vm
+                                .heap()
+                                .host_payload(value, Slot::Id as u32)?
+                                .as_int()
+                                .unwrap() as u64,
+                        );
+                        if self.media.live.iter().any(|live| {
+                            live.id == id && live.video.is_none() && live.result.is_none()
+                        }) {
+                            self.media.backend.as_mut().unwrap().queue_audio(
+                                id,
+                                crate::audio::AudioQueueItem {
+                                    source,
+                                    start_position,
+                                    end_position,
+                                    loop_region,
+                                },
+                            )
+                        } else {
+                            Err("queue requires a live audio activity".to_string())
+                        }
+                    };
                 match result {
                     Ok(()) => self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?,
                     Err(error) => self.media_error(ticket, &error)?,
@@ -984,6 +1017,50 @@ impl SessionVm {
         self.vm.respond(ticket, HostResponse::Ready(value))?;
         Ok(())
     }
+    fn playback_value(
+        &mut self,
+        position: Duration,
+        owner_value: Value,
+        target_value: Value,
+        result: Value,
+    ) -> Result<Value, AdapterError> {
+        let native = self
+            .vm
+            .program()
+            .package()
+            .natives
+            .iter()
+            .position(|n| {
+                self.vm.program().package().symbols[n.symbol.index()] == "reel::audio::await"
+            })
+            .ok_or(AdapterError::Input("media await binding missing"))?;
+        let heap = self.vm.heap_mut();
+        let position = self.media.keys.record(
+            heap,
+            &[("position", Value::float(position.as_secs_f64()))],
+            &[],
+        )?;
+        let fields = heap.alloc_table()?;
+        let value = heap.alloc_host(
+            fields,
+            &[
+                Value::int(TAG),
+                Value::NULL,
+                result,
+                Value::int(0),
+                position,
+                target_value,
+                owner_value,
+            ],
+            Some(&READONLY),
+        )?;
+        self.stage
+            .types
+            .mark(heap, value, "reel::types::Playback")?;
+        self.vm
+            .bind_awaitable(value, aside_vm::bytecode::NativeId(native as u32))?;
+        Ok(value)
+    }
     fn start_media(
         &mut self,
         ticket: HostTicket,
@@ -996,51 +1073,15 @@ impl SessionVm {
             .live
             .try_reserve(1)
             .map_err(|_| AdapterError::Allocation)?;
-        let native = self
-            .vm
-            .program()
-            .package()
-            .natives
-            .iter()
-            .position(|n| {
-                self.vm.program().package().symbols[n.symbol.index()] == "reel::audio::await"
-            })
-            .ok_or(AdapterError::Input("media await binding missing"))?;
         let start = match &playback {
             MediaPlayback::Audio(p) => p.request.start_position,
             MediaPlayback::Video(p) => p.request.start_position,
         };
-        let heap = self.vm.heap_mut();
-        let position = self.media.keys.record(
-            heap,
-            &[("position", Value::float(start.as_secs_f64()))],
-            &[],
-        )?;
-        let fields = heap.alloc_table()?;
-        let value = heap.alloc_host(
-            fields,
-            &[
-                Value::int(TAG),
-                Value::NULL,
-                Value::NULL,
-                Value::int(0),
-                position,
-                target_value,
-                owner_value,
-            ],
-            Some(&READONLY),
-        )?;
-        self.stage
-            .types
-            .mark(heap, value, "reel::types::Playback")?;
-        let root = heap.add_root(self.root_owner, RootKind::Host, value)?;
-        if let Err(error) = self
+        let value = self.playback_value(start, owner_value, target_value, Value::NULL)?;
+        let root = self
             .vm
-            .bind_awaitable(value, aside_vm::bytecode::NativeId(native as u32))
-        {
-            self.vm.heap_mut().release_root(root)?;
-            return Err(error.into());
-        }
+            .heap_mut()
+            .add_root(self.root_owner, RootKind::Host, value)?;
         let video = match &playback {
             MediaPlayback::Video(p) => Some(p.request.clone()),
             _ => None,
@@ -1188,6 +1229,10 @@ aside_host::native_documentation! {
         /// the innermost active scope, otherwise the task's inherited resource owner.
         /// A callback inherits its event node; the main story uses the session.
         /// Retiring the owner cancels loading and playback.
+        /// For a published, skippable line, `skip: "omit"` skips a new voice during
+        /// fast-forward before opening the asset. It returns an ended activity at `start`
+        /// with outcome "Stopped". Defaults to "keep". Other groups and existing
+        /// activities keep playing under their normal transport and owner rules.
         /// Awaiting returns "Completed" or "Stopped"; output failures and cancellation throw.
         "reel::audio::play";
         /// Append an audio asset to a live audio activity's playback queue.
@@ -1280,6 +1325,10 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                     "source" | "group" => TypeHint::String,
                     "looping" | "paused" => TypeHint::Bool,
                     "end" | "loop_end" => nullable(number()),
+                    "skip" => TypeHint::Union(vec![
+                        TypeHint::StringLiteral("keep".into()),
+                        TypeHint::StringLiteral("omit".into()),
+                    ]),
                     "volume" | "pan" | "fade_in" | "start" | "loop_start" | "value"
                     | "duration" | "fade" | "seconds" | "rate" => number(),
                     _ => parameter.ty.clone(),

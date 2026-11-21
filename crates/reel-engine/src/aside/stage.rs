@@ -987,16 +987,17 @@ impl StageBinding {
     }
 
     fn retire(&mut self, heap: &mut Heap, nodes: Vec<NodeId>) -> Result<(), AdapterError> {
-        if !nodes.is_empty() {
-            self.retirement_revision = self.retirement_revision.wrapping_add(1);
+        if nodes.is_empty() {
+            return Ok(());
         }
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::StageRetire);
+        self.retirement_revision = self.retirement_revision.wrapping_add(1);
         for id in nodes {
             self.page_stacks.remove(&id);
             self.virtual_scrolls.retire(id);
             if let Some(binding) = self.handles.remove(&id)
                 && let Ok(value) = heap.import_handle(binding.handle)
             {
-                interaction::publish(heap, value, binding.interaction_offset, Default::default())?;
                 let view = heap.host_payload(value, 3)?;
                 if binding.input.is_some() {
                     heap.set_host_payload(value, 3, Value::NULL)?;

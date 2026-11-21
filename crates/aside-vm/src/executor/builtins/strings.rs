@@ -1,7 +1,9 @@
 //! Immutable text operations retain cursors, never a second whole-string copy.
 use super::*;
 use crate::executor::text::Utf8;
+mod find;
 mod split;
+use find::FindWork;
 use split::SplitWork;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -44,6 +46,7 @@ enum TextMode {
         end: u32,
     },
     Split(SplitWork),
+    Find(FindWork),
 }
 
 impl Vm {
@@ -163,6 +166,17 @@ impl Vm {
                     version,
                 }
             }
+            Builtin::StringContains | Builtin::StringFind => {
+                let pattern = argument()?;
+                if !self.is_text(pattern, ObjectKind::String) {
+                    return Err(FaultKind::Type);
+                }
+                let pattern_len = self.heap.info(pattern).map_err(heap_fault)?.len;
+                if pattern_len == 0 || pattern_len > len {
+                    return self.finish_find(s, call, (pattern_len == 0).then_some(0));
+                }
+                TextMode::Find(FindWork::Start)
+            }
             _ => unreachable!("text method dispatch"),
         };
         if matches!(
@@ -219,6 +233,7 @@ impl Vm {
         let receiver = self.value(s.env, 1).map_err(vm_fault)?;
         work.mode = match work.mode {
             TextMode::Split(state) => return self.split_text_step(s, work, state, meter),
+            TextMode::Find(state) => return self.find_text_step(s, work, state, meter),
             TextMode::Scan {
                 offset,
                 mut utf8,

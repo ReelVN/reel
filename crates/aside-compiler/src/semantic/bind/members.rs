@@ -341,6 +341,11 @@ impl Binder<'_> {
             effect,
             no_wait: ctx.no_wait,
             derived: ctx.derived,
+            derived_forbidden: external
+                .as_ref()
+                .and_then(|symbol| symbol.signature.as_ref())
+                .is_some_and(|signature| signature.derived_safe == Some(false)),
+            conditional: ctx.conditional || optional || chain,
             named_callee,
         };
         let mut actual_ctx = ctx.clone();

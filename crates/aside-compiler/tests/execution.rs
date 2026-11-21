@@ -347,6 +347,36 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
                 let first = values.first_where(|item| { calls += 1; item > 20 });
                 if calls != 2 || first != 22 || !values.any(|item| item == 20)
                     || ().any(|item| true) { throw "predicate scan"; }
+                let mut visited = 0;
+                if values.all(|item| { visited += 1; item != 22 })
+                    || visited != 2 || !().all(|item| false)
+                    || values.index_where(|item| item > 20) != 1
+                    || values.index_where(|item| item < 0) != null
+                    || values.count(|item| item > 20) != 2
+                    || ().count(|item| true) != 0 {
+                    throw "collection queries";
+                }
+                let shared = {value: 20};
+                let filtered = (null, shared, 22).filter(|item| item != null);
+                let mapped = filtered.map(transform: |item| if item == shared { item.value } else { item });
+                if filtered.len() != 2 || filtered[0] != shared || mapped.len() != 2
+                    || mapped[0] != 20 || mapped[1] != 22 || ().map(|item| item).len() != 0
+                    || [].filter(|item| true).len() != 0 {
+                    throw "new sequence";
+                }
+                let large = [].resize(161, value: 7).map(|item| item + 1);
+                if large.len() != 161 || large[160] != 8 { throw "metered output growth"; }
+                let mut failed = 0;
+                let mut published = null;
+                try {
+                    published = values.map(|item| { if item == 22 { throw "transform"; } item });
+                } catch e { if e == "transform" { failed += 1; } }
+                try {
+                    published = values.filter(|item| { if item == 22 { values[2] = 99; } true });
+                } catch e { failed += 1; }
+                if failed != 2 || published != null || values[2] != 99 {
+                    throw "partial output escaped";
+                }
                 let entries = {existing: null};
                 if entries.get_or_insert_with("existing", || { throw "factory ran"; }) != null {
                     throw "stored null was lost";
@@ -509,7 +539,7 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             fn score(menu: Menu) -> int {
                 match menu {
                     Menu.Load {slot, hint: "resume"} if slot > 0 => slot,
-                    Menu.Load {hint: _, slot} => slot + 2,
+                    Menu.Load {slot, ..} => slot + 2,
                     Menu.Back | Menu.Stay => 0,
                 }
             }
@@ -524,7 +554,31 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
                 if !(menu is Menu) || ("bad" is Menu) { throw "enum type admission"; }
                 let bad: any = ("main::Menu::Load", {slot: "bad", hint: "resume"});
                 if match bad { Menu.Load => true, _ => false } { throw "malformed payload"; }
+                if let Menu.Load {slot, ..} = menu {
+                    if slot != 39 { throw "if let payload"; }
+                } else { throw "if let missed payload"; }
                 score(menu) + score(Menu.Load("new", 1))
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let mut reads = 0;
+                fn input(value) { reads += 1; value }
+                let data = {kind: "card", id: 2, extra: null, has_own: false};
+                let value = if let {kind: "card", id, extra: _, ..} = input(data) { id } else { 0 };
+                if reads != 1 || value != 2 { throw "one evaluation"; }
+                let id = 40;
+                let absent = if let {id, missing: _, ..} = data { id } else { id + value };
+                if match data { {kind: "card", id} => true, _ => false } { throw "exact record"; }
+                if let {..} = 0 { throw "table required"; }
+                if let false = true { throw "literal test"; }
+                let callbacks = [];
+                for row in [data, {id: 4}] {
+                    if let {id, ..} = row { callbacks.append(|| id); }
+                }
+                if callbacks[0]() != 2 || callbacks[1]() != 4 { throw "fresh bindings"; }
+                absent
             }"#,
             42,
         ),
@@ -627,6 +681,12 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             if !s.starts_with(prefix:"A中") || !s.ends_with(suffix:"é\0") {throw "prefix/suffix";}
             if s.starts_with("中") || s.ends_with("A") || s.starts_with(s+"x") {throw "mismatch";}
             if !s.starts_with("") || !"".ends_with("") || "".byte_len()!=0 || "".scalar_count()!=0 {throw "empty text";}
+            if s.find(pattern: "🙂e") != 2 || !s.contains("\0") || "abc".find("bc") != 1 {
+                throw "substring index";
+            }
+            if "é".contains("é") || "é".find("é") != null || "".find("") != 0 {
+                throw "literal substrings";
+            }
             if " · ".join(items:["中","🙂",""])!="中 · 🙂 · " {throw "join array";}
             if "".join(("e","́","\0"))!="é\0" || "x".join([])!="" || "x".join(())!="" {throw "join tuple";}
             if "x".join([""])!="" || "x".join(["",""])!="x" {throw "empty elements";}
@@ -681,7 +741,9 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             try {dynamic.starts_with(suffix:"A");} catch e {caught+=1;}
             try {dynamic.join();} catch e {caught+=1;}
             try {dynamic.starts_with("A",prefix:"A");} catch e {caught+=1;}
-            if caught==13 && s=="A中🙂é\0" {42} else {0}
+            try {dynamic.find(null);} catch e {caught+=1;}
+            try {dynamic.contains(1);} catch e {caught+=1;}
+            if caught==15 && s=="A中🙂é\0" {42} else {0}
         }"#,
             42,
         ),
@@ -872,6 +934,19 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             123,
         ),
         (
+            r#"fn main() {
+                let callbacks = [];
+                for index, value in 7..=10 {
+                    if value == 8 { continue; }
+                    callbacks.append(|| (index, value));
+                    if value == 9 { break; }
+                }
+                if callbacks.len() == 2 && callbacks[0]() == (0, 7)
+                    && callbacks[1]() == (2, 9) { 42 } else { 0 }
+            }"#,
+            42,
+        ),
+        (
             r#"fn main(node) {
             fn collect(children=[]) { children }
             fn helper() { node.x+=1; node; }
@@ -931,11 +1006,17 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         ("中🙂é", ""),
         ("abc", "longer"),
         (crossing.as_str(), "中文🙂"),
+        (repetitive.as_str(), "b"),
         (repetitive.as_str(), long_separator.as_str()),
     ]
     .into_iter()
     .map(|(text, separator)| {
         let expected: Vec<_> = text.split(separator).collect();
+        let first = text.find(separator);
+        let scalar_index = first.map_or_else(
+            || "null".to_owned(),
+            |byte| text[..byte].chars().count().to_string(),
+        );
         let checks = expected
             .iter()
             .enumerate()
@@ -944,10 +1025,15 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             .join(" || ");
         format!(
             r#"fn main() {{
-            let split={text:?}.split;
+            let source = {text:?};
+            let split=source.split;
             let parts=split(separator:{separator:?});
             if parts.len()!={} || {checks} {{throw "split result";}}
             if {separator:?}.join(parts)!={text:?} {{throw "split/join";}}
+            let find = source.find;
+            if source.contains(pattern: {separator:?}) != {} || find({separator:?}) != {scalar_index} {{
+                throw "substring result";
+            }}
             parts.append("mutable result");
             let mut rejected=false;
             fn unknown(value){{value}}
@@ -955,7 +1041,7 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             try {{dynamic(null);}} catch error {{rejected=true;}}
             if rejected {{42}} else {{0}}
         }}"#,
-            expected.len()
+            expected.len(), first.is_some()
         )
     })
     .collect();
@@ -1222,7 +1308,7 @@ mod sorting {
     }
 
     #[test]
-    fn snapshots_at_every_execution_boundary_preserve_comparator_effects_and_sort_cursors() {
+    fn snapshots_at_every_execution_boundary_preserve_collection_callbacks() {
         let source = r#"
         fn main() {
             let a = [4, 1, 3, 2];
@@ -1233,6 +1319,12 @@ mod sorting {
             let b = ["zz", "za"];
             b.sort();
             if b[0] != "za" || b[1] != "zz" { throw "text"; }
+            let mut visited = "";
+            let values = a.filter(|item| { visited += f"f{item}"; item >= 3 });
+            let mapped = values.map(|item| { visited += f"m{item}"; {item,} });
+            if visited != "f1f2f3f4m3m4" || mapped[0].item != 3 || mapped[1].item != 4 {
+                throw "collection callback repeated or lost";
+            }
             42
         }
     "#;
@@ -1278,22 +1370,34 @@ mod sorting {
                 other => panic!("snapshot outcome: {other:?}"),
             }
         }
-        panic!("restored sort must finish");
+        panic!("restored collection callbacks must finish");
     }
 
     #[test]
-    fn cancellation_and_other_tasks_cannot_publish_a_partial_sort() {
+    fn cancellation_and_other_tasks_cannot_publish_partial_collections() {
         let source = r#"
         let values = [3, 1, 2]; let mut comparing = false; let mut proceed = false;
+        let mut published = null;
         fn sorting() { values.sort(|a, b| { comparing = true; while !proceed {} a - b }); }
+        fn mapping() {
+            published = values.map(|item| {
+                if item == 1 { comparing = true; while !proceed {} }
+                item * 2
+            });
+        }
         fn observed() { comparing }
         fn mutate() { values[1] = 99; proceed = true; }
-        fn unchanged() { values[0] == 3 && values[1] == 1 && values[2] == 2 }
-        fn preserved() { values[0] == 3 && values[1] == 99 && values[2] == 2 }
+        fn unchanged() { published == null && values[0] == 3 && values[1] == 1 && values[2] == 2 }
+        fn preserved() { published == null && values[0] == 3 && values[1] == 99 && values[2] == 2 }
     "#;
-        for cancel in [true, false] {
+        for (entry, cancel) in [
+            ("sorting", true),
+            ("sorting", false),
+            ("mapping", true),
+            ("mapping", false),
+        ] {
             let mut vm = load(source);
-            let task = start(&mut vm, "sorting", &[]);
+            let task = start(&mut vm, entry, &[]);
             assert!(matches!(
                 vm.run_slice(task, SliceBudget::default(), || 0).unwrap(),
                 RunOutcome::BudgetYield(_)
@@ -1307,7 +1411,7 @@ mod sorting {
                 finish(&mut vm, mutate, true);
             }
             let RunOutcome::Fault(id) = next(&mut vm, task, true) else {
-                panic!("sort must fault");
+                panic!("collection scan must fault");
             };
             assert_eq!(
                 vm.delivery_fault(id).unwrap().unwrap().kind,
@@ -1321,6 +1425,20 @@ mod sorting {
             let check = start(&mut vm, if cancel { "unchanged" } else { "preserved" }, &[]);
             assert_eq!(finish(&mut vm, check, true).as_bool(), Some(true));
         }
+
+        let mut vm = load(source);
+        let task = start(&mut vm, "mapping", &[]);
+        assert!(matches!(
+            vm.run_slice(task, SliceBudget::default(), || 0).unwrap(),
+            RunOutcome::BudgetYield(_)
+        ));
+        vm.cancel_task(task).unwrap();
+        assert!(matches!(
+            vm.run_slice(task, SliceBudget::default(), || 0),
+            Err(VmError::Idle)
+        ));
+        let check = start(&mut vm, "unchanged", &[]);
+        assert_eq!(finish(&mut vm, check, true).as_bool(), Some(true));
     }
 
     #[test]

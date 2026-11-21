@@ -59,6 +59,7 @@ impl SessionVm {
         t: HostTicket,
         s: Value,
     ) -> Result<(), AdapterError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::VirtualListPrepare);
         self.virtual_target_position(s)?;
         self.virtual_window_fault(s)?;
         let output = get(self.vm.heap(), s, S::Window)?;
@@ -262,6 +263,9 @@ impl SessionVm {
                         w.index += 1;
                         self.virtual_continue(t, &w, WINDOW)?;
                     } else {
+                        let _timing = reel_core::profile::Scope::new(
+                            reel_core::profile::Phase::VirtualListRow,
+                        );
                         let key = entry(self.vm.heap(), e, Entry::Key)?;
                         let item = entry(self.vm.heap(), e, Entry::Item)?;
                         let index = self.vm.heap().sequence_get(e, INDEX)?;
@@ -274,6 +278,8 @@ impl SessionVm {
                         self.virtual_call(t, &w, BUILT, self.vm.host_arguments(t)?[2], row)?;
                     }
                 } else {
+                    let mount =
+                        reel_core::profile::Scope::new(reel_core::profile::Phase::VirtualListMount);
                     let old = get(self.vm.heap(), w.state, S::Mounted)?;
                     for i in 0..self.vm.heap().sequence_len(w.source)? {
                         let e = self.vm.heap().sequence_get(w.source, i)?;
@@ -291,6 +297,10 @@ impl SessionVm {
                         w.children,
                         self.read_limit,
                     )?;
+                    drop(mount);
+                    let retire = reel_core::profile::Scope::new(
+                        reel_core::profile::Phase::VirtualListRetire,
+                    );
                     for i in 0..self.vm.heap().sequence_len(old)? {
                         let e = self.vm.heap().sequence_get(old, i)?;
                         let kept = mounted_contains(self.vm.heap(), w.source, e)?;
@@ -324,6 +334,7 @@ impl SessionVm {
                                 .set_field(e, Entry::Node as u32, Value::NULL)?;
                         }
                     }
+                    drop(retire);
                     put(self.vm.heap_mut(), w.state, S::Mounted, w.source)?;
                     commit_projection(self.vm.heap_mut(), w.state, true)?;
                     self.stage.publish_virtual(self.vm.heap(), host)?;

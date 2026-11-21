@@ -150,6 +150,7 @@ impl Vm {
             self.put(s.env, 1, Value::NULL)?;
         }
         self.clear(s.env, 2)?;
+        self.clear(s.env, 3)?;
         s.phase = ScriptPhase::Exit {
             origin: s.pc,
             reason: ExitReason::Throw(FaultSeed {
@@ -301,6 +302,10 @@ pub(super) enum TableAction {
     EntryOrInsert {
         call: BuiltinCall,
         filled: bool,
+    },
+    PatternRead {
+        present: Reg,
+        dest: Reg,
     },
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -471,6 +476,7 @@ impl Vm {
         // retain their complete source-content snapshot.
         match action {
             TableAction::Get(_)
+            | TableAction::PatternRead { .. }
             | TableAction::MemberGet { .. }
             | TableAction::GetDefault { .. }
             | TableAction::GetHost { .. }
@@ -607,6 +613,7 @@ impl Vm {
             && !matches!(
                 work.action,
                 TableAction::Get(_)
+                    | TableAction::PatternRead { .. }
                     | TableAction::GetDefault { .. }
                     | TableAction::GetHost { .. }
                     | TableAction::MemberGet { .. }
@@ -687,6 +694,7 @@ impl Vm {
                     field: work.entry,
                 }),
                 TableAction::Get(_)
+                | TableAction::PatternRead { .. }
                 | TableAction::GetDefault { .. }
                 | TableAction::MemberGet { .. }
                     if self.heap.is_model_table(table)? =>
@@ -892,7 +900,10 @@ impl Vm {
         let key = self.value(s.env, 2)?;
         if matches!(
             work.action,
-            TableAction::Get(_) | TableAction::GetDefault { .. } | TableAction::HasOwn(_)
+            TableAction::Get(_)
+                | TableAction::PatternRead { .. }
+                | TableAction::GetDefault { .. }
+                | TableAction::HasOwn(_)
         ) && self.query_key(s, self.heap.table_len(table)?)?.is_some()
         {
             self.table_queries
@@ -1016,6 +1027,7 @@ impl Vm {
                 self.put(s.regs, dest.0, value)?;
             }
             TableAction::Get(dest)
+            | TableAction::PatternRead { dest, .. }
             | TableAction::GetDefault { dest, .. }
             | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {
@@ -1045,6 +1057,9 @@ impl Vm {
                         }
                         None => Value::NULL,
                     }
+                } else if matches!(work.action, TableAction::PatternRead { .. }) {
+                    self.heap.observe_read(table, None)?;
+                    Value::NULL
                 } else if let TableAction::MemberGet { symbol, .. } = work.action {
                     let Some(method) = Builtin::lookup(
                         ObjectKind::Table,
@@ -1060,6 +1075,9 @@ impl Vm {
                     return self.collection_fault(s, FaultKind::MissingKey);
                 };
                 self.put(s.regs, dest.0, value)?;
+                if let TableAction::PatternRead { present, .. } = work.action {
+                    self.put(s.regs, present.0, Value::bool(work.matched))?;
+                }
             }
             TableAction::Set(reg) | TableAction::SetHost { value: reg, .. } => {
                 if let TableAction::SetHost { .. } = work.action
