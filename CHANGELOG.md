@@ -4,6 +4,9 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Prepare and load custom WGSL effects in browser previews.
+- Reuse Reel's language service for completion, hover and diagnostics in browser editors.
+
 ## 0.4.5 — 2026-11-22
 
 - Embed an Aside source preview on WebGPU pages with `reel-web`. It compiles snippets with the Reel compiler, reports editor diagnostic ranges, and runs the shared player on a browser canvas.

@@ -3469,9 +3469,9 @@ dependencies = [
  "libc",
  "libimgquant",
  "lsp-server",
- "lsp-types",
  "pollster",
  "reel-core",
+ "reel-editor",
  "reel-engine",
  "reel-media",
  "reel-package",
@@ -3512,6 +3512,17 @@ dependencies = [
  "tempfile",
  "vita-native",
  "walkdir",
+]
+
+[[package]]
+name = "reel-editor"
+version = "0.4.5"
+dependencies = [
+ "aside-compiler",
+ "aside-host",
+ "aside-lsp",
+ "lsp-types",
+ "reel-engine",
 ]
 
 [[package]]
@@ -3701,8 +3712,10 @@ name = "reel-web"
 version = "0.4.5"
 dependencies = [
  "aside-compiler",
+ "aside-lsp",
  "console_error_panic_hook",
  "reel-core",
+ "reel-editor",
  "reel-engine",
  "reel-package",
  "reel-player",

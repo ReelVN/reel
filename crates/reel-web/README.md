@@ -36,4 +36,8 @@ Treat the editor contents as `src/main.aside` with a `main` function. Compilatio
 
 Asset keys match the logical paths used in Aside, and their values may be URLs or bytes. `fonts/body.ttf` is the default text font when supplied. A script may choose its own fonts with `game.configure`. Call `preview.dispose()` when removing the canvas.
 
+Effects declared in the snippet use the same WGSL preparation as desktop export. Prepared effect assets belong to the current preview session.
+
+Use the generated module's `WebAnalysis` from a Web Worker for editor queries. Call `setSource(source)` before requesting `completion(line, character)`, `hover(line, character)`, or `diagnostics()`. Queries return JSON in LSP format with zero-based UTF-16 positions. The analysis runs on the current snippet and can start without a canvas or WebGPU.
+
 For a runnable editor example, copy `web/example.html` into the bundle directory and put the font and its `OFL.txt` from [the arcade example](../../examples/author_arcade/resources/fonts) in its `assets/` subdirectory. The browser preview covers source snippets and supplied image/font assets. Web audio, video and persistent saves are outside this embedding API.

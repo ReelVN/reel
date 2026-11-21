@@ -33,15 +33,14 @@ serde = { version = "=1.0.229", features = ["derive"] }
 clap = { version = "=4.6.7", features = ["derive"] }
 tempfile = "=3.27.0"
 aside-compiler = { path = "../aside-compiler" }
-aside-host = { path = "../aside-host" }
 aside-lsp = { path = "../aside-lsp" }
-lsp-types = "=0.97.0"
 aside-vm = { path = "../aside-vm" }
 codespan-reporting = "=0.13.1"
 serde_json = "=1.0.154"
 toml = "=1.1.6"
 globset = "=0.4.20"
 reel-package = { path = "../reel-package" }
+reel-editor = { path = "../reel-editor" }
 reel-engine = { path = "../reel-engine" }
 reel-render = { path = "../reel-render" }
 reel-ui = { path = "../reel-ui" }
@@ -64,6 +63,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.6"
 
 [dev-dependencies]
+aside-host = { path = "../aside-host" }
 lsp-server = "=0.7.9"
 reel-media = { path = "../reel-media", default-features = false }
 reel-core = { path = "../reel-core" }

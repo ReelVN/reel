@@ -1030,6 +1030,7 @@ fn import_name(name: &str) -> bool {
     })
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn file_uri(path: &Path) -> Result<Uri, String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -1041,11 +1042,24 @@ pub(crate) fn file_uri(path: &Path) -> Result<Uri, String> {
     let url = url::Url::from_file_path(absolute).map_err(|_| "invalid source file path")?;
     Uri::from_str(url.as_str()).map_err(|error| error.to_string())
 }
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn uri_path(uri: &Uri) -> Option<PathBuf> {
     Some(normalize_drive(
         url::Url::parse(uri.as_str()).ok()?.to_file_path().ok()?,
     ))
 }
+
+// Browser documents have virtual URIs and cannot participate in disk discovery.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn file_uri(_path: &Path) -> Result<Uri, String> {
+    Err("file URIs require a native filesystem".into())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn uri_path(_uri: &Uri) -> Option<PathBuf> {
+    None
+}
+
 fn normalize_drive(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     let path = {
@@ -1072,6 +1086,7 @@ fn normalize_drive(path: PathBuf) -> PathBuf {
 }
 // File URI spelling is a protocol boundary: VS Code escapes the drive colon
 // and lowercases its letter. Buffers retain their client URI for all responses.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn source_key(uri: &Uri) -> String {
     let Some(path) = uri_path(uri) else {
         return uri.as_str().to_owned();
@@ -1087,6 +1102,12 @@ fn source_key(uri: &Uri) -> String {
     }
     url.into()
 }
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn source_key(uri: &Uri) -> String {
+    uri.as_str().to_owned()
+}
+
 fn module_path(uri: &Uri, roots: &[ModuleRoot]) -> Option<String> {
     let path = uri_path(uri)?;
     roots

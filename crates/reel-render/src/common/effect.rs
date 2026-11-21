@@ -31,6 +31,9 @@ mod footprint;
 pub use footprint::source_footprint;
 #[path = "effect/gxp_compiler.rs"]
 pub mod gxp_compiler;
+#[path = "effect/preparation.rs"]
+mod preparation;
+pub use preparation::{MAX_SHADER_BYTES, PreparedShader, ShaderTarget, prepare_shader};
 #[path = "effect/reduction.rs"]
 mod reduction;
 #[path = "effect/scalar_reduction.rs"]

@@ -7,11 +7,9 @@
 use crate::resource_conversion::{Prepared, Report};
 use reel_engine::aside::source::{EffectDefinition, EffectProducts};
 use reel_package::archive::{ArchiveKind, ArchiveWriter};
+pub use reel_render::effect::MAX_SHADER_BYTES;
 use reel_render::effect::gxp_compiler::{Compiler, Stage};
-use reel_render::effect::{
-    FragmentCoverage, Language, OutputTail, compile_diagonal_fragment, compile_fragment,
-    compile_fragment_variant, compile_fragment_with_tail,
-};
+use reel_render::effect::{ShaderTarget, prepare_shader};
 use reel_ui::resources::{EffectShaderDescriptor, EffectShaderFormat};
 use std::{
     collections::BTreeMap,
@@ -19,9 +17,6 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
 };
-
-/// Maximum complete generated source and cached envelope size per effect.
-pub const MAX_SHADER_BYTES: usize = 4 << 20;
 
 /// Targets emitted for the host renderer or for an offline Vita distribution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,144 +112,21 @@ pub fn prepare_with_input(
                         prepared.report.reused += 1;
                         bytes.len()
                     } else {
-                        let language = match format {
-                            EffectShaderFormat::Wgsl => Language::Wgsl,
-                            EffectShaderFormat::Gxp => Language::Cg,
-                        };
-                        let fragment =
-                            compile_fragment(&definition.program, language, MAX_SHADER_BYTES)
-                                .map_err(|error| {
-                                    io::Error::other(format!(
-                                        "effect shader generation failed: {error:?}"
-                                    ))
-                                })?;
-                        prepared.report.source_bytes += fragment.source.len() as u64;
-                        let mut raw = if format == EffectShaderFormat::Gxp {
+                        let mut compile_gxp = |source: &str| {
                             gxp(
                                 &cache,
-                                &fragment.source,
+                                source,
                                 compiler.as_ref().unwrap(),
                                 compiler_identity.as_bytes(),
-                            )?
-                        } else {
-                            fragment.source.into_bytes()
-                        };
-                        let coverage_offset = if OutputTail::supports_coverage(
-                            fragment.output_type,
-                            definition.program.textures().len() as u32,
-                            fragment.source_sampler,
-                        ) {
-                            let masked = compile_fragment_with_tail(
-                                &definition.program,
-                                language,
-                                OutputTail::AlphaCoverage,
-                                MAX_SHADER_BYTES,
                             )
-                            .map_err(io::Error::other)?;
-                            prepared.report.source_bytes += masked.source.len() as u64;
-                            let code = if format == EffectShaderFormat::Gxp {
-                                gxp(
-                                    &cache,
-                                    &masked.source,
-                                    compiler.as_ref().unwrap(),
-                                    compiler_identity.as_bytes(),
-                                )?
-                            } else {
-                                masked.source.into_bytes()
-                            };
-                            let offset = u32::try_from(raw.len()).map_err(io::Error::other)?;
-                            raw.extend_from_slice(&code);
-                            Some(offset)
-                        } else {
-                            None
                         };
-                        let full = compile_fragment_variant(
-                            &definition.program,
-                            language,
-                            OutputTail::Ordinary,
-                            FragmentCoverage::FullTarget,
-                            MAX_SHADER_BYTES,
-                        )
-                        .map_err(io::Error::other)?;
-                        prepared.report.source_bytes += full.source.len() as u64;
-                        let full_code = if format == EffectShaderFormat::Gxp {
-                            gxp(
-                                &cache,
-                                &full.source,
-                                compiler.as_ref().unwrap(),
-                                compiler_identity.as_bytes(),
-                            )?
-                        } else {
-                            full.source.into_bytes()
+                        let target = match format {
+                            EffectShaderFormat::Wgsl => ShaderTarget::Wgsl,
+                            EffectShaderFormat::Gxp => ShaderTarget::Gxp(&mut compile_gxp),
                         };
-                        let full_offset =
-                            if raw.len() + full_code.len() + 108 + fragment.parameters.slots.len()
-                                <= MAX_SHADER_BYTES
-                            {
-                                let offset = u32::try_from(raw.len()).map_err(io::Error::other)?;
-                                raw.extend_from_slice(&full_code);
-                                Some(offset)
-                            } else {
-                                None
-                            };
-                        let descriptor = EffectShaderDescriptor::with_textures(
-                            definition.id,
-                            format,
-                            fragment
-                                .parameters
-                                .slots
-                                .iter()
-                                .map(|slot| slot.ty)
-                                .collect(),
-                            definition.program.textures().len() as u32,
-                            fragment.source_sampler,
-                            fragment.output_type,
-                            &raw,
-                        )
-                        .map_err(io::Error::other)?;
-                        let descriptor = if let Some(offset) = coverage_offset {
-                            descriptor
-                                .with_coverage_variant(offset, &raw)
-                                .map_err(io::Error::other)?
-                        } else {
-                            descriptor
-                        };
-                        let descriptor = if let Some(offset) = full_offset {
-                            descriptor
-                                .with_full_target_variant(offset, &raw)
-                                .map_err(io::Error::other)?
-                        } else {
-                            descriptor
-                        };
-                        let footprint = reel_render::effect::source_footprint(&definition.program)
-                            .filter(|_| {
-                                raw.len() + 124 + descriptor.parameters.len() <= MAX_SHADER_BYTES
-                            });
-                        let mut descriptor = descriptor
-                            .with_source_footprint(footprint, &raw)
-                            .map_err(io::Error::other)?;
-                        if format == EffectShaderFormat::Gxp {
-                            let diagonal =
-                                compile_diagonal_fragment(&definition.program, MAX_SHADER_BYTES)
-                                    .map_err(io::Error::other)?;
-                            if let Some(diagonal) = diagonal {
-                                prepared.report.source_bytes += diagonal.source.len() as u64;
-                                let code = gxp(
-                                    &cache,
-                                    &diagonal.source,
-                                    compiler.as_ref().unwrap(),
-                                    compiler_identity.as_bytes(),
-                                )?;
-                                descriptor =
-                                    append_diagonal(descriptor, &mut raw, &code, MAX_SHADER_BYTES)?;
-                            }
-                        }
-                        let bytes = descriptor.encode_payload(&raw).map_err(io::Error::other)?;
-                        if bytes.len() > MAX_SHADER_BYTES {
-                            return Err(io::Error::other(
-                                "prepared effect shader exceeds its byte limit",
-                            ));
-                        }
+                        let shader = prepare_shader(definition.id, &definition.program, target)?;
+                        prepared.report.source_bytes += shader.source_bytes;
+                        let bytes = shader.bytes;
                         publish(&path, &[&bytes])?;
                         prepared.report.converted += 1;
                         bytes.len()
@@ -318,30 +190,6 @@ fn valid_product(bytes: &[u8], definition: &EffectDefinition, format: EffectShad
                 && descriptor.matches_bytes(&bytes[raw])
         },
     )
-}
-
-// Optional code must not remove an existing fragment or source-footprint proof
-// to fit the complete current envelope limit.
-fn append_diagonal(
-    descriptor: EffectShaderDescriptor,
-    raw: &mut Vec<u8>,
-    code: &[u8],
-    limit: usize,
-) -> io::Result<EffectShaderDescriptor> {
-    let header = 108 + 16 * usize::from(descriptor.source_footprint.is_some());
-    let size = raw
-        .len()
-        .checked_add(code.len())
-        .and_then(|size| size.checked_add(header))
-        .and_then(|size| size.checked_add(descriptor.parameters.len()));
-    if size.is_none_or(|size| size > limit) {
-        return Ok(descriptor);
-    }
-    let offset = u32::try_from(raw.len()).map_err(io::Error::other)?;
-    raw.extend_from_slice(code);
-    descriptor
-        .with_diagonal_variant(offset, raw)
-        .map_err(io::Error::other)
 }
 
 fn gxp(
@@ -472,38 +320,6 @@ mod tests {
         assert_eq!(&header, digest.as_bytes());
         fs::write(&path, &header[..31]).unwrap();
         assert!(cached(&path, &mut header).unwrap().is_none());
-    }
-
-    #[test]
-    fn optional_diagonal_code_keeps_all_existing_segments_at_the_complete_limit() {
-        let mut raw = b"ordinaryfull".to_vec();
-        let original = EffectShaderDescriptor::new(
-            [7; 32],
-            EffectShaderFormat::Gxp,
-            vec![reel_ui::stage::effect::EffectType::Float],
-            reel_ui::stage::effect::EffectType::Vec4,
-            &raw,
-        )
-        .unwrap()
-        .with_full_target_variant(8, &raw)
-        .unwrap()
-        .with_source_footprint(
-            Some(reel_ui::resources::EffectSourceFootprint {
-                logical_halo: [30, 0, 30, 0],
-            }),
-            &raw,
-        )
-        .unwrap();
-        let limit = 108 + 16 + original.parameters.len() + raw.len() + 8;
-        let refused = append_diagonal(original.clone(), &mut raw, b"diagonal", limit - 1).unwrap();
-        assert_eq!(refused, original);
-        assert_eq!(raw, b"ordinaryfull");
-        assert_eq!(&refused.encode_payload(&raw).unwrap()[..8], b"REELSHD2");
-        let admitted = append_diagonal(original, &mut raw, b"diagonal", limit).unwrap();
-        assert_eq!(admitted.code(&raw, false), Some(&b"ordinary"[..]));
-        assert_eq!(admitted.full_target_code(&raw), Some(&b"full"[..]));
-        assert_eq!(admitted.diagonal_code(&raw), Some(&b"diagonal"[..]));
-        assert_eq!(admitted.encode_payload(&raw).unwrap().len(), limit);
     }
 
     #[test]

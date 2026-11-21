@@ -12,11 +12,15 @@ use reel_player::{
     hal::DisplayMetrics,
     player::{Player, PlayerOptions, PointerKind},
 };
-use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, WgpuBackend};
+use reel_render::{
+    effect::{ShaderTarget, prepare_shader},
+    gpu::{DeviceGeneration, Gpu, GpuLimits, WgpuBackend},
+};
 use reel_ui::{
     core::{PointerButton, ScrollDelta, TextEvent, keyboard},
     dpi::PhysicalPosition,
     input::InputEvent,
+    resources::EffectShaderFormat,
 };
 use std::{collections::BTreeMap, sync::Arc};
 use wasm_bindgen::prelude::*;
@@ -224,8 +228,16 @@ impl WebPreview {
             resource_target: "web".into(),
             ..Default::default()
         };
-        let assets = Assets::memory(options.assets.clone(), self.assets.clone())
-            .map_err(|error| error.message)?;
+        let mut files = self.assets.clone();
+        for definition in compiled.effects.definitions() {
+            let shader = prepare_shader(definition.id, &definition.program, ShaderTarget::Wgsl)?;
+            files.insert(
+                EffectShaderFormat::Wgsl.asset_path(definition.id),
+                shader.bytes.into(),
+            );
+        }
+        let assets =
+            Assets::memory(options.assets.clone(), files).map_err(|error| error.message)?;
         let mut limits = VmLimits::default();
         limits.heap.max_bytes = 80 << 20;
         limits.slots.initial_capacity = 4096;

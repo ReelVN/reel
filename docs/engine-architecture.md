@@ -35,6 +35,7 @@ Reel 让创作者用代码表达画面、对白、UI、演出和嵌入的 2D 游
 | `reel-storage` | 文件存储的原子发布 |
 | `reel-package` | ASB、文本包和资源归档 |
 | `reel-cli` | 项目检查、运行、构建、导出与 Reel 语言服务入口 |
+| `reel-editor` | 桌面和浏览器语言服务共用的 Reel API 声明和源码检查 |
 | `reel-dev` | 仓库检查、性能采集流程与报告分析 |
 
 Aside 依赖语言与 Rust 基础库。窗口和 GPU 类型留在平台适配器；UI 向后端提供拥有数据与资源租约的可移植帧。`reel-engine` 当前直接依赖 `aside-compiler`，源码和 ASB 通过同一宿主注册与执行准入。
@@ -45,7 +46,9 @@ Aside 依赖语言与 Rust 基础库。窗口和 GPU 类型留在平台适配器
 
 发行包由 `reel-player::distribution` 读取 ASB、文本池、语言索引和资源根，再交给共用会话执行。CLI 负责定位作者工程及编译、导出；平台入口直接加载发行包。
 
-`reel-web` 为网页代码预览提供浏览器入口。编辑器提交完整的 `src/main.aside`，使用 `web` 构建目标和同一 Aside 编译器，诊断返回零起始行号、UTF-16 列和 UTF-8 字节偏移。成功运行会建立新的会话。网页提供 canvas、输入事件和按逻辑路径命名的二进制素材，预览复用引擎的舞台和玩家渲染流程。预览使用会话内存，关闭后释放。这个入口用于运行和展示示例源码。
+`reel-web` 为网页代码预览提供浏览器入口。编辑器提交完整的 `src/main.aside`，使用 `web` 构建目标和同一 Aside 编译器，诊断返回零起始行号、UTF-16 列和 UTF-8 字节偏移。成功运行会建立新的会话。网页提供 canvas、输入事件和按逻辑路径命名的二进制素材。浏览器与发行工具共用效果着色器准备流程，生成的 WGSL 效果随网页提供的素材一起挂载到会话资源中。预览复用引擎的舞台和玩家渲染流程，关闭时释放会话。这个入口用于运行和展示示例源码。
+
+浏览器编辑器在 Web Worker 中复用 `aside-lsp` 的补全、悬停和诊断查询，分析当前 `src/main.aside` 缓冲区。查询使用与桌面语言服务相同的 Reel 接口声明和 LSP UTF-16 位置。语言服务独立于 WebGPU 和舞台会话。
 
 作者在 Reel 源码目录用 Cargo 构建发行播放器。桌面构建 `reel-game`，Vita 用 `cargo vita build eboot` 构建 `reel-vita`。编译产物遵循 Cargo 的目标目录配置。随后用 `reel export --release --runtime <播放器路径>` 把该播放器与作品打包。固定启动素材位于 `crates/reel-player/runtime/vita/sce_sys/`，可随 Vita 运行时提供。
 

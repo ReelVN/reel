@@ -1,0 +1,16 @@
+[package]
+name = "reel-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aside-compiler = { path = "../aside-compiler" }
+aside-host = { path = "../aside-host" }
+aside-lsp = { path = "../aside-lsp" }
+lsp-types = "=0.97.0"
+reel-engine = { path = "../reel-engine" }
+
+[lints]
+workspace = true

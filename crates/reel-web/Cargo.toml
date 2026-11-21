@@ -10,8 +10,10 @@ crate-type = ["cdylib"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 aside-compiler = { path = "../aside-compiler" }
+aside-lsp = { path = "../aside-lsp" }
 console_error_panic_hook.workspace = true
 reel-core = { path = "../reel-core" }
+reel-editor = { path = "../reel-editor" }
 reel-engine = { path = "../reel-engine" }
 reel-package = { path = "../reel-package" }
 reel-player = { path = "../reel-player" }

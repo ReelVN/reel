@@ -89,6 +89,11 @@ pub struct TranslationMessage {
 }
 
 static SOURCE_API: OnceLock<Api> = OnceLock::new();
+const HOST_BUILD_TARGET: &str = if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
+    "web"
+} else {
+    std::env::consts::OS
+};
 
 /// Trusted native ABI declarations, shared by compilation and VM admission.
 pub fn contracts() -> &'static [aside_host::NativeContract] {
@@ -492,7 +497,7 @@ fn build_api() -> Api {
         "reel::build",
         "1",
         "target",
-        aside_compiler::semantic::CompileConstant::Utf8(std::env::consts::OS.into()),
+        aside_compiler::semantic::CompileConstant::Utf8(HOST_BUILD_TARGET.into()),
         "The build target selected by --resource-target, such as windows, linux, macos or vita. Use ordinary if conditions to select platform effects or settings at compilation; unselected branches produce no executable body. Resource overlays use the same target. window.info().platform reports the running player instead.",
     );
     resolver.insert(ModuleInterface {
@@ -718,7 +723,7 @@ pub fn compile_module(
         module_path,
         source_path,
         content_version,
-        std::env::consts::OS,
+        HOST_BUILD_TARGET,
     )
 }
 
@@ -785,7 +790,7 @@ pub fn compile_story(
         module_path,
         content_version,
         entry_name,
-        std::env::consts::OS,
+        HOST_BUILD_TARGET,
     )
 }
 
@@ -856,7 +861,7 @@ pub fn compile_project(
         inputs,
         aliases,
         content_version,
-        std::env::consts::OS,
+        HOST_BUILD_TARGET,
         &mut |_| {},
     )
 }
