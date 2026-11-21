@@ -38,7 +38,7 @@ Maintain the English `CHANGELOG.md` for user-visible changes under `Unreleased`.
 
 Public interfaces carry English source documentation beside their declarations. Native macros and property schemas expose the same documentation to editor tooling; executable Aside examples in these comments are checked against the registered interfaces. Update these declarations with API, default and behavior changes.
 
-The project lead maintains engine and language contracts in `docs/` and publishes game development tutorials at [reelvn.com](https://reelvn.com). Keep equivalent tutorial snippets identical in both editions. Preserve behavior assertions in Rust tests when moving examples out of Markdown. The compiler uses `crates/aside-compiler/tests/fixtures/author_scenes.md` for retained author-scene inputs. Verification logs and maintenance reports belong under ignored artifacts. Record completed work in its PR.
+The project lead maintains engine and language contracts in `docs/` and publishes game development tutorials at [reelvn.com](https://reelvn.com). Keep equivalent tutorial snippets identical in both editions. Preserve behavior assertions in Rust tests when moving examples out of Markdown. Verification logs and maintenance reports belong under ignored artifacts. Record completed work in its PR.
 
 ## Review and delivery
 

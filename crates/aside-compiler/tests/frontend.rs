@@ -468,17 +468,35 @@ fn recovery_preserves_following_declarations_and_insertion_locations() {
 }
 #[test]
 fn every_utf8_truncation_and_seeded_arbitrary_input_terminates_losslessly() {
+    let scene = r#"column() {
+        button("确认", on_click: |event| { await page.show(); });
+        text("下一页😀");
+    };"#;
+    ok(scene, E::Block);
     let corpus = [
-        "fn 名称(x = f\"{name}\") { let (a,...b) = x; if x { f() { node; }; } }",
-        "/* 外 /* 内 */ */ let x = r\"\"\"多行\n文本\"\"\";",
-        "class A: Base { let x; fn init(self) { self.x = 1; } }",
-        "match x { {field: [a,...rest]} if a > 0 => f(...rest), _ => null, }",
+        (
+            "fn 名称(x = f\"{name}\") { let (a,...b) = x; if x { f() { node; }; } }",
+            E::Module,
+        ),
+        (
+            "/* 外 /* 内 */ */ let x = r\"\"\"多行\n文本\"\"\";",
+            E::Module,
+        ),
+        (
+            "class A: Base { let x; fn init(self) { self.x = 1; } }",
+            E::Module,
+        ),
+        (
+            "match x { {field: [a,...rest]} if a > 0 => f(...rest), _ => null, }",
+            E::Module,
+        ),
+        (scene, E::Block),
     ];
-    for source in corpus {
+    for (source, entry) in corpus {
         for end in 0..=source.len() {
             if source.is_char_boundary(end) {
                 let truncated = &source[..end];
-                let p = at(truncated, E::Module);
+                let p = at(truncated, entry);
                 assert_eq!(p.syntax().text().to_string(), truncated);
                 ranges(&p, truncated);
             }
