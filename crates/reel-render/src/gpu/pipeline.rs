@@ -1,6 +1,8 @@
 use super::{Gpu, GpuError, Quality, mesh::Vertex, targets::Target};
+#[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::task::{Context, Poll, Waker};
 use wgpu::util::DeviceExt;
 
@@ -503,67 +505,65 @@ impl Pipelines {
                 Some(counts),
             )
         };
-        // Each worker owns its WGPU error scopes. The tier is published after all joins.
-        let (paint, specialized, yuv, composite) = std::thread::scope(|scope| {
-            let paint = scope.spawn(|| {
-                validation_scope(gpu, || {
-                    ["fragment", "fragment_coverage"]
-                        .map(|entry| paint_pipeline(&paint_shader, entry, over))
-                })
-            });
-            let yuv = scope.spawn(|| {
-                validation_scope(gpu, || {
+        let compile_paint = || {
+            validation_scope(gpu, || {
+                ["fragment", "fragment_coverage"]
+                    .map(|entry| paint_pipeline(&paint_shader, entry, over))
+            })
+        };
+        let compile_yuv = || {
+            validation_scope(gpu, || {
+                pipeline_module(
+                    device,
+                    quality,
+                    &yuv_layout,
+                    &paint_shader,
+                    (VertexInput::Mesh, "vertex"),
+                    FragmentOutput {
+                        entry: "fragment_yuv",
+                        blend: over,
+                    },
+                    #[cfg(test)]
+                    Some(counts),
+                )
+            })
+        };
+        let compile_composite = || {
+            validation_scope(gpu, || {
+                let composite_pipeline = |shader: &wgpu::ShaderModule, entry, blend| {
                     pipeline_module(
                         device,
                         quality,
-                        &yuv_layout,
-                        &paint_shader,
-                        (VertexInput::Mesh, "vertex"),
-                        FragmentOutput {
-                            entry: "fragment_yuv",
-                            blend: over,
-                        },
+                        &composite_layout,
+                        shader,
+                        (VertexInput::None, "vertex"),
+                        FragmentOutput { entry, blend },
                         #[cfg(test)]
                         Some(counts),
                     )
-                })
-            });
-            let composite = scope.spawn(|| {
-                validation_scope(gpu, || {
-                    let composite_pipeline = |shader: &wgpu::ShaderModule, entry, blend| {
-                        pipeline_module(
-                            device,
-                            quality,
-                            &composite_layout,
-                            shader,
-                            (VertexInput::None, "vertex"),
-                            FragmentOutput { entry, blend },
-                            #[cfg(test)]
-                            Some(counts),
-                        )
-                    };
-                    let resample_shader = bounded_composite_shader
-                        .as_ref()
-                        .unwrap_or(&composite_shader);
-                    let composite = composite_pipeline(&composite_shader, "fragment", over);
-                    let composite_blend = composite_pipeline(&composite_shader, "fragment", None);
-                    let extended_blend =
-                        composite_pipeline(&composite_shader, "extended_blend", None);
-                    let effect_resample = [None, over]
-                        .map(|blend| composite_pipeline(resample_shader, "effect_resample", blend));
-                    let source_over = composite_pipeline(resample_shader, "source_over", over);
-                    let alpha_mask = composite_pipeline(resample_shader, "alpha_mask", over);
-                    (
-                        composite,
-                        composite_blend,
-                        extended_blend,
-                        effect_resample,
-                        source_over,
-                        alpha_mask,
-                    )
-                })
-            });
-            let specialized = validation_scope(gpu, || {
+                };
+                let resample_shader = bounded_composite_shader
+                    .as_ref()
+                    .unwrap_or(&composite_shader);
+                let composite = composite_pipeline(&composite_shader, "fragment", over);
+                let composite_blend = composite_pipeline(&composite_shader, "fragment", None);
+                let extended_blend = composite_pipeline(&composite_shader, "extended_blend", None);
+                let effect_resample = [None, over]
+                    .map(|blend| composite_pipeline(resample_shader, "effect_resample", blend));
+                let source_over = composite_pipeline(resample_shader, "source_over", over);
+                let alpha_mask = composite_pipeline(resample_shader, "alpha_mask", over);
+                (
+                    composite,
+                    composite_blend,
+                    extended_blend,
+                    effect_resample,
+                    source_over,
+                    alpha_mask,
+                )
+            })
+        };
+        let compile_specialized = || {
+            validation_scope(gpu, || {
                 let direct = [
                     "fragment_direct",
                     "fragment_direct_bc1",
@@ -602,7 +602,15 @@ impl Pipelines {
                 ]
                 .map(|entry| paint_pipeline(&paint_shader, entry, None));
                 (direct, bounded, bounded_opaque, opaque)
-            });
+            })
+        };
+        // Each worker owns its WGPU error scopes.
+        #[cfg(not(target_arch = "wasm32"))]
+        let (paint, specialized, yuv, composite) = std::thread::scope(|scope| {
+            let paint = scope.spawn(compile_paint);
+            let yuv = scope.spawn(compile_yuv);
+            let composite = scope.spawn(compile_composite);
+            let specialized = compile_specialized();
             (
                 paint.join().unwrap(),
                 specialized,
@@ -610,6 +618,13 @@ impl Pipelines {
                 composite.join().unwrap(),
             )
         });
+        #[cfg(target_arch = "wasm32")]
+        let (paint, specialized, yuv, composite) = (
+            compile_paint(),
+            compile_specialized(),
+            compile_yuv(),
+            compile_composite(),
+        );
         let [paint, coverage] = paint?;
         let (direct, bounded, bounded_opaque, opaque) = specialized?;
         let (composite, composite_blend, extended_blend, effect_resample, source_over, alpha_mask) =
@@ -1052,6 +1067,18 @@ pub(super) fn validation_scope<T>(gpu: &Gpu, create: impl FnOnce() -> T) -> Resu
     ]
     .map(|filter| gpu.device.push_error_scope(filter));
     let value = create();
+    #[cfg(target_arch = "wasm32")]
+    for scope in scopes.into_iter().rev() {
+        // Pop immediately and let the browser resolve the promise. The next
+        // renderer turn sees any error in the same sticky device state.
+        gpu.observe_error_scope(scope.pop());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    complete_error_scopes(gpu, scopes)?;
+    Ok(value)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn complete_error_scopes(gpu: &Gpu, scopes: [wgpu::ErrorScopeGuard; 3]) -> Result<(), GpuError> {
     let mut pending = false;
     for scope in scopes.into_iter().rev() {
         let mut result = std::pin::pin!(scope.pop());
@@ -1070,5 +1097,5 @@ pub(super) fn validation_scope<T>(gpu: &Gpu, create: impl FnOnce() -> T) -> Resu
             "pipeline construction requires asynchronous validation on this backend".into(),
         ));
     }
-    Ok(value)
+    Ok(())
 }

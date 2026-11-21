@@ -9,6 +9,70 @@ fn input(path: &str, source: &str) -> SourceModule {
 }
 
 #[test]
+fn effect_proof_preserves_reexport_origin_and_match_exit_paths() {
+    let options = AnalysisOptions {
+        hosts: vec![ExternalSymbol::function(
+            "launch",
+            ExternalSignature {
+                parameters: vec![],
+                result: TypeHint::Null,
+                result_cases: Vec::new(),
+                result_parameter: None,
+                effect: CallEffect::StartsTask,
+                init_safe: Some(false),
+                derived_safe: Some(false),
+            },
+        )],
+        ..Default::default()
+    };
+    let main = "use facade::{choose}; gen fn preview() { choose(true); yield 0; }";
+    let facade = "pub use logic::{helper as choose};";
+    for (body, starts_task) in [
+        ("match value { true => launch(), _ => launch() }", true),
+        ("match value { true if value => launch(), _ => null }", false),
+        ("match value { true => launch() }", false),
+        ("match value { _ => launch(), true => null }", true),
+        ("match value { true => { return; }, _ => launch() }", false),
+    ] {
+        let source = format!("pub fn helper(value) {{ {body} }}");
+        let logic = SourceModule {
+            source_path: Some("src/logic.aside".into()),
+            ..input("logic", &source)
+        };
+        let result = analyze_project(
+            &[input("main", main), input("facade", facade), logic],
+            &options,
+            &mut NoModules,
+        )
+        .unwrap();
+        if starts_task {
+            assert_eq!(result.diagnostics.len(), 1, "{body}: {:?}", result.diagnostics);
+            let report = &result.diagnostics[0];
+            assert_eq!(report.module, "main");
+            assert_eq!(report.diagnostic.code, DiagnosticCode::NoWait);
+            assert_eq!(&main[report.diagnostic.range], "choose(true)");
+            let related = &report.diagnostic.related[0];
+            assert_eq!(related.source.as_deref(), Some("src/logic.aside"));
+            assert_eq!(&source[related.range], "launch()");
+        } else {
+            assert!(result.is_ok(), "{body}: {:?}", result.diagnostics);
+        }
+    }
+
+    let result = analyze_project(
+        &[
+            input("main", "use logic::{Mode, choose}; gen fn preview() { choose(Mode.Left); yield 0; }"),
+            input("logic", "pub enum Mode { Left, Right(x: int) } pub fn choose(mode: Mode) { match mode { Mode.Left => launch(), Mode.Right { .. } => launch() } }"),
+        ],
+        &options,
+        &mut NoModules,
+    )
+    .unwrap();
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].diagnostic.code, DiagnosticCode::NoWait);
+}
+
+#[test]
 fn imported_plain_call_uses_inferred_await_diagnostic_at_the_use() {
     let source = "use model::load; fn inspect() { await load(); }";
     let result = analyze_project(
@@ -85,7 +149,7 @@ fn exported_destructuring_projects_each_binding_type() {
 #[test]
 fn exported_builtin_categories_match_local_annotation_semantics() {
     let inputs = [
-        input("a", "pub fn f(x:Map){} pub fn callback(x:closure){}"),
+        input("a", "pub fn f(x:table){} pub fn callback(x:closure){}"),
         input("b", "use a::{f,callback}; f({}); fn g(){} callback(g);"),
     ];
     let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();

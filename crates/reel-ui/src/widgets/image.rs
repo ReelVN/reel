@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::TypeId;
+use std::sync::Arc;
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
@@ -12,7 +13,7 @@ use crate::core::{
     WidgetMut,
 };
 use crate::imaging::Painter;
-use crate::kurbo::{Affine, Axis, Insets, Rect, Size};
+use crate::kurbo::{Affine, Axis, BezPath, Insets, Point, Rect, Size};
 use crate::layout::{LenReq, Length};
 use crate::peniko::{Color, Extend, ImageBrush};
 use crate::properties::ObjectFit;
@@ -54,6 +55,7 @@ pub struct Image {
     repeat: [bool; 2],
     tile_scale: f64,
     corner_colors: Option<[Color; 4]>,
+    corners: Option<Arc<[Point; 4]>>,
     adjustment: crate::frame::ImageColorAdjustment,
     content_size: Size,
     paint_visible: bool,
@@ -73,6 +75,82 @@ pub struct ImageTile {
 
 // --- MARK: BUILDERS
 impl Image {
+    fn paint_corners(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        painter: &mut Painter<'_>,
+        source: Rect,
+        content: Rect,
+        sampling: Affine,
+        mut corners: [Point; 4],
+    ) {
+        for corner in &mut corners {
+            *corner += content.origin().to_vec2();
+        }
+        let [top_left, top_right, bottom_right, bottom_left] = corners;
+        let source_corners = [
+            Point::new(source.x0, source.y0),
+            Point::new(source.x1, source.y0),
+            Point::new(source.x1, source.y1),
+            Point::new(source.x0, source.y1),
+        ];
+        let triangles = [
+            ([0, 1, 2], top_right - top_left, bottom_right - top_right),
+            (
+                [0, 2, 3],
+                bottom_right - bottom_left,
+                bottom_left - top_left,
+            ),
+        ];
+        let to_unit = Affine::scale_non_uniform(1. / source.width(), 1. / source.height())
+            * Affine::translate(-source.origin().to_vec2());
+        ctx.set_image_sampling_transform(true);
+        let needs_clip = corners
+            .iter()
+            .any(|&point| !content.contains_rect(Rect::from_points(point, point)));
+        if needs_clip {
+            painter.push_fill_clip(content);
+        }
+        let mut path = BezPath::with_capacity(4);
+        for ([a, b, c], horizontal, vertical) in triangles {
+            if horizontal.cross(vertical) == 0. {
+                continue;
+            }
+            let transform = Affine::new([
+                horizontal.x,
+                horizontal.y,
+                vertical.x,
+                vertical.y,
+                top_left.x,
+                top_left.y,
+            ]) * to_unit;
+            path.truncate(0);
+            path.move_to(source_corners[a]);
+            path.line_to(source_corners[b]);
+            path.line_to(source_corners[c]);
+            path.close_path();
+            if let Some(image) = &self.image_data {
+                painter
+                    .fill(&path, image)
+                    .transform(transform)
+                    .brush_transform(Some(sampling))
+                    .draw();
+            } else if let Some(resource) = &self.resource {
+                ctx.draw_resource_image(
+                    painter,
+                    resource,
+                    &path,
+                    transform,
+                    sampling,
+                    self.sampler(),
+                );
+            }
+        }
+        if needs_clip {
+            painter.pop_clip();
+        }
+    }
+
     /// Select per-draw filtering without copying or replacing image storage.
     pub fn with_sampling(mut self, sampling: crate::peniko::ImageQuality) -> Self {
         self.sampling = sampling;
@@ -107,6 +185,7 @@ impl Image {
             repeat: [false; 2],
             tile_scale: 1.,
             corner_colors: None,
+            corners: None,
             adjustment: Default::default(),
             content_size: Size::ZERO,
             paint_visible: true,
@@ -132,6 +211,7 @@ impl Image {
             repeat: [false; 2],
             tile_scale: 1.,
             corner_colors: None,
+            corners: None,
             adjustment: Default::default(),
             content_size: Size::ZERO,
             paint_visible: true,
@@ -203,6 +283,12 @@ impl Image {
     /// required; out-of-texture coordinates pad the texture's edges.
     pub fn with_source_rect(mut self, rect: Option<Rect>) -> Self {
         self.source_rect = rect;
+        self
+    }
+
+    /// Supply local positions for the four corners of the visible fitted image.
+    pub fn with_corners(mut self, corners: Option<Arc<[Point; 4]>>) -> Self {
+        self.corners = corners;
         self
     }
 
@@ -290,6 +376,14 @@ impl Image {
             } else {
                 this.ctx.request_render();
             }
+        }
+    }
+
+    /// Replace warped paint geometry without changing the image layout or resource.
+    pub fn set_corners(this: &mut WidgetMut<'_, Self>, corners: Option<Arc<[Point; 4]>>) {
+        if this.widget.corners != corners {
+            this.widget.corners = corners;
+            this.ctx.request_render();
         }
     }
 
@@ -757,6 +851,10 @@ impl Widget for Image {
         let sampling = source_rect.map_or(Affine::IDENTITY, |rect| {
             Affine::translate(rect.origin().to_vec2())
         });
+        if let Some(corners) = &self.corners {
+            self.paint_corners(ctx, painter, bounds, content_box, sampling, **corners);
+            return;
+        }
         if let Some(image) = &self.image_data {
             painter
                 .fill(bounds, image)
@@ -827,6 +925,76 @@ mod tests {
                 matches!(command, Command::Draw(id) if matches!(scene.draw_op(*id), Draw::Fill { brush: Brush::Image(_), .. }))
             }).count()
         }).sum()
+    }
+
+    #[test]
+    fn warped_image_uses_shared_diagonal_and_preserves_source_pixels() {
+        use crate::imaging::record::Geometry;
+
+        let image = ImageData {
+            data: Blob::from(vec![255; 8 * 8 * 4]),
+            width: 8,
+            height: 8,
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+        };
+        let corners = [(-2., 3.), (14., 1.), (13., 11.), (1., 9.)].map(Point::from);
+        let widget = NewWidget::new(
+            Image::new(image)
+                .with_source_rect(Some(Rect::new(2., 1., 6., 5.)))
+                .with_corners(Some(Arc::new(corners))),
+        )
+        .with_props(ObjectFit::Stretch);
+        let mut root = RenderRoot::new(
+            widget,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(16, 12),
+                scale_factor: 1.,
+                default_font: None,
+            },
+        );
+        let (plan, _) = root.redraw();
+        let mut expected = [[0, 1, 2], [0, 2, 3]].into_iter();
+        let source = [(2., 1.), (6., 1.), (6., 5.), (2., 5.)].map(Point::from);
+        let mut clips = 0;
+        for layer in &plan.layers {
+            let VisualLayerKind::Scene(scene) = &layer.kind else {
+                continue;
+            };
+            for command in scene.commands() {
+                let Command::Draw(id) = command else {
+                    if matches!(command, Command::PushClip(_)) {
+                        clips += 1;
+                    }
+                    continue;
+                };
+                let Draw::Fill {
+                    shape: Geometry::Path(path),
+                    brush: Brush::Image(_),
+                    transform,
+                    brush_transform: Some(sampling),
+                    ..
+                } = scene.draw_op(*id)
+                else {
+                    continue;
+                };
+                for (element, index) in path.elements().iter().zip(expected.next().unwrap()) {
+                    let point = match *element {
+                        crate::kurbo::PathEl::MoveTo(point)
+                        | crate::kurbo::PathEl::LineTo(point) => point,
+                        _ => panic!("image draw must be a triangle"),
+                    };
+                    assert_eq!(*transform * point, corners[index]);
+                    assert_eq!(*sampling * point, source[index]);
+                }
+            }
+        }
+        assert!(expected.next().is_none());
+        assert_eq!(clips, 1);
     }
 
     #[test]

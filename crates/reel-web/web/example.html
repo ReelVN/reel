@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reel preview example</title>
+    <style>
+        body { max-width: 82rem; margin: 0 auto; padding: 1.5rem; font: 1rem/1.5 system-ui; color: #dce7e1; background: #161b19; }
+        h1 { margin-top: 0; font-size: 1.5rem; }
+        main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; }
+        label { display: block; margin-bottom: .4rem; }
+        textarea { display: block; box-sizing: border-box; width: 100%; min-height: 21rem; padding: .75rem; background: #101412; color: inherit; border: 1px solid #52635b; border-radius: .25rem; font: .9rem/1.45 ui-monospace, monospace; }
+        canvas { display: block; width: 100%; aspect-ratio: 16 / 9; background: #101412; touch-action: none; }
+        button { margin-top: .6rem; padding: .35rem .8rem; font: inherit; }
+        output { display: block; min-height: 1.5em; margin-top: .5rem; white-space: pre-wrap; overflow-wrap: anywhere; color: #ffb7a8; }
+        @media (max-width: 55rem) { main { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <h1>Reel preview</h1>
+    <main>
+        <section>
+            <label for="source">src/main.aside</label>
+            <textarea id="source" spellcheck="false"></textarea>
+            <button id="run" type="button" disabled>Run preview</button>
+            <output id="status" aria-live="polite"></output>
+        </section>
+        <canvas id="preview" aria-label="Reel stage preview"></canvas>
+    </main>
+    <script type="module">
+        import { mountPreview } from "./preview.js";
+
+        const source = document.querySelector("#source");
+        const button = document.querySelector("#run");
+        const status = document.querySelector("#status");
+        const canvas = document.querySelector("#preview");
+        source.value = `fn main() {
+    game.configure(width: 960, height: 540, fonts: ["fonts/body.ttf"]);
+    let caption = text("An evening in the glasshouse", x: 52, y: 64,
+        width: 820, height: 64, font_size: 38, color: "#f1e8db");
+    stage.replace(stack(width: 960, height: 540, background: "#17382d") {
+        caption;
+        button("Turn on the lamps", x: 52, y: 164, width: 260, height: 64,
+            background: "#bfa36c", color: "#18241c", on_click: || {
+                caption.value = "Warm light fills the glasshouse.";
+            });
+    });
+}`;
+
+        function showError(error) {
+            status.textContent = error instanceof Error ? error.message : String(error);
+        }
+
+        try {
+            const preview = await mountPreview(canvas, {
+                assets: { "fonts/body.ttf": new URL("./assets/AtkinsonHyperlegible-Regular.ttf", import.meta.url) },
+                onError: showError,
+            });
+            const run = () => {
+                try {
+                    const result = preview.run(source.value);
+                    status.textContent = result.status === "compile_error"
+                        ? result.diagnostics.map(({ source, start, code, message }) => {
+                            const location = start ? `${source}:${start.line + 1}:${start.utf16Column + 1}` : source;
+                            return `${location} ${code} ${message}`;
+                        }).join("\n")
+                        : result.status === "runtime_error" ? result.message : "";
+                } catch (error) {
+                    showError(error);
+                }
+            };
+            button.disabled = false;
+            button.addEventListener("click", run);
+            window.addEventListener("pagehide", ({ persisted }) => {
+                if (!persisted) preview.dispose();
+            });
+            run();
+        } catch (error) {
+            showError(error);
+        }
+    </script>
+</body>
+</html>

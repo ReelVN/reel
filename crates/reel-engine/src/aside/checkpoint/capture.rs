@@ -9,7 +9,7 @@ use crate::aside::{
 };
 use crate::{Session, reading::checkpoint::ReadingCapture};
 use aside_vm::{
-    HeapError, HeapReservation, RootKind, RootOwner, RootToken,
+    HeapError, HeapReservation, RootKind, RootOwner, RootToken, Value,
     resume::{
         CaptureProgress, ContinuationDescriptor, ResumeCaptureCursor, ResumeError, ResumeSite,
         RootKey,
@@ -114,6 +114,7 @@ pub struct CheckpointCapture {
     failed: bool,
     required_work: u32,
     media: Option<MediaCapture>,
+    voice: Value,
     context: Option<ContextSlots>,
     member: Option<MemberBinding>,
 }
@@ -168,6 +169,7 @@ impl SessionVm {
             .budget_usage()
             .reserve(metadata_bytes(&descriptor, &keys) + root.0.capacity() as u64)?;
         let media = self.media.capture_logical(self.vm.heap())?;
+        let voice = self.dialogue_voice()?;
         let array = self.vm.heap_mut().alloc_array(&[state])?;
         let wrapper = self
             .vm
@@ -193,6 +195,7 @@ impl SessionVm {
             failed: false,
             required_work: 1,
             media: Some(media),
+            voice,
             context: Some(context),
             member: None,
         })
@@ -352,6 +355,9 @@ impl CheckpointCapture {
                     self.context = None;
                     let heap = source.vm.heap_mut();
                     let array = heap.root_value(self.wrapper.unwrap())?;
+                    if !self.voice.same_bits(Value::NULL) {
+                        heap.array_push(array, self.voice)?;
+                    }
                     self.graph = Some(TypedCapture::new(heap, self.owner, array)?);
                 }
             }

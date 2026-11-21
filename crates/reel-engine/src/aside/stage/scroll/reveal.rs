@@ -108,7 +108,7 @@ impl SessionVm {
                     )?;
                     self.scroll_reveal_call(
                         ticket,
-                        "reel::run",
+                        "reel::action::run",
                         action,
                         &[owner, Value::bool(false)],
                         1,

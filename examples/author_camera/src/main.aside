@@ -33,34 +33,28 @@ fn main() {
                     button(
                         "Library",
                         on_click: || {
-                            await run(
-                                tween(
+                            await tween(
                                     view, camera_x: 270, camera_y: 320, zoom: 1.5,
                                     camera_rotation: -6, duration: 0.8
-                                )
-                            );
+                                ).run();
                         }
                     );
                     button(
                         "Tower",
                         on_click: || {
-                            await run(
-                                tween(
+                            await tween(
                                     view, camera_x: 990, camera_y: 320, zoom: 1.5,
                                     camera_rotation: 6, duration: 0.8
-                                )
-                            );
+                                ).run();
                         }
                     );
                     button(
                         "Overview",
                         on_click: || {
-                            await run(
-                                tween(
+                            await tween(
                                     view, camera_x: 600, camera_y: 320, zoom: 0.72,
                                     camera_rotation: 0, duration: 0.8
-                                )
-                            );
+                                ).run();
                         }
                     );
                 }
@@ -68,15 +62,12 @@ fn main() {
         }
     );
     await stage.presented(owner: view);
-    await run(
-        sequence(
+    await sequence(
             tween(view, camera_x: 270, zoom: 1.4, duration: 1.2, easing: "in_out"), delay(0.5),
             tween(view, camera_x: 990, camera_rotation: 6, duration: 2.0, easing: "in_out"),
             delay(0.5),
             tween(
                 view, camera_x: 600, zoom: 0.72, camera_rotation: 0, duration: 1.2, easing: "in_out"
             )
-        ),
-        owner: view
-    );
+        ).run(owner: view);
 }

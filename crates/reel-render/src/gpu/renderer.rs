@@ -17,6 +17,7 @@ pub struct Prepared {
     pub(super) capture: Option<Arc<super::capture::ReadbackStorage>>,
     pub(super) encoder: wgpu::CommandEncoder,
     pub(super) output: wgpu::TextureView,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) texture: wgpu::Texture,
     pub(super) quality: Quality,
     pub(super) size: [u32; 2],
@@ -164,6 +165,7 @@ impl Renderer {
     /// Warm the preferred surface quality before showing its first frame.
     pub(super) fn prepare_quality(&self, quality: Quality) -> Result<(), GpuError> {
         // Start desktop upload workers before the first interactive frame.
+        #[cfg(not(target_arch = "wasm32"))]
         rayon::current_num_threads();
         let pipelines = self.pipelines.get(&self.gpu, quality)?;
         if self.gpu.coverage_quality(quality).is_some() {
@@ -1060,6 +1062,7 @@ impl Renderer {
                 cache_targets: !capture,
                 encoder: ctx.encoder,
                 output: output.view,
+                #[cfg(not(target_arch = "wasm32"))]
                 texture: output.texture,
                 quality,
                 size,
@@ -1159,11 +1162,7 @@ impl Renderer {
         Ok(())
     }
     pub fn submit(&mut self, mut prepared: Prepared) -> Result<u64, GpuError> {
-        self.gpu.check()?;
-        if !Arc::ptr_eq(&prepared.owner, &self.owner) || prepared.generation != self.gpu.generation
-        {
-            return Err(GpuError::WrongDevice);
-        }
+        self.validate_prepared(&prepared)?;
         if self.inflight.len() >= self.gpu.limits.max_inflight {
             return Err(GpuError::Busy);
         }
@@ -1245,6 +1244,7 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         // The queue may own the last references to buffers and images. Keep frame
         // leases and accounting live until it has completed or reported device loss.
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
         self.inflight.clear();
     }

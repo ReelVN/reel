@@ -27,18 +27,38 @@ impl FunctionBuilder<'_, '_> {
         name: bc::SymbolId,
         node: h::NodeId,
     ) -> Result<(), Box<Error>> {
-        if let Some(ty) = self.record_member_type(node) {
+        if let Some((ty, optional)) = self.record_member_type(node) {
             let key = self.l.b.string(&self.l.package.symbols[name.index()])?;
             let key = self.constant(bc::Const::Utf8(key), node)?;
-            self.op(bc::Opcode::IndexGet, out.0, receiver.0, key.0, node)?;
-            self.release(key)?;
-            self.check_member_value(out, ty, node)
+            if optional {
+                self.op(bc::Opcode::PatternField, key.0, receiver.0, out.0, node)?;
+                if self.l.m.types()[ty.0 as usize] != h::Type::Any {
+                    let present = self.block()?;
+                    let join = self.block()?;
+                    self.terminate(
+                        Terminator::BranchBool { value: key, yes: present, no: join },
+                        node,
+                    )?;
+                    self.release(key)?;
+                    self.start(present)?;
+                    self.check_member_value(out, ty, node)?;
+                    self.terminate(Terminator::Jump(join), node)?;
+                    self.start(join)?;
+                } else {
+                    self.release(key)?;
+                }
+                Ok(())
+            } else {
+                self.op(bc::Opcode::IndexGet, out.0, receiver.0, key.0, node)?;
+                self.release(key)?;
+                self.check_member_value(out, ty, node)
+            }
         } else {
             self.op(bc::Opcode::MemberGet, out.0, receiver.0, name.0, node)
         }
     }
 
-    fn record_member_type(&self, node: h::NodeId) -> Option<h::TypeId> {
+    fn record_member_type(&self, node: h::NodeId) -> Option<(h::TypeId, bool)> {
         let m = self.l.m;
         if m.facts()[node.0 as usize].checks.0 & h::RuntimeChecks::RECORD_FIELD == 0 {
             return None;
@@ -51,7 +71,7 @@ impl FunctionBuilder<'_, '_> {
         fields
             .binary_search_by_key(&name, |&(key, _)| key)
             .ok()
-            .map(|i| fields[i].1)
+            .map(|i| h::field_contract(m.types(), fields[i].1))
     }
 
     fn check_member_value(
@@ -303,7 +323,7 @@ impl FunctionBuilder<'_, '_> {
                 symbol,
                 node,
             } => {
-                if let Some(ty) = self.record_member_type(node) {
+                if let Some((ty, _)) = self.record_member_type(node) {
                     self.check_member_value(value, ty, node)?;
                 }
                 self.op(bc::Opcode::MemberSet, object.0, value.0, symbol.0, node)

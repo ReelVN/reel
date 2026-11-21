@@ -17,12 +17,12 @@ fn scope_offsets_reuse_storage_for_idle_projection_motion_and_removal() {
         let (mut session, mut vm) = prepared(&format!(
             r#"fn opening() {{
                 let panel=stack(x:10,width:40,height:20);stage.replace(panel);
-                run(tween(panel,x:110,duration:100));
+                tween(panel,x:110,duration:100).run();
                 scope(body:|s|{{
                     let mut i=0;
                     while i<{layers} {{
                         let layer=s.offset(panel,x:1,y:-1);
-                        run(tween(layer,x:11,duration:100));i+=1;
+                        tween(layer,x:11,duration:100).run();i+=1;
                     }}
                     narrator("measure");
                 }});

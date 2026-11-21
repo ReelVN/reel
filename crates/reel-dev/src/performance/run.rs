@@ -65,13 +65,13 @@ fn device(options: &Run, directory: &Path, manifest: &Manifest) -> Result<()> {
             runtime.join("eboot.bin").is_file(),
             "runtime requires eboot.bin"
         );
-        // The official player must already be registered by installing its VPK.
+        // Installing the performance VPK registers the application.
         let app = format!("ux0:/app/{VITA_PLAYER_TITLE_ID}");
         let eboot = format!("{app}/eboot.bin");
         vdb.call(&["stat".as_ref(), eboot.as_ref()])
-            .context("install the official reel-vita VPK once before deploying a runtime")?;
+            .context("install the VPK from reel-dev perf runtime before deploying a runtime")?;
         vdb.push(&runtime.join("eboot.bin"), Path::new(&eboot))?;
-        for name in ["launcher.rpk", "sce_sys", "licenses", "module"] {
+        for name in ["sce_sys", "licenses", "module"] {
             let path = runtime.join(name);
             let remote = format!("{app}/{name}");
             if path.is_dir() {

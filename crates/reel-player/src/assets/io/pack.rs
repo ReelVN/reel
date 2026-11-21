@@ -1,4 +1,4 @@
-use super::{ReadFile, directory, failure, file::File, io_error};
+use super::{ReadFile, ReadHandle, directory, failure, file::File, io_error};
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, BudgetTicket},
     identity::{AssetSource, ContentVersion},
@@ -171,7 +171,7 @@ impl Files {
             }
         };
         Ok(ReadFile {
-            file: &mut self.files[location.archive],
+            file: ReadHandle::File(&mut self.files[location.archive]),
             offset: descriptor.offset,
             length: descriptor.length,
             version: ContentVersion(descriptor.version),

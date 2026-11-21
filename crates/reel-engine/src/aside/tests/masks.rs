@@ -199,7 +199,7 @@ fn mask_uniform_properties_share_tween_binding_and_owner_cancellation() {
         let node = stack(mask: mask.param("progress"), mask_progress: 0,
             mask_y: bind(state.offset));
         stage.replace(node);
-        let moving = run(tween(node, mask_x: 1, mask_progress: 1, duration: 2), owner: node);
+        let moving = tween(node, mask_x: 1, mask_progress: 1, duration: 2).run(owner: node);
         narrator("moving");
         state.offset = -0.75;
         narrator("bound");

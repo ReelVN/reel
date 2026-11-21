@@ -48,8 +48,8 @@ pub fn builtin_members(
     ty: TypeId,
 ) -> Option<&'static BuiltinTypeMembers> {
     let receiver = match &types[ty.0 as usize] {
-        Type::Array => ObjectKind::Array,
-        Type::Table => ObjectKind::Table,
+        Type::Array | Type::TypedArray(_) => ObjectKind::Array,
+        Type::Table | Type::Record(_) => ObjectKind::Table,
         Type::String | Type::StringLiteral(_) => ObjectKind::String,
         Type::Tuple(_) => ObjectKind::Tuple,
         Type::Generator => ObjectKind::Generator,

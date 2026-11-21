@@ -92,7 +92,7 @@ fn code(input: Input, event: bool, waiting: bool) -> String {
     }}"#,
         parameter = if event { "event" } else { "" },
         wait = if waiting {
-            "await run(delay(1)); output.y += 1;"
+            "await delay(1).run(); output.y += 1;"
         } else {
             ""
         }

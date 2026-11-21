@@ -951,7 +951,7 @@ fn suspended_button_animation_advances_without_polling_vm_and_closes_its_wait() 
         stage.replace(stack() {
             target;
             button("Animate", width: 180, height: 60, on_click: |event| {
-                await run(tween(target, x: 100, duration: 1));
+                await tween(target, x: 100, duration: 1).run();
                 throw "closed callback must not resume";
             });
         });

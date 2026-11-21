@@ -64,7 +64,7 @@ impl Heap {
         let prepared = if info.kind == ObjectKind::Table {
             self.alloc_table()?
         } else {
-            self.alloc_array(&[])?
+            self.alloc_array_like(target)?
         };
         self.commit_collection(target, prepared)?;
         self.request_collection();
@@ -110,6 +110,9 @@ impl Heap {
         }
         if target == prepared {
             return Ok(());
+        }
+        if kind == ObjectKind::Array && self.array_item(target_value)? != self.array_item(prepared_value)? {
+            return Err(HeapError::TypeMismatch);
         }
         // Removal only retains already adopted values; the prepared table's
         // metadata contains its new position map and must remain private.

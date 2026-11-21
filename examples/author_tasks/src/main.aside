@@ -9,16 +9,14 @@ class Bouncer {
 
     fn idle(self) {
         loop {
-            await run(delay(1 + self.rng.float() * 2));
-            await run(
-                repeat(
+            await delay(1 + self.rng.float() * 2).run();
+            await repeat(
                     sequence(
                         tween(self.node, y: 40, duration: 0.18, easing: "quad_out"),
                         tween(self.node, y: 120, duration: 0.18, easing: "quad_in")
                     ),
                     times: 2
-                )
-            );
+                ).run();
         }
     }
 }

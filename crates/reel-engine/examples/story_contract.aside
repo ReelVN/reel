@@ -1,4 +1,4 @@
-use reel::prelude::*;
+use reel::*;
 
 fn main() {
     localization.set_locale("en");

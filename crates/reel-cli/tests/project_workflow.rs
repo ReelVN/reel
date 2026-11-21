@@ -612,7 +612,7 @@ mod projects {
         write(
             root,
             "src/library/data.aside",
-            r#"pub use reel::prelude::text as label;
+            r#"pub use reel::text as label;
 use std::random;
 pub let model = {value: 0};
 pub fn bump() { model.value += random(seed: 42).int(1, 2); }"#,

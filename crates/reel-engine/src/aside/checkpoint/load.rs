@@ -226,6 +226,10 @@ impl CheckpointLoad {
                         candidate
                             .prepare_reading_resume(reading, self.record.continuation().clone())?;
                     }
+                    let voice = self.restored.as_ref().unwrap().voice;
+                    if !voice.same_bits(aside_vm::Value::NULL) {
+                        candidate.publish_dialogue_voice(voice)?;
+                    }
                     self.phase = Phase::Reading;
                 }
             }

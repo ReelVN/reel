@@ -693,6 +693,9 @@ impl StageView {
                         NodeKind::Image { repeat, .. } if *repeat != [false; 2] => {
                             Some("repetition requires a whole PNG, JPEG or .reel-texture image")
                         }
+                        NodeKind::Image { corners: Some(_), .. } => {
+                            Some("image corners require a whole image or prepared texture")
+                        }
                         _ => None,
                     };
                     if let Some(restriction) = restriction {

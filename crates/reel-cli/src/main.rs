@@ -4,9 +4,9 @@ mod formatting;
 mod progress;
 use aside_compiler::{SourceMap, semantic::SourceModule};
 use clap::Parser;
-use codespan_reporting::{files::SimpleFile, term};
+use codespan_reporting::{files::SimpleFiles, term};
 use commands::{Cli, Command, SourceCommand};
-use reel_cli::{BuildProfile, diagnostic_json, package_limits_json, prepare_build};
+use reel_cli::{BuildProfile, diagnostic_json_with, package_limits_json, prepare_build};
 use serde_json::{Value, json};
 use std::{
     io::{self, Write},
@@ -308,6 +308,8 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 }
             };
             let default_output = args.output.is_none();
+            let vita_vpk =
+                args.settings.release && args.resource_target == "vita" && !args.data_only;
             let resources = if args.resources.is_empty()
                 && args.text.is_empty()
                 && loaded.project_root.join("resources").is_dir()
@@ -337,12 +339,22 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 runtime,
             };
             progress.phase("Packing resources");
-            match reel_cli::distribution::export(&loaded, &artifact, &options) {
-                Ok(result) => {
+            let result = if vita_vpk {
+                reel_cli::distribution::export_vita(
+                    &loaded,
+                    &artifact,
+                    &options,
+                    (!default_output).then_some(options.output.as_path()),
+                )
+            } else {
+                reel_cli::distribution::export(&loaded, &artifact, &options)
+            };
+            match result {
+                Ok((output, result)) => {
                     progress.finish("Exported");
                     if json_format {
                         report_json(
-                            &json!({"status":"exported", "profile":profile.name(), "output":options.output,
+                            &json!({"status":"exported", "profile":profile.name(), "output":output,
                             "resources":result.files,"payload_bytes":result.bytes,
                             "text_pool_bytes":artifact.text_pool.as_ref().map_or(0, |pool| pool.as_bytes().len())}),
                         )?;
@@ -350,7 +362,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                         writeln!(
                             io::stdout().lock(),
                             "Exported {} ({}; {} resources, {} payload bytes)",
-                            options.output.display(),
+                            output.display(),
                             profile.name(),
                             result.files,
                             result.bytes
@@ -551,7 +563,13 @@ fn source_error(
                     .iter()
                     .find(|input| d.source.as_deref() == input.source_path.as_deref())
                     .unwrap_or(&sources[0]);
-                let mut value = diagnostic_json(&d.diagnostic, &SourceMap::new(&input.source));
+                let mut value =
+                    diagnostic_json_with(&d.diagnostic, &SourceMap::new(&input.source), |path| {
+                        sources
+                            .iter()
+                            .find(|source| source.source_path.as_deref() == Some(path))
+                            .map(|source| source.source.as_ref())
+                    });
                 value["source"] = json!(input.source_path.as_deref().unwrap_or(path));
                 if let Some(code) = &failed.code {
                     value["code"] = json!(code);
@@ -564,18 +582,25 @@ fn source_error(
                     "stage": failed.stage, "executed": false, "diagnostics": diagnostics}),
         )?;
     } else {
+        let mut files = SimpleFiles::new();
+        for input in sources {
+            files.add(input.source_path.as_deref().unwrap_or(path), &*input.source);
+        }
         let mut output = io::stderr().lock();
         for d in &failed.diagnostics {
-            let input = sources
+            let file = sources
                 .iter()
-                .find(|input| d.source.as_deref() == input.source_path.as_deref())
-                .unwrap_or(&sources[0]);
-            let file = SimpleFile::new(input.source_path.as_deref().unwrap_or(path), &input.source);
-            let mut rendered = d.diagnostic.to_codespan(());
+                .position(|input| d.source.as_deref() == input.source_path.as_deref())
+                .unwrap_or(0);
+            let mut rendered = d.diagnostic.to_codespan_with(file, |path| {
+                sources
+                    .iter()
+                    .position(|source| source.source_path.as_deref() == Some(path))
+            });
             if let Some(code) = &failed.code {
                 rendered.code = Some(code.clone());
             }
-            term::emit_to_io_write(&mut output, &term::Config::default(), &file, &rendered)
+            term::emit_to_io_write(&mut output, &term::Config::default(), &files, &rendered)
                 .map_err(io::Error::other)?;
         }
     }

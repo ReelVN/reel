@@ -10,7 +10,7 @@ fn scope_finish_returns_original_value_and_retires_nested_work_before_continuing
             state.finish=page.finish;state.cancel=page.cancel;
             let node=page.add(root,stack(){text("temporary");});
             state.child=page.spawn(||await completion());
-            state.motion=page.run(tween(node,x:100,duration:10));
+            state.motion=tween(node,x:100,duration:10).run(owner: page);
             scope(body:|inner| {
                 inner.add(node,text("nested"));
                 try {page.finish(expected);state.after=true;await completion();}

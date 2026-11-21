@@ -24,7 +24,7 @@ Use `reel-dev debug` to open the source project and reproduce a stutter or scrip
 
 Source commands in an interactive terminal show the current phase, module progress and elapsed time. `dev` reports when it reuses cached code.
 
-`export` produces a development project at `dist/TARGET/debug/`. Use `--release` for `dist/TARGET/release/`, such as `dist/vita/release/`. Distribute the whole release directory, including the code, text package, resource volumes and any bundled player. Default outputs update on repeated runs. An explicit `--output` destination uses `--overwrite` to replace existing output. Keep saves separately before replacing an export directory. `--save-directory` selects runtime storage.
+`export` produces a development project at `dist/TARGET/debug/`. A desktop `--release` writes to `dist/TARGET/release/` with its player, code, text package, and resource volumes. Each Vita release includes one VPK and one data directory. Default outputs update on repeated runs. An explicit `--output` destination uses `--overwrite` to replace existing output.
 
 Use `reel-dev perf verify` before publishing to check key scenes exercised by the distribution player. The policy specifies a target, environment, scene labels and submission interval or memory limits. The resulting `verification.json` records observations and failed checks. [Release verification](../../crates/reel-dev/README.md#verify-a-release)
 
@@ -32,7 +32,7 @@ Place platform assets in `resources/@TARGET/` to override common assets at match
 
 ```sh
 reel dev --resource-target vita
-reel export --release --resource-target vita
+reel export --release --resource-target vita --data-only
 ```
 
 `dev` previews the selected assets in the current platform player. `export` prepares the release for the selected target. Development exports copy selected files. Release exports package them under their logical paths.
@@ -45,25 +45,61 @@ let particle_count = if build.target == "vita" { 80 } else { 320 };
 
 Keep the logical canvas when sharing a layout; use resource scaling and effect settings to adjust rendering cost. `window.info().platform` reports the player currently running the game.
 
-Native desktop releases include the player from the installed tools. The `desktop` and custom resource variants also bundle the host player by default. For a release targeting another desktop OS, supply that platform's runtime directory with `--runtime`, or choose `--data-only` for a separately installed player. Runtime files keep their relative paths beside `game.asb`.
+Native desktop releases include the player from the installed tools. The `desktop` and custom resource variants also bundle the host player by default. For a release targeting another desktop OS, supply that platform's player or runtime directory with `--runtime`, or choose `--data-only` for a separately installed player. Supporting files keep their paths relative to the player.
 
 ```sh
 reel export --release --resource-target linux --runtime path/to/linux-runtime
 ```
 
-Use the target platform's packaging tool to prepare an installer. A custom Vita runtime directory must contain `eboot.bin` at its root. The Vita player reads prepared Opus audio and textures. Hardware movies use H.264/AAC with even dimensions up to 960 × 544.
+To set the release name and icon, add `[desktop]` to `distribution.toml` at the project root. Use a reverse-domain `id` and keep it the same for updates. `icon` is optional. Use a square PNG inside the project, ideally 1024 × 1024.
+
+```toml
+[desktop]
+id = "com.example.mygame"
+title = "My Game"
+icon = "platform/icon.png"
+```
+
+- Windows embeds the icon in `game.exe` and uses it for the game window and taskbar. Players extract the whole release directory and double-click the executable. Sign it after export if required.
+- macOS produces `dist/macos/release/My Game.app`. Players double-click the `.app`. Pass `--output` to choose another `.app` path. Sign and notarize it as required by your distribution channel.
+- Linux can launch `./game` from a terminal. After placing the release directory in its permanent location, run `sh install-menu.sh` there to add the entry and icon to the current user's application menu. Run the script again after moving the directory.
+
+Create the final archive for Linux and macOS on the target operating system to preserve the player's executable bit. If extraction removed it, use `chmod +x` on `game` on Linux or `.app/Contents/MacOS/game` on macOS.
+
+A custom runtime directory uses a root entry point named `game.exe` on Windows or `game` on Linux and macOS. The player starts with the release title. Change the window title during play with `game.configure(title: "第二章")`.
+
+With `[desktop]`, saves and settings go to `%LOCALAPPDATA%/<id>/saves/` on Windows, `~/Library/Application Support/<id>/saves/` on macOS, and `$XDG_DATA_HOME/<id>/saves/` on Linux, where the default data directory is `~/.local/share/`. Keep `saves/` beside the executable when updating a portable release. When adding `[desktop]` to an existing portable game, copy that directory to the new location. Use `--save-directory` to choose a different location.
+
+To build your own release player, clone Reel and run the Cargo command below in the source checkout on the target desktop system. Cargo writes the player to its configured target directory. Run the matching version of `reel` from your game project and pass this executable with `--runtime`. For a player with companion files, pass their directory instead.
+
+```sh
+cargo build --locked --release -p reel-cli --bin reel-game --features window
+reel export --release --runtime path/to/reel-game
+```
+
+The Vita player reads prepared Opus audio and textures. Hardware movies use H.264/AAC with even dimensions up to 960 × 544.
 
 Vita exports compile effects to GXP with the official SDK host tool `psp2cgc`. Set `REEL_PSP2CGC` to the compiler executable or `SCE_PSP2_SDK_DIR` to the SDK directory. The runtime embeds its builtin programs and uses the system GXM API.
 
-Vita release exports contain game data by default. Use this output with the installed Reel launcher.
+Add `distribution.toml` at the game project root. Use `title` for the name shown in LiveArea, `title_id` for the installation identity, and `version` for this game's release version.
 
-```sh
-reel export --release --resource-target vita
+```toml
+[vita]
+title_id = "MYGAMEVTA"
+title = "My Game"
+version = "01.00"
 ```
 
-Copy the exported directory to `ux0:/data/reel/GameName/`. The launcher lists directories containing `game.asb`; each game keeps its progress in its own `saves/` directory. Press SELECT + START during a game to return to the list.
+Use nine uppercase ASCII letters or digits for `title_id`. Keep the ID when updating the same game. Use up to 51 UTF-8 bytes for `title` and use `NN.NN` for `version`. Set `assets = "platform/vita"` to provide your own icons and LiveArea images under that directory's `sce_sys/` path.
 
-In the launcher, Circle confirms and Cross goes back. Press SELECT to choose the language and theme, and START to refresh the library after copying a new game. Preferences are saved in `ux0:/data/reel/launcher.json`.
+```sh
+cargo +nightly vita build eboot --locked --release -p reel-player --bin reel-vita --features vita
+reel export --release --resource-target vita --runtime path/to/reel-vita.self
+```
+
+Run both commands on your development computer. The first builds `reel-vita.self` in the engine checkout. The second packages it from the game project. With matching copies of `reel` and `reel-vita.self`, run the second command directly. Source builds use nightly Rust, `cargo-vita` and VitaSDK. Set `VITASDK` to the toolchain directory or add its packaging tools to `PATH`. `--runtime` also accepts a directory with `eboot.bin` at its root and optional default launch assets under `sce_sys/`.
+
+Distribute `dist/vita/MYGAMEVTA/`. Install `MYGAMEVTA.vpk` and copy the bundled `data/MYGAMEVTA/` directory into `ux0:/data/reel/games/`. Start the game from its Vita home screen icon. Progress and game settings are stored in the game's `saves/` directory. Keep that subdirectory when updating the game data. Use `--data-only` for development exports.
 
 During desktop development, `reel dev` reads PNG, JPEG, static WebP and sRGB QOI directly. Add `resources.toml` at the project root to prepare assets for each release target:
 
@@ -187,11 +223,13 @@ pub fn title() {
 Build content with arrays, tables and ordinary loops. `..` excludes the end, `..=` includes it, and integer ranges iterate lazily. `f"...{expression}..."` inserts expression values into text.
 
 ```aside
-let values = [];
+let values: array<int> = [];
 for value in 1..=3 { values.append(value); }
 let latest = values.pop();
 stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
+
+An `array<int>` keeps its element contract when shared. Initializers and direct arguments take the expected array type. To check an existing array and copy its elements, use `let checked: array<int> = [...values];`.
 
 Write a variable's name once when it matches the record field, as in `{width, height, fullscreen: false}`.
 
@@ -255,6 +293,16 @@ Use tuples for fixed shapes. `let` and `for` support fixed-length destructuring,
 Destructure objects by field name with `let {value: item, index} = row;`. A field without an alias binds its own name.
 
 When several annotations share one shape, write `type Caption = {message: string, color: string};` at module scope and use `Caption` in the annotations. Declare it with `pub type` to make the name available to other modules through `use`.
+
+A record field marked with `?` may be omitted. Reading an omitted field yields `null`, so a layout can supply its default with `??`.
+
+```aside
+type CaptionStyle = {message: string, color?: string};
+
+fn caption_color(style: CaptionStyle) -> string {
+    style.color ?? "#FFFFFF"
+}
+```
 
 ```aside
 let settings = {language: "zh-CN", volume: 0.8};
@@ -467,7 +515,7 @@ Keep a mounted modal menu hidden and update its visibility to open it. The playe
 ```aside
 stage.replace(scene);
 await stage.presented(owner: scene);
-await run(tween(scene, opacity: 1, duration: 0.5));
+await tween(scene, opacity: 1, duration: 0.5).run();
 ```
 
 Use `appearance` to share a control's interaction paint. Background, text color, borders and transforms apply directly to the existing node; `focus_visible` marks keyboard and gamepad focus. Each state overrides its specified properties, with scope overrides taking precedence. Children and `derive` still compose image-based or other compound appearances.
@@ -572,8 +620,8 @@ let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
 };
 stage.replace(view);
 await stage.presented(owner: view);
-await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
-                camera_rotation: 8, duration: 1.2, easing: "in_out"));
+await tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
+                camera_rotation: 8, duration: 1.2, easing: "in_out").run();
 ```
 
 Put `camera_plane` directly inside a `camera` to move a flat layer toward or away from the viewpoint. A greater `distance` places the plane farther away. Animating `camera_z` moves the viewpoint toward all planes. Place fixed interface elements outside the camera. The order of children determines which layer draws in front.
@@ -584,7 +632,7 @@ let room = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
     camera_plane(distance: 600) { image("assets/mio.png", x: 370, y: 85); };
 };
 stage.replace(room);
-await run(tween(room, camera_z: 120, duration: 0.8));
+await tween(room, camera_z: 120, duration: 0.8).run();
 ```
 
 A scene can return its root and the parts controlled by the story. Put this component in `src/ui/room.aside`, then let story functions control its portrait, CG and dialogue area.
@@ -720,7 +768,7 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 
 ```aside
 let line = mio("Starting", wait: false);
-await run(delay(0.5));
+await delay(0.5).run();
 line.append(" ...", wait: false);
 audio.play("assets/chime.wav");
 line.append(" ready.");
@@ -729,12 +777,12 @@ line.append("\nWelcome back.");
 
 ## 6 Sequence, parallel work and time
 
-`tween`, `delay` and composition functions describe actions; `run` starts them and `await` waits for completion. Use `sequence` or `.then` for ordering, and `parallel` or `.together` for parallel work.
+`tween`, `delay` and composition functions describe actions. Use `sequence(...)` to play actions in order, `parallel(...)` to play them together, and `repeat(...)` to play an action more than once. You can nest these functions. Call `.run()` to start an action and use `await` to wait for completion.
 
 ```aside
 let entrance = tween(portrait, opacity: 1, duration: 0.3);
 let move = tween(portrait, x: 640, duration: 1);
-await entrance.then(move).then(delay(0.5)).run();
+await sequence(entrance, move, delay(0.5)).run();
 ```
 
 Built-in easing covers common motion. Use keyframes for a custom curve and reuse it across actions.
@@ -782,8 +830,10 @@ await tween(portrait, x: 720, duration: 0.8, easing: "sine_out").run();
 Parallel actions control the portrait and UI independently; the story continues after both complete.
 
 ```aside
-let entrance = tween(view.portrait, x: 320, duration: 0.5)
-    .together(tween(view.hud, opacity: 1, duration: 0.3));
+let entrance = parallel(
+    tween(view.portrait, x: 320, duration: 0.5),
+    tween(view.hud, opacity: 1, duration: 0.3),
+);
 await entrance.run();
 ```
 
@@ -793,15 +843,16 @@ An ordinary function returning an action makes choreography reusable. `from` sup
 fn fade_in(node, seconds = 0.5) {
     tween(node, from: {opacity: 0}, opacity: 1, duration: seconds)
 }
-await delay(0.5).then(fade_in(view.hud)).run();
+await sequence(delay(0.5), fade_in(view.hud)).run();
 ```
 
 Repeating actions suit breathing, blinking and waiting indicators. Keep the activity handle to pause, resume or stop it.
 
 ```aside
-let breathing = tween(view.portrait, opacity: 0.92, duration: 1.4)
-    .then(tween(view.portrait, opacity: 1.0, duration: 1.4))
-    .repeat();
+let breathing = repeat(sequence(
+    tween(view.portrait, opacity: 0.92, duration: 1.4),
+    tween(view.portrait, opacity: 1.0, duration: 1.4),
+));
 breathing.run(owner: view.root);
 mio("听，雨又大了。");
 ```
@@ -809,8 +860,8 @@ mio("听，雨又大了。");
 `delay` leaves time in the story and composes with other actions. While waiting, the player schedules work at activity deadlines.
 
 ```aside
-await run(delay(1.5));
-await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
+await delay(1.5).run();
+await sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)).run();
 ```
 
 Curves can also be sampled directly, letting one time source control several properties. Resume the clock after scene resources are ready.
@@ -830,9 +881,9 @@ fn main() {
             width: 40, height: 40, background: "#ec769e");
     });
     await stage.presented();
-    resume(timer);
-    await run(delay(3));
-    stop(timer);
+    timer.resume();
+    await delay(3).run();
+    timer.stop();
 }
 ```
 
@@ -872,7 +923,7 @@ fn show_cg(view) {
 ```aside
 scope(body: |s| {
     let effect = s.override(panel, {opacity: 0.4, width: null});
-    await s.run(tween(effect, opacity: 1, duration: 0.3));
+    await tween(effect, opacity: 1, duration: 0.3).run(owner: s);
     let next = completion();
     s.add(panel, button("Continue", on_click: || next.resolve()));
     await next;
@@ -882,13 +933,13 @@ scope(body: |s| {
 `offset` adds displacement for shaking or floating. The base animation continues, and the temporary displacement ends with the scope.
 
 ```aside
-let moving = run(tween(panel, x: 500, duration: 4));
+let moving = tween(panel, x: 500, duration: 4).run();
 scope(body: |s| {
     let shake = s.offset(panel, y: -3);
-    await run(repeat(sequence(
+    await repeat(sequence(
         tween(shake, x: 6, duration: 0.05),
         tween(shake, x: -6, duration: 0.05)
-    ), times: 8));
+    ), times: 8).run();
 });
 await moving;
 ```
@@ -917,7 +968,7 @@ Video is an ordinary stage node, and `play` returns an awaitable activity. A ski
 let movie = video("assets/logo.mp4", width: 1280, height: 720, fit: "contain");
 let playing = movie.play();
 stage.replace(button(width: 1280, height: 720, decorated: false,
-    background: "#000000", on_click: || stop(playing)) {
+    background: "#000000", on_click: || playing.stop()) {
     movie;
 });
 await playing;
@@ -954,7 +1005,7 @@ fn main() {
         button("Move", width: 180, height: 64, background: "#284860",
             on_click: |event| {
                 event.target.enabled = false;
-                await run(tween(caption, x: 120, duration: 0.4));
+                await tween(caption, x: 120, duration: 0.4).run();
                 caption.value = "Arrived";
                 event.target.enabled = true;
             }
@@ -1029,10 +1080,10 @@ fn main() {
             jump: {
                 bindings: ["Space", "South", "PointerPrimary"],
                 on_press: || {
-                    await run(sequence(
+                    await sequence(
                         tween(marker, y: 16, duration: 0.15),
                         tween(marker, y: 64, duration: 0.15)
-                    ));
+                    ).run();
                 },
             },
             finish: {
@@ -1233,22 +1284,24 @@ let cast = stack() {
     dialogue_view(game.dialogue());
 };
 stage.replace(cast);
-await run(tween(cast, x: 80, duration: 0.5));
+await tween(cast, x: 80, duration: 0.5).run();
 ```
 
 Use a scope to combine repeating effects with finite choreography and end the repeat when the body completes.
 
 ```aside
 scope(body: |s| {
-    s.run(repeat(sequence(
+    repeat(sequence(
         tween(view.hud, opacity: 0.4, duration: 0.5),
         tween(view.hud, opacity: 1, duration: 0.5)
-    )));
+    )).run(owner: s);
     narrator("The light keeps pulsing while this line is shown.");
 });
 ```
 
-A transition retains the current presented view and builds its destination in `change`. Call `stage.transition` directly. It returns after the destination is shown. A helper that only performs a transition can declare `-> null` so an extra `await` is diagnosed at the caller. Use `await` with the activity returned by `run(tween(...))`.
+A transition retains the current presented view and builds its destination in `change`. Call `stage.transition` directly. It returns after the destination is shown. A helper that only performs a transition can declare `-> null` so an extra `await` is diagnosed at the caller. Use `await` with the activity returned by `tween(...).run()`.
+
+Use the same rule when reading API signatures. Dialogue calls, `Speech.wait()` and `choose(...)` wait in the current story and return their result. `stage.presented()` and `saves.save(...)` return requests that you can await now or keep for later. If the compiler can prove that a value cannot be awaited, use the editor's **Remove unnecessary await** action.
 
 ```aside
 stage.transition(target: scene, duration: 0.6, change: || {
@@ -1267,7 +1320,7 @@ let reveal = stack(width: 1280, height: 720,
     image("assets/window-cg.png");
 };
 view.picture.add(reveal);
-await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
+await tween(reveal, mask_progress: 1, duration: 1.2).run(owner: reveal);
 reveal.mask = null;
 ```
 
@@ -1279,7 +1332,7 @@ let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
     stack(width: 640, height: 360, background: "#2d8aab");
 };
 stage.replace(reveal);
-await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+await tween(reveal, mask_x: 1, duration: 3).run(owner: reveal);
 ```
 
 `invert` inverts a subtree and composes with opacity, masks and animation.
@@ -1289,7 +1342,7 @@ let scene = stack(width: 800, height: 450, invert: 0) {
     text("A different view", color: "#e08020", font_size: 48);
 };
 stage.replace(scene);
-await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
+await tween(scene, invert: 1, duration: 0.4).run(owner: scene);
 ```
 
 `blend` controls a subtree against its background with `normal`, `add`, `subtract`, `multiply`, `screen`, `overlay`, `hard_light`, `color_dodge`, `lighten`, `difference`, `soft_light` or `linear_burn`. The subtree is composed before blending.
@@ -1345,7 +1398,7 @@ fn main() {
         noise: texture("assets/noise.png"), progress: bind(scene.mask_progress)
     });
     stage.replace(scene);
-    await run(tween(scene, mask_progress: 1, duration: 1.2), owner: scene);
+    await tween(scene, mask_progress: 1, duration: 1.2).run(owner: scene);
     scene.mask = null;
 }
 ```
@@ -1372,7 +1425,7 @@ fn burst() {
         acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
 }
 let first = burst();
-await run(delay(0.2));
+await delay(0.2).run();
 let second = burst();
 await first;
 await second;
@@ -1405,7 +1458,7 @@ await tween(glow, size_scale: 0, duration: 0.2).run();
 let caption = text("The light is moving.", reveal_fade: 0,
     reveal_fade_from: 0, reveal_fade_step: 20.0 / 255.0);
 stage.replace(caption);
-await run(tween(caption, reveal_fade: 3, duration: 3.0 * 255.0 / 1400.0), owner: caption);
+await tween(caption, reveal_fade: 3, duration: 3.0 * 255.0 / 1400.0).run(owner: caption);
 caption.reveal_fade = null;
 ```
 
@@ -1634,14 +1687,20 @@ column(gap: 6) {
 
 `audio.play` returns a controllable, awaitable activity. Group volumes serve music, voices, effects and UI; `owner` binds playback to a scene lifetime. The host chooses loading appropriate to short sounds or long tracks.
 
-Publish dialogue with `wait: false`, start the voice with `audio.play(source, group: "voice", skip: "omit")`, then wait for the dialogue. When fast-forward can skip that dialogue, the voice returns a terminal activity and `await` yields `"Stopped"`. Use `audio.stop` to stop an earlier voice. Manual replay can use the default `skip: "keep"`.
+Pass `voice` to a character or to `narrator` to play it with the line. The next line or choice ends that voice. Fast-forward can omit its playback while keeping the path as `line.voice` in history. Play that path with `audio.play(line.voice, group: "voice")` for manual replay. Use `game.dialogue().voice` after publishing with `wait: false` to add the playback to an automatic advance condition.
+
+```aside
+narrator("Wait for me.", voice: "assets/wait-for-me.opus");
+```
+
+Use `audio.duck(music, by: voice, gain: 0.6, attack: 0.12, release: 0.18)` to lower a music activity until a voice activity ends. The music keeps its original volume setting.
 
 ```aside
 fn main() {
     audio.group_volume("music", 0.7);
     let music = audio.play("assets/chime.wav", group: "music", looping: true, volume: 0.4, fade_in: 0.5);
-    pause(music);
-    resume(music);
+    music.pause();
+    music.resume();
     audio.volume(music, 0.2, duration: 0.5);
     let sound = audio.play("assets/chime.wav", pan: -0.5, rate: 0.8);
     audio.rate(sound, 1.2, duration: 0.15);
@@ -1663,11 +1722,11 @@ audio.queue(music, "assets/outro.ogg");
 await music;
 ```
 
-When changing music, read its content position and fade the next track in at a corresponding position. `audio.at` waits for a content position for lyrics or captions; `video(...).play()` synchronizes picture and sound.
+Audio and video playback share position controls. Call `playing.position()` to read the current content time or `playing.seek(seconds)` to set it. Use `await playing.at(seconds)` to wait for a position when timing lyrics or captions. When changing music, read its content position and fade the next track in at a corresponding position.
 
 ```aside
 let next = audio.play("assets/music-next.ogg", group: "music", looping: true,
-    start: audio.position(music), loop_start: 4, loop_end: 64, fade_in: 2);
+    start: music.position(), loop_start: 4, loop_end: 64, fade_in: 2);
 audio.stop(music, fade: 2);
 music = next;
 ```

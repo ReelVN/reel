@@ -289,14 +289,16 @@ impl Vm {
             s.phase = ScriptPhase::Builtin(call);
             return Ok(true);
         }
+        let appending = call.method == Builtin::Append && call.index < call.count;
         let extra = if matches!(call.method, Builtin::Split | Builtin::Replace) {
             Values::allocation_bytes(4)
-        } else if matches!(call.method, Builtin::Append) && call.index < call.count {
+        } else if appending {
             Values::growth_bytes(self.heap.info(receiver)?.len.into(), 1)
         } else {
             0
         };
-        if !meter.take(0, 3, extra) {
+        let validation = if appending { self.heap.array_item_work(receiver)? } else { 0 };
+        if !meter.take(0, 3 + validation, extra) {
             return Ok(false);
         }
         let result = match call.method {

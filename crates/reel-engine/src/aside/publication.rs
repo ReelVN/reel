@@ -44,6 +44,11 @@ impl Publication {
     pub fn id(&self) -> InteractionId {
         self.interaction.id()
     }
+    pub fn attach_voice(&mut self, path: &str) {
+        if let Some(line) = self.history.as_mut().and_then(|group| group.lines.first_mut()) {
+            line.voice = Some(std::sync::Arc::from(path));
+        }
+    }
     pub fn commit(self, session: &mut Session) {
         session.reading_data.active = Some(self.interaction);
         if let Some(history) = self.history {

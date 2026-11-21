@@ -101,7 +101,7 @@ mod audio {
             let mut cancelled=false;
             try { await handles.owned; } catch error { cancelled=true; }
             if !cancelled { throw "scope sound survived"; }
-            stop(handles.escaped);
+            handles.escaped.stop();
             await handles.escaped;
         }"#;
         for encoded in [false, true] {
@@ -123,11 +123,11 @@ mod audio {
         let voice = audio.play("voice-current.wav", group: "voice", start: 0.42, end: 0.75);
         audio.queue(voice, "voice-next.wav", start: 0.1, end: 0.3);
         audio.queue(voice, "voice-last.wav", end: 0.9, looping: true, loop_start: 0.2, loop_end: 0.8);
-        pause(voice);
+        voice.pause();
         let effect = audio.play("effect.wav", start: 0.15);
         let ended = audio.play("ended.wav", group: "ui", start: 0.25);
         narrator("save");
-        if audio.position(voice) != 0.42 || audio.position(effect) != 0.15 { throw "audio position reset"; }
+        if voice.position() != 0.42 || effect.position() != 0.15 { throw "audio position reset"; }
         if await ended != "Completed" || await ended != "Completed" { throw "ended audio replayed"; }
         narrator("restored audio");
     }"#;
@@ -524,8 +524,8 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let burn = stack(blend: "linear_burn");
         let snow = particles("flake.png");
         let emission = emit(snow, burst:0, rate:5, lifetime:2);
-        let mover = run(tween(background, x: 100, invert: 1, duration: 4, easing: "linear"));
-        let task = spawn(|| { await run(delay(2)); data.score += 3; done.resolve(9); });
+        let mover = tween(background, x: 100, invert: 1, duration: 4, easing: "linear").run();
+        let task = spawn(|| { await delay(2).run(); data.score += 3; done.resolve(9); });
         let caption = text("score", x: bind(data.score), max_width: 140, align_x: 0.5);
         stage.replace(column() {
             background; burn; snow;
@@ -540,7 +540,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let picked = choose([{key: "next", label: "继续"}]);
         if picked != "next" || await done != 9 { throw "saved completion or choice"; }
         await task;
-        finish(mover); stop(emission);
+        mover.finish(); emission.stop();
         if caption.max_width != 140 || caption.align_x != 0.5 { throw "lost layout constraints"; }
         if background.blend != "screen" || burn.blend != "linear_burn" { throw "lost blend mode"; }
         if entries != 1 || data.score != 5 || background.x != 100 || background.invert != 1 { throw "replayed or lost state"; }

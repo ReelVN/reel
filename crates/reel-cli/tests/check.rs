@@ -187,7 +187,7 @@ fn option_terminator_help_and_duplicate_options() {
 fn source_larger_than_old_cli_and_string_caps_passes_the_shared_pipeline() {
     let case = Case::new();
     let source = format!(
-        "//{}\nuse reel::prelude::*; fn main() {{ let item={{next:null}}; item.next=item; let sum={}; let selected=item{}; stage.replace({}text(\"nested scene\");{}); }}",
+        "//{}\nuse reel::*; fn main() {{ let item={{next:null}}; item.next=item; let sum={}; let selected=item{}; stage.replace({}text(\"nested scene\");{}); }}",
         "x".repeat(8 * 1024 * 1024 + 1),
         vec!["1"; 256].join("+"),
         ".next".repeat(256),

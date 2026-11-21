@@ -469,6 +469,10 @@ impl Vm {
                 _ => (1 + self.type_checks.extra(TypeId(c)), 0),
             },
             Opcode::CheckType => (1 + self.type_checks.extra(TypeId(b)), 0),
+            Opcode::IndexSet => {
+                let object = self.slots.read_vm(at(s.regs, _a))?;
+                (1 + self.heap.array_item_work(object)?, 0)
+            }
             Opcode::Return => (
                 1 + self
                     .type_checks
@@ -569,7 +573,7 @@ impl Vm {
                     )
                 }
             }
-            Opcode::MakeTuple | Opcode::MakeArray => (1, 0),
+            Opcode::MakeTuple | Opcode::MakeArray | Opcode::MakeTypedArray => (1, 0),
             Opcode::Throw | Opcode::Rethrow => (
                 f.regions.len() as u64 + self.active.caught.data.len() as u64 + 3,
                 0,
@@ -710,7 +714,7 @@ impl Vm {
                 let value = self.slots.read_vm(at(s.regs, b))?;
                 let len = self.heap.info(array)?.len;
                 (
-                    1,
+                    1 + self.heap.array_item_work(array)?,
                     if op == Opcode::ArrayPush || !value.same_bits(Value::NULL) {
                         Values::growth_bytes(len.into(), 1)
                     } else {

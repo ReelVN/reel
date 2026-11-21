@@ -1,10 +1,11 @@
 //! Shared built-in annotation and structural signature projection.
 use super::{CallEffect, ExternalParameter, ExternalSignature, TypeHint};
 use crate::hir::{Form, FunctionKind, Hir, HirKind as H, NodeId};
+use crate::SyntaxKind as K;
 
 macro_rules! builtin_types {
     ($name:ident; $($($spelling:literal)|+ => $ty:expr),+ $(,)?) => {
-        /// Accepted built-in annotation names, including their source aliases.
+        /// Accepted built-in annotation names.
         /// Editor completion and semantic lookup share these exact spellings.
         pub const BUILTIN_TYPE_NAMES: &[&str] = &[$($($spelling),+),+];
 
@@ -26,7 +27,7 @@ builtin_types! {
         "float" => TypeHint::Float,
         "string" => TypeHint::String,
         "array" => TypeHint::Array,
-        "table" | "Map" => TypeHint::Table,
+        "table" => TypeHint::Table,
         "Future" => TypeHint::Future,
         "generator" => TypeHint::Generator,
         "Bytes" | "TextBuffer" | "ByteBuffer" | "Set" | "Range" | "Iterator" | "AsyncIterator"
@@ -87,6 +88,9 @@ pub(super) fn type_hint(hir: &Hir, n: NodeId) -> TypeHint {
             let text = hir.tokens(n).map(|t| hir.text(t.span)).collect::<String>();
             builtin_type(&text).unwrap_or(TypeHint::Named(text))
         }
+        H::ArrayType => hir.children(n).next().map_or(TypeHint::Array, |item| {
+            TypeHint::TypedArray(Box::new(type_hint(hir, item)))
+        }),
         H::StringType => hir
             .children(n)
             .next()
@@ -96,10 +100,11 @@ pub(super) fn type_hint(hir: &Hir, n: NodeId) -> TypeHint {
             hir.children(n)
                 .filter_map(|field| {
                     let name = hir.tokens(field).next()?.name?;
-                    Some((
-                        hir.name(name).into(),
-                        type_hint(hir, hir.children(field).next()?),
-                    ))
+                    let mut ty = type_hint(hir, hir.children(field).next()?);
+                    if hir.tokens(field).any(|token| token.kind == K::Question) {
+                        ty = TypeHint::OptionalField(Box::new(ty));
+                    }
+                    Some((hir.name(name).into(), ty))
                 })
                 .collect(),
         ),

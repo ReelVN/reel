@@ -6,7 +6,7 @@ fn main() {
     stage.replace(
         button(
             width: 1280, height: 720, decorated: false, background: "#000000",
-            on_click: || stop(playing)
+            on_click: || playing.stop()
         ) {
             movie;
         }

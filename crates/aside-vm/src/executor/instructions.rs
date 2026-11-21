@@ -67,6 +67,7 @@ impl Vm {
                 | Opcode::MakeClosure
                 | Opcode::MakeTuple
                 | Opcode::MakeArray
+                | Opcode::MakeTypedArray
                 | Opcode::MakeTable
                 | Opcode::ArgsNew
                 | Opcode::ArgsPush
@@ -211,11 +212,16 @@ impl Vm {
                     .set_field(iterator, 0, Value::NULL)
                     .map_err(heap_fault)?;
             }
-            Opcode::MakeTuple | Opcode::MakeArray => {
+            Opcode::MakeTuple | Opcode::MakeArray | Opcode::MakeTypedArray => {
                 let Descriptor::Sequence(window) = f.descriptors[b as usize] else {
                     unreachable!()
                 };
-                let builder = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+                let builder = if op == Opcode::MakeTypedArray {
+                    self.heap.alloc_typed_array(TypeId(c))
+                } else {
+                    self.heap.alloc_array(&[])
+                }
+                .map_err(heap_fault)?;
                 self.put(s.env, 1, builder).map_err(vm_fault)?;
                 s.phase = ScriptPhase::Sequence {
                     dest: r(a),

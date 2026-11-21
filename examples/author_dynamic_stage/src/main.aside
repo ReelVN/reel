@@ -15,7 +15,7 @@ fn main() {
 
     let incoming = cards.add(card("Added later", "#385030"));
     incoming.opacity = 0;
-    await run(tween(incoming, opacity: 1, duration: 0.4));
+    await tween(incoming, opacity: 1, duration: 0.4).run();
     narrator("This card was added to the existing scene.");
 
     cards.add(card("Inserted first", "#503048"), index: 0);

@@ -24,6 +24,7 @@ fn preload_stage(source: &str) -> (reel_ui::stage::Stage, reel_ui::stage::NodeId
                 repeat: [false; 2],
                 tile_scale: 1.,
                 corner_colors: None,
+                corners: None,
                 alpha_layout: Default::default(),
                 adjustment: Default::default(),
             },

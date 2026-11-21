@@ -15,6 +15,11 @@ pub struct DeviceLoss {
     pub message: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+type DriverFault = wgpu::Error;
+#[cfg(target_arch = "wasm32")]
+type DriverFault = str;
+
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -22,10 +27,41 @@ pub struct Gpu {
     pub(super) generation: DeviceGeneration,
     pub(super) limits: GpuLimits,
     lost: Arc<Mutex<Option<Arc<DeviceLoss>>>>,
-    fault: Arc<Mutex<Option<Arc<wgpu::Error>>>>,
+    fault: Arc<Mutex<Option<Arc<DriverFault>>>>,
     #[cfg(test)]
     pub(super) upload_creations: super::resources::UploadCreations,
 }
+
+#[cfg(target_arch = "wasm32")]
+impl Clone for Gpu {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            adapter: self.adapter.clone(),
+            generation: self.generation,
+            limits: self.limits,
+            lost: self.lost.clone(),
+            fault: self.fault.clone(),
+            #[cfg(test)]
+            upload_creations: Default::default(),
+        }
+    }
+}
+
+fn remember_driver_error(fault: &Mutex<Option<Arc<DriverFault>>>, error: wgpu::Error) {
+    let mut first = fault.lock().expect("device error state poisoned");
+    if first.is_none() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let error = Arc::new(error);
+        #[cfg(target_arch = "wasm32")]
+        // A browser error's source is local to its JS agent. The WGPU
+        // callback and shared fault slot only need its diagnostic text.
+        let error = error.to_string().into();
+        *first = Some(error);
+    }
+}
+
 impl Gpu {
     pub(super) fn submit(&self, encoder: wgpu::CommandEncoder) {
         let _submit = reel_core::profile::Scope::new(reel_core::profile::Phase::RenderFence);
@@ -41,7 +77,7 @@ impl Gpu {
     pub fn limits(&self) -> GpuLimits {
         self.limits
     }
-    /// Request a native renderer device. The instance must leave
+    /// Request a renderer device. Native instances must leave
     /// `STRICT_WEBGPU_COMPLIANCE` unset: fully overwritten scratch attachments
     /// use WGPU's `DontCare` load operation.
     pub async fn request(
@@ -93,10 +129,7 @@ impl Gpu {
         let fault = Arc::new(Mutex::new(None));
         let capture = fault.clone();
         device.on_uncaptured_error(Arc::new(move |error| {
-            let mut first = capture.lock().expect("device error state poisoned");
-            if first.is_none() {
-                *first = Some(Arc::new(error));
-            }
+            remember_driver_error(&capture, error);
         }));
         Ok(Self {
             device,
@@ -121,11 +154,21 @@ impl Gpu {
     }
     /// Constructor-owned scopes must publish their errors to the same sticky
     /// state as uncaptured errors, even when a caller has an outer scope.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn capture_driver_error(&self, error: wgpu::Error) {
-        let mut first = self.fault.lock().expect("device error state poisoned");
-        if first.is_none() {
-            *first = Some(Arc::new(error));
-        }
+        remember_driver_error(&self.fault, error);
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn observe_error_scope(
+        &self,
+        result: impl std::future::Future<Output = Option<wgpu::Error>> + 'static,
+    ) {
+        let fault = self.fault.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(error) = result.await {
+                remember_driver_error(&fault, error);
+            }
+        });
     }
     /// Capability probe for one target. Renderer negotiates the complete frame's peak.
     pub fn quality(&self, size: [u32; 2]) -> Result<Quality, GpuError> {

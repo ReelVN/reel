@@ -1,19 +1,17 @@
 //! Vita host assembly using the shared player, asset loader and media transport.
 //!
-//! Build on Linux/WSL with nightly Rust, `rust-src` and VitaSDK on `PATH`:
+//! Build with nightly Rust, `rust-src` and VitaSDK on `PATH`:
 //!
 //! ```sh
-//! cargo run -p reel-dev -- vita-assets --font path/to/font.ttf --font-license path/to/license.txt
-//! cargo +nightly vita build vpk --locked --release \
+//! cargo +nightly vita build eboot --locked --release \
 //!     -p reel-player --bin reel-vita --no-default-features --features vita
 //! ```
 //!
 //! Set the target's `CC`, `CXX` and `AR` to the VitaSDK cross tools. The render
 //! build compiles Cg to embedded GXP programs with the official SDK tool selected
 //! by `REEL_PSP2CGC` or `SCE_PSP2_SDK_DIR`.
-//! `cargo-vita` packages the ELF, platform metadata and `runtime/vita/`.
-//! Its VPK contains `eboot.bin` and `launcher.rpk`, which contains the launcher
-//! font at `fonts/body.ttf`. Graphics uses the system GXM API.
+//! `cargo-vita` builds the executable reused by the standalone game distributor.
+//! Graphics uses the system GXM API.
 use super::vita_signals::Signals;
 use crate::{
     hal::{DisplayMetrics, Host, PlatformHost, WindowControl},
@@ -209,15 +207,6 @@ impl Runtime {
         Ok(())
     }
 
-    /// Show child directories containing `game.asb`. Each work owns its `saves/`
-    /// directory. Game exit and SELECT + START return to this library.
-    pub fn run_launcher(&mut self, game_root: &Path) -> Result<(), Error> {
-        self.backend.reset_session()?;
-        let result = run_launcher_on(game_root, &mut self.native, &mut self.backend);
-        reset_after_session(&mut self.backend, &result)?;
-        result
-    }
-
     /// Load a relocatable ASB distribution using the retained device. The host
     /// supplies this work's persistent-data directory independently of title ID.
     pub fn run_package(&mut self, package: &Path, save_directory: &Path) -> Result<(), Error> {
@@ -244,87 +233,6 @@ impl Runtime {
         reset_after_session(&mut self.backend, &result)?;
         result
     }
-}
-
-fn run_launcher_on(
-    game_root: &Path,
-    native: &mut NativeLoop,
-    backend: &mut GxmBackend,
-) -> Result<(), Error> {
-    let mut error = std::fs::create_dir_all(game_root)
-        .err()
-        .map(|error| format!("创建作品目录失败：\n{error}"));
-    loop {
-        native.begin_session(backend);
-        let outcome = run_library(game_root, native, backend, error.take());
-        // The borrowed player has left scope, including captures and UI/font leases.
-        // A failed drain is terminal: no subsequent player may use this device.
-        reset_after_session(backend, &outcome)?;
-        match outcome? {
-            crate::launcher::Outcome::Exit => return Ok(()),
-            crate::launcher::Outcome::Launch(package) => {
-                let saves = package.with_file_name("saves");
-                native.begin_session(backend);
-                let result = run_package_on(&package, &saves, native, backend);
-                reset_after_session(backend, &result)?;
-                if let Err(failure) = result {
-                    eprintln!(
-                        "[reel-vita] package {} failed: {failure}",
-                        package.display()
-                    );
-                    error = Some(format!("{}\n{failure}", package.display()));
-                }
-            }
-        }
-    }
-}
-
-fn run_library(
-    game_root: &Path,
-    native: &mut NativeLoop,
-    backend: &mut GxmBackend,
-    error: Option<String>,
-) -> Result<crate::launcher::Outcome, Error> {
-    let options = PlayerOptions {
-        assets: crate::assets::AssetOptions {
-            root: "app0:/".into(),
-            resident_bytes: 32 << 20,
-            metadata_bytes: 32 << 20,
-            input_bytes: 32 << 20,
-            decode_bytes: 1 << 20,
-        },
-        frame_bytes: 4 << 20,
-        canvas_size: Some([960, 544]),
-        ..Default::default()
-    };
-    let launcher = crate::launcher::Launcher::new(
-        game_root,
-        crate::assets::Assets::packaged(
-            options.assets.clone(),
-            vec!["app0:/launcher.rpk".into()],
-            None,
-        )
-        .map_err(|error| error.message)?,
-        error,
-        {
-            let notify = native.host.wake_callback();
-            WakeSignal::new(move || notify())
-        },
-    )?;
-    let mut player = Player::mount(
-        crate::player::session::PlayerSession::Launcher(Box::new(launcher)),
-        backend,
-        &mut native.host,
-        &options,
-    )?;
-    native.drive(&mut player, false)?;
-    let Some(crate::player::session::PlayerSession::Launcher(launcher)) = &mut player.session
-    else {
-        unreachable!("library player owns its native launcher");
-    };
-    Ok(launcher
-        .take_outcome()
-        .unwrap_or(crate::launcher::Outcome::Exit))
 }
 
 fn run_package_on(
@@ -444,7 +352,7 @@ fn run_story_on(
         runtime.set_media_factory(make_media);
     }
     drop(mounting);
-    native.drive(&mut player, true)
+    native.drive(&mut player)
 }
 
 fn reset_after_session<T>(
@@ -581,11 +489,7 @@ impl NativeLoop {
         ))
     }
 
-    fn drive(
-        &mut self,
-        player: &mut Player<&mut GxmBackend>,
-        return_to_library: bool,
-    ) -> Result<(), Error> {
+    fn drive(&mut self, player: &mut Player<&mut GxmBackend>) -> Result<(), Error> {
         let Self {
             host,
             wake,
@@ -666,10 +570,6 @@ impl NativeLoop {
                     controls.sample()?
                 };
                 let keyboard_was_active = text.active();
-                if !keyboard_was_active && return_to_library && input.return_to_library(&sample) {
-                    host.signals.exit.set(true);
-                    continue;
-                }
                 {
                     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Input);
                     if !keyboard_was_active {

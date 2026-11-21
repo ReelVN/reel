@@ -223,6 +223,7 @@ impl StoryRuntime {
             && (self.needs_work()
                 || self.host_work_pending()
                 || self.driver().adapter().has_save_requests()
+                || self.driver().adapter().save_results_pending()
                 || self.driver().adapter().has_capture_requests()
                 || self.driver().adapter().has_window_requests()
                 || self.driver().adapter().media_poll_after().is_some()
@@ -291,8 +292,16 @@ impl StoryRuntime {
 
     fn short_poll(&self) -> Option<WakeSource> {
         if self.capture.is_some() {
-            Some(WakeSource::Capture)
-        } else if self.saves.as_ref().is_some_and(|s| s.busy()) {
+            return Some(WakeSource::Capture);
+        }
+        let adapter = self.driver().adapter();
+        let queued = adapter.has_save_requests();
+        if adapter.save_results_pending()
+            || self
+                .saves
+                .as_ref()
+                .map_or(queued, |saves| saves.needs_local_progress(queued))
+        {
             Some(WakeSource::Save)
         } else if self.starting.is_some() || self.retiring.is_some() || self.needs_work() {
             Some(WakeSource::Maintenance)
@@ -396,6 +405,16 @@ impl StoryRuntime {
         let after = |base: u64, interval: std::time::Duration| {
             base.saturating_add(u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX))
         };
+        let short_deadline = |source| {
+            (
+                MonoTime(after(now.0, std::time::Duration::from_millis(1))),
+                source,
+            )
+        };
+        if self.closing {
+            return (self.retiring.is_some() || self.driver().cleanup_pending())
+                .then(|| short_deadline(WakeSource::Maintenance));
+        }
         if !self.needs_tick() {
             return None;
         }
@@ -417,10 +436,7 @@ impl StoryRuntime {
             return Some((now, WakeSource::Ready));
         }
         if let Some(source) = self.short_poll() {
-            return Some((
-                MonoTime(after(now.0, std::time::Duration::from_millis(1))),
-                source,
-            ));
+            return Some(short_deadline(source));
         }
         let story = self
             .frame_time_interval(production)
@@ -432,7 +448,7 @@ impl StoryRuntime {
                     .map(|(interval, source)| (after(now.0, interval), source)),
             )
             .min_by_key(|(time, _)| *time)?;
-        Some((MonoTime(deadline.max(now.0)), source))
+        (deadline != u64::MAX).then_some((MonoTime(deadline.max(now.0)), source))
     }
 
     /// Resume ready callbacks and completed waits after host input or a resource
@@ -980,6 +996,60 @@ mod tests {
     }
 
     #[test]
+    fn background_save_wakes_a_parked_story_and_persists_through_close() {
+        use crate::saves::{DirectorySaves, RuntimeSaves, SaveService, SaveStorage};
+        use reel_core::{budget::QueueLimits, clock::MonoTime, wake::WakeSignal};
+        use std::{sync::Arc, sync::mpsc, time::Duration};
+
+        for closing in [false, true] {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/reel-artifacts/save-tests")
+                .join(format!("save-wake-{}-{closing}", std::process::id()));
+            let storage = Arc::new(DirectorySaves::new(root, 1 << 20));
+            let (wake, wakes) = mpsc::channel();
+            let service = SaveService::new(
+                storage.clone(),
+                QueueLimits {
+                    max_requests: 1,
+                    max_bytes: 1 << 20,
+                },
+                WakeSignal::new(move || {
+                    let _ = wake.send(());
+                }),
+            );
+            let mut story =
+                runtime(r#"fn main() { await persistent.write("test", { answer: 42 }); }"#)
+                    .with_saves(RuntimeSaves::new(service, 1 << 20));
+            let budget = SliceBudget::default();
+            for _ in 0..1000 {
+                story.tick(budget, || 0).unwrap();
+                if !story.saves.as_ref().unwrap().service.is_idle() && !story.needs_work() {
+                    break;
+                }
+            }
+            assert!(!story.saves.as_ref().unwrap().service.is_idle());
+            assert_eq!(story.wake_deadline(MonoTime(0)), None);
+            if closing {
+                story.close().unwrap();
+                assert!(!story.close_complete());
+            }
+            wakes.recv_timeout(Duration::from_secs(5)).unwrap();
+            for _ in 0..1000 {
+                story.tick(budget, || 0).unwrap();
+                if !story.needs_tick() {
+                    break;
+                }
+            }
+            assert!(storage.read_data("test").unwrap().is_some());
+            if closing {
+                assert!(story.close_complete());
+            } else {
+                assert_eq!(story.driver().state(), StoryState::Finished);
+            }
+        }
+    }
+
+    #[test]
     fn skip_presents_complete_lines_once_and_honors_protected_reveal_and_barriers() {
         use reel_core::identity::FrameId;
         use reel_ui::bridge::{NoticeResult, PresentationNotice, PresentationOutcome};
@@ -1154,7 +1224,7 @@ mod tests {
         );
         let bytes = Arc::new(OwnedBytes::new(vec![1, 2, 3], pool.reserve(3).unwrap()).unwrap());
         let mut story = runtime(
-            r#"use reel::prelude::*; fn main(){
+            r#"use reel::*; fn main(){
             if (await assets.read("sample")).len()!=3 {throw "asset completion";}
         }"#,
         );
@@ -1199,7 +1269,7 @@ mod tests {
     fn native_derived_batches_publish_before_the_next_synchronous_transaction() {
         use reel_ui::stage::NodeKind;
         let mut story = runtime(
-            r#"use reel::prelude::*;use std::math::sin;
+            r#"use reel::*;use std::math::sin;
             fn sample(value) {let mut result=0.0;for i in 0..32 {result+=sin(i);} value+result*0.0}
             fn main() {
                 let data=model({x:0,y:0});
@@ -1320,7 +1390,7 @@ mod tests {
     fn fractional_activity_deadlines_round_up_to_the_host_clock() {
         use reel_core::clock::MonoTime;
         let mut story = runtime(
-            "fn main() { await run(delay(0.1)); await run(delay(0.2)); narrator(\"ready\"); }",
+            "fn main() { await delay(0.1).run(); await delay(0.2).run(); narrator(\"ready\"); }",
         );
         let settle = |story: &mut StoryRuntime, time| {
             for _ in 0..10_000 {
@@ -1351,7 +1421,7 @@ mod tests {
     #[test]
     fn pure_delays_sleep_at_deadlines_and_suspension_preserves_remaining_time() {
         use reel_core::clock::MonoTime;
-        let mut story = runtime("fn main() { await run(delay(2)); }");
+        let mut story = runtime("fn main() { await delay(2).run(); }");
         for _ in 0..10_000 {
             if !story.needs_work() {
                 break;
@@ -1585,13 +1655,13 @@ mod tests {
             r#"fn main() {
             let node = text("moving");
             stage.replace(node);
-            let activity = run(tween(node, x: 100, duration: 1));
+            let activity = tween(node, x: 100, duration: 1).run();
             narrator("moving dialogue");
             if node.x != 50 { throw "dialogue blocked animation"; }
-            pause(activity);
+            activity.pause();
             narrator("paused dialogue");
             if node.x != 50 { throw "pause advanced"; }
-            resume(activity);
+            activity.resume();
             if await activity != "Completed" || node.x != 100 { throw "await not resumed"; }
         }"#,
         );
@@ -1658,7 +1728,7 @@ mod tests {
     #[test]
     fn story_scheduling_wait_resume_finish_and_close_retire_real_vm() {
         let text = r#"
-            use reel::prelude::*;
+            use reel::*;
             fn main() {
                 let mut n = 0;
                 while n < 40 { n += 1; }

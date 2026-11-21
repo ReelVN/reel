@@ -30,6 +30,6 @@ fn main() {
         }
     );
     narrator("点击按钮切换前景图层，背景节点保持不变。");
-    await run(tween(portrait, x: 100, duration: 0.5));
+    await tween(portrait, x: 100, duration: 0.5).run();
     narrator("移动、缩放、透明度和存档使用同一个舞台模型。");
 }

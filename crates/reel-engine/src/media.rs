@@ -66,6 +66,15 @@ pub trait MediaBackend {
         value: f64,
         duration: Duration,
     ) -> Result<(), String>;
+    /// Change the aggregate temporary gain independently of a playback's base volume.
+    fn duck_audio(
+        &mut self,
+        _id: MediaId,
+        _gain: f64,
+        _duration: Duration,
+    ) -> Result<(), String> {
+        Err("temporary audio gain is not installed".into())
+    }
     fn cancel(&mut self, id: MediaId);
     /// Elapsed session time excludes host suspension. Audio uses the mixer clock.
     fn maintain(&mut self, elapsed: Duration);

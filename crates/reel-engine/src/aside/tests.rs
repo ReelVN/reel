@@ -61,7 +61,7 @@ mod virtual_lists;
 mod window;
 
 const STORY: &str =
-    "use reel::prelude::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";
+    "use reel::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";
 fn session() -> Session {
     Session::new(SessionId(41), Epoch(9)).unwrap()
 }
@@ -121,7 +121,7 @@ fn collect(vm: &mut SessionVm) {
 
 #[test]
 fn default_reel_environment_respects_author_scopes_and_explicit_aliases() {
-    let code = r#"use reel::prelude::text as reel_text;
+    let code = r#"use reel::text as reel_text;
         use std::random as standard_random;
         fn text(value) { value + " author" }
         fn opening() {
@@ -182,7 +182,7 @@ fn default_reel_environment_respects_author_scopes_and_explicit_aliases() {
 #[test]
 fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
     use reel_ui::{properties::ObjectFit, stage::NodeKind};
-    let code = r#"use reel::prelude::*; fn dynamic(value) {value}
+    let code = r#"use reel::*; fn dynamic(value) {value}
         fn opening() {
             let p = image("original.png", width: 200, opacity: 0.5, rotation: 450, scale_x: -2, scale_y: 0, anchor_x: 1.5, anchor_y: -1);
             let mut errors = 0;
@@ -406,7 +406,7 @@ fn malformed_duplicate_choices_leave_no_publication_or_decoder_roots() {
         "[{key: \"a\"}]",
         "[{key: \"a\", label: 1}]",
     ] {
-        let code = format!("use reel::prelude::*; fn opening() {{ choose({options}); }}");
+        let code = format!("use reel::*; fn opening() {{ choose({options}); }}");
         let (mut s, mut vm) = setup(&code, Context::Ordinary);
         let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
             panic!("choice")
@@ -429,7 +429,7 @@ fn malformed_duplicate_choices_leave_no_publication_or_decoder_roots() {
 #[test]
 fn choice_decode_yields_with_roots_and_returns_original_key_once() {
     let (mut s, mut vm) = setup(
-        "use reel::prelude::*; fn opening() {\n\
+        "use reel::*; fn opening() {\n\
         let answer = choose([{ key: \"a\", label: \"A\" }, { key: \"b\", label: \"B\" }, { key: \"c\", label: \"C\" }, { key: \"d\", label: \"D\" }]);\n\
         narrator(answer); }",
         Context::Ordinary,
@@ -511,7 +511,7 @@ fn effective_no_wait_has_no_history_or_interaction_publication() {
 fn narrator_wait_maps_exact_task_and_resumes_once_across_gc() {
     for source in [
         STORY,
-        "use reel::prelude::*; pub fn opening() { let say=narrator; say(\"你好\"); say?(\"again\"); }",
+        "use reel::*; pub fn opening() { let say=narrator; say(\"你好\"); say?(\"again\"); }",
     ] {
         let (mut s, mut vm) = setup(source, Context::Ordinary);
         let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
@@ -729,7 +729,7 @@ fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
         .collect();
     rows.push(format!("{{key: \"{long}\", label: \"Last option\"}}"));
     let code = format!(
-        "use reel::prelude::*; fn opening() {{ let mut count = 0; while count < 300 {{ narrator(\"continued\"); count += 1; }} narrator(\"{long}\"); choose([{}]) }}",
+        "use reel::*; fn opening() {{ let mut count = 0; while count < 300 {{ narrator(\"continued\"); count += 1; }} narrator(\"{long}\"); choose([{}]) }}",
         rows.join(",")
     );
     let (mut session, mut vm) = setup(&code, Context::Ordinary);
@@ -827,7 +827,7 @@ fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
 fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
     use reel_ui::stage::NodeKind;
     let code = r##"
-        use reel::prelude::*;
+        use reel::*;
         fn dynamic(value) {value}
         fn card(children = []) {
             column(gap: 8, padding: 12, background: "#203040") {

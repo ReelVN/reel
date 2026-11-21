@@ -403,7 +403,7 @@ mod localization {
         write(
             root,
             "story.aside",
-            r#"use reel::prelude::tr as translated;pub fn greeting(){translated("雨停了。",{en:"The rain stopped."})}"#,
+            r#"use reel::tr as translated;pub fn greeting(){translated("雨停了。",{en:"The rain stopped."})}"#,
         );
         write(
             root,

@@ -7,7 +7,7 @@ fn delayed_image_replacement_rejects_a_preload_receipt_after_loading() {
         let picture = image("assets/panels.png", width: 160, height: 90);
         stage.replace(picture);
         spawn(|| {
-            await run(delay(1));
+            await delay(1).run();
             picture.source = "assets/sun.jpg";
         });
         narrator("The same unfinished dialogue stays active during the image replacement.");

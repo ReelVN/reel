@@ -1,6 +1,27 @@
 //! Contextual code completion.
 use super::*;
 
+pub(super) fn argument_offset(source: &Source, offset: usize) -> usize {
+    let Some(colon) = previous_completion_token(source, offset).filter(|token| {
+        token.kind() == K::Colon
+            && token
+                .parent()
+                .is_some_and(|node| node.kind() == K::NamedArg)
+    }) else {
+        return offset;
+    };
+    let end = u32::from(colon.text_range().end()) as usize;
+    if end <= offset
+        && source.text.as_bytes()[end..offset]
+            .iter()
+            .all(u8::is_ascii_whitespace)
+    {
+        // Recovery can leave trivia outside an incomplete inner call's span.
+        return u32::from(colon.text_range().start()) as usize;
+    }
+    offset
+}
+
 pub(super) fn type_completion_context(source: &Source, offset: usize) -> bool {
     let Some(mut token) = completion_token(source, offset) else {
         return false;
@@ -37,6 +58,48 @@ pub(super) fn type_completion_context(source: &Source, offset: usize) -> bool {
         })
 }
 
+fn literal_argument_items(
+    signature: &Signature,
+    active: usize,
+    replacement: Option<Range>,
+) -> impl Iterator<Item = CompletionItem> + '_ {
+    signature
+        .literal_parameters
+        .iter()
+        .find(|(index, _)| *index == active)
+        .into_iter()
+        .flat_map(|(_, values)| values)
+        .map(move |value| CompletionItem {
+            label: value.clone(),
+            kind: Some(CompletionItemKind::VALUE),
+            sort_text: Some(format!("0{value}")),
+            text_edit: replacement.map(|range| {
+                CompletionTextEdit::Edit(TextEdit {
+                    range,
+                    new_text: value.clone(),
+                })
+            }),
+            ..Default::default()
+        })
+}
+
+fn quoted_argument_range(
+    module: EditorModule<'_>,
+    arguments: NodeId,
+    offset: usize,
+) -> Option<TextRange> {
+    module.hir().children(arguments).find_map(|arg| {
+        let Form::Argument { value, .. } = module.hir().node(arg).form else {
+            return None;
+        };
+        let literal = module.hir().node(value);
+        (literal.kind == HirKind::String
+            && contains(literal.span, offset)
+            && module.hir().children(value).next().is_none())
+        .then_some(literal.span)
+    })
+}
+
 impl Workspace {
     pub fn complete(
         &mut self,
@@ -51,6 +114,18 @@ impl Workspace {
             .offset(&source.text, position, encoding)
             .ok_or("invalid completion position")?;
         if completion_in_text(source, offset) {
+            if completion_token(source, offset).is_some_and(|token| {
+                matches!(token.kind(), K::StringStart | K::StringText | K::StringEnd)
+            }) && let Some(module) = snapshot.module()
+                && let Some((callee, Some(arguments))) = call_at(module, offset)
+                && let Some(span) = quoted_argument_range(module, arguments, offset)
+                && let Some(signature) =
+                    signature_for(&snapshot, module, source, &self.host, callee)
+            {
+                let active = active_parameter(module, Some(arguments), offset, &signature);
+                let range = source.lines.range(&source.text, span, encoding);
+                return Ok(literal_argument_items(&signature, active, Some(range)).collect());
+            }
             return Ok(Vec::new());
         }
         if let Some(region) = snapshot
@@ -233,7 +308,12 @@ impl Workspace {
                     .map(|&(name, ty)| CompletionItem {
                         label: module.hir().name(name).into(),
                         kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(type_label(module, ty)),
+                        detail: Some(match module.types()[ty.0 as usize] {
+                            aside_compiler::hir::Type::OptionalField(inner) => {
+                                format!("{} | null", type_label(module, inner))
+                            }
+                            _ => type_label(module, ty),
+                        }),
                         ..Default::default()
                     })
                     .collect());
@@ -375,23 +455,16 @@ impl Workspace {
             .map(|id| source_completion(module, source, id, &snapshot, &self.host))
             .collect();
         items.extend(keywords);
-        if let Some((callee, arguments)) = call_at(module, offset)
+        let call_offset = argument_offset(source, offset);
+        if let Some((callee, arguments)) = call_at(module, call_offset)
             && let Some(signature) = signature_for(&snapshot, module, source, &self.host, callee)
         {
             if !signature.literal_parameters.is_empty() {
-                let active = active_parameter(module, arguments, offset, &signature);
-                if let Some((_, values)) = signature
-                    .literal_parameters
-                    .iter()
-                    .find(|(index, _)| *index == active)
-                {
-                    items.extend(values.iter().map(|value| CompletionItem {
-                        label: value.clone(),
-                        kind: Some(CompletionItemKind::VALUE),
-                        sort_text: Some(format!("0{value}")),
-                        ..Default::default()
-                    }));
-                }
+                let active = active_parameter(module, arguments, call_offset, &signature);
+                items.extend(literal_argument_items(&signature, active, None));
+            }
+            if !signature.accepts_named_arguments {
+                return Ok(items);
             }
             let mut supplied = BTreeSet::new();
             let mut positional = 0;
@@ -430,6 +503,12 @@ impl Workspace {
                         detail: Some(label),
                         insert_text: Some(format!("{name}: ")),
                         sort_text: Some(format!("0{name}")),
+                        documentation: signature.parameter_documentation.get(&name).map(|doc| {
+                            Documentation::MarkupContent(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: doc.to_string(),
+                            })
+                        }),
                         ..Default::default()
                     }),
             );

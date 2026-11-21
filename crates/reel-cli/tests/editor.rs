@@ -920,7 +920,13 @@ mod editor_declarations {
     #[test]
     fn node_schema_groups_and_parameter_help_describe_the_actual_properties() {
         let mut server = Server::start(env!("CARGO_BIN_EXE_reel-lsp"));
-        server.request(1, "initialize", json!({"capabilities":{}}));
+        server.request(
+            1,
+            "initialize",
+            json!({"capabilities":{"textDocument":{"signatureHelp":{
+                "signatureInformation":{"documentationFormat":["markdown"]}
+            }}}}),
+        );
         server.notify("initialized", json!({}));
         let uri = "untitled:property-parameter-help.aside";
         let source = "fn main() { let editor = text_input(value: \"Name\", password: true); editor.with(password: false, x: 12); }";
@@ -981,43 +987,45 @@ mod editor_declarations {
     }
 
     #[test]
-    fn reexports_keep_function_identity_when_a_namespace_has_the_same_path() {
+    fn video_constructor_and_playback_methods_navigate_to_registered_declarations() {
         let mut server = Server::start(env!("CARGO_BIN_EXE_reel-lsp"));
         server.request(1, "initialize", json!({"capabilities":{}}));
         server.notify("initialized", json!({}));
-        let uri = "untitled:function-namespace-identity.aside";
-        let source = "use reel::prelude::{video}; fn main() { let clip = video(\"clip.mp4\"); }";
+        let uri = "untitled:video-playback.aside";
+        let source = r#"use reel::{video};
+fn main() {
+    let clip = video("clip.mp4");
+    let playing = clip.play();
+    playing.seek(1);
+    let cue = playing.at(2);
+    let seconds = playing.position();
+    await cue;
+}"#;
         open(&mut server, uri, source);
         let mut id = 1;
         let constructor = definition(&mut server, &mut id, uri, source, "video};");
-        let module = definition(&mut server, &mut id, uri, source, "prelude::{");
-        let (module_uri, module_text) = document(&mut server, &mut id, &module);
-        let reexport = definition(&mut server, &mut id, &module_uri, &module_text, "video;");
+        let call = definition(&mut server, &mut id, uri, source, "video(\"clip.mp4\")");
         assert_eq!(
-            reexport, constructor,
-            "the reexport must retain its function identity"
+            call, constructor,
+            "the import must retain its function identity"
         );
-        let (_, text) = document(&mut server, &mut id, &reexport);
+        let (_, text) = document(&mut server, &mut id, &constructor);
         assert!(
             text.lines()
-                .nth(reexport["range"]["start"]["line"].as_u64().unwrap() as usize)
+                .nth(constructor["range"]["start"]["line"].as_u64().unwrap() as usize)
                 .unwrap()
                 .starts_with("pub fn video(")
         );
-        let namespace_uri = "aside-native://reel/modules/reel/video.aside";
-        id += 1;
-        let namespace = server.request(id, "aside/nativeDocument", json!({"uri":namespace_uri}));
-        let namespace_text = namespace["text"].as_str().unwrap();
-        open(&mut server, namespace_uri, namespace_text);
-        let namespace = definition(
-            &mut server,
-            &mut id,
-            namespace_uri,
-            namespace_text,
-            "video;",
-        );
-        assert_eq!(namespace["uri"], namespace_uri);
-        assert_ne!(namespace, constructor);
+        for (needle, method) in [
+            ("play();", "play"),
+            ("seek(1)", "seek"),
+            ("at(2)", "at"),
+            ("position();", "position"),
+        ] {
+            let target = definition(&mut server, &mut id, uri, source, needle);
+            let (_, text) = document(&mut server, &mut id, &target);
+            assert_eq!(selected(&text, &target), method);
+        }
         server.stop();
     }
 }

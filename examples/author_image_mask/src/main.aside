@@ -12,6 +12,6 @@ fn main() {
         }
     );
     await stage.presented(owner: reveal);
-    await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
+    await tween(reveal, mask_progress: 1, duration: 1.2).run(owner: reveal);
     reveal.mask = null;
 }

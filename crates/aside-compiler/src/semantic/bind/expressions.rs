@@ -92,10 +92,18 @@ impl Binder<'_> {
                 self.intern_type(Type::Tuple(ts))
             }
             H::Array => {
+                let typed = self.contextual_array(expected);
                 for c in children {
-                    self.visit(c, ctx);
+                    if let Some((_, item)) = typed
+                        && self.kind(c) != H::Spread
+                    {
+                        let actual = self.visit_expected(c, ctx, item);
+                        self.require(c, actual, item, "array element");
+                    } else {
+                        self.visit(c, ctx);
+                    }
                 }
-                ARRAY
+                typed.map_or(ARRAY, |(ty, _)| ty)
             }
             H::Object => {
                 for c in children {
@@ -151,8 +159,8 @@ impl Binder<'_> {
                 }
                 ARRAY
             }
-            H::If => self.condition(n, ctx, false),
-            H::While => self.condition(n, ctx, true),
+            H::If => self.condition(n, ctx, false, expected),
+            H::While => self.condition(n, ctx, true, ANY),
             H::For | H::Loop => self.loop_node(n, None, ctx),
             H::Label => {
                 if let Some(&child) = children.first() {
@@ -160,7 +168,7 @@ impl Binder<'_> {
                 }
                 NULL
             }
-            H::Match => self.match_node(n, &children, ctx),
+            H::Match => self.match_node(n, &children, ctx, expected),
             H::Try => self.try_node(n, &children, ctx),
             H::Return | H::Break | H::Continue | H::Throw => {
                 self.jump(n, &children, ctx);
@@ -188,6 +196,7 @@ impl Binder<'_> {
             }
             H::Class => self.class_node(n, &children, ctx),
             H::NamedType
+            | H::ArrayType
             | H::StringType
             | H::RecordType
             | H::TupleType
@@ -292,11 +301,14 @@ impl Binder<'_> {
                     .reduce(|a, b| if a == b { a } else { ANY })
                     .unwrap_or(ANY)
             }
-            Type::Array => {
+            Type::Array | Type::TypedArray(_) => {
                 if let Some(&c) = children.get(1) {
                     self.require(c, index, INT, "array index");
                 }
-                ANY
+                match self.out.types[object.0 as usize] {
+                    Type::TypedArray(item) => item,
+                    _ => ANY,
+                }
             }
             Type::Class(_) | Type::Instance(_) => {
                 if let Some(&c) = children.get(1) {
@@ -362,19 +374,14 @@ impl Binder<'_> {
                 if let Some(f) = ctx.function {
                     self.out.functions[f.0 as usize].known_wait = true;
                 }
-                if is_primitive(&self.out.types[t.0 as usize]) {
-                    self.error(
-                        D::TypeMismatch,
-                        self.span(n),
-                        "await requires an Awaitable. Use an ordinary call result directly",
-                    );
-                } else if t == ANY
+                if t == ANY
                     && let Some(&operand) = children.first()
                     && self.call_result_can_be_inferred(operand)
                 {
                     self.out.inferred_awaits.push(n);
                 }
                 self.check(n, RuntimeChecks::TYPE);
+                let mut ordinary = is_primitive(&self.out.types[t.0 as usize]);
                 if let Some(name) = self.nullable_named_type(t) {
                     if !self.await_types.contains_key(&name) {
                         let hint = self.resolver.resolve_type_await(self.out.hir.name(name));
@@ -384,6 +391,11 @@ impl Binder<'_> {
                     if let Some(result) = self.await_types[&name] {
                         return result;
                     }
+                    ordinary = self.resolver.has_closed_members(self.out.hir.name(name));
+                }
+                if ordinary && self.diagnostics.len() < self.options.limits.max_diagnostics.max(1) {
+                    self.diagnostics
+                        .push(super::super::invalid_await(&self.out.hir, n));
                 }
                 ANY
             }

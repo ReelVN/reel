@@ -859,7 +859,7 @@ impl SessionVm {
             }
         };
         let arguments = self.vm.host_arguments(ticket)?;
-        let [text, history, reveal_skippable, wait] = arguments else {
+        let [text, history, reveal_skippable, wait, voice, voice_volume] = arguments else {
             return Err(AdapterError::Input("narrator arity"));
         };
         let reveal_skippable = reveal_skippable
@@ -870,6 +870,7 @@ impl SessionVm {
             .ok_or(AdapterError::Input("wait must be bool"))?;
         let text = rich_text::read(self.vm.heap(), *text, self.read_limit)?;
         let history = dialogue::HistoryText::read(self.vm.heap(), *history, self.read_limit)?;
+        let voice = dialogue::voice_input(self.vm.heap(), *voice, *voice_volume, self.read_limit)?;
         let interaction = self.publish_say(
             session,
             ticket,
@@ -883,6 +884,7 @@ impl SessionVm {
             locale,
             reveal_skippable,
             wait,
+            voice,
         )?;
         Ok(NativeDispatch::Published { interaction, work })
     }
@@ -897,17 +899,28 @@ impl SessionVm {
         locale: &str,
         reveal_skippable: bool,
         wait: bool,
+        voice: Option<crate::audio::AudioRequest>,
     ) -> Result<InteractionId, AdapterError> {
         self.check_story_wait(session, ticket)?;
         let selected_locale = self.locale();
         let locale = selected_locale.as_deref().unwrap_or(locale);
-        let publication = publication::Publication::stage(session, |s| {
+        let voice_owner = if voice.is_some() {
+            let owner = self.default_activity_owner(ticket.task)?;
+            scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
+            owner
+        } else {
+            Value::NULL
+        };
+        let mut publication = publication::Publication::stage(session, |s| {
             if wait {
                 s.begin_say(self.owner, lines, locale, reveal_skippable)
             } else {
                 s.begin_open_say(self.owner, lines, locale, reveal_skippable)
             }
         })?;
+        if let Some(request) = &voice {
+            publication.attach_voice(&request.source);
+        }
         let interaction = publication.id();
         if wait {
             self.accept_wait(session, ticket, publication, None)?;
@@ -918,6 +931,7 @@ impl SessionVm {
             self.vm.respond(ticket, HostResponse::Ready(handle))?;
             self.issued = None;
         }
+        self.set_dialogue_voice(session, ticket.task, voice_owner, voice)?;
         Ok(interaction)
     }
 
@@ -974,6 +988,7 @@ impl SessionVm {
                 entries: keys,
             }),
         )?;
+        self.set_dialogue_voice(session, ticket.task, Value::NULL, None)?;
         Ok(interaction)
     }
 

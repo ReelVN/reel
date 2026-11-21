@@ -20,6 +20,18 @@ pub(in crate::aside) const TOOLTIP_PROPERTIES: &[aside_host::Property] =
     PopupField::PROPERTIES.split_at(2).0;
 pub(in crate::aside) const TOOLTIP_NAMES: &[&str] = PopupField::NAMES.split_at(2).0;
 
+text::word_options! {
+    PLACEMENT_CHOICES, placement_word -> PopupPlacement {
+        b"bottom-start" => PopupPlacement::BottomStart,
+        b"bottom-end" => PopupPlacement::BottomEnd,
+        b"top-start" => PopupPlacement::TopStart,
+        b"top-end" => PopupPlacement::TopEnd,
+        b"left-start" => PopupPlacement::LeftStart,
+        b"left-end" => PopupPlacement::LeftEnd,
+        b"right-start" => PopupPlacement::RightStart,
+        b"right-end" => PopupPlacement::RightEnd,
+    }
+}
 fn placement(heap: &Heap, value: Value) -> Result<PopupPlacement, HeapError> {
     let info = heap.info(value)?;
     if info.kind != ObjectKind::String || info.len > 12 {
@@ -29,17 +41,7 @@ fn placement(heap: &Heap, value: Value) -> Result<PopupPlacement, HeapError> {
     for index in 0..info.len {
         heap.read_bytes(value, index, &mut bytes[index as usize..index as usize + 1])?;
     }
-    Ok(match &bytes[..info.len as usize] {
-        b"bottom-start" => PopupPlacement::BottomStart,
-        b"bottom-end" => PopupPlacement::BottomEnd,
-        b"top-start" => PopupPlacement::TopStart,
-        b"top-end" => PopupPlacement::TopEnd,
-        b"left-start" => PopupPlacement::LeftStart,
-        b"left-end" => PopupPlacement::LeftEnd,
-        b"right-start" => PopupPlacement::RightStart,
-        b"right-end" => PopupPlacement::RightEnd,
-        _ => return Err(HeapError::TypeMismatch),
-    })
+    placement_word(&bytes[..info.len as usize]).ok_or(HeapError::TypeMismatch)
 }
 fn validate_placement(heap: &Heap, value: Value) -> Result<(), HeapError> {
     placement(heap, value).map(|_| ())

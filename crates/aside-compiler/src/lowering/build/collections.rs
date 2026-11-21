@@ -43,17 +43,7 @@ impl FunctionBuilder<'_, '_> {
         self.l.b.span = self.span(n);
         let descriptor = self.descriptor(bc::Descriptor::Sequence(window))?;
         let out = self.temp()?;
-        self.op(
-            if self.l.m.hir().node(n).kind == H::Tuple {
-                bc::Opcode::MakeTuple
-            } else {
-                bc::Opcode::MakeArray
-            },
-            out.0,
-            descriptor.0,
-            0,
-            n,
-        )?;
+        self.make_sequence(n, out, descriptor)?;
         self.release_window(window, n)?;
         Ok(Some(out))
     }
@@ -167,7 +157,7 @@ impl FunctionBuilder<'_, '_> {
             start: out,
             len: 0,
         }))?;
-        self.op(bc::Opcode::MakeArray, out.0, empty.0, 0, n)?;
+        self.make_sequence(n, out, empty)?;
         for child in self.l.m.hir().children(n) {
             let (input, opcode) = match self.l.m.hir().node(child).form {
                 Form::Spread { value } => (value, bc::Opcode::ArraySpread),
@@ -181,5 +171,22 @@ impl FunctionBuilder<'_, '_> {
             self.release(value)?;
         }
         Ok(Some(out))
+    }
+
+    fn make_sequence(
+        &mut self,
+        node: h::NodeId,
+        out: bc::Reg,
+        descriptor: bc::DescriptorId,
+    ) -> Result<(), Box<Error>> {
+        let ty = self.l.m.facts()[node.0 as usize].ty;
+        let (opcode, item) = if self.l.m.hir().node(node).kind == H::Tuple {
+            (bc::Opcode::MakeTuple, 0)
+        } else if let h::Type::TypedArray(item) = self.l.m.types()[ty.0 as usize] {
+            (bc::Opcode::MakeTypedArray, self.l.ty(item, 0)?.0)
+        } else {
+            (bc::Opcode::MakeArray, 0)
+        };
+        self.op(opcode, out.0, descriptor.0, item, node)
     }
 }

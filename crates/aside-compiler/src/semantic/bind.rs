@@ -60,7 +60,7 @@ impl super::patterns::PatternTypes for Binder<'_> {
         match &self.out.types[ty.0 as usize] {
             Type::Any | Type::Union(_) | Type::Named(_) | Type::Instance(_) => Shape::Unknown,
             Type::Tuple(elements) => Shape::Tuple(elements.clone()),
-            Type::Array => Shape::Array,
+            Type::Array | Type::TypedArray(_) => Shape::Array,
             Type::Table | Type::Record(_) => Shape::Table,
             _ => Shape::Other,
         }
@@ -77,7 +77,7 @@ impl super::patterns::PatternTypes for Binder<'_> {
     fn field(&self, ty: &TypeId, name: NameId) -> TypeId {
         record_fields(&self.out.types, *ty)
             .and_then(|fields| fields.iter().find(|(key, _)| *key == name))
-            .map_or(ANY, |&(_, ty)| ty)
+            .map_or(ANY, |&(_, ty)| field_contract(&self.out.types, ty).0)
     }
     fn variant_payload(&self, case: NodeId) -> TypeId {
         if let Type::Tuple(parts) = &self.out.types[self.ty(case).0 as usize] {
@@ -188,6 +188,7 @@ mod type_aliases;
 struct Binder<'a> {
     out: AnalyzedModule,
     options: &'a AnalysisOptions,
+    project_effects: bool,
     resolver: &'a mut dyn ModuleResolver,
     diagnostics: Vec<Diagnostic>,
     exhausted: bool,
@@ -258,6 +259,35 @@ pub(super) fn analyze_editor(
     hir: Hir,
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
+) -> crate::editor::EditorAnalysis {
+    let mut analysis = bind_module(hir, options, resolver, false);
+    if !analysis.exhausted
+        && let Some(module) = &mut analysis.module
+    {
+        let mut diagnostics = Vec::new();
+        let limits = AnalysisLimits {
+            max_work: options.limits.max_work.saturating_sub(analysis.stats.work_units),
+            max_diagnostics: options.limits.max_diagnostics.max(1).saturating_sub(analysis.diagnostics.len()),
+            ..options.limits
+        };
+        let (work, exhausted) = super::effects::check(
+            std::slice::from_mut(module),
+            limits,
+            &mut diagnostics,
+        );
+        analysis.diagnostics.extend(diagnostics.into_iter().map(|item| item.diagnostic));
+        analysis.exhausted |= exhausted;
+        analysis.stats.work_units = analysis.stats.work_units.saturating_add(work);
+        module.stats.work_units = analysis.stats.work_units;
+    }
+    analysis
+}
+
+pub(super) fn bind_module(
+    hir: Hir,
+    options: &AnalysisOptions,
+    resolver: &mut dyn ModuleResolver,
+    project_effects: bool,
 ) -> crate::editor::EditorAnalysis {
     // Admit the seeded name index before allocating binding metadata.
     let admitted = hir.names.len().saturating_add(1);
@@ -341,8 +371,10 @@ pub(super) fn analyze_editor(
             external: Vec::new(),
             source_types: SourceTypes::default(),
             inferred_awaits: Vec::new(),
+            effect_calls: Vec::new(),
         },
         options,
+        project_effects,
         resolver,
         diagnostics: Vec::new(),
         exhausted: false,
@@ -603,8 +635,16 @@ impl Binder<'_> {
                     .collect();
                 self.record_type(fields)
             }
+            TypeHint::OptionalField(ty) => {
+                let ty = self.hint(ty);
+                self.intern_type(Type::OptionalField(ty))
+            }
             TypeHint::Enum { name, cases } => self.enum_type_hint(name, cases),
             TypeHint::Array => ARRAY,
+            TypeHint::TypedArray(item) => {
+                let item = self.hint(item);
+                self.intern_type(Type::TypedArray(item))
+            }
             TypeHint::Table => TABLE,
             TypeHint::Future => FUTURE,
             TypeHint::Generator => GENERATOR,
@@ -693,6 +733,7 @@ impl Binder<'_> {
             if let Some(d) = self.diagnostics.last_mut() {
                 d.related.push(RelatedRange {
                     range: self.out.symbols[old.0 as usize].declaration,
+                    source: None,
                     message: "previous declaration".into(),
                 });
             }
@@ -1460,6 +1501,7 @@ fn is_type(k: HirKind) -> bool {
     matches!(
         k,
         HirKind::NamedType
+            | HirKind::ArrayType
             | HirKind::StringType
             | HirKind::RecordType
             | HirKind::TupleType

@@ -4,6 +4,31 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+## 0.4.5 — 2026-11-22
+
+- Embed an Aside source preview on WebGPU pages with `reel-web`. It compiles snippets with the Reel compiler, reports editor diagnostic ranges, and runs the shared player on a browser canvas.
+- Use a player built from source with `reel export --release --runtime <player>`. Runtime directories remain supported for platforms that ship companion files.
+- Export each Vita game as its own VPK and data directory. Choose the LiveArea title in `distribution.toml` and keep assets, saves, and game settings under `ux0:/data/reel/games/<TITLE_ID>/`. Start the game directly from LiveArea. Remove the shared Vita launcher.
+- Set a desktop title, application ID, and optional PNG icon in `distribution.toml`. Embed Windows executable icons, produce macOS application bundles, and register Linux application menu entries. Branded releases store saves and settings in the user's application data directory.
+- Show Markdown and readable signatures in the editor. Named-argument completion includes parameter help and supported option values.
+- Describe `bind`, `value_of`, dialogue, rich text, video sources, and playback requests in the public API reference.
+- Diagnose an extra `await` on a known ordinary result and offer an editor action to remove it.
+- Compose actions with `sequence(...)` and `parallel(...)`. Replace `a.then(b)` with `sequence(a, b)` and `a.together(b)` with `parallel(a, b)`, then re-export affected games.
+- Compose repetition with `repeat(action, times: ...)`, start actions with `action.run(...)`, and control running activities through their methods. Pass a scope as `owner` for scope-owned activities.
+- Start a video with `node.play(...)`. Audio and video playback share the `seek`, `at`, and `position` methods on their playback handle.
+- Use `table` for table annotations and import directly from `reel` or `std` when needed. Remove the `Map`, `reel::prelude`, and `std::prelude` source aliases.
+
+## 0.4.4 — 2026-11-22
+
+- Wake a parked story when its background storage job completes. Keep bounded main-thread work for capture, restore and publishing the result.
+- Reuse the text projection when a new source contains the same plain text or markup.
+- Prove restricted effects through imported and re-exported helpers and exhaustive matches. Show the originating source location in CLI and editor diagnostics.
+- Add optional record fields with `field?: Type` and arrays with an element contract using `array<Type>`. Preserve typed arrays and their aliases in logical saves.
+- Add `voice` and `voice_volume` to dialogue. Keep voice paths in history for replay and restore active dialogue voice with the scene.
+- Add `audio.duck` for temporary gain held by a playback handle. Reject `skip: "omit"` for non-voice playback.
+- Add four-corner geometry for ordinary fitted images. The quad uses the existing texture sampling and stage transforms.
+- Re-export game packages for this player. ASB and logical saves keep format version 1.
+
 ## 0.4.3 — 2026-11-22
 
 - Name types with module-level `type` aliases. Imports and editor navigation use the same declarations.

@@ -25,14 +25,6 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     );
     for (method, result, parameters) in [
         (
-            "run",
-            named("reel::types::Activity"),
-            vec![
-                ("action", named("reel::types::Action")),
-                ("skip", super::activity::skip_type()),
-            ],
-        ),
-        (
             "spawn",
             named("reel::types::Task"),
             vec![("work", TypeHint::Closure)],
@@ -70,7 +62,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         "reel::types::Scope",
         "A callback lifetime that owns tasks, activities, nodes and property overrides.",
         [
-            "run", "spawn", "add", "override", "offset", "cancel", "finish", "wait",
+            "spawn", "add", "override", "offset", "cancel", "finish", "wait",
         ]
         .into_iter()
         .map(|method| {
@@ -157,9 +149,6 @@ aside_host::native_documentation! {
         /// Park the current scope body until a callback finishes or cancels it.
         /// The original scope call receives the finish result.
         "reel::scope::wait";
-        /// Start an action owned by this scope, optionally paused. With `skip: "finish"`,
-        /// fast-forward can finish a running, finite activity in the current reading context.
-        "reel::scope::run";
         /// Start a zero-argument task owned by this scope. Its result is awaitable.
         "reel::scope::spawn";
         /// Insert a node under parent at the optional child index and own its lifetime

@@ -777,7 +777,7 @@ fn failed_tab_factories_retire_exposed_controls_without_restarting() {
             if !caught {throw "invalid content factory completed";}
             let mut retired=false;try {let _=saved.control.visible;} catch e {retired=true;}
             if !retired {throw "failed factory left control live";}
-            selected.value=1;await run(delay(0));
+            selected.value=1;await delay(0).run();
             if saved.built!=mode+1 {throw "failed factory restarted";}
         }
     }"#;

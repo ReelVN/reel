@@ -815,9 +815,9 @@ impl SessionVm {
                 .is_ok_and(|v| v.same_bits(result))
         }) {
             match symbol {
-                "reel::pause" | "reel::resume" => {
+                "reel::activity::pause" | "reel::activity::resume" => {
                     let live = &self.particles.live[index];
-                    let paused = symbol == "reel::pause";
+                    let paused = symbol == "reel::activity::pause";
                     let mut projection = live.projection();
                     projection.frame = projection.frame_at(self.particles.time);
                     projection.started = self.particles.time;
@@ -837,8 +837,8 @@ impl SessionVm {
                     live.paused = paused;
                     self.stage.scene.set_particle_batches(target, batches)?;
                 }
-                "reel::stop" => self.end_emission(index, "Stopped")?,
-                "reel::finish" => {
+                "reel::activity::stop" => self.end_emission(index, "Stopped")?,
+                "reel::activity::finish" => {
                     if self.particles.live[index].frame.duration.is_none() {
                         return Err(AdapterError::Input(
                             "continuous emission has no final value; use stop",

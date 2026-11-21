@@ -4,7 +4,7 @@ use aside_compiler::{
     AnalysisOptions, analyze_module,
     hir::AnalyzedModule,
     lowering,
-    semantic::{ExternalSymbol, MemoryResolver, ModuleInterface, NamespaceRef},
+    semantic::{ExternalSymbol, MemoryResolver, ModuleDiagnostic, ModuleInterface},
 };
 use aside_host::source::{Api, Declaration};
 use aside_vm::bytecode as bc;
@@ -14,13 +14,35 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+mod audio;
 mod effects;
 mod translations;
 
-/// Offer the literal values accepted by a native constructor's property validator.
+/// Offer literal spellings from native parsers while keeping dynamic strings valid.
 pub fn literal_argument_choices(module: &str, export: &str, parameter: &str) -> Vec<&'static str> {
-    use super::stage::{property_values, scroll};
+    use super::stage::{popup, property_values, scroll};
     match (module, export, parameter) {
+        ("reel", constructor, "blend" | "writing_mode")
+            if registry::is_node_constructor(&format!("reel::{constructor}")) =>
+        {
+            match (constructor, parameter) {
+                (_, "blend") => property_values::BLEND_CHOICES.to_vec(),
+                ("text_input" | "text_area", _) => {
+                    property_values::WRITING_MODE_CHOICES[..1].to_vec()
+                }
+                _ => property_values::WRITING_MODE_CHOICES.to_vec(),
+            }
+        }
+        ("reel", "popup" | "tooltip", "placement") => popup::PLACEMENT_CHOICES.to_vec(),
+        ("reel", "scroll", "axis") => scroll::AXIS_CHOICES.to_vec(),
+        ("reel", "tween", "easing") | ("reel::stage", "transition", "easing") => {
+            super::activity::easing::CHOICES.to_vec()
+        }
+        ("reel::audio", "play", "group") => super::media::GROUP_CHOICES.to_vec(),
+        ("reel::audio", "group_volume", "group") => [super::media::MASTER_GROUP]
+            .into_iter()
+            .chain(super::media::GROUP_CHOICES.iter().copied())
+            .collect(),
         ("reel", "image" | "video", "fit") => property_values::FIT_CHOICES
             .into_iter()
             .map(|(name, _)| name)
@@ -37,6 +59,7 @@ pub fn literal_argument_choices(module: &str, export: &str, parameter: &str) -> 
     }
 }
 
+pub use audio::audio_diagnostics;
 pub use effects::{
     CompiledEffect, EffectCompileLimits, EffectDefinition, EffectDefinitionId, EffectDiagnostic,
     EffectFunction, EffectLoadLimits, EffectLocation, EffectOrigin, EffectProductError,
@@ -277,6 +300,7 @@ pub enum SourceError {
     Entry,
     ProjectAnalysis(aside_compiler::semantic::ProjectAnalysis),
     ProjectLowering(lowering::ProjectError),
+    NativeArgument(ModuleDiagnostic),
     Translation(TranslationDiagnostic),
     Effect(EffectDiagnostic),
     EffectProduct(EffectProductError),
@@ -311,6 +335,14 @@ struct SourceProducts {
 
 fn collect_source_products(modules: &[AnalyzedModule]) -> Result<SourceProducts, SourceError> {
     let selected = translations::select_branches(modules).map_err(SourceError::Translation)?;
+    for (module, selected) in modules.iter().zip(&selected) {
+        if let Some(diagnostic) = audio::check_selected(module.into(), Some(selected)).next() {
+            return Err(SourceError::NativeArgument(ModuleDiagnostic {
+                module: module.source_path().into(),
+                diagnostic,
+            }));
+        }
+    }
     let (catalogs, expansions) =
         translations::extract_selected(modules, &selected).map_err(SourceError::Translation)?;
     let effects = effects::collect_registered(modules, &selected).map_err(SourceError::Effect)?;
@@ -319,6 +351,51 @@ fn collect_source_products(modules: &[AnalyzedModule]) -> Result<SourceProducts,
         expansions,
         effects,
     })
+}
+
+fn compiler_intrinsic(
+    name: &str,
+    intrinsic: aside_compiler::semantic::Intrinsic,
+    parameter: &str,
+    result: aside_compiler::semantic::TypeHint,
+    documentation: &str,
+) -> Declaration {
+    use aside_compiler::semantic::{
+        CallEffect, ExternalParameter, ExternalSignature, SymbolReference, TypeHint,
+    };
+    let mut symbol = ExternalSymbol::function(
+        name,
+        ExternalSignature {
+            parameters: vec![ExternalParameter {
+                name: parameter.into(),
+                ty: TypeHint::Any,
+                mutable: false,
+                default: false,
+                rest: false,
+            }],
+            result,
+            result_cases: Vec::new(),
+            result_parameter: None,
+            effect: CallEffect::NoWait,
+            init_safe: Some(true),
+            derived_safe: Some(true),
+        },
+    )
+    .with_reference(SymbolReference {
+        module: "reel".into(),
+        version: "1".into(),
+        export: Some(name.into()),
+    });
+    symbol.intrinsic = Some(intrinsic);
+    Declaration {
+        symbol,
+        documentation: documentation.into(),
+        parameter_defaults: BTreeMap::new(),
+        property_default: None,
+        property_parameters: Vec::new(),
+        parameter_documentation: BTreeMap::new(),
+        property_groups: Vec::new(),
+    }
 }
 
 /// The author CLI and runtime share this resolver and trusted native registry.
@@ -433,53 +510,26 @@ fn build_api() -> Api {
         .filter(|(_, reference)| reference.module == "reel")
         .map(|(export, _)| export.clone())
         .collect::<Vec<_>>();
-    prelude
-        .iter_mut()
-        .find(|e| e.name == "video")
-        .unwrap()
-        .namespace = Some(NamespaceRef {
-        module: "reel::video".into(),
-        version: "1".into(),
-    });
-    resolver.insert(ModuleInterface {
-        canonical_path: "reel::video".into(),
-        version: "1".into(),
-        exports: exports
-            .iter()
-            .zip(&references)
-            .filter(|(_, r)| r.module == "reel::video")
-            .map(|(e, _)| e.clone())
-            .collect(),
-    });
     prelude.extend(aside_std::prelude());
-    prelude.push(ExternalSymbol::intrinsic(
-        "bind",
-        aside_compiler::semantic::Intrinsic::Bind,
-    ));
-    {
-        use aside_compiler::semantic::{
-            CallEffect, ExternalParameter, ExternalSignature, Intrinsic, TypeHint,
-        };
-        let mut value_of = ExternalSymbol::function(
+    use aside_compiler::semantic::{Intrinsic, TypeHint};
+    for declaration in [
+        compiler_intrinsic(
+            "bind",
+            Intrinsic::Bind,
+            "property",
+            aside_host::source::named("Binding"),
+            "Create a Binding that refers to an observable property. Pass one positional field or indexed property, such as `bind(model.volume)`. A binding to a writable property lets a control write back to that property.",
+        ),
+        compiler_intrinsic(
             "value_of",
-            ExternalSignature {
-                parameters: vec![ExternalParameter {
-                    name: "value".into(),
-                    ty: TypeHint::Any,
-                    mutable: false,
-                    default: false,
-                    rest: false,
-                }],
-                result: TypeHint::Any,
-                result_cases: Vec::new(),
-                result_parameter: None,
-                effect: CallEffect::NoWait,
-                init_safe: Some(true),
-                derived_safe: Some(true),
-            },
-        );
-        value_of.intrinsic = Some(Intrinsic::ValueOf);
-        prelude.push(value_of);
+            Intrinsic::ValueOf,
+            "value",
+            TypeHint::Any,
+            "Read the current value of a Binding. Reading inside derive tracks the source property as a dependency. Ordinary values pass through.",
+        ),
+    ] {
+        prelude.push(declaration.symbol.clone());
+        api.functions.push(declaration);
     }
     let build = Declaration::namespace(
         "reel::build",
@@ -501,10 +551,7 @@ fn build_api() -> Api {
             "reel::game",
             "Configure the game session, start a fresh story, and access dialogue, choices, reading state and history.",
         ),
-        (
-            "reel::audio",
-            "Play and control audio activities, queue sources, and await playback positions.",
-        ),
+        ("reel::audio", "Play, queue and mix audio sources."),
         (
             "reel::localization",
             "Load translation catalogs and select or read the current observable locale.",
@@ -546,13 +593,11 @@ fn build_api() -> Api {
     }
 
     prelude.extend(api.types.iter().map(aside_host::source::NamedType::symbol));
-    for path in ["reel", "reel::prelude"] {
-        resolver.insert(ModuleInterface {
-            canonical_path: path.into(),
-            version: "1".into(),
-            exports: prelude.clone(),
-        });
-    }
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel".into(),
+        version: "1".into(),
+        exports: prelude.clone(),
+    });
     let mut type_modules: std::collections::BTreeMap<String, Vec<ExternalSymbol>> =
         Default::default();
     for ty in &api.types {
@@ -668,7 +713,23 @@ pub fn compile_module(
     source_path: &str,
     content_version: u64,
 ) -> Result<SourceCompilation, SourceError> {
-    let (mut resolver, prelude) = environment(std::env::consts::OS);
+    compile_module_for_target(
+        source,
+        module_path,
+        source_path,
+        content_version,
+        std::env::consts::OS,
+    )
+}
+
+fn compile_module_for_target(
+    source: &str,
+    module_path: &str,
+    source_path: &str,
+    content_version: u64,
+    target: &str,
+) -> Result<SourceCompilation, SourceError> {
+    let (mut resolver, prelude) = environment(target);
     let options = AnalysisOptions {
         module: module_path.into(),
         source_path: Some(source_path.into()),
@@ -718,12 +779,31 @@ pub fn compile_story(
     content_version: u64,
     entry_name: &str,
 ) -> Result<CompiledStory, SourceError> {
+    compile_story_for_target(
+        source,
+        module_path,
+        module_path,
+        content_version,
+        entry_name,
+        std::env::consts::OS,
+    )
+}
+
+/// Compile a single-source story with the selected `build.target` and diagnostic path.
+pub fn compile_story_for_target(
+    source: &str,
+    module_path: &str,
+    source_path: &str,
+    content_version: u64,
+    entry_name: &str,
+    target: &str,
+) -> Result<CompiledStory, SourceError> {
     let SourceCompilation {
         module,
         compilation: compiled,
         catalogs,
         effects,
-    } = compile_module(source, module_path, module_path, content_version)?;
+    } = compile_module_for_target(source, module_path, source_path, content_version, target)?;
     // The compiler initializes module function globals at runtime; their
     // GlobalDef.linked_function is intentionally None. Select the real HIR
     // declaration/output mapping, not that optional prelinked-closure field.

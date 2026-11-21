@@ -205,13 +205,23 @@ impl RenderBackend for WgpuBackend {
                 };
             }
         };
+        let view_format = self
+            .config
+            .as_ref()
+            .expect("configured surface")
+            .view_formats
+            .first()
+            .copied();
         self.output
             .as_ref()
             .expect("configured surface output")
             .encode(
                 &self.renderer.gpu().device,
                 &mut prepared,
-                &texture.texture.create_view(&Default::default()),
+                &texture.texture.create_view(&wgpu::TextureViewDescriptor {
+                    format: view_format,
+                    ..Default::default()
+                }),
             );
         self.renderer.submit(prepared)?;
         before_present();
@@ -247,6 +257,7 @@ impl RenderBackend for WgpuBackend {
         self.renderer.cancel_preparations();
         // Native surface lifetime ends before the host releases its window. Submitted
         // frame leases stay in Renderer until completion is polled or device retirement.
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = self
             .renderer
             .gpu()

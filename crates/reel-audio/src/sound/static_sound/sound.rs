@@ -41,6 +41,7 @@ pub(super) struct StaticSound {
 	transport: Transport,
 	fractional_position: f64,
 	volume: Parameter<Decibels>,
+	ducking: Option<Parameter<Decibels>>,
 	playback_rate: Parameter<PlaybackRate>,
 	rate_sequence: u64,
 	pending_rate: Option<super::RateChangeCommand>,
@@ -87,6 +88,7 @@ impl StaticSound {
 			transport,
 			fractional_position: 0.0,
 			volume: Parameter::new(settings.volume, Decibels::IDENTITY),
+			ducking: None,
 			playback_rate,
 			rate_sequence: 0,
 			pending_rate: None,
@@ -411,6 +413,11 @@ impl StaticSound {
 
 	fn read_commands(&mut self) {
 		read_commands_into_parameters!(self, volume, panning);
+		if let Some(command) = self.command_readers.set_ducking.read() {
+			self.ducking
+				.get_or_insert_with(|| Parameter::new(Decibels::IDENTITY.into(), Decibels::IDENTITY))
+				.set(command.target, command.tween);
+		}
 		if let Some(command) = self.command_readers.set_playback_rate.read() {
 			// A seek can publish during this method. Keep the previous parameter
 			// and acknowledgement together until process actually applies the rate.
@@ -512,6 +519,9 @@ impl Sound for StaticSound {
 		}
 		// update parameters
 		self.volume.update(dt * out.len() as f64, info);
+		if let Some(ducking) = &mut self.ducking {
+			ducking.update(dt * out.len() as f64, info);
+		}
 		self.panning.update(dt * out.len() as f64, info);
 		let changed_playback_state = self.playback_state_manager.update(
 			if self
@@ -618,6 +628,7 @@ impl Sound for StaticSound {
 		// play back audio
 		let num_frames = out.len();
 		let volume = self.volume.amplitude_block();
+		let ducking = self.ducking.as_ref().map(Parameter::amplitude_block);
 		let fade = self.playback_state_manager.fade_amplitudes();
 		let panning = self.panning.panning_block();
 		for (i, frame) in out.iter_mut().enumerate() {
@@ -667,7 +678,8 @@ impl Sound for StaticSound {
 				}
 			}
 			let time_in_chunk = (i + 1) as f64 / num_frames as f64;
-			let volume = volume.at(time_in_chunk);
+			let volume = volume.at(time_in_chunk)
+				* ducking.map_or(1., |gain| gain.at(time_in_chunk));
 			let fade_volume = fade.at(time_in_chunk);
 			let playback_rate = self.playback_rate.interpolated_value(time_in_chunk);
 			let resampler_out = self.resampler.get(self.fractional_position as f32);

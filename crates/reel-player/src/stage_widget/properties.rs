@@ -31,6 +31,7 @@ impl SceneWidget {
             repeat,
             tile_scale,
             corner_colors,
+            corners,
             adjustment,
             slice_center,
             source_rect,
@@ -53,6 +54,7 @@ impl SceneWidget {
             .map(|image| {
                 NewWidget::new(
                     image
+                        .with_corners(corners.clone())
                         .with_source_rect(*source_rect)
                         .with_alpha_layout(*alpha_layout)
                         .with_sampling(*sampling)
@@ -651,6 +653,7 @@ impl SceneWidget {
                     repeat,
                     tile_scale,
                     corner_colors,
+                    corners,
                     adjustment,
                     slice_center,
                     source_rect,
@@ -666,6 +669,7 @@ impl SceneWidget {
             }
             // This also clears slicing when a whole image switches to tiles.
             Image::set_source_rect(&mut image, *source_rect);
+            Image::set_corners(&mut image, corners.clone());
             Image::set_alpha_layout(&mut image, *alpha_layout);
             Image::set_sampling(&mut image, *sampling);
             Image::set_slice(&mut image, *slice, *slice_scale, *slice_center);

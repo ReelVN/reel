@@ -172,11 +172,12 @@ impl StageBinding {
                 ),
                 NodeKind::Text(text) => {
                     let source = heap.table_entry(fields, 0)?.1;
+                    let unchanged = binding.text_source == Some(heap.handle(source)?);
                     (
-                        NodeKind::Text(if binding.text_source == Some(heap.handle(source)?) {
+                        NodeKind::Text(if unchanged {
                             text.clone()
                         } else {
-                            super::super::rich_text::read(heap, source, read_limit)?
+                            super::super::rich_text::read_or_reuse(heap, source, text, read_limit)?
                         }),
                         2,
                     )
@@ -243,7 +244,12 @@ impl StageBinding {
                         super::super::particles::PREFIX.len(),
                     )
                 }
-                NodeKind::Image { source, origin, .. } => {
+                NodeKind::Image {
+                    source,
+                    origin,
+                    corners,
+                    ..
+                } => {
                     let table = heap.table_read(fields)?;
                     let raw_source = table.value(0)?;
                     let raw_rect = table.value(11)?;
@@ -273,15 +279,25 @@ impl StageBinding {
                     } else {
                         None
                     };
+                    let slice_value = table.value(2)?;
+                    let slice = read_slice(heap, slice_value)?;
+                    let repeat = read_image_repeat(heap, table.value(4)?, slice_value)?;
                     (
                         NodeKind::Image {
                             source: selected_source,
                             fit: read_fit(heap, table.value(1)?)?,
-                            slice: read_slice(heap, table.value(2)?)?,
+                            slice,
                             slice_scale: nonnegative(table.value(3)?)?,
-                            repeat: read_image_repeat(heap, table.value(4)?, table.value(2)?)?,
+                            repeat,
                             tile_scale: positive(table.value(5)?)?,
                             corner_colors: read_corner_colors(heap, table.value(6)?)?,
+                            corners: property_values::image_corners(
+                                heap,
+                                table.value(14)?,
+                                slice,
+                                repeat,
+                                corners.as_ref(),
+                            )?,
                             slice_center: boolean(table.value(7)?)?,
                             adjustment: read_image_adjustment(heap, fields)?,
                             source_rect: read_source_rect(heap, rect)?,

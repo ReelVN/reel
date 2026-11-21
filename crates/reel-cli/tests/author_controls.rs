@@ -338,8 +338,8 @@ mod author_bindings {
     use support::*;
 
     const SOURCE: &str = r##"
-use reel::prelude::*;
-use reel::prelude::bind as link;
+use reel::*;
+use reel::bind as link;
 fn main() {
     let source = slider(value: 40, max: 100, width: 220, height: 40);
     let peer = slider(value: bind(source.value), max: 80, y: 60, width: 220, height: 40);

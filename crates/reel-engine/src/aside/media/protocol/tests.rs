@@ -2,10 +2,11 @@ use super::*;
 use crate::audio::{AudioPlayback, AudioQueueItem, AudioRequest};
 use crate::video::VideoPlaybackState;
 use crate::{
-    Epoch, InputAction, Session, SessionId,
+    Epoch, InputAction, Session, SessionId, SessionIdentity,
     aside::{
         RunOutcome, SessionBudget, SessionStep, SliceBudget, VmLimits,
         checkpoint::{CheckpointLoad, CheckpointRecord},
+        snapshot::{SessionSnapshot, SnapshotBudget},
         source,
     },
 };
@@ -17,6 +18,7 @@ struct Backend(Rc<RefCell<Transport>>);
 struct Transport {
     entries: Vec<MediaPlayback>,
     events: Vec<&'static str>,
+    gains: Vec<(MediaId, f64, Duration)>,
 }
 impl Backend {
     fn position_to(&self, seconds: f64) {
@@ -120,6 +122,12 @@ impl MediaBackend for Backend {
     fn group_volume(&mut self, _: Option<AudioGroup>, _: f64, _: Duration) -> Result<(), String> {
         Ok(())
     }
+    fn duck_audio(&mut self, id: MediaId, gain: f64, fade: Duration) -> Result<(), String> {
+        let mut state = self.0.borrow_mut();
+        state.events.push("duck");
+        state.gains.push((id, gain, fade));
+        Ok(())
+    }
     fn cancel(&mut self, id: MediaId) {
         let _ = self.command(id, MediaCommand::Stop);
     }
@@ -151,7 +159,7 @@ fn code(body: &str) -> String {
         r#"
     use std::resume::{{state,root,flow,point}};
     use reel::types::MediaCue;
-    class World {{let mut track:any=null;let mut alias:any=null;let mut cue:MediaCue|null=null;let mut movie:any=null;}}
+    class World {{let mut track:any=null;let mut alias:any=null;let mut cue:MediaCue|null=null;let mut movie:any=null;let mut second_voice:any=null;}}
     state(World,"world");root(main,"game");
     fn main(state:World=model(World())){{reading(||{{
         let dialogue=game.dialogue();stage.replace(stack(){{text(derive(||dialogue.text));}});
@@ -276,6 +284,28 @@ fn restore(
     }
     panic!("media load exhausted work")
 }
+fn restore_exact(vm: &SessionVm, session: &Session, backend: Backend) -> (Session, SessionVm) {
+    let mut capture = vm.snapshot_begin(session).unwrap();
+    while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let bytes = capture.finish().unwrap().encode().unwrap();
+    let mut image = SessionSnapshot::decode(&bytes).unwrap();
+    let mut restore = SessionVm::restore_begin(
+        &mut image,
+        vm.vm.program().clone(),
+        VmLimits::default(),
+        SessionIdentity {
+            session_id: SessionId(918),
+            epoch: Epoch(2),
+        },
+        Default::default(),
+        Some(Box::new(backend)),
+        None,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    restore.finish().unwrap()
+}
+
 fn advance(session: &mut Session) {
     let id = session.view().interaction.unwrap().id();
     for _ in 0..2 {
@@ -294,7 +324,7 @@ fn audio_queue_position_aliases_and_adoption_use_one_typed_graph_source_asb() {
         r#"audio.play("unretained.ogg");state.track=audio.play("old.ogg",start:2,volume:0.4);audio.queue(state.track,"tail.ogg",start:1);state.alias=state.track;point("line");narrator("A");if state.track!=state.alias{throw "alias";}audio.stop(state.track);await state.track;40"#,
     );
     let b = code(
-        r#"state.track=audio.play("changed.ogg");state.alias=state.track;point("line");narrator("B");if state.track!=state.alias{throw "alias";}if audio.position(state.track)!=4.5{throw "position";}audio.stop(state.track);await state.track;42"#,
+        r#"state.track=audio.play("changed.ogg");state.alias=state.track;point("line");narrator("B");if state.track!=state.alias{throw "alias";}if state.track.position()!=4.5{throw "position";}audio.stop(state.track);await state.track;42"#,
     );
     for encoded in [false, true] {
         let old = Backend::default();
@@ -326,6 +356,67 @@ fn audio_queue_position_aliases_and_adoption_use_one_typed_graph_source_asb() {
         };
         assert_eq!(vm.vm.delivery_value(delivery).unwrap().as_int(), Some(42));
     }
+}
+
+#[test]
+fn overlapping_ducks_restore_owned_levels_and_release_independently() {
+    let program = code(
+        r#"
+        state.track=audio.play("music.ogg",group:"music",volume:0.8);
+        state.alias=audio.play("first.ogg",group:"voice");
+        state.second_voice=audio.play("second.ogg",group:"voice");
+        audio.duck(state.track,by:state.alias,gain:0.5,attack:0.1,release:0.2);
+        audio.duck(state.track,by:state.second_voice,gain:0.25,attack:0.15,release:0.3);
+        point("line");narrator("A");
+        audio.stop(state.alias);await state.alias;
+        audio.stop(state.second_voice);await state.second_voice;
+        42"#,
+    );
+    let old = Backend::default();
+    let (session, mut vm) = start(&program, true, old.clone());
+    assert_eq!(
+        old.0.borrow().gains,
+        [
+            (MediaId(1), 0.5, Duration::from_millis(100)),
+            (MediaId(1), 0.125, Duration::from_millis(150)),
+        ],
+    );
+    let exact = Backend::default();
+    let _ = restore_exact(&vm, &session, exact.clone());
+    assert_eq!(exact.0.borrow().gains.last().unwrap().1, 0.125);
+
+    let record = capture(&mut vm, &session);
+    let backend = Backend::default();
+    let (mut session, mut vm) = restore(&program, true, record, backend.clone());
+    assert_eq!(
+        &backend.0.borrow().events[..6],
+        [
+            "prepare-audio",
+            "prepare-audio",
+            "prepare-audio",
+            "duck",
+            "duck",
+            "commit"
+        ],
+    );
+    let last = *backend.0.borrow().gains.last().expect("restored duck");
+    assert_eq!((last.1, last.2), (0.125, Duration::ZERO));
+    let music = last.0;
+    assert!(matches!(&backend.0.borrow().entries[music.0 as usize - 1],
+            MediaPlayback::Audio(entry) if entry.request.volume == 0.8));
+    advance(&mut session);
+    let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
+        panic!("voice activities did not retire");
+    };
+    assert_eq!(vm.vm.delivery_value(delivery).unwrap().as_int(), Some(42));
+    let gains = &backend.0.borrow().gains;
+    assert_eq!(
+        gains[gains.len() - 2..],
+        [
+            (music, 0.25, Duration::from_millis(200)),
+            (music, 1., Duration::from_millis(300)),
+        ],
+    );
 }
 
 #[test]
@@ -371,12 +462,74 @@ fn terminal_audio_await_returns_its_saved_result_without_starting_transport() {
 }
 
 #[test]
+fn dialogue_voice_restores_without_replaying_and_keeps_history_replay_path() {
+    for (encoded, skipping) in [(false, false), (true, true), (true, false)] {
+        let skip = if skipping {
+            "game.reading().set_skip(true, unread: true);"
+        } else {
+            ""
+        };
+        let before = code(&format!(
+            r#"{skip} point("line");narrator("A",voice:"original.ogg",voice_volume:0.4);42"#,
+        ));
+        let verify = if skipping {
+            r#"if game.dialogue().voice!=null { throw "fast-forward started voice"; }"#
+        } else {
+            r#"if game.dialogue().voice.position()!=2.5 { throw "voice position"; }"#
+        };
+        let after = code(&format!(
+            r#"point("line");narrator("B",voice:"changed.ogg");
+                {verify}
+                let input=game.history()[0].lines[0].voice;
+                if input!="original.ogg" {{throw "history voice";}}
+                audio.play(input,group:"voice");42"#,
+        ));
+        let old = Backend::default();
+        let (session, mut vm) = start(&before, encoded, old.clone());
+        assert_eq!(old.0.borrow().entries.len(), usize::from(!skipping));
+        assert_eq!(
+            session.view().history[0].lines()[0].voice(),
+            Some("original.ogg")
+        );
+        let (restored, _) = restore_exact(&vm, &session, Backend::default());
+        assert_eq!(
+            restored.view().history[0].lines()[0].voice(),
+            Some("original.ogg")
+        );
+        old.position_to(2.5);
+        let record = capture(&mut vm, &session);
+        let backend = Backend::default();
+        let (mut session, mut vm) = restore(&after, encoded, record, backend.clone());
+        {
+            let state = backend.0.borrow();
+            assert_eq!(state.entries.len(), usize::from(!skipping));
+            if let Some(MediaPlayback::Audio(audio)) = state.entries.first() {
+                assert_eq!(audio.request.source, "original.ogg");
+                assert_eq!(audio.request.start_position, Duration::from_secs_f64(2.5));
+                assert_eq!(audio.request.volume, 0.4);
+            }
+        }
+        advance(&mut session);
+        let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
+            panic!("voice history replay did not finish");
+        };
+        assert_eq!(vm.vm.delivery_value(delivery).unwrap().as_int(), Some(42));
+        let state = backend.0.borrow();
+        let Some(MediaPlayback::Audio(replay)) = state.entries.last() else {
+            panic!("history voice did not start");
+        };
+        assert_eq!(replay.request.source, "original.ogg");
+        assert_eq!(replay.request.start_position, Duration::ZERO);
+    }
+}
+
+#[test]
 fn video_target_and_transport_position_restore_in_the_same_graph() {
     let a = code(
-        r#"state.movie=video("old.mp4",width:160,height:90);state.track=video.play(state.movie);point("line");narrator("A");7"#,
+        r#"state.movie=video("old.mp4",width:160,height:90);state.track=state.movie.play();point("line");narrator("A");7"#,
     );
     let b = code(
-        r#"state.movie=video("changed.mp4");state.track=video.play(state.movie);point("line");narrator("B");8"#,
+        r#"state.movie=video("changed.mp4");state.track=state.movie.play();point("line");narrator("B");8"#,
     );
     let old = Backend::default();
     let (session, mut vm) = start(&a, true, old.clone());
@@ -408,10 +561,10 @@ fn video_target_and_transport_position_restore_in_the_same_graph() {
 #[test]
 fn cue_wait_reconnects_its_source_and_preserves_the_previous_page_source_asb() {
     let a = code(
-        r#"state.track=audio.play("old.ogg");state.cue=audio.at(state.track,5);point("line");narrator("A");point("cue");await state.cue"#,
+        r#"state.track=audio.play("old.ogg");state.cue=state.track.at(5);point("line");narrator("A");point("cue");await state.cue"#,
     );
     let b = code(
-        r#"state.track=audio.play("changed.ogg");state.cue=audio.at(state.track,99);point("line");narrator("B");point("cue");await state.cue"#,
+        r#"state.track=audio.play("changed.ogg");state.cue=state.track.at(99);point("line");narrator("B");point("cue");await state.cue"#,
     );
     for encoded in [false, true] {
         let old = Backend::default();

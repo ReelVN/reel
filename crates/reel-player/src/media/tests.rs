@@ -748,22 +748,22 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         audio.stop(early, fade: 0.1);
         if await early != "Stopped" || await early != "Stopped" { throw "early stop"; }
         let tiny = audio.play("assets/chime.wav", start: 0.1, end: 0.100000001);
-        if await tiny != "Completed" || audio.position(tiny) != 0.1 { throw "quantized empty segment"; }
+        if await tiny != "Completed" || tiny.position() != 0.1 { throw "quantized empty segment"; }
         let crossfade = audio.play("assets/chime.wav", group: "music", looping: true, fade_in: 0.01);
         let sound = audio.play("assets/chime.wav", group: "voice", end: 0.2, rate: 0.5);
         if audio.queue(sound, "assets/chime.wav", start: 0.03, end: 0.12) != null { throw "queue result"; }
         audio.queue(sound, "assets/chime.wav", start: 0.1, end: 0.18);
-        pause(sound);
-        if audio.seek(sound, 0.02) != null || audio.position(sound) != 0.02 { throw "seek result"; }
-        audio.seek(sound, 0.01);
-        if audio.position(sound) != 0.01 { throw "latest seek"; }
-        resume(sound);
+        sound.pause();
+        if sound.seek(0.02) != null || sound.position() != 0.02 { throw "seek result"; }
+        sound.seek(0.01);
+        if sound.position() != 0.01 { throw "latest seek"; }
+        sound.resume();
         if audio.rate(sound, 2, duration: 0.02) != sound { throw "rate result"; }
         audio.pan(sound, 1, duration: 0.01);
         audio.volume(sound, 0.5, duration: 0.01);
         if await sound != "Completed" || await sound != "Completed" { throw "completion"; }
-        if audio.position(sound) != 0.18 { throw "queue end not retained"; }
-        audio.seek(sound, 0);
+        if sound.position() != 0.18 { throw "queue end not retained"; }
+        sound.seek(0);
         if await sound != "Completed" { throw "seek restarted completed activity"; }
         audio.stop(crossfade, fade: 0.01);
         if await crossfade != "Stopped" { throw "fade completion"; }
@@ -771,7 +771,7 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         try { audio.group_volume("typo", 1); } catch error { invalid += 1; }
         try { audio.play("assets/chime.wav", pan: 2); } catch error { invalid += 1; }
         try { audio.volume(crossfade, 1, duration: -1); } catch error { invalid += 1; }
-        try { audio.seek(crossfade, -1); } catch error { invalid += 1; }
+        try { crossfade.seek(-1); } catch error { invalid += 1; }
         try { audio.queue(sound, "assets/chime.wav"); } catch error { invalid += 1; }
         try { audio.queue(crossfade, "assets/chime.wav", looping: false, loop_start: 1); } catch error { invalid += 1; }
         try { audio.play("assets/chime.wav", start: 0.1, end: 0.1); } catch error { invalid += 1; }
@@ -783,8 +783,8 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         try { audio.rate(crossfade, 1, duration: -1); } catch error { invalid += 1; }
         if invalid != 13 { throw "audio validation"; }
         let music = audio.play("assets/chime.wav", looping: true);
-        pause(music); audio.volume(music, 0); resume(music);
-        stop(music);
+        music.pause(); audio.volume(music, 0); music.resume();
+        music.stop();
         if await music != "Stopped" { throw "loop stop"; }
         let node = text("owned sound"); stage.replace(node);
         let owned = audio.play("assets/chime.wav", looping: true, owner: node);
@@ -858,12 +858,12 @@ fn bounded_audio_source_and_asb_restore_real_transport_and_queue_endpoints() {
     let text = r#"fn main() {
         let sound = audio.play("assets/chime.wav", start: 0.04, end: 0.08, rate: 0.5);
         audio.queue(sound, "assets/chime.wav", start: 0.02, end: 0.12);
-        pause(sound);
+        sound.pause();
         audio.rate(sound, 2, duration: 0.04);
         narrator("save bounded audio");
-        if audio.position(sound) != 0.04 { throw "restored absolute position"; }
-        resume(sound);
-        if await sound != "Completed" || audio.position(sound) != 0.12 { throw "restored queue end"; }
+        if sound.position() != 0.04 { throw "restored absolute position"; }
+        sound.resume();
+        if await sound != "Completed" || sound.position() != 0.12 { throw "restored queue end"; }
         if await sound != "Completed" { throw "terminal replay"; }
     }"#;
     for binary in [false, true] {

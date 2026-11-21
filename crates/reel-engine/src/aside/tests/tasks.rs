@@ -255,13 +255,13 @@ fn task_fault_keeps_original_source_as_a_cause_after_gc_and_await() {
 fn completed_awaits_yield_to_other_tasks_even_on_a_slow_host() {
     for encoded in [false, true] {
         for instructions in [1, 1000] {
-            for wait in ["ready", "run(delay(0.004), owner: root)"] {
+            for wait in ["ready", "delay(0.004).run(owner: root)"] {
                 let code = format!(
                     r#"fn opening() {{
                     let root = stack(); stage.replace(root);
                     let ready = completion(); ready.resolve();
                     spawn(|| {{ loop {{ await {wait}; root.x += 1; }} }}, owner: root);
-                    await run(delay(2), owner: root);
+                    await delay(2).run(owner: root);
                     if root.x == 0 {{ throw "worker never ran"; }}
                     root.remove(); stage.replace(text("continued"));
                 }}"#
@@ -332,7 +332,7 @@ fn ordinary_wait_capable_calls_and_budget_slices_keep_the_sync_segment() {
     let code = r#"fn opening() {
         let state = {value: 0};
         let worker = spawn(|| { if state.value != 20 { throw "interrupted synchronous segment"; } state.value = 21; });
-        for i in 0..20 { run(delay(0)); state.value += 1; }
+        for i in 0..20 { delay(0).run(); state.value += 1; }
         if state.value != 20 { throw "ordinary WAIT native yielded"; }
         await worker;
         if state.value != 21 { throw "await did not schedule worker"; }

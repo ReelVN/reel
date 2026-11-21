@@ -372,6 +372,13 @@ impl RowInput<'_> {
             Self::History(l) => l.speaker_id.as_deref(),
         }
     }
+
+    fn voice(&self) -> Option<&str> {
+        match self {
+            Self::Dialogue(_) => None,
+            Self::History(line) => line.voice(),
+        }
+    }
 }
 struct StringBuilder {
     value: Value,
@@ -492,6 +499,9 @@ impl RowBuilder {
             5 => {
                 self.field(heap, input.content().styled(), chunk)?;
             }
+            6 if let Some(voice) = input.voice() => {
+                self.field(heap, voice, chunk)?;
+            }
             _ => {
                 let id = heap.sequence_get(self.values, 0)?;
                 let name = heap.sequence_get(self.values, 1)?;
@@ -522,17 +532,25 @@ impl RowBuilder {
                         ],
                         &[],
                     )?,
-                    RowInput::History(_) => record(
-                        heap,
-                        &[
-                            ("id", id),
-                            ("speaker_id", speaker),
-                            ("speaker_name", name),
-                            ("content_id", content),
-                            ("text", text),
-                        ],
-                        &[],
-                    )?,
+                    RowInput::History(line) => {
+                        let voice = if line.voice().is_some() {
+                            heap.sequence_get(self.values, heap.sequence_len(self.values)? - 1)?
+                        } else {
+                            Value::NULL
+                        };
+                        record(
+                            heap,
+                            &[
+                                ("id", id),
+                                ("speaker_id", speaker),
+                                ("speaker_name", name),
+                                ("content_id", content),
+                                ("text", text),
+                                ("voice", voice),
+                            ],
+                            &[],
+                        )?
+                    }
                 };
                 return Ok(Some(row));
             }

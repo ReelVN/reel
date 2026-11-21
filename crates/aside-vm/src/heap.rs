@@ -1,4 +1,5 @@
 mod array;
+mod portable_array;
 mod changes;
 mod model;
 pub use changes::ChangeCursor;
@@ -350,6 +351,8 @@ pub(crate) struct Root {
 /// Single-threaded integer-handle graph. All publishing writes pass the barrier.
 pub struct Heap {
     pub(crate) code: Option<Rc<crate::fault::CodeLease>>,
+    portable_arrays: Vec<portable_array::PortableArrayItem>,
+    has_typed_arrays: bool,
     pub(crate) id: HeapId,
     pub(crate) epoch: SessionEpoch,
     pub(crate) objects: crate::slots::ObjectSlots<Object>,
@@ -449,6 +452,8 @@ impl Heap {
         usage.charge(estimate - BOOK_BYTES);
         let mut heap = Self {
             code: None,
+            portable_arrays: Vec::new(),
+            has_typed_arrays: false,
             id: HeapId::fresh().ok_or(HeapError::IdentityExhausted)?,
             epoch,
             objects: crate::slots::ObjectSlots::new(
@@ -767,7 +772,7 @@ impl Heap {
     /// Freeze a private, unpublished array builder without copying its edges.
     pub fn seal_tuple(&mut self, builder: Value) -> Result<(), HeapError> {
         let key = self.key(builder)?;
-        if self.object(key)?.kind != ObjectKind::Array {
+        if self.object(key)?.kind != ObjectKind::Array || self.array_item(builder)?.is_some() {
             return Err(HeapError::WrongKind);
         }
         self.objects.get_mut(key).unwrap().kind = ObjectKind::Tuple;
@@ -1116,6 +1121,9 @@ impl Heap {
         if position >= obj.payload.len() {
             return Err(HeapError::OutOfBounds);
         }
+        if let Payload::Values(values) = &obj.payload {
+            self.check_array_items(values.array_item(), std::slice::from_ref(&value))?;
+        }
         self.adopt_model_value(target, value)?;
         self.barrier(value)?;
         let obj = self.objects.get_mut(key).unwrap();
@@ -1131,6 +1139,11 @@ impl Heap {
         Ok(())
     }
     pub fn array_push(&mut self, target: Value, value: Value) -> Result<(), HeapError> {
+        self.push_array_value::<true>(target, value)
+    }
+    fn push_array_value<const CHECK_CONTRACT: bool>(
+        &mut self, target: Value, value: Value
+    ) -> Result<(), HeapError> {
         let key = self.key(target)?;
         let obj = self.object(key)?;
         if obj.kind != ObjectKind::Array {
@@ -1140,6 +1153,9 @@ impl Heap {
             unreachable!()
         };
         values.len.checked_add(1).ok_or(HeapError::OutOfBounds)?;
+        if CHECK_CONTRACT {
+            self.check_array_items(values.array_item(), std::slice::from_ref(&value))?;
+        }
         let extra = Values::growth_bytes(values.len.into(), 1);
         self.ensure_bytes(extra)?;
         self.adopt_model_value_reserving(target, value, extra)?;
@@ -1161,7 +1177,7 @@ impl Heap {
     /// every use: bytecode verification does not prove a private ArgsNew origin.
     pub(crate) fn packed_array_len(&self, target: Value) -> Result<u32, HeapError> {
         let obj = self.object(self.key(target)?)?;
-        if obj.kind != ObjectKind::Array {
+        if !matches!(&obj.payload, Payload::Values(values) if obj.kind == ObjectKind::Array && values.array_item().is_none()) {
             return Err(HeapError::WrongKind);
         }
         let len = obj.payload.len();

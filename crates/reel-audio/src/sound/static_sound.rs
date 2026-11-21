@@ -82,6 +82,7 @@ impl RateChangeCommand {
 
 command_writers_and_readers! {
 	set_volume: ValueChangeCommand<Decibels>,
+	set_ducking: ValueChangeCommand<Decibels>,
 	set_playback_rate: RateChangeCommand,
 	set_panning: ValueChangeCommand<Panning>,
 	set_loop_region: Option<Region>,

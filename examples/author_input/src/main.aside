@@ -18,12 +18,10 @@ fn main() {
             jump: {
                 bindings: ["Space", "South", "PointerPrimary"],
                 on_press: || {
-                    await run(
-                        sequence(
+                    await sequence(
                             tween(marker, y: 16, duration: 0.15),
                             tween(marker, y: 64, duration: 0.15)
-                        )
-                    );
+                        ).run();
                 },
             },
             finish: {

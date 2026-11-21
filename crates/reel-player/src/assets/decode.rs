@@ -240,7 +240,11 @@ fn jpeg(input: &[u8], probe: bool, temporary: u64, output: u64) -> Option<Result
 impl WorkExecutor for ImageExecutor {
     fn capabilities(&self) -> WorkCaps {
         WorkCaps {
-            mode: WorkMode::Threaded,
+            mode: if cfg!(target_arch = "wasm32") {
+                WorkMode::Cooperative
+            } else {
+                WorkMode::Threaded
+            },
             kinds: vec![image_probe(), image_decode()],
             queue: self.limits,
         }
@@ -289,8 +293,21 @@ impl WorkExecutor for ImageExecutor {
     fn cancel(&mut self, id: WorkId) {
         self.worker.cancel(id.0);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn advance(&mut self, _: WorkBudget) -> WorkProgress {
         WorkProgress::default()
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn advance(&mut self, budget: WorkBudget) -> WorkProgress {
+        // Browser decoders reuse the shared image implementation. Advance a
+        // single admitted job per poll so a queue cannot monopolize the host.
+        let limit = u32::from(budget.max_units != 0 && budget.max_bytes != 0);
+        let (units, has_work) = self.worker.advance(limit);
+        WorkProgress {
+            units,
+            has_work,
+            ..WorkProgress::default()
+        }
     }
     fn drain(&mut self, out: &mut Vec<WorkEvent>, limit: usize) {
         self.worker.drain(out, limit);

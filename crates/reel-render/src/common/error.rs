@@ -42,8 +42,10 @@ pub enum GpuError {
     #[cfg(feature = "wgpu")]
     DeviceLost(std::sync::Arc<crate::gpu::DeviceLoss>),
     WrongDevice,
-    #[cfg(feature = "wgpu")]
+    #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
     Driver(std::sync::Arc<wgpu::Error>),
+    #[cfg(all(feature = "wgpu", target_arch = "wasm32"))]
+    Driver(std::sync::Arc<str>),
     InvalidSize,
     IdentityExhausted,
     Busy,

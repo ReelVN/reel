@@ -6,13 +6,11 @@ fn switch_puzzle() {
     let result = completion(owner: root);
     let timer = clock(owner: root);
     let hint = text("Match the pattern: ON, OFF, ON", x: 32, y: 24, font_size: 28);
-    let pulse = run(
-        repeat(
+    let pulse = repeat(
             sequence(
                 tween(hint, opacity: 0.55, duration: 0.8), tween(hint, opacity: 1, duration: 0.8)
             )
-        ), owner: root
-    );
+        ).run(owner: root);
     root.add(hint);
     for index in 0 .. 3 {
         root.add(
@@ -58,11 +56,11 @@ fn switch_puzzle() {
                 on_click: || {
                     state.paused = !state.paused;
                     if state.paused {
-                        pause(timer);
-                        pause(pulse);
+                        timer.pause();
+                        pulse.pause();
                     } else {
-                        resume(timer);
-                        resume(pulse);
+                        timer.resume();
+                        pulse.resume();
                     }
                 }
             );

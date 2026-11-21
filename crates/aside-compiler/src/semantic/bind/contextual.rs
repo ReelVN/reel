@@ -2,12 +2,28 @@
 use super::*;
 
 impl Binder<'_> {
-    fn direct_lambda(&mut self, mut node: NodeId) -> bool {
+    pub(super) fn contextual_array(&self, ty: TypeId) -> Option<(TypeId, TypeId)> {
+        match &self.out.types[ty.0 as usize] {
+            Type::TypedArray(item) => Some((ty, *item)),
+            Type::Union(types) => {
+                let mut members = types.iter().copied().filter(|&ty| ty != NULL);
+                let only = members.next()?;
+                if members.next().is_none() && let Type::TypedArray(item) = self.out.types[only.0 as usize] {
+                    Some((only, item))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn direct_contextual_argument(&mut self, mut node: NodeId) -> bool {
         loop {
             if !self.budget(node) {
                 return false;
             }
-            if self.kind(node) == HirKind::Closure {
+            if matches!(self.kind(node), HirKind::Closure | HirKind::Array) {
                 return true;
             }
             node = match self.out.hir.node(node).form {
@@ -97,7 +113,7 @@ impl Binder<'_> {
         let contextual = arguments.is_some_and(|args| {
             self.children(args)
                 .into_iter()
-                .any(|arg| self.direct_lambda(arg))
+                .any(|arg| self.direct_contextual_argument(arg))
         });
         if !contextual {
             for part in arguments.into_iter().chain(trailing) {

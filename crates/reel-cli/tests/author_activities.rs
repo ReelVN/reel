@@ -24,11 +24,11 @@ use std::sync::Arc;
 const SOURCE: &str = r##"fn main() {
     let card = stack(width: 20, height: 20, x: 10, y: 10, background: "#ff0000");
     stage.replace(card);
-    await run(parallel(
+    await parallel(
         sequence(tween(card, x: 50, y: 30, duration: 1), tween(card, x: 90, y: 50, duration: 1)),
         sequence(tween(card, rotation: 45, duration: 1), repeat(tween(card, rotation: 90, duration: 0.5), times: 2)),
         tween(card, opacity: 0.5, duration: 2)
-    ));
+    ).run();
 }"##;
 
 fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
@@ -557,7 +557,7 @@ fn author_diagnostics_for_transition_task_and_derived_context() {
         (
             r#"fn main() { let value = stage.transition(change: || { stack(); }); await value; }"#,
             DiagnosticCode::TypeMismatch,
-            "await value",
+            "await",
             None,
         ),
         (

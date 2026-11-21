@@ -28,6 +28,9 @@ fn slice() -> TypeHint {
 fn source_rect() -> TypeHint {
     nullable(TypeHint::Tuple(vec![number(); 4]))
 }
+fn corners() -> TypeHint {
+    nullable(TypeHint::Tuple(vec![TypeHint::Tuple(vec![number(); 2]); 4]))
+}
 fn colors() -> TypeHint {
     nullable(TypeHint::Union(vec![
         TypeHint::Array,
@@ -117,6 +120,16 @@ pub(in crate::aside) enum ImageField {
     /// ```
     #[aside(name="sampling",ty=String,default="linear")]
     Sampling,
+    /// Local content points ordered top-left, top-right, bottom-right, bottom-left.
+    /// Warp the fitted source along the top-left to bottom-right diagonal.
+    /// Layout and clipping use the ordinary content box. Use with whole images and ordinary fit.
+    ///
+    /// ```aside
+    /// image("images/card.png", width: 80, height: 100, fit: "stretch",
+    ///       corners: ((12, 0), (76, 8), (80, 96), (2, 100)));
+    /// ```
+    #[aside(name="corners",ty=Any,doc_type=corners(),default=null)]
+    Corners,
 }
 #[derive(Properties)]
 #[expect(

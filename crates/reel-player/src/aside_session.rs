@@ -121,10 +121,11 @@ impl AsideSessionUi {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::HistoryCapture);
         const SLICE_WORK: u32 = 256;
         const MAX_WORK: u32 = 2048;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_micros(750);
+        use reel_ui::util::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_micros(750);
         let mut capture = self.vm.capture_history_begin(self.ui.session()).ok()?;
         let mut remaining = MAX_WORK;
-        while remaining != 0 && std::time::Instant::now() < deadline {
+        while remaining != 0 && Instant::now() < deadline {
             let minimum = capture.required_work();
             if minimum > remaining {
                 break;
@@ -409,6 +410,16 @@ impl AsideSessionUi {
     pub fn with_assets(self, assets: crate::assets::Assets) -> Self {
         let catalogs = self.catalogs();
         self.with_asset_context(assets, catalogs)
+    }
+    /// Supply host fonts before starting the story. An authored `game.configure`
+    /// can replace them with the story's own logical asset paths.
+    pub fn with_default_fonts(mut self, fonts: Vec<String>) -> Self {
+        if !fonts.is_empty() && self.vm.game_settings().fonts.is_empty() {
+            let mut settings = self.vm.game_settings().as_ref().clone();
+            settings.fonts = fonts;
+            self.vm.inherit_game_settings(std::sync::Arc::new(settings));
+        }
+        self
     }
     /// Install assets and their validated language index before driving the story.
     /// The same index follows fresh sessions and save restoration.

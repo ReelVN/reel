@@ -9,7 +9,7 @@ fn layered_motion_reuses_resolved_viewport_images() {
             let picture = image(if i % 2 == 0 { "assets/sun.jpg" } else { "assets/panels.png" },
                 x: (i % 8) * 55, y: (i / 8) * 85, width: 96, height: 96);
             world.add(picture);
-            run(tween(picture, x: (i % 8) * 55 + 80, rotation: 12, opacity: 0.65, duration: 100));
+            tween(picture, x: (i % 8) * 55 + 80, rotation: 12, opacity: 0.65, duration: 100).run();
         }
         stage.replace(world);
         narrator("moving");

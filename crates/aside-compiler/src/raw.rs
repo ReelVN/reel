@@ -61,6 +61,8 @@ pub(crate) enum RawToken {
     OrOr,
     #[token("??")]
     QuestionQuestion,
+    #[token("?")]
+    Question,
     #[token("?.")]
     QuestionDot,
     #[token("?[")]
@@ -157,6 +159,7 @@ impl RawToken {
             Self::AndAnd => SyntaxKind::AndAnd,
             Self::OrOr => SyntaxKind::OrOr,
             Self::QuestionQuestion => SyntaxKind::QuestionQuestion,
+            Self::Question => SyntaxKind::Question,
             Self::QuestionDot => SyntaxKind::QuestionDot,
             Self::QuestionBracket => SyntaxKind::QuestionBracket,
             Self::QuestionParen => SyntaxKind::QuestionParen,

@@ -18,6 +18,7 @@ impl Parser<'_> {
             source: self.source,
             tokens: self.tokens,
             cursor: self.cursor,
+            split_token: self.split_token,
             builder: GreenNodeBuilder::new(),
             import_offsets: Vec::new(),
             diagnostics: Vec::new(),

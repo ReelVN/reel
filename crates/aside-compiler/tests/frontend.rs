@@ -246,7 +246,7 @@ fn exact_operator_precedence_associativity_and_nonassociative_groups() {
 fn declarations_patterns_imports_loops_and_exceptions_are_real_nodes() {
     let source = r#"pub use reel::{stage as scene, ui::{text, button},};
 use game::main as entry;
-use reel::prelude::*;
+use reel::*;
 class Child: Parent {
     let id: int;
     let mut data = [];

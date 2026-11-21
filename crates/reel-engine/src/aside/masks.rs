@@ -15,7 +15,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                     parameter.name.as_str(),
                     match parameter.name.as_str() {
                         "source" | "repeat" | "name" => TypeHint::String,
-                        "power" => number(),
+                        "power" | "min" | "max" => number(),
                         _ => scalar.clone(),
                     },
                 )
@@ -50,7 +50,8 @@ aside_host::native_documentation! {
         "reel::mask::multiply";
         /// Raise a scalar mask expression to a finite nonnegative power.
         "reel::mask::pow";
-        /// Clamp a scalar mask expression to min/max, defaulting to zero and one.
+        /// Clamp a mask expression or number between numeric `min` and `max` bounds.
+        /// The bounds default to zero and one.
         "reel::mask::clamp";
         /// Apply smoothstep between edge0 and edge1 to a scalar mask expression.
         "reel::mask::smoothstep";

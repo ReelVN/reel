@@ -248,7 +248,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
         r#"fn main() {
             game.configure(title: "Portable lifecycle", fonts: ["body.ttf", "fallback.ttf"]);
             stage.replace(button(width: 180, height: 60, on_click: |event| {
-                await run(tween(event.target, x: 100, duration: 1));
+                await tween(event.target, x: 100, duration: 1).run();
             }));
         }"#,
         "portable_lifecycle",
@@ -533,34 +533,22 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     };
     reset_session(&mut backend);
 
-    // Exercise the actual library -> game -> library session variants, including
-    // a game assembly error. Every player borrows the same still-live device.
-    for (library, fail) in [(true, false), (false, true), (true, false)] {
+    // Remount after both a normal close and an assembly error. Every player
+    // borrows the same still-live device.
+    for fail in [false, true, false] {
         let configurations = backend.configurations.len();
-        let session = if library {
-            crate::player::session::PlayerSession::Launcher(Box::new(
-                crate::launcher::Launcher::new(
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-                    Assets::directory(Default::default()),
-                    None,
-                    reel_core::wake::WakeSignal::new(|| {}),
-                )
-                .unwrap(),
-            ))
-        } else {
-            crate::player::session::PlayerSession::aside(
-                AsideSessionUi::from_source(
-                    session(),
-                    "fn main() {}",
-                    "replacement",
-                    1,
-                    "main",
-                    "en",
-                    VmLimits::default(),
-                )
-                .unwrap(),
+        let session = crate::player::session::PlayerSession::aside(
+            AsideSessionUi::from_source(
+                session(),
+                "fn main() {}",
+                "replacement",
+                1,
+                "main",
+                "en",
+                VmLimits::default(),
             )
-        };
+            .unwrap(),
+        );
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let mut player = Player::mount(session, &mut backend, &mut host, &Default::default())?;
             if fail {
@@ -569,7 +557,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
             player.close()?;
             Ok(())
         })();
-        assert_eq!(result.is_err(), fail, "library={library}: {result:?}");
+        assert_eq!(result.is_err(), fail, "{result:?}");
         assert_eq!(backend.configurations.len(), configurations + 1);
         assert!(!backend.has_pending());
         reset_session(&mut backend);
@@ -583,7 +571,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         r#"fn main() {
         stage.replace(button(width: 180, height: 60, on_click: |event| {
             event.target.x += 10;
-            await run(tween(event.target, y: 100, duration: 1));
+            await tween(event.target, y: 100, duration: 1).run();
             event.target.enabled = false;
         }));
     }"#,

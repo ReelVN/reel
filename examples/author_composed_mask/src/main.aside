@@ -17,9 +17,7 @@ fn main() {
         }
     );
     await stage.presented(owner: reveal);
-    run(
-        repeat(
+    repeat(
             sequence(tween(reveal, mask_x: 1, duration: 4), tween(reveal, mask_x: 0, duration: 4))
-        ), owner: reveal
-    );
+        ).run(owner: reveal);
 }

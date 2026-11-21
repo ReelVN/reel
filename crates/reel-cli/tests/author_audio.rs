@@ -25,7 +25,7 @@ fn author_audio_source_and_asb_complete_on_native_output() {
         let sound = audio.play("assets/chime.wav", volume: 0);
         if await sound != "Completed" || await sound != "Completed" { throw "native completion"; }
         let music = audio.play("assets/chime.wav", looping: true, volume: 0);
-        pause(music); resume(music); stop(music);
+        music.pause(); music.resume(); music.stop();
         if await music != "Stopped" { throw "native stop"; }
     }"#;
     let checked = reel_cli::check(source, "native_audio.aside").unwrap();

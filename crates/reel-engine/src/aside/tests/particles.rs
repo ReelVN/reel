@@ -12,9 +12,9 @@ fn particle_size_scale_preserves_trajectories_bindings_pause_and_restore_source_
                 size: 20, size_spread: 0, velocity_x: 10,
                 size_curve: curve([{time: 0, value: 0}, {time: 1, value: 1}]));
             narrator("original");
-            state.scale = 0.5; pause(active);
+            state.scale = 0.5; active.pause();
             narrator("half");
-            resume(active); run(tween(p, size_scale: 0, duration: 1));
+            active.resume(); tween(p, size_scale: 0, duration: 1).run();
             narrator("shrinking");
             p.remove();
             let mut cancelled = false;
@@ -75,8 +75,8 @@ fn particle_envelope_radial_motion_prewarm_pause_and_restore() {
                 angle: 180, angle_spread: 180, spin_spread: 0,
                 size: 10, size_spread: 0,
                 size_curve: curve([{time: 0, value: 0}, {time: 0.5, value: 1}, {time: 1, value: 0}]));
-            narrator("running"); pause(active);
-            narrator("paused"); resume(active);
+            narrator("running"); active.pause();
+            narrator("paused"); active.resume();
             narrator("resumed"); p.remove();
             narrator("retired");
         }"#;
@@ -184,8 +184,8 @@ fn particle_fade_publishes_middle_frames_without_restarting_owner_maintenance() 
         let owner=stack();
         stage.replace(stack() {p; owner;});
         emit(p,burst:2,lifetime:3,velocity_x:100,velocity_y:0,spread_x:0,spread_y:0);
-        let paused=emit(p,owner:owner);pause(paused);
-        run(tween(p,opacity:0,duration:2));
+        let paused=emit(p,owner:owner);paused.pause();
+        tween(p,opacity:0,duration:2).run();
         await stage.presented();
         narrator("middle frame accepted");
         owner.remove();
@@ -235,7 +235,7 @@ fn restored_paused_particle_owner_retires_without_advancing_time() {
         let old=stack();old.remove();
         let p=particles("spark.png");stage.replace(p);
         let owner=stack();
-        let flight=emit(p,owner:owner);pause(flight);
+        let flight=emit(p,owner:owner);flight.pause();
         narrator("save");
         owner.remove();
         let mut cancelled=false;
@@ -289,22 +289,22 @@ fn particles_source_asb_seed_pause_overlap_and_retirement() {
         let first = emit(snow, burst:0, rate:40, lifetime:5);
         let consumer = spawn(|| await first); consumer.cancel();
         narrator("running");
-        pause(first);
+        first.pause();
         narrator("paused");
-        resume(first);
+        first.resume();
         narrator("resumed");
         let second = emit(snow, burst:0, rate:40, lifetime:5, duration:1);
         narrator("overlapping");
-        stop(first);
+        first.stop();
         if await first != "Stopped" || await first != "Stopped" { throw "stop first"; }
         if await second != "Completed" { throw "finite"; }
         let infinite = emit(snow, burst:0, rate:40);
         let mut rejected = false;
-        try { finish(infinite); } catch e { rejected = true; }
+        try { infinite.finish(); } catch e { rejected = true; }
         if !rejected { throw "infinite finish"; }
-        stop(infinite);
+        infinite.stop();
         if await infinite != "Stopped" { throw "stop"; }
-        let ended = emit(snow, duration: 1); finish(ended);
+        let ended = emit(snow, duration: 1); ended.finish();
         if await ended != "Completed" { throw "finish"; }
         let owner = stack();
         snow.remove();
@@ -371,7 +371,7 @@ fn particles_clock_slices_storage_and_tween_coexist_without_particle_objects() {
             let snow = root.add(particles("snow.png", seed: i));
             emit(snow, burst:0, rate:10000, lifetime:2);
         }
-        run(tween(root, x: 10, duration: 2000000));
+        tween(root, x: 10, duration: 2000000).run();
         narrator("running");
     }"#;
     let (mut session, mut vm) = models::prepared(code, false);
@@ -450,7 +450,7 @@ fn particles_stop_during_a_partial_clock_pass_keeps_the_pending_prefix_exact() {
         let first = emit(snow, burst:0, rate:4, lifetime:0.5, duration:0.25);
         let second = emit(snow, burst:0, rate:4, lifetime:0.5, duration:0.25);
         let third = emit(snow, burst:0, rate:4, lifetime:0.5, duration:0.25);
-        stop(second);
+        second.stop();
         if await second != "Stopped" { throw "stop result"; }
         if await first != "Completed" || await third != "Completed" { throw "completion"; }
         stage.replace(text("done"));
@@ -469,7 +469,7 @@ fn particles_stop_during_a_partial_clock_pass_keeps_the_pending_prefix_exact() {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     let package = vm.vm.program().package();
                     if package.symbols[package.natives[ticket.native.index()].symbol.index()]
-                        == "reel::stop"
+                        == "reel::activity::stop"
                     {
                         break ticket;
                     }
@@ -518,7 +518,7 @@ fn particle_scope_and_owner_cancel_only_their_batches() {
         try { await a; } catch e { cancelled=true; }
         if !cancelled { throw "owner survived"; }
         narrator("survivor");
-        finish(b);
+        b.finish();
         if await b != "Completed" || await b != "Completed" { throw "terminal"; }
         stage.replace(text("done"));
     }"#;
@@ -546,12 +546,12 @@ fn particle_snapshot_restores_overlap_pause_and_next_seed() {
         let p=particles("spark.png", seed:42,width:100,height:30); stage.replace(p);
         let a=emit(p,burst:80,lifetime:1,lifetime_spread:0.5,size_end:0);
         let b=emit(p,burst:3,rate:10,duration:0.5,lifetime:2,velocity_x:100);
-        pause(b);
+        b.pause();
         narrator("save");
         p.width=300;
         emit(p,burst:11,lifetime:1,lifetime_spread:0.2,x:-2.5,y:12);
         narrator("third");
-        stop(a); resume(b);
+        a.stop(); b.resume();
         if await b != "Completed" { throw "restored terminal"; }
         stage.replace(text("done"));
     }"#;
@@ -718,7 +718,7 @@ fn particle_repeated_small_emissions_cost_and_retirement() {
                     velocity_y:100,acceleration_y:800,size_end:0);
             }
             i+=1;
-            await run(delay(0.008));
+            await delay(0.008).run();
         }
         narrator("drain");
     }"#;

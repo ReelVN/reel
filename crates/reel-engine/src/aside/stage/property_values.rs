@@ -1,5 +1,9 @@
 //! Author property decoding and validation.
 use super::*;
+use reel_ui::{
+    frame::BlendMode,
+    peniko::{Compose, Mix},
+};
 
 #[cfg(test)]
 #[path = "property_values_tests.rs"]
@@ -118,7 +122,8 @@ pub(in crate::aside) fn read_source_rect(
             "image source_rect requires null or a finite (x, y, width, height) tuple with positive dimensions and finite float32 endpoints",
         )
     };
-    if heap.info(value)?.kind != ObjectKind::Tuple || heap.sequence_len(value)? != 4 {
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::Tuple || info.len != 4 {
         return Err(invalid());
     }
     let mut values = [0.; 4];
@@ -153,6 +158,69 @@ pub(in crate::aside) fn valid_source_rect(rect: reel_ui::kurbo::Rect) -> bool {
         ]
         .iter()
         .all(|n| (*n as f32).is_finite())
+}
+
+pub(super) fn read_image_corners(
+    heap: &Heap,
+    value: Value,
+) -> Result<Option<[reel_ui::kurbo::Point; 4]>, AdapterError> {
+    use reel_ui::kurbo::Point;
+    if value.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    let invalid =
+        || AdapterError::Input("image corners require four finite (x, y) points in outline order");
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::Tuple || info.len != 4 {
+        return Err(invalid());
+    }
+    let mut corners = [Point::ORIGIN; 4];
+    for (index, corner) in corners.iter_mut().enumerate() {
+        let pair = heap.sequence_get(value, index as u32)?;
+        let info = heap.info(pair)?;
+        if info.kind != ObjectKind::Tuple || info.len != 2 {
+            return Err(invalid());
+        }
+        let component = |index| {
+            let value = heap.sequence_get(pair, index)?;
+            value
+                .as_float()
+                .or_else(|| value.as_int().map(|n| n as f64))
+                .filter(|number| (*number as f32).is_finite())
+                .ok_or_else(invalid)
+        };
+        *corner = Point::new(component(0)?, component(1)?);
+    }
+    let turns: [f64; 4] = std::array::from_fn(|i| {
+        let a = corners[(i + 1) % 4] - corners[i];
+        let b = corners[(i + 2) % 4] - corners[(i + 1) % 4];
+        a.cross(b)
+    });
+    if turns.iter().any(|&turn| turn < 0.) && turns.iter().any(|&turn| turn > 0.) {
+        return Err(invalid());
+    }
+    Ok(Some(corners))
+}
+
+pub(super) fn image_corners(
+    heap: &Heap,
+    value: Value,
+    slice: Option<reel_ui::kurbo::Insets>,
+    repeat: [bool; 2],
+    previous: Option<&std::sync::Arc<[reel_ui::kurbo::Point; 4]>>,
+) -> Result<Option<std::sync::Arc<[reel_ui::kurbo::Point; 4]>>, AdapterError> {
+    let corners = read_image_corners(heap, value)?;
+    if corners.is_some() && (slice.is_some() || repeat != [false; 2]) {
+        return Err(AdapterError::Input(
+            "image corners require ordinary image fit",
+        ));
+    }
+    Ok(corners.map(|points| {
+        previous
+            .filter(|old| old.as_ref() == &points)
+            .cloned()
+            .unwrap_or_else(|| std::sync::Arc::new(points))
+    }))
 }
 
 pub(in crate::aside) fn read_slice(
@@ -352,6 +420,9 @@ pub(in crate::aside) fn validate_image_property(
         13 => read_sampling(heap, value)
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
+        14 => read_image_corners(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
         _ => validate_layout_property(heap, index - registry::IMAGE_PREFIX.len() as u32, value),
     }
 }
@@ -518,19 +589,8 @@ pub(in crate::aside) fn invert(value: Value) -> Result<f64, AdapterError> {
 pub(in crate::aside) fn validate_invert(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(invert(value))
 }
-pub(in crate::aside) fn blend(
-    heap: &Heap,
-    value: Value,
-) -> Result<reel_ui::frame::BlendMode, HeapError> {
-    use reel_ui::frame::BlendMode;
-    use reel_ui::peniko::{Compose, Mix};
-    let info = heap.info(value)?;
-    if info.kind != ObjectKind::String || info.len > 11 {
-        return Err(HeapError::TypeMismatch);
-    }
-    let mut bytes = [0; 11];
-    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
-    Ok(match &bytes[..info.len as usize] {
+text::word_options! {
+    BLEND_CHOICES, blend_word -> BlendMode {
         b"normal" => BlendMode::default(),
         b"add" => reel_ui::peniko::BlendMode::new(Mix::Normal, Compose::PlusLighter).into(),
         b"subtract" => BlendMode::Subtract,
@@ -543,8 +603,16 @@ pub(in crate::aside) fn blend(
         b"difference" => Mix::Difference.into(),
         b"soft_light" => Mix::SoftLight.into(),
         b"linear_burn" => BlendMode::LinearBurn,
-        _ => return Err(HeapError::TypeMismatch),
-    })
+    }
+}
+pub(in crate::aside) fn blend(heap: &Heap, value: Value) -> Result<BlendMode, HeapError> {
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 11 {
+        return Err(HeapError::TypeMismatch);
+    }
+    let mut bytes = [0; 11];
+    text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
+    blend_word(&bytes[..info.len as usize]).ok_or(HeapError::TypeMismatch)
 }
 pub(in crate::aside) fn validate_blend(heap: &Heap, value: Value) -> Result<(), HeapError> {
     blend(heap, value).map(|_| ())
@@ -742,6 +810,13 @@ pub(in crate::aside) fn validate_reveal(_: &Heap, value: Value) -> Result<(), He
     }
 }
 
+text::word_options! {
+    WRITING_MODE_CHOICES, writing_mode_word -> reel_ui::WritingMode {
+        b"horizontal-tb" => reel_ui::WritingMode::HorizontalTb,
+        b"vertical-rl" => reel_ui::WritingMode::VerticalRl,
+        b"vertical-lr" => reel_ui::WritingMode::VerticalLr,
+    }
+}
 pub(in crate::aside) fn writing_mode(
     heap: &Heap,
     value: Value,
@@ -752,12 +827,7 @@ pub(in crate::aside) fn writing_mode(
     }
     let mut bytes = [0; 13];
     text::read_fixed_bytes(heap, value, &mut bytes[..info.len as usize])?;
-    match &bytes[..info.len as usize] {
-        b"horizontal-tb" => Ok(reel_ui::WritingMode::HorizontalTb),
-        b"vertical-rl" => Ok(reel_ui::WritingMode::VerticalRl),
-        b"vertical-lr" => Ok(reel_ui::WritingMode::VerticalLr),
-        _ => Err(HeapError::TypeMismatch),
-    }
+    writing_mode_word(&bytes[..info.len as usize]).ok_or(HeapError::TypeMismatch)
 }
 pub(in crate::aside) fn validate_writing_mode(heap: &Heap, value: Value) -> Result<(), HeapError> {
     writing_mode(heap, value).map(|_| ())

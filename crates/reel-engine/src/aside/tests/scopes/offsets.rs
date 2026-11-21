@@ -65,15 +65,15 @@ fn scope_offset_sums_after_overrides_preserves_base_bindings_and_restores() {
 fn scope_offset_motion_is_independent_and_exit_exposes_continuing_base_motion() {
     let source = r#"fn opening() {
         let panel=text("offset",x:0);stage.replace(panel);
-        let moving=run(tween(panel,x:100,duration:10));
+        let moving=tween(panel,x:100,duration:10).run();
         scope(body: |s| {
             let shake=s.offset(panel,x:10,y:-3);
-            let shaking=run(tween(shake,x:30,duration:10));
+            let shaking=tween(shake,x:30,duration:10).run();
             narrator("both moving");
             if panel.x!=50 || shake.x!=20 {throw "independent motion";}
         });
         narrator("base moving");
-        finish(moving);await moving;
+        moving.finish();await moving;
         narrator("base finished");
     }"#;
     for encoded in [false, true] {
@@ -109,13 +109,13 @@ fn scope_offset_rejects_invalid_fields_and_keeps_shared_source_conflicts() {
             let second=s.offset(panel,x:bind(source.x));
             try{first.width=3;}catch error{rejected+=1;}
             try{tween(first,opacity:0,duration:1);}catch error{rejected+=1;}
-            let moving=run(tween(first,x:40,duration:4));
+            let moving=tween(first,x:40,duration:4).run();
             source.x=10;
             if await moving!="Stopped" {throw "source conflict";}
-            let a=run(tween(first,x:20,duration:4));
-            let b=run(tween(second,x:30,duration:4));
+            let a=tween(first,x:20,duration:4).run();
+            let b=tween(second,x:30,duration:4).run();
             if await a!="Stopped" {throw "shared source writer";}
-            stop(b);await b;
+            b.stop();await b;
             if rejected!=4 || first.x!=10 || second.x!=10 {throw "offset validation";}
             narrator("two bound layers");
         });
@@ -137,7 +137,7 @@ fn scope_offset_fault_cancel_and_target_retirement_share_layer_cleanup() {
         let state={layer:null,motion:null};let ready=completion();
         let task=spawn(||scope(body:|s|{
             state.layer=s.offset(panel,x:8);
-            state.motion=run(tween(state.layer,x:20,duration:10),owner:root);
+            state.motion=tween(state.layer,x:20,duration:10).run(owner:root);
             ready.resolve();await completion();
         }));
         await ready;narrator("save");

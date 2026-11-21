@@ -281,25 +281,38 @@ impl<T: Wire> Wire for Option<T> {
 impl<T: Wire> Wire for Vec<T> {
     const MIN: usize = 4;
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
-        w.capacity(
-            self.len(),
-            self.capacity()
-                .checked_mul(size_of::<T>())
-                .ok_or_else(|| Error::new(ErrorKind::Limit, "vector capacity"))?,
-        )?;
-        u32::try_from(self.len())
-            .map_err(|_| Error::new(ErrorKind::Limit, "vector length"))?
-            .put(w)?;
-        for x in self {
-            x.put(w)?;
-        }
-        Ok(())
+        put_vec_with(self, w, |value, writer| value.put(writer))
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         counted_vec(r).map(|(values, _)| values)
     }
 }
+fn put_vec_with<T: Wire>(
+    values: &Vec<T>,
+    w: &mut Writer,
+    mut put: impl FnMut(&T, &mut Writer) -> Result<(), Error>,
+) -> Result<(), Error> {
+    w.capacity(
+        values.len(),
+        values.capacity()
+            .checked_mul(size_of::<T>())
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "vector capacity"))?,
+    )?;
+    u32::try_from(values.len())
+        .map_err(|_| Error::new(ErrorKind::Limit, "vector length"))?
+        .put(w)?;
+    for value in values {
+        put(value, w)?;
+    }
+    Ok(())
+}
 fn counted_vec<T: Wire>(r: &mut Reader<'_>) -> Result<(Vec<T>, usize), Error> {
+    counted_vec_with(r, T::get)
+}
+fn counted_vec_with<T: Wire>(
+    r: &mut Reader<'_>,
+    mut get: impl FnMut(&mut Reader<'_>) -> Result<T, Error>,
+) -> Result<(Vec<T>, usize), Error> {
     let count = r.count::<T>()?;
     let mut out = Vec::new();
     if r.materialize {
@@ -313,7 +326,7 @@ fn counted_vec<T: Wire>(r: &mut Reader<'_>) -> Result<(Vec<T>, usize), Error> {
         )?;
     }
     for _ in 0..count {
-        let x = T::get(r)?;
+        let x = get(r)?;
         if r.materialize {
             out.push(x);
         }

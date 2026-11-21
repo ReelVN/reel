@@ -93,6 +93,10 @@ pub(super) fn validate_program(
     for (i, t) in p.types.iter().enumerate() {
         match t {
             TypeDef::Builtin(_) | TypeDef::StringLiteral(_) => {}
+            TypeDef::Array(item) => {
+                b.work(1)?;
+                check(item.index() < i, ErrorKind::Index, "array element type must refer backwards")?;
+            }
             TypeDef::Record(fields) => {
                 unique_slice(
                     fields,

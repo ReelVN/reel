@@ -47,6 +47,30 @@ impl HistoryLog {
         self.pages.iter().flat_map(|page| page.rows.iter())
     }
 
+    pub(crate) fn voice_paths(&self) -> impl Iterator<Item = (u64, usize, &str)> {
+        self.iter().flat_map(|group| {
+            group.lines().iter().filter_map(|line| {
+                let id = line.id();
+                Some((id.interaction_id().generation(), id.index(), line.voice()?))
+            })
+        })
+    }
+
+    pub(crate) fn restore_voice(&mut self, group: u64, index: usize, path: &str) -> bool {
+        let Some(row) = self.find_interaction(group) else {
+            return false;
+        };
+        let Some(line) = self[row]
+            .lines()
+            .iter()
+            .position(|line| line.id().index() == index && line.voice().is_none())
+        else {
+            return false;
+        };
+        self.edit(row, |group| group.lines[line].voice = Some(Arc::from(path)));
+        true
+    }
+
     /// Read one group by its zero-based position.
     pub fn get(&self, index: usize) -> Option<&HistoryGroup> {
         let (page, row) = self.locate(index)?;
@@ -214,6 +238,10 @@ fn group_bytes(group: &HistoryGroup) -> usize {
                     + line.speaker_name.capacity()
                     + line.content.id.capacity()
                     + line.content.fallback.storage_bytes()
+                    + line
+                        .voice
+                        .as_ref()
+                        .map_or(0, |path| path.len() + 2 * size_of::<usize>())
             })
             .sum::<usize>()
 }

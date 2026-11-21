@@ -113,6 +113,7 @@ struct Entry {
     key: u64,
     initial_batch: Option<u64>,
     started: bool,
+    ducking: f64,
     descriptor: BudgetTicket,
     queue_storage: Option<BudgetTicket>,
 }
@@ -745,6 +746,7 @@ impl MediaBackend for MediaPlayer {
                 key: id.0,
                 initial_batch: None,
                 started: false,
+                ducking: 1.,
                 descriptor,
                 queue_storage: None,
             },
@@ -916,6 +918,18 @@ impl MediaBackend for MediaPlayer {
         self.output_failure();
         Ok(())
     }
+    fn duck_audio(&mut self, id: MediaId, gain: f64, duration: Duration) -> Result<(), String> {
+        let entry = self.entries.get_mut(&id).ok_or("audio duck target has ended")?;
+        if let Phase::Playing(media) = entry.phase {
+            self.service
+                .as_mut()
+                .unwrap()
+                .set_ducking_db(media, db(gain), duration)
+                .map_err(|error| error.to_string())?;
+        }
+        entry.ducking = gain;
+        Ok(())
+    }
     fn group_volume(
         &mut self,
         group: Option<AudioGroup>,
@@ -1047,6 +1061,11 @@ impl MediaBackend for MediaPlayer {
                     sound,
                 }) {
                     Ok(media) => {
+                        if entry.ducking != 1. {
+                            service
+                                .set_ducking_db(media, db(entry.ducking), Duration::ZERO)
+                                .expect("new held activity with validated temporary gain");
+                        }
                         if !entry.request.rate.remaining.is_zero() {
                             service
                                 .set_playback_rate(

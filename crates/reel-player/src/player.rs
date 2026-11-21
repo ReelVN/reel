@@ -43,6 +43,8 @@ pub struct PlayerOptions {
     pub catalogs: crate::localization::CatalogIndex,
     pub media: crate::media::MediaOptions,
     pub title: String,
+    /// Application identity used to associate a Linux window with its desktop entry.
+    pub desktop_id: Option<String>,
     pub locale: String,
     pub logical_size: Option<[u32; 2]>,
     pub canvas_size: Option<[u32; 2]>,
@@ -67,6 +69,7 @@ impl Default for PlayerOptions {
             catalogs: Default::default(),
             media: Default::default(),
             title: "Reel".into(),
+            desktop_id: None,
             locale: "en".into(),
             logical_size: None,
             canvas_size: None,
@@ -369,12 +372,7 @@ where
     }
 
     pub(crate) fn is_diagnostic(&self) -> bool {
-        match self.session {
-            Some(PlayerSession::Aside { .. }) => false,
-            #[cfg(any(feature = "vita", test))]
-            Some(PlayerSession::Launcher(_)) => false,
-            _ => true,
-        }
+        !matches!(self.session, Some(PlayerSession::Aside { .. }))
     }
 
     /// Next story or capture wake in the host's monotonic time domain.
@@ -387,7 +385,7 @@ where
         now: MonoTime,
     ) -> Option<(MonoTime, crate::story_runtime::WakeSource)> {
         use crate::story_runtime::WakeSource;
-        if self.captures.busy() {
+        if !self.closing && self.captures.busy() {
             return Some((
                 MonoTime(now.0.saturating_add(8_000_000)),
                 WakeSource::Capture,
@@ -397,6 +395,9 @@ where
             .session
             .as_ref()
             .and_then(|session| session.wake_deadline(now, self.frame_production()));
+        if self.closing {
+            return story;
+        }
         let animation = self
             .ui_animation_deadline(now)
             .map(|deadline| (deadline, WakeSource::UiAnimation));
@@ -889,6 +890,12 @@ where
         {
             self.invalidate();
         }
+    }
+
+    /// Convert a mouse action in physical canvas coordinates into a pointer event.
+    pub fn pointer_input(&mut self, position: [f64; 2], kind: PointerKind) -> Result<(), Error> {
+        self.pointer = reel_ui::dpi::PhysicalPosition::new(position[0], position[1]);
+        self.pointer_event(kind)
     }
 
     pub(crate) fn pointer_event(&mut self, kind: PointerKind) -> Result<(), Error> {

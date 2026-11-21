@@ -18,14 +18,14 @@ pub(super) fn run(options: &Run, directory: &Path, manifest: &Manifest) -> Resul
     let app = storage.join("ux0/app").join(VITA_PLAYER_TITLE_ID);
     ensure!(
         app.join("eboot.bin").is_file(),
-        "install the official reel-vita VPK into Vita3K first"
+        "install the VPK from reel-dev perf runtime into Vita3K first"
     );
     if let Some(runtime) = &options.runtime {
         ensure!(
             runtime.join("eboot.bin").is_file(),
             "runtime requires eboot.bin"
         );
-        for name in ["eboot.bin", "launcher.rpk", "sce_sys", "licenses", "module"] {
+        for name in ["eboot.bin", "sce_sys", "licenses", "module"] {
             let source = runtime.join(name);
             if source.is_dir() {
                 copy_tree(&source, &app.join(name))?;

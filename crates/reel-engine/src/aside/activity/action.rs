@@ -75,20 +75,10 @@ pub(in crate::aside) fn compose(
     types: &super::super::source::HostTypes,
     ticket: HostTicket,
     kind: Kind,
-    pair: bool,
     budget: u32,
 ) -> Result<u32, AdapterError> {
     let (children, mut index, mut seconds) = match ticket.input {
-        NativeInput::Entry => {
-            let children = if pair {
-                let args = vm.host_arguments(ticket)?;
-                let pair = [args[0], args[1]];
-                vm.heap_mut().alloc_array(&pair)?
-            } else {
-                vm.host_arguments(ticket)?[0]
-            };
-            (children, 0, 0.0_f64)
-        }
+        NativeInput::Entry => (vm.host_arguments(ticket)?[0], 0, 0.0_f64),
         NativeInput::Continue { .. } => {
             let saved = vm.host_continuation(ticket)?;
             (

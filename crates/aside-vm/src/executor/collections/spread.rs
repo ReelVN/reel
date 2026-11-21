@@ -86,7 +86,15 @@ impl Vm {
         } else {
             0
         };
-        if !meter.take(0, 2, extra) {
+        let contract = if !changed
+            && work.index < work.len
+            && matches!(work.kind, CaptureKind::Elements | CaptureKind::Children)
+        {
+            self.heap.array_item_work(target)?
+        } else {
+            0
+        };
+        if !meter.take(0, 2 + contract, extra) {
             return Ok(false);
         }
         if changed {

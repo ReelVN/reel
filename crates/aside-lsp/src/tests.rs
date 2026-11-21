@@ -49,6 +49,7 @@ fn main(selection: Menu) {
             &uri(),
             position(source, "Menu.Load(", true),
             Encoding::Utf16,
+            &MarkupKind::PlainText,
         )
         .unwrap()
         .unwrap();
@@ -232,6 +233,7 @@ fn callable_types_offer_real_signature_positions_without_inventing_parameter_nam
             &uri(),
             position(source, "callback(1,", true),
             Encoding::Utf16,
+            &MarkupKind::PlainText,
         )
         .unwrap()
         .unwrap();
@@ -266,6 +268,36 @@ fn callable_types_offer_real_signature_positions_without_inventing_parameter_nam
             .unwrap()
             .is_some()
     );
+
+    let literal = "\"😀 very long parameter value\"";
+    let types = std::iter::repeat_n(literal, 5)
+        .collect::<Vec<_>>()
+        .join(",");
+    let wrapped =
+        format!("fn invoke(callback:fn({types})->string){{callback({literal},{literal});}}");
+    workspace.open(uri(), 2, wrapped.clone()).unwrap();
+    let help = workspace
+        .signature(
+            &uri(),
+            position(&wrapped, &format!("callback({literal},"), true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
+        .unwrap()
+        .unwrap();
+    let signature = &help.signatures[0];
+    assert!(signature.label.starts_with("fn callback(\n"));
+    assert_eq!(help.active_parameter, Some(1));
+    let label: Vec<_> = signature.label.encode_utf16().collect();
+    for parameter in signature.parameters.as_ref().unwrap() {
+        let ParameterLabel::LabelOffsets([start, end]) = parameter.label else {
+            panic!("unnamed callable parameter lost its offsets")
+        };
+        assert_eq!(
+            String::from_utf16(&label[start as usize..end as usize]).unwrap(),
+            literal
+        );
+    }
 }
 
 pub(crate) fn project_options() -> ServerOptions {
@@ -327,7 +359,12 @@ fn local_shadowing_docs_signature_and_recovery_use_original_scope() {
     assert!(hover.contains("Adds a value."));
     assert!(hover.contains("step: int = 2"));
     let signature = workspace
-        .signature(&uri(), position(source, "step:3", true), Encoding::Utf16)
+        .signature(
+            &uri(),
+            position(source, "step:3", true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(signature.active_parameter, Some(1));
@@ -521,7 +558,12 @@ fn source_class_members_and_bound_method_parameters() {
     assert!(items.iter().any(|item| item.label == "value"));
     assert!(items.iter().any(|item| item.label == "add"));
     let signature = workspace
-        .signature(&uri(), position(source, "amount:3", true), Encoding::Utf16)
+        .signature(
+            &uri(),
+            position(source, "amount:3", true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
         .unwrap()
         .unwrap();
     assert!(!signature.signatures[0].label.contains("self"));
@@ -573,7 +615,12 @@ fn imported_class_constructor_members_defaults_and_reexports_share_identity() {
     assert!(hover.contains("amount: int = 2"), "{hover}");
     assert!(!hover.contains("self"));
     let signature = workspace
-        .signature(&main, position(source, "start:5", true), Encoding::Utf16)
+        .signature(
+            &main,
+            position(source, "start:5", true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
         .unwrap()
         .unwrap();
     assert!(signature.signatures[0].label.contains("start: int = 4"));
@@ -637,7 +684,12 @@ fn cross_module_inheritance_reuses_constructor_and_completion_declarations() {
         "{diagnostics:?}"
     );
     let signature = workspace
-        .signature(&main, position(source, "count:3", true), Encoding::Utf16)
+        .signature(
+            &main,
+            position(source, "count:3", true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
         .unwrap()
         .unwrap();
     assert!(
@@ -727,7 +779,12 @@ fn cross_module_inheritance_reuses_constructor_and_completion_declarations() {
         )
         .unwrap();
     let edited = workspace
-        .signature(&main, position(source, "count:3", true), Encoding::Utf16)
+        .signature(
+            &main,
+            position(source, "count:3", true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
         .unwrap()
         .unwrap();
     assert!(
@@ -740,7 +797,12 @@ fn cross_module_inheritance_reuses_constructor_and_completion_declarations() {
     );
     workspace.close(&base_uri);
     let restored = workspace
-        .signature(&main, position(source, "count:3", true), Encoding::Utf16)
+        .signature(
+            &main,
+            position(source, "count:3", true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
         .unwrap()
         .unwrap();
     assert!(
@@ -945,6 +1007,7 @@ fn native_types_keep_nominal_members_readonly_defaults_and_definition_documents(
                 range: aside_compiler::TextRange::new(start.into(), (start + 5).into()),
             }),
             parameter_defaults: BTreeMap::new(),
+            argument_choices: BTreeMap::new(),
             property_parameters: Vec::new(),
             parameter_documentation: BTreeMap::new(),
             property_groups: Vec::new(),
@@ -1076,7 +1139,12 @@ fn nested_arguments_and_named_completion_use_direct_binding_positions() {
     let mut workspace = Workspace::new(ServerOptions::default());
     workspace.open(uri(), 1, source.into()).unwrap();
     let signature = workspace
-        .signature(&uri(), position(source, "third:4", true), Encoding::Utf16)
+        .signature(
+            &uri(),
+            position(source, "third:4", true),
+            Encoding::Utf16,
+            &MarkupKind::PlainText,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(signature.active_parameter, Some(2));
@@ -1159,7 +1227,8 @@ fn named_callable_and_await_protocols_keep_real_result_types() {
             .signature(
                 &uri(),
                 position(source, "wait:false", true),
-                Encoding::Utf16
+                Encoding::Utf16,
+                &MarkupKind::PlainText,
             )
             .unwrap()
             .unwrap()

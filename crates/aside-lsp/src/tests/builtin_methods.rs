@@ -139,7 +139,12 @@ fn primitive_methods_share_completion_signature_hover_and_readonly_definitions()
         );
         assert!(hover.contains("first index"), "{hover}");
         let signature = workspace
-            .signature(&uri(), position(&source, "value:2", true), Encoding::Utf16)
+            .signature(
+                &uri(),
+                position(&source, "value:2", true),
+                Encoding::Utf16,
+                &MarkupKind::PlainText,
+            )
             .unwrap()
             .unwrap();
         assert!(signature.signatures[0].label.contains("value: any"));

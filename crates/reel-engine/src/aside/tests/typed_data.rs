@@ -47,6 +47,67 @@ fn capture(vm: &mut SessionVm, value: Value, registry: &Registry) -> Arc<TypedDo
     decoded
 }
 
+#[test]
+fn typed_array_contract_survives_rebuild_without_its_source_annotation() {
+    let first = r#"
+        class Progress {
+            let mut winners: any = null;
+            let mut alias: any = null;
+        }
+        fn opening() {
+            let progress = Progress();
+            let winners: array<"sayori" | "natsuki" | "yuri"> = ["sayori", "sayori", "natsuki"];
+            progress.winners = winners;
+            progress.alias = winners;
+            persistent.write("fixture", progress);
+        }
+    "#;
+    let second = r#"
+        class Progress {
+            let mut winners: any = null;
+            let mut alias: any = null;
+            let new_scores: array<int> = [1, 2];
+        }
+        fn opening() { persistent.write("current", Progress); }
+    "#;
+    let (_, mut old, _, value) = persistent::pending_write(first, true);
+    let class = Registry::instance_class(old.vm.heap(), value).unwrap();
+    let source_registry = registry(&mut old, class, Identities::default());
+    let document = capture(&mut old, value, &source_registry);
+    let (_, mut current, _, class) = persistent::pending_write_version(second, true, 2);
+    let current_registry = registry(&mut current, class, Identities::default());
+    let owner = current.root_owner;
+    let mut restore = TypedRestore::new(current.vm.heap_mut(), owner, document).unwrap();
+    while !restore
+        .step(
+            current.vm.heap_mut(),
+            &current_registry,
+            &NoReferences,
+            1,
+            1,
+        )
+        .unwrap()
+    {
+        collect(&mut current);
+    }
+    let root = restore.value_root(current.vm.heap_mut(), owner).unwrap();
+    let value = current.vm.heap().root_value(root).unwrap();
+    let winners = field(&current, value, "winners");
+    let alias = field(&current, value, "alias");
+    let scores = field(&current, value, "new_scores");
+    assert!(winners.same_bits(alias));
+    let heap = current.vm.heap_mut();
+    assert_eq!(heap.sequence_get(scores, 1).unwrap().as_int(), Some(2));
+    assert_eq!(heap.sequence_len(winners).unwrap(), 3);
+    assert_eq!(
+        heap.array_push(alias, Value::int(12)),
+        Err(aside_vm::HeapError::TypeMismatch)
+    );
+    let another_winner = heap.alloc_string("natsuki").unwrap();
+    heap.array_push(alias, another_winner).unwrap();
+    assert_eq!(heap.sequence_len(winners).unwrap(), 4);
+}
+
 const A: &str = r#"
     let calls={count:0};
     class Profile {

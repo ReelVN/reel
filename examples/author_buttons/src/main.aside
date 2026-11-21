@@ -11,7 +11,7 @@ fn main() {
             "Move",
             |event| {
                 event.target.enabled = false;
-                await run(tween(caption, x: 120, duration: 0.4));
+                await tween(caption, x: 120, duration: 0.4).run();
                 caption.value = "Arrived";
                 event.target.enabled = true;
             }

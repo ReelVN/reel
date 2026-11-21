@@ -5,7 +5,6 @@ pub mod maintenance;
 pub mod performance;
 pub mod process;
 pub mod render_cost;
-pub mod vita;
 
 use std::path::{Path, PathBuf};
 

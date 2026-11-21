@@ -561,6 +561,18 @@ impl AudioActivityService {
         e.volume_db = db;
         Ok(())
     }
+    /// Apply temporary gain without changing base volume or its current ramp.
+    pub fn set_ducking_db(
+        &mut self,
+        id: MediaId,
+        db: f32,
+        duration: Duration,
+    ) -> Result<(), AudioError> {
+        if let Ok(entry) = self.live_mut(id) {
+            entry.playback.set_ducking_db(db, duration)?;
+        }
+        Ok(())
+    }
     pub fn set_group_volume_db(
         &mut self,
         group: Option<AudioGroup>,

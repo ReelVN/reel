@@ -59,7 +59,7 @@ fn continuous_clock_settles_sliced_derivations_and_restores_a_pending_batch() {
         }
         stage.replace(root);
         narrator("running");
-        stop(timer);
+        timer.stop();
         narrator("stopped");
     }"#;
     for encoded in [false, true] {

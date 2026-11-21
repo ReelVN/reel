@@ -877,17 +877,17 @@ impl PaintCtx<'_> {
         self.widget_state.image_source_rect = rect;
     }
 
-    /// Record one image rectangle and retain its actual resource for this draw.
+    /// Record one image shape and retain its actual resource for this draw.
     /// `transform` maps geometry into widget coordinates; `source_transform`
     /// maps that geometry into logical source pixels, including collapsed axes.
     /// The current source window is retained per draw, so tiles can translate
     /// a shared original-image crop into each resource's own pixel coordinates.
     /// The frame snapshot must also admit the resource. Other draws are unchanged.
-    pub fn draw_resource_image<S: crate::imaging::PaintSink + ?Sized>(
+    pub fn draw_resource_image<'a, S: crate::imaging::PaintSink + ?Sized>(
         &mut self,
-        painter: &mut crate::imaging::Painter<'_, S>,
+        painter: &'a mut crate::imaging::Painter<'_, S>,
         resource: &crate::resources::ResourceLease,
-        bounds: Rect,
+        shape: impl crate::imaging::PaintShape<'a>,
         transform: Affine,
         source_transform: Affine,
         sampler: peniko::ImageSampler,
@@ -901,7 +901,7 @@ impl PaintCtx<'_> {
                 sprites: None,
             });
         painter
-            .fill(bounds, peniko::Color::WHITE)
+            .fill(shape, peniko::Color::WHITE)
             .transform(transform)
             .brush_transform(Some(source_transform))
             .draw();

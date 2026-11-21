@@ -75,7 +75,7 @@ impl Vm {
         let buffer = if info.kind == ObjectKind::Table && matches!(call.method, Builtin::Clear) {
             self.heap.alloc_table()
         } else {
-            self.heap.alloc_array(&[])
+            self.heap.alloc_array_like(receiver)
         }
         .map_err(heap_fault)?;
         self.put(s.env, 2, buffer).map_err(vm_fault)?;
@@ -121,6 +121,7 @@ impl Vm {
     ) -> Result<bool, VmError> {
         let receiver = self.value(s.env, 1)?;
         let buffer = self.value(s.env, 2)?;
+        let item_work = self.heap.array_item_work(buffer)?;
         let changed = self.heap.info(receiver)?.content_version != work.receiver_version
             || if let Some(version) = work.source_version {
                 self.heap
@@ -137,7 +138,7 @@ impl Vm {
             if count > 1
                 && meter.take(
                     0,
-                    6 + u64::from(count),
+                    6 + u64::from(count) + item_work,
                     Values::growth_bytes(work.index.into(), count.into()),
                 )
             {
@@ -178,7 +179,8 @@ impl Vm {
         } else {
             0
         };
-        if !meter.take(0, 6, extra) {
+        let validation = if !changed && work.index < work.len { item_work } else { 0 };
+        if !meter.take(0, 6 + validation, extra) {
             return Ok(false);
         }
         if changed {

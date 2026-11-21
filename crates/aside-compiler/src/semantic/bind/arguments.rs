@@ -129,7 +129,7 @@ impl Binder<'_> {
             return true;
         }
         match &self.out.types[ty.0 as usize] {
-            Type::Any | Type::Named(_) | Type::Array | Type::Tuple(_) => true,
+            Type::Any | Type::Named(_) | Type::Array | Type::TypedArray(_) | Type::Tuple(_) => true,
             Type::Table => allow_table,
             Type::Union(types) => {
                 let count = types.len();
@@ -166,7 +166,10 @@ impl Binder<'_> {
                 self.span(node),
                 "call spread requires array, tuple or table",
             );
-        } else if !matches!(self.out.types[ty.0 as usize], Type::Array | Type::Tuple(_)) {
+        } else if !matches!(
+            self.out.types[ty.0 as usize],
+            Type::Array | Type::TypedArray(_) | Type::Tuple(_)
+        ) {
             self.check(node, RuntimeChecks::TYPE);
         }
     }

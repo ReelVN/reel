@@ -1,0 +1,29 @@
+[package]
+name = "reel-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+aside-compiler = { path = "../aside-compiler" }
+console_error_panic_hook.workspace = true
+reel-core = { path = "../reel-core" }
+reel-engine = { path = "../reel-engine" }
+reel-package = { path = "../reel-package" }
+reel-player = { path = "../reel-player" }
+reel-render = { path = "../reel-render", features = ["wgpu"] }
+reel-ui.workspace = true
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "=0.4.79"
+web-sys = { version = "=0.3.106", features = ["HtmlCanvasElement"] }
+web-time.workspace = true
+wgpu = { version = "=30.0.1", default-features = false, features = ["webgpu", "wgsl"] }
+
+[lints]
+workspace = true

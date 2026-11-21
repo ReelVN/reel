@@ -23,13 +23,13 @@ macro_rules! native_documentation {
     ($vis:vis fn $name:ident { $($(#[doc = $line:expr])+ $($symbol:literal)|+;)* }) => {
         $vis fn $name(symbol: &str) -> Option<&'static str> {
             match symbol {
-                $($($symbol)|+ => Some(concat!($($line, "\n",)+)),)*
+                $($($symbol)|+ => Some($crate::doc_comments!($($line,)+)),)*
                 _ => None,
             }
         }
     };
     ($(#[doc = $line:expr])* $vis:vis const $name:ident;) => {
         $(#[doc = $line])*
-        $vis const $name: &str = concat!($($line, "\n",)*);
+        $vis const $name: &str = $crate::doc_comments!($($line,)*);
     };
 }

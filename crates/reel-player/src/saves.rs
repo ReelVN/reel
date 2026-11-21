@@ -105,6 +105,12 @@ impl RuntimeSaves {
             || self.candidate.is_some()
             || !self.service.is_idle()
     }
+
+    pub(crate) fn needs_local_progress(&self, queued_request: bool) -> bool {
+        self.restore.is_some()
+            || self.candidate.is_some()
+            || ((self.pending.is_some() || queued_request) && self.service.is_idle())
+    }
 }
 pub(crate) struct Candidate {
     pub driver: Box<AsideSessionUi>,

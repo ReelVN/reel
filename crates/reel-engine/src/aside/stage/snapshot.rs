@@ -125,6 +125,8 @@ impl Shape {
                 } else {
                     (get(0)?, get(11)?)
                 };
+                let slice = read_slice(heap, get(2)?)?;
+                let repeat = read_image_repeat(heap, get(4)?, get(2)?)?;
                 NodeKind::Image {
                     source: if self == Self::Video {
                         let source = text::read_string(heap, get(0)?, limit)?;
@@ -140,11 +142,12 @@ impl Shape {
                         source
                     },
                     fit: read_fit(heap, get(1)?)?,
-                    slice: read_slice(heap, get(2)?)?,
+                    slice,
                     slice_scale: nonnegative(get(3)?)?,
-                    repeat: read_image_repeat(heap, get(4)?, get(2)?)?,
+                    repeat,
                     tile_scale: positive(get(5)?)?,
                     corner_colors: read_corner_colors(heap, get(6)?)?,
+                    corners: property_values::image_corners(heap, get(14)?, slice, repeat, None)?,
                     slice_center: boolean(get(7)?)?,
                     adjustment: read_image_adjustment(heap, fields)?,
                     source_rect: read_source_rect(heap, source_rect)?,

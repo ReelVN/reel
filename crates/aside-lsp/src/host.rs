@@ -68,6 +68,9 @@ pub struct HostDeclaration {
     pub definition: Option<HostLocation>,
     /// Source default semantics, keyed by their actual parameter names.
     pub parameter_defaults: BTreeMap<String, ParameterDefault>,
+    /// Accepted literal spellings for dynamically validated native parameters.
+    /// The values are unquoted and do not narrow the compiler's source types.
+    pub argument_choices: BTreeMap<String, Vec<String>>,
     /// Parameters contributed by the real property schema. Hover may summarize
     /// optional entries; completion and signature help retain the full contract.
     pub property_parameters: Vec<String>,

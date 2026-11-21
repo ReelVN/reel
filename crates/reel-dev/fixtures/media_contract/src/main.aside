@@ -7,7 +7,7 @@
 // to resources/fonts/body.ttf and its OFL license beside the packaged font.
 // Export with: reel export --release --resource-target vita --data-only
 // The completion marker is written only after every pause/seek/loop/retire assertion.
-fn wait(seconds: float) { await run(delay(seconds)); }
+fn wait(seconds: float) { await delay(seconds).run(); }
 
 fn page(label: string) {
     game.configure(title: label);
@@ -21,17 +21,17 @@ fn main() {
     game.configure(width: 960, height: 544, fonts: ["fonts/body.ttf"]);
     page("AUDIO / stream, pause, seek, resume");
     let music = audio.play("tone.opus", group: "music", looping: true, volume: 0.2);
-    await audio.at(music, 1.0);
-    pause(music);
+    await music.at(1.0);
+    music.pause();
     wait(0.3);
-    let held = audio.position(music);
+    let held = music.position();
     wait(0.3);
-    if audio.position(music) != held { throw "paused audio advanced"; }
-    audio.seek(music, 6.0);
-    resume(music);
-    await audio.at(music, 7.0);
+    if music.position() != held { throw "paused audio advanced"; }
+    music.seek(6.0);
+    music.resume();
+    await music.at(7.0);
     wait(2.0);
-    if audio.position(music) > 7.5 { throw "audio did not loop"; }
+    if music.position() > 7.5 { throw "audio did not loop"; }
 
     page("AUDIO / concurrent sound and fade");
     let sound = audio.play("tone.opus", start: 0.0, end: 0.5, volume: 0.15, pan: -0.5);
@@ -46,18 +46,18 @@ fn main() {
 
     game.configure(title: "VIDEO / pause, seek, loop, stop");
     let playing = movie.play(looping: true, volume: 0.3);
-    await video.at(playing, 1.0);
-    pause(playing);
+    await playing.at(1.0);
+    playing.pause();
     wait(0.3);
-    let position = video.position(playing);
+    let position = playing.position();
     wait(0.3);
-    if video.position(playing) != position { throw "paused video advanced"; }
-    video.seek(playing, 3.0);
-    resume(playing);
-    await video.at(playing, 3.5);
+    if playing.position() != position { throw "paused video advanced"; }
+    playing.seek(3.0);
+    playing.resume();
+    await playing.at(3.5);
     wait(1.5);
-    if video.position(playing) > 3.9 { throw "video did not loop"; }
-    stop(playing);
+    if playing.position() > 3.9 { throw "video did not loop"; }
+    playing.stop();
     if await playing != "Stopped" { throw "video did not stop"; }
 
     game.configure(title: "VIDEO / silent playback and scene retirement");
@@ -65,7 +65,7 @@ fn main() {
     stage.replace(silent);
     if await silent.play() != "Completed" { throw "silent video did not complete"; }
     let retired = silent.play(looping: true);
-    await video.at(retired, 0.5);
+    await retired.at(0.5);
     page("MEDIA / released; reopening decoder");
     let mut cancelled = false;
     try { await retired; } catch error { cancelled = true; }

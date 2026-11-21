@@ -166,7 +166,7 @@ impl ModelCopy {
         self.reserve()?;
         let target = match info.kind {
             ObjectKind::Table => heap.alloc_table()?,
-            ObjectKind::Array | ObjectKind::Tuple => heap.alloc_array(&[])?,
+            ObjectKind::Array | ObjectKind::Tuple => heap.alloc_array_like(value)?,
             ObjectKind::TextBuffer => heap.alloc_text_buffer("")?,
             ObjectKind::ByteBuffer => heap.alloc_byte_buffer(&[])?,
             ObjectKind::Instance => {

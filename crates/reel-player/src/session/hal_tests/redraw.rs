@@ -285,7 +285,7 @@ fn check_native_scroll_bounce(animated: bool) {
     .replace(
         "/* motion */",
         if animated {
-            "run(tween(background,x:100,duration:1),owner:root);"
+            "tween(background,x:100,duration:1).run(owner:root);"
         } else {
             ""
         },

@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn imported_effect_diagnostic_points_to_its_original_file() {
+    let (_project, root) = project_sources();
+    let source = "use game::helpers::{animate};\ngen fn story() { animate(); yield 0; }";
+    let helper = "pub fn animate() { launch(); }";
+    let file = root.join("helpers.aside");
+    std::fs::write(&file, helper).unwrap();
+    let original = file_uri(&file).unwrap();
+    let main = file_uri(&root.join("main.aside")).unwrap();
+    let mut options = project_options();
+    options.host.globals.push(ExternalSymbol::function(
+        "launch",
+        ExternalSignature {
+            parameters: vec![],
+            result: TypeHint::Null,
+            result_cases: vec![],
+            result_parameter: None,
+            effect: CallEffect::StartsTask,
+            init_safe: Some(false),
+            derived_safe: Some(false),
+        },
+    ));
+    let mut workspace = Workspace::new(options);
+    workspace.open(main.clone(), 1, source.into()).unwrap();
+    let diagnostics = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
+    let report = diagnostics
+        .iter()
+        .find(|results| results.uri == main)
+        .and_then(|results| results.diagnostics.first())
+        .unwrap();
+    let related = &report.related_information.as_ref().unwrap()[0];
+    assert_eq!(related.location.uri, original);
+    assert_eq!(
+        related.location.range.start,
+        position(helper, "launch", false)
+    );
+
+    workspace
+        .open(original, 1, "pub fn animate() {}".into())
+        .unwrap();
+    let results = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
+    assert!(results.iter().all(|file| file.diagnostics.is_empty()));
+}
+
+#[test]
 fn generator_keywords_follow_function_and_cleanup_boundaries() {
     for (source, yielded, awaited) in [
         ("gen fn values(){let item = ", true, false),
@@ -341,16 +385,16 @@ fn type_and_named_argument_completion_keep_their_language_boundaries() {
             .position(source, source.len(), Encoding::Utf16)
             .unwrap();
         let items = workspace.complete(&main, cursor, Encoding::Utf16).unwrap();
-        for name in ["int", "string", "Map", "Future", "Actor", "Local", "fn"] {
+        for name in ["int", "string", "table", "Future", "Actor", "Local", "fn"] {
             assert!(
                 items.iter().any(|item| item.label == name),
                 "missing {name} in {source:?}: {items:?}"
             );
         }
         assert!(
-            !items
-                .iter()
-                .any(|item| ["value", "main", "return", "let"].contains(&item.label.as_str())),
+            !items.iter().any(
+                |item| ["value", "main", "return", "let", "Map"].contains(&item.label.as_str())
+            ),
             "{source:?}: {items:?}"
         );
     }
@@ -546,6 +590,7 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
                 markdown: "A node.".into(),
                 definition: None,
                 parameter_defaults: BTreeMap::new(),
+                argument_choices: BTreeMap::new(),
                 property_parameters: Vec::new(),
                 parameter_documentation: BTreeMap::new(),
                 property_groups: Vec::new(),
@@ -568,8 +613,12 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
                         .map(|name| (name, crate::ParameterDefault::Omitted)),
                 )
                 .collect(),
+                argument_choices: BTreeMap::new(),
                 property_parameters: std::iter::once("value".into()).chain(properties).collect(),
-                parameter_documentation: BTreeMap::new(),
+                parameter_documentation: BTreeMap::from([(
+                    "property_59".into(),
+                    Arc::from("Adjust the **last** property."),
+                )]),
                 property_groups: Vec::new(),
                 property_default: None,
             },
@@ -618,16 +667,162 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
         );
         assert!(!hover.contains("property_59"), "{hover}");
         let help = workspace
-            .signature(&uri(), position(source, "\"Hello\"", true), Encoding::Utf16)
+            .signature(
+                &uri(),
+                position(source, "\"Hello\"", true),
+                Encoding::Utf16,
+                &MarkupKind::Markdown,
+            )
             .unwrap()
             .unwrap();
-        assert!(help.signatures[0].label.contains("property_59?: int"));
+        assert!(
+            help.signatures[0]
+                .label
+                .contains("\n    property_59?: int,\n)")
+        );
         assert!(help.signatures[0].label.contains(canonical));
         assert_eq!(help.signatures[0].parameters.as_ref().unwrap().len(), 63);
+        assert_eq!(help.active_parameter, Some(0));
+        assert_eq!(
+            help.signatures[0].documentation,
+            Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: "Creates a text node.".into(),
+            }))
+        );
         let items = workspace
             .complete(&uri(), position(source, "text(", true), Encoding::Utf16)
             .unwrap();
-        assert!(items.iter().any(|item| item.label == "property_59:"));
+        let last_property = items
+            .iter()
+            .find(|item| item.label == "property_59:")
+            .unwrap();
+        assert_eq!(
+            last_property.documentation,
+            help.signatures[0].parameters.as_ref().unwrap()[62].documentation
+        );
+        assert!(matches!(
+            &last_property.documentation,
+            Some(Documentation::MarkupContent(markup)) if markup.value == "Adjust the **last** property."
+        ));
         assert!(items.iter().any(|item| item.label == "text" && item.kind == Some(CompletionItemKind::FUNCTION)));
+
+        let named = source.replace("text(\"Hello\")", "text(\"Hello\", property_59: 1)");
+        workspace.open(uri(), 2, named.clone()).unwrap();
+        let help = workspace
+            .signature(
+                &uri(),
+                position(&named, "property_59: 1", true),
+                Encoding::Utf16,
+                &MarkupKind::Markdown,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(help.active_parameter, Some(62));
     }
+}
+
+#[test]
+fn literal_alternatives_survive_bindable_types_and_bind_stays_positional() {
+    let mode = TypeHint::Union(vec![
+        TypeHint::Union(vec![
+            TypeHint::StringLiteral("vertical".into()),
+            TypeHint::StringLiteral("horizontal".into()),
+        ]),
+        TypeHint::Named("Binding".into()),
+    ]);
+    let reference = SymbolReference {
+        module: "native".into(),
+        version: "1".into(),
+        export: Some("host_option".into()),
+    };
+    let host_option = ExternalSymbol::function(
+        "host_option",
+        signature(vec![parameter("mode", mode, false)], TypeHint::Null),
+    )
+    .with_reference(reference.clone());
+    let mut bind = ExternalSymbol::function(
+        "bind",
+        signature(
+            vec![parameter("location", TypeHint::Any, false)],
+            TypeHint::Named("Binding".into()),
+        ),
+    );
+    bind.intrinsic = Some(Intrinsic::Bind);
+    let source = r#"fn local_option(mode: "ondemand" | "continuous" | int) {}
+fn main() {
+    let state = { value: 3 };
+    host_option(mode: "vertical");
+    host_option("horizontal");
+    local_option(mode: 1);
+    bind(state.value);
+}"#;
+    let mut options = ServerOptions::default();
+    options.host.globals = vec![host_option, bind];
+    options.host.declarations.push(HostDeclaration {
+        reference,
+        signature: None,
+        markdown: String::new(),
+        definition: None,
+        argument_choices: BTreeMap::from([("mode".into(), vec!["vertical".into(), "auto".into()])]),
+        parameter_defaults: BTreeMap::new(),
+        property_parameters: Vec::new(),
+        parameter_documentation: BTreeMap::new(),
+        property_groups: Vec::new(),
+        property_default: None,
+    });
+    let mut workspace = Workspace::new(options);
+    workspace.open(uri(), 1, source.into()).unwrap();
+    let complete = |workspace: &mut Workspace, at| {
+        workspace
+            .complete(&uri(), position(source, at, true), Encoding::Utf16)
+            .unwrap()
+    };
+    for (at, choices) in [
+        ("host_option(mode:", ["\"vertical\"", "\"horizontal\""]),
+        ("local_option(mode:", ["\"ondemand\"", "\"continuous\""]),
+    ] {
+        let items = complete(&mut workspace, at);
+        assert!(
+            choices
+                .into_iter()
+                .all(|choice| items.iter().any(|item| item.label == choice)),
+            "{items:?}"
+        );
+    }
+    for (at, value) in [
+        ("host_option(mode: \"vert", "\"vertical\""),
+        ("host_option(\"horiz", "\"horizontal\""),
+    ] {
+        let items = complete(&mut workspace, at);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.label == "\"vertical\"")
+                .count(),
+            1
+        );
+        let text_edit = items
+            .iter()
+            .find(|item| item.label == "\"auto\"")
+            .unwrap()
+            .text_edit
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            text_edit,
+            &CompletionTextEdit::Edit(TextEdit {
+                range: Range::new(
+                    position(source, value, false),
+                    position(source, value, true)
+                ),
+                new_text: "\"auto\"".into(),
+            })
+        );
+    }
+    assert!(
+        !complete(&mut workspace, "bind(")
+            .iter()
+            .any(|item| item.label == "location:")
+    );
 }

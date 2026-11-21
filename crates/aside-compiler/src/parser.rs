@@ -68,6 +68,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
         tokens: &lexed.tokens,
         diagnostics: lexed.diagnostics,
         cursor: 0,
+        split_token: None,
         builder: GreenNodeBuilder::new(),
         import_offsets: Vec::new(),
         limits,
@@ -113,6 +114,7 @@ struct Parser<'a> {
     source: &'a str,
     tokens: &'a [Token],
     cursor: usize,
+    split_token: Option<Token>,
     builder: GreenNodeBuilder<'static>,
     import_offsets: Vec<crate::TextSize>,
     diagnostics: Vec<Diagnostic>,
@@ -182,6 +184,9 @@ impl Parser<'_> {
             .map_or(self.tokens.len(), |offset| self.cursor + offset)
     }
     fn nth(&self, n: usize) -> K {
+        if n == 0 && let Some(token) = self.split_token {
+            return token.kind;
+        }
         self.tokens[self.cursor..]
             .iter()
             .filter(|t| !t.kind.is_trivia())
@@ -192,10 +197,12 @@ impl Parser<'_> {
         self.nth(0)
     }
     fn token(&self) -> Option<Token> {
-        self.tokens[self.cursor..]
-            .iter()
-            .find(|t| !t.kind.is_trivia())
-            .copied()
+        self.split_token.or_else(|| {
+            self.tokens[self.cursor..]
+                .iter()
+                .find(|t| !t.kind.is_trivia())
+                .copied()
+        })
     }
     fn range(&self) -> TextRange {
         self.token()
@@ -257,21 +264,26 @@ impl Parser<'_> {
         }
     }
     fn raw_bump(&mut self) {
+        let token = self.split_token.take().unwrap_or(self.tokens[self.cursor]);
+        if self.emit_token(token) {
+            self.cursor += 1;
+        }
+    }
+    fn emit_token(&mut self, token: Token) -> bool {
         if self.probe {
             let remaining = self.probes.remaining.get();
             if remaining == 0 {
                 self.limit("assignment pattern trial budget exhausted");
-                return;
+                return false;
             }
             self.probes.remaining.set(remaining - 1);
         }
-        let token = self.tokens[self.cursor];
         if !self.probe {
             self.builder
                 .token(token.kind.raw(), token.text(self.source));
         }
-        self.cursor += 1;
         self.frames.last_mut().unwrap().push(0);
+        true
     }
     fn bump(&mut self) {
         if !self.halted {
@@ -902,6 +914,7 @@ impl Parser<'_> {
                     {
                         d.related.push(RelatedRange {
                             range: previous,
+                            source: None,
                             message: "first argument with this name".into(),
                         });
                     }
@@ -1333,6 +1346,9 @@ impl Parser<'_> {
             let before = self.cursor;
             self.start(K::RecordFieldType);
             self.expect(K::Ident);
+            if end == K::RBrace {
+                self.eat(K::Question);
+            }
             self.expect(K::Colon);
             self.ty();
             self.finish();
@@ -1344,6 +1360,32 @@ impl Parser<'_> {
         self.expect(end);
         self.finish();
     }
+    fn close_array_type(&mut self) {
+        let tail = match self.peek() {
+            K::Shr => K::Gt,
+            K::ShrEq => K::Ge,
+            K::Ge => K::Eq,
+            _ => {
+                self.expect(K::Gt);
+                return;
+            }
+        };
+        if self.halted {
+            return;
+        }
+        self.trivia();
+        let range = self.range();
+        let middle = range.start() + crate::TextSize::from(1);
+        if self.emit_token(Token {
+            kind: K::Gt,
+            range: TextRange::new(range.start(), middle),
+        }) {
+            self.split_token = Some(Token {
+                kind: tail,
+                range: TextRange::new(middle, range.end()),
+            });
+        }
+    }
     fn type_atom(&mut self, stop_union: bool) {
         match self.peek() {
             K::StringStart => {
@@ -1352,6 +1394,14 @@ impl Parser<'_> {
                 self.finish();
             }
             K::LBrace => self.record_type(K::RBrace),
+            K::Ident if self.text() == "array" && self.nth(1) == K::Lt => {
+                self.start(K::ArrayType);
+                self.bump();
+                self.bump();
+                self.ty();
+                self.close_array_type();
+                self.finish();
+            }
             K::Ident | K::Null | K::Class => {
                 self.start(K::TypeName);
                 self.bump();
@@ -1473,6 +1523,7 @@ mod probe_tests {
             let mut parser = Parser {
                 source,
                 tokens: &lexed.tokens,
+                split_token: None,
                 cursor: 0,
                 builder: GreenNodeBuilder::new(),
                 import_offsets: Vec::new(),

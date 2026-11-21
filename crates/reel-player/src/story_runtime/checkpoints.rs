@@ -149,7 +149,8 @@ fn runtime(source: &str, version: u64, storage: Arc<DirectorySaves>) -> StoryRun
 }
 fn drain(runtime: &mut StoryRuntime) {
     let deadline = Instant::now() + Duration::from_secs(120);
-    while runtime.short_poll() {
+    while runtime.short_poll().is_some() || runtime.saves.as_deref().is_some_and(RuntimeSaves::busy)
+    {
         assert!(
             Instant::now() < deadline,
             "checkpoint runtime did not settle"

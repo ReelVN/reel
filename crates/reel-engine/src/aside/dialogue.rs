@@ -9,6 +9,8 @@ use aside_vm::executor::{
 };
 use aside_vm::{Heap, HeapError, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag};
 mod resources;
+mod voice;
+pub(super) use voice::voice_input;
 pub(in crate::aside) use resources::{
     allocate_character_resource, character_resource_field, character_resource_header,
     connect_character_resource, finish_character_resource,
@@ -41,7 +43,12 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         let parameters = if symbol == "reel::say" {
             vec![("lines", TypeHint::Array)]
         } else {
-            vec![("text", text.clone()), ("history", history.clone())]
+            vec![
+                ("text", text.clone()),
+                ("history", history.clone()),
+                ("voice", nullable(TypeHint::String)),
+                ("voice_volume", aside_host::source::number()),
+            ]
         };
         api.refine(symbol, nullable(speech.clone()), &parameters);
         api.native_mut(symbol).result_cases(&[
@@ -582,6 +589,7 @@ impl SessionVm {
         let wait = args[4]
             .as_bool()
             .ok_or(AdapterError::Input("wait must be bool"))?;
+        let voice = voice_input(self.vm.heap(), args[5], args[6], self.read_limit)?;
         let interaction = self.publish_say(
             session,
             ticket,
@@ -595,6 +603,7 @@ impl SessionVm {
             locale,
             reveal_skippable,
             wait,
+            voice,
         )?;
         Ok(NativeDispatch::Published { interaction, work })
     }
@@ -659,7 +668,7 @@ impl SessionVm {
                     })
                     .collect();
                 let result =
-                    self.publish_say(session, ticket, &inputs, locale, reveal_skippable, wait);
+                    self.publish_say(session, ticket, &inputs, locale, reveal_skippable, wait, None);
                 reader.release(self.vm.heap_mut())?;
                 result.map(|interaction| NativeDispatch::Published {
                     interaction,

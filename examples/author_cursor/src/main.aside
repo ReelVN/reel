@@ -32,11 +32,9 @@ fn main() {
             };
         }
     );
-    run(
-        repeat(
+    repeat(
             sequence(
                 tween(mark, opacity: 0.35, duration: 0.3), tween(mark, opacity: 1, duration: 0.3)
             )
-        ), owner: pointer
-    );
+        ).run(owner: pointer);
 }

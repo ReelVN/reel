@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use reel_dev::{audio, frame_cost, maintenance, performance, render_cost, root, vita};
+use reel_dev::{audio, frame_cost, maintenance, performance, render_cost, root};
 use std::{path::PathBuf, process::Command};
 
 #[derive(Parser)]
@@ -24,7 +24,6 @@ enum Action {
         release: bool,
     },
     AudioProbe,
-    VitaAssets(vita::Assets),
     /// Open a source project for manual diagnosis and save its logs and frame timings.
     Debug(performance::DebugOptions),
     Perf(performance::Options),
@@ -86,7 +85,6 @@ fn main() -> Result<()> {
         Action::Deps => maintenance::dependencies()?,
         Action::AudioRegression { release } => audio::regression(release)?,
         Action::AudioProbe => audio::probes()?,
-        Action::VitaAssets(options) => vita::assets(options)?,
         Action::Debug(options) => performance::debug(options)?,
         Action::Perf(options) => performance::execute(options)?,
         Action::FrameCost {
@@ -137,7 +135,6 @@ mod tests {
             panic!("measure");
         };
         assert_eq!(arguments, ["--ignored", "--nocapture"]);
-        assert!(Cli::try_parse_from(["reel-dev", "vita-assets", "--font", "f.ttf"]).is_err());
         assert!(
             Cli::try_parse_from(["reel-dev", "perf", "--help"])
                 .is_err_and(|e| e.kind() == clap::error::ErrorKind::DisplayHelp)

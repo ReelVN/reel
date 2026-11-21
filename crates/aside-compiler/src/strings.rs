@@ -31,7 +31,7 @@ pub struct StringText<'a> {
 pub struct DecodeError;
 
 /// Decode a literal whose value is known without evaluating a script expression.
-pub(crate) fn static_text(hir: &hir::Hir, node: hir::NodeId) -> Option<String> {
+pub fn static_text(hir: &hir::Hir, node: hir::NodeId) -> Option<String> {
     let literal = StringLiteral::new(hir, node)?;
     let mut bytes = Vec::new();
     for part in literal.parts() {

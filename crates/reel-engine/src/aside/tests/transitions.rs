@@ -383,7 +383,7 @@ fn transition_change_awaits_on_original_main_task_and_restores_inside_callback()
             let result=stage.transition(duration:0,change:|| {
                 state.calls+=1;
                 narrator("inside original task");
-                await run(delay(0.1));
+                await delay(0.1).run();
                 17
             });
             if state.calls!=1 || result!=17 { throw "callback replay"; }
@@ -733,7 +733,7 @@ fn transition_retention_failure_and_prechange_cancel_do_not_run_callback() {
             stage.replace(stack());
             let state={calls:0};
             let work=spawn(|| stage.transition(change:|| { state.calls+=1; }));
-            await run(delay(0.01));
+            await delay(0.01).run();
             work.cancel();
             try { await work; } catch error {}
             if state.calls!=0 { throw "cancelled retention executed change"; }

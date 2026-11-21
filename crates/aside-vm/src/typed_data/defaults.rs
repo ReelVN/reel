@@ -5,7 +5,7 @@ use crate::bytecode::{Const, ConstId, Descriptor, FunctionId, Opcode, TableSourc
 #[derive(Clone)]
 enum Node {
     Constant(ConstId),
-    Array(Vec<u32>),
+    Array(Vec<u32>, Option<TypeId>),
     Tuple(Vec<u32>),
     Table(Vec<[u32; 2]>),
 }
@@ -90,7 +90,7 @@ impl Proof {
                 Collect::Sequence { node, .. } | Collect::Table { node, .. } => *node,
             };
             match &self.plan.nodes[node as usize] {
-                Node::Array(v) | Node::Tuple(v) => growth(v),
+                Node::Array(v, _) | Node::Tuple(v) => growth(v),
                 Node::Table(v) => growth(v),
                 _ => 0,
             }
@@ -132,7 +132,7 @@ impl Proof {
                         return Ok(false);
                     }
                     let value = self.read(start + next)?;
-                    let (Node::Array(values) | Node::Tuple(values)) =
+                    let (Node::Array(values, _) | Node::Tuple(values)) =
                         &mut self.plan.nodes[node as usize]
                     else {
                         unreachable!()
@@ -226,14 +226,14 @@ impl Proof {
                 self.plan.checks.push((self.read(a)?, TypeId(b)));
                 self.plan.bytes += (self.plan.checks.capacity() - old) * size_of::<(u32, TypeId)>();
             }
-            Opcode::MakeArray | Opcode::MakeTuple => {
+            Opcode::MakeArray | Opcode::MakeTypedArray | Opcode::MakeTuple => {
                 let Descriptor::Sequence(window) = f.descriptors[b as usize] else {
                     unreachable!()
                 };
-                let node = self.node(if op == Opcode::MakeArray {
-                    Node::Array(Vec::new())
-                } else {
-                    Node::Tuple(Vec::new())
+                let node = self.node(match op {
+                    Opcode::MakeArray => Node::Array(Vec::new(), None),
+                    Opcode::MakeTypedArray => Node::Array(Vec::new(), Some(TypeId(c))),
+                    _ => Node::Tuple(Vec::new()),
                 });
                 self.collect = Some(Collect::Sequence {
                     dest: a,
@@ -447,17 +447,17 @@ impl DefaultBuild {
                 continue;
             }
             if heap.sequence_len(values)? as usize == self.node {
-                let value = if matches!(node, Node::Table(_)) {
-                    heap.alloc_table()?
-                } else {
-                    heap.alloc_array(&[])?
+                let value = match node {
+                    Node::Table(_) => heap.alloc_table()?,
+                    Node::Array(_, Some(item)) => heap.alloc_typed_array(*item)?,
+                    _ => heap.alloc_array(&[])?,
                 };
                 heap.array_push(values, value)?;
                 continue;
             }
             let value = heap.sequence_get(values, self.node as u32)?;
             match node {
-                Node::Array(items) | Node::Tuple(items) if self.edge < items.len() => {
+                Node::Array(items, _) | Node::Tuple(items) if self.edge < items.len() => {
                     heap.array_push(value, heap.sequence_get(values, items[self.edge])?)?;
                     self.edge += 1;
                 }

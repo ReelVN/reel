@@ -109,8 +109,7 @@ mod semantic_guides {
     const EN: &str = include_str!("../../../docs/guide/en.md");
     use super::scenes;
     use scenes::{SCENES, snippets};
-    // These names are the documented reel::prelude symbols, not names harvested
-    // from unresolved diagnostics. Their dynamic members remain runtime contracts.
+    // These names are the documented Reel globals. Their dynamic members remain runtime contracts.
     const PRELUDE: &[&str] = &[
         "build",
         "audio",
@@ -127,9 +126,6 @@ mod semantic_guides {
         "window",
         "particles",
         "emit",
-        "pause",
-        "resume",
-        "stop",
         "stage",
         "game",
         "saves",
@@ -167,7 +163,6 @@ mod semantic_guides {
         "sequence",
         "repeat",
         "tween",
-        "run",
         "run_flow",
         "scope",
         "reading",
@@ -231,7 +226,7 @@ mod semantic_guides {
             ("story".into(), "game::story".into()),
         ]);
         resolver.insert(ModuleInterface {
-            canonical_path: "reel::prelude".into(),
+            canonical_path: "reel".into(),
             version: "guide-v1".into(),
             exports: PRELUDE.iter().map(|&n| prelude_symbol(n)).collect(),
         });

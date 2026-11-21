@@ -310,8 +310,11 @@ impl Binder<'_> {
                 guard: None,
                 ..
             } = self.out.hir.node(arm).form
-                && self.covered_enum_pattern(pattern, value, &mut covered)
+                && (self.covered_enum_pattern(pattern, value, &mut covered)
+                    || (covered.len() >= cases.len()
+                        && cases.iter().all(|case| covered.contains(case))))
             {
+                self.check(arm, RuntimeChecks::LAST_ENUM_ARM);
                 return;
             }
         }
@@ -360,6 +363,7 @@ impl Binder<'_> {
                     self.out.hir.children(payload).all(|field| {
                         match self.out.hir.node(field).form {
                             Form::Wildcard => true,
+                            _ if self.kind(field) == HirKind::RestPattern => true,
                             Form::PatternField { pattern, .. } => pattern.is_none_or(|part| {
                                 matches!(
                                     self.out.hir.node(part).form,

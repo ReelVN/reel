@@ -216,7 +216,7 @@ fn terminal_video_collected_before_publication_restores_its_picture() {
         let source = r#"fn opening(){
             let movie=video("movie.mp4",width:32,height:18); stage.replace(movie);
             let playing=movie.play(); narrator("save");
-            if await playing!="Completed" || video.position(playing)!=1 {throw "restored terminal";}
+            if await playing!="Completed" || playing.position()!=1 {throw "restored terminal";}
             narrator("done");
         }"#;
         let (mut session, mut vm) = models::prepared(source, encoded);
@@ -300,22 +300,22 @@ fn video_nodes_share_activity_ownership_and_restore_live_and_terminal_frames() {
         let a = movie.play(start: 0.2, end: 0.8);
         let waiter = spawn(|| await a); waiter.cancel();
         narrator("playing");
-        pause(a);
+        a.pause();
         narrator("paused");
-        video.seek(a, 0.6);
-        if video.position(a) != 0.6 { throw "seek position"; }
-        resume(a);
+        a.seek(0.6);
+        if a.position() != 0.6 { throw "seek position"; }
+        a.resume();
         narrator("resumed");
         if await a != "Completed" || await a != "Completed" { throw "completion"; }
         narrator("finished");
-        if video.position(a) != 0.8 { throw "terminal position"; }
+        if a.position() != 0.8 { throw "terminal position"; }
         let looping = movie.play(looping: true);
         let mut rejected = false;
-        try { finish(looping); } catch error { rejected = true; }
+        try { looping.finish(); } catch error { rejected = true; }
         if !rejected { throw "infinite finish"; }
         let replacement = movie.play();
         if await looping != "Stopped" { throw "replacement"; }
-        finish(replacement);
+        replacement.finish();
         if await replacement != "Completed" { throw "finish"; }
         let retired = movie.play();
         movie.remove();

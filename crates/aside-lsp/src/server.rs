@@ -51,6 +51,12 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
         .and_then(|client| client.document_symbol.as_ref())
         .and_then(|symbols| symbols.hierarchical_document_symbol_support)
         .unwrap_or_default();
+    let signature_markup = text_document
+        .and_then(|client| client.signature_help.as_ref())
+        .and_then(|help| help.signature_information.as_ref())
+        .and_then(|info| info.documentation_format.as_deref())
+        .and_then(|formats| formats.first())
+        .unwrap_or(&MarkupKind::PlainText);
     let versioned_quick_fixes = text_document
         .and_then(|client| client.code_action.as_ref())
         .is_some_and(|actions| actions.code_action_literal_support.is_some())
@@ -175,7 +181,13 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
                     )
                 } else {
                     let id = request.id.clone();
-                    match dispatch(&mut workspace, request, encoding, hierarchical_symbols) {
+                    match dispatch(
+                        &mut workspace,
+                        request,
+                        encoding,
+                        hierarchical_symbols,
+                        signature_markup,
+                    ) {
                         Ok(result) => Response::new_ok(id, result),
                         Err((code, message)) => Response::new_err(id, code as i32, message),
                     }
@@ -416,6 +428,7 @@ fn dispatch(
     request: Request,
     encoding: Encoding,
     hierarchical_symbols: bool,
+    signature_markup: &MarkupKind,
 ) -> RequestResult {
     fn params<T: serde::de::DeserializeOwned>(
         value: Value,
@@ -495,6 +508,7 @@ fn dispatch(
                     &params.text_document_position_params.text_document.uri,
                     params.text_document_position_params.position,
                     encoding,
+                    signature_markup,
                 )
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         }

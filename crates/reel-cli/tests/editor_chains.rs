@@ -8,6 +8,86 @@ use support::Server;
 const URI: &str = "untitled:creator-chains.aside";
 
 #[test]
+fn registered_native_choices_complete_inside_named_and_positional_strings() {
+    let source = r#"fn main() {
+        let node = stack(blend: "overlay");
+        let _ = text("Hello", writing_mode: "vertical-rl");
+        let _ = text_input(writing_mode: "horizontal-tb");
+        let _ = popup(placement: "bottom-start");
+        let _ = scroll(axis: "vertical", overscroll: "clamp");
+        let _ = image("art.png", fit: "contain", sampling: "linear");
+        tween(node, x: 5, easing: "linear");
+        stage.transition(|| {}, easing: "sine_in");
+        audio.play("bell.opus", group: "effects");
+        audio.group_volume("music", 0.7);
+    }"#;
+    let (mut server, _) = open(source);
+    for (index, (at, required, excluded)) in [
+        ("blend: \"over", "linear_burn", None),
+        ("writing_mode: \"vertical-", "vertical-lr", None),
+        (
+            "writing_mode: \"horizontal-",
+            "horizontal-tb",
+            Some("vertical-rl"),
+        ),
+        ("placement: \"bottom-", "top-end", None),
+        ("axis: \"ver", "both", None),
+        ("overscroll: \"cla", "bounce", None),
+        ("fit: \"con", "cover", None),
+        ("sampling: \"li", "nearest", None),
+        ("easing: \"li", "quad_in", None),
+        ("easing: \"sine", "elastic_in_out", None),
+        ("group: \"eff", "voice", Some("master")),
+        ("group_volume(\"mu", "master", None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = server.request(
+            index as i32 + 2,
+            "textDocument/completion",
+            query(source, at, true),
+        );
+        let items = result["items"]
+            .as_array()
+            .or_else(|| result.as_array())
+            .unwrap();
+        let has = |word: &str| {
+            items
+                .iter()
+                .any(|item| item["label"] == format!("{word:?}"))
+        };
+        assert!(has(required), "{at}: {result}");
+        assert!(excluded.is_none_or(|word| !has(word)), "{at}: {result}");
+    }
+
+    let source = r#"fn main() { let _ = scroll(axis: , children: [scroll(overscroll: )]); }"#;
+    server.notify(
+        "textDocument/didChange",
+        json!({"textDocument":{"uri":URI,"version":2},"contentChanges":[{"text":source}]}),
+    );
+    for (id, at, expected, excluded) in [
+        (14, "axis: ", "\"vertical\"", "\"bounce\""),
+        (15, "overscroll: ", "\"bounce\"", "\"vertical\""),
+    ] {
+        let result = server.request(id, "textDocument/completion", query(source, at, true));
+        let items = result["items"]
+            .as_array()
+            .or_else(|| result.as_array())
+            .unwrap();
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{at}: {result}"
+        );
+        assert!(
+            items.iter().all(|item| item["label"] != excluded),
+            "{at}: {result}"
+        );
+    }
+    server.stop();
+}
+
+#[test]
 fn virtual_list_methods_complete_and_navigate_the_registered_declaration() {
     let source = r#"fn main(){let items=list(||[1],key:|item|item,build:|row|text("Row"),virtual:true); let request=items.scroll_to(1);}"#;
     let (mut server, initialized) = open(source);
@@ -296,7 +376,7 @@ fn assert_method_token(tokens: &Value, initialized: &Value, source: &str, expres
 fn action_and_speech_chains_infer_complete_navigate_and_color_real_methods() {
     let source = r#"fn main() {
     let label = text("雪😀");
-    let plan = delay(0.1).then(tween(label, x: 12, duration: 0.2)).together(delay(0.3)).repeat(times: 2);
+    let plan = repeat(parallel(sequence(delay(0.1), tween(label, x: 12, duration: 0.2)), delay(0.3)), times: 2);
     let running = plan.run(paused: true);
     let held = running.pause();
     held.resume().stop();
@@ -307,9 +387,6 @@ fn action_and_speech_chains_infer_complete_navigate_and_color_real_methods() {
     let (mut server, initialized) = open(source);
     let mut id = 2;
     for (expression, method, result) in [
-        ("then(tween", "then", "Action"),
-        ("together(delay", "together", "Action"),
-        ("repeat(times", "repeat", "Action"),
         ("run(paused", "run", "Activity"),
         ("pause();", "pause", "Activity"),
         ("resume()", "resume", "Activity"),
@@ -321,7 +398,7 @@ fn action_and_speech_chains_infer_complete_navigate_and_color_real_methods() {
         assert_method(&mut server, &mut id, source, expression, method, result);
     }
     for (expression, names) in [
-        ("plan.", &["then", "together", "repeat", "run"][..]),
+        ("plan.", &["run"][..]),
         ("running.", &["pause", "resume", "stop", "finish"][..]),
         ("sentence.", &["append", "wait", "revealed"][..]),
     ] {
@@ -341,6 +418,11 @@ fn action_and_speech_chains_infer_complete_navigate_and_color_real_methods() {
                 "{expression} missing method {name}: {items}"
             );
         }
+        if expression == "plan." {
+            assert!(items.as_array().unwrap().iter().all(|item| {
+                item["kind"] != 2 || names.iter().any(|name| item["label"] == *name)
+            }));
+        }
     }
     let tokens = server.request(
         id,
@@ -348,8 +430,7 @@ fn action_and_speech_chains_infer_complete_navigate_and_color_real_methods() {
         json!({"textDocument":{"uri":URI}}),
     );
     for expression in [
-        "together(delay",
-        "repeat(times",
+        "run(paused",
         "revealed().append",
         "append(\" tail\"",
         "wait();",

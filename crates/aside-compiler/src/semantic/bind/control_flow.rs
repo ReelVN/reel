@@ -2,7 +2,7 @@
 use super::*;
 
 impl Binder<'_> {
-    pub(super) fn condition(&mut self, n: NodeId, ctx: &Context, is_loop: bool) -> TypeId {
+    pub(super) fn condition(&mut self, n: NodeId, ctx: &Context, is_loop: bool, expected: TypeId) -> TypeId {
         let Form::Condition {
             pattern,
             condition,
@@ -38,7 +38,7 @@ impl Binder<'_> {
         if pattern.is_none() {
             self.refine_condition(condition, true);
         }
-        let yes = self.visit(body, &inner);
+        let yes = self.visit_expected(body, &inner, expected);
         self.restore_refinements(refinement_mark);
         self.scope = previous;
         let mut otherwise_ctx = ctx.clone();
@@ -46,7 +46,7 @@ impl Binder<'_> {
         if pattern.is_none() {
             self.refine_condition(condition, false);
         }
-        let no = otherwise.map_or(NULL, |c| self.visit(c, &otherwise_ctx));
+        let no = otherwise.map_or(NULL, |c| self.visit_expected(c, &otherwise_ctx, expected));
         self.restore_refinements(refinement_mark);
         if is_loop {
             NULL
@@ -60,7 +60,7 @@ impl Binder<'_> {
         if self.kind(n) == HirKind::While {
             let mut c = ctx.clone();
             c.loops.push((n, label, ctx.finally.len()));
-            self.condition(n, &c, true);
+            self.condition(n, &c, true, ANY);
             return NULL;
         }
         let mut inner = ctx.clone();
@@ -114,6 +114,7 @@ impl Binder<'_> {
                     .copied()
                     .reduce(|a, b| if a == b { a } else { ANY })
                     .unwrap_or(ANY),
+                Type::TypedArray(item) => *item,
                 _ => ANY,
             };
             self.bind_pattern(p, item, &inner, PatternUse::Declaration, false);
@@ -122,7 +123,9 @@ impl Binder<'_> {
         self.scope = previous;
         NULL
     }
-    pub(super) fn match_node(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
+    pub(super) fn match_node(
+        &mut self, n: NodeId, children: &[NodeId], ctx: &Context, expected: TypeId
+    ) -> TypeId {
         let value = children.first().map_or(ANY, |&c| self.visit(c, ctx));
         let mut result = None;
         for &arm in children.iter().skip(1) {
@@ -144,7 +147,7 @@ impl Binder<'_> {
             }
             let mut branch = ctx.clone();
             branch.conditional = true;
-            let t = parts.last().map_or(NULL, |&body| self.visit(body, &branch));
+            let t = parts.last().map_or(NULL, |&body| self.visit_expected(body, &branch, expected));
             result = Some(match result {
                 None => t,
                 Some(old) if old == t => t,
@@ -220,6 +223,7 @@ impl Binder<'_> {
                             .related
                             .push(RelatedRange {
                                 range: boundary,
+                                source: None,
                                 message: "parameter default expression boundary".into(),
                             });
                     }
@@ -334,18 +338,7 @@ impl Binder<'_> {
         false
     }
     pub(super) fn constant_bool(&self, n: NodeId) -> Option<bool> {
-        match self.out.hir.node(n).form {
-            Form::Literal { token } => match token.kind {
-                K::True => Some(true),
-                K::False => Some(false),
-                _ => None,
-            },
-            Form::Single { child } => self.constant_bool(child),
-            Form::Unary { operator, value } if operator.kind == K::Bang => {
-                self.constant_bool(value).map(|b| !b)
-            }
-            _ => None,
-        }
+        super::super::forms::constant_bool(&self.out.hir, n)
     }
     pub(super) fn branch_constant(
         &self,

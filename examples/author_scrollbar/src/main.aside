@@ -76,7 +76,7 @@ fn main() {
             button(
                 "Back to top", x: 160, y: 260,
                 on_click: |e| {
-                    await run(tween(page, scroll_y: 0, duration: 0.5, easing: "out"), owner: page);
+                    await tween(page, scroll_y: 0, duration: 0.5, easing: "out").run(owner: page);
                 }
             );
         }

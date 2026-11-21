@@ -42,6 +42,7 @@ fn image(source: &str) -> NodeKind {
         repeat: [false; 2],
         tile_scale: 1.,
         corner_colors: None,
+        corners: None,
         alpha_layout: Default::default(),
         adjustment: Default::default(),
     }

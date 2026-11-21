@@ -14,10 +14,10 @@ fn setup(bound: bool) -> (Session, SessionVm) {
             viewport;text(value:derive(||state.phase));
             button("start",on_click:||{{
                 state.phase="down";
-                let down=await run(tween(viewport,scroll_y:640,duration:0.8,easing:"linear"));
+                let down=await tween(viewport,scroll_y:640,duration:0.8,easing:"linear").run();
                 if down!="Completed" {{state.phase=down;return;}}
                 state.phase="up";
-                state.phase=await run(tween(viewport,scroll_y:0,duration:0.8,easing:"linear"));
+                state.phase=await tween(viewport,scroll_y:0,duration:0.8,easing:"linear").run();
             }});
             button("same",on_click:||{{viewport.scroll_y=viewport.scroll_y;}});
             button("jump",on_click:||{{let target=rows.scroll_to(4);}});

@@ -10,7 +10,7 @@ use crate::player::{PlayerOptions, PointerKind};
 use reel_core::wake::WakeSignal;
 use reel_engine::{
     Epoch, Session, SessionId,
-    aside::{VmLimits, source::CompiledStory},
+    aside::{GameSettings, VmLimits, source::CompiledStory},
 };
 use reel_render::RenderBackend;
 use reel_render::gpu::GpuError;
@@ -46,9 +46,15 @@ pub fn run_story(story: CompiledStory, mut options: PlayerOptions) -> Result<(),
         let assets = options
             .open_assets()
             .map_err(|error| format!("cannot open story resources: {error:?}"))?;
-        let driver =
+        let mut driver =
             AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?
                 .with_asset_context(assets, options.catalogs.clone());
+        driver
+            .adapter_mut()
+            .inherit_game_settings(std::sync::Arc::new(GameSettings {
+                title: options.title.clone(),
+                ..GameSettings::default()
+            }));
         Ok::<_, Error>(Mode::Story(Box::new((driver, options))))
     })();
     let mode = match prepared {
@@ -429,7 +435,12 @@ impl ApplicationHandler for App {
                     state.host.apply(event_loop);
                     self.state = None;
                 } else {
-                    let deadline = Some(Instant::now() + Duration::from_millis(1));
+                    let deadline = state
+                        .story_deadline()
+                        .map(|(deadline, _)| deadline)
+                        .into_iter()
+                        .chain(self.wake.is_pending().then(Instant::now))
+                        .min();
                     state.host.wait_until(deadline);
                     state.host.apply(event_loop);
                     #[cfg(feature = "performance")]

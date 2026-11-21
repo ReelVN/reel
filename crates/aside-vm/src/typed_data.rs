@@ -35,6 +35,8 @@ pub enum DataType {
     LogicalRef(String),
     StringLiteral(String),
     Record(Vec<(String, DataType)>),
+    Array(Box<DataType>),
+    OptionalField(Box<DataType>),
 }
 impl PartialOrd for DataType {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -51,6 +53,8 @@ impl Ord for DataType {
             Self::LogicalRef(_) => 4,
             Self::StringLiteral(_) => 5,
             Self::Record(_) => 6,
+            Self::Array(_) => 7,
+            Self::OptionalField(_) => 8,
         };
         tag(self)
             .cmp(&tag(other))
@@ -61,6 +65,8 @@ impl Ord for DataType {
                 (Self::LogicalRef(a), Self::LogicalRef(b)) => a.cmp(b),
                 (Self::StringLiteral(a), Self::StringLiteral(b)) => a.cmp(b),
                 (Self::Record(a), Self::Record(b)) => a.cmp(b),
+                (Self::Array(a), Self::Array(b))
+                | (Self::OptionalField(a), Self::OptionalField(b)) => a.cmp(b),
                 _ => std::cmp::Ordering::Equal,
             })
     }
@@ -75,6 +81,7 @@ impl DataType {
             }
             Self::State(k) => k.module.capacity() + k.name.capacity(),
             Self::LogicalRef(s) | Self::StringLiteral(s) => s.capacity(),
+            Self::Array(item) | Self::OptionalField(item) => size_of::<Self>() + item.retained_bytes(),
             Self::Record(fields) => {
                 fields.capacity() * size_of::<(String, Self)>()
                     + fields
@@ -126,6 +133,8 @@ impl Identities {
                 |kind| DataType::LogicalRef(kind.clone()),
             ),
             DataType::Tuple(v) => DataType::Tuple(v.into_iter().map(|t| self.remap(t)).collect()),
+            DataType::Array(item) => DataType::Array(Box::new(self.remap(*item))),
+            DataType::OptionalField(item) => DataType::OptionalField(Box::new(self.remap(*item))),
             DataType::Record(fields) => DataType::Record(
                 fields
                     .into_iter()
@@ -204,14 +213,14 @@ pub fn data_type<C, S>(p: &BytecodePackage<C, S>, id: TypeId) -> Result<DataType
                     .collect::<Result<_, _>>()?,
             ),
             TypeDef::StringLiteral(text) => DataType::StringLiteral(text.clone()),
+            TypeDef::Array(item) => DataType::Array(Box::new(convert(p, *item, depth + 1)?)),
             TypeDef::Record(fields) => {
                 let mut fields = fields
                     .iter()
                     .map(|field| {
-                        Ok((
-                            p.symbols[field.name.index()].clone(),
-                            convert(p, field.ty, depth + 1)?,
-                        ))
+                        let ty = convert(p, field.ty, depth + 1)?;
+                        let ty = if field.optional { DataType::OptionalField(Box::new(ty)) } else { ty };
+                        Ok((p.symbols[field.name.index()].clone(), ty))
                     })
                     .collect::<Result<Vec<_>, SchemaError>>()?;
                 fields.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -337,6 +346,7 @@ impl Registry {
                         named(registry, ty)?;
                     }
                 }
+                DataType::Array(item) | DataType::OptionalField(item) => named(registry, item)?,
                 _ => {}
             }
             Ok(())

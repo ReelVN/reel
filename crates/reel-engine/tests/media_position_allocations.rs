@@ -56,7 +56,7 @@ impl MediaBackend for Host {
 fn initially_paused_activities_have_no_per_sample_allocation() {
     let source = r#"fn opening() {
         let node=stack();stage.replace(node);
-        run(tween(node,x:100,duration:1),paused:true);
+        tween(node,x:100,duration:1).run(paused:true);
         clock(interval:0.01,paused:true);
         narrator("paused");
     }"#;
@@ -96,7 +96,7 @@ fn media_position_sampling_and_observer_cost() {
             let read = if kind == "clock" {
                 "timer.elapsed"
             } else {
-                "audio.position(media)"
+                "media.position()"
             };
             let source = format!(
                 r#"fn opening() {{
@@ -177,9 +177,9 @@ fn media_position_sampling_and_observer_cost() {
         let source = format!(
             r#"fn opening() {{
             let media=audio.play("measure");
-            for i in 0..{pending} {{audio.at(media,100000);}}
+            for i in 0..{pending} {{media.at(100000);}}
             narrator("ready");
-            for i in 0..60 {{audio.seek(media,1);audio.seek(media,0);}}
+            for i in 0..60 {{media.seek(1);media.seek(0);}}
             narrator("done");
         }}"#
         );

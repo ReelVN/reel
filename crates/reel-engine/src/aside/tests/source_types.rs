@@ -2,6 +2,41 @@ use super::*;
 use aside_compiler::semantic::TypeHint;
 
 #[test]
+fn binding_intrinsics_have_source_declarations_without_native_abi() {
+    use aside_compiler::semantic::Intrinsic;
+    let api = source::api();
+    for (name, intrinsic, parameter, result) in [
+        (
+            "bind",
+            Intrinsic::Bind,
+            "property",
+            TypeHint::Named("Binding".into()),
+        ),
+        ("value_of", Intrinsic::ValueOf, "value", TypeHint::Any),
+    ] {
+        let symbol = format!("reel::{name}");
+        let declaration = api.native(&symbol);
+        let signature = declaration.symbol.signature.as_ref().unwrap();
+        assert_eq!(signature.parameters[0].name, parameter);
+        assert_eq!(signature.result, result);
+        assert_eq!(declaration.symbol.intrinsic, Some(intrinsic));
+        assert!(!declaration.documentation.is_empty());
+        assert!(
+            !source::contracts()
+                .iter()
+                .any(|native| native.symbol == symbol)
+        );
+    }
+    source::compile_module(
+        "use reel::{bind as reference, value_of as read}; fn main() {let state = model({value: 42}); read(reference(state.value))}",
+        "main",
+        "src/main.aside",
+        1,
+    )
+    .unwrap();
+}
+
+#[test]
 fn tab_factories_publish_callable_types_and_check_unannotated_content() {
     use aside_host::source::{named, nullable};
     let build = source::api()
@@ -283,11 +318,11 @@ fn host_node_binding_completion_task_and_scope_annotations_execute_from_source_a
             let task:Task=s.spawn(|| 8);
             if await task!=8 {throw "Task";}
             let action:Action=delay(0);
-            let running:Activity=s.run(action);
-            finish(running);
+            let running:Activity=action.run(owner: s);
+            running.finish();
             let pulse:Clock=clock(owner:s);
             if pulse.ticks!=0 || pulse.elapsed!=0.0 {throw "Clock";}
-            stop(pulse);
+            pulse.stop();
             let state=model({x:3});
             let label:TextNode=text("typed",x:bind(state.x));
             let common:Node=identity(label);

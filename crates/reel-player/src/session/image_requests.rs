@@ -2,7 +2,7 @@
 use super::*;
 use crate::stage_widget::OffscreenImage;
 use reel_ui::stage::NodeId;
-use std::time::{Duration, Instant};
+use reel_ui::util::{Duration, Instant};
 
 const IMAGE_LOOKAHEAD: Duration = Duration::from_millis(120);
 

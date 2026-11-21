@@ -17,9 +17,9 @@ fn main() {
     let envelope = curve([{time: 0, value: 0}, {time: 0.5, value: 1}, {time: 1, value: 0}]);
     scene.add(
         row(x: 24, y: 640, gap: 12) {
-            button("Pause", on_click: || pause(falling));
-            button("Resume", on_click: || resume(falling));
-            button("Stop", on_click: || stop(falling));
+            button("Pause", on_click: || falling.pause());
+            button("Resume", on_click: || falling.resume());
+            button("Stop", on_click: || falling.stop());
             button(
                 "Burst",
                 on_click: || emit(

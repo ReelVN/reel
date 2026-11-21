@@ -207,6 +207,37 @@ fn value_contracts_keep_state_field_identity_across_record_reordering() {
 }
 
 #[test]
+fn optional_record_presence_has_a_stable_state_contract() {
+    use aside_vm::typed_data::DataType;
+    let compiled = compile(
+        r#"
+        use std::resume::state;
+        type View = {title: string, count?: int};
+        class Menu { let mut view: View; }
+        state(Menu, "menu");
+        "#,
+    )
+    .unwrap();
+    let verified = compiled
+        .program
+        .verify_resume(compiled.resume, &[], ResumeLimits::default())
+        .unwrap();
+    let state = verified
+        .normalized_state_contracts(&[], ResumeLimits::default())
+        .unwrap();
+    let schema = &state.states[0].schema;
+    assert!(matches!(
+        &schema.fields[0].ty,
+        DataType::Record(fields)
+        if matches!(
+            &fields[0],
+            (name, DataType::OptionalField(ty))
+            if name == "count" && **ty == DataType::Builtin(aside_vm::bytecode::BuiltinType::Int)
+        )
+    ));
+}
+
+#[test]
 fn static_declarations_roundtrip_metadata_and_register_current_classes_without_native_stubs() {
     let compiled = compile(SOURCE).unwrap();
     assert!(compiled.program.package().natives.is_empty());

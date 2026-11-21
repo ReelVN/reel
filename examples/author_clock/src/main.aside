@@ -5,9 +5,9 @@ fn main() {
     panel.add(text(derive(|| f"Elapsed: {timer.elapsed} seconds")));
     panel.add(
         row(gap: 12) {
-            button("Pause", on_click: |e| pause(timer));
-            button("Resume", on_click: |e| resume(timer));
-            button("Stop", on_click: |e| stop(timer));
+            button("Pause", on_click: |e| timer.pause());
+            button("Resume", on_click: |e| timer.resume());
+            button("Stop", on_click: |e| timer.stop());
             button("Remove", on_click: |e| panel.remove());
         }
     );

@@ -111,15 +111,25 @@ pub fn load(
 }
 
 pub fn standalone(executable: &Path, saves: Option<PathBuf>) -> Result<(), String> {
-    let root = executable
-        .parent()
-        .ok_or("player executable has no parent directory")?;
-    run(
+    use crate::distribution::desktop::{Identity, data_directory};
+    let root = data_directory(executable).map_err(|error| error.to_string())?;
+    let identity = Identity::read_release(&root).map_err(|error| error.to_string())?;
+    let saves = match (saves, &identity) {
+        (Some(saves), _) => saves,
+        (None, Some(identity)) => identity.saves_path().map_err(|error| error.to_string())?,
+        (None, None) => root.join("saves"),
+    };
+    let (story, mut options) = load(
         &root.join(reel_package::distribution::MAIN_PACKAGE),
         None,
-        Some(saves.unwrap_or_else(|| root.join("saves"))),
         std::env::consts::OS.into(),
-    )
+    )?;
+    options.save_directory = Some(saves);
+    if let Some(identity) = identity {
+        options.title = identity.title;
+        options.desktop_id = Some(identity.id);
+    }
+    launch(story, options)
 }
 
 /// Launch a compiled story with the shared player's resource and host settings.

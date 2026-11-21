@@ -93,7 +93,7 @@ fn animation_cadence_follows_high_refresh_displays_and_explicit_game_rates() {
     ] {
         for producer in [
             "let p=particles(\"spark.png\"); stage.replace(p); emit(p,burst:1,rate:0,lifetime:10,duration:10);",
-            "let p=text(\"moving\"); stage.replace(p); run(tween(p,x:100,duration:10));",
+            "let p=text(\"moving\"); stage.replace(p); tween(p,x:100,duration:10).run();",
         ] {
             let mut story = runtime(&format!(
                 "fn main(){{ game.configure(frame_rate:{configured}); {producer} narrator(\"waiting\"); }}"
@@ -179,7 +179,7 @@ fn continuation_and_collection_wakes_do_not_oversample_a_running_clock() {
 fn input_wakes_start_short_delays_at_current_time_with_or_without_a_running_clock() {
     for timed in [false, true] {
         let code = format!(
-            "fn main() {{ {} narrator(\"waiting\"); await run(delay(0.003)); narrator(\"done\"); }}",
+            "fn main() {{ {} narrator(\"waiting\"); await delay(0.003).run(); narrator(\"done\"); }}",
             if timed {
                 "let timer=clock(interval:1);"
             } else {

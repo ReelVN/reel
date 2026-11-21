@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
 	Decibels, Panning, PlaybackRate, StartTime, Tween,
-	command::handle_param_setters,
+	command::{ValueChangeCommand, handle_param_setters},
 	sound::{IntoOptionalRegion, PlaybackState},
 };
 
@@ -18,6 +18,14 @@ pub struct StaticSoundHandle {
 }
 
 impl StaticSoundHandle {
+	/// Set the independent temporary gain on this playback.
+	pub fn set_ducking(&mut self, gain: Decibels, tween: Tween) {
+		self.command_writers.set_ducking.write(ValueChangeCommand {
+			target: gain.into(),
+			tween,
+		});
+	}
+
 	/// Source cursor and fixed-rate ramp from one callback publication. Pending
 	/// absolute seeks and rate commands remain visible until acknowledged by PCM.
 	pub fn playback(&self) -> super::StaticSoundPlayback {

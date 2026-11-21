@@ -13,6 +13,7 @@ pub enum TypeHint {
     Float,
     String,
     Array,
+    TypedArray(Box<TypeHint>),
     Table,
     Future,
     Generator,
@@ -22,6 +23,7 @@ pub enum TypeHint {
     Named(String),
     StringLiteral(String),
     Record(Vec<(String, TypeHint)>),
+    OptionalField(Box<TypeHint>),
     Enum {
         name: String,
         cases: Arc<Vec<TypeHint>>,
@@ -38,6 +40,7 @@ impl std::fmt::Display for TypeHint {
             Self::Float => f.write_str("float"),
             Self::String => f.write_str("string"),
             Self::Array => f.write_str("array"),
+            Self::TypedArray(item) => write!(f, "array<{item}>"),
             Self::Table => f.write_str("table"),
             Self::Future => f.write_str("Future"),
             Self::Generator => f.write_str("generator"),
@@ -50,10 +53,15 @@ impl std::fmt::Display for TypeHint {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
-                    write!(f, "{name}: {ty}")?;
+                    if let Self::OptionalField(ty) = ty {
+                        write!(f, "{name}?: {ty}")?;
+                    } else {
+                        write!(f, "{name}: {ty}")?;
+                    }
                 }
                 f.write_str("}")
             }
+            Self::OptionalField(ty) => ty.fmt(f),
             Self::Tuple(types) => {
                 f.write_str("(")?;
                 for (i, ty) in types.iter().enumerate() {

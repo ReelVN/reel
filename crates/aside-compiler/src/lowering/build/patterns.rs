@@ -184,7 +184,7 @@ impl FunctionBuilder<'_, '_> {
             let name = self.l.name(self.l.m.hir().text(key.span))?;
             self.l
                 .b
-                .push(&mut fields, bc::RecordFieldType { name, ty: any })?;
+                .push(&mut fields, bc::RecordFieldType { name, ty: any, optional: false })?;
         }
         let ty = bc::TypeId(self.l.package.types.len() as u32);
         self.l

@@ -10,17 +10,47 @@ pub(super) struct State {
 }
 const TYPE: &str = "reel::types::InputInfo";
 const LABELS: &str = "reel::types::GamepadLabels";
-const BUTTONS: [&str; 10] = [
-    "South",
-    "East",
-    "North",
-    "West",
-    "LeftShoulder",
-    "RightShoulder",
-    "LeftTrigger",
-    "RightTrigger",
-    "Select",
-    "Start",
+const BUTTONS: [(&str, &str); 10] = [
+    (
+        "South",
+        "Label of the bottom face button, such as A on Xbox or Cross on PlayStation.",
+    ),
+    (
+        "East",
+        "Label of the right face button, such as B on Xbox or Circle on PlayStation.",
+    ),
+    (
+        "North",
+        "Label of the top face button, such as Y on Xbox or Triangle on PlayStation.",
+    ),
+    (
+        "West",
+        "Label of the left face button, such as X on Xbox or Square on PlayStation.",
+    ),
+    (
+        "LeftShoulder",
+        "Label of the left shoulder button, such as LB or L1.",
+    ),
+    (
+        "RightShoulder",
+        "Label of the right shoulder button, such as RB or R1.",
+    ),
+    (
+        "LeftTrigger",
+        "Label of the left trigger, such as LT or L2.",
+    ),
+    (
+        "RightTrigger",
+        "Label of the right trigger, such as RT or R2.",
+    ),
+    (
+        "Select",
+        "Label of the select button, such as View on Xbox or minus on Nintendo.",
+    ),
+    (
+        "Start",
+        "Label of the start button, such as Menu on Xbox or plus on Nintendo.",
+    ),
 ];
 
 fn buttons(heap: &mut Heap, layout: GamepadLayout) -> Result<Value, AdapterError> {
@@ -30,10 +60,10 @@ fn buttons(heap: &mut Heap, layout: GamepadLayout) -> Result<Value, AdapterError
             "Cross", "Circle", "Triangle", "Square", "L1", "R1", "L2", "R2", "Select", "Start",
         ],
         GamepadLayout::Nintendo => ["B", "A", "X", "Y", "L", "R", "ZL", "ZR", "−", "+"],
-        GamepadLayout::Generic => BUTTONS,
+        GamepadLayout::Generic => BUTTONS.map(|(name, _)| name),
     };
     let mut fields = [("", Value::NULL); BUTTONS.len()];
-    for ((field, name), label) in fields.iter_mut().zip(BUTTONS).zip(labels) {
+    for ((field, (name, _)), label) in fields.iter_mut().zip(BUTTONS).zip(labels) {
         *field = (name, heap.alloc_string(label)?);
     }
     observable::record(heap, &fields, &[])
@@ -55,15 +85,8 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         "Read-only display labels indexed by logical gamepad button name.",
         BUTTONS
             .into_iter()
-            .map(|button| {
-                Member::field(
-                    LABELS,
-                    button,
-                    TypeHint::String,
-                    None,
-                    "Display label for this physical button.",
-                    None,
-                )
+            .map(|(button, documentation)| {
+                Member::field(LABELS, button, TypeHint::String, None, documentation, None)
             })
             .collect(),
     ));

@@ -29,20 +29,20 @@ fn initially_paused_activity_restores_before_first_activation() {
     use aside_vm::snapshot::SnapshotBudget;
     let source = r#"fn opening() {
         let node=stack(x:0); stage.replace(node);
-        let moving=run(tween(node,x:100,duration:10));
-        let prepared=run(tween(node,x:60,duration:1),paused:true);
+        let moving=tween(node,x:100,duration:10).run();
+        let prepared=tween(node,x:60,duration:1).run(paused:true);
         let timer=clock(interval:0.25,paused:true);
         node.add(text("clock",x:bind(timer.ticks),y:bind(timer.elapsed)));
         narrator("prepared");
         if node.x!=20 || timer.ticks!=0 || timer.elapsed!=0 {throw "initial pause";}
-        stop(moving);
+        moving.stop();
         node.x=30;
-        resume(prepared);resume(timer);
+        prepared.resume();timer.resume();
         narrator("resumed");
         if node.x!=45 || timer.ticks!=2 {throw "activation must read current start";}
         narrator("halfway");
         if await prepared!="Completed" || node.x!=60 || timer.ticks!=4 {throw "completion";}
-        stop(timer);
+        timer.stop();
         narrator("done");
     }"#;
     for encoded in [false, true] {
@@ -92,30 +92,30 @@ fn initially_paused_activity_restores_before_first_activation() {
 fn initially_paused_actions_defer_zero_duration_and_preserve_controls() {
     let source = r#"fn dynamic(value) { value } fn opening() {
         let node=stack(x:7);stage.replace(node);
-        let zero=run(tween(node,x:99,duration:0),paused:true);
-        let empty=run(sequence(),paused:true);
+        let zero=tween(node,x:99,duration:0).run(paused:true);
+        let empty=sequence().run(paused:true);
         if node.x!=7 {throw "paused zero wrote";}
-        stop(zero);
+        zero.stop();
         if await zero!="Stopped" || node.x!=7 {throw "paused stop";}
-        resume(empty);
+        empty.resume();
         if await empty!="Completed" {throw "empty resume";}
-        let forced=run(tween(node,x:42,duration:0),paused:true);
-        finish(forced);
+        let forced=tween(node,x:42,duration:0).run(paused:true);
+        forced.finish();
         if await forced!="Completed" || node.x!=42 {throw "paused finish";}
         scope(body:|s| {
-            let grouped=s.run(sequence(tween(node,x:50,duration:0),delay(0)),paused:true);
+            let grouped=sequence(tween(node,x:50,duration:0),delay(0)).run(owner: s, paused:true);
             if node.x!=42 {throw "scope activated early";}
-            resume(grouped);
+            grouped.resume();
             if await grouped!="Completed" || node.x!=50 {throw "scope resume";}
         });
-        let waiting=run(tween(node,x:60,duration:1),paused:true,owner:node);
+        let waiting=tween(node,x:60,duration:1).run(paused:true, owner:node);
         node.remove();
         let mut cancelled=false;
         try {await waiting;} catch error {cancelled=true;}
         if !cancelled {throw "paused owner retirement";}
         let mut rejected=0;
         try {clock(paused:dynamic(1));} catch error {rejected+=1;}
-        try {run(delay(1),paused:dynamic(1));} catch error {rejected+=1;}
+        try {delay(1).run(paused:dynamic(1));} catch error {rejected+=1;}
         if rejected!=2 {throw "paused requires bool";}
         narrator("done");
     }"#;
@@ -139,14 +139,14 @@ fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
         let mut rejected = 0;
         try { clock(interval: 0); } catch e { rejected += 1; }
         try { dynamic(timer).ticks = 5; } catch e { rejected += 1; }
-        try { finish(timer); } catch e { rejected += 1; }
+        try { timer.finish(); } catch e { rejected += 1; }
         if rejected != 3 { throw "clock contract"; }
         narrator("running");
-        pause(timer);
+        timer.pause();
         narrator("paused");
-        resume(timer);
+        timer.resume();
         narrator("resumed");
-        stop(timer);
+        timer.stop();
         if await timer != "Stopped" { throw "stop"; }
         let retired = clock(owner: owner);
         owner.remove();
@@ -228,13 +228,13 @@ fn clock_ticks_index_and_slice_through_pause_restore_and_stop() {
         check(timer, 2);
         narrator("running");
         check(timer, 3);
-        pause(timer);
+        timer.pause();
         narrator("paused");
         check(timer, 3);
-        resume(timer);
+        timer.resume();
         narrator("resumed");
         check(timer, 4);
-        stop(timer);
+        timer.stop();
         if await timer != "Stopped" { throw "clock stop"; }
         check(timer, 4);
         narrator("stopped");
@@ -364,17 +364,17 @@ fn delays_share_composition_controls_and_sleep_until_their_deadline() {
         let mut rejected = false;
         try { delay(-1); } catch e { rejected = true; }
         if !rejected { throw "negative delay"; }
-        if await run(delay(0)) != "Completed" { throw "zero delay"; }
+        if await delay(0).run() != "Completed" { throw "zero delay"; }
         let action = sequence(delay(1), parallel(delay(0.5), tween(node, x: 100, duration: 0.5)));
-        let activity = run(action);
-        pause(activity); resume(activity);
+        let activity = action.run();
+        activity.pause(); activity.resume();
         if await activity != "Completed" || node.x != 100 { throw "composition"; }
-        let ended = run(repeat(delay(1), times: 3));
-        finish(ended);
+        let ended = repeat(delay(1), times: 3).run();
+        ended.finish();
         if await ended != "Completed" { throw "finish"; }
-        let stopped = run(delay(4)); stop(stopped);
+        let stopped = delay(4).run(); stopped.stop();
         if await stopped != "Stopped" { throw "stop"; }
-        let owned = run(delay(20), owner: node);
+        let owned = delay(20).run(owner: node);
         stage.replace(text("replacement"));
         let mut cancelled = false;
         try { await owned; } catch e { cancelled = true; }
@@ -444,9 +444,9 @@ fn author_tween_await_clock_projection_and_steady_heap_cost() {
         let node = text("moving", x: 20, opacity: 0);
         stage.replace(node);
         let action = tween(node, x: 220, opacity: 1, rotation: 360, duration: 2);
-        if await run(action) != "Completed" { throw "result"; }
+        if await action.run() != "Completed" { throw "result"; }
         if node.x != 220 || node.opacity != 1 || node.rotation != 360 { throw "end"; }
-        if await run(action) != "Completed" { throw "reuse"; }
+        if await action.run() != "Completed" { throw "reuse"; }
         true
     }"#;
     let (mut session, mut vm) = setup(code, Context::Ordinary);
@@ -499,7 +499,7 @@ fn quadratic_curves_keep_distinct_midpoints_and_exact_endpoints() {
         let root = stack(); stage.replace(root);
         for curve in ["quad_in", "quad_out", "quad_in_out"] {
             let node = text(curve); root.add(node);
-            run(tween(node, x: 100, duration: 1, easing: curve));
+            tween(node, x: 100, duration: 1, easing: curve).run();
         }
     }"#;
     for encoded in [false, true] {
@@ -535,40 +535,40 @@ fn activity_controls_takeover_direct_writes_and_retirement() {
     let code = r#"fn opening() {
         let node = text("moving");
         stage.replace(node);
-        let first = run(tween(node, x: 100, y: 100, duration: 1));
-        pause(first);
+        let first = tween(node, x: 100, y: 100, duration: 1).run();
+        first.pause();
         narrator("paused");
         if node.x != 0 { throw "paused clock"; }
-        resume(first);
+        first.resume();
         narrator("resumed");
         if node.x != 50 { throw "resume clock"; }
         node.opacity = 0.8;
-        pause(first);
-        resume(first);
-        let second = run(tween(node, x: 200, duration: 1));
+        first.pause();
+        first.resume();
+        let second = tween(node, x: 200, duration: 1).run();
         if await first != "Stopped" { throw "takeover"; }
         node.x = node.x;
         if await second != "Stopped" { throw "same-value write"; }
-        let third = run(tween(node, x: 300, duration: 1));
-        finish(third);
-        finish(third);
+        let third = tween(node, x: 300, duration: 1).run();
+        third.finish();
+        third.finish();
         if await third != "Completed" || node.x != 300 { throw "finish"; }
-        let stopped = run(tween(node, x: 400));
-        stop(stopped);
-        finish(stopped);
+        let stopped = tween(node, x: 400).run();
+        stopped.stop();
+        stopped.finish();
         if await stopped != "Stopped" || node.x != 300 { throw "terminal changed"; }
-        if await run(tween(node, x: 20, duration: 0)) != "Completed" || node.x != 20 { throw "zero"; }
-        let independent = run(tween(node, opacity: 1));
+        if await tween(node, x: 20, duration: 0).run() != "Completed" || node.x != 20 { throw "zero"; }
+        let independent = tween(node, opacity: 1).run();
         node.y = 7;
         try { node.opacity = 2; } catch error {}
-        finish(independent);
+        independent.finish();
         if await independent != "Completed" { throw "unrelated or failed write"; }
         let mut invalid = 0;
         try { tween(node, x: 1, duration: -1); } catch error { invalid += 1; }
         try { tween(node, x: 1, easing: "unknown"); } catch error { invalid += 1; }
-        try { run(tween(node, width: 100)); } catch error { invalid += 1; }
+        try { tween(node, width: 100).run(); } catch error { invalid += 1; }
         if invalid != 3 { throw "bad action admitted"; }
-        let retired = run(tween(node, x: 200), owner: node);
+        let retired = tween(node, x: 200).run(owner: node);
         stage.replace(text("new"));
         let mut cancelled = false;
         try { await retired; } catch error { cancelled = true; }
@@ -608,7 +608,7 @@ fn many_activities_use_bounded_time_slices_and_release_terminal_graphs() {
         for i in 0..160 {
             let node = text("particle", x: i);
             nodes.append(node);
-            last = run(tween(node, y: 100, duration: 2));
+            last = tween(node, y: 100, duration: 2).run();
         }
         stage.replace(stack(children: nodes));
         if await last != "Completed" { throw "completion"; }
@@ -676,7 +676,7 @@ fn a_long_sequence_samples_only_its_scheduled_leaf() {
         stage.replace(stack(children: [moving, future]));
         let mut steps = [tween(moving, x: 50, duration: 10)];
         for i in 0..32 { steps.append(tween(future, x: i, duration: 2)); }
-        let motion = run(sequence(...steps));
+        let motion = sequence(...steps).run();
         narrator("moving");
         if moving.x != 5 { throw "active leaf did not sample"; }
         future.remove();
@@ -704,14 +704,14 @@ fn composition_large_and_small_clock_steps_agree_on_delayed_takeover() {
     let source = r#"fn opening() {
         let node = text("moving");
         stage.replace(node);
-        let old = run(tween(node, x: 100, duration: 2));
+        let old = tween(node, x: 100, duration: 2).run();
         let motion = sequence(tween(node, y: 10, duration: 1), tween(node, x: 200, duration: 1));
-        let current = run(motion);
+        let current = motion.run();
         if await current != "Completed" || node.x != 200 || node.y != 10 { throw "composed end"; }
         if await old != "Stopped" { throw "delayed takeover"; }
         node.x = 0;
         node.y = 0;
-        finish(run(motion));
+        motion.run().finish();
         if node.x != 200 || node.y != 10 { throw "description reuse"; }
         true
     }"#;
@@ -742,37 +742,37 @@ fn composed_controls_conflicts_empty_actions_and_failure_terminate_whole_roots()
         let future = text("future", width: 10);
         let holder = column(children: [node, future]);
         stage.replace(holder);
-        let old = run(tween(node, x: 100, duration: 2));
+        let old = tween(node, x: 100, duration: 2).run();
         let mut errors = 0;
-        try { run(parallel(tween(node, x: 7, duration: 0), sequence(tween(node, y: 5), tween(node, x: 9)))); }
+        try { parallel(tween(node, x: 7, duration: 0), sequence(tween(node, y: 5), tween(node, x: 9))).run(); }
         catch error { errors += 1; }
         if node.x != 0 { throw "conflict partially executed"; }
-        finish(old);
+        old.finish();
         if await old != "Completed" || node.x != 100 { throw "conflict stopped old root"; }
-        if await run(sequence()) != "Completed" || await run(parallel()) != "Completed" { throw "empty"; }
-        if await run(repeat(tween(node, x: 7, duration: 0), times: 0)) != "Completed" || node.x != 100 { throw "zero repeat"; }
+        if await sequence().run() != "Completed" || await parallel().run() != "Completed" { throw "empty"; }
+        if await repeat(tween(node, x: 7, duration: 0), times: 0).run() != "Completed" || node.x != 100 { throw "zero repeat"; }
         try { repeat(sequence()); } catch error { errors += 1; }
         try { repeat(tween(node, x: 0), times: -1); } catch error { errors += 1; }
         try { repeat(tween(node, x: 0), times: dynamic(1.5)); } catch error { errors += 1; }
         let cycle = sequence(tween(node, x: 0, duration: 1), tween(node, y: 20, duration: 1));
-        let forever = run(repeat(cycle));
-        pause(forever);
-        try { finish(forever); } catch error { errors += 1; }
+        let forever = repeat(cycle).run();
+        forever.pause();
+        try { forever.finish(); } catch error { errors += 1; }
         if node.x != 100 || errors != 5 { throw "invalid finish changed state"; }
-        stop(forever);
+        forever.stop();
         if await forever != "Stopped" { throw "infinite stop"; }
-        let huge = run(repeat(cycle, times: 9000000000000000000));
-        finish(huge);
+        let huge = repeat(cycle, times: 9000000000000000000).run();
+        huge.finish();
         if await huge != "Completed" || node.x != 0 || node.y != 20 { throw "finite finish"; }
-        let root = run(parallel(tween(node, x: 70), tween(node, y: 80)));
+        let root = parallel(tween(node, x: 70), tween(node, y: 80)).run();
         node.x = node.x;
         if await root != "Stopped" || node.y != 20 { throw "direct write stopped only branch"; }
-        let cancelled = run(sequence(tween(node, x: 50), tween(future, x: 10)));
+        let cancelled = sequence(tween(node, x: 50), tween(future, x: 10)).run();
         future.remove();
         let mut cancelled_ok = false;
         try { await cancelled; } catch error { cancelled_ok = true; }
         if !cancelled_ok { throw "future target retirement"; }
-        let failing = run(sequence(tween(node, y: 30, duration: 1), tween(node, width: 100), tween(node, x: 999)));
+        let failing = sequence(tween(node, y: 30, duration: 1), tween(node, width: 100), tween(node, x: 999)).run();
         node.width = null;
         let mut failed = false;
         try { await failing; } catch error { failed = true; }
@@ -795,13 +795,13 @@ fn nested_loops_reuse_the_graph_and_pause_the_whole_timeline() {
         let node = text("moving");
         stage.replace(node);
         let cycle = sequence(parallel(tween(node, x: 10, duration: 0.5), tween(node, y: 20, duration: 0.25)), tween(node, x: 0, y: 0, duration: 0.5));
-        let activity = run(repeat(cycle));
+        let activity = repeat(cycle).run();
         narrator("looping");
-        pause(activity);
+        activity.pause();
         narrator("paused");
-        resume(activity);
+        activity.resume();
         narrator("resumed");
-        stop(activity);
+        activity.stop();
         if await activity != "Stopped" { throw "stop loop"; }
         true
     }"#;
@@ -860,7 +860,7 @@ fn deep_graph_admission_and_execution_survive_gc_between_every_work_slice() {
         stage.replace(node);
         let mut action = tween(node, x: 10, duration: 1);
         for i in 0..256 { action = sequence(action); }
-        if await run(action) != "Completed" || node.x != 10 { throw "deep graph"; }
+        if await action.run() != "Completed" || node.x != 10 { throw "deep graph"; }
         true
     }"#;
     let (mut session, mut vm) = setup(source, Context::Ordinary);
@@ -911,32 +911,32 @@ fn bound_animation_sources_share_claims_and_release_old_connections() {
         let replacement = text("replacement", x: 30);
         let view = column() { source; a; b; replacement; };
         stage.replace(view);
-        let first = run(tween(a, x: 100, duration: 10));
-        let second = run(tween(b, x: 200, duration: 10));
+        let first = tween(a, x: 100, duration: 10).run();
+        let second = tween(b, x: 200, duration: 10).run();
         if await first != "Stopped" { throw "shared animation claim"; }
-        pause(second);
+        second.pause();
         source.x = 20;
         if await second != "Stopped" { throw "write through source"; }
-        let third = run(tween(b, x: 300, duration: 10));
+        let third = tween(b, x: 300, duration: 10).run();
         a.x = bind(replacement.x);
         if await third != "Stopped" { throw "rebinding stops old chain"; }
-        let old = run(tween(source, x: 40, duration: 10));
-        let fresh = run(tween(b, x: 50, duration: 10));
-        finish(old);
-        finish(fresh);
+        let old = tween(source, x: 40, duration: 10).run();
+        let fresh = tween(b, x: 50, duration: 10).run();
+        old.finish();
+        fresh.finish();
         if await old != "Completed" || await fresh != "Completed" { throw "stale claim"; }
         if source.x != 40 || replacement.x != 50 || a.x != 50 || b.x != 50 { throw "animated propagation"; }
         let mut conflict = false;
-        try { run(parallel(tween(a, x: 60), tween(b, x: 70))); } catch e { conflict = true; }
+        try { parallel(tween(a, x: 60), tween(b, x: 70)).run(); } catch e { conflict = true; }
         if !conflict { throw "parallel alias conflict"; }
-        let fourth = run(tween(b, x: 80));
+        let fourth = tween(b, x: 80).run();
         unbind(bind(a.x));
         if await fourth != "Stopped" { throw "unbind stops dependent animation"; }
         let limit = slider(value: 10, max: 100);
         let panel = stack(width: bind(limit.value));
         view.add(limit);
         view.add(panel);
-        let ongoing = run(tween(panel, width: 80, duration: 1));
+        let ongoing = tween(panel, width: 80, duration: 1).run();
         limit.max = 20;
         let mut failed = false;
         try { await ongoing; } catch e { failed = true; }
@@ -967,18 +967,17 @@ fn skipping_finishes_story_sequences_with_a_small_budget_without_finishing_ui_or
         let looped = text("loop");
         let paused = text("paused");
         stage.replace(column() { moving; ui; default_owned; looped; paused; });
-        let ui_job = run(tween(ui, x: 100, duration: 100), owner: ui);
-        let default_job = run(tween(default_owned, x: 100, duration: 100));
-        let loop_job = run(repeat(tween(looped, x: 100, duration: 100)), skip: "finish");
-        let paused_job = run(tween(paused, x: 100, duration: 100), paused: true, skip: "finish");
-        let job = run(sequence(tween(moving, x: 40, duration: 100),
-                              repeat(tween(moving, x: 80, duration: 100), times: 1000000)),
-                      owner: moving, skip: "finish");
+        let ui_job = tween(ui, x: 100, duration: 100).run(owner: ui);
+        let default_job = tween(default_owned, x: 100, duration: 100).run();
+        let loop_job = repeat(tween(looped, x: 100, duration: 100)).run(skip: "finish");
+        let paused_job = tween(paused, x: 100, duration: 100).run(paused: true, skip: "finish");
+        let job = sequence(tween(moving, x: 40, duration: 100),
+                              repeat(tween(moving, x: 80, duration: 100), times: 1000000)).run(owner: moving, skip: "finish");
         narrator("enable skip");
         if await job != "Completed" || moving.x != 80 { throw "story finish"; }
         if ui.x != 0 || default_owned.x != 0 || looped.x != 0 || paused.x != 0 { throw "keep/control advanced"; }
-        stop(ui_job); stop(default_job); stop(loop_job);
-        resume(paused_job);
+        ui_job.stop(); default_job.stop(); loop_job.stop();
+        paused_job.resume();
         if await paused_job != "Completed" || paused.x != 100 { throw "resumed finish"; }
         narrator("finished");
     }"#;
@@ -1013,7 +1012,7 @@ fn skip_finishes_effects_only_in_the_selected_reading() {
         stage.replace(stack { outside; inside; });
         let parked = tween(outside, x: 10, duration: 100).run(skip: "finish");
         reading(body: |page: Scope| {
-            let active = page.run(tween(inside, x: 10, duration: 100), skip: "finish");
+            let active = tween(inside, x: 10, duration: 100).run(owner: page, skip: "finish");
             game.reading().set_skip(true, unread: true);
             if await active != "Completed" || inside.x != 10 || outside.x != 0 {
                 throw "crossed reading boundary";
@@ -1091,18 +1090,18 @@ fn camera_source_asb_binding_animation_takeover_and_retirement() {
         try { tween(view, zoom: 0); } catch e { rejected += 1; }
         try { tween(readout, camera_x: 10); } catch e { rejected += 1; }
         if rejected != 4 || view.zoom != 1 { throw "camera validation"; }
-        let first = run(tween(view, camera_x: 400, camera_y: 200,
-                              zoom: 2, camera_rotation: 90, duration: 2));
+        let first = tween(view, camera_x: 400, camera_y: 200,
+                              zoom: 2, camera_rotation: 90, duration: 2).run();
         narrator("moving");
-        let second = run(tween(view, camera_x: 500, duration: 1));
+        let second = tween(view, camera_x: 500, duration: 1).run();
         if await first != "Stopped" { throw "takeover"; }
         data.focus = 333;
         if await second != "Stopped" { throw "bound assignment takeover"; }
         if view.camera_x != 333 { throw "binding"; }
-        let third = run(tween(view, camera_x: 350, duration: 1));
-        finish(third);
+        let third = tween(view, camera_x: 350, duration: 1).run();
+        third.finish();
         if await third != "Completed" || data.focus != 350 { throw "released model claim"; }
-        let pending = run(tween(view, zoom: 3, duration: 10), owner: view);
+        let pending = tween(view, zoom: 3, duration: 10).run(owner: view);
         view.remove();
         let mut cancelled = false;
         try { await pending; } catch e { cancelled = true; }
@@ -1214,7 +1213,7 @@ fn main() {
     }
     stage.replace(scene);
     await stage.presented(owner: scene);
-    await run(parallel(...actions), owner: scene);
+    await parallel(...actions).run(owner: scene);
 }
 "##
     .replace("fn main()", "fn opening()");
@@ -1278,12 +1277,12 @@ fn quart_elastic_easing_source_asb_overshoot_pause_restore_and_terminal_values()
         for curve in ["quart_in", "quart_out", "quart_in_out",
                       "elastic_in", "elastic_out", "elastic_in_out"] {
             let node = text(curve); owner.add(node);
-            active.append(run(tween(node, x: 100, duration: 1, easing: curve), owner: owner));
+            active.append(tween(node, x: 100, duration: 1, easing: curve).run(owner: owner));
         }
         narrator("running");
-        for item in active { pause(item); }
+        for item in active { item.pause(); }
         narrator("paused");
-        for item in active { resume(item); }
+        for item in active { item.resume(); }
         narrator("resumed");
         for item in active {
             if await item != "Completed" { throw "curve terminal"; }

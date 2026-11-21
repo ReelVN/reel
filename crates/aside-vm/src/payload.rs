@@ -32,17 +32,28 @@ enum ValueStorage {
 pub(crate) struct Values {
     storage: ValueStorage,
     pub len: u32,
+    // Verified and restored type IDs leave u32::MAX available. Using the
+    // existing padding keeps ordinary heap objects at their original size.
+    array_item: crate::bytecode::TypeId,
 }
 impl Default for Values {
     fn default() -> Self {
         Self {
             storage: ValueStorage::Inline([Value::NULL; INLINE_VALUES]),
             len: 0,
+            array_item: crate::bytecode::TypeId(u32::MAX),
         }
     }
 }
 
 impl Values {
+    pub fn array_item(&self) -> Option<crate::bytecode::TypeId> {
+        (self.array_item.0 != u32::MAX).then_some(self.array_item)
+    }
+    pub fn set_array_item(&mut self, item: crate::bytecode::TypeId) {
+        self.array_item = item;
+    }
+
     pub fn chunks_for_len(len: u64) -> u64 {
         if len <= INLINE_VALUES as u64 {
             0

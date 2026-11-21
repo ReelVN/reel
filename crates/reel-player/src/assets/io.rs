@@ -1,8 +1,12 @@
 use super::worker::{Step, Worker, check_completion};
 mod directory;
 pub(crate) mod file;
+#[cfg(target_arch = "wasm32")]
+mod memory;
 mod pack;
 use file::File;
+#[cfg(target_arch = "wasm32")]
+pub(super) use memory::MemoryIo;
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetSource, ContentVersion, IoId},
@@ -205,6 +209,8 @@ impl PackIo {
 enum Files {
     Directory(directory::Files),
     Pack(pack::Files),
+    #[cfg(target_arch = "wasm32")]
+    Memory(memory::Files),
 }
 impl Files {
     fn open(
@@ -223,6 +229,8 @@ impl Files {
         let file = match self {
             Self::Directory(files) => ReadFile::directory(files.open(source)?),
             Self::Pack(files) => files.entry(source, location)?,
+            #[cfg(target_arch = "wasm32")]
+            Self::Memory(files) => files.open(source)?,
         };
         if source
             .version
@@ -234,7 +242,7 @@ impl Files {
     }
 }
 struct ReadFile<'a> {
-    file: &'a mut File,
+    file: ReadHandle<'a>,
     offset: u64,
     length: u64,
     version: ContentVersion,
@@ -244,10 +252,15 @@ struct ReadFile<'a> {
         &'a mut reel_package::archive::ReadScratch,
     )>,
 }
+enum ReadHandle<'a> {
+    File(&'a mut File),
+    #[cfg(target_arch = "wasm32")]
+    Memory(&'a [u8]),
+}
 impl<'a> ReadFile<'a> {
     fn directory(file: &'a mut directory::OpenFile) -> Self {
         Self {
-            file: &mut file.file,
+            file: ReadHandle::File(&mut file.file),
             offset: 0,
             length: file.length,
             version: file.version,
@@ -264,10 +277,19 @@ impl<'a> ReadFile<'a> {
         read_ahead: bool,
     ) -> Result<(), IoError> {
         let _timing = Scope::new(Phase::ReadPayload);
+        let file = match &mut self.file {
+            ReadHandle::File(file) => &mut **file,
+            #[cfg(target_arch = "wasm32")]
+            ReadHandle::Memory(bytes) => {
+                let start = offset as usize;
+                output.copy_from_slice(&bytes[start..start + output.len()]);
+                return Ok(());
+            }
+        };
         if let Some((entry, scratch)) = &mut self.compressed {
             if let Some(cursor) = cursor {
                 return entry
-                    .read_range_with_cursor(self.file, offset, output, scratch, cursor, || {
+                    .read_range_with_cursor(file, offset, output, scratch, cursor, || {
                         cancelled.load(Ordering::Acquire)
                     })
                     .map_err(io_error);
@@ -275,19 +297,18 @@ impl<'a> ReadFile<'a> {
             let mut cursor = entry.read_cursor(offset, output.len()).map_err(io_error)?;
             cursor.set_read_ahead(read_ahead);
             return entry
-                .read_range_with_cursor(self.file, offset, output, scratch, &mut cursor, || {
+                .read_range_with_cursor(file, offset, output, scratch, &mut cursor, || {
                     cancelled.load(Ordering::Acquire)
                 })
                 .map_err(io_error);
         }
-        self.file
-            .seek(SeekFrom::Start(self.offset + offset))
+        file.seek(SeekFrom::Start(self.offset + offset))
             .map_err(io_error)?;
         for chunk in output.chunks_mut(reel_package::archive::BLOCK_BYTES) {
             if cancelled.load(Ordering::Acquire) {
                 return Err(failure("read cancelled"));
             }
-            self.file.read_exact(chunk).map_err(io_error)?;
+            file.read_exact(chunk).map_err(io_error)?;
         }
         Ok(())
     }
@@ -310,7 +331,7 @@ impl FileIo {
     ) -> Self {
         let indexes = match &files {
             Files::Pack(files) => files.immutable_indexes(),
-            Files::Directory(_) => None,
+            _ => None,
         };
         let files = Mutex::new(files);
         Self {
@@ -344,7 +365,7 @@ impl FileIo {
                             if let Some(observer) = &observer {
                                 let seeks = match &*files {
                                     Files::Pack(files) => files.seek_calls(),
-                                    Files::Directory(_) => 0,
+                                    _ => 0,
                                 };
                                 observer(
                                     id,
@@ -412,6 +433,7 @@ fn io_error(error: std::io::Error) -> IoError {
     reason = "rejection returns the owning request without allocating"
 )]
 impl AssetIo for FileIo {
+    #[cfg(not(target_arch = "wasm32"))]
     fn background_reader(&self, wake: WakeSignal) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
         Ok(Box::new(Self {
             worker: self.worker.client(wake)?,
@@ -521,6 +543,8 @@ impl AssetIo for FileIo {
         self.worker.cancel(id.0);
     }
     fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
+        #[cfg(target_arch = "wasm32")]
+        self.worker.advance(limit.min(4) as u32);
         self.worker.drain(out, limit);
     }
 }
@@ -570,3 +594,5 @@ macro_rules! forward_asset_io {
 }
 forward_asset_io!(DirectoryIo);
 forward_asset_io!(PackIo);
+#[cfg(target_arch = "wasm32")]
+forward_asset_io!(MemoryIo);

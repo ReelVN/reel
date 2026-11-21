@@ -11,7 +11,7 @@ fn vm_snapshot_reports_selected_task_execution_and_collection_progress() {
     };
     let driver = crate::aside_session::AsideSessionUi::from_source(
         Session::new(SessionId(1), Epoch(1)).unwrap(),
-        "fn main() { await run(delay(1)); }",
+        "fn main() { await delay(1).run(); }",
         "probe_wait",
         1,
         "main",

@@ -94,7 +94,7 @@ fn scope_override_target_retirement_and_task_cancellation_release_layers() {
         let entered=completion(); let state={effect:null,motion:null};
         let job=spawn(|| scope(body: |s| {
             state.effect=s.override(panel,{x:10});
-            state.motion=run(tween(state.effect,x:20,duration:20),owner:root);
+            state.motion=tween(state.effect,x:20,duration:20).run(owner:root);
             entered.resolve(); await completion();
         }));
         await entered; narrator("save layer");
@@ -121,12 +121,12 @@ fn scope_override_target_retirement_and_task_cancellation_release_layers() {
 fn scope_override_independent_and_hidden_animations_continue_after_restore() {
     let code = r#"fn opening() {
         let panel=text("covered",x:0); stage.replace(panel);
-        let base=run(tween(panel,x:100,duration:10));
+        let base=tween(panel,x:100,duration:10).run();
         scope(body: |s| {
             let lower=s.override(panel,{x:200});
-            let hidden=s.run(tween(lower,x:300,duration:10));
+            let hidden=tween(lower,x:300,duration:10).run(owner: s);
             let upper=s.override(panel,{x:400});
-            let top=s.run(tween(upper,x:500,duration:10));
+            let top=tween(upper,x:500,duration:10).run(owner: s);
             narrator("moving");
             if panel.x!=50 || lower.x!=250 || upper.x!=450 { throw "independent writers"; }
             upper.remove();
@@ -136,7 +136,7 @@ fn scope_override_independent_and_hidden_animations_continue_after_restore() {
             try { await hidden; } catch error {}
         });
         narrator("base continued");
-        finish(base); if await base!="Completed" || panel.x!=100 { throw "base animation"; }
+        base.finish(); if await base!="Completed" || panel.x!=100 { throw "base animation"; }
     }"#;
     for encoded in [false, true] {
         let (mut session, mut vm) = prepared(code, encoded);
@@ -165,15 +165,15 @@ fn scope_override_real_binding_sources_conflict_and_reject_derived_writes() {
         let panel=text("covered",x:bind(data.x)); stage.replace(panel);
         scope(body: |s| {
             let effect=s.override(panel,{x:bind(data.x)});
-            let first=run(tween(panel,x:100,duration:10));
-            let second=run(tween(effect,x:200,duration:10));
+            let first=tween(panel,x:100,duration:10).run();
+            let second=tween(effect,x:200,duration:10).run();
             if await first!="Stopped" { throw "same source did not conflict"; }
             effect.x=5;
             if await second!="Stopped" || data.x!=5 || panel.x!=5 { throw "layer write through"; }
             effect.x=derive(|| data.x*2);
             let mut rejected=0;
             try { effect.x=8; } catch error { rejected+=1; }
-            try { run(tween(effect,x:8)); } catch error { rejected+=1; }
+            try { tween(effect,x:8).run(); } catch error { rejected+=1; }
             if rejected!=2 { throw "derived layer became writable"; }
             narrator("derived");
         });

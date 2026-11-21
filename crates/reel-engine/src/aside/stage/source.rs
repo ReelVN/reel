@@ -58,6 +58,10 @@ pub(in crate::aside) fn properties(symbol: &str) -> Vec<PropertyDocumentation> {
         "reel::particles" => schema::<super::super::particles::ParticleField>(),
         _ => Vec::new(),
     };
+    if symbol == "reel::video" {
+        properties[appearance::ImageField::Source.index()].markdown =
+            "The video asset path. The property is read-only after construction.";
+    }
     properties.extend(schema::<NodeProperty>());
     properties
 }

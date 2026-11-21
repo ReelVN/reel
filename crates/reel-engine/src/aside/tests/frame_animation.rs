@@ -13,7 +13,7 @@ fn source(clock: bool, noise: bool) -> String {
     let body = if clock {
         r#"let timer=clock(interval:0.125,paused:true,owner:owner);
         owner.add(image(source:derive(||frames[timer.ticks%frames.len()]),width:64,height:64));
-        stage.replace(owner);resume(timer);"#
+        stage.replace(owner);timer.resume();"#
     } else if noise {
         r#"let images=[];
         for index in 0..frames.len() {
@@ -22,15 +22,15 @@ fn source(clock: bool, noise: bool) -> String {
         }
         stage.replace(owner);
         spawn(|| {let mut frame=0;loop {
-            await run(delay(0.125));images[frame].visible=false;
+            await delay(0.125).run();images[frame].visible=false;
             frame=(frame+1)%frames.len();images[frame].visible=true;
         }},owner:owner);"#
     } else {
         r#"let picture=image(frames[0],width:64,height:64);owner.add(picture);
         stage.replace(owner);
         spawn(|| {loop {
-            await run(delay(0.125));picture.source=frames[1];
-            await run(delay(0.125));picture.source=frames[0];
+            await delay(0.125).run();picture.source=frames[1];
+            await delay(0.125).run();picture.source=frames[0];
         }},owner:owner);"#
     };
     format!("fn opening() {{{setup}{body}narrator(\"running\");}}")
@@ -172,9 +172,9 @@ fn frame_animation_waits_for_presentation_and_preserves_pause_restore_and_retire
         let timer=clock(interval:0.125,paused:true,owner:owner);
         owner.add(image(source:derive(||frames[timer.ticks%frames.len()]),width:64,height:64));
         stage.replace(owner);
-        await stage.presented(owner:owner);resume(timer);
-        narrator("started");pause(timer);narrator("paused");
-        resume(timer);narrator("resumed");stop(timer);narrator("stopped");
+        await stage.presented(owner:owner);timer.resume();
+        narrator("started");timer.pause();narrator("paused");
+        timer.resume();narrator("resumed");timer.stop();narrator("stopped");
         let retiring=clock(interval:0.125,owner:owner);owner.remove();
         let mut cancelled=false;try {await retiring;}catch error {cancelled=true;}
         if !cancelled {throw "clock owner survived retirement";}

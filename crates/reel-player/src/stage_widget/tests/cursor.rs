@@ -481,7 +481,7 @@ fn cursor_snapshot_restores_subtree_and_owned_activity() {
         r##"fn main() {
             let pointer=cursor(width:20,height:20) {stack(width:20,height:20,background:"#ff0000");};
             stage.replace(stack(width:640,height:420,children:[pointer]));
-            run(repeat(sequence(tween(pointer,opacity:0.2,duration:1),tween(pointer,opacity:1,duration:1))),owner:pointer);
+            repeat(sequence(tween(pointer,opacity:0.2,duration:1),tween(pointer,opacity:1,duration:1))).run(owner:pointer);
         }"##,"main",1,"main","en",VmLimits::default()).unwrap();
     drain(&mut live);
     while live.advance_time(0.5, 16).unwrap().pending {}

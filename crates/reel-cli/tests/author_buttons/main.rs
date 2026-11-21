@@ -234,7 +234,7 @@ mod author_exit {
             let source = if callback {
                 r#"fn main() {
                 stage.replace(button("Exit", width: 200, height: 80, on_click: |event| {
-                    await run(delay(0.5));
+                    await delay(0.5).run();
                     game.exit();
                     throw "callback continued after exit";
                 }));
@@ -243,7 +243,7 @@ mod author_exit {
             }"#
             } else {
                 r#"fn main() {
-                run(repeat(delay(60)));
+                repeat(delay(60)).run();
                 game.exit();
                 throw "main continued after exit";
             }"#
@@ -556,15 +556,15 @@ mod dynamic_stage {
     let blue = stack(width: 20, height: 20, background: "#0000ff");
     let root = row(x: 10, y: 10) { red; blue; };
     stage.replace(root);
-    await run(tween(root, duration: 1));
+    await tween(root, duration: 1).run();
     root.add(stack(width: 20, height: 20, background: "#00ff00"), index: 1);
-    await run(tween(root, duration: 1));
+    await tween(root, duration: 1).run();
     red.remove();
-    await run(tween(root, duration: 1));
+    await tween(root, duration: 1).run();
     root.clear();
-    await run(tween(root, duration: 1));
+    await tween(root, duration: 1).run();
     root.add(stack(width: 20, height: 20, background: "#ffff00"));
-    await run(tween(root, duration: 1));
+    await tween(root, duration: 1).run();
 }"##;
 
     fn wait(driver: &mut AsideSessionUi) {

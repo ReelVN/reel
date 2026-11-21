@@ -48,7 +48,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ],
     );
     api.refine(
-        "reel::run",
+        "reel::action::run",
         activity.clone(),
         &[
             ("action", action.clone()),
@@ -63,13 +63,6 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             ("skip", skip_type()),
         ],
     );
-    for symbol in ["then", "together"] {
-        api.refine(
-            &format!("reel::action::{symbol}"),
-            action.clone(),
-            &[("action", action.clone()), ("other", action.clone())],
-        );
-    }
     api.refine(
         "reel::clock",
         named("reel::types::Clock"),
@@ -80,32 +73,12 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         TypeHint::Int,
         &[("clock", named("reel::types::Clock"))],
     );
-    let producer = TypeHint::Union(vec![
-        activity,
-        named("reel::types::Playback"),
-        named("reel::types::ParticleActivity"),
-    ]);
-    for symbol in ["pause", "resume", "stop", "finish"] {
-        api.refine(
-            &format!("reel::{symbol}"),
-            producer.clone(),
-            &[("activity", producer.clone())],
-        );
-        api.native_mut(&format!("reel::{symbol}"))
-            .returns_parameter("activity");
-    }
     api.types.push(NamedType::new(
         "reel::types::Action",
         "An immutable action description. Sequence, parallel and repeat compose actions; run starts an independent activity.",
-        [
-            ("then", "reel::action::then"),
-            ("together", "reel::action::together"),
-            ("repeat", "reel::repeat"),
-            ("run", "reel::run"),
-        ]
-        .into_iter()
-        .map(|(name, symbol)| Member::method(api.native(symbol).clone().bound(name)))
-        .collect(),
+        vec![Member::method(
+            api.native("reel::action::run").clone().bound("run"),
+        )],
     ));
     let mut base = NamedType::new(
         "reel::types::Activity",
@@ -152,7 +125,7 @@ pub(super) fn describe_controls(api: &mut aside_host::source::Api) {
             .into_iter()
             .map(|name| {
                 Member::method(
-                    api.native(&format!("reel::{name}"))
+                    api.native(&format!("reel::activity::{name}"))
                         .clone()
                         .bound(name)
                         .types(named(&owner), &[]),
@@ -182,12 +155,6 @@ aside_host::native_documentation! {
         "reel::sequence";
         /// Describe actions played together, completing when all children complete.
         "reel::parallel";
-        /// Follow this action with `other`. Both descriptions remain reusable;
-        /// the returned action shares them without copying their contents.
-        "reel::action::then";
-        /// Run this action and `other` together, completing when both finish.
-        /// Each chained operation combines the complete preceding expression.
-        "reel::action::together";
         /// Describe repeated execution of an action. `times: null` repeats indefinitely;
         /// a nonnegative integer count finishes after that many iterations.
         "reel::repeat";
@@ -196,7 +163,7 @@ aside_host::native_documentation! {
         /// task owner. `skip: "finish"` allows fast-forward in the current reading
         /// context to finish a running, finite activity; `"keep"` preserves its timing.
         /// Await returns Completed or Stopped; retirement cancels the activity.
-        "reel::run";
+        "reel::action::run";
         /// Start a periodic activity with observable integer ticks and elapsed seconds.
         /// Publish the latest complete interval when time advances. Pause freezes time;
         /// stop settles the activity. A clock has no finite endpoint for `finish`.
@@ -212,14 +179,14 @@ aside_host::native_documentation! {
         "reel::activity::await";
         /// Pause the activity at its current progress. Its owner and saved state remain
         /// active; `resume` continues from that progress.
-        "reel::pause";
+        "reel::activity::pause";
         /// Resume a paused activity from its saved progress.
-        "reel::resume";
+        "reel::activity::resume";
         /// Stop the activity at its current progress and settle its waiters as Stopped.
-        "reel::stop";
+        "reel::activity::stop";
         /// Apply the finite activity's endpoint and settle it as Completed. Indefinite
         /// clocks, repetitions and continuous emissions have no endpoint.
-        "reel::finish";
+        "reel::activity::finish";
     }
 }
 pub(super) mod easing;

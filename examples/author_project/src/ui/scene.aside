@@ -8,7 +8,7 @@ pub fn scene() {
             "改变画面", x: 24, y: 100,
             on_click: |event| {
                 caption.value = "同一个节点，新的画面。";
-                await run(tween(caption, x: 48, duration: 0.3));
+                await tween(caption, x: 48, duration: 0.3).run();
             }
         );
     };

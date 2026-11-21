@@ -71,6 +71,7 @@ pub(in crate::aside) enum SliderField {
 pub(in crate::aside) enum ToggleField {
     #[aside(name = "label", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_label)]
     Label,
+    /// The on/off state. Bind a writable bool to share the control's state.
     #[aside(name = "value", ty = Bool, default = false)]
     Value,
     #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]

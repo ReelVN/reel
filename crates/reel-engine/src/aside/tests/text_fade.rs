@@ -49,9 +49,9 @@ fn text_fade_scalar_source_asb_binding_tween_cancel_and_snapshot() {
         try {node.reveal_fade_from=-1;}catch error{rejected+=1;}
         try {let _ = text("雪",reveal_fade_from:1);}catch error{rejected+=1;}
         if rejected!=4 {throw "fade input contract";}
-        let moving=run(tween(node,reveal_fade:1,reveal_fade_step:0.5,duration:2));
+        let moving=tween(node,reveal_fade:1,reveal_fade_step:0.5,duration:2).run();
         narrator("moving");
-        stop(moving);
+        moving.stop();
         if await moving!="Stopped" || node.reveal_fade!=0.5 {throw "fade stop must preserve progress";}
         narrator("stopped");
         node.reveal_fade=null;

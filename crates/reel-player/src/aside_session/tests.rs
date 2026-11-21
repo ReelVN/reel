@@ -108,7 +108,7 @@ fn fault_is_stable_inspectable_and_cancel_retires_delivery() {
 
 #[test]
 fn cancelling_published_wait_prevents_further_drive() {
-    let mut d = driver("use reel::prelude::*; fn main() { narrator(\"wait\"); }");
+    let mut d = driver("use reel::*; fn main() { narrator(\"wait\"); }");
     let mut published = false;
     for _ in 0..10_000 {
         if matches!(tick(&mut d), StoryProgress::Interaction(_)) {

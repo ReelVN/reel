@@ -17,6 +17,7 @@ use std::sync::Arc;
 pub struct RestoredCheckpoint {
     record: Arc<CheckpointRecord>,
     root: RootToken,
+    pub(super) voice: Value,
     _charge: HeapReservation,
 }
 impl RestoredCheckpoint {
@@ -197,15 +198,25 @@ impl CheckpointDataRestore {
                 .flatten()
                 .filter(|binding| matches!(binding, CheckpointBinding::Data(_)))
                 .count();
-            if info.kind != ObjectKind::Array || info.len as usize != count {
+            if info.kind != ObjectKind::Array || !(count..=count + 1).contains(&(info.len as usize)) {
                 return Err(CheckpointError::Contract(
                     "checkpoint root array differs from its binding contract",
                 ));
             }
+            let voice = if info.len as usize == count + 1 {
+                let value = heap.sequence_get(array, count as u32)?;
+                if !crate::aside::media::is_media(heap, value) {
+                    return Err(CheckpointError::Contract("invalid restored dialogue voice"));
+                }
+                value
+            } else {
+                Value::NULL
+            };
             self.charge.resize(self.record.retained_bytes())?;
             Ok(RestoredCheckpoint {
                 record: self.record,
                 root,
+                voice,
                 _charge: self.charge,
             })
         })();

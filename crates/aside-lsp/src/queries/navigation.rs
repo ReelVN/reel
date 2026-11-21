@@ -1,4 +1,5 @@
 //! Hover, definition and call signature queries.
+use super::completion::argument_offset;
 use super::*;
 
 impl Workspace {
@@ -347,6 +348,7 @@ impl Workspace {
         uri: &Uri,
         position: Position,
         encoding: Encoding,
+        markup: &MarkupKind,
     ) -> Result<Option<SignatureHelp>, String> {
         let snapshot = self.snapshot(uri)?;
         let source = snapshot.source();
@@ -357,6 +359,7 @@ impl Workspace {
         let Some(module) = snapshot.module() else {
             return Ok(None);
         };
+        let offset = argument_offset(source, offset);
         let Some((callee, args)) = call_at(module, offset) else {
             return Ok(None);
         };
@@ -365,36 +368,56 @@ impl Workspace {
         };
         let active = active_parameter(module, args, offset, &signature)
             .min(signature.parameters.len().saturating_sub(1)) as u32;
-        let mut parameter_offset = 4 + signature.name.encode_utf16().count() as u32;
+        let multiline = signature.label.chars().count() > SIGNATURE_LINE_LIMIT
+            && !signature.parameters.is_empty();
+        let mut label = format!("{} {}(", signature.prefix, signature.name);
+        if multiline {
+            label.push_str("\n    ");
+        }
+        let mut parameter_offset = label.encode_utf16().count() as u32;
+        let separator = if multiline { ",\n    " } else { ", " };
+        let documentation = |value| match markup {
+            MarkupKind::Markdown => Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            MarkupKind::PlainText => Documentation::String(value),
+        };
         let parameters = signature
             .parameters
             .into_iter()
-            .map(|(name, label)| {
-                let end = parameter_offset + label.encode_utf16().count() as u32;
-                let label = if name.is_empty() {
+            .enumerate()
+            .map(|(index, (name, parameter))| {
+                if index != 0 {
+                    label.push_str(separator);
+                    parameter_offset += separator.len() as u32;
+                }
+                label.push_str(&parameter);
+                let end = parameter_offset + parameter.encode_utf16().count() as u32;
+                let parameter = if name.is_empty() {
                     ParameterLabel::LabelOffsets([parameter_offset, end])
                 } else {
-                    ParameterLabel::Simple(label)
+                    ParameterLabel::Simple(parameter)
                 };
-                parameter_offset = end + 2;
+                parameter_offset = end;
                 ParameterInformation {
-                    label,
+                    label: parameter,
                     documentation: signature
                         .parameter_documentation
                         .get(&name)
-                        .map(|markdown| {
-                            Documentation::MarkupContent(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: markdown.to_string(),
-                            })
-                        }),
+                        .map(|markdown| documentation(markdown.to_string())),
                 }
             })
             .collect();
+        if multiline {
+            label.push_str(",\n");
+        }
+        label.push_str(") -> ");
+        label.push_str(&signature.result);
         Ok(Some(SignatureHelp {
             signatures: vec![SignatureInformation {
-                label: signature.label,
-                documentation: signature.markdown.map(Documentation::String),
+                label,
+                documentation: signature.markdown.map(documentation),
                 parameters: Some(parameters),
                 active_parameter: Some(active),
             }],

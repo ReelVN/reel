@@ -17,13 +17,9 @@ impl SessionVm {
             return Ok(NativeDispatch::Ready { work });
         }
         let p = self.vm.program().package();
-        let media_read = match p.symbols[p.natives[ticket.native.index()].symbol.index()].as_str() {
-            "reel::audio::position" => Some("reel::audio::position"),
-            "reel::video::position" => Some("reel::video::position"),
-            _ => None,
-        };
-        if let Some(symbol) = media_read {
-            self.dispatch_media(session, ticket, symbol)?;
+        let symbol = &p.symbols[p.natives[ticket.native.index()].symbol.index()];
+        if symbol == "reel::playback::position" {
+            self.dispatch_media(session, ticket, "reel::playback::position")?;
             return Ok(NativeDispatch::Ready { work: 1 });
         }
         // Retain the verified program while dispatch mutates the VM. Its immutable
@@ -251,19 +247,16 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::video::play"
-            | "reel::video::seek"
-            | "reel::video::position"
+            | "reel::playback::seek"
+            | "reel::playback::at"
             | "reel::audio::play"
             | "reel::audio::queue"
             | "reel::audio::volume"
+            | "reel::audio::duck"
             | "reel::audio::await"
             | "reel::audio::group_volume"
             | "reel::audio::pan"
             | "reel::audio::rate"
-            | "reel::audio::seek"
-            | "reel::audio::at"
-            | "reel::video::at"
-            | "reel::audio::position"
             | "reel::audio::stop" => {
                 if symbol == "reel::audio::await" {
                     self.check_wait(session, ticket)?;
@@ -343,24 +336,14 @@ impl SessionVm {
                 self.configure_game(ticket)?;
                 Ok(NativeDispatch::Ready { work: 4 })
             }
-            "reel::sequence"
-            | "reel::parallel"
-            | "reel::action::then"
-            | "reel::action::together" => {
-                let pair = symbol.starts_with("reel::action::");
-                let kind = if matches!(symbol, "reel::sequence" | "reel::action::then") {
+            "reel::sequence" | "reel::parallel" => {
+                let kind = if symbol == "reel::sequence" {
                     activity::action::Kind::Sequence
                 } else {
                     activity::action::Kind::Parallel
                 };
-                let work = activity::action::compose(
-                    &mut self.vm,
-                    &self.stage.types,
-                    ticket,
-                    kind,
-                    pair,
-                    work,
-                )?;
+                let work =
+                    activity::action::compose(&mut self.vm, &self.stage.types, ticket, kind, work)?;
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work })
             }
@@ -396,13 +379,9 @@ impl SessionVm {
                 self.dispatch_scope_add(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
-            "reel::run" | "reel::clock" | "reel::scope::run" => {
+            "reel::action::run" | "reel::clock" => {
                 let args = self.vm.host_arguments(ticket)?;
-                let [action, owner, paused] = if symbol == "reel::scope::run" {
-                    [args[1], args[0], args[2]]
-                } else {
-                    [args[0], args[1], args[2]]
-                };
+                let [action, owner, paused] = [args[0], args[1], args[2]];
                 let skip = (symbol != "reel::clock").then(|| (args[3], session.reading_id));
                 let owner = if owner.tag() == aside_vm::ValueTag::Null {
                     self.default_activity_owner(ticket.task)?
@@ -464,10 +443,10 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
-            "reel::pause"
-            | "reel::resume"
-            | "reel::stop"
-            | "reel::finish"
+            "reel::activity::pause"
+            | "reel::activity::resume"
+            | "reel::activity::stop"
+            | "reel::activity::finish"
             | "reel::activity::await" => {
                 if results::kind(self.vm.heap(), self.vm.host_arguments(ticket)?[0]).ok()
                     == Some(results::Kind::Particle)
@@ -480,10 +459,10 @@ impl SessionVm {
                     return Ok(NativeDispatch::Ready { work: 1 });
                 }
                 let command = match symbol {
-                    "reel::pause" => activity::Command::Pause,
-                    "reel::resume" => activity::Command::Resume,
-                    "reel::stop" => activity::Command::Stop,
-                    "reel::finish" => activity::Command::Finish,
+                    "reel::activity::pause" => activity::Command::Pause,
+                    "reel::activity::resume" => activity::Command::Resume,
+                    "reel::activity::stop" => activity::Command::Stop,
+                    "reel::activity::finish" => activity::Command::Finish,
                     _ => {
                         self.check_wait(session, ticket)?;
                         activity::Command::Await

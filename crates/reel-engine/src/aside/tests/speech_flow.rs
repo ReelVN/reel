@@ -267,7 +267,7 @@ fn speech_component_composes_playback_and_visual_activity_waits_source_asb() {
             let appearance:Activity;
             fn init(self,speech:Speech,node:Node) {
                 self.speech=speech;
-                self.appearance=run(tween(node,reveal_fade:1,duration:2),owner:node);
+                self.appearance=tween(node,reveal_fade:1,duration:2).run(owner:node);
             }
             fn revealed(self)->AnimatedSpeech {
                 self.speech.revealed();await self.appearance;self

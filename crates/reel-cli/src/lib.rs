@@ -176,6 +176,14 @@ pub fn source_failure(failure: SourceError) -> Failure {
             result.diagnostics[0].source = Some(failure.module);
             result
         }
+        SourceError::NativeArgument(failure) => Failure {
+            stage: "analyze",
+            diagnostics: vec![ReportedDiagnostic {
+                source: Some(failure.module),
+                diagnostic: failure.diagnostic,
+            }],
+            code: None,
+        },
         SourceError::Analysis(failure) => {
             Failure {
                 stage: if failure.diagnostics.iter().any(|d| {
@@ -285,9 +293,17 @@ pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failur
 }
 
 pub fn diagnostic_json(diagnostic: &Diagnostic, map: &SourceMap<'_>) -> Value {
-    let range = |span: TextRange| {
+    diagnostic_json_with(diagnostic, map, |_| None)
+}
+
+pub fn diagnostic_json_with<'a>(
+    diagnostic: &Diagnostic,
+    map: &SourceMap<'_>,
+    related_source: impl Fn(&str) -> Option<&'a str>,
+) -> Value {
+    let range = |map: Option<&SourceMap<'_>>, span: TextRange| {
         let position = |offset: usize| {
-            map.position(offset).map(|p| {
+            map.and_then(|map| map.position(offset)).map(|p| {
                 json!({
                     "line": p.line, "byte_column": p.byte_column,
                     "scalar_column": p.scalar_column, "utf16_column": p.utf16_column
@@ -300,9 +316,16 @@ pub fn diagnostic_json(diagnostic: &Diagnostic, map: &SourceMap<'_>) -> Value {
     json!({
         "code": diagnostic.code.as_str(),
         "severity": match diagnostic.severity { aside_compiler::Severity::Error => "error", aside_compiler::Severity::Warning => "warning" },
-        "message": diagnostic.message, "range": range(diagnostic.range),
-        "related": diagnostic.related.iter().map(|r| json!({"range": range(r.range), "message": r.message})).collect::<Vec<_>>(),
-        "fix": diagnostic.fix.as_ref().map(|f| json!({"range": range(f.range), "replacement": f.replacement}))
+        "message": diagnostic.message, "range": range(Some(map), diagnostic.range),
+        "related": diagnostic.related.iter().map(|related| {
+            if let Some(path) = &related.source {
+                let source = related_source(path).map(SourceMap::new);
+                json!({"source": path, "range": range(source.as_ref(), related.range), "message": related.message})
+            } else {
+                json!({"range": range(Some(map), related.range), "message": related.message})
+            }
+        }).collect::<Vec<_>>(),
+        "fix": diagnostic.fix.as_ref().map(|f| json!({"range": range(Some(map), f.range), "replacement": f.replacement}))
     })
 }
 

@@ -69,7 +69,7 @@ fn scope_nodes_restore_without_rebuilding_and_cancel_node_owned_work() {
             state.created+=1;
             state.page=s.add(root,stack() { text("temporary page"); });
             state.child=spawn(|| await completion(),owner:state.page);
-            state.motion=run(tween(state.page,x:100,duration:10),owner:state.page);
+            state.motion=tween(state.page,x:100,duration:10).run(owner:state.page);
             state.presented=stage.presented(owner:state.page);
             entered.resolve();
             await completion();
@@ -219,19 +219,19 @@ fn effect_scope_return_fault_and_task_cancel_retire_owned_work() {
         let node = stack(); stage.replace(node);
         let handles = {motion:null, child:null, wait:null, explicit:null};
         let result = scope(body: |s| {
-            handles.motion = s.run(tween(node, x:100, duration:10));
+            handles.motion = tween(node, x:100, duration:10).run(owner: s);
             handles.child = s.spawn(|| await completion());
             handles.wait = completion();
-            handles.explicit = run(delay(10), owner:node);
+            handles.explicit = delay(10).run(owner:node);
             42
         });
         if result != 42 { throw "scope return"; }
         cancelled(handles.motion); cancelled(handles.child); cancelled(handles.wait);
-        finish(handles.explicit);
+        handles.explicit.finish();
         let original = {reason:"source error"};
         let mut caught = false;
         try { scope(body: || {
-            handles.motion = run(tween(node, x:100, duration:10));
+            handles.motion = tween(node, x:100, duration:10).run();
             throw original;
         }); } catch error { caught = error == original; }
         if !caught { throw "scope error identity"; }
@@ -239,7 +239,7 @@ fn effect_scope_return_fault_and_task_cancel_retire_owned_work() {
         let started = completion();
         let state = {cleanup:false};
         let worker = spawn(|| scope(body: || {
-            handles.motion = run(tween(node, x:200, duration:10));
+            handles.motion = tween(node, x:200, duration:10).run();
             handles.child = spawn(|| await completion());
             started.resolve();
             try { await completion(); } finally { state.cleanup = true; }
@@ -309,7 +309,7 @@ fn effect_scope_restore_waiting_or_during_callback_cleanup() {
         let started = {value:0}; let child = {value:null};
         try { scope(owner:owner, body: || {
             started.value += 1;
-            run(repeat(delay(1)));
+            repeat(delay(1)).run();
             child.value = spawn(|| await completion());
             await completion();
         }); } catch error { if error != "ScopeCancelled" { throw error; } }
@@ -408,7 +408,7 @@ fn effect_scope_cancels_story_wait_and_allows_following_dialogue() {
         let code = format!(
             r#"fn opening() {{
             let owner=stack(); stage.replace(owner);
-            spawn(|| {{ await run(delay(1)); owner.remove(); }});
+            spawn(|| {{ await delay(1).run(); owner.remove(); }});
             try {{ scope(owner:owner, body: || {{ {wait}; throw "old input resumed"; }}); }}
             catch error {{ if error != "ScopeCancelled" {{ throw error; }} }}
             narrator("after scope");
@@ -474,7 +474,7 @@ fn scope_cancel_self_and_pending_request_restore_preserve_outer_fault_boundary()
         try {scope(body:|s| {
             state.cancel=s.cancel;
             state.child=s.spawn(||await completion());
-            state.motion=s.run(tween(root,x:50,duration:10));
+            state.motion=tween(root,x:50,duration:10).run(owner: s);
             scope(body:|| {
                 try {
                     state.cancel();state.after=true;
@@ -736,12 +736,12 @@ fn scope_and_override_shared_methods_keep_receivers_through_gc_restore_and_retir
         let root=stack();stage.replace(root);
         let saved={finish:null,cancel:null,remove:null,node:null};
         let result=scope(body: |s| {
-            let add=s.add;let run=s.run;let spawn=s.spawn;
+            let add=s.add;let spawn=s.spawn;
             let cover=s.override;let offset=s.offset;
             saved.finish=s.finish;saved.cancel=s.cancel;
             saved.node=add(root,text("owned"));
             if await spawn(||42)!=42 {throw "shared spawn receiver";}
-            await run(delay(0));
+            await delay(0).run(owner: s);
             let tint=cover(saved.node,{opacity:0.4});
             let shift=offset(saved.node,x:7,y:3);
             saved.remove=tint.remove;

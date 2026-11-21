@@ -24,7 +24,7 @@ fn moving_images_reuse_fixed_property_storage() {
             r#"fn opening() {{
             let panel = {constructor};
             stage.replace(panel);
-            run(tween(panel, x: 100, duration: 100));
+            tween(panel, x: 100, duration: 100).run();
             narrator("measure");
         }}"#
         );

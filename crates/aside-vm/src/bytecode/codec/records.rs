@@ -385,9 +385,20 @@ impl Wire for TypeDef {
                 5u8.put(w)?;
                 text.put(w)?;
             }
+            Self::Record(fields) if fields.iter().any(|field| field.optional) => {
+                8u8.put(w)?;
+                put_vec_with(fields, w, |field, w| {
+                    field.put(w)?;
+                    field.optional.put(w)
+                })?;
+            }
             Self::Record(fields) => {
                 6u8.put(w)?;
                 fields.put(w)?;
+            }
+            Self::Array(item) => {
+                7u8.put(w)?;
+                item.put(w)?;
             }
         }
         Ok(())
@@ -408,6 +419,14 @@ impl Wire for TypeDef {
             }),
             5 => Ok(Self::StringLiteral(Wire::get(r)?)),
             6 => Ok(Self::Record(Wire::get(r)?)),
+            7 => Ok(Self::Array(Wire::get(r)?)),
+            8 => Ok(Self::Record(
+                counted_vec_with(r, |r| {
+                    let mut field = RecordFieldType::get(r)?;
+                    field.optional = bool::get(r)?;
+                    Ok(field)
+                })?.0,
+            )),
             _ => Err(r.error(ErrorKind::Encoding, "type tag")),
         }
     }
@@ -422,6 +441,7 @@ impl Wire for RecordFieldType {
         Ok(Self {
             name: Wire::get(r)?,
             ty: Wire::get(r)?,
+            optional: false,
         })
     }
 }

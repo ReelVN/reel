@@ -4,9 +4,9 @@ use clap::Parser;
 use std::{path::PathBuf, process::ExitCode};
 
 #[derive(Parser)]
-#[command(about = "Play the game next to this executable")]
+#[command(about = "Play the game in this release")]
 struct Options {
-    /// Override the save directory; defaults to saves beside this executable.
+    /// Override the release's default save directory.
     #[arg(long, value_name = "DIRECTORY")]
     save_directory: Option<PathBuf>,
 }

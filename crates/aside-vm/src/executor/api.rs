@@ -440,6 +440,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::MakeClosure,
     Opcode::MakeTuple,
     Opcode::MakeArray,
+    Opcode::MakeTypedArray,
     Opcode::MakeTable,
     Opcode::MakeClass,
     Opcode::SuperRef,

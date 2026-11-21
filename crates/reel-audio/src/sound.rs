@@ -34,6 +34,10 @@ pub use playback_position::*;
 
 use crate::{frame::Frame, info::Info};
 
+/// An owned, seekable encoded source usable by background decoding workers.
+pub trait AudioRead: std::io::Read + std::io::Seek + Send + Sync {}
+impl<T: std::io::Read + std::io::Seek + Send + Sync> AudioRead for T {}
+
 /// A source of audio that is loaded, but not yet playing.
 pub trait SoundData {
 	/// Errors that can occur when starting the sound.

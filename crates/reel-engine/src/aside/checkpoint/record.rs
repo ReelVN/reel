@@ -5,6 +5,8 @@ use aside_vm::resume::{BindingKey, ContinuationDescriptor, RootKey};
 use serde::{Deserialize, Serialize};
 use std::{io::Write, sync::Arc};
 
+mod voices;
+
 const MAGIC: &[u8; 8] = b"REELCHK1";
 const VERSION: u32 = 1;
 
@@ -165,7 +167,10 @@ impl CheckpointRecord {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         writer.write_all(MAGIC)?;
         postcard::to_io(&self.header, &mut writer)?;
-        self.values.write_to(writer)?;
+        self.values.write_to(&mut writer)?;
+        if let Some(reading) = &self.header.reading {
+            voices::write(&reading.data.history, &mut writer)?;
+        }
         Ok(())
     }
 
@@ -178,9 +183,13 @@ impl CheckpointRecord {
         if header.version != VERSION {
             return Err("continuation record version".into());
         }
-        let values = Arc::new(TypedDocument::decode(values)?);
-        let reading = header.reading;
-        let mut record = Self::new(header.root, header.continuation, header.bindings, values)?;
+        let (values, tail) = TypedDocument::decode_prefix(values)?;
+        let mut reading = header.reading;
+        if !tail.is_empty() {
+            let history = &mut reading.as_mut().ok_or("voice history without reading")?.data.history;
+            voices::read(history, tail)?;
+        }
+        let mut record = Self::new(header.root, header.continuation, header.bindings, Arc::new(values))?;
         record.header.reading = reading;
         Ok(record)
     }

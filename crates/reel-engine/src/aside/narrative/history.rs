@@ -278,6 +278,9 @@ impl History {
                         text::alloc_string(heap, line.content().id(), chunk)?,
                     )
                 };
+                let voice = line
+                    .voice()
+                    .map_or(Ok(Value::NULL), |path| text::alloc_string(heap, path, chunk))?;
                 let row = self.keys.record(
                     heap,
                     &[
@@ -286,6 +289,7 @@ impl History {
                         ("speaker_name", name),
                         ("content_id", content),
                         ("text", text),
+                        ("voice", voice),
                     ],
                     &[],
                 )?;

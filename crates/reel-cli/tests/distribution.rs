@@ -435,7 +435,11 @@ fn release_cli_routes_vita_and_foreign_desktop_runtimes() {
             .unwrap()
     };
 
-    let vita = export("vita", &[]);
+    let vita_without_runtime = export("vita", &[]);
+    assert!(!vita_without_runtime.status.success());
+    assert!(String::from_utf8_lossy(&vita_without_runtime.stderr).contains("requires --runtime"));
+
+    let vita = export("vita", &["--data-only"]);
     assert!(
         vita.status.success(),
         "{}",
@@ -451,17 +455,19 @@ fn release_cli_routes_vita_and_foreign_desktop_runtimes() {
 
     fs::create_dir(root.join("runtime")).unwrap();
     fs::write(root.join("runtime/native-player"), "player fixture").unwrap();
+    fs::write(
+        root.join("distribution.toml"),
+        "[vita]\ntitle_id = \"REELPROBE\"\ntitle = \"Release probe\"\nversion = \"01.00\"\n",
+    )
+    .unwrap();
     let missing_eboot = export("vita", &["--runtime", "runtime"]);
     assert!(!missing_eboot.status.success());
-    assert!(String::from_utf8_lossy(&missing_eboot.stderr).contains("requires eboot.bin"));
+    assert!(String::from_utf8_lossy(&missing_eboot.stderr).contains("eboot.bin"));
     fs::write(root.join("runtime/eboot.bin"), "Vita player fixture").unwrap();
     let with_eboot = export("vita", &["--runtime", "runtime"]);
-    assert!(
-        with_eboot.status.success(),
-        "{}",
-        String::from_utf8_lossy(&with_eboot.stderr)
-    );
-    assert!(vita_output.join("eboot.bin").is_file());
+    assert!(!with_eboot.status.success());
+    assert!(String::from_utf8_lossy(&with_eboot.stderr).contains("expected a Vita SELF"));
+    assert!(!root.join("dist/vita/REELPROBE").exists());
 
     let foreign = if std::env::consts::OS == "linux" {
         "windows"
@@ -492,6 +498,21 @@ fn release_cli_routes_vita_and_foreign_desktop_runtimes() {
         String::from_utf8_lossy(&with_runtime.stderr)
     );
     assert!(foreign_output.join("native-player").is_file());
+    let with_executable = export(foreign, &["--runtime", "runtime/native-player"]);
+    assert!(
+        with_executable.status.success(),
+        "{}",
+        String::from_utf8_lossy(&with_executable.stderr)
+    );
+    let executable = if foreign == "windows" {
+        "game.exe"
+    } else {
+        "game"
+    };
+    assert_eq!(
+        fs::read(foreign_output.join(executable)).unwrap(),
+        b"player fixture"
+    );
 }
 
 #[test]
@@ -509,7 +530,13 @@ fn release_mp4_keeps_original_bytes_in_a_seekable_raw_entry() {
 
     let exported = std::process::Command::new(env!("CARGO_BIN_EXE_reel"))
         .current_dir(root)
-        .args(["export", "--release", "--resource-target", "vita"])
+        .args([
+            "export",
+            "--release",
+            "--resource-target",
+            "vita",
+            "--data-only",
+        ])
         .output()
         .unwrap();
     assert!(

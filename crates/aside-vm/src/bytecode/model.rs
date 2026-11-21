@@ -97,7 +97,7 @@ pub struct TextPoolDescriptor {
     pub byte_len: u64,
     pub digest: [u8; 32],
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BuiltinType {
     Any,
     Null,
@@ -119,7 +119,7 @@ pub enum BuiltinType {
     /// A bind/derive property reference; access permissions belong to the value.
     PropertyRef,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TypeDef {
     Builtin(BuiltinType),
     Tuple(Vec<TypeId>),
@@ -138,11 +138,14 @@ pub enum TypeDef {
     StringLiteral(String),
     /// The exact own string keys of an ordinary table and their value contracts.
     Record(Vec<RecordFieldType>),
+    /// A mutable array carrying the exact element type contract.
+    Array(TypeId),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RecordFieldType {
     pub name: SymbolId,
     pub ty: TypeId,
+    pub optional: bool,
 }
 /// A mask of allowed effects, not a promise that a call will actually wait.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -169,9 +169,9 @@ fn tween_original_curve_delay_and_clock_phase_resume_after_adoption_source_asb()
         fn main(s:Scene=model(Scene())){s}
         fn opening(){
             let s=main();s.sprite=image("sprite.png",x:0,width:100,height:50);
-            s.motion=run(tween(s.sprite,duration:10,easing:"in",x:100),owner:s.sprite,skip:"finish");
+            s.motion=tween(s.sprite,duration:10,easing:"in",x:100).run(owner:s.sprite, skip:"finish");
             s.timer=clock(interval:2,owner:s.sprite);
-            s.waiting=run(delay(10),owner:s.sprite);
+            s.waiting=delay(10).run(owner:s.sprite);
             stage.replace(s.sprite);persistent.write("capture",s);
         }
     "#;
@@ -311,14 +311,14 @@ fn inactive_explicit_start_and_terminal_activity_keep_public_controls_source_asb
         fn inspect_loaded(loaded){
             if loaded!=null {
                 if await loaded.done!="Completed" {throw "terminal result";}
-                stage.replace(loaded.sprite);resume(loaded.prepared);resume(loaded.timer);
+                stage.replace(loaded.sprite);loaded.prepared.resume();loaded.timer.resume();
                 narrator("resumed");
             }
         }
         fn opening(){
             let s=main();s.sprite=image("sprite.png",x:0,width:100,height:50);
-            s.prepared=run(tween(s.sprite,duration:2,from:{x:10},x:50),paused:true,owner:s.sprite);
-            s.done=run(delay(1),owner:s.sprite);s.timer=clock(interval:0.5,paused:true,owner:s.sprite);
+            s.prepared=tween(s.sprite,duration:2,from:{x:10},x:50).run(paused:true, owner:s.sprite);
+            s.done=delay(1).run(owner:s.sprite);s.timer=clock(interval:0.5,paused:true,owner:s.sprite);
             stage.replace(s.sprite);
             let loaded=persistent.write("capture",s);
             inspect_loaded(loaded);
@@ -509,8 +509,8 @@ fn composed_occurrences_repeat_iteration_and_shared_curve_resume_source_asb() {
             let rise=tween(s.sprite,duration:2,easing:ramp,from:{x:0},x:20);
             let fall=tween(s.sprite,duration:1,x:0);
             s.curves=[ramp,ramp];s.descriptions=[rise,rise];
-            s.motion=run(parallel(sequence(rise,fall,rise,fall).repeat(times:2),
-                sequence(delay(1),tween(s.sprite,duration:11,y:110))),owner:s.sprite);
+            s.motion=parallel(repeat(sequence(rise,fall,rise,fall), times:2),
+                sequence(delay(1),tween(s.sprite,duration:11,y:110))).run(owner:s.sprite);
             stage.replace(s.sprite);persistent.write("capture",s);
         }
     "#;
@@ -701,7 +701,7 @@ fn default_root_scope_owner_reconnects_current_identity_at_adoption() {
         state(Scene,"scene");root(main,"game");fn main(s:Scene=model(Scene())){s}
         fn opening(){let s=main();scope(body: |owner| {
             s.sprite=image("sprite.png",x:0,width:100,height:50);
-            s.motion=run(tween(s.sprite,duration:10,x:100));
+            s.motion=tween(s.sprite,duration:10,x:100).run();
             stage.replace(s.sprite);persistent.write("capture",s);
         });}
     "#;

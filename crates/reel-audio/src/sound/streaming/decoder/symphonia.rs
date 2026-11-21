@@ -1,4 +1,4 @@
-use super::AudioRead;
+use crate::sound::AudioRead;
 use crate::{
 	frame::Frame,
 	sound::{FromFileError, symphonia::load_frames_from_buffer_ref_into},

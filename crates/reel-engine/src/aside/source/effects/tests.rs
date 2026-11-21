@@ -213,7 +213,7 @@ fn unsupported_effect_state_and_structure_report_original_ranges() {
             "cannot recurse",
         ),
         (
-            "fn surface(pixel) { await delay(1.0); (0.0,0.0,0.0,1.0) }",
+            "fn surface(pixel) { await delay(1.0).run(); (0.0,0.0,0.0,1.0) }",
             "cannot wait",
         ),
         (

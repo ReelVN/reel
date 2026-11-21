@@ -12,7 +12,7 @@ profiling = ["reel-core/profiling", "vita-native?/profiling"]
 gxm-tile-destination = ["gxm"]
 # Opt-in tiled offscreen storage for device validation; backdrop copies stay linear.
 gxm-tiled-targets = ["gxm"]
-wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:pollster", "dep:half", "dep:guillotiere", "dep:rayon"]
+wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:pollster", "dep:half", "dep:guillotiere", "dep:rayon", "dep:wasm-bindgen-futures"]
 gxm = ["dep:vita-native", "vita-native/graphics", "vita-native/video", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
 
 [dependencies]
@@ -30,9 +30,13 @@ bytemuck = { version = "=1.25.2", features = ["derive", "extern_crate_alloc"], o
 pollster = { version = "=1.0.1", optional = true }
 half = { version = "=2.7.1", optional = true }
 guillotiere = { version = "=0.7.0", optional = true }
+vita-native = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { version = "=1.12.0", optional = true }
 
-vita-native = { workspace = true, optional = true }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = { version = "=0.4.79", optional = true }
 
 [lints.rust]
 unsafe_code = "deny"

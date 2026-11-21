@@ -239,6 +239,7 @@ fn kind(k: K) -> Option<HirKind> {
         K::ParamList => H::Parameters,
         K::Param => H::Parameter,
         K::TypeName => H::NamedType,
+        K::ArrayType => H::ArrayType,
         K::StringType => H::StringType,
         K::RecordType => H::RecordType,
         K::RecordFieldType => H::RecordFieldType,

@@ -645,7 +645,7 @@ fn analyze_project_inner<'a>(
                 },
                 ..options.clone()
             };
-            let result = super::bind::analyze_editor(
+            let result = super::bind::bind_module(
                 hir,
                 &local,
                 &mut Overlay {
@@ -653,6 +653,7 @@ fn analyze_project_inner<'a>(
                     fallback: resolver,
                     aliases: &aliases,
                 },
+                true,
             );
             work = work.saturating_add(result.stats.work_units);
             symbols += result.stats.symbols;
@@ -705,6 +706,19 @@ fn analyze_project_inner<'a>(
                 completed: completed + 1,
                 total: analysis_total,
             });
+        }
+    }
+    if !exhausted {
+        let limits = AnalysisLimits {
+            max_work: options.limits.max_work.saturating_sub(work),
+            max_diagnostics: diagnostic_limit.saturating_sub(diagnostics.len()),
+            ..options.limits
+        };
+        let (effect_work, effect_exhausted) = super::effects::check(&mut modules, limits, &mut diagnostics);
+        exhausted |= effect_exhausted;
+        work = work.saturating_add(effect_work);
+        if let Some(module) = modules.first_mut() {
+            module.stats.work_units = module.stats.work_units.saturating_add(effect_work);
         }
     }
     if !exhausted && (recover || modules.iter().any(super::needs_source_types)) {
@@ -1007,6 +1021,7 @@ impl TypeNames<'_> {
 fn canonical_hint(hint: &mut TypeHint, names: &impl Fn(&str) -> String) {
     match hint {
         TypeHint::Named(name) => *name = names(name),
+        TypeHint::TypedArray(item) | TypeHint::OptionalField(item) => canonical_hint(item, names),
         TypeHint::Enum { cases, .. } => {
             for hint in Arc::make_mut(cases) {
                 canonical_hint(hint, names);
@@ -1097,7 +1112,7 @@ impl super::patterns::PatternTypes for ExportPatternTypes<'_> {
         match ty {
             TypeHint::Any | TypeHint::Named(_) | TypeHint::Union(_) => Shape::Unknown,
             TypeHint::Tuple(elements) => Shape::Tuple(elements.clone()),
-            TypeHint::Array => Shape::Array,
+            TypeHint::Array | TypeHint::TypedArray(_) => Shape::Array,
             TypeHint::Table | TypeHint::Record(_) => Shape::Table,
             _ => Shape::Other,
         }
@@ -1115,7 +1130,10 @@ impl super::patterns::PatternTypes for ExportPatternTypes<'_> {
         if let TypeHint::Record(fields) = ty {
             let name = self.0.name(name);
             if let Some((_, field)) = fields.iter().find(|(key, _)| key == name) {
-                return field.clone();
+                return match field {
+                    TypeHint::OptionalField(ty) => (**ty).clone(),
+                    ty => ty.clone(),
+                };
             }
         }
         TypeHint::Any

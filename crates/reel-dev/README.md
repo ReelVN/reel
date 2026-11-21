@@ -123,7 +123,6 @@ Use `--vdb PATH` to select vdb. `perf collect RUN --address DEVICE_IP` retrieves
 reports after a transport interruption. `perf report RUN` repeats local analysis.
 Vita consumes `ux0:/data/reel/performance.json` once and retains it as
 `performance.active.json`; reports go to the request's output directory.
-Without a request the same player opens its launcher.
 
 For Vita3K, prepare with `--target vita --environment emulator`, then run with
 `--emulator PATH_TO_VITA3K --storage CONFIGURED_STORAGE_ROOT --runtime RUNTIME`.
@@ -177,13 +176,8 @@ sampled interpreter detail or `--save-directory` to reproduce a particular save.
 The default save directory is inside the capture.
 
 Vita packages read fixed assets from `crates/reel-player/runtime/vita/` and
-`crates/reel-dev/runtime/vita/device-checks/`. LiveArea images and the launcher font archive
-are maintained there. To update the launcher's font and native modules, run:
-
-```sh
-cargo run --locked -p reel-dev -- vita-assets --modules path/to/module \
-    --font path/to/font.ttf --font-license path/to/license.txt
-```
+`crates/reel-dev/runtime/vita/device-checks/`. Each directory keeps its LiveArea
+images and layout in `sce_sys/`.
 
 Low-level device contracts use `reel-device-checks` with feature `device-checks`.
 Its case file is `ux0:/data/reel-device-checks/case.txt`, for example

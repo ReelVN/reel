@@ -5,8 +5,6 @@
 use std::fs::File as PlatformFile;
 #[cfg(not(target_os = "vita"))]
 pub(crate) use std::fs::Metadata;
-#[cfg(all(not(target_os = "vita"), any(feature = "vita", test)))]
-pub(crate) use std::fs::metadata;
 use std::{
     io::{self, Read, Seek, SeekFrom},
     path::Path,
@@ -15,8 +13,6 @@ use std::{
 use vita_native::app::fs::File as PlatformFile;
 #[cfg(target_os = "vita")]
 pub(crate) use vita_native::app::fs::Metadata;
-#[cfg(all(target_os = "vita", any(feature = "vita", test)))]
-pub(crate) use vita_native::app::fs::metadata;
 
 pub(crate) type File = Positioned<PlatformFile>;
 pub(crate) struct Positioned<R> {

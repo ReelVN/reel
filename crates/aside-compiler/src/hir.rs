@@ -31,6 +31,7 @@ pub enum HirKind {
     Parameters,
     Parameter,
     NamedType,
+    ArrayType,
     StringType,
     RecordType,
     RecordFieldType,
@@ -179,6 +180,7 @@ pub enum Type {
     Float,
     String,
     Array,
+    TypedArray(TypeId),
     Table,
     Future,
     Generator,
@@ -192,6 +194,8 @@ pub enum Type {
     Named(NameId),
     StringLiteral(String),
     Record(Vec<(NameId, TypeId)>),
+    /// An internal presence marker used only within a record field list.
+    OptionalField(TypeId),
     Enum(NameId, Vec<TypeId>),
 }
 /// A record, optionally wrapped in a nullable annotation, has one closed field set.
@@ -208,6 +212,12 @@ pub fn record_fields(types: &[Type], ty: TypeId) -> Option<&[(NameId, TypeId)]> 
             })
         }
         _ => None,
+    }
+}
+pub(crate) fn field_contract(types: &[Type], field: TypeId) -> (TypeId, bool) {
+    match types[field.0 as usize] {
+        Type::OptionalField(ty) => (ty, true),
+        _ => (field, false),
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +393,8 @@ impl RuntimeChecks {
     pub const PROPERTY: u16 = 512;
     pub const WRITE_EFFECT: u16 = 1024;
     pub const RECORD_FIELD: u16 = 2048;
+    /// This enum arm completes the set of pattern alternatives.
+    pub(crate) const LAST_ENUM_ARM: u16 = 4096;
 }
 #[derive(Debug, Clone)]
 pub struct ControlTransfer {
@@ -429,6 +441,7 @@ pub struct AnalyzedModule {
     pub(crate) external: Vec<ExternalBinding>,
     pub(crate) source_types: crate::semantic::SourceTypes,
     pub(crate) inferred_awaits: Vec<NodeId>,
+    pub(crate) effect_calls: Vec<crate::semantic::effects::EffectCall>,
 }
 /// A local slot is stable within the fixed module content version, rather than
 /// a process pointer or a globally meaningful arena index.
@@ -556,6 +569,7 @@ impl std::fmt::Display for TypeDisplay<'_> {
             Type::Float => f.write_str("float"),
             Type::String => f.write_str("string"),
             Type::Array => f.write_str("array"),
+            Type::TypedArray(item) => write!(f, "array<{}>", display(*item)),
             Type::Table => f.write_str("table"),
             Type::Future => f.write_str("Future"),
             Type::Generator => f.write_str("generator"),
@@ -567,10 +581,13 @@ impl std::fmt::Display for TypeDisplay<'_> {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
-                    write!(f, "{}: {}", self.module.hir.name(name), display(ty))?;
+                    let (ty, optional) = field_contract(&self.module.types, ty);
+                    let presence = if optional { "?" } else { "" };
+                    write!(f, "{}{presence}: {}", self.module.hir.name(name), display(ty))?;
                 }
                 f.write_str("}")
             }
+            Type::OptionalField(ty) => display(*ty).fmt(f),
             Type::Enum(name, _) => f.write_str(self.module.hir().name(*name)),
             Type::Tuple(types) => {
                 f.write_str("(")?;

@@ -10,6 +10,7 @@ use aside_vm::executor::{Completion, HostResponse, TaskId, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
 use reel_ui::stage::NodeId;
 use std::{collections::VecDeque, time::Duration};
+mod ducking;
 mod protocol;
 pub(in crate::aside) use protocol::MediaCapture;
 
@@ -26,6 +27,7 @@ enum Slot {
     Position,
     Target,
     Owner,
+    Duck,
 }
 struct Live {
     id: MediaId,
@@ -54,6 +56,8 @@ pub(super) struct Media {
     cue_remaining: usize,
     pending_terminals: usize,
     keys: observable::SchemaKeys,
+    ducks: VecDeque<ducking::Duck>,
+    duck_charge: Option<aside_vm::HeapReservation>,
 }
 
 struct Poster {
@@ -171,7 +175,8 @@ impl Media {
                     self.waits
                         .iter()
                         .map(|wait| Record::new(Part::MediaWait, wait)),
-                ),
+                )
+                .chain(self.ducks.iter().map(ducking::Duck::snapshot_record)),
         ))
     }
     pub(super) fn restore_record(
@@ -180,6 +185,10 @@ impl Media {
         map: &aside_vm::snapshot::SnapshotMap,
         heap: &mut Heap,
     ) -> Result<(), AdapterError> {
+        if matches!(record.part, super::snapshot::Part::AudioDuck) {
+            let voice = heap.root_value(map.root(record.read()?)?)?;
+            return self.restore_duck(heap, voice);
+        }
         if matches!(record.part, super::snapshot::Part::MediaCue) {
             super::results::reserve_queue(heap, &mut self.cues, &mut self.cue_charge)?;
             self.cues.push_back(map.root(record.read()?)?);
@@ -375,7 +384,7 @@ fn response(heap: &Heap, value: Value) -> Result<Option<Completion>, AdapterErro
         })
     }))
 }
-fn volume(value: Value) -> Result<f64, AdapterError> {
+pub(super) fn volume(value: Value) -> Result<f64, AdapterError> {
     let value = stage::number(value)?;
     if value < 0. {
         return Err(AdapterError::Input("audio volume must be nonnegative"));
@@ -403,16 +412,20 @@ fn rate(value: Value) -> Result<f64, AdapterError> {
     }
     Ok(value)
 }
-fn group(name: &str) -> Result<AudioGroup, AdapterError> {
-    match name {
-        "music" => Ok(AudioGroup::Music),
-        "voice" => Ok(AudioGroup::Voice),
-        "effects" => Ok(AudioGroup::Effects),
-        "ui" => Ok(AudioGroup::Ui),
-        _ => Err(AdapterError::Input(
-            "audio group must be music, voice, effects or ui",
-        )),
+text::word_options! {
+    GROUP_CHOICES, group_word -> AudioGroup {
+        b"music" => AudioGroup::Music,
+        b"voice" => AudioGroup::Voice,
+        b"effects" => AudioGroup::Effects,
+        b"ui" => AudioGroup::Ui,
     }
+}
+pub(super) const MASTER_GROUP: &str = "master";
+
+fn group(name: &str) -> Result<AudioGroup, AdapterError> {
+    group_word(name.as_bytes()).ok_or(AdapterError::Input(
+        "audio group must be music, voice, effects or ui",
+    ))
 }
 
 fn omit_during_skip(heap: &Heap, policy: Value) -> Result<bool, AdapterError> {
@@ -516,6 +529,7 @@ impl SessionVm {
             }
             self.media.cursor += 1;
         }
+        self.media.retire_ducks(self.vm.heap_mut())?;
         for _ in 0..self.media.posters.len().min(64) {
             if self.media.poster_cursor >= self.media.posters.len() {
                 self.media.poster_cursor = 0;
@@ -679,7 +693,7 @@ impl SessionVm {
         ticket: HostTicket,
         symbol: &str,
     ) -> Result<(), AdapterError> {
-        if matches!(symbol, "reel::audio::position" | "reel::video::position") {
+        if symbol == "reel::playback::position" {
             let value = self.vm.host_arguments(ticket)?[0];
             if !is_media(self.vm.heap(), value) {
                 return Err(AdapterError::Input("expected media activity"));
@@ -692,9 +706,25 @@ impl SessionVm {
             return Ok(());
         }
         let args = self.vm.host_arguments(ticket)?;
-        if symbol == "reel::audio::group_volume" {
+        if symbol == "reel::audio::duck" {
+            let target = args[0];
+            let voice = args[1];
+            let gain = args[2];
+            let attack = duration(args[3])?;
+            let release = args[4];
+            let heap = self.vm.heap_mut();
+            let link = heap.alloc_tuple(&[target, gain, release])?;
+            if !self.media.apply_duck(heap, voice, link, attack)? {
+                self.media_error(ticket, "audio duck requires two live audio playbacks")?;
+            } else {
+                self.vm
+                    .heap_mut()
+                    .set_host_payload(voice, Slot::Duck as u32, link)?;
+                self.vm.respond(ticket, HostResponse::Ready(target))?;
+            }
+        } else if symbol == "reel::audio::group_volume" {
             let name = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
-            let group = if name == "master" {
+            let group = if name == MASTER_GROUP {
                 None
             } else {
                 Some(group(&name)?)
@@ -733,8 +763,13 @@ impl SessionVm {
                 .as_bool()
                 .ok_or(AdapterError::Input("paused must be bool"))?;
             let rate = crate::audio::AudioRate::constant(rate(args[12])?);
-            let omit = omit_during_skip(self.vm.heap(), args[13])?
-                && group == AudioGroup::Voice
+            let omit = omit_during_skip(self.vm.heap(), args[13])?;
+            if omit && group != AudioGroup::Voice {
+                self.media_error(ticket, "audio skip omit requires group voice")?;
+                self.issued = None;
+                return Ok(());
+            }
+            let omit = omit
                 && session.skipping_effects().is_some()
                 && matches!(&session.reading_data.active, Some(Interaction::Dialogue(_)));
             if omit {
@@ -826,7 +861,7 @@ impl SessionVm {
             {
                 return Err(AdapterError::Input("expected media activity"));
             }
-            if matches!(symbol, "reel::audio::at" | "reel::video::at") {
+            if symbol == "reel::playback::at" {
                 self.start_media_cue(ticket, value, args[1])?;
             } else if symbol == "reel::audio::queue" {
                 let source = text::read_string(self.vm.heap(), args[1], self.read_limit)?;
@@ -887,13 +922,11 @@ impl SessionVm {
                 }
             } else {
                 let command = match symbol {
-                    "reel::audio::seek" | "reel::video::seek" => {
-                        MediaCommand::Seek(duration(args[1])?)
-                    }
-                    "reel::stop" => MediaCommand::Stop,
-                    "reel::pause" => MediaCommand::Pause,
-                    "reel::resume" => MediaCommand::Resume,
-                    "reel::finish" => MediaCommand::Finish,
+                    "reel::playback::seek" => MediaCommand::Seek(duration(args[1])?),
+                    "reel::activity::stop" => MediaCommand::Stop,
+                    "reel::activity::pause" => MediaCommand::Pause,
+                    "reel::activity::resume" => MediaCommand::Resume,
+                    "reel::activity::finish" => MediaCommand::Finish,
                     "reel::audio::volume" => MediaCommand::Volume {
                         value: volume(args[1])?,
                         duration: duration(args[2])?,
@@ -926,7 +959,7 @@ impl SessionVm {
                         self.issued = None;
                         return Ok(());
                     }
-                    if matches!(symbol, "reel::audio::seek" | "reel::video::seek") {
+                    if symbol == "reel::playback::seek" {
                         self.settle_source_cues(value)?;
                         let position = self
                             .media
@@ -942,7 +975,7 @@ impl SessionVm {
                         self.settle_source_cues(value)?;
                     }
                 }
-                let result = if matches!(symbol, "reel::audio::seek" | "reel::video::seek") {
+                let result = if symbol == "reel::playback::seek" {
                     Value::NULL
                 } else {
                     value
@@ -1051,6 +1084,7 @@ impl SessionVm {
                 position,
                 target_value,
                 owner_value,
+                Value::NULL,
             ],
             Some(&READONLY),
         )?;
@@ -1069,6 +1103,75 @@ impl SessionVm {
         target: Option<NodeId>,
         target_value: Value,
     ) -> Result<(), AdapterError> {
+        match self.admit_media(ticket.task, playback, owner_value, target, target_value) {
+            Ok(value) => self.vm.respond(ticket, HostResponse::Ready(value))?,
+            Err(AdapterError::Asset(error)) => self.media_error(ticket, &error)?,
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    pub(super) fn start_dialogue_voice(
+        &mut self,
+        task: TaskId,
+        owner: Value,
+        request: AudioRequest,
+    ) -> Result<Value, AdapterError> {
+        let playback = MediaPlayback::Audio(crate::audio::AudioPlayback {
+            request,
+            paused: false,
+            queue: Vec::new(),
+            result: None,
+        });
+        match self.admit_media(task, playback, owner, None, Value::NULL) {
+            Err(AdapterError::Asset(error)) => {
+                let message = self.vm.heap_mut().alloc_string(&error)?;
+                let value =
+                    self.playback_value(Duration::ZERO, Value::NULL, Value::NULL, message)?;
+                self.vm
+                    .heap_mut()
+                    .set_host_payload(value, Slot::Error as u32, Value::int(1))?;
+                Ok(value)
+            }
+            admitted => admitted,
+        }
+    }
+
+    pub(super) fn stop_dialogue_voice(&mut self, value: Value) -> Result<(), AdapterError> {
+        if value.tag() == ValueTag::Null {
+            return Ok(());
+        }
+        let id = self
+            .vm
+            .heap()
+            .host_payload(value, Slot::Id as u32)?
+            .as_int()
+            .map(|id| MediaId(id as u64));
+        if let Some(id) = id
+            && self
+                .media
+                .live
+                .iter()
+                .any(|live| live.id == id && live.result.is_none())
+        {
+            self.media
+                .backend
+                .as_mut()
+                .expect("live media backend")
+                .command(id, MediaCommand::Stop)
+                .map_err(AdapterError::Asset)?;
+        }
+        Ok(())
+    }
+
+    fn admit_media(
+        &mut self,
+        task: TaskId,
+        playback: MediaPlayback,
+        owner_value: Value,
+        target: Option<NodeId>,
+        target_value: Value,
+    ) -> Result<Value, AdapterError> {
         self.media
             .live
             .try_reserve(1)
@@ -1124,19 +1227,18 @@ impl SessionVm {
                     root,
                     target,
                     result: None,
-                    pending_start: video.is_none().then_some(ticket.task),
+                    pending_start: video.is_none().then_some(task),
                     video,
                     has_frame: false,
                     latest_position: start,
                 });
-                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                Ok(value)
             }
             Err(error) => {
                 self.vm.heap_mut().release_root(root)?;
-                self.media_error(ticket, &error)?;
+                Err(AdapterError::Asset(error))
             }
         }
-        Ok(())
     }
     fn media_error(&mut self, ticket: HostTicket, error: &str) -> Result<(), AdapterError> {
         let value = self.vm.heap_mut().alloc_string(error)?;
@@ -1164,6 +1266,8 @@ impl Media {
         self.waits = VecDeque::new();
         self.wait_charge = None;
         self.live.clear(); // Session owner scan releases the retained heap roots.
+        self.ducks = VecDeque::new();
+        self.duck_charge = None;
         self.cues = VecDeque::new();
         self.cue_charge = None;
         self.cue_remaining = 0;
@@ -1231,8 +1335,8 @@ aside_host::native_documentation! {
         /// Retiring the owner cancels loading and playback.
         /// For a published, skippable line, `skip: "omit"` skips a new voice during
         /// fast-forward before opening the asset. It returns an ended activity at `start`
-        /// with outcome "Stopped". Defaults to "keep". Other groups and existing
-        /// activities keep playing under their normal transport and owner rules.
+        /// with outcome "Stopped". Omit requires the voice group. Defaults to "keep".
+        /// Existing activities keep their normal transport and owner rules.
         /// Awaiting returns "Completed" or "Stopped"; output failures and cancellation throw.
         "reel::audio::play";
         /// Append an audio asset to a live audio activity's playback queue.
@@ -1247,6 +1351,12 @@ aside_host::native_documentation! {
         /// `duration` is a nonnegative ramp time in seconds. Returns null after admission.
         /// This changes the shared bus rather than creating an owned playback activity.
         "reel::audio::group_volume";
+        /// Temporarily multiply one playback's gain while `by` is active.
+        /// Both playbacks must be audio and distinct. Gain is in 0..1.
+        /// Multiple owners multiply their gains. Repeating the call replaces
+        /// that owner's previous layer. Attack and release are seconds.
+        /// The layer retires with its owning playback and returns the target.
+        "reel::audio::duck";
         /// Set an activity's stereo pan in -1..1, optionally ramping over `duration`
         /// seconds. Returns the same activity without waiting for the ramp.
         "reel::audio::pan";
@@ -1264,16 +1374,16 @@ aside_host::native_documentation! {
         /// Seek a media activity to a finite, nonnegative position in seconds.
         /// Returns null after the transport accepts the command. Position cues are
         /// reevaluated against the updated transport cursor; terminal activities stay terminal.
-        "reel::audio::seek" | "reel::video::seek";
+        "reel::playback::seek";
         /// Create an awaitable cue for a finite, nonnegative transport position in seconds.
         /// Awaiting returns true once the cursor reaches that position, or false if normal
         /// playback ends first. Source failure or cancellation throws even at the threshold.
         /// The cue belongs to the current scope owner and does not pause or stop playback.
-        "reel::audio::at" | "reel::video::at";
+        "reel::playback::at";
         /// Read the media transport's latest published position in seconds.
         /// The read participates in reactive dependency tracking. Terminal activities
         /// retain their final position; this does not wait for playback or a new frame.
-        "reel::audio::position" | "reel::video::position";
+        "reel::playback::position";
         /// Await a media activity or position cue. Ordinary `await activity` uses this
         /// same binding. Playback yields "Completed" or "Stopped"; cues yield a bool.
         /// Repeated awaits preserve the terminal result. Failure or owner cancellation throws.
@@ -1289,21 +1399,39 @@ aside_host::native_documentation! {
 }
 pub(super) fn describe(api: &mut aside_host::source::Api) {
     use aside_compiler::semantic::TypeHint;
-    use aside_host::source::{NamedType, named, nullable, number};
+    use aside_host::source::{Member, NamedType, named, nullable, number};
+    let playback_type = named("reel::types::Playback");
     for symbol in ["reel::audio::play", "reel::video::play"] {
-        api.refine(symbol, named("reel::types::Playback"), &[]);
+        api.refine(symbol, playback_type.clone(), &[]);
     }
-    for symbol in ["reel::audio::position", "reel::video::position"] {
+    api.refine(
+        "reel::playback::position",
+        TypeHint::Float,
+        &[("activity", playback_type.clone())],
+    );
+    for (method, result) in [
+        ("seek", TypeHint::Null),
+        ("at", named("reel::types::MediaCue")),
+    ] {
         api.refine(
-            symbol,
-            TypeHint::Float,
-            &[("activity", named("reel::types::Playback"))],
+            &format!("reel::playback::{method}"),
+            result,
+            &[("activity", playback_type.clone()), ("seconds", number())],
         );
     }
     let mut playback = NamedType::new(
         "reel::types::Playback",
-        "An awaitable audio or video playback controlled through audio and video functions.",
-        Vec::new(),
+        "An awaitable audio or video playback with controls for its content timeline.",
+        ["position", "seek", "at"]
+            .into_iter()
+            .map(|method| {
+                Member::method(
+                    api.native(&format!("reel::playback::{method}"))
+                        .clone()
+                        .bound(method),
+                )
+            })
+            .collect(),
     );
     playback.await_result = Some(TypeHint::String);
     playback.await_adapter = Some(api.native("reel::audio::await").clone());
@@ -1321,7 +1449,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             let signature = api.native_mut(&symbol).symbol.signature.as_mut().unwrap();
             for parameter in &mut signature.parameters {
                 parameter.ty = match parameter.name.as_str() {
-                    "activity" => named("reel::types::Playback"),
+                    "activity" | "by" => playback_type.clone(),
                     "source" | "group" => TypeHint::String,
                     "looping" | "paused" => TypeHint::Bool,
                     "end" | "loop_end" => nullable(number()),
@@ -1330,15 +1458,14 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                         TypeHint::StringLiteral("omit".into()),
                     ]),
                     "volume" | "pan" | "fade_in" | "start" | "loop_start" | "value"
-                    | "duration" | "fade" | "seconds" | "rate" => number(),
+                    | "duration" | "fade" | "rate" | "gain" | "attack" | "release" => number(),
                     _ => parameter.ty.clone(),
                 };
             }
             let function = symbol.rsplit("::").next().unwrap();
             signature.result = match function {
-                "volume" | "pan" | "stop" | "rate" => named("reel::types::Playback"),
-                "queue" | "seek" | "group_volume" => TypeHint::Null,
-                "at" => named("reel::types::MediaCue"),
+                "volume" | "pan" | "stop" | "rate" | "duck" => playback_type.clone(),
+                "queue" | "group_volume" => TypeHint::Null,
                 _ => signature.result.clone(),
             };
         }

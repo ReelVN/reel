@@ -26,16 +26,61 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         TypeHint::Bool,
         &[("task", named("reel::types::Task"))],
     );
-    for (name, observable, methods) in [
-        ("Completion", true, &["resolve", "reject", "cancel"][..]),
-        ("Task", true, &["cancel"][..]),
-        ("Presentation", false, &["cancel"][..]),
-        ("Capture", false, &["cancel"][..]),
-        ("AssetRead", false, &["cancel"][..]),
-        ("WindowOperation", false, &["cancel"][..]),
-        ("Condition", true, &["cancel"][..]),
-        ("ParticleActivity", false, &[][..]),
-        ("Operation", false, &[][..]),
+    for (name, documentation, observable, methods) in [
+        (
+            "Completion",
+            "A one-shot result. Resolve it with a value to deliver that value to every waiter, or reject it to make awaiting throw.",
+            true,
+            &["resolve", "reject", "cancel"][..],
+        ),
+        (
+            "Task",
+            "A script task started with spawn. Await it to receive the function's return value or propagate its fault.",
+            true,
+            &["cancel"][..],
+        ),
+        (
+            "Presentation",
+            "A request from stage.presented. Await it until the host accepts a frame containing the current stage changes and prepared assets.",
+            false,
+            &["cancel"][..],
+        ),
+        (
+            "Capture",
+            "A frame capture request from stage.capture. Await it to receive PNG Bytes.",
+            false,
+            &["cancel"][..],
+        ),
+        (
+            "AssetRead",
+            "A request from assets.read. Await it to receive the asset's Bytes.",
+            false,
+            &["cancel"][..],
+        ),
+        (
+            "WindowOperation",
+            "A window configuration or pointer request. Await it to receive the resulting window information or a boolean indicating whether the pointer moved.",
+            false,
+            &["cancel"][..],
+        ),
+        (
+            "Condition",
+            "An observable condition created by when. Await it until the predicate becomes true.",
+            true,
+            &["cancel"][..],
+        ),
+        (
+            "ParticleActivity",
+            "A running particle emission. Await it to receive the activity's terminal status.",
+            false,
+            &[][..],
+        ),
+        (
+            "Operation",
+            "A save-slot or persistent-data request. Await it to receive the result of the requested operation.",
+            false,
+            &[][..],
+        ),
     ] {
         let ty = format!("reel::types::{name}");
         let mut members = Vec::new();
@@ -57,11 +102,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             };
             members.push(Member::method(api.native(&native).clone().bound(method)));
         }
-        let mut descriptor = NamedType::new(
-            &ty,
-            "An awaitable owned operation with a shared terminal result.",
-            members,
-        );
+        let mut descriptor = NamedType::new(&ty, documentation, members);
         descriptor.await_result = Some(match name {
             "Capture" | "AssetRead" => named("Bytes"),
             "WindowOperation" => TypeHint::Union(vec![TypeHint::Table, TypeHint::Bool]),

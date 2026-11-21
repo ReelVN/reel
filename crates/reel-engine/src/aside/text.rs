@@ -3,6 +3,24 @@ use std::sync::Arc;
 
 use super::AdapterError;
 
+/// Keep editor choices and the VM's allocation-free string dispatch in sync.
+macro_rules! word_options {
+    ($choices:ident, $parse:ident -> $ty:ty { $($word:literal => $value:expr),+ $(,)? }) => {
+        pub(in crate::aside) const $choices: &[&str] = &[$(match std::str::from_utf8($word) {
+            Ok(word) => word,
+            Err(_) => panic!("invalid UTF-8 in native option"),
+        }),+];
+
+        fn $parse(word: &[u8]) -> Option<$ty> {
+            match word {
+                $($word => Some($value),)+
+                _ => None,
+            }
+        }
+    };
+}
+pub(super) use word_options;
+
 /// Copy a validated fixed-size property through bounded borrowed heap segments.
 /// The caller supplies the exact byte length; each segment respects the heap's
 /// read limit, including limits smaller than the property itself.

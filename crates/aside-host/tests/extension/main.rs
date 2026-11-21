@@ -285,12 +285,22 @@ fn declaration_documents_preserve_bound_and_inherited_identities() {
 
 #[test]
 fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
+    aside_host::native_documentation! {
+        /// Command documentation.
+        ///
+        ///     Indented example.
+        const DOCS;
+    }
+    assert_eq!(DOCS, "Command documentation.\n\n    Indented example.\n");
     let add = add::binding();
-    assert!(add.documentation.contains("Add two integers"));
-    assert!(add.documentation.contains("add(3, right: 4)"));
+    assert!(add.documentation.starts_with("Add two integers"));
+    assert!(
+        add.documentation
+            .contains("\n```aside\nfn main() { add(3, right: 4) }\n```")
+    );
     assert_eq!(
         Field::documentation(Field::X.index()),
-        " Horizontal position in logical pixels.\n"
+        "Horizontal position in logical pixels.\n"
     );
     assert_eq!(Field::documentation(Field::Visible.index()), "");
     let decorate = decorate::binding();

@@ -358,6 +358,8 @@ impl Inference<'_> {
             Type::String => TypeHint::String,
             Type::StringLiteral(text) => TypeHint::StringLiteral(text.clone()),
             Type::Array => TypeHint::Array,
+            Type::TypedArray(item) => TypeHint::TypedArray(Box::new(self.hint(m, *item, depth + 1))),
+            Type::OptionalField(ty) => TypeHint::OptionalField(Box::new(self.hint(m, *ty, depth + 1))),
             Type::Table => TypeHint::Table,
             Type::Future => TypeHint::Future,
             Type::Generator => TypeHint::Generator,

@@ -3,7 +3,7 @@ pub use reel_audio::Frame;
 use reel_core::budget::BudgetPool;
 use std::sync::{Arc, atomic::AtomicBool};
 
-pub use reel_audio::sound::streaming::AudioRead as MediaRead;
+pub use reel_audio::sound::AudioRead as MediaRead;
 
 #[cfg(any(feature = "decode", feature = "opus"))]
 mod software;

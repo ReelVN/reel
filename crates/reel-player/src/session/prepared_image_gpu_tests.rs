@@ -4,7 +4,7 @@ use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
     identity::FrameId,
 };
-use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+use reel_render::gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, Renderer};
 use reel_ui::{
     frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget},
     resources::ResourceSnapshot,
@@ -72,6 +72,7 @@ fn scene(
                 repeat: [false; 2],
                 tile_scale: 1.,
                 corner_colors: None,
+                corners: None,
                 alpha_layout: Default::default(),
                 adjustment: Default::default(),
                 slice_center: true,
@@ -121,6 +122,74 @@ fn scene(
     ui.set_stage(&stage);
     let (bridge, widget) = super::super::tests::mount(&ui);
     (ui, bridge, widget, stage, camera, wake)
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn image_corners_match_a_translucent_image_through_rotated_camera() {
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/reel-artifacts/image-corners-gpu")
+        .join(std::process::id().to_string());
+    fs::create_dir_all(&directory).unwrap();
+    image::RgbaImage::from_fn(1024, 1024, |x, y| {
+        image::Rgba([(x / 4) as u8, (y / 4) as u8, 130, 192])
+    })
+    .save(directory.join("crop.png"))
+    .unwrap();
+    let instance = wgpu::Instance::default();
+    let gpu = pollster::block_on(Gpu::request(
+        &instance,
+        None,
+        DeviceGeneration(1),
+        GpuLimits::default(),
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    let readback = |renderer: &mut Renderer, frame: &RenderFrame| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match renderer.prepare(frame) {
+                Ok(prepared) => break renderer.readback(prepared).unwrap(),
+                Err(GpuError::Preparing) if Instant::now() < deadline => {
+                    renderer
+                        .gpu()
+                        .device
+                        .poll(wgpu::PollType::wait_indefinitely())
+                        .unwrap();
+                    renderer.poll().unwrap();
+                }
+                Err(error) => panic!("image preparation failed: {error:?}"),
+            }
+        }
+    };
+    let (mut ui, mut bridge, widget, mut stage, camera, wake) = scene(&directory, false);
+    settle(&mut ui, &mut bridge, widget, &wake);
+    let direct = readback(&mut renderer, &frame(&ui, &mut bridge, 1));
+
+    let id = stage.node(camera).unwrap().children[0];
+    let node = stage.node(id).unwrap();
+    let props = node.props.clone();
+    let mut kind = node.kind.clone();
+    let NodeKind::Image { corners, .. } = &mut kind else {
+        unreachable!()
+    };
+    *corners = Some(Arc::new(
+        [(0., 0.), (1024., 0.), (1024., 1024.), (0., 1024.)].map(Point::from),
+    ));
+    stage.update(id, kind, props).unwrap();
+    ui.set_stage(&stage);
+    settle(&mut ui, &mut bridge, widget, &wake);
+    let warped = readback(&mut renderer, &frame(&ui, &mut bridge, 2));
+    // The camera rotates and crops both frames. In particular the warped
+    // half-transparent image cannot blend twice on its diagonal.
+    let error = direct
+        .iter()
+        .zip(&warped)
+        .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
+        .fold(0f32, f32::max);
+    assert!((direct[210 * 640 + 250][0] - direct[210 * 640 + 350][0]).abs() > 0.01);
+    eprintln!("rotated alpha texture max error {error}");
+    assert!(error < 0.005, "rotated alpha texture max error {error}");
 }
 
 #[test]

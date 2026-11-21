@@ -28,37 +28,38 @@ pub(in crate::aside) enum Easing {
     ElasticInOut,
 }
 
+super::super::text::word_options! {
+    CHOICES, easing_word -> Easing {
+        b"linear" => Easing::Linear,
+        b"in" => Easing::CubicIn,
+        b"out" => Easing::CubicOut,
+        b"in_out" => Easing::CubicInOut,
+        b"quad_in" => Easing::QuadIn,
+        b"quad_out" => Easing::QuadOut,
+        b"quad_in_out" => Easing::QuadInOut,
+        b"sine_in" => Easing::SineIn,
+        b"sine_out" => Easing::SineOut,
+        b"sine_in_out" => Easing::SineInOut,
+        b"quint_in" => Easing::QuintIn,
+        b"quint_out" => Easing::QuintOut,
+        b"quint_in_out" => Easing::QuintInOut,
+        b"bounce_in" => Easing::BounceIn,
+        b"bounce_out" => Easing::BounceOut,
+        b"bounce_in_out" => Easing::BounceInOut,
+        b"quart_in" => Easing::QuartIn,
+        b"quart_out" => Easing::QuartOut,
+        b"quart_in_out" => Easing::QuartInOut,
+        b"elastic_in" => Easing::ElasticIn,
+        b"elastic_out" => Easing::ElasticOut,
+        b"elastic_in_out" => Easing::ElasticInOut,
+    }
+}
+
 impl Easing {
     pub(in crate::aside) fn parse(name: &str) -> Result<Self, AdapterError> {
-        Ok(match name {
-            "linear" => Self::Linear,
-            "in" => Self::CubicIn,
-            "out" => Self::CubicOut,
-            "in_out" => Self::CubicInOut,
-            "quad_in" => Self::QuadIn,
-            "quad_out" => Self::QuadOut,
-            "quad_in_out" => Self::QuadInOut,
-            "sine_in" => Self::SineIn,
-            "sine_out" => Self::SineOut,
-            "sine_in_out" => Self::SineInOut,
-            "quint_in" => Self::QuintIn,
-            "quint_out" => Self::QuintOut,
-            "quint_in_out" => Self::QuintInOut,
-            "bounce_in" => Self::BounceIn,
-            "bounce_out" => Self::BounceOut,
-            "bounce_in_out" => Self::BounceInOut,
-            "quart_in" => Self::QuartIn,
-            "quart_out" => Self::QuartOut,
-            "quart_in_out" => Self::QuartInOut,
-            "elastic_in" => Self::ElasticIn,
-            "elastic_out" => Self::ElasticOut,
-            "elastic_in_out" => Self::ElasticInOut,
-            _ => {
-                return Err(AdapterError::Input(
-                    "easing requires linear or in/out/in_out with an optional quad_, quart_, quint_, sine_, bounce_ or elastic_ prefix",
-                ));
-            }
-        })
+        easing_word(name.as_bytes()).ok_or(AdapterError::Input(
+            "easing requires linear or in/out/in_out with an optional quad_, quart_, quint_, sine_, bounce_ or elastic_ prefix",
+        ))
     }
 
     pub(in crate::aside) fn from_code(code: i64) -> Self {

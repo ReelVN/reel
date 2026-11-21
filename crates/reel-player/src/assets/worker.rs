@@ -5,13 +5,14 @@ use reel_core::{
     result::{RejectCode, RejectReason, Rejected},
     wake::WakeSignal,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 use std::{
     collections::BTreeMap,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
 };
 
 struct Task<R> {
@@ -49,10 +50,14 @@ struct State<R, E> {
     active: BTreeMap<u64, Active>,
     clients: BTreeMap<u64, Client>,
     wakes: Arc<[Client]>,
+    #[cfg(not(target_arch = "wasm32"))]
     next_client: u64,
+    #[cfg(not(target_arch = "wasm32"))]
     max_clients: u32,
     handler: Option<Arc<Handler<R, E>>>,
+    #[cfg(not(target_arch = "wasm32"))]
     workers: usize,
+    #[cfg(not(target_arch = "wasm32"))]
     max_workers: usize,
     closed: bool,
 }
@@ -109,10 +114,14 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                     active: BTreeMap::new(),
                     clients: BTreeMap::from([(0, client.clone())]),
                     wakes: Arc::from([client]),
+                    #[cfg(not(target_arch = "wasm32"))]
                     next_client: 1,
+                    #[cfg(not(target_arch = "wasm32"))]
                     max_clients: limits.max_requests,
                     handler: Some(Arc::new(handler)),
+                    #[cfg(not(target_arch = "wasm32"))]
                     workers: 0,
+                    #[cfg(not(target_arch = "wasm32"))]
                     max_workers: 1,
                     closed: false,
                 }),
@@ -123,11 +132,17 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         }
     }
     pub(super) fn with_parallelism(self, workers: usize) -> Self {
-        self.state.0.lock().unwrap().max_workers = workers;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.state.0.lock().unwrap().max_workers = workers;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = workers;
         self
     }
     /// Shares the worker, queue and handler without starting another thread.
     /// Client registrations are bounded by the lane's request ceiling.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn client(&self, wake: WakeSignal) -> Result<Self, RejectReason> {
         let mut state = self.state.0.lock().unwrap();
         if state.closed {
@@ -178,6 +193,7 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                 reason: closed(),
             });
         }
+        #[cfg(not(target_arch = "wasm32"))]
         if state.workers <= state.active.len()
             && let Some(handler) = state.handler.clone()
         {
@@ -292,7 +308,11 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                 },
                 bytes,
                 priority,
-                deadline,
+                if cfg!(target_arch = "wasm32") {
+                    None
+                } else {
+                    deadline
+                },
             )
             .map_err(|error| {
                 if error.reason.code == RejectCode::Busy {
@@ -312,9 +332,61 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                 client: self.client,
             },
         );
-        drop(state);
-        self.state.1.notify_one();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            drop(state);
+            self.state.1.notify_one();
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let wake = state.clients[&self.client].wake.clone();
+            drop(state);
+            wake.wake();
+        }
         Ok(())
+    }
+    /// On the browser thread, run bounded queue quanta between presentation turns.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn advance(&mut self, limit: u32) -> (u32, bool) {
+        let mut state = self.state.0.lock().unwrap();
+        let mut units = 0;
+        // A browser lane has only its foreground consumer. Its handler remains
+        // installed until the consumer drops, and no worker races this poll.
+        let handler = state.handler.as_ref().unwrap().clone();
+        while units < limit {
+            let Some(mut entry) = state.queue.pop() else {
+                break;
+            };
+            units += 1;
+            let cancelled = &entry.request.control.cancelled;
+            let step = handler(entry.request.request, cancelled, false);
+            let mut event = match step {
+                Step::Continue(request) => {
+                    entry.request.request = request;
+                    state.queue.requeue(entry);
+                    continue;
+                }
+                Step::Complete(event) => event,
+            };
+            let active = state.active.remove(&entry.slot.id).unwrap();
+            if cancelled.load(Ordering::Acquire) {
+                (self.cancel_event)(&mut event);
+            }
+            state.queue.finish(
+                Event {
+                    client: active.client,
+                    event,
+                },
+                entry.slot,
+            );
+        }
+        let pending = state.queue.usage().pending != 0;
+        let wake = pending.then(|| state.clients[&self.client].wake.clone());
+        drop(state);
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+        (units, pending)
     }
     pub fn is_idle(&self) -> bool {
         self.state.0.lock().unwrap().queue.usage().requests == 0
@@ -389,6 +461,7 @@ impl<R, E> Drop for Worker<R, E> {
         let wakes = state.wakes.clone();
         drop(state);
         drop(handler);
+        #[cfg(not(target_arch = "wasm32"))]
         self.state.1.notify_all();
         notify(&wakes);
     }

@@ -248,14 +248,17 @@ impl Cache {
                 )
             })
         };
+        let normal = || {
+            compile(
+                "fragment",
+                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            )
+        };
+        let extended_blend = || compile("extended_blend", None);
+        #[cfg(not(target_arch = "wasm32"))]
         let (normal, blend, extended_blend) = std::thread::scope(|scope| {
-            let normal = scope.spawn(|| {
-                compile(
-                    "fragment",
-                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                )
-            });
-            let extended_blend = scope.spawn(|| compile("extended_blend", None));
+            let normal = scope.spawn(normal);
+            let extended_blend = scope.spawn(extended_blend);
             let blend = compile("fragment", None);
             (
                 normal.join().unwrap(),
@@ -263,6 +266,9 @@ impl Cache {
                 extended_blend.join().unwrap(),
             )
         });
+        #[cfg(target_arch = "wasm32")]
+        let (normal, blend, extended_blend) =
+            (normal(), compile("fragment", None), extended_blend());
         let compiled = Arc::new(Compiled {
             layout,
             normal: normal?,

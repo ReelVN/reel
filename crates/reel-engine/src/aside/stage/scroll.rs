@@ -10,6 +10,7 @@ pub(in crate::aside) use reveal::documentation;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ScrollField {
+    /// Scroll vertically, horizontally, or along both axes.
     #[aside(name = "axis", ty = String, default = "vertical", validate = validate_axis)]
     Axis,
     /// Boundary behavior: `clamp` keeps direct touch panning bounded; `bounce`
@@ -72,12 +73,16 @@ pub(super) const METRICS: [(&str, &str); 6] = [
         "The accepted bottom scroll offset in logical pixels. Zero when vertical scrolling is unavailable.",
     ),
 ];
+text::word_options! {
+    AXIS_CHOICES, axis_word -> ScrollAxis {
+        b"horizontal" => ScrollAxis::Horizontal,
+        b"vertical" => ScrollAxis::Vertical,
+        b"both" => ScrollAxis::Both,
+    }
+}
 fn axis(heap: &Heap, value: Value) -> Result<ScrollAxis, HeapError> {
-    word(heap, value, |word| match word {
-        b"horizontal" => Ok(ScrollAxis::Horizontal),
-        b"vertical" => Ok(ScrollAxis::Vertical),
-        b"both" => Ok(ScrollAxis::Both),
-        _ => Err(HeapError::TypeMismatch),
+    word(heap, value, |word| {
+        axis_word(word).ok_or(HeapError::TypeMismatch)
     })
 }
 fn word<T>(

@@ -7,18 +7,17 @@ impl Binder<'_> {
             .name(n)
             .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
         if let (Some(&base), Some(key)) = (children.first(), key) {
-            if let Some(fields) = crate::hir::record_fields(&self.out.types, object) {
-                let ty = fields
+            let record = crate::hir::record_fields(&self.out.types, object);
+            if let Some(field) = record.and_then(|fields| {
+                fields
                     .iter()
                     .find(|(name, _)| self.out.hir.name(*name) == key)
-                    .map(|&(_, ty)| ty);
-                let Some(ty) = ty else {
-                    self.unknown_member(n, &key);
-                    return ANY;
-                };
+                    .map(|&(_, ty)| ty)
+            }) {
+                let (ty, optional) = field_contract(&self.out.types, field);
                 self.member_write_types.insert(n, Some(ty));
                 self.check(n, RuntimeChecks::RECORD_FIELD);
-                return if matches!(
+                return if optional || matches!(
                     self.out.hir.node(n).form,
                     Form::Member { optional: true, .. } | Form::Member { chain: true, .. }
                 ) {
@@ -30,7 +29,7 @@ impl Binder<'_> {
             if let Some(group) = super::super::builtin_members(&self.out.hir, &self.out.types, object)
                 // A table's own named entry wins over a builtin method. Its
                 // dynamic shape cannot promise this fallback's call contract.
-                && group.receiver != TypeHint::Table
+                && (group.receiver != TypeHint::Table || record.is_some())
             {
                 let Some(member) = group
                     .members
@@ -49,6 +48,10 @@ impl Binder<'_> {
                     self.check(n, RuntimeChecks::TYPE);
                 }
                 return ty;
+            }
+            if record.is_some() {
+                self.unknown_member(n, &key);
+                return ANY;
             }
             if let Some(class) = self
                 .external_nodes
@@ -453,7 +456,16 @@ impl Binder<'_> {
                     result
                 };
             }
-            let result = self.hint(&signature.result);
+            let result = if signature.result == TypeHint::Array
+                && let Form::Member { object, .. } = self.out.hir.node(target).form
+                && let Some((array, _)) = self.contextual_array(self.ty(object))
+                && aside_vm::BuiltinMethod::lookup(aside_vm::ObjectKind::Array, &external.name)
+                    .is_some_and(|method| method != aside_vm::BuiltinMethod::Map)
+            {
+                array
+            } else {
+                self.hint(&signature.result)
+            };
             return if (optional || chain) && !self.definitely_nonnull(ty) {
                 self.nullable_type(result)
             } else {

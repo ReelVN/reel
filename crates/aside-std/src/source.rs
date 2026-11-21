@@ -67,17 +67,13 @@ pub(super) fn api() -> &'static Api {
                 .collect::<Vec<_>>()
         };
         api.globals = exports(&["std::random"]);
-        for path in ["std", "std::prelude"] {
-            let mut exports = api.globals.clone();
-            if path == "std" {
-                exports.push(api.types[0].symbol());
-            }
-            api.modules.push(ModuleInterface {
-                canonical_path: path.into(),
-                version: "1".into(),
-                exports,
-            });
-        }
+        let mut root_exports = api.globals.clone();
+        root_exports.push(api.types[0].symbol());
+        api.modules.push(ModuleInterface {
+            canonical_path: "std".into(),
+            version: "1".into(),
+            exports: root_exports,
+        });
         api.modules.push(ModuleInterface {
             canonical_path: "std::core".into(),
             version: "1".into(),

@@ -244,8 +244,13 @@ pub(super) fn rows_per_upload(height: u32, first: u32, available: u64, row_bytes
 pub(super) struct WhiteTexture {
     pub(super) view: wgpu::TextureView,
     pub(super) brush: super::draw::BrushCache,
+    initialization: Arc<WhiteInitialization>,
+}
+// The completion callback retains the residency ticket without capturing a
+// browser texture handle, which belongs to the current JS agent.
+struct WhiteInitialization {
     _residency: reel_core::budget::BudgetTicket,
-    initialization: AtomicU8,
+    state: AtomicU8,
 }
 impl WhiteTexture {
     pub(super) const BYTES: u64 = 8;
@@ -303,26 +308,27 @@ impl WhiteTexture {
         let texture = Arc::new(Self {
             view,
             brush: Default::default(),
-            _residency: residency,
-            initialization: AtomicU8::new(Self::INITIALIZING),
+            initialization: Arc::new(WhiteInitialization {
+                _residency: residency,
+                state: AtomicU8::new(Self::INITIALIZING),
+            }),
         });
         gpu.submit(encoder);
-        let pending = texture.clone();
+        let pending = texture.initialization.clone();
         gpu.queue.on_submitted_work_done(move || {
-            pending
-                .initialization
-                .store(Self::COMPLETE, Ordering::Release);
+            pending.state.store(Self::COMPLETE, Ordering::Release);
         });
         gpu.check()?;
         Ok(texture)
     }
 
     pub(super) fn initialization_pending(&self) -> bool {
-        self.initialization.load(Ordering::Acquire) != Self::OBSERVED
+        self.initialization.state.load(Ordering::Acquire) != Self::OBSERVED
     }
 
     pub(super) fn poll_initialization(&self) -> bool {
         self.initialization
+            .state
             .compare_exchange(
                 Self::COMPLETE,
                 Self::OBSERVED,
@@ -755,6 +761,11 @@ fn convert_rows(
         );
         Ok::<_, GpuError>(())
     };
+    #[cfg(target_arch = "wasm32")]
+    for batch in 0..height.div_ceil(batch_rows) {
+        convert(batch)?;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if height <= batch_rows {
         convert(0)?;
     } else {

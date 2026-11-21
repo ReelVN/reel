@@ -13,9 +13,11 @@ fn main() {
     await entrance.run();
 
     // Animation continues while dialogue waits for input.
-    let sway = tween(card, x: 240, rotation: 2, duration: 2, easing: "in_out")
-        .then(tween(card, x: 220, rotation: 0, duration: 2, easing: "in_out"));
-    let drift = sway.repeat().run(owner: card);
+    let sway = sequence(
+        tween(card, x: 240, rotation: 2, duration: 2, easing: "in_out"),
+        tween(card, x: 220, rotation: 0, duration: 2, easing: "in_out"),
+    );
+    let drift = repeat(sway).run(owner: card);
     narrator("窗外的雨渐渐停了。");
     drift.pause();
     narrator("画面停在此刻。继续后让它回到原位。");
@@ -25,6 +27,6 @@ fn main() {
     narrator("写作时只需描述画面应该如何变化。");
     await tween(card, opacity: 0, duration: 0.4).run();
     // Reuse the authored starting values for another entrance after the delay.
-    await delay(0.5).then(entrance).run();
+    await sequence(delay(0.5), entrance).run();
     narrator("同一个入场动作，也可以留给重播按钮。");
 }

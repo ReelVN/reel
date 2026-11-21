@@ -344,6 +344,8 @@ pub enum NodeKind {
         repeat: [bool; 2],
         tile_scale: f64,
         corner_colors: Option<[Color; 4]>,
+        /// Four local content points, ordered from top-left clockwise.
+        corners: Option<std::sync::Arc<[crate::kurbo::Point; 4]>>,
         /// Shared-texture color adjustment applied after the image's tint colors.
         adjustment: crate::frame::ImageColorAdjustment,
         slice_center: bool,

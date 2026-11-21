@@ -19,6 +19,7 @@ pub(crate) use crate::common::glyph;
 mod glyph_cache;
 pub(crate) use crate::common::gradient;
 mod present;
+#[cfg(not(target_arch = "wasm32"))]
 mod readback;
 pub use capture::GpuCapture;
 pub use present::SurfacePass;

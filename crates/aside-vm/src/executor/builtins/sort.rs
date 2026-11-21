@@ -74,7 +74,7 @@ impl Vm {
         }
         // Both halves use the heap's ordinary u32 collection indices.
         info.len.checked_mul(2).ok_or(FaultKind::Resource)?;
-        let buffer = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+        let buffer = self.heap.alloc_array_like(receiver).map_err(heap_fault)?;
         self.put(s.env, 2, buffer).map_err(vm_fault)?;
         s.phase = ScriptPhase::Sort(SortWork {
             call,
@@ -130,13 +130,22 @@ impl Vm {
         } else {
             0
         };
-        if !meter.take(0, 8, extra) {
+        let item_work = self.heap.array_item_work(buffer)?;
+        let validation = match work.phase {
+            SortPhase::Copy if work.position < work.len * 2 => item_work,
+            SortPhase::Write { .. } => item_work,
+            SortPhase::Normalize if work.position < work.len => item_work,
+            _ => 0,
+        };
+        if !meter.take(0, 8 + validation, extra) {
             return Ok(false);
         }
         let result = match work.phase {
             SortPhase::Copy if work.position < work.len * 2 => {
                 let value = if work.position < work.len {
                     self.heap.sequence_get(receiver, work.position)?
+                } else if item_work != 0 {
+                    self.heap.sequence_get(receiver, work.position - work.len)?
                 } else {
                     Value::NULL
                 };

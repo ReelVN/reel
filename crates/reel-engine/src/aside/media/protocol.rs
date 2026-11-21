@@ -214,7 +214,13 @@ impl MediaCapture {
             Ok(LogicalReference {
                 kind: kind.into(),
                 version: 1,
-                fields: 6,
+                fields: if kind == "reel.media.playback"
+                    && heap.host_payload(value, Slot::Duck as u32)?.tag() != ValueTag::Null
+                {
+                    7
+                } else {
+                    6
+                },
                 payload,
             })
         })())
@@ -262,6 +268,7 @@ impl MediaCapture {
             6 if is_cue(heap, value) => {
                 ("source".into(), heap.host_payload(value, Slot::Id as u32)?)
             }
+            6 => ("duck".into(), heap.host_payload(value, Slot::Duck as u32)?),
             _ => return Err(TypedDataError::Contract("unknown media resource field")),
         })
     }
@@ -282,6 +289,8 @@ struct Pending {
 pub(super) struct Restoring {
     entries: BTreeMap<u64, Pending>,
     prepare_after: Option<u64>,
+    duck_after: Option<u64>,
+    restore_ducks: bool,
     adopt_after: Option<u64>,
     await_scan: usize,
     await_native: Option<NativeId>,
@@ -293,15 +302,16 @@ impl Media {
         heap: &mut Heap,
         header: &LogicalReference,
     ) -> Result<Value, TypedDataError> {
-        let fields = if header.kind == "reel.media.cue" {
-            7
-        } else {
-            6
-        };
-        if header.fields != fields {
+        if !matches!(
+            (header.kind.as_str(), header.fields),
+            ("reel.media.cue", 7) | ("reel.media.playback", 6 | 7) | ("reel.media.terminal", 6)
+        ) {
             return Err(TypedDataError::Contract(
                 "media fields differ from their protocol",
             ));
+        }
+        if header.kind == "reel.media.playback" && header.fields == 7 {
+            self.logical.restore_ducks = true;
         }
         let (mut playback, mut completion, cue) = match header.kind.as_str() {
             "reel.media.playback" => (
@@ -343,19 +353,18 @@ impl Media {
             self.keys
                 .record(heap, &[("position", Value::float(0.))], &[])?
         };
-        let value = heap.alloc_host(
-            fields,
-            &[
-                Value::int(if cue { CUE_TAG } else { TAG }),
-                Value::NULL,
-                Value::NULL,
-                Value::int(0),
-                position,
-                Value::NULL,
-                Value::NULL,
-            ],
-            Some(&READONLY),
-        )?;
+        let payload = [
+            Value::int(if cue { CUE_TAG } else { TAG }),
+            Value::NULL,
+            Value::NULL,
+            Value::int(0),
+            position,
+            Value::NULL,
+            Value::NULL,
+            Value::NULL,
+        ];
+        let value =
+            heap.alloc_host(fields, &payload[..if cue { 7 } else { 8 }], Some(&READONLY))?;
         let kind = heap.host_type(if cue {
             "reel::types::MediaCue"
         } else {
@@ -438,6 +447,7 @@ impl Media {
                         Slot::Owner
                     }
                     "source" if pending.cue => Slot::Id,
+                    "duck" if !pending.cue => Slot::Duck,
                     _ => return Err(TypedDataError::Contract("unknown media resource edge")),
                 };
                 heap.set_host_payload(value, slot as u32, field)?;
@@ -469,6 +479,13 @@ impl Media {
             return Err(TypedDataError::Contract(
                 "media cue source is not a playback",
             ));
+        }
+        if !pending.cue {
+            let link = heap.host_payload(value, Slot::Duck as u32)?;
+            if link.tag() != ValueTag::Null {
+                super::ducking::validate_link(heap, value, link)
+                    .map_err(|_| TypedDataError::Contract("invalid temporary audio gain"))?;
+            }
         }
         Ok(true)
     }
@@ -607,6 +624,25 @@ impl Media {
     ) -> Result<bool, AdapterError> {
         use std::ops::Bound::{Excluded, Unbounded};
         for _ in 0..work {
+            if self.logical.restore_ducks {
+                let next = match self.logical.duck_after {
+                    Some(after) => self
+                        .logical
+                        .entries
+                        .range((Excluded(after), Unbounded))
+                        .next(),
+                    None => self.logical.entries.first_key_value(),
+                };
+                if let Some((&key, pending)) = next {
+                    if !pending.cue {
+                        let value = heap.import_handle(pending.handle)?;
+                        self.restore_duck(heap, value)?;
+                    }
+                    self.logical.duck_after = Some(key);
+                    continue;
+                }
+                self.logical.restore_ducks = false;
+            }
             let next = match self.logical.adopt_after {
                 Some(after) => self
                     .logical
@@ -624,8 +660,9 @@ impl Media {
                 heap.set_host_payload(value, Slot::Owner as u32, current_default)?;
             }
             if let Some(id) = pending.id {
+                let audio = matches!(pending.playback, Some(MediaPlayback::Audio(_)));
                 let backend = self.backend.as_mut().unwrap();
-                if matches!(pending.playback, Some(MediaPlayback::Audio(_))) {
+                if audio {
                     backend.commit_audio(id);
                 }
                 if !pending.paused {

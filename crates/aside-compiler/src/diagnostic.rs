@@ -105,6 +105,8 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelatedRange {
     pub range: TextRange,
+    /// Source path of a related label in another file.
+    pub source: Option<String>,
     pub message: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,14 +142,24 @@ impl Diagnostic {
         &self,
         file: FileId,
     ) -> codespan_reporting::diagnostic::Diagnostic<FileId> {
+        self.to_codespan_with(file, |_| None)
+    }
+
+    pub fn to_codespan_with<FileId: Clone>(
+        &self,
+        file: FileId,
+        source_file: impl Fn(&str) -> Option<FileId>,
+    ) -> codespan_reporting::diagnostic::Diagnostic<FileId> {
         use codespan_reporting::diagnostic::{Diagnostic as D, Label, Severity as S};
         let mut labels =
             vec![Label::primary(file.clone(), byte_range(self.range)).with_message(&self.message)];
-        labels.extend(
-            self.related.iter().map(|r| {
-                Label::secondary(file.clone(), byte_range(r.range)).with_message(&r.message)
-            }),
-        );
+        labels.extend(self.related.iter().filter_map(|r| {
+            let file = match &r.source {
+                Some(path) => source_file(path)?,
+                None => file.clone(),
+            };
+            Some(Label::secondary(file, byte_range(r.range)).with_message(&r.message))
+        }));
         D::new(match self.severity {
             Severity::Error => S::Error,
             Severity::Warning => S::Warning,

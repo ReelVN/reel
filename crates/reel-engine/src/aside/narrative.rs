@@ -11,6 +11,9 @@ aside_host::native_documentation! {
         /// or replacement text. With `wait: false`, return a speech handle immediately;
         /// call its `append` and `wait` methods to stage the line in segments.
         /// Reveal input completes visible text before advancing an armed wait.
+        /// `voice` supplies the asset for this line, with a `voice_volume` default of 1.
+        /// Fast-forward omits transport for a skippable line; history keeps its voice path.
+        /// Playback uses the story task's current owner.
         "reel::narrator" | "reel::character::speak";
         /// Create a speaker with a display name and an optional stable id.
         /// Calling the speaker presents a line; `.line(text)` creates data for `say`.
@@ -56,6 +59,8 @@ aside_host::native_documentation! {
         /// Append/new dialogue/clear reset it; snapshots retain it. The root field is
         /// false after the interaction ends. Older displayed rows retain their last
         /// projected value; current_line_ids identifies the active segment's lines.
+        /// `voice` is the most recent automatically started Playback in this context,
+        /// or null. Awaiting it is separate from dialogue advance.
         /// Capture this object when constructing a component. A later getter,
         /// including an event callback's getter, selects the then-active context.
         "reel::game::dialogue";
@@ -76,10 +81,11 @@ aside_host::native_documentation! {
         "reel::choice::select";
         /// Return the active reading context's observable dialogue history collection.
         /// Entries retain their speaker, text and content identity independently of layout.
+        /// Each line also exposes its original `voice` asset path or null for manual replay.
         /// Capture the array in a component and refresh from that same array.
         "reel::game::history";
-        /// Append a history entry without presenting dialogue. `speaker` optionally
-        /// provides its display name; text accepts plain or rich content.
+        /// Append plain or rich text to history without presenting dialogue.
+        /// Pass a Character as `speaker` to record its display name and stable id.
         "reel::game::record";
         /// Return the active reading context's observable controls: auto, paused,
         /// delay, skipping and auto_ready. Direct getters inside derive follow
@@ -164,25 +170,74 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ],
     );
     let mut dialogue = Vec::new();
-    for (name, ty) in [
-        ("lines", TypeHint::Array),
-        ("current_line_ids", TypeHint::Array),
-        ("speaker_name", TypeHint::String),
-        ("text", text),
-        ("reveal", TypeHint::Int),
-        ("active", TypeHint::Bool),
-        ("read", TypeHint::Bool),
-        ("speaker_id", nullable(TypeHint::String)),
-        ("content_id", nullable(TypeHint::String)),
-        ("ready", TypeHint::Bool),
-        ("advance_requested", TypeHint::Bool),
+    for (name, ty, documentation) in [
+        (
+            "lines",
+            TypeHint::Array,
+            "Lines on the displayed dialogue page, including retained lines in append mode.",
+        ),
+        (
+            "current_line_ids",
+            TypeHint::Array,
+            "Opaque ids of lines belonging to the active dialogue interaction.",
+        ),
+        (
+            "speaker_name",
+            TypeHint::String,
+            "Display name of the first line in the most recent dialogue group. An unnamed speaker yields an empty string.",
+        ),
+        (
+            "text",
+            text,
+            "Plain or rich text of the first line in the most recent dialogue group.",
+        ),
+        (
+            "reveal",
+            TypeHint::Int,
+            "Number of revealed UTF-8 bytes in the first line's plain text.",
+        ),
+        (
+            "active",
+            TypeHint::Bool,
+            "Whether a dialogue interaction is active in this reading context.",
+        ),
+        (
+            "read",
+            TypeHint::Bool,
+            "Whether the dialogue group had already been read when it appeared.",
+        ),
+        (
+            "speaker_id",
+            nullable(TypeHint::String),
+            "Stable Character id for the first line in the most recent dialogue group, or null.",
+        ),
+        (
+            "content_id",
+            nullable(TypeHint::String),
+            "Stable content id for the first line in the most recent dialogue group, or null.",
+        ),
+        (
+            "ready",
+            TypeHint::Bool,
+            "Whether all text and inline pauses in the active dialogue have finished.",
+        ),
+        (
+            "advance_requested",
+            TypeHint::Bool,
+            "Whether manual input requested advancement of the current dialogue segment.",
+        ),
+        (
+            "voice",
+            nullable(named("reel::types::Playback")),
+            "Playback handle for the current dialogue's voice. Unvoiced or skipped dialogue yields null.",
+        ),
     ] {
         dialogue.push(Member::field(
             "reel::types::Dialogue",
             name,
             ty,
             None,
-            "The current observable dialogue state.",
+            documentation,
             None,
         ));
     }
@@ -221,28 +276,45 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         choice,
     ));
     let mut reading: Vec<Member> = [
-        "auto",
-        "paused",
-        "delay",
-        "skipping",
-        "skip_unread",
-        "skip_after_choices",
-        "auto_ready",
+        (
+            "auto",
+            TypeHint::Bool,
+            "Whether automatic advancement is enabled.",
+        ),
+        (
+            "paused",
+            TypeHint::Bool,
+            "Whether authored reading controls pause this context.",
+        ),
+        (
+            "delay",
+            TypeHint::Float,
+            "Automatic advancement delay in seconds.",
+        ),
+        (
+            "skipping",
+            TypeHint::Bool,
+            "Whether fast-forward is enabled.",
+        ),
+        (
+            "skip_unread",
+            TypeHint::Bool,
+            "Whether fast-forward may advance unread dialogue.",
+        ),
+        (
+            "skip_after_choices",
+            TypeHint::Bool,
+            "Whether fast-forward stays enabled after resolving a choice.",
+        ),
+        (
+            "auto_ready",
+            TypeHint::Bool,
+            "Whether the author's condition permits the automatic advancement countdown.",
+        ),
     ]
     .into_iter()
-    .map(|name| {
-        Member::field(
-            "reel::types::Reading",
-            name,
-            if name == "delay" {
-                TypeHint::Float
-            } else {
-                TypeHint::Bool
-            },
-            None,
-            "This reading context's observable control state.",
-            None,
-        )
+    .map(|(name, ty, documentation)| {
+        Member::field("reel::types::Reading", name, ty, None, documentation, None)
     })
     .collect();
     for method in ["set_auto", "set_skip", "pause", "clear_history"] {
@@ -283,6 +355,7 @@ enum DialogueField {
     ContentId,
     Ready,
     AdvanceRequested,
+    Voice,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -469,6 +542,7 @@ impl Narrative {
                 ("content_id", Value::NULL),
                 ("ready", Value::bool(false)),
                 ("advance_requested", Value::bool(false)),
+                ("voice", Value::NULL),
             ],
             &[active],
         )?;
@@ -941,6 +1015,34 @@ impl SessionVm {
             model.sync(self.vm.heap_mut(), session, self.read_limit)?;
         }
         Ok(())
+    }
+    pub(in crate::aside) fn dialogue_voice(&self) -> Result<Value, AdapterError> {
+        let Some(model) = &self.narrative else {
+            return Ok(Value::NULL);
+        };
+        Ok(self.vm.heap().host_property(PropertyId {
+            host: model.dialogue,
+            field: DialogueField::Voice as u32,
+        })?)
+    }
+
+    pub(in crate::aside) fn publish_dialogue_voice(
+        &mut self,
+        value: Value,
+    ) -> Result<(), AdapterError> {
+        if self.narrative.is_none() {
+            self.narrative = Some(Narrative::new(
+                &mut self.vm,
+                self.root_owner,
+                &self.stage.types,
+            )?);
+        }
+        publish(
+            self.vm.heap_mut(),
+            self.narrative.as_ref().unwrap().dialogue,
+            DialogueField::Voice as u32,
+            value,
+        )
     }
     pub(super) fn dispatch_narrative(
         &mut self,

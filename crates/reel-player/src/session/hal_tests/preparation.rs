@@ -24,7 +24,7 @@ impl Fixture {
                 let node = button(width: 80, height: 40);
                 stage.replace(node);
                 await stage.presented();
-                await run(tween(node, x: 200, duration: 1));
+                await tween(node, x: 200, duration: 1).run();
             }"#,
             "preparation",
             1,

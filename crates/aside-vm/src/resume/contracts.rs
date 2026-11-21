@@ -100,6 +100,9 @@ fn check_named_types(
                 check_named_types(item, scripted, identities, native_admission, b)?;
             }
         }
+        DataType::Array(item) | DataType::OptionalField(item) => {
+            check_named_types(item, scripted, identities, native_admission, b)?;
+        }
         DataType::Record(fields) => {
             for (_, ty) in fields {
                 check_named_types(ty, scripted, identities, native_admission, b)?;

@@ -350,7 +350,7 @@ fn dialogue_identity_and_read_styling_survive_completion_choice_and_nvl_retentio
         try { a.read = false; } catch e { errors += 1; }
         try { a.speaker_id = "other"; } catch e { errors += 1; }
         if errors != 2 { throw "mutable dialogue metadata"; }
-        await run(delay(1));
+        await delay(1).run();
         choose([{key: "next", label: "Next"}]);
         if d.read != all_read || d.speaker_id != "a" { throw "choice changed old display"; }
         narrator("third");

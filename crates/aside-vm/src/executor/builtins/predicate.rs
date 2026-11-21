@@ -39,7 +39,12 @@ impl Vm {
             if s.effects.0 & Effects::ALLOCATE == 0 {
                 return Err(FaultKind::Effect);
             }
-            let output = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+            let output = if call.method == Builtin::Filter {
+                self.heap.alloc_array_like(receiver)
+            } else {
+                self.heap.alloc_array(&[])
+            }
+            .map_err(heap_fault)?;
             self.put(s.env, 2, output).map_err(vm_fault)?;
         }
         s.phase = ScriptPhase::Predicate(PredicateWork {
@@ -89,7 +94,8 @@ impl Vm {
             && work.waiting
             && (method == Builtin::Map || (method == Builtin::Filter && accepted == Some(true)));
         let (work_units, extra) = if append {
-            (6, Values::growth_bytes(work.call.index.into(), 1))
+            let output = self.value(s.env, 2)?;
+            (6 + self.heap.array_item_work(output)?, Values::growth_bytes(work.call.index.into(), 1))
         } else {
             (3, 0)
         };

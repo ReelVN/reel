@@ -91,6 +91,7 @@ impl From<HostContext> for HostIndex {
                             )
                         })
                         .collect(),
+                    argument_choices: BTreeMap::new(),
                     property_parameters: Vec::new(),
                     parameter_documentation: BTreeMap::new(),
                     property_groups: Vec::new(),
@@ -290,6 +291,22 @@ impl Snapshot {
                 .expect("feature slots belong to analyzed modules");
             analyze(module)
         }))
+    }
+
+    pub(crate) fn source_diagnostics<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> impl Iterator<Item = &'a aside_compiler::Diagnostic> {
+        self.project
+            .diagnostics
+            .iter()
+            .filter(move |diagnostic| diagnostic.module == path)
+            .map(|diagnostic| &diagnostic.diagnostic)
+            .chain(
+                self.source_features(path)
+                    .into_iter()
+                    .flat_map(|features| &features.diagnostics),
+            )
     }
 }
 struct Document {
@@ -951,17 +968,7 @@ impl Workspace {
             .iter()
             .map(|(module, source)| {
                 let diagnostics = snapshot
-                    .project
-                    .diagnostics
-                    .iter()
-                    .filter(|diagnostic| &diagnostic.module == module)
-                    .map(|diagnostic| &diagnostic.diagnostic)
-                    .chain(
-                        snapshot
-                            .source_features(module)
-                            .into_iter()
-                            .flat_map(|features| &features.diagnostics),
-                    )
+                    .source_diagnostics(module)
                     .map(|diagnostic| Diagnostic {
                         range: source.lines.range(&source.text, diagnostic.range, encoding),
                         severity: Some(match diagnostic.severity {
@@ -975,16 +982,25 @@ impl Workspace {
                             diagnostic
                                 .related
                                 .iter()
-                                .map(|related| DiagnosticRelatedInformation {
-                                    location: Location {
-                                        uri: source.uri.clone(),
-                                        range: source.lines.range(
-                                            &source.text,
-                                            related.range,
-                                            encoding,
-                                        ),
-                                    },
-                                    message: related.message.clone(),
+                                .filter_map(|related| {
+                                    let source = match &related.source {
+                                        None => source,
+                                        Some(path) => snapshot
+                                            .sources
+                                            .values()
+                                            .find(|item| item.uri.as_str() == path)?,
+                                    };
+                                    Some(DiagnosticRelatedInformation {
+                                        location: Location {
+                                            uri: source.uri.clone(),
+                                            range: source.lines.range(
+                                                &source.text,
+                                                related.range,
+                                                encoding,
+                                            ),
+                                        },
+                                        message: related.message.clone(),
+                                    })
                                 })
                                 .collect()
                         }),

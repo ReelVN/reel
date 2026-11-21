@@ -107,7 +107,7 @@ fn unawaited_sound_completion_requests_sampling_until_the_bounded_batch_is_drain
         let source = format!(
             r#"fn opening() {{
                 for i in 0..{count} {{ audio.play("click"); }}
-                await run(delay(2));
+                await delay(2).run();
             }}"#
         );
         let (mut session, mut vm) = models::prepared(&source, false);
@@ -150,10 +150,10 @@ fn voice_omission_settles_before_transport_and_respects_reading_boundaries() {
             if index == 1 {
                 game.reading().set_skip(true);
                 skipped = audio.play("omitted", group: "voice", skip: "omit", start: 2, owner: node);
-                if await skipped != "Stopped" || audio.position(skipped) != 2 {
+                if await skipped != "Stopped" || skipped.position() != 2 {
                     throw "omitted voice did not settle";
                 }
-                if await audio.at(skipped, 3) {
+                if await skipped.at(3) {
                     throw "omitted voice moved beyond its start";
                 }
                 let mut rejected = false;
@@ -162,7 +162,12 @@ fn voice_omission_settles_before_transport_and_respects_reading_boundaries() {
                 if !rejected || audio.stop(skipped) != skipped || await skipped != "Stopped" {
                     throw "terminal control changed the result";
                 }
-                audio.play("music", group: "music", skip: "omit");
+                let group = if game.reading().skipping { "music" } else { "voice" };
+                let mut rejected_group = false;
+                try { audio.play("music", group: group, skip: "omit"); }
+                catch error { rejected_group = error == "audio skip omit requires group voice"; }
+                if !rejected_group { throw "nonvoice omission was accepted"; }
+                audio.play("music", group: "music");
                 audio.play("replay", group: "voice");
             }
             line.wait();
@@ -252,13 +257,12 @@ fn source_types_playback_and_position_cues_use_real_audio_and_video_handles() {
             } else {
                 r#"let media:Playback=audio.play("track");"#
             };
-            let api = if video { "video" } else { "audio" };
             let code = format!(
                 r#"fn opening() {{
                 let root:Node=stack();stage.replace(root);{start}
-                let cue:MediaCue={api}.at(media,0);
+                let cue:MediaCue=media.at(0);
                 if !await cue {{throw "cue result";}}
-                if pause(media)!=media || resume(media)!=media || stop(media)!=media {{throw "control identity";}}
+                if media.pause()!=media || media.resume()!=media || media.stop()!=media {{throw "control identity";}}
                 if await media!="Stopped" {{throw "playback result";}}
                 true
             }}"#
@@ -280,22 +284,21 @@ fn initially_paused_media_seeks_restores_and_resumes_shared_activity() {
             } else {
                 r#"let media=audio.play("track",start:1,paused:true);"#
             };
-            let api = if video { "video" } else { "audio" };
             let source = format!(
                 r#"fn opening() {{
                 let root=stack();stage.replace(root);
                 {start}
                 let alias=media;
-                root.add(text("position",x:derive(|| {api}.position(media))));
-                if {api}.position(media)!=1 {{throw "initial position";}}
-                {api}.seek(media,2);
-                let reached={api}.at(media,2);
+                root.add(text("position",x:derive(|| media.position())));
+                if media.position()!=1 {{throw "initial position";}}
+                media.seek(2);
+                let reached=media.at(2);
                 if !(await reached) {{throw "paused seek";}}
                 narrator("paused");
-                if media!=alias || {api}.position(alias)!=2 || !(await reached) {{throw "restored paused state";}}
-                resume(media);
+                if media!=alias || alias.position()!=2 || !(await reached) {{throw "restored paused state";}}
+                media.resume();
                 narrator("resumed");
-                stop(media);
+                media.stop();
                 if await media!="Stopped" {{throw "stop result";}}
                 narrator("done");
             }}"#
@@ -417,26 +420,21 @@ fn dialogue(session: &Session, expected: &str) {
 
 #[test]
 fn seek_updates_derived_position_and_freezes_repeated_cue_result() {
-    for namespace in ["audio", "video"] {
-        let play = if namespace == "audio" {
-            r#"audio.play("track")"#
-        } else {
-            r#"video.play(video("movie"))"#
-        };
+    for play in [r#"audio.play("track")"#, r#"video("movie").play()"#] {
         let source = format!(
             r#"fn opening() {{
-            let media={play}; pause(media);
-            let observed=derive(|| {namespace}.position(media));
+            let media={play}; media.pause();
+            let observed=derive(|| media.position());
             let marker=text("position",x:observed); stage.replace(marker);
-            let cue={namespace}.at(media,2);
-            {namespace}.seek(media,3);
-            if {namespace}.position(media)!=3 {{throw "seek not immediately visible";}}
-            {namespace}.seek(media,0.5);
+            let cue=media.at(2);
+            media.seek(3);
+            if media.position()!=3 {{throw "seek not immediately visible";}}
+            media.seek(0.5);
             if !(await cue) || !(await cue) {{throw "reusable reached result changed";}}
             narrator("seek");
             if marker.x!=0.5 {{throw "seek did not update binding";}}
-            let before_end={namespace}.at(media,0.75);
-            stop(media);
+            let before_end=media.at(0.75);
+            media.stop();
             if await before_end {{throw "early stop reported arrival";}}
             if await media!="Stopped" {{throw "stop result";}}
             narrator("done");
@@ -468,13 +466,13 @@ fn final_position_settles_cue_before_terminal_and_preserves_failures() {
     ] {
         for encoded in [false, true] {
             let source = r#"fn opening() {
-                let media=audio.play("track"); let cue=audio.at(media,2);
+                let media=audio.play("track"); let cue=media.at(2);
                 let mut value="";
                 try { value=f"{await cue}"; }
                 catch error {
                     value=error;
                 }
-                if audio.position(media)!=2 {throw "terminal cursor";}
+                if media.position()!=2 {throw "terminal cursor";}
                 narrator(value);
             }"#;
             let (mut session, mut vm) = models::prepared(source, encoded);
@@ -505,7 +503,7 @@ fn cue_failure_and_cancellation_keep_the_media_fault_category() {
             ),
         ] {
             let (mut session, mut vm) = models::prepared(
-                r#"fn opening(){let media=audio.play("track");await audio.at(media,1);}"#,
+                r#"fn opening(){let media=audio.play("track");await media.at(1);}"#,
                 encoded,
             );
             let host = Host::default();
@@ -527,7 +525,7 @@ fn cue_waits_through_observed_loop_and_queue_position_rewinds() {
     for encoded in [false, true] {
         let source = r#"fn opening(){
             let sound=audio.play("track",looping:true);
-            let cue=audio.at(sound,2);
+            let cue=sound.at(2);
             if !(await cue) {throw "rewind ended the condition";}
             narrator("arrived");
         }"#;
@@ -552,18 +550,18 @@ fn owner_retirement_and_waiter_cancellation_preserve_shared_sound() {
         let node=stack(); stage.replace(node);
         let media=audio.play("track",owner:node);
         let held={cue:null};
-        scope(body:|| {held.cue=audio.at(media,100);});
+        scope(body:|| {held.cue=media.at(100);});
         let mut retired=false;
         try {await held.cue;} catch error {retired=error=="media position owner retired";}
         if !retired {throw "position owner survived";}
-        let cue=audio.at(media,1);
+        let cue=media.at(1);
         let task=spawn(|| {await cue;});
-        await run(delay(0.01));
+        await delay(0.01).run();
         task.cancel();
         try {await task;} catch error {}
-        audio.seek(media,1);
+        media.seek(1);
         if !(await cue) {throw "shared cue cancelled";}
-        if audio.position(media)!=1 {throw "shared sound stopped";}
+        if media.position()!=1 {throw "shared sound stopped";}
         narrator("alive");
     }"#;
     for encoded in [false, true] {
@@ -588,13 +586,13 @@ fn pending_cue_snapshot_preserves_shared_media_and_completed_result() {
     let source = r#"fn opening() {
         let media=audio.play("track");
         let alias=media;
-        let reached=audio.at(media,0);
-        let cue=audio.at(media,2);
+        let reached=media.at(0);
+        let cue=media.at(2);
         narrator("save");
         if alias!=media || !(await reached) {throw "restored identity/result";}
-        audio.seek(alias,2);
+        alias.seek(2);
         if !(await cue) || !(await cue) {throw "restored pending cue";}
-        audio.seek(media,0);
+        media.seek(0);
         if !(await reached) || !(await cue) {throw "restored result rewound";}
         narrator("restored");
     }"#;
@@ -642,7 +640,7 @@ fn pending_cue_snapshot_preserves_shared_media_and_completed_result() {
 fn cue_round_does_not_restart_the_position_publication_barrier() {
     let source = r#"fn opening() {
         let media=audio.play("track"); let cues=[];
-        for i in 0..128 {cues.append(audio.at(media,1));}
+        for i in 0..128 {cues.append(media.at(1));}
         for cue in cues {if !(await cue) {throw "missed position";}}
         narrator("all reached");
     }"#;
@@ -668,12 +666,12 @@ fn shared_cue_delivers_more_than_one_wait_slice_after_backend_stops_polling() {
     let source = r#"fn opening() {
         let root=stack();stage.replace(root);
         let sound=audio.play("track");
-        let cue=audio.at(sound,1);
+        let cue=sound.at(1);
         for i in 0..130 {
             spawn(|| {if !(await cue) {throw "cue result";} root.x+=1;});
         }
         let cancelled=spawn(|| {await cue;throw "cancelled waiter resumed";});
-        await run(delay(0.01));
+        await delay(0.01).run();
         cancelled.cancel();
         try {await cancelled;} catch error {}
         narrator("ready");
@@ -719,9 +717,9 @@ fn shared_cue_delivers_more_than_one_wait_slice_after_backend_stops_polling() {
 #[test]
 fn continuous_media_and_clock_settle_the_same_sliced_reactive_batch() {
     let source = r#"fn sample(media) {
-        let before=audio.position(media);
+        let before=media.position();
         let mut i=0; while i<8 {i+=1;}
-        if before!=audio.position(media) {throw "media changed during derived batch";}
+        if before!=media.position() {throw "media changed during derived batch";}
         before
     }
     fn opening() {
@@ -732,7 +730,7 @@ fn continuous_media_and_clock_settle_the_same_sliced_reactive_batch() {
             root.add(text("sample",x:derive(||sample(media)),y:derive(||timer.elapsed)));
         }
         stage.replace(root);
-        let delayed=spawn(|| {await run(delay(0.5)); root.opacity=0.5;});
+        let delayed=spawn(|| {await delay(0.5).run(); root.opacity=0.5;});
         narrator("running");
     }"#;
     for encoded in [false, true] {

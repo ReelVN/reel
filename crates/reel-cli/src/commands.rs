@@ -146,7 +146,7 @@ fn asb_output(value: &str) -> Result<PathBuf, String> {
 pub struct Export {
     #[command(flatten)]
     pub settings: BuildSettings,
-    /// Destination directory; defaults to dist/TARGET/debug (release with --release).
+    /// Destination directory or macOS .app path. Defaults under dist/TARGET.
     #[arg(long, value_name = "DIRECTORY")]
     pub output: Option<PathBuf>,
     /// Package a resource directory under its logical prefix; use . for the resource root.
@@ -158,10 +158,10 @@ pub struct Export {
     /// Select @NAME resource variants, conversion rules and the release destination.
     #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
     pub resource_target: String,
-    /// Include a native runtime directory, preserving its relative paths.
-    #[arg(long, value_name = "DIRECTORY", requires = "release")]
+    /// Use a compiled player or runtime directory. Vita accepts a SELF or a directory with eboot.bin.
+    #[arg(long, value_name = "PATH", requires = "release")]
     pub runtime: Option<PathBuf>,
-    /// Export code, text and resources for an installed player. The default for Vita.
+    /// Export code, text and resources without a player or install package.
     #[arg(long, requires = "release", conflicts_with = "runtime")]
     pub data_only: bool,
     /// Target resource volume size including index; defaults to 2147483648 (2 GiB).
@@ -176,7 +176,16 @@ impl Export {
             return Ok(None);
         }
         match &self.runtime {
-            Some(directory) => Ok(Some(Runtime::Directory(directory.clone()))),
+            Some(path) => {
+                let metadata = std::fs::metadata(path).map_err(|error| {
+                    io::Error::new(error.kind(), format!("runtime {}: {error}", path.display()))
+                })?;
+                if metadata.is_file() {
+                    Ok(Some(Runtime::Executable(path.clone())))
+                } else {
+                    Ok(Some(Runtime::Directory(path.clone())))
+                }
+            }
             None => Runtime::default_for_target(&self.resource_target),
         }
     }

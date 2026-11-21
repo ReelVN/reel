@@ -21,10 +21,6 @@ pub(super) struct Input {
     events: Vec<input::NavigationEvent>,
 }
 impl Input {
-    pub fn return_to_library(&self, sample: &native::Sample) -> bool {
-        let chord = native::SELECT | native::START;
-        sample.buttons & chord == chord && self.blocked_buttons & chord == 0
-    }
     pub fn new(sample: native::Sample) -> Self {
         Self {
             blocked_buttons: sample.buttons,

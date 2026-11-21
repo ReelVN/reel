@@ -71,7 +71,7 @@ fn bound_node_methods_edit_the_same_tree_and_retire_owned_activities() {
         stage.replace(root);
         let insert = root.add;
         let part = column() { text("nested"); };
-        let moving = run(tween(part, x: 100), owner: part);
+        let moving = tween(part, x: 100).run(owner: part);
         if insert(index: 0, child: part) != part { throw "identity"; }
         narrator("indexed");
         let last = root.add(text("last"));
@@ -198,7 +198,7 @@ fn same_parent_move_preserves_identity_bindings_activities_and_ownership() {
         let third = text("third");
         let root = stack { first; second; third; };
         stage.replace(root);
-        let job = run(tween(first, x: 80, duration: 2), owner: first);
+        let job = tween(first, x: 80, duration: 2).run(owner: first);
         let move = root.move;
         if move(first, index: 2) != first { throw "move identity"; }
         root.move(first, index: 2);
@@ -214,7 +214,7 @@ fn same_parent_move_preserves_identity_bindings_activities_and_ownership() {
         narrator("reordered");
         if await job != "Completed" || first.x != 80 { throw "animation survived"; }
         root.move(first, index: 0);
-        let pending = run(tween(first, y: 100, duration: 10), owner: first);
+        let pending = tween(first, y: 100, duration: 10).run(owner: first);
         root.move(first, index: 1);
         first.remove();
         let mut cancelled = false;
@@ -292,15 +292,12 @@ fn main() {
         }
     );
     await stage.presented(owner: cards);
-    run(
-        repeat(
+    repeat(
             sequence(
                 tween(left, y: 50, duration: 1.5, easing: "in_out"),
                 tween(left, y: 90, duration: 1.5, easing: "in_out")
             )
-        ),
-        owner: left
-    );
+        ).run(owner: left);
 }
 "##
     .replace("fn main()", "fn opening()");

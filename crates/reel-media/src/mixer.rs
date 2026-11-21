@@ -976,6 +976,11 @@ impl Playback {
         self.handle.set_volume(db, tween(duration));
         Ok(())
     }
+    pub(crate) fn set_ducking_db(&mut self, db: f32, duration: Duration) -> Result<(), AudioError> {
+        let db = validate_db(db)?;
+        self.handle.set_ducking(Decibels(db), tween(duration));
+        Ok(())
+    }
     pub fn set_pan(&mut self, pan: f32, duration: Duration) -> Result<(), AudioError> {
         if !(-1.0..=1.0).contains(&pan) {
             return Err(AudioError::new(

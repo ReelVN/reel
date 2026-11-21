@@ -1,6 +1,7 @@
 //! Conservative semantic analysis. Unknown dynamic behavior remains a runtime obligation.
 mod bind;
 mod builtin_methods;
+pub(crate) mod effects;
 mod enumerations;
 pub use builtin_methods::{
     BuiltinCatalog, BuiltinMember, BuiltinTypeMembers, builtin_catalog, builtin_members,
@@ -272,18 +273,37 @@ fn inferred_await_diagnostics(module: &AnalyzedModule) -> impl Iterator<Item = D
         }
     }
     module.inferred_awaits.iter().filter_map(|&node| {
-        let crate::hir::Form::Unary { operator, value } = module.hir.node(node).form else {
+        let crate::hir::Form::Unary { value, .. } = module.hir.node(node).form else {
             unreachable!("await candidate must be a prefix expression");
         };
         let result = module.source_types.value(value)?;
-        non_awaitable(&result.ty).then(|| {
-            Diagnostic::error(
-                crate::DiagnosticCode::TypeMismatch,
-                operator.span,
-                "await requires an Awaitable. Use an ordinary call result directly",
-            )
-        })
+        non_awaitable(&result.ty).then(|| invalid_await(&module.hir, node))
     })
+}
+
+fn invalid_await(hir: &crate::hir::Hir, node: crate::hir::NodeId) -> Diagnostic {
+    let crate::hir::Form::Unary { operator, value } = hir.node(node).form else {
+        unreachable!("await must be a prefix expression");
+    };
+    let between = crate::TextRange::new(operator.span.end(), hir.node(value).span.start());
+    let spaces = hir
+        .text(between)
+        .bytes()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    let mut diagnostic = Diagnostic::error(
+        crate::DiagnosticCode::TypeMismatch,
+        operator.span,
+        "await requires an Awaitable. Use the result directly",
+    );
+    diagnostic.fix = Some(crate::diagnostic::Fix {
+        range: crate::TextRange::new(
+            operator.span.start(),
+            operator.span.end() + crate::TextSize::from(spaces as u32),
+        ),
+        replacement: String::new(),
+    });
+    diagnostic
 }
 
 pub(crate) fn editor_interface(

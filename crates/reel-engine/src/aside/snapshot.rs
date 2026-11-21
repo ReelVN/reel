@@ -78,6 +78,8 @@ pub(super) enum Part {
     Transitions,
     Transition,
     AssetRead,
+    HistoryVoice,
+    AudioDuck,
 }
 #[derive(Serialize, Deserialize)]
 pub(super) struct Record {
@@ -175,7 +177,10 @@ pub struct SessionCapture<'a> {
     complete: bool,
 }
 impl SessionVm {
-    fn snapshot_records(&self) -> Result<RecordStream<'_>, AdapterError> {
+    fn snapshot_records<'a>(
+        &'a self,
+        session: &'a Session,
+    ) -> Result<RecordStream<'a>, AdapterError> {
         use std::iter::once_with;
         let streams: [RecordStream<'_>; 14] = [
             Box::new(
@@ -228,6 +233,19 @@ impl SessionVm {
                             .frames
                             .iter()
                             .map(|frame| Record::new(Part::ReadingContext, frame)),
+                    )
+                    .chain(
+                        std::iter::once((session.reading_id, &session.reading_data.history))
+                            .chain(
+                                session
+                                    .parked_readings
+                                    .iter()
+                                    .map(|reading| (reading.id, &reading.data.history)),
+                            )
+                            .flat_map(|(reading, history)| {
+                                history.voice_paths().map(move |path| (reading, path))
+                            })
+                            .map(|entry| Record::new(Part::HistoryVoice, &entry)),
                     ),
             ),
             self.activities.snapshot_records(),
@@ -282,7 +300,7 @@ impl SessionVm {
             session: Some(session.snapshot_begin()),
             saved_session: None,
             records: Vec::new(),
-            adapters: self.snapshot_records()?,
+            adapters: self.snapshot_records(session)?,
             pictures: self.transition_pictures(),
             picture_sizes: Some(Box::new(self.transition_picture_sizes())),
             text_intents: Vec::new(),
@@ -688,6 +706,23 @@ impl SessionRestore<'_> {
                             .ok_or(AdapterError::Input("choice identity without narrative"))?
                             .restore_option(record, map, runtime.identity)?;
                     }
+                    Part::HistoryVoice => {
+                        let (reading, (group, line, path)): (_, (u64, usize, String)) =
+                            record.read()?;
+                        if !self
+                            .session
+                            .as_mut()
+                            .unwrap()
+                            .with_reading(reading, |session| {
+                                session
+                                    .reading_data
+                                    .history
+                                    .restore_voice(group, line, &path)
+                            })?
+                        {
+                            return Err(AdapterError::Input("missing snapshot voice history line"));
+                        }
+                    }
                     Part::Activities | Part::ActivityEvent | Part::ActivityWait => {
                         runtime
                             .activities
@@ -707,7 +742,11 @@ impl SessionRestore<'_> {
                             runtime.stage.retirement_revision,
                         )?;
                     }
-                    Part::Media | Part::MediaWait | Part::MediaCue | Part::VideoPoster => {
+                    Part::Media
+                    | Part::MediaWait
+                    | Part::MediaCue
+                    | Part::VideoPoster
+                    | Part::AudioDuck => {
                         runtime
                             .media
                             .restore_record(record, map, runtime.vm.heap_mut())?;

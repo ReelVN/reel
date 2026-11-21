@@ -35,7 +35,7 @@ fn dialogue_box() {
             content.opacity = 1;
             speaker(words);
             // Advance completes the dialogue first; its displayed data stays available.
-            await run(tween(content, y: -180, opacity: 0, duration: 0.2, easing: "in"));
+            await tween(content, y: -180, opacity: 0, duration: 0.2, easing: "in").run();
         }
     };
 }

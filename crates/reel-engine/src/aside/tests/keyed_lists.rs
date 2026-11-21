@@ -259,7 +259,7 @@ fn deleting_a_row_cancels_its_waiting_callback_and_activity() {
         let data = model({items: [1], completed: false});
         stage.replace(column() {
             list(|| data.items, key: |x| x, build: |row| button("working", on_click: |e| {
-                await run(tween(e.target, x: 100, duration: 100));
+                await tween(e.target, x: 100, duration: 100).run();
                 data.completed = true;
             }));
             button("remove", on_click: |e| data.items.clear());

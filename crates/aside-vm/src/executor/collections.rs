@@ -180,10 +180,15 @@ impl Vm {
         } else {
             0
         };
-        if !meter.take(0, 1, extra) {
+        let builder = self.value(s.env, 1)?;
+        let work = if index < window.len {
+            1 + self.heap.array_item_work(builder)?
+        } else {
+            1
+        };
+        if !meter.take(0, work, extra) {
             return Ok(false);
         }
-        let builder = self.value(s.env, 1)?;
         let result = if index == window.len {
             if tuple {
                 self.heap.seal_tuple(builder)?;

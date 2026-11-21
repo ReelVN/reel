@@ -39,12 +39,18 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
-        /// Parse immutable rich text. Tags control spans, ruby, links and reveal cues.
-        /// Font spans select configured families, including blank-line metrics and ruby.
-        /// `[weight=400]` accepts finite weights in 1..=1000; `[b]` selects 700.
-        /// `[line_height=46]` sets a finite nonnegative absolute logical line height.
-        /// Closing nested tags restores the enclosing style.
-        /// Use rich_escape for dynamic plain text inside markup. Parse errors report their
+        /// Parse immutable rich text. Style spans use `[b]`, `[i]`, `[u]`, `[s]`,
+        /// `[em]`, `[size=24]`, `[font=Family]`, `[line_height=46]`,
+        /// `[weight=400]` and `[color=#RRGGBB]`. Color also accepts `#RRGGBBAA`.
+        /// Font spans select configured families. Weights range from 1 to 1000,
+        /// and `[b]` selects 700. Line height is absolute, in logical units.
+        /// Use `[ruby=annotation]base[/ruby]` for ruby and `[link=id]label[/link]`
+        /// for links. Close nested spans in reverse order to restore the enclosing style.
+        /// `[speed=30]` sets the reveal rate in graphemes per second.
+        /// `[speed=2x]` scales the configured rate. `[pause=0.5]` waits in seconds.
+        /// `[next]` advances dialogue after reveal when every line in the group uses it.
+        /// Write `[[` for a literal open bracket. Use `rich_escape` for dynamic
+        /// plain text inside markup. Parse errors report their
         /// UTF-8 byte offset; plain and parsed text use the same dialogue/layout pipeline.
         "reel::rich";
         /// Escape plain text for literal insertion into rich markup.
@@ -82,6 +88,30 @@ pub(super) fn matches(
     chunk: usize,
 ) -> Result<bool, AdapterError> {
     let (value, rich) = source(heap, value)?;
+    matches_source(heap, value, rich, expected, chunk)
+}
+
+pub(super) fn read_or_reuse(
+    heap: &Heap,
+    value: Value,
+    expected: &Text,
+    chunk: usize,
+) -> Result<Text, AdapterError> {
+    let (value, rich) = source(heap, value)?;
+    if matches_source(heap, value, rich, expected, chunk)? {
+        Ok(expected.clone())
+    } else {
+        decode(text::read_string(heap, value, chunk)?, rich)
+    }
+}
+
+fn matches_source(
+    heap: &Heap,
+    value: Value,
+    rich: bool,
+    expected: &Text,
+    chunk: usize,
+) -> Result<bool, AdapterError> {
     if rich != expected.markup().is_some() {
         return Ok(false);
     }

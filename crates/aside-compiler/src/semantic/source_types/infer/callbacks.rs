@@ -44,8 +44,11 @@ impl Inference<'_> {
             .captured_provider(m, provider, state)
             .or_else(|| supplied.info.call_result.clone());
         let element = source
-            .filter(|source| source.ty == TypeHint::Array)
-            .and_then(|source| source.element().cloned())
+            .and_then(|source| match &source.ty {
+                TypeHint::Array => source.element().cloned(),
+                TypeHint::TypedArray(element) => Some(self.leaf((**element).clone())),
+                _ => None,
+            })
             .unwrap_or_else(|| self.unknown.clone());
         for callback in context.callbacks {
             let Some(&(node, _)) = bound.get(callback.parameter) else {

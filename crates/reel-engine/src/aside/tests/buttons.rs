@@ -433,7 +433,7 @@ fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
         }, on_submit: |event| {
             if event.value != "中文" { throw "wrong submit"; }
             output.y += 1;
-            await run(delay(20));
+            await delay(20).run();
             throw "retired submit resumed";
         });
         stage.replace(column() { editor; output;
@@ -515,7 +515,7 @@ fn text_area_restores_multiline_binding_and_owned_submit() {
         let editor = text_area(value: bind(data.body), on_change: |e| {
             if data.body != e.value { throw "binding"; } output.x += 1;
         }, on_submit: |e| {
-            output.y += 1; await run(delay(20)); throw "retired editor resumed";
+            output.y += 1; await delay(20).run(); throw "retired editor resumed";
         });
         stage.replace(column { editor; output;
             button("replace", on_click: || { data.body = "author\nreplacement"; });
@@ -717,7 +717,7 @@ fn independent_callbacks_await_one_producer_beside_main_dialogue() {
     let (mut s, mut vm) = setup(
         r#"fn opening() {
         let count = text("count");
-        let motion = run(sequence(tween(count, y: 50, duration: 0.5), tween(count, y: 100, duration: 0.5)));
+        let motion = sequence(tween(count, y: 50, duration: 0.5), tween(count, y: 100, duration: 0.5)).run();
         let first = button("first", on_click: |event| {
             if await motion != "Completed" { throw "wrong completion"; }
             count.x += 1;
@@ -776,7 +776,7 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
         let count = text("count");
         let holder = column();
         holder.add(button("waiting", on_click: |event| {
-            await run(tween(count, y: 100, duration: 1));
+            await tween(count, y: 100, duration: 1).run();
             throw "retired waiting callback resumed";
         }));
         holder.add(button("remove", on_click: |event| {
@@ -785,7 +785,7 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
         }));
         stage.replace(column() { holder; count;
             button("close pending", on_click: |event| {
-                await run(tween(count, x: 100, duration: 1));
+                await tween(count, x: 100, duration: 1).run();
                 throw "closed callback resumed";
             });
         });
@@ -833,8 +833,8 @@ fn retiring_a_future_target_wakes_waiters_of_paused_compositions_without_clock_t
         r#"fn opening() {
         let count = text("count");
         let future = text("future");
-        let motion = run(sequence(tween(count, y: 10), tween(future, y: 20)));
-        pause(motion);
+        let motion = sequence(tween(count, y: 10), tween(future, y: 20)).run();
+        motion.pause();
         stage.replace(column() { count; future;
             button("wait", on_click: |event| {
                 try { await motion; } catch error { count.x += 1; }
@@ -871,7 +871,7 @@ fn value_controls_recheck_current_flags_and_retire_waiting_change_tasks() {
         let count = text("count");
         let value = slider(on_change: |event| {
             if event.target.value != event.value { throw "uncommitted value"; }
-            await run(tween(count, y: 100, duration: 1));
+            await tween(count, y: 100, duration: 1).run();
             throw "retired change callback resumed";
         });
         let silent = toggle();
@@ -984,7 +984,7 @@ fn event_callbacks_adapt_zero_parameters_bound_receivers_defaults_and_rest() {
             button("rest", on_click: rest);
             button("native zero", on_click: removed.remove);
             button("waiting", on_click: || {
-                await run(delay(10));
+                await delay(10).run();
                 output.y = 1;
             });
         });
@@ -1035,7 +1035,7 @@ fn pending_pointer_moves_coalesce_across_gc_with_and_without_event_arguments() {
     use reel_ui::stage::{NodePointer, PointerPhase};
     for handler in [
         "|| { output.x += 1; }",
-        "|event| { output.x += 1; output.y = event.x; output.height = if event.dragging {1} else {0}; let initial = event.x; let dragging = event.dragging; await run(delay(1)); if event.x != initial || event.dragging != dragging { throw \"started argument changed\"; } output.width = event.x; }",
+        "|event| { output.x += 1; output.y = event.x; output.height = if event.dragging {1} else {0}; let initial = event.x; let dragging = event.dragging; await delay(1).run(); if event.x != initial || event.dragging != dragging { throw \"started argument changed\"; } output.width = event.x; }",
     ] {
         for encoded in [false, true] {
             let code = format!(
@@ -1113,7 +1113,7 @@ fn wheel_callbacks_source_asb_restore_scope_and_owner_retirement() {
             if event.target != control { throw "target identity"; }
             output.x += event.delta_y;
             output.y = event.x;
-            await run(delay(20));
+            await delay(20).run();
             throw "retired wheel callback resumed";
         });
         let modal = stack(modal: true, visible: false);

@@ -387,9 +387,16 @@ pub struct HistoryLine {
     speaker_id: Option<String>,
     speaker_name: String,
     content: TextContent,
+    #[serde(skip)]
+    voice: Option<std::sync::Arc<str>>,
 }
 
 impl HistoryLine {
+    /// Original voice asset, even when fast-forward omitted its playback.
+    pub fn voice(&self) -> Option<&str> {
+        self.voice.as_deref()
+    }
+
     pub fn id(&self) -> DialogueLineId {
         self.id
     }
@@ -1050,6 +1057,7 @@ impl Session {
                     speaker_id: copy_optional_text(line.speaker_id)?,
                     speaker_name: copy_text(line.speaker_name)?,
                     content,
+                    voice: None,
                 });
             }
         }
@@ -1138,6 +1146,7 @@ impl Session {
                 speaker_id: copy_optional_text(line.speaker_id)?,
                 speaker_name: copy_text(line.speaker_name)?,
                 content: copy_content(&DialogueLineInput { text, ..*line })?,
+                voice: None,
             });
         }
         let group = HistoryGroup {

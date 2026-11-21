@@ -610,6 +610,7 @@ impl<'a> Builder<'a> {
             K::Comma
                 | K::Semi
                 | K::Colon
+                | K::Question
                 | K::RParen
                 | K::RBracket
                 | K::Dot

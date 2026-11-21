@@ -113,6 +113,7 @@ fn inferred_builtin_members(ty: &TypeHint) -> Option<&'static BuiltinTypeMembers
     }
     builtin_catalog().types.iter().find(|group| {
         group.receiver == *ty
+            || matches!((ty, &group.receiver), (TypeHint::TypedArray(_), TypeHint::Array))
             || matches!((ty, &group.receiver), (TypeHint::StringLiteral(_), TypeHint::String))
             || matches!((ty, &group.receiver), (TypeHint::Tuple(_), TypeHint::Named(name)) if name == "tuple")
     })
@@ -124,48 +125,39 @@ struct Signature {
     name: String,
     result: String,
     parameters: Vec<(String, String)>,
+    accepts_named_arguments: bool,
     literal_parameters: Vec<(usize, Vec<String>)>,
     markdown: Option<String>,
     parameter_documentation: std::collections::BTreeMap<String, std::sync::Arc<str>>,
 }
 
-fn hint_literals(ty: &TypeHint) -> Option<Vec<String>> {
+const SIGNATURE_LINE_LIMIT: usize = 100;
+
+fn hint_literals(ty: &TypeHint) -> Vec<String> {
     match ty {
-        TypeHint::StringLiteral(text) => Some(vec![format!("{text:?}")]),
-        TypeHint::Null => Some(vec!["null".into()]),
-        TypeHint::Union(types) => {
-            let mut values = Vec::new();
-            for ty in types {
-                values.extend(hint_literals(ty)?);
-            }
-            Some(values)
-        }
-        _ => None,
+        TypeHint::StringLiteral(text) => vec![format!("{text:?}")],
+        TypeHint::Null => vec!["null".into()],
+        TypeHint::Union(types) => types.iter().flat_map(hint_literals).collect(),
+        _ => Vec::new(),
     }
 }
 
-fn source_literals(module: EditorModule<'_>, ty: TypeId) -> Option<Vec<String>> {
+fn source_literals(module: EditorModule<'_>, ty: TypeId) -> Vec<String> {
     match &module.types()[ty.0 as usize] {
-        Type::StringLiteral(text) => Some(vec![format!("{text:?}")]),
-        Type::Null => Some(vec!["null".into()]),
-        Type::Union(types) => {
-            let mut values = Vec::new();
-            for &ty in types {
-                values.extend(source_literals(module, ty)?);
-            }
-            Some(values)
-        }
-        _ => None,
+        Type::StringLiteral(text) => vec![format!("{text:?}")],
+        Type::Null => vec!["null".into()],
+        Type::Union(types) => types
+            .iter()
+            .flat_map(|&ty| source_literals(module, ty))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
-fn literal_parameters(
-    choices: impl Iterator<Item = Option<Vec<String>>>,
-) -> Vec<(usize, Vec<String>)> {
+fn literal_parameters(choices: impl Iterator<Item = Vec<String>>) -> Vec<(usize, Vec<String>)> {
     choices
         .enumerate()
-        .filter_map(|(index, values)| {
-            let mut values = values?;
+        .filter_map(|(index, mut values)| {
             if !values.iter().any(|value| value.starts_with('"')) {
                 return None;
             }
@@ -215,12 +207,16 @@ fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature
         .collect();
     Some(Signature {
         prefix: "fn",
-        literal_parameters: literal_parameters(
-            signature
-                .parameters
-                .iter()
-                .map(|parameter| hint_literals(&parameter.ty)),
-        ),
+        accepts_named_arguments: symbol.intrinsic != Some(Intrinsic::Bind),
+        literal_parameters: literal_parameters(signature.parameters.iter().map(|parameter| {
+            let mut values = hint_literals(&parameter.ty);
+            if let Some(choices) =
+                declaration.and_then(|doc| doc.argument_choices.get(&parameter.name))
+            {
+                values.extend(choices.iter().map(|choice| format!("{choice:?}")));
+            }
+            values
+        })),
         parameter_documentation: declaration
             .map(|declaration| declaration.parameter_documentation.clone())
             .unwrap_or_default(),
@@ -296,6 +292,7 @@ fn value_signature(
         let result = type_label(module, *result);
         return Some(Signature {
             prefix: "fn",
+            accepts_named_arguments: false,
             literal_parameters,
             parameter_documentation: Default::default(),
             label: format!(
@@ -383,6 +380,7 @@ fn function_signature(
         .collect();
     Signature {
         prefix,
+        accepts_named_arguments: true,
         literal_parameters: literal_parameters(
             function
                 .parameters
@@ -589,6 +587,7 @@ fn external_signature(
             })
             .unwrap_or(Signature {
                 prefix: "fn",
+                accepts_named_arguments: true,
                 literal_parameters: Vec::new(),
                 parameter_documentation: Default::default(),
                 label: String::new(),
@@ -945,21 +944,26 @@ fn active_parameter(
         return 0;
     };
     // Nested commas belong to their own expression, not this argument list.
-    let positional = module
-        .hir()
+    let hir = module.hir();
+    let positional = hir
         .tokens(args)
         .filter(|token| token.kind == K::Comma && (u32::from(token.span.start()) as usize) < offset)
         .count();
-    for argument in module.hir().children(args) {
-        let node = module.hir().node(argument);
-        if contains(node.span, offset)
-            && let Form::Argument {
-                name: Some(name), ..
-            } = node.form
+    for argument in hir.children(args) {
+        let node = hir.node(argument);
+        if !contains(node.span, offset) {
+            continue;
+        }
+        let mut tokens = hir.tokens(argument);
+        let (Some(name), Some(colon)) = (tokens.next(), tokens.next()) else {
+            continue;
+        };
+        if name.kind == K::Ident
+            && colon.kind == K::Colon
             && let Some(index) = signature
                 .parameters
                 .iter()
-                .position(|(parameter, _)| parameter == module.hir().text(name.span))
+                .position(|(parameter, _)| parameter == hir.text(name.span))
         {
             return index;
         }
@@ -1226,6 +1230,7 @@ fn hover_type_aliases(
 fn hover_type(ty: &TypeHint, aliases: &std::collections::BTreeMap<String, String>) -> TypeHint {
     match ty {
         TypeHint::Named(name) => TypeHint::Named(aliases.get(name).unwrap_or(name).clone()),
+        TypeHint::TypedArray(item) => TypeHint::TypedArray(Box::new(hover_type(item, aliases))),
         TypeHint::Tuple(types) => {
             TypeHint::Tuple(types.iter().map(|ty| hover_type(ty, aliases)).collect())
         }
@@ -1238,6 +1243,7 @@ fn hover_type(ty: &TypeHint, aliases: &std::collections::BTreeMap<String, String
                 .map(|(name, ty)| (name.clone(), hover_type(ty, aliases)))
                 .collect(),
         ),
+        TypeHint::OptionalField(ty) => TypeHint::OptionalField(Box::new(hover_type(ty, aliases))),
         TypeHint::Callable(parameters, result) => TypeHint::Callable(
             parameters
                 .iter()
@@ -1262,7 +1268,7 @@ fn hover_signature(signature: &Signature, summarized: &BTreeSet<&str>) -> String
         parameters.join(", "),
         signature.result
     );
-    if label.chars().count() <= 100 || parameters.is_empty() {
+    if label.chars().count() <= SIGNATURE_LINE_LIMIT || parameters.is_empty() {
         return label;
     }
     format!(

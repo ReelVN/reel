@@ -186,7 +186,7 @@ fn dialogue_append_source_asb_checkpoints_history_prefix_and_restore() {
         let speech = mio(rich("[b]A[/b][pause=0.5]"), wait:false);
         let row = d.lines[0]; let group = history[0]; let recorded = group.lines[0];
         stage.replace(text(value:derive(||group.text)));
-        await run(delay(1));
+        await delay(1).run();
         speech.append("e",wait:false);
         if row != d.lines[0] || recorded != group.lines[0] || d.lines.len()!=1 || history.len()!=1 {
             throw "append changed identity";

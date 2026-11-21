@@ -228,6 +228,24 @@ struct Service {
 #[derive(Clone)]
 pub struct Assets(Rc<RefCell<Service>>);
 impl Assets {
+    /// Mount browser-supplied resource bytes under their ordinary logical paths.
+    #[cfg(target_arch = "wasm32")]
+    pub fn memory(
+        options: AssetOptions,
+        files: BTreeMap<String, Arc<[u8]>>,
+    ) -> Result<Self, IoError> {
+        let limits = options.queue_limits();
+        let input_bytes = options.input_bytes;
+        Self::with_image_executor(options, |wake, _, _| {
+            Ok(Box::new(io::MemoryIo::new(
+                files,
+                input_bytes,
+                limits,
+                wake,
+            )?))
+        })
+    }
+
     /// Open fixed loose resources for this run. File identities use source paths;
     /// preparation reads only requested data. Restart after changing assets.
     pub fn directory(options: AssetOptions) -> Self {

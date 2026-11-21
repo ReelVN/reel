@@ -12,8 +12,12 @@ pub(crate) struct Rasterizers(Box<[std::sync::Mutex<Rasterizer>]>);
 #[cfg(feature = "wgpu")]
 impl Default for Rasterizers {
     fn default() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let lanes = rayon::current_num_threads().min(8);
+        #[cfg(target_arch = "wasm32")]
+        let lanes = 1;
         Self(
-            (0..rayon::current_num_threads().min(8))
+            (0..lanes)
                 .map(|_| std::sync::Mutex::new(Rasterizer::default()))
                 .collect(),
         )
@@ -108,12 +112,10 @@ impl<'a> RasterRun<'a> {
         indices: &[usize],
         limits: RasterLimits,
     ) -> smallvec::SmallVec<[Result<Option<GlyphBitmap>, GpuError>; 32]> {
-        use rayon::prelude::*;
         let mut results: smallvec::SmallVec<[_; 32]> = indices.iter().map(|_| Ok(None)).collect();
-        if indices.len() < 8 {
-            let mut context = contexts.0[0].lock().unwrap();
-            self.rasterize(&mut context, indices, &mut results, limits);
-        } else {
+        #[cfg(not(target_arch = "wasm32"))]
+        if indices.len() >= 8 {
+            use rayon::prelude::*;
             let lanes = (indices.len() / 4).min(contexts.0.len());
             let chunk = indices.len().div_ceil(lanes);
             results
@@ -124,7 +126,10 @@ impl<'a> RasterRun<'a> {
                     let mut context = context.lock().unwrap();
                     self.rasterize(&mut context, indices, results, limits.clone());
                 });
+            return results;
         }
+        let mut context = contexts.0[0].lock().unwrap();
+        self.rasterize(&mut context, indices, &mut results, limits);
         results
     }
 }

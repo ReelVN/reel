@@ -380,7 +380,8 @@ fn derived_helpers_report_a_forbidden_host_call_without_rejecting_guarded_paths(
 
 #[test]
 fn await_diagnoses_inferred_ordinary_results_and_accepts_unknown_or_future_results() {
-    let source = "fn read() { 4 } fn helper() { read() } fn main() { await helper(); }";
+    let source =
+        "fn read() { 4 } fn helper() { read() } fn main() { await /* result */ helper(); }";
     let result = analyze_code(source);
     let diagnostic = result
         .diagnostics
@@ -391,6 +392,14 @@ fn await_diagnoses_inferred_ordinary_results_and_accepts_unknown_or_future_resul
         &source[usize::from(diagnostic.range.start())..usize::from(diagnostic.range.end())],
         "await"
     );
+    let fix = diagnostic.fix.as_ref().unwrap();
+    let mut corrected = source.to_owned();
+    corrected.replace_range(
+        usize::from(fix.range.start())..usize::from(fix.range.end()),
+        &fix.replacement,
+    );
+    assert!(corrected.contains("/* result */ helper()"));
+    valid(&corrected);
     valid("fn obtain(callback) { callback() } fn main(callback) { await obtain(callback); }");
     valid("async fn read() { 4 } fn helper() { read() } fn main() { await helper(); }");
 }

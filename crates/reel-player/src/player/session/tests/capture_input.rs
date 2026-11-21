@@ -56,7 +56,7 @@ fn capture_routes_noop_input_and_preserves_authored_action_thresholds() {
                     text(derive(|| f"{state.result}:{state.events}:{state.name}"));
                 });
                 spawn(|| {
-                    await run(delay(1));
+                    await delay(1).run();
                     try {
                         await saves.save("capture");
                         state.result = "saved";

@@ -4,12 +4,14 @@ use crate::{
     root_ranges::ChargedVec,
 };
 use std::cell::RefCell;
+mod array_identity;
 
 #[derive(Clone, Copy)]
 struct Cursor {
     ty: TypeId,
     value: Value,
-    next: usize,
+    next: u32,
+    remaining_fields: u32,
 }
 
 pub(crate) struct TypeChecks {
@@ -17,6 +19,7 @@ pub(crate) struct TypeChecks {
     signature_work: ChargedVec<u64>,
     stack: RefCell<ChargedVec<Cursor>>,
     symbols: ChargedVec<SymbolId>,
+    array_identities: ChargedVec<TypeId>,
     pub(crate) host_types: crate::host_types::HostTypes,
 }
 
@@ -35,6 +38,7 @@ impl TypeChecks {
         for ty in &p.types {
             let (cost, depth) = match ty {
                 TypeDef::Builtin(_) => (1, 0usize),
+                TypeDef::Array(_) => (2, 0usize),
                 TypeDef::Function { .. } => (2, 0usize),
                 TypeDef::Named { .. } => (3 + host_types.work, 0usize),
                 TypeDef::StringLiteral(text) => (1 + text.len() as u64, 0),
@@ -93,12 +97,19 @@ impl TypeChecks {
             signature_work,
             stack: RefCell::new(stack),
             symbols,
+            array_identities: array_identity::build(p, usage)?,
             host_types,
         })
     }
 
     pub(super) fn extra(&self, ty: TypeId) -> u64 {
         self.work.data[ty.index()] - 1
+    }
+    pub(crate) fn same_type(&self, left: TypeId, right: TypeId) -> bool {
+        left == right
+            || self.array_identities.data.get(left.index()).is_some_and(|left| {
+                Some(left) == self.array_identities.data.get(right.index())
+            })
     }
     pub(super) fn argument_extra(&self, sig: SignatureId) -> u64 {
         self.signature_work.data[sig.index()]
@@ -190,6 +201,11 @@ impl TypeChecks {
                 if let Some((ty, value)) = current.take() {
                     match &p.types[ty.index()] {
                         TypeDef::Builtin(kind) => accepted = heap.accepts_builtin(*kind, value)?,
+                        TypeDef::Array(item) => {
+                            accepted = heap.array_item(value)?.is_some_and(|actual| {
+                                self.same_type(actual, *item)
+                            });
+                        }
                         TypeDef::Function { .. } => {
                             accepted = heap.accepts_builtin(BuiltinType::Closure, value)?
                                 || (value.tag() == crate::ValueTag::Object
@@ -203,20 +219,19 @@ impl TypeChecks {
                             accepted = string_equal(heap, value, text)?;
                         }
                         TypeDef::Record(fields) => {
-                            if !heap.accepts_builtin(BuiltinType::Table, value)?
-                                || heap.table_len(value)? as usize != fields.len()
-                            {
+                            if !heap.accepts_builtin(BuiltinType::Table, value)? {
                                 accepted = false;
-                            } else if fields.is_empty() {
-                                accepted = true;
-                            } else if let Some(field_value) =
-                                record_field(heap, value, 0, &p.symbols[fields[0].name.index()])?
-                            {
-                                stack.data.push(Cursor { ty, value, next: 1 });
-                                current = Some((fields[0].ty, field_value));
-                                continue;
                             } else {
-                                accepted = false;
+                                let len = heap.table_len(value)?;
+                                accepted = len as usize <= fields.len();
+                                if accepted && !fields.is_empty() {
+                                    stack.data.push(Cursor {
+                                        ty,
+                                        value,
+                                        next: 0,
+                                        remaining_fields: len,
+                                    });
+                                }
                             }
                         }
                         TypeDef::Tuple(items) => {
@@ -227,7 +242,7 @@ impl TypeChecks {
                             } else if items.is_empty() {
                                 accepted = true;
                             } else {
-                                stack.data.push(Cursor { ty, value, next: 1 });
+                                stack.data.push(Cursor { ty, value, next: 1, remaining_fields: 0 });
                                 current = Some((items[0], heap.sequence_get(value, 0)?));
                                 continue;
                             }
@@ -236,7 +251,7 @@ impl TypeChecks {
                             if items.is_empty() {
                                 accepted = false;
                             } else {
-                                stack.data.push(Cursor { ty, value, next: 1 });
+                                stack.data.push(Cursor { ty, value, next: 1, remaining_fields: 0 });
                                 current = Some((items[0], value));
                                 continue;
                             }
@@ -251,32 +266,38 @@ impl TypeChecks {
                         TypeDef::Tuple(items) => (items, true),
                         TypeDef::Union(items) => (items, false),
                         TypeDef::Record(fields) => {
-                            if accepted && let Some(field) = fields.get(parent.next) {
+                            while accepted && let Some(field) = fields.get(parent.next as usize) {
                                 if let Some(value) = record_field(
                                     heap,
                                     parent.value,
-                                    parent.next,
+                                    parent.next as usize,
                                     &p.symbols[field.name.index()],
                                 )? {
                                     parent.next += 1;
+                                    parent.remaining_fields -= 1;
                                     stack.data.push(parent);
                                     current = Some((field.ty, value));
                                     break;
                                 }
-                                accepted = false;
+                                accepted = field.optional;
+                                parent.next += 1;
                             }
+                            if current.is_some() {
+                                break;
+                            }
+                            accepted &= parent.remaining_fields == 0;
                             continue;
                         }
                         _ => unreachable!(),
                     };
-                    if accepted == tuple && parent.next < items.len() {
+                    if accepted == tuple && (parent.next as usize) < items.len() {
                         let index = parent.next;
                         parent.next += 1;
                         stack.data.push(parent);
                         current = Some((
-                            items[index],
+                            items[index as usize],
                             if tuple {
-                                heap.sequence_get(parent.value, index as u32)?
+                                heap.sequence_get(parent.value, index)?
                             } else {
                                 parent.value
                             },
@@ -291,7 +312,7 @@ impl TypeChecks {
     }
 }
 
-fn string_equal(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
+pub(super) fn string_equal(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
     if !string_matches_length(heap, value, expected.len())? {
         return Ok(false);
     }
@@ -329,7 +350,7 @@ pub(super) fn string_equal_bytes(
     Ok(true)
 }
 
-fn record_field(
+pub(super) fn record_field(
     heap: &Heap,
     table: Value,
     preferred: usize,
@@ -337,8 +358,8 @@ fn record_field(
 ) -> Result<Option<Value>, HeapError> {
     let table = heap.table_read(table)?;
     let preferred = preferred as u32;
-    for index in
-        std::iter::once(preferred).chain((0..table.len()).filter(|&index| index != preferred))
+    let first = (preferred < table.len()).then_some(preferred);
+    for index in first.into_iter().chain((0..table.len()).filter(|&index| index != preferred))
     {
         let (key, value) = table.entry(index)?;
         if string_equal(heap, key, name)? {

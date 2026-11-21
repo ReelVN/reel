@@ -1,5 +1,6 @@
 //! Code-independent values for system records. No VM handles cross the IO lane.
 use super::AdapterError;
+use aside_vm::typed_data::DataType;
 use aside_vm::{
     Heap, HeapHandle, HeapReservation, InstanceField, ObjectKind, RootKind, RootOwner, RootToken,
     Value, ValueTag, bytecode::SymbolId,
@@ -28,12 +29,23 @@ enum Object {
     Array(Vec<Atom>),
     Tuple(Vec<Atom>),
     Table(Vec<(Atom, Atom)>),
+    TypedArray(Box<TypedArray>),
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct TypedArray {
+    element: DataType,
+    values: Vec<Atom>,
 }
 impl Object {
     fn bytes(&self) -> usize {
         match self {
             Self::String(v) | Self::Bytes(v) => v.capacity(),
             Self::Array(v) | Self::Tuple(v) => v.capacity() * size_of::<Atom>(),
+            Self::TypedArray(array) => {
+                size_of::<TypedArray>()
+                    + array.element.retained_bytes()
+                    + array.values.capacity() * size_of::<Atom>()
+            }
             Self::Table(v) => v.capacity() * size_of::<(Atom, Atom)>(),
         }
     }
@@ -41,6 +53,7 @@ impl Object {
         match self {
             Self::String(v) | Self::Bytes(v) => v.len(),
             Self::Array(v) | Self::Tuple(v) => v.len(),
+            Self::TypedArray(array) => array.values.len(),
             Self::Table(v) => v.len(),
         }
     }
@@ -105,6 +118,11 @@ impl DataDocument {
                 Object::Bytes(_) => {}
                 Object::Array(values) | Object::Tuple(values) => {
                     for &value in values {
+                        check(value)?;
+                    }
+                }
+                Object::TypedArray(array) => {
+                    for &value in &array.values {
                         check(value)?;
                     }
                 }
@@ -245,7 +263,29 @@ impl Capture {
                     match info.kind {
                         ObjectKind::String => Object::String(buffer(len)?),
                         ObjectKind::Bytes => Object::Bytes(buffer(len)?),
-                        ObjectKind::Array => Object::Array(buffer(len)?),
+                        ObjectKind::Array => {
+                            let element = heap
+                                .array_data_type(value, context.map(|ctx| ctx.registry))
+                                .map_err(|error| {
+                                    if let Some(context) = context {
+                                        context.error.replace(Some(error.into()));
+                                    }
+                                    AdapterError::Input("array element type is not persistent")
+                                })?;
+                            if let Some(element) = element {
+                                self.charge.resize(
+                                    self.charge.bytes()
+                                        + (size_of::<TypedArray>() + element.retained_bytes())
+                                            as u64,
+                                )?;
+                                Object::TypedArray(Box::new(TypedArray {
+                                    element,
+                                    values: buffer(len)?,
+                                }))
+                            } else {
+                                Object::Array(buffer(len)?)
+                            }
+                        }
                         ObjectKind::Tuple => Object::Tuple(buffer(len)?),
                         ObjectKind::Table | ObjectKind::Instance => Object::Table(buffer(len)?),
                         _ => unreachable!(),
@@ -496,13 +536,13 @@ impl Capture {
                     };
                     entries.push((key, value));
                 }
-                Object::Array(_) | Object::Tuple(_) => {
+                Object::Array(_) | Object::Tuple(_) | Object::TypedArray(_) => {
                     let value =
                         self.atom(heap, heap.sequence_get(value, offset as u32)?, context)?;
-                    let (Object::Array(values) | Object::Tuple(values)) =
-                        &mut self.document.objects[object]
-                    else {
-                        unreachable!()
+                    let values = match &mut self.document.objects[object] {
+                        Object::Array(values) | Object::Tuple(values) => values,
+                        Object::TypedArray(array) => &mut array.values,
+                        _ => unreachable!(),
                     };
                     values.push(value);
                 }
@@ -538,6 +578,8 @@ pub(super) struct Restore {
     cursor: usize,
     offset: usize,
     sealing: bool,
+    typed_arrays: Vec<u32>,
+    array_cursor: usize,
     _charge: HeapReservation,
 }
 impl Restore {
@@ -555,6 +597,8 @@ impl Restore {
             cursor: 0,
             offset: 0,
             sealing: false,
+            typed_arrays: Vec::new(),
+            array_cursor: 0,
             _charge: charge,
         })
     }
@@ -592,10 +636,25 @@ impl Restore {
                 let value = if let Some(value) = special {
                     value
                 } else {
-                    match self.document.objects[len] {
+                    match &self.document.objects[len] {
                         Object::String(_) | Object::Bytes(_) => heap.alloc_byte_buffer(&[])?,
                         Object::Array(_) | Object::Tuple(_) => heap.alloc_array(&[])?,
                         Object::Table(_) => heap.alloc_table()?,
+                        Object::TypedArray(array) => {
+                            let registry = context.as_ref().map(|(_, ctx)| ctx.registry);
+                            let restored = heap.alloc_restored_array(&array.element, registry)?;
+                            if self.typed_arrays.len() == self.typed_arrays.capacity() {
+                                let growth = self.typed_arrays.capacity().max(4);
+                                self._charge.resize(
+                                    self._charge.bytes() + (growth * size_of::<u32>()) as u64,
+                                )?;
+                                self.typed_arrays
+                                    .try_reserve_exact(growth)
+                                    .map_err(|_| AdapterError::Allocation)?;
+                            }
+                            self.typed_arrays.push(len as u32);
+                            restored
+                        }
                     }
                 };
                 heap.array_push(values, value)?;
@@ -603,6 +662,17 @@ impl Restore {
             }
             if self.cursor == len {
                 if self.sealing {
+                    if let Some(&id) = self.typed_arrays.get(self.array_cursor) {
+                        let array = heap.sequence_get(values, id)?;
+                        if self.offset == self.document.objects[id as usize].len() {
+                            self.array_cursor += 1;
+                            self.offset = 0;
+                        } else {
+                            heap.validate_restored_array_element(array, self.offset as u32)?;
+                            self.offset += 1;
+                        }
+                        continue;
+                    }
                     if let Some((state, context)) = context.as_mut()
                         && !state.complete(heap, values, context).map_err(|e| {
                             state.error = Some(e);
@@ -662,6 +732,13 @@ impl Restore {
                 }
                 Object::Array(entries) | Object::Tuple(entries) => {
                     heap.array_push(value, Self::value(heap, values, entries[self.offset])?)?;
+                    self.offset += 1;
+                }
+                Object::TypedArray(array) => {
+                    heap.push_restored_array_value(
+                        value,
+                        Self::value(heap, values, array.values[self.offset])?,
+                    )?;
                     self.offset += 1;
                 }
                 Object::Table(entries) => {

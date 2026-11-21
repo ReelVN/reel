@@ -161,8 +161,18 @@ impl TypedDocument {
         postcard::to_io(self, writer).map(|_| ())
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (value, tail) = Self::decode_prefix(bytes)?;
+        if !tail.is_empty() {
+            return Err("unsupported typed State document".into());
+        }
+        Ok(value)
+    }
+
+    pub(in crate::aside) fn decode_prefix(
+        bytes: &[u8],
+    ) -> Result<(Self, &[u8]), Box<dyn std::error::Error + Send + Sync>> {
         let (mut value, tail): (Self, _) = postcard::take_from_bytes(bytes)?;
-        if value.version != VERSION || !tail.is_empty() {
+        if value.version != VERSION {
             return Err("unsupported typed State document".into());
         }
         let count = value.data.objects.len();
@@ -229,7 +239,7 @@ impl TypedDocument {
         Arc::get_mut(&mut value.data).unwrap().validate()?;
         value.metadata.bytes = metadata_bytes(&value.metadata);
         value.validated = true;
-        Ok(value)
+        Ok((value, tail))
     }
     /// Return cached retained storage without traversing schemas or field contracts.
     pub fn retained_bytes(&self) -> u64 {

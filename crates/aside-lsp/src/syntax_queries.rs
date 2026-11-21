@@ -25,7 +25,7 @@ impl Workspace {
     }
 
     pub(crate) fn quick_fixes(
-        &self,
+        &mut self,
         params: CodeActionParams,
         encoding: Encoding,
     ) -> Result<CodeActionResponse, String> {
@@ -39,12 +39,11 @@ impl Workspace {
         {
             return Ok(Vec::new());
         }
-        let source = self.open_source(&uri)?;
+        let snapshot = self.snapshot(&uri)?;
+        let source = snapshot.source();
         let range = |bytes| source.lines.range(&source.text, bytes, encoding);
-        Ok(source
-            .parsed
-            .diagnostics()
-            .iter()
+        Ok(snapshot
+            .source_diagnostics(&snapshot.entry)
             .filter_map(|diagnostic| {
                 let fix = diagnostic.fix.as_ref()?;
                 let diagnostic_range = range(diagnostic.range);
@@ -72,6 +71,7 @@ impl Workspace {
                 Some(CodeActionOrCommand::CodeAction(CodeAction {
                     title: match diagnostic.code {
                         DiagnosticCode::MissingSemicolon => "Insert missing semicolon".into(),
+                        DiagnosticCode::TypeMismatch => "Remove unnecessary await".into(),
                         _ => format!("Fix: {}", diagnostic.message),
                     },
                     kind: Some(CodeActionKind::QUICKFIX),

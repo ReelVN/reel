@@ -1,12 +1,14 @@
 //! Native distribution entry; all package/resource interpretation remains shared.
 #[cfg(target_os = "vita")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use std::path::Path;
+
     // Mode C enables the GPU performance configuration while retaining WLAN.
     vita_native::app::power::request_configuration(vita_native::app::power::ConfigurationMode::C)?;
     vita_native::app::power::request_arm_clock_frequency(444)?;
     #[cfg(feature = "performance")]
     {
-        let path = std::path::Path::new("ux0:/data/reel/performance.json");
+        let path = Path::new("ux0:/data/reel/performance.json");
         let active = path.with_file_name("performance.active.json");
         if path.try_exists()? && active.try_exists()? {
             std::fs::remove_file(&active)?;
@@ -30,9 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return result;
         }
     }
-    reel_player::platform::vita::Runtime::run(|runtime| {
-        runtime.run_launcher(std::path::Path::new("ux0:/data/reel"))
-    })
+    let title_id = vita_native::app::title_id()?;
+    let game = Path::new("ux0:/data/reel/games").join(title_id);
+    let saves = game.join("saves");
+    let package = game.join(reel_package::distribution::MAIN_PACKAGE);
+    reel_player::platform::vita::Runtime::run(|runtime| runtime.run_package(&package, &saves))
 }
 #[cfg(not(target_os = "vita"))]
 fn main() {

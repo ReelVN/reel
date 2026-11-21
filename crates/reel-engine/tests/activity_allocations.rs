@@ -22,7 +22,7 @@ fn tween_from_steady_samples_and_repeated_activation_cost() {
         ),
     ] {
         let source = format!(
-            "fn opening() {{let node=stack();stage.replace(node);run({action});narrator(\"running\");}}"
+            "fn opening() {{let node=stack();stage.replace(node);({action}).run();narrator(\"running\");}}"
         );
         let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
         let story = aside::source::compile_story(&source, name, 1, "opening").unwrap();

@@ -15,6 +15,11 @@ use std::{
 
 use reel_player::distribution::read_manifest;
 
+pub(crate) mod desktop;
+mod vita;
+
+pub use vita::export_vita;
+
 /// Resolve the content-addressed sidecars for a standalone ASB build.
 pub fn build_manifest(
     catalogs: &crate::localization::PreparedCatalogs,
@@ -74,17 +79,21 @@ pub enum Runtime {
     Directory(PathBuf),
 }
 impl Runtime {
-    /// Resolve the implicit runtime for a release resource target. Vita uses the
-    /// shared launcher. Explicit desktop OS targets require a matching player.
+    /// Resolve the implicit runtime from the installed tool bundle.
     pub fn default_for_target(target: &str) -> io::Result<Option<Self>> {
         let host = std::env::consts::OS;
         match target {
-            "vita" => return Ok(None),
+            "vita" => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Vita release requires --runtime with a compiled player; use --data-only for game data",
+                ));
+            }
             "windows" | "linux" | "macos" if target != host => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "exporting for {target} from {host} requires --runtime DIRECTORY or --data-only"
+                        "exporting for {target} from {host} requires --runtime PATH or --data-only"
                     ),
                 ));
             }
@@ -112,8 +121,7 @@ pub struct ExportOptions {
     /// Source-resource variants to select before writing either export profile.
     pub resource_target: String,
     pub pack_bytes: NonZeroU64,
-    /// Platform runtime to copy into a release export. `None` exports game data
-    /// for a shared runtime already installed on the destination device.
+    /// Platform runtime to copy into a release export. `None` exports game data.
     pub runtime: Option<Runtime>,
 }
 
@@ -220,20 +228,19 @@ fn sources(loaded: &Loaded, staging: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn export(
+fn export_directory(
     loaded: &Loaded,
-    artifact: &PreparedCode<'_>,
-    options: &ExportOptions,
-) -> io::Result<Exported> {
-    let parent = options
-        .output
+    path: &Path,
+    manifest: &Path,
+    overwrite: bool,
+) -> io::Result<PathBuf> {
+    let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let parent = parent.canonicalize()?;
-    let name = options
-        .output
+    let name = path
         .file_name()
         .ok_or_else(|| io::Error::other("export output needs a directory name"))?;
     let requested_output = parent.join(name);
@@ -253,26 +260,93 @@ pub fn export(
         }
     }
     if output.exists() {
-        if !options.overwrite {
+        if !overwrite {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "export exists; pass --overwrite to replace it",
             ));
         }
-        read_manifest(&output.join(MAIN_PACKAGE))?;
+        read_manifest(&output.join(manifest))?;
     }
+    Ok(output)
+}
+
+pub fn export(
+    loaded: &Loaded,
+    artifact: &PreparedCode<'_>,
+    options: &ExportOptions,
+) -> io::Result<(PathBuf, Exported)> {
+    let release = if artifact.profile == BuildProfile::Release
+        && options.runtime.is_some()
+        && let Some(target) = desktop::Target::resolve(&options.resource_target)
+    {
+        desktop::Release::read(&loaded.project_root, target)?
+    } else {
+        None
+    };
+    let requested = release.as_ref().map_or_else(
+        || options.output.clone(),
+        |release| release.output(&options.output),
+    );
+    let data = release
+        .as_ref()
+        .map_or(Path::new(""), desktop::Release::data_path);
+    let manifest = data.join(MAIN_PACKAGE);
+    let output = export_directory(loaded, &requested, &manifest, options.overwrite)?;
+    let icon = release
+        .as_ref()
+        .map(|release| release.load_icon(&output))
+        .transpose()?
+        .flatten();
+    let candidate = tempfile::Builder::new()
+        .prefix(".reel-export-")
+        .tempdir_in(output.parent().unwrap())?;
+    let staging = candidate.path();
+    let runtime_dir = staging.join(
+        release
+            .as_ref()
+            .map_or(Path::new(""), desktop::Release::runtime_path),
+    );
+    let mut result = stage_export(
+        loaded,
+        artifact,
+        options,
+        options
+            .runtime
+            .as_ref()
+            .map(|runtime| (runtime, runtime_dir.as_path())),
+        &output,
+        &staging.join(data),
+    )?;
+    if let Some(release) = release {
+        release.write(staging, icon, &mut result)?;
+    }
+    publish_directory(staging, &output, &manifest, options.overwrite)?;
+    Ok((requested, result))
+}
+
+fn stage_export(
+    loaded: &Loaded,
+    artifact: &PreparedCode<'_>,
+    options: &ExportOptions,
+    runtime: Option<(&Runtime, &Path)>,
+    output: &Path,
+    staging: &Path,
+) -> io::Result<Exported> {
     let target = ResourceTarget::parse(&options.resource_target)?;
     let mut runtime_files = BTreeMap::new();
     if artifact.profile == BuildProfile::Release
-        && let Some(runtime) = &options.runtime
+        && let Some((runtime, _)) = runtime
     {
         match runtime {
             Runtime::Executable(path) => {
-                runtime_files.insert(exported_player_name(), path.clone());
+                let executable = desktop::Target::resolve(target.as_str())
+                    .map_or_else(exported_player_name, |target| target.executable().into());
+                runtime_files.insert(executable, path.clone());
             }
             Runtime::Directory(path) => {
                 let root = path.canonicalize()?;
-                if root.starts_with(&output) || output.starts_with(&root) {
+                if root.starts_with(output) || output.starts_with(&root) {
                     return Err(io::Error::other(
                         "export output overlaps the runtime directory",
                     ));
@@ -297,7 +371,7 @@ pub fn export(
     ] {
         for mount in mounts {
             let root = mount.directory.canonicalize()?;
-            if root.starts_with(&output) || output.starts_with(&root) {
+            if root.starts_with(output) || output.starts_with(&root) {
                 return Err(io::Error::other(
                     "export output overlaps a resource directory",
                 ));
@@ -332,7 +406,7 @@ pub fn export(
             crate::prepare_effects::Target::for_export(target.as_str()),
         )?,
     )?;
-    if resources.values().any(|path| path.starts_with(&output)) {
+    if resources.values().any(|path| path.starts_with(output)) {
         return Err(io::Error::other(
             "export output contains a prepared resource input",
         ));
@@ -350,10 +424,7 @@ pub fn export(
             )));
         }
     }
-    let candidate = tempfile::Builder::new()
-        .prefix(".reel-export-")
-        .tempdir_in(&parent)?;
-    let staging = candidate.path();
+    fs::create_dir_all(staging)?;
     let result = {
         let mut manifest = Distribution {
             text: None,
@@ -398,35 +469,46 @@ pub fn export(
         }
         let encoded = artifact.encode(Some(&manifest)).map_err(io::Error::other)?;
         File::create_new(staging.join(MAIN_PACKAGE))?.write_all(&encoded)?;
-        let runtime_bytes = runtime_files.iter().try_fold(0u64, |total, (name, file)| {
-            copy(file, &staging.join(name)).map(|bytes| total + bytes)
-        })?;
+        let runtime_bytes = if let Some((_, destination)) = runtime {
+            runtime_files.iter().try_fold(0u64, |total, (name, file)| {
+                copy(file, &destination.join(name)).map(|bytes| total + bytes)
+            })?
+        } else {
+            0
+        };
         Exported {
             files: resources.len() + text.len() + catalogs.files.len(),
             bytes: encoded.len() as u64 + runtime_bytes + asset_bytes,
         }
     };
+    Ok(result)
+}
+
+fn publish_directory(
+    staging: &Path,
+    output: &Path,
+    manifest: &Path,
+    overwrite: bool,
+) -> io::Result<()> {
     // Build every file before touching the previous export. Both renames stay
     // on the same filesystem; rollback keeps the old output if publication fails.
     let backup = tempfile::Builder::new()
         .prefix(".reel-previous-")
-        .tempdir_in(&parent)?;
+        .tempdir_in(output.parent().unwrap())?;
     let old = backup.path().join("export");
     let replacing = output.exists();
-    if replacing && !options.overwrite {
+    if replacing && !overwrite {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "another export created the output; pass --overwrite to replace it",
         ));
     }
     if replacing {
-        read_manifest(&output.join(MAIN_PACKAGE))?;
+        read_manifest(&output.join(manifest))?;
+        fs::rename(output, &old)?;
     }
-    if replacing {
-        fs::rename(&output, &old)?;
-    }
-    if let Err(error) = fs::rename(staging, &output) {
-        if replacing && let Err(restore) = fs::rename(&old, &output) {
+    if let Err(error) = fs::rename(staging, output) {
+        if replacing && let Err(restore) = fs::rename(&old, output) {
             let retained = backup.keep();
             return Err(io::Error::other(format!(
                 "{error}; restoring previous export failed: {restore}; previous export retained at {}",
@@ -435,6 +517,5 @@ pub fn export(
         }
         return Err(error);
     }
-    backup.close()?;
-    Ok(result)
+    backup.close()
 }

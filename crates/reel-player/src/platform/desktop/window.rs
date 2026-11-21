@@ -197,31 +197,51 @@ impl State {
         options: Option<PlayerOptions>,
     ) -> Result<Self, Error> {
         let first_frame_pending = matches!(session, Some(PlayerSession::Aside { .. }));
-        let window = Arc::new(
-            event_loop.create_window(
-                Window::default_attributes()
-                    .with_visible(!first_frame_pending)
-                    .with_title(options.as_ref().map_or_else(
-                        || {
-                            if session.is_some() {
-                                "Reel Rust session host diagnostic — no Aside execution"
-                            } else {
-                                "Reel renderer diagnostic — drag shapes; no Aside session"
-                            }
-                        },
-                        |options| options.title.as_str(),
-                    ))
-                    .with_inner_size({
-                        let [width, height] = options.as_ref().map_or([640, 420], |options| {
-                            options
-                                .logical_size
-                                .or(options.canvas_size)
-                                .unwrap_or([1280, 720])
-                        });
-                        PhysicalSize::new(width, height)
-                    }),
-            )?,
-        );
+        let attributes = Window::default_attributes()
+            .with_visible(!first_frame_pending)
+            .with_title(options.as_ref().map_or_else(
+                || {
+                    if session.is_some() {
+                        "Reel Rust session host diagnostic — no Aside execution"
+                    } else {
+                        "Reel renderer diagnostic — drag shapes; no Aside session"
+                    }
+                },
+                |options| options.title.as_str(),
+            ))
+            .with_inner_size({
+                let [width, height] = options.as_ref().map_or([640, 420], |options| {
+                    options
+                        .logical_size
+                        .or(options.canvas_size)
+                        .unwrap_or([1280, 720])
+                });
+                PhysicalSize::new(width, height)
+            });
+        #[cfg(target_os = "windows")]
+        let attributes = {
+            use winit::{
+                platform::windows::{IconExtWindows, WindowAttributesExtWindows},
+                window::Icon,
+            };
+            // The exporter writes the same PE icon that Explorer displays.
+            let icon = Icon::from_resource_name("MAINICON", None).ok();
+            attributes
+                .with_window_icon(icon.clone())
+                .with_taskbar_icon(icon)
+        };
+        #[cfg(target_os = "linux")]
+        let attributes = if let Some(id) = options
+            .as_ref()
+            .and_then(|options| options.desktop_id.as_deref())
+        {
+            // Winit uses the same application name for Wayland app_id and X11 WM_CLASS.
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            attributes.with_name(id, id)
+        } else {
+            attributes
+        };
+        let window = Arc::new(event_loop.create_window(attributes)?);
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone())?;
         let gpu = pollster::block_on(Gpu::request(

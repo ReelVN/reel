@@ -1242,12 +1242,15 @@ fn edit_filter_pending_callback_restores_queue_and_retires_without_committing() 
 
 #[test]
 fn edit_filter_fault_and_wait_rejection_preserve_value_and_history() {
-    for body in [
-        "throw \"filter failed\";",
-        "await delay(0.1);return e.text;",
+    for (setup, body) in [
+        ("", "throw \"filter failed\";"),
+        (
+            "let pending=delay(0.1).run();",
+            "await pending;return e.text;",
+        ),
     ] {
         let code = format!(
-            r#"fn opening(){{let editor=text_input(value:"old",edit_filter:|e:TextEdit|{{{body}}});stage.replace(editor);narrator("wait");}}"#
+            r#"fn opening(){{{setup}let editor=text_input(value:"old",edit_filter:|e:TextEdit|{{{body}}});stage.replace(editor);narrator("wait");}}"#
         );
         let (mut session, mut vm) = models::prepared(&code, false);
         drive(&mut vm, &mut session);

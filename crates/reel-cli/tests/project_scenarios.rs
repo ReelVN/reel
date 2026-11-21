@@ -783,7 +783,7 @@ fn project_scenario_rebuilds_transition_target_from_a_checkpoint_saved_during_pl
             });
             await changed;
             await stage.presented();
-            await run(delay(0.03));
+            await delay(0.03).run();
             spawn(||{
                 await stage.presented();
                 await saves.save("transition");
@@ -862,7 +862,7 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_after_root_reconstruct
                     let animation=spawn(||reveal_new(panel,changed,||{}));
                     await changed;
                     await stage.presented();
-                    await run(delay(0.25));
+                    await delay(0.25).run();
                     await stage.capture();
                     await animation;
                     gate.resolve(null);
@@ -879,7 +879,7 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_after_root_reconstruct
             spawn(||reveal_new(panel,changed,||{w.calls+=1;w.changed=true;}));
             await changed;
             await stage.presented();
-            await run(delay(0.25));
+            await delay(0.25).run();
             await stage.capture();
             spawn(||{
                 await stage.presented();
@@ -960,11 +960,11 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
             let sound = audio.play("chime.wav", group: "music", volume: 0.5,
                 looping: true, loop_start: 0.02, loop_end: 0.2);
             w.sound=sound;
-            if !(await audio.at(sound,0.03)) {throw "queue position not reached";}
-            pause(sound);
-            await run(delay(0.02));
+            if !(await sound.at(0.03)) {throw "queue position not reached";}
+            sound.pause();
+            await delay(0.02).run();
             audio.queue(sound, "chime.wav", start: 0.1);
-            w.position=audio.position(sound);
+            w.position=sound.position();
             if w.position <= 0 { throw "audio did not consume PCM"; }
             spawn(||{
                 await stage.presented();
@@ -976,21 +976,21 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
                 throw "load returned to old audio";
             });
             point("saved");await gate;
-            await run(delay(0.02));
-            if sound!=w.sound || audio.position(sound) < w.position - 0.001
-                || audio.position(sound) > w.position + 0.001 {
+            await delay(0.02).run();
+            if sound!=w.sound || sound.position() < w.position - 0.001
+                || sound.position() > w.position + 0.001 {
                 throw "restored paused position changed";
             }
-            resume(sound);
+            sound.resume();
             if await sound != "Completed" || await sound != "Completed" {
                 throw "restored queue did not complete";
             }
-            if audio.position(sound) < 0.19 { throw "queue tail did not play"; }
+            if sound.position() < 0.19 { throw "queue tail did not play"; }
             game.start(finish);
         }
         fn finish() {
             let sound = audio.play("chime.wav");
-            if await sound != "Completed" || audio.position(sound) < 0.19 {
+            if await sound != "Completed" || sound.position() < 0.19 {
                 throw "new session lost media backend";
             }
         }
@@ -1091,7 +1091,7 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
         class World {let mut sound:Playback|null=null;}
         state(World,"world");root(main,"game");
         fn main(w:World=model(World())) {
-            let cursor=derive(||if w.sound==null{0.0}else{audio.position(w.sound)});
+            let cursor=derive(||if w.sound==null{0.0}else{w.sound.position()});
             let marker=stack(width:20,height:20,x:derive(||cursor.value*100));
             stage.replace(stack(width:320,height:180){marker;});
             let gate=completion();
@@ -1106,10 +1106,10 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
             w.sound=sound;
             let marker=ctx.marker;
             await stage.presented();
-            if audio.position(sound)!=0 || marker.x!=0 {throw "paused loading advanced";}
-            let cue=audio.at(sound,0.125);
-            audio.seek(sound,0.05);
-            if audio.position(sound)!=0.05 {throw "seek observation";}
+            if sound.position()!=0 || marker.x!=0 {throw "paused loading advanced";}
+            let cue=sound.at(0.125);
+            sound.seek(0.05);
+            if sound.position()!=0.05 {throw "seek observation";}
             await stage.presented();
             if marker.x!=5 {throw "seek binding";}
             spawn(||{
@@ -1121,15 +1121,15 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
             });
             let gate:Completion=ctx.gate;
             point("saved");await gate;
-            if audio.position(sound)!=0.05 || marker.x!=5 {throw "restored position";}
-            resume(sound);
+            if sound.position()!=0.05 || marker.x!=5 {throw "restored position";}
+            sound.resume();
             if !(await cue) || !(await cue) {throw "restored position wait";}
-            if audio.position(sound)<0.125 {throw "cue preceded observed position";}
+            if sound.position()<0.125 {throw "cue preceded observed position";}
             if await sound!="Completed" {throw "audio terminal";}
             await stage.presented();
             if marker.x<24 {throw "final reactive position";}
-            if !(await audio.at(sound,audio.position(sound))) {throw "final threshold";}
-            if await audio.at(sound,1) {throw "early ending reported arrival";}
+            if !(await sound.at(sound.position())) {throw "final threshold";}
+            if await sound.at(1) {throw "early ending reported arrival";}
         }
     "#,
     )
@@ -1156,12 +1156,12 @@ fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
                 else {game.reading().set_auto(true, delay:0.01);}
                 let line = narrator("Deferred advance", wait:false);
                 await stage.presented(owner:owner);
-                await run(delay(0.02), owner:owner);
+                await delay(0.02).run(owner:owner);
                 if !game.dialogue().ready {throw "deferred line was not revealed";}
                 line.wait();
                 line.append(" and another segment", wait:false);
                 await stage.presented(owner:owner);
-                await run(delay(0.02), owner:owner);
+                await delay(0.02).run(owner:owner);
                 if !game.dialogue().ready {throw "appended line was not revealed";}
                 line.wait();
                 line.append(" and a waiting segment");

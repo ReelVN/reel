@@ -19,14 +19,12 @@ fn main() {
                 scope(
                     body: |s| {
                         let motion = s.offset(panel, y: -3);
-                        await run(
-                            repeat(
+                        await repeat(
                                 sequence(
                                     tween(motion, x: 6, duration: 0.05),
                                     tween(motion, x: -6, duration: 0.05)
                                 ), times: 8
-                            )
-                        );
+                            ).run();
                     }
                 );
                 state.shaking = false;
@@ -60,5 +58,5 @@ fn main() {
             );
         }
     );
-    run(repeat(sequence(tween(panel, x: 360, duration: 4), tween(panel, x: 40, duration: 4))));
+    repeat(sequence(tween(panel, x: 360, duration: 4), tween(panel, x: 40, duration: 4))).run();
 }

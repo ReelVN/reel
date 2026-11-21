@@ -2,7 +2,9 @@
 #![forbid(unsafe_code)]
 
 use moxy::ast::*;
-use moxy::token::{Delim, Group, LitStr, LitVerbatim, Span, Spanner, ToTokenStream, TokenStream};
+use moxy::token::{
+    Delim, Group, Lit, LitStr, LitVerbatim, Span, Spanner, ToTokenStream, TokenStream,
+};
 
 fn literal(value: impl std::fmt::Display) -> moxy::token::Lit {
     LitVerbatim::new(&value.to_string(), Span::call_site()).into()
@@ -65,7 +67,37 @@ fn documentation(attrs: &Attributes) -> TokenStream {
             lines.push(expr.clone());
         }
     }
-    moxy::template! { concat!(@for line in &lines { {{ line }}, "\n", }) }
+    moxy::template! { ::aside_host::doc_comments!(@for line in &lines { {{ line }}, }) }
+}
+
+fn doc_line(expression: &Expr) -> TokenStream {
+    let mut token = expression;
+    while let Expr::Group(group) = token {
+        token = &group.expr;
+    }
+    if let Expr::Lit(ExprLit {
+        lit: Lit::Str(line),
+        ..
+    }) = token
+        && let Some(plain) = line.value().strip_prefix(' ')
+    {
+        return LitStr::new(plain, line.span()).to_token_stream();
+    }
+    expression.to_token_stream()
+}
+
+/// Extract Rust line comments as Markdown, retaining their authored indentation.
+#[doc(hidden)]
+#[proc_macro]
+pub fn doc_comments(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let tokens = input.into();
+    let lines = match List::<Expr, Token![,]>::parse_all(&Parser::from_tokens(&tokens)) {
+        Ok(lines) => lines.iter().map(doc_line).collect::<Vec<_>>(),
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let output: TokenStream =
+        moxy::template! { concat!(@for line in &lines { {{ line }}, "\n", }) };
+    output.into()
 }
 fn constant(meta: &Meta) -> Result<TokenStream, ParseError> {
     let tokens = expression(meta)?;

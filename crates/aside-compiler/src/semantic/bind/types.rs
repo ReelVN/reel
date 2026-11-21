@@ -78,7 +78,11 @@ impl Binder<'_> {
                             self.error(D::InvalidType, name.span, "duplicate record field");
                             continue;
                         }
-                        fields.push((key, self.annotation(child, ctx)));
+                        let mut ty = self.annotation(child, ctx);
+                        if self.token(field, K::Question).is_some() {
+                            ty = self.intern_type(Type::OptionalField(ty));
+                        }
+                        fields.push((key, ty));
                     }
                 }
                 self.record_type(fields)
@@ -153,6 +157,10 @@ impl Binder<'_> {
                     }
                 }
             }
+            HirKind::ArrayType => {
+                let item = children.first().map_or(ANY, |&c| self.annotation(c, ctx));
+                self.intern_type(Type::TypedArray(item))
+            }
             HirKind::GroupType => children.first().map_or(ANY, |&c| self.annotation(c, ctx)),
             HirKind::TupleType => {
                 let ts = children
@@ -188,6 +196,25 @@ impl Binder<'_> {
     pub(super) fn record_type(&mut self, mut fields: Vec<(NameId, TypeId)>) -> TypeId {
         fields.sort_unstable_by_key(|&(name, _)| name);
         self.intern_type(Type::Record(fields))
+    }
+
+    fn records_compatible(&self, actual: &[(NameId, TypeId)], expected: &[(NameId, TypeId)]) -> bool {
+        let mut left = actual.iter().peekable();
+        let mut right = expected.iter().peekable();
+        while let (Some(&(a, actual)), Some(&(b, expected))) = (left.peek().copied(), right.peek().copied()) {
+            let (actual, actual_optional) = field_contract(&self.out.types, actual);
+            let (expected, expected_optional) = field_contract(&self.out.types, expected);
+            match a.cmp(&b) {
+                std::cmp::Ordering::Less if actual_optional => { left.next(); }
+                std::cmp::Ordering::Greater if expected_optional => { right.next(); }
+                std::cmp::Ordering::Equal if (actual_optional && expected_optional) || self.compatible(actual, expected) => {
+                    left.next();
+                    right.next();
+                }
+                _ => return false,
+            }
+        }
+        left.chain(right).all(|&(_, ty)| field_contract(&self.out.types, ty).1)
     }
 
     pub(super) fn union_type(&mut self, mut types: Vec<TypeId>) -> TypeId {
@@ -289,14 +316,10 @@ impl Binder<'_> {
             (_, Type::Union(ts)) => ts.iter().any(|&t| self.compatible(actual, t)),
             (Type::Union(ts), _) => ts.iter().any(|&t| self.compatible(t, expected)),
             (Type::Enum(a, _), Type::Enum(b, _)) => a == b,
+            (Type::TypedArray(_), Type::Array) => true,
             (Type::StringLiteral(_), Type::String) | (Type::String, Type::StringLiteral(_)) => true,
             (Type::Record(_), Type::Table) | (Type::Table, Type::Record(_)) => true,
-            (Type::Record(a), Type::Record(b)) => {
-                a.len() == b.len()
-                    && a.iter()
-                        .zip(b)
-                        .all(|(&(ak, a), &(bk, b))| ak == bk && self.compatible(a, b))
-            }
+            (Type::Record(a), Type::Record(b)) => self.records_compatible(a, b),
             (Type::Tuple(a), Type::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b).all(|(&a, &b)| self.compatible(a, b))
             }
@@ -409,6 +432,7 @@ impl Binder<'_> {
                 types.iter().any(|&ty| self.incomplete_signature(ty))
             }
             Type::Record(fields) => fields.iter().any(|&(_, ty)| self.incomplete_signature(ty)),
+            Type::OptionalField(ty) => self.incomplete_signature(*ty),
             Type::Callable(types, result) => {
                 types.iter().any(|&ty| self.incomplete_signature(ty))
                     || self.incomplete_signature(*result)

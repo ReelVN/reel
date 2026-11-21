@@ -574,10 +574,10 @@ fn history_and_script_collection_clear_reclaim_before_sleeping() {
                 fn main() {{
                     let history = game.history();
                     for i in 0..1000 {{ game.record(f"line {{i}}"); }}
-                    await run(delay(1));
+                    await delay(1).run();
                     {clear}
                     if history.len() != 0 {{ throw "history not cleared"; }}
-                    await run(delay(1));
+                    await delay(1).run();
                 }}
             "#
             )
@@ -586,10 +586,10 @@ fn history_and_script_collection_clear_reclaim_before_sleeping() {
                 fn main() {
                     let history = [];
                     for i in 0..1000 { history.append([i]); }
-                    await run(delay(1));
+                    await delay(1).run();
                     history.clear();
                     if history.len() != 0 { throw "array not cleared"; }
-                    await run(delay(1));
+                    await delay(1).run();
                 }
             "#
             .into()
@@ -619,16 +619,16 @@ fn one_table_removal_uses_allocation_pressure_while_clear_requests_reclamation()
             let records = model({gone: [1], kept: [2]});
             let alias = records.kept;
             stage.replace(text(value: derive(|| f"left={records.len()}")));
-            await run(delay(1));
+            await delay(1).run();
             let removed = records.remove("gone");
             if removed[0] != 1 || records.len() != 1 || alias[0] != 2 || retained.len() != 1000 {
                 throw "remove changed retained aliases";
             }
-            await run(delay(1));
+            await delay(1).run();
             records.clear();
             retained.clear();
             if records.len() != 0 || alias[0] != 2 || removed[0] != 1 { throw "clear changed retained aliases"; }
-            await run(delay(1));
+            await delay(1).run();
         }
     "#,
     );
@@ -707,12 +707,12 @@ fn constructing_animated_layers_makes_progress_with_short_slices() {
                 let x = 40 + (i % 8) * 140;
                 let layer = image("layer.png", x: x, width: 190, height: 254, opacity: 0.65);
                 world.add(layer);
-                run(repeat(sequence(
+                repeat(sequence(
                     tween(layer, x: x + 80, rotation: 12, opacity: 0.9,
                         duration: 1.5, easing: "sine_in_out"),
                     tween(layer, x: x, rotation: -8, opacity: 0.65,
                         duration: 1.5, easing: "sine_in_out")
-                )), owner: world);
+                )).run(owner: world);
             }
             let sparks = particles("spark.png", x: 600, y: 300, seed: 17, blend: "add");
             world.add(sparks);
@@ -721,7 +721,7 @@ fn constructing_animated_layers_makes_progress_with_short_slices() {
             };
             game.configure(title: "constructed");
             stage.replace(view);
-            await run(delay(0.01));
+            await delay(0.01).run();
             game.configure(title: "finished");
         }
     "#;
@@ -771,12 +771,12 @@ fn runtime_cost() {
             for i in 0..{rows} {{ items.append([i, i]); }}
             let label = text("stable");
             stage.replace(label);
-            await run(delay(1));
+            await delay(1).run();
             for i in 0..10000 {{ label.x = i; }}
             if items.len() != {rows} || items[{last}][1] != {last} || label.x != 9999 {{ throw "lost retained data"; }}
-            for i in 0..100 {{ await run(delay(1)); label.y = i; }}
+            for i in 0..100 {{ await delay(1).run(); label.y = i; }}
             if label.y != 99 {{ throw "lost interaction update"; }}
-            await run(delay(1));
+            await delay(1).run();
             narrator("done", history: false);
         }}
     "#,

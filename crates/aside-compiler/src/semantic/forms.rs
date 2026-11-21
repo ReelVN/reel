@@ -49,6 +49,7 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
         | H::Enum
         | H::EnumVariant
         | H::TupleType
+        | H::ArrayType
         | H::RecordType
         | H::UnionType
         | H::TuplePattern
@@ -345,6 +346,7 @@ fn is_type(k: HirKind) -> bool {
     matches!(
         k,
         HirKind::NamedType
+            | HirKind::ArrayType
             | HirKind::StringType
             | HirKind::RecordType
             | HirKind::GroupType
@@ -352,4 +354,18 @@ fn is_type(k: HirKind) -> bool {
             | HirKind::UnionType
             | HirKind::FunctionType
     )
+}
+pub(super) fn constant_bool(hir: &crate::hir::Hir, node: NodeId) -> Option<bool> {
+    match hir.node(node).form {
+        Form::Literal { token } => match token.kind {
+            K::True => Some(true),
+            K::False => Some(false),
+            _ => None,
+        },
+        Form::Single { child } => constant_bool(hir, child),
+        Form::Unary { operator, value } if operator.kind == K::Bang => {
+            constant_bool(hir, value).map(|value| !value)
+        }
+        _ => None,
+    }
 }

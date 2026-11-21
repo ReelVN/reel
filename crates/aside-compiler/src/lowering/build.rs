@@ -674,13 +674,15 @@ impl Lowerer<'_> {
                     return Ok(ty);
                 }
                 h::Type::StringLiteral(text) => bc::TypeDef::StringLiteral(self.b.string(text)?),
+                h::Type::TypedArray(item) => bc::TypeDef::Array(self.ty(*item, depth + 1)?),
                 h::Type::Record(fields) => {
                     let mut compiled = Vec::new();
-                    for &(name, ty) in fields {
+                    for &(name, field) in fields {
+                        let (ty, optional) = h::field_contract(self.m.types(), field);
                         let name = self.name(self.m.hir().name(name))?;
                         let ty = self.ty(ty, depth + 1)?;
                         self.b
-                            .push(&mut compiled, bc::RecordFieldType { name, ty })?;
+                            .push(&mut compiled, bc::RecordFieldType { name, ty, optional })?;
                     }
                     bc::TypeDef::Record(compiled)
                 }

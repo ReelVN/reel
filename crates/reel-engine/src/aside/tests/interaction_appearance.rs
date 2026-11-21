@@ -99,6 +99,43 @@ fn image_skin_projects_asset_and_atlas_region_from_control_state() {
 }
 
 #[test]
+fn image_quad_binding_is_projected_and_restored() {
+    let code = r#"fn opening() {
+        let pose = model({points: ((0, 0), (40, 0), (40, 40), (0, 40))});
+        stage.replace(image("card.png", fit: "stretch", corners: bind(pose.points),
+            source_rect: (16, 8, 40, 40), width: 40, height: 40));
+        narrator("front");
+        pose.points = ((4, 3), (38, 0), (40, 40), (1, 35));
+        narrator("tilted");
+    }"#;
+    let (mut session, mut vm) = models::prepared(code, true);
+    let check = |vm: &SessionVm, expected| {
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|node| matches!(node.kind, NodeKind::Image { .. }))
+            .unwrap();
+        let NodeKind::Image {
+            corners: Some(points),
+            source_rect,
+            ..
+        } = &node.kind
+        else {
+            panic!("expected a warped image");
+        };
+        assert_eq!(points[0], reel_ui::kurbo::Point::from(expected));
+        assert_eq!(source_rect.unwrap().x0, 16.);
+    };
+    box_style::drive(&mut vm, &mut session);
+    check(&vm, (0., 0.));
+    advance(&mut vm, &mut session);
+    check(&vm, (4., 3.));
+    (session, vm) = scopes::restored(&mut vm, &session);
+    vm.sync_stage(&session).unwrap();
+    check(&vm, (4., 3.));
+}
+
+#[test]
 fn appearance_selects_paint_preserves_base_bindings_and_resets_input_on_restore() {
     let code = r##"fn opening() {
         let data = model({background: "#102030"});

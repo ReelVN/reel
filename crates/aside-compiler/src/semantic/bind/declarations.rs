@@ -308,7 +308,7 @@ impl Binder<'_> {
             }
         }
         let calls = std::mem::take(&mut self.calls);
-        self.check_definite_effects(&calls);
+        self.collect_effect_calls(&calls);
         for call in calls {
             if let Some(caller) = call.caller {
                 if let Some(callee) = call.callee {

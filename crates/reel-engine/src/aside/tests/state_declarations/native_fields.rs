@@ -26,7 +26,7 @@ fn opening(){
     value.root=stack(){sprite;};stage.replace(value.root);
     let action=tween(sprite,x:20,duration:1);
     value.action=action;
-    value.activity=run(action,paused:true);
+    value.activity=action.run(paused:true);
     value.timer=clock(interval:0.25,paused:true);
     persistent.write("typed-native",value);
 }

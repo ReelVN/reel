@@ -10,5 +10,5 @@ fn main() {
     };
     stage.replace(scene);
     await stage.presented(owner: scene);
-    await run(tween(scene, opacity: 1, duration: 0.5));
+    await tween(scene, opacity: 1, duration: 0.5).run();
 }

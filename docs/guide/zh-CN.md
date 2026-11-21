@@ -24,7 +24,7 @@ reel export --release
 
 交互终端中的源码命令显示当前阶段、模块进度和耗时；`dev` 复用缓存时显示缓存状态。
 
-`export` 默认生成 `dist/目标/debug/` 开发工程。`--release` 使用 `dist/目标/release/`，例如 `dist/vita/release/`。将整个发布目录交给玩家，包含代码、文本包、资源卷和随包附带的播放器。默认输出重复执行时更新，显式 `--output` 通过 `--overwrite` 替换已有目标。替换导出目录前，将存档放在独立位置。`--save-directory` 指定运行数据目录。
+`export` 默认生成 `dist/目标/debug/` 开发工程。桌面 `--release` 使用 `dist/目标/release/`，其中包含播放器、代码、文本包和资源卷。Vita 每部游戏有一个 VPK 和一个数据目录。重复导出会更新默认输出，显式 `--output` 通过 `--overwrite` 替换已有目标。
 
 发布前可用 `reel-dev perf verify` 验收正式播放器完成的关键场景。策略指定目标、运行环境、场景标签和提交间隔或内存额度。输出的 `verification.json` 记录观测值和未通过项。 [发布验收用法](../../crates/reel-dev/README.md#verify-a-release)
 
@@ -32,7 +32,7 @@ reel export --release
 
 ```sh
 reel dev --resource-target vita
-reel export --release --resource-target vita
+reel export --release --resource-target vita --data-only
 ```
 
 `dev` 用当前平台的播放器预览所选素材。`export` 按选定目标准备发布内容。开发版复制所选资源，发布版打包为统一逻辑路径。
@@ -45,25 +45,61 @@ let particle_count = if build.target == "vita" { 80 } else { 320 };
 
 共用布局时保留逻辑画布，通过素材缩放和效果配置调整绘制成本。`window.info().platform` 报告当前运行游戏的播放器平台。
 
-本机桌面发布包默认使用工具自带的播放器。`desktop` 和自定义资源变体也默认使用宿主播放器。发布到其他桌面系统时，用 `--runtime` 指定目标系统的运行时目录，或用 `--data-only` 供另行安装的播放器读取。运行时文件保留相对路径，与 `game.asb` 一同发布。
+本机桌面发布包默认使用工具自带的播放器。`desktop` 和自定义资源变体也默认使用宿主播放器。发布到其他桌面系统时，用 `--runtime` 指定目标平台的播放器或运行时目录，或用 `--data-only` 供另行安装的播放器读取。附带文件保留在播放器旁的相对路径。
 
 ```sh
 reel export --release --resource-target linux --runtime path/to/linux-runtime
 ```
 
-使用目标平台的打包工具制作安装包。自定义 Vita 运行时目录的根目录必须包含 `eboot.bin`。Vita 播放器读取准备好的 Opus 音频和纹理。硬解视频使用 H.264/AAC，尺寸为偶数且不超过 960 × 544。
+要设置发行名称和图标，在项目根目录的 `distribution.toml` 中填写 `[desktop]`。`id` 使用反向域名形式，发布更新时沿用。`icon` 可省略，指定时使用项目内的方形 PNG，建议 1024 × 1024。
+
+```toml
+[desktop]
+id = "com.example.mygame"
+title = "My Game"
+icon = "platform/icon.png"
+```
+
+- Windows 把图标写入 `game.exe`，窗口和任务栏也使用这个图标。玩家解压整个发行目录后双击它。需签名时，在导出后签名。
+- macOS 生成 `dist/macos/release/My Game.app`，玩家双击 `.app`。`--output` 可以指定另一个 `.app` 路径。对外分发时按发行渠道要求签名和公证。
+- Linux 可从终端运行 `./game`。把发行目录放到长期使用的位置后，可运行其中的 `sh install-menu.sh`，将入口和图标加入当前用户的应用菜单。移动目录后再次运行脚本。
+
+发行 Linux 和 macOS 版本时，在目标系统完成最终归档，保留播放器的执行权限。如果解压后丢了权限，Linux 对 `game`、macOS 对 `.app/Contents/MacOS/game` 执行 `chmod +x`。
+
+使用自定义运行时目录时，入口放在该目录根部，Windows 使用 `game.exe`，Linux 和 macOS 使用 `game`。`title` 也用作初始窗口名称，游戏中可通过 `game.configure(title: "第二章")` 修改窗口名。
+
+设置 `[desktop]` 后，播放器按 `id` 将存档和设置写入系统的应用数据目录。Windows 使用 `%LOCALAPPDATA%/<id>/saves/`，macOS 使用 `~/Library/Application Support/<id>/saves/`，Linux 使用 `$XDG_DATA_HOME/<id>/saves/`，默认在 `~/.local/share/` 下。便携包将 `saves/` 放在播放器旁，更新时保留它。给已有便携包添加 `[desktop]` 时，可把 `saves/` 复制到新的位置。`--save-directory` 可以指定存档目录。
+
+需要自己编译发行播放器时，克隆 Reel，并在目标桌面系统的源码目录运行下列命令。Cargo 将播放器写到配置的目标目录。回到作品目录，用同版本的 `reel` 导出，并通过 `--runtime` 指定该可执行文件。播放器需要附带文件时，也可以指定包含这些文件的目录。
+
+```sh
+cargo build --locked --release -p reel-cli --bin reel-game --features window
+reel export --release --runtime path/to/reel-game
+```
+
+Vita 播放器读取准备好的 Opus 音频和纹理。硬解视频使用 H.264/AAC，尺寸为偶数且不超过 960 × 544。
 
 Vita 导出使用官方 SDK 主机工具 `psp2cgc` 将效果编译为 GXP。通过 `REEL_PSP2CGC` 指定编译器程序，或通过 `SCE_PSP2_SDK_DIR` 指定 SDK 目录。运行时内嵌基础着色器，通过系统 GXM API 绘制。
 
-Vita 发布默认导出游戏数据，可交给已安装的 Reel 启动器运行。
+在游戏项目根目录添加 `distribution.toml`。`title` 设置 Vita 主界面显示的游戏名，`title_id` 标识安装的游戏，`version` 设置该游戏的发行版本。
 
-```sh
-reel export --release --resource-target vita
+```toml
+[vita]
+title_id = "MYGAMEVTA"
+title = "My Game"
+version = "01.00"
 ```
 
-将导出目录复制到 `ux0:/data/reel/作品名/`。启动器列出含 `game.asb` 的作品目录；进度保存在各作品的 `saves/` 目录。游戏中按 SELECT + START 返回作品列表。
+`title_id` 使用九个大写英文字母或数字。更新同一部游戏时沿用这个 ID。`title` 的 UTF-8 编码最多 51 字节，`version` 使用 `NN.NN`。可用 `assets = "platform/vita"` 指定作品自己的启动素材目录，在其中按 `sce_sys/` 路径存放图标和 LiveArea 图片。
 
-启动器用圆圈确认、叉键返回。按 SELECT 设置语言和主题，复制新作品后按 START 刷新列表。设置保存在 `ux0:/data/reel/launcher.json`。
+```sh
+cargo +nightly vita build eboot --locked --release -p reel-player --bin reel-vita --features vita
+reel export --release --resource-target vita --runtime path/to/reel-vita.self
+```
+
+两条命令都在电脑上运行。第一条在引擎源码目录生成 `reel-vita.self`，第二条在作品目录将播放器装入 VPK。已有同版本的 `reel` 和 `reel-vita.self` 时，直接执行第二条命令即可。源码构建使用 nightly Rust、`cargo-vita` 和 VitaSDK。设置 `VITASDK` 指向工具链目录，或将 VitaSDK 的打包工具加入 `PATH`。`--runtime` 也接受根目录含 `eboot.bin` 的运行时目录，目录中的 `sce_sys/` 可提供默认启动素材。
+
+将 `dist/vita/MYGAMEVTA/` 交给玩家。先安装里面的 `MYGAMEVTA.vpk`，然后把 `data/MYGAMEVTA/` 整个目录复制到 `ux0:/data/reel/games/`。从 Vita 主界面点游戏图标即可进入游戏。存档和设置保存在对应游戏的 `saves/` 目录，更新游戏数据时保留该子目录。开发时只需要数据可加 `--data-only`。
 
 桌面开发时，`reel dev` 可直接读取 PNG、JPEG、静态 WebP 和 sRGB QOI。在项目根添加 `resources.toml`，按发行目标生成资源副本：
 
@@ -187,11 +223,13 @@ pub fn title() {
 用数组、表和普通循环生成内容。`..` 排除终点，`..=` 包含终点，整数区间按需迭代。`f"...{expression}..."` 把表达式的值插入文字。
 
 ```aside
-let values = [];
+let values: array<int> = [];
 for value in 1..=3 { values.append(value); }
 let latest = values.pop();
 stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
+
+`array<int>` 共享后仍保留元素合同。初始化字面量和直接实参沿用期望的数组类型。已有数组可用 `let checked: array<int> = [...values];` 校验并复制元素。
 
 字段名和变量名相同时可以直接写变量名，例如 `{width, height, fullscreen: false}`。
 
@@ -255,6 +293,16 @@ tuple 适合固定形状的数据。`let` 和 `for` 支持固定长度解构，`
 对象也可按字段解构，例如 `let {value: item, index} = row;`。省略字段后的别名时，局部变量沿用字段名。
 
 多处注解共享同一类型时，在模块顶部写 `type Caption = {message: string, color: string};`，随后用 `Caption` 作注解。其他模块也需要这个名字时，声明为 `pub type` 并用 `use` 导入。
+
+用 `?` 标记可省略的字段。读取省略的字段得到 `null`，布局可以用 `??` 提供缺省值。
+
+```aside
+type CaptionStyle = {message: string, color?: string};
+
+fn caption_color(style: CaptionStyle) -> string {
+    style.color ?? "#FFFFFF"
+}
+```
 
 ```aside
 let settings = {language: "zh-CN", volume: 0.8};
@@ -467,7 +515,7 @@ stage.replace(arrival);
 ```aside
 stage.replace(scene);
 await stage.presented(owner: scene);
-await run(tween(scene, opacity: 1, duration: 0.5));
+await tween(scene, opacity: 1, duration: 0.5).run();
 ```
 
 用 `appearance` 复用控件的状态外观。背景、文字颜色、边框与变换直接作用于原节点；`focus_visible` 提示键盘和手柄焦点。各状态依次覆盖已指定的属性，作用域 `override` 保持最高优先级。图片等复合外观仍可由子节点和 `derive` 组合。
@@ -572,8 +620,8 @@ let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
 };
 stage.replace(view);
 await stage.presented(owner: view);
-await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
-                camera_rotation: 8, duration: 1.2, easing: "in_out"));
+await tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
+                camera_rotation: 8, duration: 1.2, easing: "in_out").run();
 ```
 
 把 `camera_plane` 直接放在 `camera` 内，就能让平面图层沿视线移动。`distance` 越大，图层越远。增大 `camera_z` 则让镜头靠近所有平面。固定界面放在镜头外，镜头内仍按子节点顺序绘制。
@@ -584,7 +632,7 @@ let room = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
     camera_plane(distance: 600) { image("assets/mio.png", x: 370, y: 85); };
 };
 stage.replace(room);
-await run(tween(room, camera_z: 120, duration: 0.8));
+await tween(room, camera_z: 120, duration: 0.8).run();
 ```
 
 一个场景可以返回根节点以及剧情需要操作的部分。将下面的组件放在 `src/ui/room.aside`，由剧情函数控制人物、CG 和对白区域。
@@ -720,7 +768,7 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 
 ```aside
 let line = mio("Starting", wait: false);
-await run(delay(0.5));
+await delay(0.5).run();
 line.append(" ...", wait: false);
 audio.play("assets/chime.wav");
 line.append(" ready.");
@@ -729,12 +777,12 @@ line.append("\nWelcome back.");
 
 ## 6 串行、并行与时间
 
-`tween`、`delay` 和组合函数描述动作，`run` 启动动作，`await` 等待完成。`sequence` 与 `.then` 表达串行，`parallel` 与 `.together` 表达并行。
+`tween`、`delay` 和组合函数描述动作。`sequence(...)` 让动作依次播放，`parallel(...)` 让动作同时播放，`repeat(...)` 重复播放一个动作。这些函数可以互相嵌套。调用 `.run()` 启动动作，用 `await` 等待完成。
 
 ```aside
 let entrance = tween(portrait, opacity: 1, duration: 0.3);
 let move = tween(portrait, x: 640, duration: 1);
-await entrance.then(move).then(delay(0.5)).run();
+await sequence(entrance, move, delay(0.5)).run();
 ```
 
 内置缓动适合常见运动；自定义曲线用关键点表达节奏，并可供多个动作复用。
@@ -782,8 +830,10 @@ await tween(portrait, x: 720, duration: 0.8, easing: "sine_out").run();
 并行动作分别控制人物和界面，整个组合在两者完成后继续剧情。
 
 ```aside
-let entrance = tween(view.portrait, x: 320, duration: 0.5)
-    .together(tween(view.hud, opacity: 1, duration: 0.3));
+let entrance = parallel(
+    tween(view.portrait, x: 320, duration: 0.5),
+    tween(view.hud, opacity: 1, duration: 0.3),
+);
 await entrance.run();
 ```
 
@@ -793,15 +843,16 @@ await entrance.run();
 fn fade_in(node, seconds = 0.5) {
     tween(node, from: {opacity: 0}, opacity: 1, duration: seconds)
 }
-await delay(0.5).then(fade_in(view.hud)).run();
+await sequence(delay(0.5), fade_in(view.hud)).run();
 ```
 
 循环动作适合呼吸、闪烁和等待提示。保存活动句柄，场景需要时暂停、恢复或停止。
 
 ```aside
-let breathing = tween(view.portrait, opacity: 0.92, duration: 1.4)
-    .then(tween(view.portrait, opacity: 1.0, duration: 1.4))
-    .repeat();
+let breathing = repeat(sequence(
+    tween(view.portrait, opacity: 0.92, duration: 1.4),
+    tween(view.portrait, opacity: 1.0, duration: 1.4),
+));
 breathing.run(owner: view.root);
 mio("听，雨又大了。");
 ```
@@ -809,8 +860,8 @@ mio("听，雨又大了。");
 `delay` 在剧情中留出时间，也可与其他动作组合。等待期间播放器按活动的截止时间调度。
 
 ```aside
-await run(delay(1.5));
-await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
+await delay(1.5).run();
+await sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)).run();
 ```
 
 曲线也可直接采样，用同一时间源控制多个属性。场景资源准备好后恢复时钟。
@@ -830,9 +881,9 @@ fn main() {
             width: 40, height: 40, background: "#ec769e");
     });
     await stage.presented();
-    resume(timer);
-    await run(delay(3));
-    stop(timer);
+    timer.resume();
+    await delay(3).run();
+    timer.stop();
 }
 ```
 
@@ -872,7 +923,7 @@ fn show_cg(view) {
 ```aside
 scope(body: |s| {
     let effect = s.override(panel, {opacity: 0.4, width: null});
-    await s.run(tween(effect, opacity: 1, duration: 0.3));
+    await tween(effect, opacity: 1, duration: 0.3).run(owner: s);
     let next = completion();
     s.add(panel, button("Continue", on_click: || next.resolve()));
     await next;
@@ -882,13 +933,13 @@ scope(body: |s| {
 `offset` 给运动叠加位移，适合震动和漂浮。基础动画继续推进，临时位移随作用域结束。
 
 ```aside
-let moving = run(tween(panel, x: 500, duration: 4));
+let moving = tween(panel, x: 500, duration: 4).run();
 scope(body: |s| {
     let shake = s.offset(panel, y: -3);
-    await run(repeat(sequence(
+    await repeat(sequence(
         tween(shake, x: 6, duration: 0.05),
         tween(shake, x: -6, duration: 0.05)
-    ), times: 8));
+    ), times: 8).run();
 });
 await moving;
 ```
@@ -917,7 +968,7 @@ fn closeable_scene() {
 let movie = video("assets/logo.mp4", width: 1280, height: 720, fit: "contain");
 let playing = movie.play();
 stage.replace(button(width: 1280, height: 720, decorated: false,
-    background: "#000000", on_click: || stop(playing)) {
+    background: "#000000", on_click: || playing.stop()) {
     movie;
 });
 await playing;
@@ -954,7 +1005,7 @@ fn main() {
         button("Move", width: 180, height: 64, background: "#284860",
             on_click: |event| {
                 event.target.enabled = false;
-                await run(tween(caption, x: 120, duration: 0.4));
+                await tween(caption, x: 120, duration: 0.4).run();
                 caption.value = "Arrived";
                 event.target.enabled = true;
             }
@@ -1029,10 +1080,10 @@ fn main() {
             jump: {
                 bindings: ["Space", "South", "PointerPrimary"],
                 on_press: || {
-                    await run(sequence(
+                    await sequence(
                         tween(marker, y: 16, duration: 0.15),
                         tween(marker, y: 64, duration: 0.15)
-                    ));
+                    ).run();
                 },
             },
             finish: {
@@ -1233,22 +1284,24 @@ let cast = stack() {
     dialogue_view(game.dialogue());
 };
 stage.replace(cast);
-await run(tween(cast, x: 80, duration: 0.5));
+await tween(cast, x: 80, duration: 0.5).run();
 ```
 
 用作用域把循环特效与有限演出组合，正文完成时结束循环。
 
 ```aside
 scope(body: |s| {
-    s.run(repeat(sequence(
+    repeat(sequence(
         tween(view.hud, opacity: 0.4, duration: 0.5),
         tween(view.hud, opacity: 1, duration: 0.5)
-    )));
+    )).run(owner: s);
     narrator("The light keeps pulsing while this line is shown.");
 });
 ```
 
-转场保留当前已显示画面，在 `change` 中构建目标。直接调用 `stage.transition`，目标画面显示后函数返回。只执行转场的辅助函数可以声明 `-> null`，调用者多写 `await` 时能收到编译诊断。等待 `run(tween(...))` 返回的活动时使用 `await`。
+转场保留当前已显示画面，在 `change` 中构建目标。直接调用 `stage.transition`，目标画面显示后函数返回。只执行转场的辅助函数可以声明 `-> null`，调用者多写 `await` 时能收到编译诊断。等待 `tween(...).run()` 返回的活动时使用 `await`。
+
+看 API 签名时也用这个规则。对白调用、`Speech.wait()` 和 `choose(...)` 在当前剧情中等到完成后返回结果。`stage.presented()` 和 `saves.save(...)` 返回可以立即等待或留到之后处理的请求。编译器确定结果不可等待时，可用编辑器的 **Remove unnecessary await** 动作去掉多写的关键字。
 
 ```aside
 stage.transition(target: scene, duration: 0.6, change: || {
@@ -1267,7 +1320,7 @@ let reveal = stack(width: 1280, height: 720,
     image("assets/window-cg.png");
 };
 view.picture.add(reveal);
-await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
+await tween(reveal, mask_progress: 1, duration: 1.2).run(owner: reveal);
 reveal.mask = null;
 ```
 
@@ -1279,7 +1332,7 @@ let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
     stack(width: 640, height: 360, background: "#2d8aab");
 };
 stage.replace(reveal);
-await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+await tween(reveal, mask_x: 1, duration: 3).run(owner: reveal);
 ```
 
 `invert` 对整个子树反色，可以与透明度、遮罩和动画组合。
@@ -1289,7 +1342,7 @@ let scene = stack(width: 800, height: 450, invert: 0) {
     text("A different view", color: "#e08020", font_size: 48);
 };
 stage.replace(scene);
-await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
+await tween(scene, invert: 1, duration: 0.4).run(owner: scene);
 ```
 
 `blend` 控制子树与背景的混合，支持 `normal`、`add`、`subtract`、`multiply`、`screen`、`overlay`、`hard_light`、`color_dodge`、`lighten`、`difference`、`soft_light` 和 `linear_burn`。子树先完成自身合成，再应用混合。
@@ -1345,7 +1398,7 @@ fn main() {
         noise: texture("assets/noise.png"), progress: bind(scene.mask_progress)
     });
     stage.replace(scene);
-    await run(tween(scene, mask_progress: 1, duration: 1.2), owner: scene);
+    await tween(scene, mask_progress: 1, duration: 1.2).run(owner: scene);
     scene.mask = null;
 }
 ```
@@ -1372,7 +1425,7 @@ fn burst() {
         acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
 }
 let first = burst();
-await run(delay(0.2));
+await delay(0.2).run();
 let second = burst();
 await first;
 await second;
@@ -1406,7 +1459,7 @@ await tween(glow, size_scale: 0, duration: 0.2).run();
 let caption = text("The light is moving.", reveal_fade: 0,
     reveal_fade_from: 0, reveal_fade_step: 20.0 / 255.0);
 stage.replace(caption);
-await run(tween(caption, reveal_fade: 3, duration: 3.0 * 255.0 / 1400.0), owner: caption);
+await tween(caption, reveal_fade: 3, duration: 3.0 * 255.0 / 1400.0).run(owner: caption);
 caption.reveal_fade = null;
 ```
 
@@ -1635,14 +1688,20 @@ column(gap: 6) {
 
 `audio.play` 返回可控制、可等待的活动。分组音量用于音乐、语音、音效和 UI；`owner` 把播放绑定到场景生命周期。短音效和长音轨由宿主选择合适的加载方式。
 
-先用 `wait: false` 显示对白，再用 `audio.play(source, group: "voice", skip: "omit")` 启动可跳过的语音，最后等待对白。快进经过允许跳过的对白时，语音直接返回已结束的活动，`await` 得到 `"Stopped"`。先前播放的语音可用 `audio.stop` 停止。手动重播继续用默认的 `skip: "keep"`。
+给角色或 `narrator` 传入 `voice`，语音就会跟本句一起播放。下一句或选项出现时语音结束。快进可以跳过播放，历史仍通过 `line.voice` 保留路径。手动重播时用 `audio.play(line.voice, group: "voice")`。用 `wait: false` 公布对白后，可以通过 `game.dialogue().voice` 取得播放活动，把语音结束加入自动推进条件。
+
+```aside
+narrator("Wait for me.", voice: "assets/wait-for-me.opus");
+```
+
+用 `audio.duck(music, by: voice, gain: 0.6, attack: 0.12, release: 0.18)` 暂时压低音乐，语音结束后恢复。音乐原有的音量设置继续生效。
 
 ```aside
 fn main() {
     audio.group_volume("music", 0.7);
     let music = audio.play("assets/chime.wav", group: "music", looping: true, volume: 0.4, fade_in: 0.5);
-    pause(music);
-    resume(music);
+    music.pause();
+    music.resume();
     audio.volume(music, 0.2, duration: 0.5);
     let sound = audio.play("assets/chime.wav", pan: -0.5, rate: 0.8);
     audio.rate(sound, 1.2, duration: 0.15);
@@ -1664,11 +1723,11 @@ audio.queue(music, "assets/outro.ogg");
 await music;
 ```
 
-切换音乐时可读取当前内容位置，让新曲从对应位置淡入。`audio.at` 等待指定内容位置，适合歌词和字幕；视频用 `video(...).play()` 同步画面与声音。
+音频和视频的播放句柄都能用 `playing.position()` 读取当前内容时间，用 `playing.seek(seconds)` 跳转位置。歌词和字幕可以通过 `await playing.at(seconds)` 等到指定时间。切换音乐时，可读取当前内容位置，让新曲从对应位置淡入。
 
 ```aside
 let next = audio.play("assets/music-next.ogg", group: "music", looping: true,
-    start: audio.position(music), loop_start: 4, loop_end: 64, fade_in: 2);
+    start: music.position(), loop_start: 4, loop_end: 64, fade_in: 2);
 audio.stop(music, fade: 2);
 music = next;
 ```

@@ -58,7 +58,7 @@ fn transition_starts_at_acceptance_after_preparation_and_suspension() {
         let node=stack(width:64,height:64,background:"#ff0000");
         stage.replace(node);
         stage.transition(target:node,duration:0.3,change:|| { node.background="#0000ff"; });
-        await run(delay(1));
+        await delay(1).run();
     }"##;
     for encoded in [false, true] {
         for suspended in [false, true] {
@@ -268,7 +268,7 @@ fn unaccepted_transition_yields_without_freezing_a_settled_clock() {
         let node=stack(width:64,height:64,x:bind(timer.elapsed),background:"#ff0000");
         stage.replace(node);
         stage.transition(target:node,duration:0.6,change:|| { node.background="#0000ff"; });
-        await run(delay(1));
+        await delay(1).run();
     }"##;
     let driver = AsideSessionUi::from_source(
         Session::new(SessionId(75), Epoch(1)).unwrap(),

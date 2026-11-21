@@ -260,3 +260,49 @@ fn font_projection_reuses_text_and_tracks_binding_overrides_after_restore() {
         assert_eq!(&*props(&vm).font, "黑体, system-ui");
     }
 }
+
+#[test]
+fn equivalent_text_keeps_its_projection_when_other_properties_change() {
+    let code = r##"fn opening() {
+        let clock = model({sample: 10});
+        let plain = text(derive(|| f"{clock.sample / 10}s"));
+        let styled = text(derive(|| rich(f"[b]{clock.sample / 10}s[/b]")));
+        stage.replace(stack { plain; styled; });
+        narrator("initial");
+        clock.sample = 11;
+        plain.x = 9;
+        styled.x = 9;
+        narrator("still one second");
+        clock.sample = 20;
+        narrator("next second");
+    }"##;
+    let (mut session, mut vm) = models::prepared(code, true);
+    let texts = |vm: &SessionVm| {
+        vm.stage()
+            .nodes()
+            .filter_map(|node| match &node.kind {
+                reel_ui::stage::NodeKind::Text(text) => {
+                    Some((text.markup().is_some(), text.clone(), node.props.x))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    drive(&mut vm, &mut session);
+    let before = texts(&vm);
+    assert_eq!(before.len(), 2);
+    advance(&mut vm, &mut session);
+    for (rich, original, _) in &before {
+        let projected = texts(&vm)
+            .into_iter()
+            .find(|entry| entry.0 == *rich)
+            .unwrap();
+        assert_eq!(projected.2, 9.0);
+        assert_eq!(projected.1.as_ref(), "1s");
+        assert!(std::ptr::eq(original.as_ref(), projected.1.as_ref()));
+    }
+    advance(&mut vm, &mut session);
+    for (_, value, _) in texts(&vm) {
+        assert_eq!(value.as_ref(), "2s");
+    }
+}

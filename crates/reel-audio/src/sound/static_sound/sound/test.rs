@@ -954,6 +954,33 @@ fn set_volume() {
 	);
 }
 
+#[test]
+fn ducking_scales_current_volume_without_overwriting_it() {
+	let data = StaticSoundData {
+		sample_rate: 1,
+		frames: Arc::new([Frame::from_mono(1.0); 32]).into(),
+		settings: StaticSoundSettings::new(),
+		slice: None,
+	};
+	let (mut sound, mut handle) = data.split();
+	let now = Tween { duration: Duration::ZERO, ..Default::default() };
+	handle.set_ducking(Decibels(-6.0), now);
+	handle.set_volume(-3.0, now);
+	sound.on_start_processing();
+	expect_frame_soon(
+		Frame::from_mono(Decibels(-6.0).as_amplitude() * Decibels(-3.0).as_amplitude())
+			.panned(Panning::CENTER),
+		&mut sound,
+	);
+	handle.set_volume(-12.0, now);
+	handle.set_ducking(Decibels::IDENTITY, now);
+	sound.on_start_processing();
+	expect_frame_soon(
+		Frame::from_mono(Decibels(-12.0).as_amplitude()).panned(Panning::CENTER),
+		&mut sound,
+	);
+}
+
 /// Tests that the panning of a `StaticSound` can be adjusted.
 #[test]
 #[allow(clippy::float_cmp)]

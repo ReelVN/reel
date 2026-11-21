@@ -119,6 +119,7 @@ fn kind_matches(a: &NodeKind, b: &NodeKind) -> bool {
                 origin: j,
                 sampling: _,
                 corner_colors: _,
+                corners: left_corners,
                 adjustment: _,
             },
             NodeKind::Image {
@@ -134,9 +135,13 @@ fn kind_matches(a: &NodeKind, b: &NodeKind) -> bool {
                 origin: t,
                 sampling: _,
                 corner_colors: _,
+                corners: right_corners,
                 adjustment: _,
             },
-        ) => (a, b, c, d, e, f, g, h, i, j) == (k, l, m, n, o, p, q, r, s, t),
+        ) => {
+            (a, b, c, d, e, f, g, h, i, j) == (k, l, m, n, o, p, q, r, s, t)
+                && left_corners.is_some() == right_corners.is_some()
+        }
         (NodeKind::Particles(a), NodeKind::Particles(b)) => {
             a.source == b.source
                 && a.origin == b.origin

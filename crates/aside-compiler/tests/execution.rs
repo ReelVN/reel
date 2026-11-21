@@ -10,6 +10,11 @@ mod generators;
 mod numeric_match;
 #[path = "execution/text_match.rs"]
 mod text_match;
+#[path = "execution/typed_arrays.rs"]
+mod typed_arrays;
+
+#[path = "execution/optional_records.rs"]
+mod optional_records;
 
 fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
     let mut budget = if tiny {

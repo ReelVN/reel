@@ -220,7 +220,7 @@ pub(super) fn runtime(output: &Path, cargo_args: &[String]) -> Result<()> {
     )?;
     fs::copy(target.join("reel-vita.vpk"), output.join("reel-vita.vpk"))?;
     // Keep build metadata local; deployment sends only the runtime's assets.
-    println!("Official Vita performance runtime: {}", output.display());
+    println!("Vita performance runtime: {}", output.display());
     Ok(())
 }
 

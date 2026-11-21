@@ -40,6 +40,8 @@ enum Layout {
     Bytes,
     Constant(crate::bytecode::ConstId),
     Empty,
+    TypedArray(crate::bytecode::TypeId),
+    PortableArray(super::portable_array::ArrayShape),
 }
 #[derive(Serialize, Deserialize)]
 struct SavedRoot {
@@ -227,7 +229,11 @@ impl GraphCapture {
             let layout = match &object.payload {
                 Payload::Cell(cell) => Layout::Cell(cell.contract, cell.value.is_some()),
                 Payload::Fault(fault) => Layout::Fault(fault.data),
-                Payload::Values(_) => Layout::Values,
+                Payload::Values(values) => values.array_item().map_or(Layout::Values, |item| {
+                    heap.portable_item(item).map_or(Layout::TypedArray(item), |portable| {
+                        Layout::PortableArray(portable.shape.clone())
+                    })
+                }),
                 Payload::Dependencies(_) => Layout::Dependencies,
                 Payload::Table(_) => Layout::Table,
                 Payload::Bytes(bytes) => {
@@ -350,6 +356,23 @@ pub(crate) fn allocate(
                     })
                 }
                 Layout::Values if meta.kind.values() => Payload::Values(Values::default()),
+                Layout::TypedArray(item) if meta.kind == ObjectKind::Array => {
+                    if heap.code.as_ref().is_none_or(|code| item.index() >= code.package().types.len()) {
+                        return Err(SnapshotError::Invalid("array element type is outside the code package".into()));
+                    }
+                    let mut values = Values::default();
+                    values.set_array_item(item);
+                    heap.has_typed_arrays = true;
+                    Payload::Values(values)
+                }
+                Layout::PortableArray(shape) if meta.kind == ObjectKind::Array => {
+                    let item = heap.restore_array_shape(shape, None)
+                        .map_err(|error| SnapshotError::Invalid(error.to_string()))?;
+                    let mut values = Values::default();
+                    values.set_array_item(item);
+                    heap.has_typed_arrays = true;
+                    Payload::Values(values)
+                }
                 Layout::Dependencies
                     if meta.kind == ObjectKind::Dependencies && meta.len.is_multiple_of(2) =>
                 {
