@@ -6,14 +6,13 @@ This is the canonical release history for Reel, starting with the 0.3.0 baseline
 
 ## Unreleased
 
+## 0.4.5 — 2026-11-22
+
 - Prepare and load custom WGSL effects in browser previews.
 - Reuse Reel's language service for completion, hover and diagnostics in browser editors.
 - Subset TrueType and OpenType fonts with Skera in the CLI, including collections with shared outlines.
 - Clear transient interaction states in surviving bindings when a stage node is removed.
 - Scroll browser preview content in the direction of the mouse wheel.
-
-## 0.4.5 — 2026-11-22
-
 - Embed an Aside source preview on WebGPU pages with `reel-web`. It compiles snippets with the Reel compiler, reports editor diagnostic ranges, and runs the shared player on a browser canvas.
 - Start the browser preview's dialogue reveal when the page has focus, including while the editor owns the keyboard.
 - Read the creator guides on the Reel website. The engine repository keeps implementation documentation and executable compiler fixtures.
