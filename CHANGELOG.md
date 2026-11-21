@@ -6,6 +6,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 - Prepare and load custom WGSL effects in browser previews.
 - Reuse Reel's language service for completion, hover and diagnostics in browser editors.
+- Subset TrueType and OpenType fonts with Skera in the CLI, including collections with shared outlines.
 
 ## 0.4.5 — 2026-11-22
 

@@ -98,7 +98,11 @@ fn main() -> io::Result<()> {
             video.as_slice(),
             ["serde", "serde_json"].as_slice(),
         ),
-        ("FONT", font.as_slice(), [].as_slice()),
+        (
+            "FONT",
+            font.as_slice(),
+            ["skera", "write-fonts", "read-fonts 0.47.0"].as_slice(),
+        ),
     ] {
         let mut files = BTreeSet::new();
         for source in sources {

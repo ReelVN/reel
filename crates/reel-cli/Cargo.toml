@@ -32,6 +32,9 @@ blake3 = "=1.8.7"
 serde = { version = "=1.0.229", features = ["derive"] }
 clap = { version = "=4.6.7", features = ["derive"] }
 tempfile = "=3.27.0"
+read-fonts = "=0.47.0"
+skera = "=0.10.0"
+write-fonts = "=0.56.0"
 aside-compiler = { path = "../aside-compiler" }
 aside-lsp = { path = "../aside-lsp" }
 aside-vm = { path = "../aside-vm" }

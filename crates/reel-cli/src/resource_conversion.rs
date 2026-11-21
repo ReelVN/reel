@@ -694,7 +694,6 @@ fn prepare_with_rules<'a>(
     };
     let mut video_tools = None;
     let mut audio_tools = None;
-    let mut font_tools = None;
     let mut groups: BTreeMap<usize, Vec<(String, PathBuf)>> = BTreeMap::new();
     let mut ordinary = Vec::new();
     for (name, source) in selected {
@@ -774,12 +773,6 @@ fn prepare_with_rules<'a>(
                         audio_tools = Some(crate::prepare_audio::external_tools_identity()?);
                     }
                     hash.update(audio_tools.unwrap().as_bytes());
-                }
-                if matches!(recipe, Recipe::Font { .. }) {
-                    if font_tools.is_none() {
-                        font_tools = Some(crate::prepare_font::external_tools_identity()?);
-                    }
-                    hash.update(font_tools.as_ref().unwrap().as_bytes());
                 }
                 let key = hash.finalize().to_hex().to_string();
                 let objects = root.join("build/resources/objects");
