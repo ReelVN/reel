@@ -31,9 +31,9 @@ cargo build --locked --release -p reel-cli --features window
 
 ## 开发引擎
 
-- [引擎文档](docs/README.md)介绍架构、Aside 和 Rust 宿主接口。
-- [开发工具](crates/reel-dev/README.md)介绍仓库检查、调试和性能测量。
-- [浏览器预览](crates/reel-web/README.md)介绍 WebGPU 播放器的构建和嵌入。
-- [贡献规则](AGENTS.md)和[更新历史](CHANGELOG.md)记录项目的开发约定和版本改动。
+- [引擎文档](docs/README.zh.md)介绍架构、Aside 和 Rust 宿主接口。
+- [开发工具](crates/reel-dev/README.zh.md)介绍仓库检查、调试和性能测量。
+- [浏览器预览](crates/reel-web/README.zh.md)介绍 WebGPU 播放器的构建和嵌入。
+- [贡献规则](AGENTS.zh.md)和[更新历史](CHANGELOG.zh.md)记录项目的开发约定和版本改动。
 
 许可声明见各 crate 的清单。[Reel UI](crates/reel-ui/LICENSE)采用 Apache 2.0。借用的代码和测试素材在源码旁保留各自的许可声明。

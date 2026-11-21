@@ -1,5 +1,7 @@
 # Reel text provenance
 
+[简体中文](PROVENANCE.zh.md)
+
 The initial implementation came from Parley 0.8.0,
 [Linebender/parley](https://github.com/linebender/parley), commit
 `8dbecc0545a0c97eb605937b928bc186d2d1295c`, package directory `parley`.

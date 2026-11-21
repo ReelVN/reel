@@ -1,5 +1,7 @@
 # Reel ASB v1
 
+English · [简体中文](FORMAT.zh.md)
+
 ASB contains verified Aside code, source metadata and optional distribution
 configuration. The encoded version is major 1, minor 0. Model/validation details
 are documented in [the package sources](src/lib.rs).

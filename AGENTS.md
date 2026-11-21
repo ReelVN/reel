@@ -1,5 +1,7 @@
 # Reel development rules
 
+[简体中文](AGENTS.zh.md)
+
 ## Source of truth
 
 Read `docs/engine-architecture.md` and `docs/aside-language.md` before editing code. These documents define the shared engine and language contracts. Propose and resolve interface changes in the documents before implementing a different behavior.

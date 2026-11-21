@@ -1,5 +1,7 @@
 # Arcade font
 
+[简体中文](README.zh.md)
+
 `AtkinsonHyperlegible-Regular.ttf` is the unmodified Atkinson Hyperlegible Regular
 font, copyright 2020 Braille Institute of America, Inc., distributed under the
 SIL Open Font License 1.1 in [OFL.txt](OFL.txt).

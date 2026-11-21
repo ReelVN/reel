@@ -1,5 +1,7 @@
 # Reel audio provenance
 
+[简体中文](PROVENANCE.zh.md)
+
 The implementation came from Kira 0.12.5, imported from crates.io on 2026-10-08.
 Source: [tesselode/kira](https://github.com/tesselode/kira), revision
 `74b3ef0fd8bd15f90e3b469208ee741f04374a62`, directory `crates/kira`.

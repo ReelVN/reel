@@ -1,5 +1,7 @@
 # Media fixtures
 
+[简体中文](README.zh.md)
+
 These original synthetic inputs are distributed under the workspace license.
 FFmpeg generates the immutable files with the commands below.
 

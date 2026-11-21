@@ -4,7 +4,7 @@
 
 # Reel
 
-English · [简体中文](README.zh-CN.md)
+English · [简体中文](README.zh.md)
 
 Reel is a cross-platform engine for visual novels and 2D narrative games. Write dialogue, stage direction, menus, and embedded 2D games in Aside, the engine’s scripting language.
 

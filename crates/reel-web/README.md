@@ -1,5 +1,7 @@
 # Reel browser preview
 
+[简体中文](README.zh.md)
+
 Embed a live Aside snippet in a documentation page or a small playground. The preview runs the same compiler, runtime, UI projection, and WGPU renderer as Reel. Each run starts a new session on the canvas. The host page supplies any assets the snippet uses.
 
 ## Build
@@ -12,7 +14,7 @@ cargo build --locked --release --target wasm32-unknown-unknown -p reel-web
 wasm-bindgen target/wasm32-unknown-unknown/release/reel_web.wasm --target web --remove-name-section --out-name reel_web --out-dir target/reel-web
 ```
 
-If Cargo uses a custom target directory, take `reel_web.wasm` from that directory. Copy `web/preview.js` and `web/preview.d.ts` next to the generated `reel_web.js` and `reel_web_bg.wasm`. Serve them over HTTPS or localhost, with `application/wasm` for the WASM file. A WebGPU adapter is required.
+If Cargo uses a custom target directory, take `reel_web.wasm` from that directory. Copy [`web/preview.js`](web/preview.js) and [`web/preview.d.ts`](web/preview.d.ts) next to the generated `reel_web.js` and `reel_web_bg.wasm`. Serve them over HTTPS or localhost, with `application/wasm` for the WASM file. A WebGPU adapter is required.
 
 On documentation pages, mount the preview when the reader chooses to run a snippet. The module loads once per page and can serve multiple canvases. Serve the WASM file with gzip or Brotli compression.
 
@@ -40,4 +42,6 @@ Effects declared in the snippet use the same WGSL preparation as desktop export.
 
 Use the generated module's `WebAnalysis` from a Web Worker for editor queries. Call `setSource(source)` before requesting `completion(line, character)`, `hover(line, character)`, or `diagnostics()`. Queries return JSON in LSP format with zero-based UTF-16 positions. The analysis runs on the current snippet and can start without a canvas or WebGPU.
 
-For a runnable editor example, copy `web/example.html` into the bundle directory and put the font and its `OFL.txt` from [the arcade example](../../examples/author_arcade/resources/fonts) in its `assets/` subdirectory. The browser preview covers source snippets and supplied image/font assets. Web audio, video and persistent saves are outside this embedding API.
+For a runnable editor example, copy [`web/example.html`](web/example.html) into the bundle directory and put the font and its `OFL.txt` in the bundle's `assets/` subdirectory. The browser preview covers source snippets and supplied image/font assets. Find the font and license in [the arcade example](../../examples/author_arcade/resources/fonts).
+
+Use the native player to test audio, video and persistent saves.

@@ -1,6 +1,8 @@
 # Changelog
 
-Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
+English · [简体中文](CHANGELOG.zh.md)
+
+This is the canonical release history for Reel, starting with the 0.3.0 baseline.
 
 ## Unreleased
 

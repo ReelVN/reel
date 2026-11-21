@@ -1,5 +1,7 @@
 # Extending Aside from Rust
 
+[中文](aside-host.zh.md) · [Documentation](README.md) · [Aside language reference](aside-language.md)
+
 `aside-host` provides native declarations, Rust value conversions and property schemas for embedding Aside. It depends on Aside's compiler and VM. The re-exported `native` and `Properties` macros use [Moxy](https://github.com/aacebo/moxy), pinned to 0.5.4 as a compile-time dependency.
 
 ## Export a Rust function

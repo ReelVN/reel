@@ -1,5 +1,7 @@
 # Quirrel-derived execution cases
 
+[简体中文](README.zh.md)
+
 `original/` retains Quirrel inputs, expected results and runner references from
 commit `19f17df9b6ee43c91ef5c635fd45970ec76c5dbe`. See [LICENSE](LICENSE).
 `provenance.json` catalogs reviewed Aside translations and source maps;

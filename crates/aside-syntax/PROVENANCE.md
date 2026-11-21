@@ -1,5 +1,7 @@
 # Aside syntax provenance
 
+[简体中文](PROVENANCE.zh.md)
+
 The initial implementation came from Rowan 0.17.0, revision
 `c781c336f44a28210fefaa4d86b8c9902b781c8e` of
 [rust-analyzer/rowan](https://github.com/rust-analyzer/rowan), imported on

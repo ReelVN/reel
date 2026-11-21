@@ -1,5 +1,7 @@
 # Repository tools
 
+[简体中文](README.zh.md)
+
 Run these commands from the repository root with the workspace toolchain and lockfile.
 
 | Command after `cargo run --locked -p reel-dev --` | Purpose |
@@ -111,7 +113,8 @@ cargo run --locked -p reel-dev -- perf runtime --output target/reel-artifacts/vi
 ```
 
 Install the resulting `reel-vita.vpk` once using the usual Vita or Vita3K
-installation workflow. Subsequent runs update that application's runtime files.
+installation workflow. This profiling application uses the title ID `REELVITAP`.
+Subsequent runs update its runtime files.
 Additional cargo-vita options follow `--` on the `runtime` command.
 
 ```sh
