@@ -1,5 +1,5 @@
 //! Build a relocatable author export through the ordinary ASB/AssetIo path.
-use crate::{BuildProfile, PreparedCode, project::Loaded};
+use crate::{BuildProfile, PreparedCode, project::Loaded, resource_conversion};
 use reel_package::{
     archive::{ArchiveKind, ArchiveWriter},
     distribution::{Distribution, LooseResources, MAIN_PACKAGE, TEXT_POOL_ENTRY, relative_path},
@@ -8,7 +8,7 @@ use reel_package::{
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, Read, Seek, Write},
+    io::{self, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
 };
@@ -137,7 +137,9 @@ fn resource_volumes(
                 ArchiveWriter::new(File::create(staging.join(&volume))?, ArchiveKind::Resources)?;
             names.push(volume);
         }
-        let entry = if is_mp4(path, &mut file)? {
+        let entry = if resource_conversion::has_mp4_extension(path)
+            && resource_conversion::has_mp4_header(&mut file)?
+        {
             // H.264/AAC payloads are already compressed. Contiguous storage
             // lets the player seek without reading an LZ4 block directory.
             writer.add_raw(name, &mut file)?
@@ -148,25 +150,6 @@ fn resource_volumes(
     }
     writer.finish()?.sync_all()?;
     Ok((names, bytes))
-}
-
-fn is_mp4(path: &Path, file: &mut File) -> io::Result<bool> {
-    if path
-        .extension()
-        .is_none_or(|extension| !extension.eq_ignore_ascii_case("mp4"))
-    {
-        return Ok(false);
-    }
-    let mut header = [0; 8];
-    let mp4 = match file.read_exact(&mut header) {
-        Ok(()) => {
-            &header[4..] == b"ftyp" && u32::from_be_bytes(header[..4].try_into().unwrap()) >= 16
-        }
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
-        Err(error) => return Err(error),
-    };
-    file.rewind()?;
-    Ok(mp4)
 }
 
 pub struct Exported {

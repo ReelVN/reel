@@ -35,6 +35,16 @@ records declared environment, retention losses and sample size; GPU service time
 and display cadence require their own measurements. Nested phase percentiles are
 reported separately.
 
+Desktop captures add bounded `desktop_wake` and `desktop_completion` rows to
+`frames.tsv`. Their timestamps share the `frame_sample` elapsed clock. Wake
+rows include the selected reason, planned deadline, Winit's reported deadline
+and the actual callback time. Timer lateness is available on deadline wakes.
+Completion rows record when the player retrieves frame and resource events from
+the backend, including polling latency. Match these rows to submission intervals
+to inspect swapchain acquisition alongside intent and observed completion.
+`frame-cost` and `perf report` include reason counts, timer-lateness percentiles,
+completion counts and the number of evicted events under `desktop_pacing`.
+
 Performance collection belongs to the distribution player's `performance`
 feature. Each run uses a fresh directory containing the request, exported game,
 logs and reports. `prepare` builds the current exporter and exports its shaders

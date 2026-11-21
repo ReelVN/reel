@@ -214,7 +214,7 @@ pub(super) fn analyze(
     resolver: &mut dyn ModuleResolver,
 ) -> Analysis {
     let mut result = analyze_editor(hir, options, resolver);
-    if result.diagnostics.is_empty() && result.module.as_ref().is_some_and(super::has_resume_points)
+    if result.diagnostics.is_empty() && result.module.as_ref().is_some_and(super::has_resume_flows)
     {
         super::infer_source_types(&mut result, options, resolver);
     }

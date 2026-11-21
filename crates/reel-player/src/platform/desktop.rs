@@ -207,8 +207,12 @@ impl App {
 }
 impl ApplicationHandler for App {
     #[cfg(feature = "performance")]
-    fn new_events(&mut self, _: &ActiveEventLoop, _: winit::event::StartCause) {
-        drop(self.capture_wait.take());
+    fn new_events(&mut self, _: &ActiveEventLoop, cause: winit::event::StartCause) {
+        if let Some(capture) = &mut self.capture {
+            let resumed_at = Instant::now();
+            drop(self.capture_wait.take());
+            capture.wake(resumed_at, cause);
+        }
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(feature = "performance")]
@@ -242,6 +246,10 @@ impl ApplicationHandler for App {
         };
         match created {
             Ok(mut state) => {
+                #[cfg(feature = "performance")]
+                if let Some(capture) = &self.capture {
+                    capture.attach(&mut state);
+                }
                 state.host.request_redraw();
                 self.state = Some(state);
             }
@@ -421,16 +429,23 @@ impl ApplicationHandler for App {
                     state.host.apply(event_loop);
                     self.state = None;
                 } else {
-                    state
-                        .host
-                        .wait_until(Some(Instant::now() + Duration::from_millis(1)));
+                    let deadline = Some(Instant::now() + Duration::from_millis(1));
+                    state.host.wait_until(deadline);
                     state.host.apply(event_loop);
+                    #[cfg(feature = "performance")]
+                    if let Some(capture) = &mut self.capture {
+                        capture.wait(deadline, performance::Reason::Shutdown);
+                    }
                 }
                 return;
             }
             if state.is_suspended() {
                 state.host.set_wake_deadline(None);
                 state.host.apply(event_loop);
+                #[cfg(feature = "performance")]
+                if let Some(capture) = &mut self.capture {
+                    capture.wait(None, performance::Reason::Suspended);
+                }
                 return;
             }
             if let Err(error) = state.tick_gamepads() {
@@ -462,33 +477,45 @@ impl ApplicationHandler for App {
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
             // Hidden startup windows may not deliver resource redraw wakes.
-            let completion_deadline = (state.player.first_frame_pending
+            let completion_interval = (state.player.first_frame_pending
                 || state.player.needs_redraw()
                 || state.player.backend.has_pending())
             .then(|| {
-                let interval = if state.player.backend.has_pending_image_uploads() {
+                if state.player.backend.has_pending_image_uploads() {
                     1
                 } else {
                     8
-                };
-                Instant::now() + Duration::from_millis(interval)
+                }
             });
-            let deadline = [
-                completion_deadline,
+            let deadlines = [
+                completion_interval.map(|ms| Instant::now() + Duration::from_millis(ms)),
                 state.story_deadline(),
                 state.input_deadline(),
                 self.wake.is_pending().then(Instant::now),
-            ]
-            .into_iter()
-            .flatten()
-            .min();
+            ];
+            let deadline = deadlines.into_iter().flatten().min();
             state.host.wait_until(deadline);
             state.host.apply(event_loop);
             #[cfg(feature = "performance")]
             {
                 performance::record(&mut self.capture, state, &mut self.capture_started);
                 drop(_timing);
-                if self.capture.is_some() {
+                if let Some(capture) = &mut self.capture {
+                    use performance::Reason;
+                    let reason = match deadline {
+                        None => Reason::Idle,
+                        Some(_) if deadline == deadlines[0] => {
+                            if completion_interval == Some(1) {
+                                Reason::UploadPoll
+                            } else {
+                                Reason::CompletionPoll
+                            }
+                        }
+                        Some(_) if deadline == deadlines[1] => Reason::Story,
+                        Some(_) if deadline == deadlines[2] => Reason::Input,
+                        Some(_) => Reason::Notified,
+                    };
+                    capture.wait(deadline, reason);
                     self.capture_wait = Some(reel_core::profile::Scope::new(
                         reel_core::profile::Phase::HostWait,
                     ));

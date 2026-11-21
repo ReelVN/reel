@@ -50,6 +50,36 @@ fn advance(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
 }
 
 #[test]
+fn inferred_speech_has_a_resume_point_without_explicit_markers() {
+    let checked = reel_cli::check(
+        r#"
+            use std::resume::{state, root, flow};
+            class Profile { let score:int=41; }
+            state(Profile,"profile"); root(main,"game");
+            fn prepare(staged: bool) -> table {
+                { speech: if staged { narrator("Staged.", wait:false) } else { null } }
+            }
+            fn opening(state:Profile) {
+                flow("chapter.main");
+                let lines = prepare(state.score == 41);
+                let prior = lines.speech;
+                let line = if prior != null { prior } else { prepare(true).speech };
+                line.wait();
+                state.score
+            }
+            fn main(state:Profile=model(Profile())){ run_flow(opening,state) }
+        "#,
+        "inferred-speech.aside",
+    )
+    .unwrap();
+    let [flow] = checked.compilation.resume.flows.as_slice() else {
+        panic!("expected one declared flow");
+    };
+    assert_eq!(flow.points.len(), 1);
+    assert!(flow.points[0].key.0.starts_with('@'));
+}
+
+#[test]
 fn stable_stack_is_available_after_debug_release_and_external_text_reencoding() {
     let checked = reel_cli::check(SOURCE, "resume.aside").unwrap();
     for profile in [BuildProfile::Debug, BuildProfile::Release] {

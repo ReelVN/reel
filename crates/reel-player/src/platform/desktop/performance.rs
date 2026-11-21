@@ -1,13 +1,22 @@
 //! Optional measurement boundaries around the production desktop event loop.
 use super::{Error, window::State};
+pub(super) use crate::performance::recording::desktop::Reason;
 use crate::{
-    performance::{Request, StatusState, recording::Recording},
+    performance::{
+        Request, StatusState,
+        recording::{
+            Recording,
+            desktop::{Plan, Trace},
+        },
+    },
     player::{PlayerOptions, session::PlayerSession},
 };
 use std::{path::Path, time::Instant};
 
 pub(super) struct Capture {
     recording: Recording,
+    trace: Trace,
+    wait: Option<Plan>,
     title: String,
 }
 
@@ -28,10 +37,30 @@ impl Capture {
             return Err(reason.into());
         }
         options.save_directory = Some(request.saves.clone());
+        let mut recording = Recording::start(request)?;
+        let trace = recording.enable_desktop_trace();
         Ok(Self {
-            recording: Recording::start(request)?,
+            recording,
+            trace,
+            wait: None,
             title: options.title.clone(),
         })
+    }
+
+    pub(super) fn attach(&self, state: &mut State) {
+        state.player.desktop_trace = Some(self.trace.clone());
+    }
+
+    pub(super) fn wait(&mut self, deadline: Option<Instant>, reason: Reason) {
+        self.wait = Some(Plan {
+            at: Instant::now(),
+            deadline,
+            reason,
+        });
+    }
+
+    pub(super) fn wake(&mut self, at: Instant, cause: winit::event::StartCause) {
+        self.trace.wake(at, self.wait.take(), cause);
     }
 
     fn record(&mut self, state: &State, started: Instant) {

@@ -134,6 +134,8 @@ reel export --release --resource-target vita
 
 `prepare-resources` 提前准备并报告转换结果；`dev`、`run` 和 `export` 也会按配置准备。缓存位于 `build/resources/`，素材、参数、对应转换实现或依赖变化时更新相关副本。离线转换逐个处理资源或配置中的图集组；`prepare-resources --memory-bytes` 可指定转换工作区限额。
 
+发行准备会检查直接复制的 MP4。桌面播放器要求 H.264 Baseline。Vita 转换尺寸最多为 960×544，准备工具也会从复制的视频中检查容器和可读取的轨道信息。诊断会指出文件、目标和转换规则。Vita 的设备解码与完整时间轴仍需要实际播放验证。
+
 视频转换调用 PATH 中的 `ffmpeg` 和 `ffprobe`，输出 H.264/AAC MP4，保持帧率并按 `size` 等比缩小。上下排列颜色与透明度的影片使用 `alpha_layout = "top_bottom"`。视频工作区按尺寸估算，编解码子进程自行分配内存。
 
 字体默认使用完整文件。需要裁剪时，显式选择 `convert = "font"`，用 `unicode = ["U+0020-024F", "U+3000-9FFF", "U+FF00-FFEF"]` 指定字符区间，用 `text = ["src/**/*.aside"]` 加入剧情与翻译用字。按作品支持的语言扩展区间，覆盖玩家输入；范围外字符会缺字。字体转换需要 Python 的 FontTools 包；`REEL_FONT_PYTHON` 可指定已安装该包的 Python。字体族、样式和字体集合中的各字体均保留。
@@ -516,7 +518,7 @@ fn main() {
 }
 ```
 
-`camera` 把世界中的一个区域映射到视口。HUD 放在相机外的兄弟节点中保持固定。大图可以预先准备为分块图片，运行时只加载视口所需的层级和瓦片：
+`camera` 把世界中的一个区域映射到视口。HUD 放在相机外的兄弟节点中保持固定。`zoom` 会统一缩放相机的内容。要让前景和远景有不同的移动幅度，可以分别调整各层的位移和缩放。大图可以预先准备为分块图片，运行时只加载视口所需的层级和瓦片：
 
 ```sh
 reel prepare-image original.png --output resources/panorama.reel-image
@@ -849,7 +851,7 @@ scope(body: |s| {
 await moving;
 ```
 
-`finish(result)` 从组件交回结果并结束其拥有的工作。保存或退场动画应在 `finish` 前等待，或放在作用域返回之后。
+`s.finish(result)` 从组件交回结果，由宿主结束其拥有的节点、任务和活动。它可以从按钮回调关闭整个作用域，作用域正文中剩余的语句和 `finally` 都会跳过。普通 `return` 和异常仍沿当前调用栈执行 `finally`。保存或退场动画应在 `finish` 前等待，或放在作用域返回之后。
 
 ```aside
 fn closeable_scene() {
@@ -1476,7 +1478,7 @@ fn chapter_one(state: GameState) {
 
 新游戏求值 Root 的普通默认参数；读档将恢复的 State 传给当前 Root，重建界面，再接回保存的 point。增加有默认值的 State 字段、调整函数位置或修改 point 后续剧情时，已有存档沿稳定名称连接当前代码。字段改名可以在 `state` 的 `fields` 参数中保留原 key；flow、point 和 Root 的 key 在作品发布后保持稳定。
 
-编译器为能验证的对白等待、选项和 flow 调用生成续接位置。保留等待和调用结构的补丁可以沿用这些位置。作者用 `point` 明确命名发布后需要独立保留身份的关键位置。
+编译器为能验证的对白等待、选项和 flow 调用生成续接位置。声明 `flow` 即启用对白等待的类型推断，包括通过局部变量取得的 `Speech`。自动位置的身份取决于经验证的等待与调用结构。编译器在流程中发现新的续接位置时，该流程的自动身份可能变化。发布后需要独立保留的关键位置用显式 `point` 命名。
 
 需要历史跳转时，在 Root 调用 `saves.track_history(true)`，在历史菜单用 `saves.can_jump(entry.group_id)` 判断是否显示跳转按钮。点击后等待 `saves.jump(entry.group_id)`，恢复该段对白和当时的业务状态。只有窗口中仍保留的条目可以跳转。
 

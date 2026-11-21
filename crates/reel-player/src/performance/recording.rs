@@ -14,6 +14,8 @@ const SEGMENTS: usize = 64;
 
 #[cfg(feature = "performance")]
 mod active;
+#[cfg(all(feature = "performance", feature = "window"))]
+pub(crate) mod desktop;
 mod device;
 mod effects;
 mod frames;
@@ -348,6 +350,8 @@ pub(crate) struct Recording {
     device: device::DeviceSamples,
     timeline: timeline::Timeline,
     frames: frames::Frames,
+    #[cfg(all(feature = "performance", feature = "window"))]
+    desktop_trace: Option<desktop::Trace>,
 }
 impl Recording {
     pub(crate) fn new() -> Self {
@@ -374,6 +378,8 @@ impl Recording {
             device: device::DeviceSamples::default(),
             timeline: timeline::Timeline::default(),
             frames: frames::Frames::default(),
+            #[cfg(all(feature = "performance", feature = "window"))]
+            desktop_trace: None,
         }
     }
 
@@ -384,6 +390,13 @@ impl Recording {
         let mut recording = Self::new();
         recording.active = Some(active);
         Ok(recording)
+    }
+
+    #[cfg(all(feature = "performance", feature = "window"))]
+    pub(crate) fn enable_desktop_trace(&mut self) -> desktop::Trace {
+        let trace = desktop::Trace::new(self.started);
+        self.desktop_trace = Some(trace.clone());
+        trace
     }
 
     /// End collection while retaining its request and rows for final publication
@@ -534,6 +547,10 @@ impl Recording {
     ) -> io::Result<()> {
         writeln!(out, "title\t{}", title.replace(['\t', '\r', '\n'], " "))?;
         writeln!(out, "outcome\t{}", outcome.replace(['\t', '\r', '\n'], " "))?;
+        #[cfg(all(feature = "performance", feature = "window"))]
+        let desktop_bytes = self.desktop_trace.as_ref().map_or(0, desktop::Trace::bytes);
+        #[cfg(not(all(feature = "performance", feature = "window")))]
+        let desktop_bytes = 0;
         writeln!(
             out,
             "recording_bytes\t{}",
@@ -548,6 +565,7 @@ impl Recording {
                 + self.device.bytes()
                 + self.timeline.bytes()
                 + self.frames.bytes()
+                + desktop_bytes
         )?;
         writeln!(
             out,
@@ -628,6 +646,10 @@ impl Recording {
         writeln!(out, "[reel-probe-report] end")?;
         self.timeline.report(&mut out)?;
         self.frames.report(&mut out)?;
+        #[cfg(all(feature = "performance", feature = "window"))]
+        if let Some(trace) = &self.desktop_trace {
+            trace.report(&mut out)?;
+        }
         let mut native = String::with_capacity(8192);
         if device::append_live(&mut native) {
             writeln!(out, "{native}")?;

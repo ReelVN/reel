@@ -665,7 +665,7 @@ fn analyze_project_inner<'a>(
             });
         }
     }
-    if !exhausted && (recover || modules.iter().any(super::has_resume_points)) {
+    if !exhausted && (recover || modules.iter().any(super::has_resume_flows)) {
         let remaining = options.limits.max_work.saturating_sub(work);
         let result = super::source_types::analyze(
             &mut modules,

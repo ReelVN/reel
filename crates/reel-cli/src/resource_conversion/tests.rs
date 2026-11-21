@@ -25,6 +25,72 @@ fn custom_desktop_targets_check_copied_mp4() {
 }
 
 #[test]
+fn copied_mp4_uses_the_selected_target_profile() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("resources")).unwrap();
+    let source = root.join("resources/clip.mp4");
+    let clip = include_bytes!("../../../reel-media/tests/fixtures/baseline-aac.mp4");
+    let configuration = root.join("resources.toml");
+    let vita = ResourceTarget::parse("vita").unwrap();
+    let desktop = ResourceTarget::parse("windows").unwrap();
+    let mut oversized = clip.to_vec();
+    let size = clip.windows(4).rposition(|kind| kind == b"avc1").unwrap() + 28;
+    oversized[size..size + 2].copy_from_slice(&1920_u16.to_be_bytes());
+
+    for copy_rule in [
+        "",
+        r#"
+[[targets.vita]]
+match = "clip.mp4"
+convert = "copy"
+"#,
+    ] {
+        fs::write(&configuration, copy_rule).unwrap();
+        fs::write(&source, clip).unwrap();
+        let prepared = prepare_project(root, &vita).unwrap();
+        assert_eq!(fs::read(&prepared.files["clip.mp4"]).unwrap(), clip);
+
+        fs::write(&source, &oversized).unwrap();
+        let error = prepare_project(root, &vita).err().unwrap().to_string();
+        for text in [
+            "clip.mp4",
+            "for vita",
+            "1920x",
+            "960x544",
+            "convert = \"video\"",
+        ] {
+            assert!(error.contains(text), "{error}");
+        }
+        prepare_project(root, &desktop).unwrap();
+    }
+
+    let mut high = clip.to_vec();
+    let profile = clip.windows(4).position(|kind| kind == b"avcC").unwrap() + 5;
+    high[profile] = 100;
+    fs::write(&source, &high).unwrap();
+    let error = prepare_project(root, &desktop).err().unwrap().to_string();
+    assert!(error.contains("H.264 profile 100 (High)"), "{error}");
+    prepare_project(root, &vita).unwrap();
+
+    fs::write(
+        &configuration,
+        r#"
+[[targets.vita]]
+match = "clip.mp4"
+convert = "video"
+size = [1920, 1080]
+"#,
+    )
+    .unwrap();
+    let error = prepare_project(root, &vita).err().unwrap().to_string();
+    assert!(
+        error.contains("Vita video size must fit within [960, 544]"),
+        "{error}"
+    );
+}
+
+#[test]
 fn webp_packaging_and_texture_fallback_keep_logical_paths() {
     let (directory, tool, vita) = fixture();
     let root = directory.path();

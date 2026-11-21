@@ -4,6 +4,8 @@
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{borrow::Cow, collections::BTreeMap, fs, path::Path};
+#[path = "frame_cost/desktop.rs"]
+mod desktop;
 #[path = "frame_cost/vm_steps.rs"]
 mod vm_steps;
 #[path = "frame_cost/wall.rs"]
@@ -448,6 +450,9 @@ pub(crate) fn report_text(
         None => BTreeMap::new(),
     };
     let mut report = summarize(&trace, scope, &limits)?;
+    if let Some(pacing) = desktop::summarize(raw)? {
+        report["desktop_pacing"] = pacing;
+    }
     report["input"] = json!(input);
     fs::write(output, serde_json::to_vec_pretty(&report)?)?;
     println!(

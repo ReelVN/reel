@@ -225,7 +225,7 @@ impl MovieDecoder {
             .resize(reader.capacity() as u64)
             .map_err(|e| e.message)?;
         let format = Mp4Reader::read_header(reader, size).map_err(error)?;
-        let track = super::desktop_mp4::baseline_track(&format)?;
+        let track = super::mp4_profile::baseline_track(&format)?;
         let avc = &track
             .trak
             .mdia
@@ -257,7 +257,7 @@ impl MovieDecoder {
         };
         let cursor = TrackCursor::new(track, format.timescale())?;
         let (width, height) = (u32::from(track.width()), u32::from(track.height()));
-        let audio = super::desktop_mp4::aac_lc_track(&format)?
+        let audio = super::mp4_profile::aac_lc_track(&format)?
             .map(|(track, rate, config)| -> Result<_, String> {
                 let _parameters_storage = budget.reserve(2).map_err(|e| e.message)?;
                 let params = AudioCodecParameters {

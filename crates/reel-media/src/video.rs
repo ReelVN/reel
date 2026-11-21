@@ -6,10 +6,10 @@ mod pcm_pool;
 mod playback;
 pub use playback::*;
 #[cfg(feature = "video-inspect")]
-mod desktop_mp4;
+mod mp4_profile;
 #[cfg(feature = "video-inspect")]
-pub use desktop_mp4::validate_desktop_mp4;
-#[cfg(any(feature = "video-software", all(feature = "vita", target_os = "vita")))]
+pub use mp4_profile::{VITA_VIDEO_DIMENSIONS, validate_desktop_mp4, validate_vita_mp4};
+#[cfg(any(feature = "video-inspect", all(feature = "vita", target_os = "vita")))]
 mod h264;
 #[cfg(feature = "video-software")]
 mod software;

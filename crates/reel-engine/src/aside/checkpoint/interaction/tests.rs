@@ -314,6 +314,41 @@ fn speech_wait_restores_its_receiver_and_segment_without_replaying_narrator_sour
 }
 
 #[test]
+fn inferred_speech_wait_restores_after_script_edits() {
+    let before = program(
+        r#"
+        state.reward += 9;
+        let prepared = stage_speech(state.reward == 9);
+        let prior = prepared.speech;
+        let speech = if prior != null { prior } else { stage_speech(true).speech };
+        let resumed = speech.wait();
+        if resumed != speech { throw "receiver identity"; }
+        state.reward + 1
+    "#,
+        "",
+    ) + r#"
+        fn stage_speech(visible: bool) -> table {
+            { speech: if visible { narrator("Original segment.", wait:false) } else { null } }
+        }
+    "#;
+    let after = before
+        .replace("Original segment.", "Edited segment.")
+        .replace("state.reward + 1", "state.reward + 2");
+    for encoded in [false, true] {
+        let (session, mut vm) = started(&before, encoded);
+        let record = capture(&mut vm, &session);
+        let (mut session, mut vm) = restore(&after, encoded, record).unwrap();
+        assert_eq!(dialogue(&session).text(), "Original segment.");
+        assert_eq!(session.view().history.len(), 1);
+        advance(&mut session);
+        let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
+            panic!("inferred speech did not finish");
+        };
+        assert_eq!(vm.vm.delivery_value(delivery).unwrap().as_int(), Some(11));
+    }
+}
+
+#[test]
 fn completed_dialogue_resumes_once_without_requesting_another_advance() {
     let a = program(
         r#"state.reward+=4;point("line");narrator("Completed A");state.reward"#,

@@ -233,6 +233,12 @@ fn summarize(frames: &Value, render: Option<&Value>) -> Result<Value> {
             gaps.insert(format!("{description}={count}"));
         }
     }
+    if let Some(count) = frames["desktop_pacing"]["dropped_events"]
+        .as_u64()
+        .filter(|count| *count != 0)
+    {
+        gaps.insert(format!("desktop_pacing_events_dropped={count}"));
+    }
     let mut scenes = Vec::new();
     for group in groups {
         if group["eligible_intervals"].as_u64().unwrap_or(0) == 0 {
@@ -291,6 +297,7 @@ fn summarize(frames: &Value, render: Option<&Value>) -> Result<Value> {
         "fps_measurement":"complete single-presentation submission count divided by their accumulated intervals; display cadence is unmeasured",
         "gpu_execution_time_us":null,"display_fps":null,
         "scene_count":scene_count,"scenes":scenes,"fixed_frame":frozen,
+        "desktop_pacing":frames["desktop_pacing"],
         "sampling_gaps":gaps,"details":{"frames":"frames.json","render":render.map(|_| "render.json")}}),
     )
 }

@@ -194,11 +194,11 @@ pub(crate) fn editor_analysis(
     }
 }
 
-fn has_resume_points(module: &AnalyzedModule) -> bool {
+fn has_resume_flows(module: &AnalyzedModule) -> bool {
     module
         .facts()
         .iter()
-        .any(|facts| facts.intrinsic == Some(Intrinsic::ResumePoint))
+        .any(|facts| facts.intrinsic == Some(Intrinsic::ResumeFlow))
 }
 
 fn infer_source_types(

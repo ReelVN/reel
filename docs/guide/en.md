@@ -134,6 +134,8 @@ reel export --release --resource-target vita
 
 `prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource or configured atlas group at a time; `prepare-resources --memory-bytes` selects its workspace limit.
 
+Distribution preparation checks copied MP4 files. The desktop player requires H.264 Baseline. Vita conversion fits within 960×544, and preparation also checks the container and readable track metadata of copied videos. Diagnostics name the file, target, and conversion rule. Verify Vita decoding and the complete timeline during playback.
+
 Video conversion uses `ffmpeg` and `ffprobe` from PATH to produce H.264/AAC MP4, preserving the frame rate and fitting within `size`. Movies with color and alpha stacked vertically use `alpha_layout = "top_bottom"`. Video workspace is estimated from dimensions; codec subprocesses allocate their own memory.
 
 Fonts use complete files by default. To subset a font, explicitly select `convert = "font"`, use `unicode = ["U+0020-024F", "U+3000-9FFF", "U+FF00-FFEF"]` for character ranges, and add story and translation text with `text = ["src/**/*.aside"]`. Extend ranges for the languages accepted by player input; characters outside the selected coverage will be missing. Font conversion requires Python with FontTools; `REEL_FONT_PYTHON` can select that interpreter. Font families, styles and every face in a collection are preserved.
@@ -516,7 +518,7 @@ fn main() {
 }
 ```
 
-`camera` maps a world region into a viewport. Keep a fixed HUD in a sibling outside the camera. Prepare large images as tiles so runtime loading follows the visible area and required pyramid level:
+`camera` maps a world region into a viewport. Keep a fixed HUD in a sibling outside the camera. The `zoom` property scales all camera content uniformly. For parallax, give the near and far layers different offsets and scales. Prepare large images as tiles so runtime loading follows the visible area and required pyramid level:
 
 ```sh
 reel prepare-image original.png --output resources/panorama.reel-image
@@ -849,7 +851,7 @@ scope(body: |s| {
 await moving;
 ```
 
-`finish(result)` returns a component result and ends its owned work. Await saving or exit animation before `finish`, or perform it after the scope returns.
+`s.finish(result)` returns a component result and lets the host retire its nodes, tasks, and activities. A button callback can use it to close the whole scope. The remaining body statements and its `finally` blocks are skipped. Ordinary returns and exceptions still run `finally` along their call stack. Await saving or an exit animation before `finish`, or perform it after the scope returns.
 
 ```aside
 fn closeable_scene() {
@@ -1475,7 +1477,7 @@ fn chapter_one(state: GameState) {
 
 A new game evaluates Root's ordinary default argument. Loading supplies the restored State to the current Root, rebuilds its interface and reconnects the saved point. Defaulted State fields may be added, functions moved and story suffixes changed while existing saves resolve stable keys against current code. Preserve a renamed field's original key through the `fields` argument of `state`. Keep published flow, point and Root keys stable.
 
-The compiler generates resume positions for verified dialogue waits, choices and flow calls. Patches that preserve the structure of those waits and calls can reuse their positions. Use `point` to explicitly name key positions that must retain their identity after release.
+The compiler generates continuation positions for proven dialogue waits, choices and flow calls. Declaring `flow` enables type inference for dialogue waits, including waits on `Speech` values held in local variables. Automatic identities depend on the proven wait and call structure. Discovering an additional continuation can change the automatic identities in that flow. Use explicit `point` names for milestones that need an independently stable identity after release.
 
 To offer jumps from history, call `saves.track_history(true)` in Root. Use `saves.can_jump(entry.group_id)` to show a jump button and await `saves.jump(entry.group_id)` to restore that dialogue and its business state. The jump is available while the checkpoint remains in the recent history window.
 

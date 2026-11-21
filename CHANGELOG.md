@@ -4,6 +4,12 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+## 0.4.1 — 2026-11-21
+
+- Infer automatic dialogue checkpoints in declared flows without requiring an explicit `point` elsewhere in the project. Newly discovered waits can change generated point keys in affected flows. Explicit point keys retain their names.
+- Check recognized MP4 containers and track metadata during Vita resource preparation, and constrain Vita video conversion to 960×544.
+- Include selected wake deadlines, observed wake causes and polled render completions in desktop performance reports.
+- Explain scope exit and camera composition in both creator guides.
 - Continue saved-game restoration as soon as the next slice is ready to run.
 - Skip repeated animation checks when targets are unchanged, and sample the active step of a sequence directly when it is the only scheduled step.
 - Use parallel PNG decoding for more desktop images when each decode worker has enough workspace.

@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io,
+    io::{self, Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -521,6 +521,20 @@ fn rules(root: &Path, target: &ResourceTarget) -> io::Result<Vec<Rule>> {
                     "Vita image rules prepare textures, tiles or atlases instead of WebP or QOI",
                 ));
             }
+            if name == "vita"
+                && let Recipe::Video { size, .. } = &rule.recipe
+                && size
+                    .iter()
+                    .zip(reel_media::video::VITA_VIDEO_DIMENSIONS)
+                    .any(|(&requested, maximum)| requested > maximum)
+            {
+                let [width, height] = reel_media::video::VITA_VIDEO_DIMENSIONS;
+                return Err(invalid(format!(
+                    "{}: targets.{name}[{}]: Vita video size must fit within [{width}, {height}]",
+                    path.display(),
+                    index + 1
+                )));
+            }
             selected.push(rule);
         }
     }
@@ -578,6 +592,25 @@ fn directory_files(target: &ResourceTarget, root: &Path) -> io::Result<BTreeMap<
     } else {
         Ok(BTreeMap::new())
     }
+}
+
+pub(crate) fn has_mp4_extension(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"))
+}
+
+/// Recognize the normal MP4 header while leaving the input at its start.
+pub(crate) fn has_mp4_header(input: &mut (impl Read + Seek)) -> io::Result<bool> {
+    let mut header = [0; 8];
+    let mp4 = match input.read_exact(&mut header) {
+        Ok(()) => {
+            &header[4..] == b"ftyp" && u32::from_be_bytes(header[..4].try_into().unwrap()) >= 16
+        }
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
+        Err(error) => return Err(error),
+    };
+    input.rewind()?;
+    Ok(mp4)
 }
 
 /// Prepare an already selected logical resource map, including explicit mounts.
@@ -692,17 +725,19 @@ fn prepare_with_rules<'a>(
     for (name, source, recipe) in ordinary {
         let source_bytes = fs::metadata(&source)?.len();
         prepared.report.source_bytes += source_bytes;
-        if matches!(recipe, None | Some(Recipe::Copy))
-            && target.is_desktop()
-            && source
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
-        {
-            let file = io::BufReader::new(File::open(&source)?);
-            reel_media::video::validate_desktop_mp4(file, source_bytes).map_err(|error| {
+        if matches!(recipe, None | Some(Recipe::Copy)) && has_mp4_extension(&source) {
+            let mut file = io::BufReader::new(File::open(&source)?);
+            let validation = if target.is_desktop() {
+                reel_media::video::validate_desktop_mp4(file, source_bytes)
+            } else if has_mp4_header(&mut file)? {
+                reel_media::video::validate_vita_mp4(file, source_bytes)
+            } else {
+                Ok(())
+            };
+            validation.map_err(|error| {
                 invalid(format!(
-                    "resource {name:?} ({}): {error}. Use convert = \"video\" in [[targets.{}]] to prepare it",
-                    source.display(), target.as_str()
+                    "resource {name:?} for {} ({}): {error}. Use convert = \"video\" in [[targets.{}]] to prepare it",
+                    target.as_str(), source.display(), target.as_str()
                 ))
             })?;
         }

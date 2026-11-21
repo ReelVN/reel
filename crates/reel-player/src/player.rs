@@ -125,6 +125,8 @@ pub struct Player<B: RenderBackend + CaptureBackend> {
     pub(crate) first_frame_pending: bool,
     pub(crate) ui_animation: ui_animation::UiAnimation,
     pub(crate) completions: Vec<RenderEvent<<B as RenderBackend>::Error>>,
+    #[cfg(all(feature = "performance", feature = "window"))]
+    pub(crate) desktop_trace: Option<crate::performance::recording::desktop::Trace>,
     pub(crate) pixel_recovery: pixel_recovery::PixelRecovery,
     pub(crate) captures: crate::capture::CaptureService<B::Capture>,
     pub(crate) window_state: Arc<reel_core::window::WindowInfo>,
@@ -229,6 +231,8 @@ where
             first_frame_pending: true,
             ui_animation: Default::default(),
             completions: Vec::new(),
+            #[cfg(all(feature = "performance", feature = "window"))]
+            desktop_trace: None,
             pixel_recovery: pixel_recovery::PixelRecovery::default(),
             captures: crate::capture::CaptureService::new(
                 options.assets.input_bytes,
@@ -717,6 +721,10 @@ where
         self.completions.clear();
         self.presentation
             .poll(&mut self.backend, &mut self.completions, 64)?;
+        #[cfg(all(feature = "performance", feature = "window"))]
+        if let Some(trace) = &self.desktop_trace {
+            trace.completions(&self.completions);
+        }
         Ok(())
     }
 

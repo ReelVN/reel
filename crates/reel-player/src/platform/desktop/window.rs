@@ -399,6 +399,8 @@ impl State {
             first_frame_pending,
             ui_animation: Default::default(),
             completions: Vec::new(),
+            #[cfg(feature = "performance")]
+            desktop_trace: None,
             pixel_recovery: Default::default(),
             window_state: Arc::new(Default::default()),
             window_request: None,
