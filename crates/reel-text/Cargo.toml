@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish = false
 license = "Apache-2.0 OR MIT"
 description = "Reel text shaping, line breaking, layout, and editing"
-repository = "https://github.com/jhq223/reel"
+repository = "https://github.com/ReelVN/reel"
 
 [lib]
 name = "reel_text"
