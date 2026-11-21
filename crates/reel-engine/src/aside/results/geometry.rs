@@ -4,8 +4,8 @@ pub(super) mod types;
 
 aside_host::native_documentation! {
     pub(in crate::aside) fn documentation {
-        /// Request geometry from a newly accepted frame. Await returns immutable width,
-        /// height, bounds and affine transform, optionally relative to another node.
+        /// Request geometry from a newly accepted frame. Await returns the local layout
+        /// width and height plus bounds and transform in the requested reference space.
         /// text_end is the lower endpoint of the caret after the complete text, as
         /// {x,y} in the same reference space. It follows wrapping, alignment, rich text
         /// and ruby, independently of reveal progress. Empty text and non-text nodes

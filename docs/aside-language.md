@@ -84,6 +84,8 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 `std::math::min(a, b)` 和 `std::math::max(a, b)` 按数值比较选出较小或较大的入参，保留选中值的类型和精度。两值相等时返回第一个。只有一个入参为 NaN 时返回另一个，两者均为 NaN 时返回 NaN。着色器可用这两个函数比较标量。
 
+`std::math::mix(a, b, weight)` 进行线性插值，权重超出 0 到 1 时外推。`smoothstep(edge0, edge1, value)` 用归一化后的三次曲线过渡，边界反向时坡度反向；边界相等时，`value >= edge0` 返回 1，否则返回 0。`modulo(value, divisor)` 使用 `value - floor(value / divisor) * divisor`，有限有效输入的非零结果与除数同号。普通脚本使用 float64，除数为零或输入非有限时，`modulo` 返回 NaN。着色器用 float32，输入用有限值，`modulo` 的除数须非零。着色器也可用 `clamp`，上下界须是有序常量。
+
 `std::math::clamp(value, minimum, maximum)` 将数值限制在闭区间内，返回输入值或对应端点，保留该值的 int 或 float 类型。混合数值使用普通比较运算的精度。端点逆序或为 NaN 时报告 `Type` 错误。输入值为 NaN 时返回原值。
 
 `std::number::format(value, precision: 2, mode: "fixed")` 将 int 或 float 转成十进制 string。fixed 的 precision 为小数位数，范围 0..1024；scientific 的 precision 为有效数字总位数，范围 1..1024，输出小写 e、无正号或补零的十进制指数，例如 `1.000e12`。两种模式保留所请求的尾零，整数沿 int64 转换保留精度。舍入使用最接近值、中点取偶数；浮点转换直接针对当前二进制数值，因此两位小数的 `2.675` 为 `2.67`，一位小数的 `12.25` 为 `12.2`。负零保留负号，非有限值输出 `NaN`、`inf` 或 `-inf`。非法模式、非整数或越界精度、非数值输入在调用位置报告 Type。转换直接写入受 VM 文本额度约束的缓冲区；精度上界限制单次原生转换成本。源码、ASB 和 derive 使用同一接口。
@@ -177,11 +179,13 @@ to_ascii_lowercase()/to_ascii_uppercase() 返回新字符串，仅转换 ASCII �
 
 `string.split(separator)` 返回 string array，按完整分隔字符串从左至右非重叠切分，保留开头、末尾和连续分隔产生的空项。空 separator 在 Unicode scalar 边界切分并保留首尾空项。`string.replace(pattern, replacement)` 返回替换所有非重叠匹配后的字符串。空 pattern 在首尾及相邻 Unicode scalar 之间插入 replacement。扫描与结果复制按工作量让出，共用线性匹配，不先复制整段输入。临时状态由 VM 根持有并参与 GC、取消和执行快照。
 
+`string.strip_prefix(prefix)` 和 `string.strip_suffix(suffix)` 按 UTF-8 字节匹配一处指定的前缀或后缀。匹配时返回剩余字符串，无匹配时返回 null，参数为空时共享原字符串。匹配和剩余文本的复制沿现有分片预算推进。
+
 文本范围从零开始，端点规则与 Range 一致；字节切片端点须位于 UTF-8 边界。Reel 的逐字显现使用文字服务提供的字素和排版信息。
 
 ## 七 模式和分支
 
-match 的可执行模式包括名称、`_`、字面值、分组、类型测试和 OR。类型测试写 `pattern is Type`，OR 写 `left | right`，is 结合更紧；类型测试中的 union 用括号表示，如 `value is (int|null)`。同一分支名称唯一，OR 各侧绑定相同名称。
+match 的可执行模式包括名称、`_`、字面值、分组、固定长度 tuple、具名字段、类型测试和 OR。类型测试写 `pattern is Type`，OR 写 `left | right`，is 结合更紧；类型测试中的 union 用括号表示，如 `value is (int|null)`。同一分支名称唯一，OR 各侧绑定相同名称。
 
 ```aside
 let result = match event {
@@ -192,6 +196,29 @@ let result = match event {
 ```
 
 match 的输入求值一次，按源码顺序匹配；guard 要求 bool，命中后执行该分支并取得其结果。guard 在 NoWait 上下文运行，已经发生的副作用保留。没有分支命中时抛出 MatchError。分支绑定每次进入时创建，闭包保留当次值。源码与 ASB 使用相同执行路径，示例见 [match_values](../examples/match_values/src/main.aside)。
+
+`(left, right)` 匹配两个元素的 tuple，`{score, outcome: "won"}` 匹配恰有两个所列字段的记录，字段顺序不限，可用 `field: _` 忽略字段值。结构不符、字段缺失或子模式失败时继续匹配下一候选，完整命中后才建立绑定并运行 guard。两种模式可嵌套，字段有已知静态类型时分支绑定沿用该类型。
+
+模块级 `enum` 为状态或结果声明有限个变体。无载荷的变体用 `Menu.Back` 直接取值，有载荷的变体用调用传入值。具名参数和位置参数的求值顺序沿普通调用规则，载荷字段在声明时给出类型。其他模块可通过 `pub enum` 导入类型和各变体。
+
+```aside
+enum Menu { Back, Load(slot: int), }
+
+fn select(load: bool) -> Menu {
+    if load { Menu.Load(slot: 3) } else { Menu.Back }
+}
+
+fn caption(selection: Menu) -> string {
+    match selection {
+        Menu.Back => "Return",
+        Menu.Load { slot } => f"Load slot {slot}",
+    }
+}
+```
+
+有载荷的分支可以列出字段名解构，例如 `Menu.Load { slot }`，也可以写 `Menu.Load` 忽略载荷。具名字段遵循记录模式的形状匹配规则。已知枚举类型的输入要求匹配完整。只有无 guard 且覆盖所有载荷值的分支才算覆盖一个变体。动态输入仍沿通常的匹配失败规则。
+
+变体身份由模块、枚举及变体的完整名称决定。无载荷变体沿持久字符串保存，有载荷变体沿含名字段记录的 tuple 保存。调整变体顺序或改变具名载荷字段的声明顺序时，已有数据保持身份。持久字段类型声明为枚举时，增减变体、移动枚举到其他模块、改名或改变载荷合同属于存档合同变更。载荷遵守普通持久数据的限制。
 
 `let (key, value) = entry` 和 `for (key, value) in entries` 已支持固定长度 tuple 解构，允许嵌套 tuple、名称、`_` 和类型标记。先检查结构并准备全部结果，再建立绑定；类型或长度不匹配抛出 PatternMismatch。每轮 for 为捕获的名称建立独立绑定。使用现有 Is、IndexGet 和 PatternRequire 指令，不复制 tuple。
 
@@ -406,7 +433,7 @@ slotmap 的完整版本仍有回绕边界。封装删除时，在完整代数耗
 
 恢复描述仅携带稳定流程、等待和返回 key。已验证程序交叉验证 ResumeTable，再生成封闭的 VerifiedResumePlan；恢复器按预算用当前帧、Cell 和 ReturnTo 连接调用链，调用方以当前候选堆的强根保活数据值。持久类型与字段由稳定 key 匹配当前类，字段排列与源代码名称不作为兼容身份。恢复不运行普通 init；新字段使用受支持的纯数据默认配方，模型的可观察性、共享引用和环一并保留。该链路经跨包验收后接入 Reel 的逻辑检查点。
 
-模块级 `std::resume::state(Class, key, fields: {...})` 与 `std::resume::root(function, key)` 绑定当前静态类和入口并生成同一份 ResumeTable，不生成运行时登记函数。Root 从入口唯一形参的已声明 State 类型推导数据合同。入口使用普通默认参数，例如 `fn start_story(state: World = model(World()))`：新游戏零参调用并求值默认表达式，加载传入已恢复 State，按普通参数绑定跳过默认表达式。Reel 的 `run_flow` 通过当前真实原生 ticket 建立/续接普通业务帧，采用同一 Task 的原生返回边；语言 VM 不解释 Reel 的操作种类或视图。
+模块级 `std::resume::root(function, key)` 声明唯一恢复入口，从其唯一形参的直接模块类类型推导数据合同。该类已有 `std::resume::state(Class, key, fields: {...})` 时使用显式身份，否则以 Root key 加 `.state` 声明它，字段沿用名称。Root 派生的 key 及显式 key 在项目内的 State key 中保持唯一，其他参与持久化的类由 `state` 显式声明。这些声明生成同一份 ResumeTable，不生成运行时登记函数。入口使用普通默认参数，例如 `fn start_story(state: World = model(World()))`：新游戏零参调用并求值默认表达式，加载传入已恢复 State，按普通参数绑定跳过默认表达式。Reel 的 `run_flow` 通过当前真实原生 ticket 建立/续接普通业务帧，采用同一 Task 的原生返回边；语言 VM 不解释 Reel 的操作种类或视图。
 
 Reel 的原生 page_stack 保留页面节点及 key 身份，工厂与构造中的继续执行使用普通 Task、CallScript、GC 根和快照协议。ensure 的等待者共享生产结果，消费者退出等待不取消组件拥有的生产；组件退休按 owner 取消。tab_bar 的内容工厂处于无外部等待边界，允许正常的预算让出。选择与页面状态使用公共舞台绑定，组件不维护另一套脚本解释器。
 
@@ -447,6 +474,8 @@ reel-engine 直接依赖 aside-compiler；发布工具也接受已编译 ASB。�
 成员的源码声明身份供类型查询与定义跳转使用；普通对象成员仍通过成员访问及接收者绑定执行。命名空间导出与原生函数引用才参与静态链接。
 
 静态成员访问使用接收者的已知成员合同：数组、tuple、字符串、完整声明的类和宿主类型访问不存在的成员时，在成员名处报告诊断。table、any、动态索引及成员合同未知的类型继续在运行时解析；普通记录的字段推断用于编辑提示，记录仍可添加字段。
+
+`NoWait` 和派生求值会检查可静态确定的宿主效果。普通函数的正文只包含一次非可选调用时，编译器可沿直接的具名函数调用追踪启动任务或不允许派生的宿主调用。诊断标出受限制位置的调用，并附上函数内的宿主调用位置。包含条件分支或动态分派的函数继续由有效执行上下文检查。
 
 `aside-lsp` 通过标准输入输出提供语言服务，复用编译器的无损语法树、符号身份、类型和模块解析。打开文档的内容覆盖磁盘版本；源码使用 UTF-8，编辑器位置按协议协商转换，诊断带文档版本。作用域补全、悬停、定义跳转和参数提示共享一次分析结果。项目宿主注入自己的默认环境与接口说明，Aside 后端保持独立。内置接口的定义视图从 Rust 声明生成，包含英文文档、具名参数、类型、默认值及属性读写权限；定义视图供阅读和导航，运行时仍调用原宿主实现。声明中的 `name?: type` 表示可省略且没有替代默认值的原生参数；显式传入的值仍须符合所列类型。
 

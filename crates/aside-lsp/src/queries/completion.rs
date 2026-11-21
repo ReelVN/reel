@@ -97,7 +97,16 @@ impl Workspace {
         if previous_completion_token(source, offset).is_some_and(|token| {
             matches!(
                 token.kind(),
-                K::Let | K::Mut | K::Fn | K::Class | K::As | K::Pub | K::Static | K::Async | K::Gen
+                K::Let
+                    | K::Mut
+                    | K::Fn
+                    | K::Class
+                    | K::Enum
+                    | K::As
+                    | K::Pub
+                    | K::Static
+                    | K::Async
+                    | K::Gen
             )
         }) && !type_completion_context(source, offset)
         {
@@ -164,7 +173,11 @@ impl Workspace {
                 let item = source_completion(module, source, id, &snapshot, &self.host);
                 if matches!(
                     item.kind,
-                    Some(CompletionItemKind::CLASS | CompletionItemKind::MODULE)
+                    Some(
+                        CompletionItemKind::CLASS
+                            | CompletionItemKind::ENUM
+                            | CompletionItemKind::MODULE
+                    )
                 ) {
                     items.insert(item.label.clone(), item);
                 }

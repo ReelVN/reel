@@ -553,16 +553,18 @@ mod author_scopes {
 #[test]
 fn author_diagnostics_for_transition_task_and_derived_context() {
     use aside_compiler::DiagnosticCode;
-    for (source, expected, marked) in [
+    for (source, expected, marked, related) in [
         (
             r#"fn main() { let value = stage.transition(change: || { stack(); }); await value; }"#,
             DiagnosticCode::TypeMismatch,
             "await value",
+            None,
         ),
         (
             r#"fn main() { stack() { spawn(|| {}); }; }"#,
             DiagnosticCode::NoWait,
             "spawn",
+            None,
         ),
         (
             r#"use std::time::format;
@@ -572,6 +574,26 @@ fn author_diagnostics_for_transition_task_and_derived_context() {
             }"#,
             DiagnosticCode::InvalidEffect,
             "format(0)",
+            None,
+        ),
+        (
+            r#"fn queue_preview() -> null { spawn(|| {}); }
+            fn preview() -> null { return queue_preview(); }
+            fn main() { stage.replace(stack() { preview(); }); }"#,
+            DiagnosticCode::NoWait,
+            "preview()",
+            Some("spawn(|| {})"),
+        ),
+        (
+            r#"use std::time::format;
+            fn saved_label(saved: int) -> string { format(saved) }
+            fn main() {
+                let data = model({saved: 0});
+                let _ = text(value: derive(|| saved_label(data.saved)));
+            }"#,
+            DiagnosticCode::InvalidEffect,
+            "saved_label(data.saved)",
+            Some("format(saved)"),
         ),
     ] {
         let Err(failure) = reel_cli::check(source, "author-diagnostics.aside") else {
@@ -588,5 +610,17 @@ fn author_diagnostics_for_transition_task_and_derived_context() {
             "{:?}",
             diagnostic.diagnostic
         );
+        if let Some(expected) = related {
+            let [related] = diagnostic.diagnostic.related.as_slice() else {
+                panic!("missing host call location: {:?}", diagnostic.diagnostic);
+            };
+            let range: std::ops::Range<usize> = related.range.into();
+            assert_eq!(&source[range], expected);
+        }
     }
+    let conditional_helper = r#"fn preview(flag: bool) -> null {
+        if flag { spawn(|| {}); }
+    }
+    fn main() { stage.replace(stack() { preview(false); }); }"#;
+    assert!(reel_cli::check(conditional_helper, "author-diagnostics.aside").is_ok());
 }

@@ -148,6 +148,7 @@ impl Binder<'_> {
             self.scope = previous;
         }
         self.check(n, RuntimeChecks::PATTERN);
+        self.check_enum_match(n, value, children);
         result.unwrap_or(ANY)
     }
     pub(super) fn try_node(&mut self, _n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {

@@ -121,7 +121,7 @@ fn generated_declarations_keep_validated_numbers_and_known_table_results_precise
             }
         }
     }
-    assert_eq!(math_functions, 24);
+    assert_eq!(math_functions, 27);
     assert_eq!(
         api.native("std::time::parts")
             .symbol

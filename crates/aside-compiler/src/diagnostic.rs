@@ -46,6 +46,7 @@ pub enum DiagnosticCode {
     InvalidEffect,
     UnusedResult,
     UnknownMember,
+    NonExhaustiveMatch,
 }
 impl DiagnosticCode {
     pub fn as_str(self) -> &'static str {
@@ -92,6 +93,7 @@ impl DiagnosticCode {
             Self::InvalidEffect => "ASS015",
             Self::UnusedResult => "ASS016",
             Self::UnknownMember => "ASS017",
+            Self::NonExhaustiveMatch => "ASS018",
         }
     }
 }

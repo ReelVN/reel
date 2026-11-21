@@ -125,20 +125,25 @@ impl Vm {
                 }
                 TextMode::Copy { offset: begin, end }
             }
-            Builtin::StartsWith | Builtin::EndsWith => {
+            Builtin::StartsWith
+            | Builtin::EndsWith
+            | Builtin::StripPrefix
+            | Builtin::StripSuffix => {
                 let other = argument()?;
                 if !self.is_text(other, ObjectKind::String) {
                     return Err(FaultKind::Type);
                 }
                 let other_len = self.heap.info(other).map_err(heap_fault)?.len;
                 if other_len > len {
-                    return self
-                        .builtin_finish(s, call, Ok(Value::bool(false)))
-                        .map_err(vm_fault);
+                    let result = match call.method {
+                        Builtin::StripPrefix | Builtin::StripSuffix => Value::NULL,
+                        _ => Value::bool(false),
+                    };
+                    return self.builtin_finish(s, call, Ok(result)).map_err(vm_fault);
                 }
                 TextMode::Compare {
                     offset: 0,
-                    base: if matches!(call.method, Builtin::EndsWith) {
+                    base: if matches!(call.method, Builtin::EndsWith | Builtin::StripSuffix) {
                         len - other_len
                     } else {
                         0
@@ -307,15 +312,38 @@ impl Vm {
                     return Ok(false);
                 }
                 let equal = left[..count] == right[..count];
-                if !equal || offset + count as u32 == len {
+                let next = offset + count as u32;
+                if equal && next < len {
+                    TextMode::Compare {
+                        offset: next,
+                        base,
+                        len,
+                    }
+                } else if matches!(
+                    work.call.method,
+                    Builtin::StripPrefix | Builtin::StripSuffix
+                ) {
+                    if !equal || len == 0 {
+                        let result = if equal { receiver } else { Value::NULL };
+                        self.builtin_finish(s, work.call, Ok(result))
+                            .map_err(vm_fault)?;
+                        return Ok(true);
+                    }
+                    if s.effects.0 & Effects::ALLOCATE == 0 {
+                        return Err(FaultKind::Effect);
+                    }
+                    let (begin, end) = if work.call.method == Builtin::StripSuffix {
+                        (0, base)
+                    } else {
+                        (len, self.heap.info(receiver).map_err(heap_fault)?.len)
+                    };
+                    let buffer = self.heap.alloc_byte_buffer(&[]).map_err(heap_fault)?;
+                    self.put(s.env, 2, buffer).map_err(vm_fault)?;
+                    TextMode::Copy { offset: begin, end }
+                } else {
                     self.builtin_finish(s, work.call, Ok(Value::bool(equal)))
                         .map_err(vm_fault)?;
                     return Ok(true);
-                }
-                TextMode::Compare {
-                    offset: offset + count as u32,
-                    base,
-                    len,
                 }
             }
             TextMode::Join {

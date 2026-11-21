@@ -90,6 +90,13 @@ impl Binder<'_> {
                         let name = t.name.unwrap();
                         if let Some(s) = self.lookup(name) {
                             self.out.facts[n.0 as usize].symbol = Some(s);
+                            if let Some(descriptor) = self.external.get(&s).cloned()
+                                && descriptor.intrinsic == Some(Intrinsic::EnumType)
+                            {
+                                let ty = self.hint(&descriptor.ty);
+                                self.external_nodes.insert(n, descriptor);
+                                return self.set_ty(n, ty);
+                            }
                             self.capture(s, t.span, ctx);
                             match self.out.types[self.out.symbols[s.0 as usize].ty.0 as usize] {
                                 Type::Class(class) => self.intern_type(Type::Instance(class)),
@@ -225,7 +232,7 @@ impl Binder<'_> {
         }
         if let Some(descriptor) = descriptor {
             let ty = match &descriptor.ty {
-                TypeHint::Named(_) => self.external_type(&descriptor),
+                TypeHint::Named(_) | TypeHint::Enum { .. } => self.external_type(&descriptor),
                 TypeHint::Any => ANY,
                 _ => {
                     self.error(
@@ -254,6 +261,7 @@ impl Binder<'_> {
         ) {
             (_, Type::Union(ts)) => ts.iter().any(|&t| self.compatible(actual, t)),
             (Type::Union(ts), _) => ts.iter().any(|&t| self.compatible(t, expected)),
+            (Type::Enum(a, _), Type::Enum(b, _)) => a == b,
             (Type::StringLiteral(_), Type::String) | (Type::String, Type::StringLiteral(_)) => true,
             (Type::Record(_), Type::Table) | (Type::Table, Type::Record(_)) => true,
             (Type::Record(a), Type::Record(b)) => {

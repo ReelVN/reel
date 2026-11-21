@@ -2,6 +2,78 @@
 use super::*;
 
 #[test]
+fn camera_planes_compose_without_relayout_and_leave_geometry_at_the_near_plane() {
+    use reel_ui::stage::CameraView;
+
+    let mut f = Fixture::new(None);
+    let mut camera = CameraView::default();
+    let root = NodeProps {
+        width: Some(240.),
+        height: Some(180.),
+        clip: true,
+        ..Default::default()
+    };
+    let red = f.stage.node(f.red).unwrap().props.clone();
+    f.stage
+        .update(f.root, NodeKind::Camera(camera), root.clone())
+        .unwrap();
+    f.stage
+        .update(f.red, NodeKind::CameraPlane { distance: 600. }, red.clone())
+        .unwrap();
+    let first = f.record();
+    f.accept(&first);
+    let layouts = f.layouts();
+    let plane = layouts[&f.red].0;
+    let flat = layouts[&f.blue].0;
+
+    camera.z = 300.;
+    f.stage
+        .update(f.root, NodeKind::Camera(camera), root.clone())
+        .unwrap();
+    let closer = f.record();
+    assert_eq!(
+        closer
+            .geometry()
+            .get(plane)
+            .unwrap()
+            .window_transform
+            .determinant(),
+        4.
+    );
+    assert_eq!(
+        closer.geometry().get(flat).unwrap().window_transform,
+        first.geometry().get(flat).unwrap().window_transform
+    );
+    assert_eq!(f.layouts(), layouts);
+
+    f.stage
+        .update(f.red, NodeKind::CameraPlane { distance: 301. }, red.clone())
+        .unwrap();
+    let clipped = f.record();
+    assert!(
+        clipped
+            .geometry()
+            .get(plane)
+            .is_none_or(|record| record.is_stashed)
+    );
+    assert!(clipped.geometry().get(flat).is_some());
+
+    f.stage
+        .update(f.red, NodeKind::CameraPlane { distance: 1500. }, red)
+        .unwrap();
+    let farther = f.record();
+    assert_eq!(
+        farther
+            .geometry()
+            .get(plane)
+            .unwrap()
+            .window_transform
+            .determinant(),
+        0.25
+    );
+}
+
+#[test]
 fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
     let font = std::env::var_os("REEL_SESSION_FONT")
         .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));
@@ -599,6 +671,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
                 y: 30.,
                 zoom: 2.,
                 rotation: 90.,
+                ..Default::default()
             }),
             NodeProps {
                 x: 100.,
@@ -708,6 +781,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
                 y: 30.,
                 zoom: 2.,
                 rotation: 90.,
+                ..Default::default()
             }),
             props,
         )
@@ -738,6 +812,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
                     y: 30.,
                     zoom: 1. + f64::from(step) * 0.001,
                     rotation: f64::from(step) * 0.1,
+                    ..Default::default()
                 }),
                 props,
             )
@@ -782,6 +857,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
                 y: 5.,
                 zoom: 3.,
                 rotation: 90.,
+                ..Default::default()
             }),
             NodeProps {
                 x: 40.,

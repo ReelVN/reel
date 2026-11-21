@@ -139,6 +139,10 @@ methods! {
         "Return the existing value, including null, or insert the result of calling factory(). The factory cannot wait. An entry inserted during the factory takes precedence.";
     Replace: "replace" [String] ("pattern":"string"=None,"replacement":"string"=None), None => "string", false,
         "Replace all non-overlapping matches. An empty pattern inserts the replacement at each Unicode scalar boundary.";
+    StripPrefix: "strip_prefix" [String] ("prefix":"string"=None), None => "string | null", false,
+        "Remove the given prefix if it matches. Return null when absent and the original string for an empty prefix.";
+    StripSuffix: "strip_suffix" [String] ("suffix":"string"=None), None => "string | null", false,
+        "Remove the given suffix if it matches. Return null when absent and the original string for an empty suffix.";
 }
 
 impl BuiltinMethod {

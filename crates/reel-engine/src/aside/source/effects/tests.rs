@@ -97,6 +97,50 @@ fn surface(pixel, time: float, strength: float = 0.2) -> (float, float, float, f
 }
 
 #[test]
+fn scalar_math_lowers_to_shared_drawing_operations() {
+    let effect = compile(
+        r#"
+use std::math::{clamp, mix, modulo, smoothstep};
+fn shade(pixel, weight: float) -> (float, float, float, float) {
+    let (u, v) = pixel.uv;
+    let clamped = clamp(u, maximum: 1, minimum: 0);
+    let wrapped = modulo(v - 1.0, divisor: 0.5);
+    let blended = mix(clamped, wrapped, weight: weight);
+    let ramp = smoothstep(1, 0, blended);
+    (blended, ramp, smoothstep(0.5, 0.5, v), 1.0)
+}
+"#,
+    )
+    .unwrap();
+    for expected in [Ternary::Clamp, Ternary::Mix, Ternary::Smoothstep] {
+        assert!(
+            effect
+                .program
+                .nodes()
+                .iter()
+                .any(|node| matches!(node.op, Op::Ternary { op, .. } if op == expected))
+        );
+    }
+    assert!(effect.program.nodes().iter().any(|node| matches!(
+        node.op,
+        Op::Unary {
+            op: Unary::Floor,
+            ..
+        }
+    )));
+    for (expression, expected) in [
+        ("clamp(x, x, 1)", "ordered constant bounds"),
+        ("clamp(x, 1, 0)", "ordered constant bounds"),
+        ("modulo(x, 0)", "nonzero divisor"),
+    ] {
+        let code = format!(
+            "use std::math::{{clamp, modulo}}; fn shade(pixel, x: float) -> float {{ {expression} }}"
+        );
+        assert!(compile(&code).err().unwrap().message.contains(expected));
+    }
+}
+
+#[test]
 fn bound_names_and_branch_updates_preserve_source_meaning() {
     let output = compile(
         r#"

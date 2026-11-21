@@ -43,6 +43,30 @@ fn skip_can_advance(session: &Session) -> bool {
 }
 
 impl SessionUi {
+    /// A newly published waiting line can start complete during fast-forward.
+    /// Its first accepted frame is still what permits the next story step.
+    pub(crate) fn reveal_published_skip(
+        &mut self,
+        interaction: InteractionId,
+    ) -> Result<(), Error> {
+        if !self.images_pending()
+            && self.skip_reveal_pending()
+            && matches!(self.session.view().interaction, Some(InteractionView::Dialogue(dialogue))
+                if dialogue.id() == interaction && dialogue.awaiting_advance())
+        {
+            self.finish_skip_reveal(interaction)?;
+        }
+        Ok(())
+    }
+
+    fn finish_skip_reveal(&mut self, id: InteractionId) -> Result<bool, Error> {
+        let changed =
+            self.session
+                .advance_reveal(self.session.root_owner(), id, Duration::ZERO, 0.)?;
+        self.pause_dialogue();
+        Ok(changed)
+    }
+
     /// Skippable text is completed before its first fast-forward presentation.
     pub(crate) fn skip_reveal_pending(&self) -> bool {
         self.session.reading().skipping()
@@ -133,11 +157,7 @@ impl SessionUi {
         if self.skip_reveal_pending() {
             // Publishing the complete text still owes an accepted frame before
             // advancing the story. Protected reveal follows its ordinary clock.
-            let changed =
-                self.session
-                    .advance_reveal(self.session.root_owner(), id, Duration::ZERO, 0.)?;
-            self.pause_dialogue();
-            return Ok(changed);
+            return self.finish_skip_reveal(id);
         }
         if skip_can_advance(&self.session) {
             if !self

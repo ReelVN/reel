@@ -10,8 +10,8 @@ use aside_compiler::{
     semantic::*,
 };
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, NumberOrString, PublishDiagnosticsParams,
-    TextDocumentContentChangeEvent, Uri,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, NumberOrString,
+    PublishDiagnosticsParams, TextDocumentContentChangeEvent, Uri,
 };
 use std::{
     cell::RefCell,
@@ -971,6 +971,23 @@ impl Workspace {
                         code: Some(NumberOrString::String(diagnostic.code.as_str().into())),
                         source: Some("aside".into()),
                         message: diagnostic.message.clone(),
+                        related_information: (!diagnostic.related.is_empty()).then(|| {
+                            diagnostic
+                                .related
+                                .iter()
+                                .map(|related| DiagnosticRelatedInformation {
+                                    location: Location {
+                                        uri: source.uri.clone(),
+                                        range: source.lines.range(
+                                            &source.text,
+                                            related.range,
+                                            encoding,
+                                        ),
+                                    },
+                                    message: related.message.clone(),
+                                })
+                                .collect()
+                        }),
                         ..Default::default()
                     })
                     .collect();

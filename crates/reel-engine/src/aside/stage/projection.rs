@@ -114,6 +114,10 @@ impl StageBinding {
                     camera::kind(heap, fields)?,
                     camera::CameraField::PROPERTIES.len(),
                 ),
+                NodeKind::CameraPlane { .. } => (
+                    camera::plane_kind(heap, fields)?,
+                    camera::PlaneField::PROPERTIES.len(),
+                ),
                 NodeKind::Scroll { .. } => (
                     scroll::kind(heap, fields)?,
                     scroll::ScrollField::PROPERTIES.len(),

@@ -119,9 +119,14 @@ aside_host::native_documentation! {
         /// ```
         "reel::tooltip";
         /// Create a clipped camera container. camera_x/y select the viewed world point;
-        /// zoom and camera_rotation transform its ordinary children. Drawing and input
-        /// use the same transform; the common x/y properties place the viewport.
+        /// zoom and camera_rotation transform its ordinary children. Move camera_z
+        /// toward its direct camera_plane children for perspective. Drawing and input
+        /// share the transform; the common x/y properties place the viewport.
         "reel::camera";
+        /// A container projected at a distance when it is a direct camera child.
+        /// Plane distance and camera motion change scale without reordering children.
+        /// Outside a camera the container behaves like an ordinary stack.
+        "reel::camera_plane";
         /// Replace the mounted stage root with this node. Retired nodes cancel their
         /// owned work. Build the new tree before mounting it.
         "reel::stage::replace";
@@ -148,10 +153,11 @@ pub(super) mod source;
 pub(super) mod text_input;
 
 /// Specific numeric fields share one registration and dispatch order.
-pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 6]
+pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 7]
 {
     [
         ("camera", camera::CameraField::PROPERTIES),
+        ("camera_plane", camera::PlaneField::PROPERTIES),
         ("scroll", scroll::ScrollField::PROPERTIES),
         ("flow", flow::FlowField::PROPERTIES),
         ("grid", flow::GridField::PROPERTIES),
@@ -777,6 +783,7 @@ impl StageBinding {
         if matches!(
             kind,
             NodeKind::Camera(_)
+                | NodeKind::CameraPlane { .. }
                 | NodeKind::Row(_)
                 | NodeKind::Column(_)
                 | NodeKind::Grid(_)

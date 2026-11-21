@@ -12,7 +12,9 @@ use std::math::*;
 fn main() {
     [sin(0),cos(0),tan(0),asin(0),acos(1),atan(0),atan2(0,1.0),
     sqrt(4),hypot(3.0,4),pow(2,3),exp(0),ln(1),log2(8),log10(100),
-    abs(-7),floor(3),ceil(3),round(3),radians(180),degrees(0)]
+    abs(-7),floor(3),ceil(3),round(3),radians(180),degrees(0),
+    mix(2,4,0.25),mix(2,4,2),smoothstep(0,1,0.25),smoothstep(1,0,0.25),
+    smoothstep(1,1,0.9),smoothstep(1,1,1),modulo(-7,3),modulo(7,-3),modulo(1,0)]
 }
 fn untyped(value) {value}
 fn invalid() {pow(untyped("wrong"),2)}
@@ -155,6 +157,14 @@ fn math_preserves_numeric_contracts_without_allocation_and_reports_source_errors
             3.,
             std::f64::consts::PI,
             0.,
+            2.5,
+            6.,
+            0.15625,
+            0.84375,
+            0.,
+            1.,
+            2.,
+            -2.,
         ]
         .into_iter()
         .enumerate()
@@ -167,6 +177,14 @@ fn math_preserves_numeric_contracts_without_allocation_and_reports_source_errors
                 Some(expected)
             );
         }
+        assert!(
+            vm.heap()
+                .sequence_get(values, 28)
+                .unwrap()
+                .as_float()
+                .unwrap()
+                .is_nan()
+        );
         vm.discard_delivery(id).unwrap();
         let precise = Value::int(9_007_199_254_740_993);
         let rounded = Value::float(9_007_199_254_740_992.);

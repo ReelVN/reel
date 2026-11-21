@@ -723,7 +723,7 @@ impl SessionVm {
         if !session.reading().skipping() {
             self.skip_input = None;
         }
-        self.activities.set_skipping(session.reading().skipping());
+        self.sync_effect_reading(session);
         if self.reactive_ready && self.reactive_settled() {
             self.sync_auto_condition(session)?;
             self.sync_narrative(session)?;
@@ -783,7 +783,7 @@ impl SessionVm {
             return Ok(SessionStep::Progress);
         }
         if self.transitions.pending(self.activities.time()) {
-            self.transitions.advance(self.activities.time(), 64);
+            self.advance_transitions(64)?;
             return Ok(SessionStep::Progress);
         }
         if let Some(ticket) = self.issued {

@@ -34,6 +34,88 @@ fn fill(scene: &mut Scene, color: Color) {
         composite: Composite::default(),
     });
 }
+
+#[test]
+#[ignore = "requires an actual GPU adapter for a same-precision sampling comparison"]
+fn single_sample_and_msaa_match_aligned_rectangles_but_change_rotated_edges() {
+    let instance = wgpu::Instance::default();
+    let pool = pool();
+    let make_frame = |angle| {
+        let mut drawing = scene(Color::from_rgba8(18, 28, 45, 255));
+        drawing.draw(Draw::Fill {
+            transform: Affine::translate((205., 107.)) * Affine::rotate(angle),
+            fill_rule: Default::default(),
+            brush: Brush::Solid(Color::from_rgba8(250, 190, 80, 218)),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(-72., -46., 72., 46.)),
+            composite: Composite::default(),
+        });
+        let mut bridge = widget_bridge(RecordWidget::new(drawing), Affine::IDENTITY);
+        build(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        )
+    };
+    let frames = [make_frame(0.), make_frame(0.22)];
+    let mut pixels = [Vec::new(), Vec::new()];
+    for (samples, target_bytes) in [(4, 32 << 20), (1, 400 * 300 * 8)] {
+        let gpu = pollster::block_on(Gpu::request(
+            &instance,
+            None,
+            DeviceGeneration(samples),
+            GpuLimits {
+                target_bytes,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let mut renderer = Renderer::new(gpu);
+        for (index, frame) in frames.iter().enumerate() {
+            let prepared = renderer.prepare(frame).unwrap();
+            let quality = prepared.quality();
+            assert_eq!(quality.format, wgpu::TextureFormat::Rgba16Float);
+            assert_eq!(quality.samples, samples as u32);
+            let output = renderer.readback(prepared).unwrap();
+            if samples == 4 {
+                pixels[index] = output;
+            } else {
+                let changed = pixels[index]
+                    .iter()
+                    .zip(&output)
+                    .filter(|(a, b)| a != b)
+                    .count();
+                if index == 0 {
+                    assert_eq!(changed, 0);
+                } else {
+                    assert!(changed > 0);
+                }
+                eprintln!("case={index} changed_pixels={changed}");
+            }
+            let mut times = Vec::with_capacity(64);
+            for _ in 0..64 {
+                let start = std::time::Instant::now();
+                let prepared = renderer.prepare(frame).unwrap();
+                renderer.submit(prepared).unwrap();
+                renderer
+                    .gpu()
+                    .device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .unwrap();
+                renderer.poll().unwrap();
+                times.push(start.elapsed().as_micros());
+            }
+            times.sort_unstable();
+            eprintln!(
+                "case={index} samples={samples} p50_us={} p95_us={} target_bytes={}",
+                times[32],
+                times[60],
+                renderer.usage().targets
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires actual Vulkan/Metal/DX12 adapter; run explicitly"]
 fn linear_pixels_completion_and_frozen_crossfade() {

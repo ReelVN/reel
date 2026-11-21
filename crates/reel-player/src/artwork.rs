@@ -59,30 +59,51 @@ pub(crate) fn decode_qoi(bytes: &[u8], output: u64) -> Option<Result<Vec<u8>, St
     })())
 }
 
-/// Read a single, opaque VP8 frame's fixed header for bounded worker admission.
-/// The worker still validates the frame and produces pixels with the normal decoder.
-pub(crate) fn simple_webp_shape(bytes: &[u8]) -> Option<([u32; 2], u64, u64)> {
-    let header = bytes.get(..30)?;
-    if &header[..4] != b"RIFF"
-        || &header[8..16] != b"WEBPVP8 "
-        || header[20] & 1 != 0
-        || header[23..26] != [0x9d, 0x01, 0x2a]
-    {
+/// Read a static WebP canvas size for bounded worker admission. The worker
+/// validates the container and pixels using the ordinary codec.
+pub(crate) fn webp_shape(bytes: &[u8]) -> Option<([u32; 2], u64, u64)> {
+    let riff_header = bytes.get(..20)?;
+    if &riff_header[..4] != b"RIFF" || &riff_header[8..12] != b"WEBP" {
         return None;
     }
     let length = bytes.len() as u64;
-    let riff = u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap()));
-    let chunk = u64::from(u32::from_le_bytes(header[16..20].try_into().unwrap()));
-    let tag = u32::from_le_bytes([header[20], header[21], header[22], 0]);
-    if riff + 8 != length
-        || chunk.next_multiple_of(2) + 20 != length
-        || chunk < 10 + u64::from(tag >> 5)
-    {
+    let riff = u64::from(u32::from_le_bytes(riff_header[4..8].try_into().unwrap()));
+    let chunk = u64::from(u32::from_le_bytes(riff_header[16..20].try_into().unwrap()));
+    let first_end = chunk.next_multiple_of(2) + 20;
+    if riff + 8 != length || first_end > length {
         return None;
     }
-    let size = [26, 28].map(|start| {
-        u32::from(u16::from_le_bytes(header[start..start + 2].try_into().unwrap()) & 0x3fff)
-    });
+    let (size, channels, may_use_vp8) = match &riff_header[12..16] {
+        b"VP8 " if first_end == length => {
+            let header = bytes.get(20..30)?;
+            let tag = u32::from_le_bytes([header[0], header[1], header[2], 0]);
+            if tag & 1 != 0
+                || header[3..6] != [0x9d, 0x01, 0x2a]
+                || chunk < 10 + u64::from(tag >> 5)
+            {
+                return None;
+            }
+            let size = [6, 8].map(|start| {
+                u32::from(u16::from_le_bytes(header[start..start + 2].try_into().unwrap()) & 0x3fff)
+            });
+            (size, 3, true)
+        }
+        b"VP8L" if first_end == length && chunk >= 5 && bytes[20] == 0x2f => {
+            let header = u32::from_le_bytes(bytes[21..25].try_into().unwrap());
+            if header >> 29 != 0 {
+                return None;
+            }
+            // Match the extent reported by the current image-webp decoder.
+            let size = [(1 + header) & 0x3fff, (1 + (header >> 14)) & 0x3fff];
+            (size, 3 + u64::from((header >> 28) & 1), false)
+        }
+        b"VP8X" if chunk == 10 && bytes[20] & 0x02 == 0 => {
+            let size =
+                [24, 27].map(|i| 1 + u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], 0]));
+            (size, 4, true)
+        }
+        _ => return None,
+    };
     if size.contains(&0) {
         return None;
     }
@@ -90,8 +111,12 @@ pub(crate) fn simple_webp_shape(bytes: &[u8]) -> Option<([u32; 2], u64, u64)> {
     // In image-webp 0.2.4 the last partition can hold both the growing
     // read buffer and its aligned copy. At most one malformed 24-bit
     // partition length can allocate before its read fails.
-    let encoded_workspace = (length * 4).max(length + (1 << 24));
-    let workspace = webp_workspace(size, encoded_workspace) + pixels * 7;
+    let encoded_workspace = if may_use_vp8 {
+        (length * 4).max(length + (1 << 24))
+    } else {
+        length
+    };
+    let workspace = webp_workspace(size, encoded_workspace) + pixels * (4 + channels);
     Some((size, pixels * 4, workspace))
 }
 

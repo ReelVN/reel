@@ -166,6 +166,53 @@ fn primitive_methods_share_completion_signature_hover_and_readonly_definitions()
 }
 
 #[test]
+fn string_editing_methods_expose_the_same_parameter_names_to_the_editor() {
+    let source = r#"fn main() {
+    let path = "voice/風景/キャラ_014.ogg";
+    let parts = path.split(separator: "/");
+    let ruby = "雪《ゆき》".replace(pattern: "《", replacement: "(");
+    let stem = path.strip_suffix(suffix: ".ogg");
+    let subpath = path.strip_prefix(prefix: "voice/");
+    let sample = path;
+    sample.
+}"#;
+    let mut workspace = Workspace::new(ServerOptions::default());
+    workspace.open(uri(), 1, source.into()).unwrap();
+    let members = workspace
+        .complete(&uri(), position(source, "sample.", true), Encoding::Utf16)
+        .unwrap();
+    for (name, signature) in [
+        ("split", "fn split(separator: string) -> array"),
+        (
+            "replace",
+            "fn replace(pattern: string, replacement: string) -> string",
+        ),
+        (
+            "strip_prefix",
+            "fn strip_prefix(prefix: string) -> string | null",
+        ),
+        (
+            "strip_suffix",
+            "fn strip_suffix(suffix: string) -> string | null",
+        ),
+    ] {
+        let member = members.iter().find(|member| member.label == name).unwrap();
+        assert!(member.documentation.is_some(), "{member:?}");
+        let hover = hover_text(
+            workspace
+                .hover(
+                    &uri(),
+                    position(source, &format!("{name}("), false),
+                    Encoding::Utf16,
+                )
+                .unwrap()
+                .unwrap(),
+        );
+        assert!(hover.contains(signature), "{hover}");
+    }
+}
+
+#[test]
 fn builtin_calls_keep_diagnostics_and_facts_after_a_missing_argument() {
     let source = "fn main(values:array){values.find();let ok=values.contains(value:1);ok;}";
     let mut workspace = Workspace::new(ServerOptions::default());

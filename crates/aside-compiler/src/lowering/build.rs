@@ -5,6 +5,7 @@ mod collections;
 mod composition;
 pub(super) mod constants;
 mod demand;
+mod enumerations;
 mod expansions;
 mod expressions;
 mod functions;
@@ -272,7 +273,9 @@ pub(super) fn lower_prepared<'a>(
     };
     lower.b.work(symbol_count as u64)?;
     for (index, s) in m.symbols().iter().enumerate() {
-        if s.origin != h::BindingOrigin::ModuleGlobal {
+        if s.origin != h::BindingOrigin::ModuleGlobal
+            || m.type_only_symbol(h::SymbolId(index as u32))
+        {
             continue;
         }
         lower.b.span = s.declaration;
@@ -292,6 +295,9 @@ pub(super) fn lower_prepared<'a>(
     }
     lower.b.work(m.exports().len() as u64)?;
     for &sym in m.exports() {
+        if m.type_only_symbol(sym) {
+            continue;
+        }
         if project.is_some_and(|p| p.namespaces[sym.0 as usize]) {
             continue;
         }
@@ -678,7 +684,12 @@ impl Lowerer<'_> {
                     }
                     bc::TypeDef::Record(compiled)
                 }
-                h::Type::Tuple(ids) | h::Type::Union(ids) => {
+                h::Type::Enum(_, cases) if cases.len() == 1 => {
+                    let ty = self.ty(cases[0], depth + 1)?;
+                    self.type_cache[id.0 as usize] = Some(ty);
+                    return Ok(ty);
+                }
+                h::Type::Tuple(ids) | h::Type::Union(ids) | h::Type::Enum(_, ids) => {
                     self.b.work(ids.len() as u64)?;
                     let mut out = Vec::new();
                     for &id in ids {

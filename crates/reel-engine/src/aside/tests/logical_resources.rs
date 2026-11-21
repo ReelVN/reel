@@ -169,7 +169,7 @@ fn tween_original_curve_delay_and_clock_phase_resume_after_adoption_source_asb()
         fn main(s:Scene=model(Scene())){s}
         fn opening(){
             let s=main();s.sprite=image("sprite.png",x:0,width:100,height:50);
-            s.motion=run(tween(s.sprite,duration:10,easing:"in",x:100),owner:s.sprite);
+            s.motion=run(tween(s.sprite,duration:10,easing:"in",x:100),owner:s.sprite,skip:"finish");
             s.timer=clock(interval:2,owner:s.sprite);
             s.waiting=run(delay(10),owner:s.sprite);
             stage.replace(s.sprite);persistent.write("capture",s);
@@ -193,7 +193,9 @@ fn tween_original_curve_delay_and_clock_phase_resume_after_adoption_source_asb()
         document.write_to(&mut bytes).unwrap();
         let document = Arc::new(TypedDocument::decode(&bytes).unwrap());
         drop(charge);
-        let (session, mut current, _, _) = pending_resource_write(source, encoded);
+        let (mut session, mut current, _, _) = pending_resource_write(source, encoded);
+        let reading = session.prepare_reading().unwrap();
+        session.push_reading(reading);
         // Restore into a candidate with no previous producers, as the normal loader does.
         current.activities.revoke(current.vm.heap_mut()).unwrap();
         current.activities = activity::Activities::default();
@@ -242,7 +244,7 @@ fn tween_original_curve_delay_and_clock_phase_resume_after_adoption_source_asb()
                 .as_int(),
             Some(1)
         );
-        while !current.adopt_checkpoint_resources(1).unwrap() {}
+        while !current.adopt_checkpoint_resources(&session, 1).unwrap() {}
         advance_clock(&mut current, &session, 0.5, 64);
         current.sync_stage(&session).unwrap();
         assert!(
@@ -275,9 +277,16 @@ fn tween_original_curve_delay_and_clock_phase_resume_after_adoption_source_asb()
                 .as_int(),
             Some(2)
         );
-        advance_clock(&mut current, &session, 7., 64);
+        session.set_skip_reading(true, true, false);
+        advance_clock(&mut current, &session, 1., 64);
         current.sync_stage(&session).unwrap();
         assert_eq!(current.stage.scene.node(id).unwrap().props.x, 100.);
+        let delay = field(&current, loaded, "waiting");
+        assert_eq!(
+            current.vm.heap().host_payload(delay, 1).unwrap().as_int(),
+            Some(0)
+        );
+        advance_clock(&mut current, &session, 7., 64);
         assert_eq!(
             current
                 .vm
@@ -353,7 +362,7 @@ fn inactive_explicit_start_and_terminal_activity_keep_public_controls_source_asb
         let loaded = current.vm.heap().root_value(root).unwrap();
         restore.release(current.vm.heap_mut()).unwrap();
         while !current.prepare_checkpoint_resources(1).unwrap() {}
-        while !current.adopt_checkpoint_resources(1).unwrap() {}
+        while !current.adopt_checkpoint_resources(&session, 1).unwrap() {}
         assert!(!current.activities.needs_time());
         current
             .vm
@@ -536,7 +545,7 @@ fn composed_occurrences_repeat_iteration_and_shared_curve_resume_source_asb() {
         // Candidate preparation consumes no story time.
         current.activities.observe_time(40.).unwrap();
         current.activities.advance(&mut current.vm, 64).unwrap();
-        while !current.adopt_checkpoint_resources(1).unwrap() {}
+        while !current.adopt_checkpoint_resources(&session, 1).unwrap() {}
         advance_clock(&mut current, &session, 41., 1);
         current.sync_stage(&session).unwrap();
         let props = &current.stage.scene.node(id).unwrap().props;
@@ -571,7 +580,9 @@ fn ordinary_node_schemas_bindings_and_child_edges_restore_source_asb() {
                     track:stack(),thumb:stack(height:10),thumb_width:18),
                 toggle(label:"choice",value:bind(s.selected)),checkbox(label:"choice",value:bind(s.selected)),
                 radio("a",value:bind(s.selection)),input(),image("sprite.png"),
-                camera(camera_x:3,zoom:2),scroll(scroll_y:5),row(wrap:true),column(gap:4),
+                camera(camera_x:3,zoom:2,camera_z:25,focal_length:500) {
+                    camera_plane(distance:650) { stack(width:10,height:10); };
+                },scroll(scroll_y:5),row(wrap:true),column(gap:4),
                 stack(),cursor(),grid(columns:3),popup(offset:6)];
             s.group=stack(children:s.nodes);stage.replace(s.group);persistent.write("capture",s);
         }
@@ -603,8 +614,14 @@ fn ordinary_node_schemas_bindings_and_child_edges_restore_source_asb() {
         }
         let camera = current.vm.heap().sequence_get(nodes, 10).unwrap();
         let camera_id = current.stage.id(current.vm.heap(), camera).unwrap();
-        assert!(matches!(&current.stage.scene.node(camera_id).unwrap().kind,
-            reel_ui::stage::NodeKind::Camera(view) if view.x==3. && view.zoom==2.));
+        let camera = current.stage.scene.node(camera_id).unwrap();
+        assert!(matches!(&camera.kind,
+            reel_ui::stage::NodeKind::Camera(view)
+                if view.x==3. && view.zoom==2. && view.z==25. && view.focal_length==500.));
+        assert!(
+            matches!(&current.stage.scene.node(camera.children[0]).unwrap().kind,
+            reel_ui::stage::NodeKind::CameraPlane { distance } if *distance == 650.)
+        );
         let slider = current.vm.heap().sequence_get(nodes, 4).unwrap();
         let slider_id = current.stage.id(current.vm.heap(), slider).unwrap();
         let slider_node = current.stage.scene.node(slider_id).unwrap();
@@ -711,7 +728,7 @@ fn default_root_scope_owner_reconnects_current_identity_at_adoption() {
         aside_vm::ValueTag::Null
     );
     current.activities.set_restored_default_owner(current_owner);
-    while !current.adopt_checkpoint_resources(1).unwrap() {}
+    while !current.adopt_checkpoint_resources(&session, 1).unwrap() {}
     assert!(
         current
             .vm

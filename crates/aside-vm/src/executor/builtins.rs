@@ -392,6 +392,8 @@ impl Vm {
             | Builtin::SliceScalars
             | Builtin::StartsWith
             | Builtin::EndsWith
+            | Builtin::StripPrefix
+            | Builtin::StripSuffix
             | Builtin::Join
             | Builtin::Split
             | Builtin::Replace

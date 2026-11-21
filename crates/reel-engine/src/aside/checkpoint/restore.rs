@@ -58,7 +58,11 @@ impl SessionVm {
 
     /// Rebase restored activity progress at candidate adoption. Resources stay
     /// frozen while the current bootstrap rebuilds its views.
-    pub fn adopt_checkpoint_resources(&mut self, work: u32) -> Result<bool, AdapterError> {
+    pub fn adopt_checkpoint_resources(
+        &mut self,
+        session: &crate::Session,
+        work: u32,
+    ) -> Result<bool, AdapterError> {
         let (task, _) = self.flow_boundary().ok_or(AdapterError::Input(
             "restored resources require the current business flow",
         ))?;
@@ -66,7 +70,7 @@ impl SessionVm {
         self.activities.set_restored_default_owner(owner);
         if !self
             .activities
-            .adopt_restored_step(self.vm.heap_mut(), work)?
+            .adopt_restored_step(self.vm.heap_mut(), session.reading_id, work)?
         {
             return Ok(false);
         }

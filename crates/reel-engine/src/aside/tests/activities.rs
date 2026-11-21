@@ -963,19 +963,23 @@ fn skipping_finishes_story_sequences_with_a_small_budget_without_finishing_ui_or
     let code = r#"fn opening() {
         let moving = text("story");
         let ui = text("ui");
+        let default_owned = text("default");
         let looped = text("loop");
         let paused = text("paused");
-        stage.replace(column() { moving; ui; looped; paused; });
+        stage.replace(column() { moving; ui; default_owned; looped; paused; });
         let ui_job = run(tween(ui, x: 100, duration: 100), owner: ui);
-        let loop_job = run(repeat(tween(looped, x: 100, duration: 100)));
-        let paused_job = run(tween(paused, x: 100, duration: 100));
-        pause(paused_job);
+        let default_job = run(tween(default_owned, x: 100, duration: 100));
+        let loop_job = run(repeat(tween(looped, x: 100, duration: 100)), skip: "finish");
+        let paused_job = run(tween(paused, x: 100, duration: 100), paused: true, skip: "finish");
         let job = run(sequence(tween(moving, x: 40, duration: 100),
-                              repeat(tween(moving, x: 80, duration: 100), times: 1000000)));
+                              repeat(tween(moving, x: 80, duration: 100), times: 1000000)),
+                      owner: moving, skip: "finish");
         narrator("enable skip");
         if await job != "Completed" || moving.x != 80 { throw "story finish"; }
-        if ui.x != 0 || looped.x != 0 || paused.x != 0 { throw "other owner/control advanced"; }
-        stop(ui_job); stop(loop_job); stop(paused_job);
+        if ui.x != 0 || default_owned.x != 0 || looped.x != 0 || paused.x != 0 { throw "keep/control advanced"; }
+        stop(ui_job); stop(default_job); stop(loop_job);
+        resume(paused_job);
+        if await paused_job != "Completed" || paused.x != 100 { throw "resumed finish"; }
         narrator("finished");
     }"#;
     for encoded in [false, true] {
@@ -999,6 +1003,77 @@ fn skipping_finishes_story_sequences_with_a_small_budget_without_finishing_ui_or
         };
         assert_eq!(d.text(), "finished");
     }
+}
+
+#[test]
+fn skip_finishes_effects_only_in_the_selected_reading() {
+    let code = r#"fn opening() {
+        let outside = text("outside");
+        let inside = text("inside");
+        stage.replace(stack { outside; inside; });
+        let parked = tween(outside, x: 10, duration: 100).run(skip: "finish");
+        reading(body: |page: Scope| {
+            let active = page.run(tween(inside, x: 10, duration: 100), skip: "finish");
+            game.reading().set_skip(true, unread: true);
+            if await active != "Completed" || inside.x != 10 || outside.x != 0 {
+                throw "crossed reading boundary";
+            }
+        });
+        game.reading().set_skip(true, unread: true);
+        if await parked != "Completed" || outside.x != 10 { throw "parent never finished"; }
+        stage.replace(text("done"));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == reel_ui::stage::NodeKind::Text("done".into()))
+        );
+    }
+}
+
+#[test]
+fn protected_dialogue_defers_the_finish_policy() {
+    let code = r#"fn opening() {
+        let node = text("moving");
+        stage.replace(node);
+        let motion = tween(node, x: 10, duration: 100).run(skip: "finish");
+        narrator("protected", reveal_skippable: false);
+        if await motion != "Completed" || node.x != 10 { throw "finish policy"; }
+        stage.replace(text("done"));
+    }"#;
+    let (mut session, mut vm) = models::prepared(code, true);
+    models::drive(&mut vm, &mut session, false);
+    session.set_skip_reading(true, true, false);
+    advance_clock(&mut vm, &session, 1., 16);
+    vm.sync_stage(&session).unwrap();
+    assert_eq!(
+        vm.stage().node(vm.stage().root().unwrap()).unwrap().props.x,
+        0.1
+    );
+    let id = session.view().interaction.unwrap().id();
+    session
+        .advance_reveal(
+            session.root_owner(),
+            id,
+            std::time::Duration::from_secs(10),
+            30.,
+        )
+        .unwrap();
+    assert_eq!(
+        session
+            .handle_local_input(session.root_owner(), InputAction::Advance(id))
+            .unwrap(),
+        crate::InputOutcome::Completed,
+    );
+    models::drive(&mut vm, &mut session, false);
+    assert!(
+        vm.stage()
+            .nodes()
+            .any(|node| node.kind == reel_ui::stage::NodeKind::Text("done".into()))
+    );
 }
 
 #[test]

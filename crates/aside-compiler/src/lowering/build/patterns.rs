@@ -5,6 +5,27 @@ const TEXT_MATCH_MIN_ARMS: usize = 8;
 // Includes the two quote bytes. Decoding escapes does not grow the literal.
 const TEXT_MATCH_MAX_SOURCE_BYTES: u32 = 66;
 
+#[derive(Default)]
+struct MatchProjection {
+    bindings: Vec<(h::SymbolId, bc::Reg)>,
+    scratch: Vec<bc::Reg>,
+    active: usize,
+}
+
+fn projects_match_fields(hir: &h::Hir, node: h::NodeId) -> bool {
+    let part = hir.node(node);
+    match part.form {
+        Form::Sequence => matches!(part.kind, H::TuplePattern | H::ObjectPattern),
+        Form::Single { child } => projects_match_fields(hir, child),
+        Form::TypePattern { pattern, .. } => projects_match_fields(hir, pattern),
+        Form::EnumCase { payload, .. } => payload.is_some(),
+        Form::Or { left, right } => {
+            projects_match_fields(hir, left) || projects_match_fields(hir, right)
+        }
+        _ => false,
+    }
+}
+
 impl FunctionBuilder<'_, '_> {
     pub(super) fn bind_value(
         &mut self,
@@ -96,14 +117,7 @@ impl FunctionBuilder<'_, '_> {
             Form::Sequence if self.l.m.hir().node(node).kind == H::TuplePattern => {
                 self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
                 let count = self.l.m.hir().children(node).count();
-                let any = self.l.builtin(bc::BuiltinType::Any)?;
-                let mut elements = Vec::new();
-                self.l.b.reserve(&mut elements, count)?;
-                elements.resize(count, any);
-                let ty = bc::TypeId(self.l.package.types.len() as u32);
-                self.l
-                    .b
-                    .push(&mut self.l.package.types, bc::TypeDef::Tuple(elements))?;
+                let ty = self.tuple_pattern_type(count)?;
                 self.require_pattern_type(node, value, ty)?;
                 for (index, child) in self.l.m.hir().children(node).enumerate() {
                     let index = self.constant(bc::Const::Int(index as i64), child)?;
@@ -146,6 +160,37 @@ impl FunctionBuilder<'_, '_> {
             }
         }
         Ok(())
+    }
+
+    fn tuple_pattern_type(&mut self, count: usize) -> Result<bc::TypeId, Box<Error>> {
+        let any = self.l.builtin(bc::BuiltinType::Any)?;
+        let mut elements = Vec::new();
+        self.l.b.reserve(&mut elements, count)?;
+        elements.resize(count, any);
+        let ty = bc::TypeId(self.l.package.types.len() as u32);
+        self.l
+            .b
+            .push(&mut self.l.package.types, bc::TypeDef::Tuple(elements))?;
+        Ok(ty)
+    }
+
+    fn record_pattern_type(&mut self, node: h::NodeId) -> Result<bc::TypeId, Box<Error>> {
+        let any = self.l.builtin(bc::BuiltinType::Any)?;
+        let mut fields = Vec::new();
+        for field in self.l.m.hir().children(node) {
+            let Form::PatternField { key, .. } = self.l.m.hir().node(field).form else {
+                unreachable!("analyzed record pattern");
+            };
+            let name = self.l.name(self.l.m.hir().text(key.span))?;
+            self.l
+                .b
+                .push(&mut fields, bc::RecordFieldType { name, ty: any })?;
+        }
+        let ty = bc::TypeId(self.l.package.types.len() as u32);
+        self.l
+            .b
+            .push(&mut self.l.package.types, bc::TypeDef::Record(fields))?;
+        Ok(ty)
     }
 
     fn require_pattern_type(
@@ -197,14 +242,57 @@ impl FunctionBuilder<'_, '_> {
             };
             let next = self.block()?;
             self.enter_scope(arm)?;
-            self.value_pattern(pattern, source, next, depth, use_text_checks)?;
-            // Every supported value pattern binds the original value. OR alternatives
-            // share these symbols; commit once, after the complete test succeeds.
             let scope = self.l.m.facts()[arm.0 as usize].scope.expect("match scope");
             let symbols = &self.l.m.scopes()[scope.0 as usize].symbols;
             self.l.b.work(symbols.len() as u64)?;
-            for &symbol in symbols {
-                self.write(symbol, source, true, pattern)?;
+            let structured = projects_match_fields(self.l.m.hir(), pattern);
+            let mut projection = MatchProjection::default();
+            let mismatch = if structured {
+                for &symbol in symbols {
+                    let slot = self.temp()?;
+                    self.l.b.push(&mut projection.bindings, (symbol, slot))?;
+                }
+                self.block()?
+            } else {
+                next
+            };
+            self.value_pattern(
+                pattern,
+                source,
+                mismatch,
+                depth,
+                use_text_checks,
+                &mut projection,
+            )?;
+            if structured {
+                // Every successful alternative supplies the same symbols. Commit
+                // only once and release projected values on both pattern edges.
+                for &(symbol, slot) in &projection.bindings {
+                    self.write(symbol, slot, true, pattern)?;
+                    self.release(slot)?;
+                }
+                for &slot in &projection.scratch {
+                    self.release(slot)?;
+                }
+                let matched = self.block()?;
+                self.terminate(Terminator::Jump(matched), arm)?;
+                self.start(mismatch)?;
+                for slot in projection
+                    .bindings
+                    .iter()
+                    .map(|&(_, slot)| slot)
+                    .chain(projection.scratch.iter().copied())
+                {
+                    self.op(bc::Opcode::Clear, slot.0, 0, 0, pattern)?;
+                }
+                self.terminate(Terminator::Jump(next), arm)?;
+                self.start(matched)?;
+                self.l.b.release(projection.bindings);
+                self.l.b.release(projection.scratch);
+            } else {
+                for &symbol in symbols {
+                    self.write(symbol, source, true, pattern)?;
+                }
             }
             if let Some(guard) = guard {
                 let no_wait = std::mem::replace(&mut self.no_wait, true);
@@ -273,6 +361,7 @@ impl FunctionBuilder<'_, '_> {
         failed: BlockId,
         depth: usize,
         use_text_checks: bool,
+        projection: &mut MatchProjection,
     ) -> Result<(), Box<Error>> {
         self.l.b.span = self.span(node);
         self.l.b.work(1)?;
@@ -284,9 +373,28 @@ impl FunctionBuilder<'_, '_> {
         }
         let depth = depth + 1;
         match self.l.m.hir().node(node).form {
-            Form::Name { .. } | Form::Wildcard => Ok(()),
+            Form::Name { .. } | Form::PatternField { pattern: None, .. } => {
+                if !projection.bindings.is_empty() {
+                    let symbol = self.l.m.facts()[node.0 as usize]
+                        .symbol
+                        .expect("match binding");
+                    let index = projection
+                        .bindings
+                        .binary_search_by_key(&symbol, |&(symbol, _)| symbol)
+                        .expect("known match binding symbol");
+                    self.op(
+                        bc::Opcode::Move,
+                        projection.bindings[index].1.0,
+                        value.0,
+                        0,
+                        node,
+                    )?;
+                }
+                Ok(())
+            }
+            Form::Wildcard => Ok(()),
             Form::Single { child } if self.l.m.hir().node(node).kind == H::GroupPattern => {
-                self.value_pattern(child, value, failed, depth, use_text_checks)
+                self.value_pattern(child, value, failed, depth, use_text_checks, projection)
             }
             Form::LiteralPattern {
                 value: literal,
@@ -325,23 +433,100 @@ impl FunctionBuilder<'_, '_> {
                 let condition = self.temp()?;
                 self.op(bc::Opcode::Is, condition.0, value.0, ty.0, node)?;
                 self.pattern_branch(node, condition, failed)?;
-                self.value_pattern(pattern, value, failed, depth, use_text_checks)
+                self.value_pattern(pattern, value, failed, depth, use_text_checks, projection)
+            }
+            Form::EnumCase { payload, .. } => {
+                let shape = self.l.ty(self.l.m.facts()[node.0 as usize].ty, 0)?;
+                let condition = self.temp()?;
+                self.op(bc::Opcode::Is, condition.0, value.0, shape.0, node)?;
+                self.pattern_branch(node, condition, failed)?;
+                if let Some(payload) = payload {
+                    let part = self.match_part(node, value, bc::Const::Int(1), projection)?;
+                    projection.active += 1;
+                    self.match_fields(payload, part, failed, depth, projection)?;
+                    projection.active -= 1;
+                }
+                Ok(())
             }
             Form::Or { left, right } => {
                 let alternative = self.block()?;
                 let accepted = self.block()?;
-                self.value_pattern(left, value, alternative, depth, use_text_checks)?;
+                self.value_pattern(left, value, alternative, depth, use_text_checks, projection)?;
                 self.terminate(Terminator::Jump(accepted), node)?;
                 self.start(alternative)?;
-                self.value_pattern(right, value, failed, depth, use_text_checks)?;
+                self.value_pattern(right, value, failed, depth, use_text_checks, projection)?;
                 self.terminate(Terminator::Jump(accepted), node)?;
                 self.start(accepted)
+            }
+            Form::Sequence
+                if matches!(
+                    self.l.m.hir().node(node).kind,
+                    H::TuplePattern | H::ObjectPattern
+                ) =>
+            {
+                self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
+                let shape = if self.l.m.hir().node(node).kind == H::TuplePattern {
+                    self.tuple_pattern_type(self.l.m.hir().children(node).count())?
+                } else {
+                    self.record_pattern_type(node)?
+                };
+                let condition = self.temp()?;
+                self.op(bc::Opcode::Is, condition.0, value.0, shape.0, node)?;
+                self.pattern_branch(node, condition, failed)?;
+                self.match_fields(node, value, failed, depth, projection)
             }
             _ => Err(self.l.b.error(
                 ErrorKind::Unsupported,
                 "structural pattern lowering is not connected",
             )),
         }
+    }
+
+    fn match_fields(
+        &mut self,
+        node: h::NodeId,
+        value: bc::Reg,
+        failed: BlockId,
+        depth: usize,
+        projection: &mut MatchProjection,
+    ) -> Result<(), Box<Error>> {
+        self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
+        for (index, child) in self.l.m.hir().children(node).enumerate() {
+            let (pattern, field) = match self.l.m.hir().node(child).form {
+                Form::PatternField { key, pattern, .. } => (pattern.unwrap_or(child), Some(key)),
+                _ => (child, None),
+            };
+            if matches!(self.l.m.hir().node(pattern).form, Form::Wildcard) {
+                continue;
+            }
+            let key = match field {
+                Some(field) => bc::Const::Utf8(self.l.b.string(self.l.m.hir().text(field.span))?),
+                None => bc::Const::Int(index as i64),
+            };
+            let part = self.match_part(child, value, key, projection)?;
+            projection.active += 1;
+            self.value_pattern(pattern, part, failed, depth, false, projection)?;
+            projection.active -= 1;
+        }
+        Ok(())
+    }
+
+    fn match_part(
+        &mut self,
+        node: h::NodeId,
+        value: bc::Reg,
+        key: bc::Const,
+        projection: &mut MatchProjection,
+    ) -> Result<bc::Reg, Box<Error>> {
+        if projection.active == projection.scratch.len() {
+            let slot = self.temp()?;
+            self.l.b.push(&mut projection.scratch, slot)?;
+        }
+        let part = projection.scratch[projection.active];
+        let key = self.constant(key, node)?;
+        self.op(bc::Opcode::IndexGet, part.0, value.0, key.0, node)?;
+        self.release(key)?;
+        Ok(part)
     }
 
     fn short_string_pattern(

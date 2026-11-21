@@ -60,6 +60,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                 ])),
             ),
             ("paused", TypeHint::Bool),
+            ("skip", skip_type()),
         ],
     );
     for symbol in ["then", "together"] {
@@ -192,7 +193,9 @@ aside_host::native_documentation! {
         "reel::repeat";
         /// Start an action and return its awaitable activity. `paused` starts with its
         /// clock frozen. Default ownership follows the active scope, then the current
-        /// task owner. Await returns Completed or Stopped; retirement cancels the activity.
+        /// task owner. `skip: "finish"` allows fast-forward in the current reading
+        /// context to finish a running, finite activity; `"keep"` preserves its timing.
+        /// Await returns Completed or Stopped; retirement cancels the activity.
         "reel::run";
         /// Start a periodic activity with observable integer ticks and elapsed seconds.
         /// Publish the latest complete interval when time advances. Pause freezes time;
@@ -228,6 +231,7 @@ use super::{
     AdapterError, FaultKind, HostTicket,
     stage::{self, NodeProperty, StageBinding},
 };
+use crate::reading::ReadingId;
 use aside_host::PropertySchema;
 use aside_vm::executor::{Completion, HostResponse, TaskId, Vm, WaitId};
 use aside_vm::{Heap, HeapError, PropertyId, RootKind, RootOwner, RootToken, Value, ValueTag};
@@ -255,6 +259,39 @@ enum RootSlot {
     Serial,
     PausedAt,
     Forcing,
+    SkipReading,
+}
+
+pub(super) fn skip_type() -> aside_compiler::semantic::TypeHint {
+    use aside_compiler::semantic::TypeHint;
+    TypeHint::Union(vec![
+        TypeHint::StringLiteral("keep".into()),
+        TypeHint::StringLiteral("finish".into()),
+    ])
+}
+
+pub(super) fn skip_finishes(heap: &Heap, policy: Value) -> Result<bool, AdapterError> {
+    let info = heap.info(policy)?;
+    if info.kind == aside_vm::ObjectKind::String {
+        match info.len {
+            4 => {
+                let mut bytes = [0; 4];
+                super::text::read_fixed_bytes(heap, policy, &mut bytes)?;
+                if &bytes == b"keep" {
+                    return Ok(false);
+                }
+            }
+            6 => {
+                let mut bytes = [0; 6];
+                super::text::read_fixed_bytes(heap, policy, &mut bytes)?;
+                if &bytes == b"finish" {
+                    return Ok(true);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(AdapterError::Input("skip requires \"keep\" or \"finish\""))
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
@@ -339,7 +376,7 @@ struct Scan {
 #[derive(Clone, Copy)]
 enum Round {
     CheckHosts,
-    Reconcile(Option<Scan>),
+    Reconcile(Option<Scan>, Option<ReadingId>),
     Events,
     Sample(Option<Scan>),
 }
@@ -371,12 +408,22 @@ struct NativeWork {
     command: Option<Command>,
 }
 
+pub(super) struct Launch {
+    pub action: Value,
+    pub owner: Value,
+    pub paused: Value,
+    pub skip: Option<(Value, ReadingId)>,
+}
+
 type EventKey = (u64, u64, u32);
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Activities {
     #[serde(skip)]
     logical: resources::Restoring,
-    skipping: bool,
+    #[serde(skip)]
+    skipping: Option<ReadingId>,
+    #[serde(skip)]
+    skip_pending: Option<ReadingId>,
     head: Option<RootToken>,
     jobs: Option<RootToken>,
     job_tail: Option<Value>,
@@ -397,7 +444,7 @@ pub(super) struct Activities {
     #[serde(skip)]
     round: Option<Round>,
     #[serde(skip)]
-    reconciled_hosts: Option<(u64, u64)>,
+    reconciled_hosts: Option<(u64, u64, Option<ReadingId>)>,
     clock_round: bool,
     time: f64,
     observed_time: f64,
@@ -479,7 +526,6 @@ impl Activities {
         self.head = self.head.map(|r| map.root(r)).transpose()?;
         self.jobs = self.jobs.map(|r| map.root(r)).transpose()?;
         self.job_tail = self.job_tail.map(|v| map.value(v)).transpose()?;
-        self.skipping = false;
         Ok(())
     }
 }

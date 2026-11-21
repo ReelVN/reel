@@ -31,7 +31,11 @@ impl Evaluator<'_, '_> {
                     .symbol
                     .and_then(|symbol| self.m.external_binding(Some(symbol), None))
             })
-            .filter(|binding| binding.kind == h::ExternalBindingKind::Reference)
+            .filter(|binding| {
+                binding.kind == h::ExternalBindingKind::Reference
+                    || (binding.descriptor.intrinsic == Some(crate::semantic::Intrinsic::EnumCase)
+                        && binding.descriptor.signature.is_none())
+            })
             .and_then(|binding| binding.descriptor.constant.as_deref())
         else {
             return Ok(None);

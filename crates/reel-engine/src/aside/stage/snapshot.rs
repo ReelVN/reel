@@ -31,6 +31,7 @@ pub(in crate::aside) enum Shape {
     ScrollBar,
     ProgressBar,
     Tooltip,
+    CameraPlane,
 }
 
 impl Shape {
@@ -53,6 +54,7 @@ impl Shape {
             "reel::video" => Self::Video,
             "reel::particles" => Self::Particles,
             "reel::camera" => Self::Camera,
+            "reel::camera_plane" => Self::CameraPlane,
             "reel::scroll" => Self::Scroll,
             "reel::popup" => Self::Popup,
             "reel::tooltip" => Self::Tooltip,
@@ -80,6 +82,7 @@ impl Shape {
             Self::Input => input::InputField::PROPERTIES.len(),
             Self::Particles => super::super::particles::PREFIX.len(),
             Self::Camera => camera::CameraField::PROPERTIES.len(),
+            Self::CameraPlane => camera::PlaneField::PROPERTIES.len(),
             Self::Scroll => scroll::ScrollField::PROPERTIES.len(),
             Self::Popup => popup::PopupField::PROPERTIES.len(),
             Self::Tooltip => popup::TOOLTIP_PROPERTIES.len(),
@@ -157,6 +160,7 @@ impl Shape {
                 super::super::particles::kind(heap, &args, origin, limit)?
             }
             Self::Camera => camera::kind(heap, fields)?,
+            Self::CameraPlane => camera::plane_kind(heap, fields)?,
             Self::Scroll => scroll::kind(heap, fields)?,
             Self::ScrollBar => scrollbar::kind(heap, fields)?,
             Self::Popup | Self::Tooltip => {
@@ -229,6 +233,9 @@ impl Shape {
                 super::super::particles::validate(h, host, i, v)
             }),
             Self::Camera => descriptor!("reel.camera", |h, _, i, v| camera::validate(h, i, v)),
+            Self::CameraPlane => descriptor!("reel.camera_plane", |h, _, i, v| {
+                camera::validate_plane(h, i, v)
+            }),
             Self::Scroll => descriptor!("reel.scroll", |h, _, i, v| scroll::validate(h, i, v)),
             Self::Popup => descriptor!("reel.popup", |h, _, i, v| popup::validate(h, i, v, false)),
             Self::Tooltip => {
@@ -273,6 +280,7 @@ impl StageBinding {
             Shape::Video,
             Shape::Particles,
             Shape::Camera,
+            Shape::CameraPlane,
             Shape::Scroll,
             Shape::Popup,
             Shape::Tooltip,

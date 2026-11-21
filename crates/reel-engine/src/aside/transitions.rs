@@ -24,6 +24,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             ("mask_invert", TypeHint::Bool),
             ("mask_x", number()),
             ("mask_y", number()),
+            ("skip", activity::skip_type()),
         ],
     );
     api.native_mut("reel::stage::transition")
@@ -39,6 +40,9 @@ aside_host::native_documentation! {
         /// excluded as targets.
         /// Duration, easing and masks control the blend. The call waits for final frame
         /// acceptance and returns the original value returned by `change`.
+        /// `skip: "finish"` lets fast-forward in the current reading context finish
+        /// the blend early. `change` still runs once and the final drawing must be accepted.
+        /// `skip: "keep"` preserves the authored blend timing.
         /// A string mask reveals the new drawing through the image's grayscale ranks as
         /// progress advances. A Mask expression supplies coverage directly; compose it
         /// with mask.param("progress") when its coverage should change during the blend.
@@ -46,6 +50,7 @@ aside_host::native_documentation! {
         "reel::stage::transition";
     }
 }
+use crate::reading::ReadingId;
 use aside_vm::executor::{Continuation, FaultRetention, FrameId};
 use aside_vm::{HeapReservation, ValueTag};
 use reel_ui::{
@@ -116,6 +121,7 @@ struct SavedTransition {
     mask_x: f64,
     mask_y: f64,
     finished: bool,
+    skip_reading: Option<ReadingId>,
 }
 
 struct Transition {
@@ -135,6 +141,8 @@ pub(super) struct Transitions {
     charge: Option<HeapReservation>,
     time: f64,
     round: Option<(f64, usize)>,
+    skipping: Option<ReadingId>,
+    finish: Option<(ReadingId, usize)>,
     checked_lifetimes: Option<(u64, u64)>,
     #[cfg(test)]
     pub(super) lifetime_checks: std::cell::Cell<usize>,
@@ -153,17 +161,21 @@ impl Transitions {
         !self.live.is_empty()
     }
     pub fn pending(&self, time: f64) -> bool {
+        self.finish.is_some() || self.time_pending(time)
+    }
+    fn time_pending(&self, time: f64) -> bool {
         self.round.is_some() || (self.needs_time() && time > self.time)
     }
     pub fn snapshot_ready(&self) -> bool {
-        self.live.iter().all(|t| {
-            t.state.finished
-                || (t.state.phase != TransitionPhase::OldPending
-                    && (t.saved.is_none() || t.previous.is_some()))
-        })
+        self.finish.is_none()
+            && self.live.iter().all(|t| {
+                t.state.finished
+                    || (t.state.phase != TransitionPhase::OldPending
+                        && (t.saved.is_none() || t.previous.is_some()))
+            })
     }
-    pub fn advance(&mut self, time: f64, work: u32) -> ActivityProgress {
-        if !self.pending(time) {
+    fn advance(&mut self, time: f64, work: u32) -> ActivityProgress {
+        if !self.time_pending(time) {
             return ActivityProgress::default();
         }
         let (time, mut cursor) = self.round.unwrap_or((time, 0));
@@ -270,10 +282,16 @@ impl SessionVm {
         {
             *cursor -= 1;
         }
+        if let Some((_, cursor)) = &mut self.transitions.finish
+            && index < *cursor
+        {
+            *cursor -= 1;
+        }
         if self.transitions.live.is_empty() {
             self.transitions.live = VecDeque::new();
             self.transitions.charge = None;
             self.transitions.round = None;
+            self.transitions.finish = None;
         }
         Ok(())
     }
@@ -319,6 +337,87 @@ impl SessionVm {
 
     pub fn transition_revision(&self) -> u64 {
         self.transitions.revision
+    }
+
+    pub(super) fn sync_effect_reading(&mut self, session: &Session) {
+        let skipping = session.skipping_effects();
+        self.activities.set_skipping(skipping);
+        if self.transitions.skipping != skipping {
+            self.transitions.skipping = skipping;
+            if let Some(reading) = skipping
+                && self.transitions.active()
+            {
+                self.transitions.finish = Some((reading, 0));
+            }
+        }
+    }
+
+    pub(super) fn advance_transitions(
+        &mut self,
+        budget: u32,
+    ) -> Result<ActivityProgress, AdapterError> {
+        let mut used = 0;
+        let mut changed = false;
+        if let Some((reading, mut index)) = self.transitions.finish {
+            while index < self.transitions.live.len() && used < budget {
+                changed |= self.finish_transition(index, reading)?;
+                used += 1;
+                index += 1;
+            }
+            self.transitions.finish =
+                (index < self.transitions.live.len()).then_some((reading, index));
+            if changed {
+                self.transitions.changed();
+            }
+            if self.transitions.finish.is_some() {
+                return Ok(ActivityProgress {
+                    work: used,
+                    pending: true,
+                    woke: changed,
+                });
+            }
+        }
+        let mut progress = self
+            .transitions
+            .advance(self.activities.time(), budget - used);
+        progress.work += used;
+        progress.woke |= changed;
+        Ok(progress)
+    }
+
+    fn finish_transition(
+        &mut self,
+        index: usize,
+        reading: ReadingId,
+    ) -> Result<bool, AdapterError> {
+        let state = &self.transitions.live[index].state;
+        if state.skip_reading != Some(reading)
+            || state.duration == 0.
+            || state.phase == TransitionPhase::FinalPending
+            || !self.transition_owner_live(index)?
+        {
+            return Ok(false);
+        }
+        let entry = &mut self.transitions.live[index];
+        let state = &mut entry.state;
+        state.duration = 0.;
+        state.elapsed = 0.;
+        entry.previous = None;
+        entry.saved = None;
+        entry.mask = None;
+        state.phase = match state.phase {
+            TransitionPhase::OldPending => {
+                if let Some(wait) = state.wait.take()
+                    && self.vm.wait_is_pending(wait)
+                {
+                    self.vm.complete(wait, VmCompletion::Ready(Value::NULL))?;
+                }
+                TransitionPhase::Changing
+            }
+            TransitionPhase::Changing => TransitionPhase::Changing,
+            _ => TransitionPhase::FinalPending,
+        };
+        Ok(true)
     }
 
     pub fn transition_views(&self) -> impl Iterator<Item = TransitionView> + '_ {
@@ -542,7 +641,11 @@ impl SessionVm {
         contains(a, b) || contains(b, a)
     }
 
-    pub(super) fn dispatch_transition(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+    pub(super) fn dispatch_transition(
+        &mut self,
+        session: &Session,
+        ticket: HostTicket,
+    ) -> Result<(), AdapterError> {
         if ticket.input == NativeInput::Entry {
             if ticket.context.no_wait || ticket.context.init || ticket.context.derived {
                 return Err(VmError::Effect.into());
@@ -552,6 +655,13 @@ impl SessionVm {
             let target_value = args[1];
             let target = self.transition_target(target_value)?;
             let duration = stage::nonnegative(args[2])?;
+            let skip_reading =
+                activity::skip_finishes(self.vm.heap(), args[10])?.then_some(session.reading_id);
+            let duration = if skip_reading.is_some() && session.skipping_effects() == skip_reading {
+                0.
+            } else {
+                duration
+            };
             let easing = activity::easing::Easing::parse(&text::read_string(
                 self.vm.heap(),
                 args[3],
@@ -561,7 +671,8 @@ impl SessionVm {
             stage::validate_mask(self.vm.heap(), mask_value)?;
             let mask = (mask_value.tag() != ValueTag::Null)
                 .then(|| masks::project(self.vm.heap(), mask_value, self.read_limit))
-                .transpose()?;
+                .transpose()?
+                .filter(|_| duration > 0.);
             let mask_softness = stage::nonnegative(args[5])?;
             let mask_invert = args[6]
                 .as_bool()
@@ -636,6 +747,7 @@ impl SessionVm {
                     mask_x,
                     mask_y,
                     finished: false,
+                    skip_reading,
                 },
                 target,
                 previous: None,
@@ -827,7 +939,7 @@ impl SessionVm {
             Some(self.stage.id(heap, target_value)?)
         };
         let mask_value = heap.sequence_get(value, MASK)?;
-        let mask = (!state.finished && mask_value.tag() != ValueTag::Null)
+        let mask = (!state.finished && state.duration > 0. && mask_value.tag() != ValueTag::Null)
             .then(|| masks::project(heap, mask_value, self.read_limit))
             .transpose()?;
         let saved = picture

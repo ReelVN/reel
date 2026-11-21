@@ -48,11 +48,11 @@ impl Activities {
         stage: &StageBinding,
         root_owner: RootOwner,
         ticket: HostTicket,
-        args: [Value; 3],
+        launch: Launch,
         budget: u32,
     ) -> Result<(bool, u32), AdapterError> {
         let action = if self.native.is_none() {
-            action::clock(vm.heap_mut(), args[0])?
+            action::clock(vm.heap_mut(), launch.action)?
         } else {
             Value::NULL
         };
@@ -61,7 +61,7 @@ impl Activities {
             stage,
             root_owner,
             ticket,
-            [action, args[1], args[2]],
+            Launch { action, ..launch },
             budget,
         )
     }
@@ -71,16 +71,29 @@ impl Activities {
         stage: &StageBinding,
         root_owner: RootOwner,
         ticket: HostTicket,
-        args: [Value; 3],
+        launch: Launch,
         budget: u32,
     ) -> Result<(bool, u32), AdapterError> {
-        let [action, owner, paused] = args;
+        let Launch {
+            action,
+            owner,
+            paused,
+            skip,
+        } = launch;
         if self.native.is_none() {
             let paused = paused
                 .as_bool()
                 .ok_or(AdapterError::Input("paused must be bool"))?;
             tagged(vm.heap(), action, ACTION)?;
             super::super::scopes::validate_owner(vm.heap(), stage, owner)?;
+            let skip_reading = if let Some((policy, reading)) = skip
+                && skip_finishes(vm.heap(), policy)?
+                && action::duration(vm.heap(), action)?.is_finite()
+            {
+                Value::int(reading.0 as i64)
+            } else {
+                Value::NULL
+            };
             let native = vm
                 .program()
                 .package()
@@ -118,7 +131,7 @@ impl Activities {
                 .checked_add(1)
                 .ok_or(AdapterError::Input("activity identity exhausted"))?;
             self.serial = serial;
-            let mut slots = [Value::NULL; RootSlot::Forcing as usize + 1];
+            let mut slots = [Value::NULL; RootSlot::SkipReading as usize + 1];
             slots[RootSlot::Tag as usize] = Value::int(ACTIVITY);
             slots[RootSlot::State as usize] = Value::int(if paused {
                 State::Paused
@@ -132,6 +145,7 @@ impl Activities {
             slots[RootSlot::Serial as usize] = Value::int(serial as i64);
             slots[RootSlot::PausedAt as usize] = Value::float(self.time);
             slots[RootSlot::Forcing as usize] = Value::bool(false);
+            slots[RootSlot::SkipReading as usize] = skip_reading;
             let activity =
                 heap.alloc_host(fields, &slots, if clock { None } else { Some(&READONLY) })?;
             stage.types.mark(
@@ -218,6 +232,12 @@ impl Activities {
                             RootSlot::State,
                             Value::int(State::Running as i64),
                         )?;
+                        if let Some(reading) = self.skipping
+                            && root_get(heap, activity, RootSlot::SkipReading)?.as_int()
+                                == Some(reading.0 as i64)
+                        {
+                            self.reconciled_hosts = None;
+                        }
                         Some(
                             self.time
                                 - root_get(heap, activity, RootSlot::PausedAt)?

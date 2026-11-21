@@ -41,6 +41,7 @@ pub(in crate::aside) fn properties(symbol: &str) -> Vec<PropertyDocumentation> {
         "reel::row" | "reel::column" => schema::<flow::FlowField>(),
         "reel::grid" => schema::<flow::GridField>(),
         "reel::camera" => schema::<camera::CameraField>(),
+        "reel::camera_plane" => schema::<camera::PlaneField>(),
         "reel::scroll" => schema::<scroll::ScrollField>(),
         "reel::popup" => schema::<popup::PopupField>(),
         "reel::tooltip" => {

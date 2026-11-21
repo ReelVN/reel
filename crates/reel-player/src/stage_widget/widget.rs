@@ -886,14 +886,18 @@ impl Widget for SceneWidget {
                 .unwrap()
                 .place_measured(view, self.node.props.gap);
         }
-        let view = if let NodeKind::Camera(camera) = self.node.kind {
-            camera.transform(Size::new(
-                (self.size.width - self.node.props.padding * 2.).max(0.),
-                (self.size.height - self.node.props.padding * 2.).max(0.),
-            ))
+        let camera = if let NodeKind::Camera(camera) = self.node.kind {
+            Some(camera)
         } else {
-            reel_ui::kurbo::Affine::IDENTITY
+            None
         };
+        let inner = Size::new(
+            (self.size.width - self.node.props.padding * 2.).max(0.),
+            (self.size.height - self.node.props.padding * 2.).max(0.),
+        );
+        let flat_view = camera.map_or(reel_ui::kurbo::Affine::IDENTITY, |view| {
+            view.transform(inner)
+        });
         let viewport = self.virtual_viewport(ctx);
         let logical_translation = match self.node.kind {
             NodeKind::Scroll { align, .. } => self.scroll.logical_translation(align),
@@ -910,6 +914,15 @@ impl Widget for SceneWidget {
             _ => None,
         };
         for (part_index, (node, child)) in self.children.iter_mut().enumerate() {
+            let view = match (camera, &node.kind) {
+                (Some(camera), NodeKind::CameraPlane { distance }) => {
+                    let view = camera.plane_transform(inner, *distance);
+                    ctx.set_stashed(child, !node.props.visible || view.is_none());
+                    let Some(view) = view else { continue };
+                    view
+                }
+                _ => flat_view,
+            };
             let transform = view * node.props.transform(ctx.child_size(child));
             let transform = if let Some((id, offset)) = slider_thumb
                 && id == node.id

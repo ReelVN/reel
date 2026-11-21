@@ -95,6 +95,19 @@ impl Number {
     fn pow(self, exponent: Self) -> f64 {
         self.0.powf(exponent.0)
     }
+    fn mix(self, other: Self, weight: Self) -> f64 {
+        self.0 + (other.0 - self.0) * weight.0
+    }
+    fn smoothstep(self, other: Self, value: Self) -> f64 {
+        if self.0 == other.0 {
+            return f64::from(value.0 >= self.0);
+        }
+        let t = ((value.0 - self.0) / (other.0 - self.0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+    fn modulo(self, divisor: Self) -> f64 {
+        self.0 - (self.0 / divisor.0).floor() * divisor.0
+    }
 }
 
 /// Return the signed angle of `(x, y)` in radians, preserving the quadrant.
@@ -137,6 +150,58 @@ fn pow(
     #[aside(doc_type = aside_host::source::number())] exponent: Number,
 ) -> Result<f64, NativeError> {
     Ok(base.pow(exponent))
+}
+
+/// Interpolate from `a` to `b` as `a + (b - a) * weight`. Weights outside
+/// `[0, 1]` extrapolate. Accept int or float and return float64.
+#[native(symbol = "std::math::mix", abi = 1, effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        let [a, b, weight] = [Number::read(args[0]).ok()?, Number::read(args[1]).ok()?, Number::read(args[2]).ok()?];
+        Some(Value::float(a.mix(b, weight)))
+    } })]
+fn mix(
+    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(doc_type = aside_host::source::number())] a: Number,
+    #[aside(doc_type = aside_host::source::number())] b: Number,
+    #[aside(doc_type = aside_host::source::number())] weight: Number,
+) -> Result<f64, NativeError> {
+    Ok(a.mix(b, weight))
+}
+
+/// Evaluate the cubic `t * t * (3 - 2 * t)` at the clamped ratio from `edge0`
+/// to `edge1`. Descending edges reverse the ramp. Equal edges return 1 for
+/// `value >= edge0`, otherwise 0. Accept int or float and return float64.
+#[native(symbol = "std::math::smoothstep", abi = 1, effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        let edge0 = Number::read(args[0]).ok()?;
+        let edge1 = Number::read(args[1]).ok()?;
+        let value = Number::read(args[2]).ok()?;
+        Some(Value::float(edge0.smoothstep(edge1, value)))
+    } })]
+fn smoothstep(
+    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(doc_type = aside_host::source::number())] edge0: Number,
+    #[aside(doc_type = aside_host::source::number())] edge1: Number,
+    #[aside(doc_type = aside_host::source::number())] value: Number,
+) -> Result<f64, NativeError> {
+    Ok(edge0.smoothstep(edge1, value))
+}
+
+/// Return `value - floor(value / divisor) * divisor`. The nonzero result
+/// follows the sign of the divisor for finite inputs. Zero divisors and
+/// non-finite operands yield NaN. Accept int or float and return float64.
+#[native(symbol = "std::math::modulo", abi = 1, effects = Effects(0),
+    read_only_leaf = ReadOnlyLeaf { work: 1, invoke: |_, args| {
+        let value = Number::read(args[0]).ok()?;
+        let divisor = Number::read(args[1]).ok()?;
+        Some(Value::float(value.modulo(divisor)))
+    } })]
+fn modulo(
+    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(doc_type = aside_host::source::number())] value: Number,
+    #[aside(doc_type = aside_host::source::number())] divisor: Number,
+) -> Result<f64, NativeError> {
+    Ok(value.modulo(divisor))
 }
 
 /// Return the smaller numeric input, preserving its type and precision.
@@ -276,6 +341,9 @@ pub(super) fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
         sqrt::binding(),
         hypot::binding(),
         pow::binding(),
+        mix::binding(),
+        smoothstep::binding(),
+        modulo::binding(),
         exp::binding(),
         ln::binding(),
         log2::binding(),

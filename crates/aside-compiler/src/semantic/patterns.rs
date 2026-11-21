@@ -1,5 +1,5 @@
 //! One grammar-role projection for local bindings and exported descriptors.
-use crate::hir::{Form, Hir, HirKind as H, NodeId};
+use crate::hir::{Form, Hir, HirKind as H, NameId, NodeId};
 use smallvec::SmallVec;
 
 pub(super) enum Shape<T> {
@@ -17,6 +17,10 @@ pub(super) trait PatternTypes {
     fn tuple(&mut self, elements: Vec<Self::Ty>) -> Self::Ty;
     fn array(&self) -> Self::Ty;
     fn table(&self) -> Self::Ty;
+    fn field(&self, ty: &Self::Ty, name: NameId) -> Self::Ty;
+    fn variant_payload(&self, _: NodeId) -> Self::Ty {
+        self.unknown()
+    }
     fn annotation(&mut self, node: NodeId) -> Self::Ty;
     fn compatible(&self, actual: &Self::Ty, expected: &Self::Ty) -> bool;
     fn charge(&mut self, node: NodeId) -> bool;
@@ -48,6 +52,10 @@ pub(super) fn project<C: PatternTypes>(
             true
         }
         Form::Single { child } => project(context, child, value, output),
+        Form::EnumCase { payload, .. } => {
+            let payload_ty = context.variant_payload(node);
+            payload.is_none_or(|payload| project(context, payload, payload_ty, output))
+        }
         Form::Or { left, right } => {
             let left = project(context, left, value.clone(), output);
             let right = project(context, right, value, output);
@@ -129,6 +137,10 @@ pub(super) fn project<C: PatternTypes>(
                     } else {
                         context.table()
                     }
+                } else if let Form::PatternField { key, .. } = context.hir().node(child).form
+                    && let Some(name) = key.name
+                {
+                    context.field(&value, name)
                 } else {
                     context.unknown()
                 };

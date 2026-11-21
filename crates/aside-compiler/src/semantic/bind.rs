@@ -1,5 +1,6 @@
 use super::*;
 mod arguments;
+mod enumerations;
 mod refinement;
 mod results;
 use crate::hir::*;
@@ -72,6 +73,17 @@ impl super::patterns::PatternTypes for Binder<'_> {
     fn table(&self) -> TypeId {
         TABLE
     }
+    fn field(&self, ty: &TypeId, name: NameId) -> TypeId {
+        record_fields(&self.out.types, *ty)
+            .and_then(|fields| fields.iter().find(|(key, _)| *key == name))
+            .map_or(ANY, |&(_, ty)| ty)
+    }
+    fn variant_payload(&self, case: NodeId) -> TypeId {
+        if let Type::Tuple(parts) = &self.out.types[self.ty(case).0 as usize] {
+            return parts[1];
+        }
+        ANY
+    }
     fn annotation(&mut self, node: NodeId) -> TypeId {
         self.ty(node)
     }
@@ -90,6 +102,7 @@ struct CallSite {
     bound: bool,
     effect: CallEffect,
     no_wait: bool,
+    derived: bool,
     named_callee: Option<NameId>,
 }
 #[derive(Clone)]
@@ -201,6 +214,8 @@ struct Binder<'a> {
     class: Option<(NodeId, bool)>,
     class_members: HashMap<NodeId, HashMap<(NameId, bool), NodeId>>,
     prepared_classes: HashSet<NodeId>,
+    enum_types: HashMap<NameId, TypeId>,
+    resolving_enums: HashSet<NameId>,
     class_bases: HashMap<NodeId, NodeId>,
     derived_functions: HashSet<NodeId>,
     fresh: HashSet<SymbolId>,
@@ -349,6 +364,8 @@ pub(super) fn analyze_editor(
         class: None,
         class_members: HashMap::new(),
         prepared_classes: HashSet::new(),
+        enum_types: HashMap::new(),
+        resolving_enums: HashSet::new(),
         class_bases: HashMap::new(),
         derived_functions: HashSet::new(),
         fresh: HashSet::new(),
@@ -541,7 +558,7 @@ impl Binder<'_> {
         }
         let id = TypeId(self.out.types.len() as u32);
         let value_contract = match &t {
-            Type::Record(_) | Type::StringLiteral(_) => true,
+            Type::Record(_) | Type::StringLiteral(_) | Type::Enum(..) => true,
             Type::Tuple(types) | Type::Union(types) => {
                 types.iter().any(|ty| self.value_contracts.contains(ty))
             }
@@ -582,6 +599,7 @@ impl Binder<'_> {
                     .collect();
                 self.record_type(fields)
             }
+            TypeHint::Enum { name, cases } => self.enum_type_hint(name, cases),
             TypeHint::Array => ARRAY,
             TypeHint::Table => TABLE,
             TypeHint::Future => FUTURE,
@@ -605,6 +623,12 @@ impl Binder<'_> {
             }
             TypeHint::Named(s) => {
                 let n = self.intern_name(s);
+                if let Some(ty) = self.enum_types.get(&n) {
+                    return *ty;
+                }
+                if let Some(definition) = self.enum_named_hint(s) {
+                    return self.hint(&definition);
+                }
                 self.intern_type(Type::Named(n))
             }
         }
@@ -759,12 +783,13 @@ impl Binder<'_> {
         let d = self.unwrap(n);
         if matches!(
             self.kind(d),
-            HirKind::Function | HirKind::Let | HirKind::Class
+            HirKind::Function | HirKind::Let | HirKind::Class | HirKind::Enum
         ) && !self.budget(d)
         {
             return;
         }
         match self.kind(d) {
+            HirKind::Enum => self.declare_enum(n, d, ctx),
             HirKind::Function => {
                 let receiver = Receiver::None;
                 let f = self.make_function(d, ctx, receiver);
@@ -870,6 +895,9 @@ impl Binder<'_> {
         }
         // Class shape is needed when a forward function body uses an instance.
         // Method and field initializer bodies are still analyzed at the declaration.
+        if self.scope == self.root_scope {
+            self.prepare_enums(&children, ctx);
+        }
         for &child in &children {
             let declaration = self.unwrap(child);
             if self.kind(declaration) == HirKind::Class {
@@ -959,11 +987,15 @@ impl Binder<'_> {
             return self.set_ty(n, ANY);
         };
         self.out.facts[n.0 as usize].symbol = Some(s);
-        if self
+        if let Some(descriptor) = self
             .external
             .get(&s)
-            .is_some_and(|descriptor| descriptor.type_only)
+            .filter(|descriptor| descriptor.type_only)
         {
+            if descriptor.intrinsic == Some(Intrinsic::EnumType) && self.enum_namespace_access(n) {
+                self.external_nodes.insert(n, descriptor.clone());
+                return self.set_ty(n, self.out.symbols[s.0 as usize].ty);
+            }
             self.error(
                 D::InvalidType,
                 token.span,
@@ -1155,10 +1187,47 @@ impl Binder<'_> {
             }
         }
     }
-    fn pattern_defaults(&mut self, n: NodeId, ctx: &Context) {
+    fn pattern_defaults(&mut self, n: NodeId, ctx: &Context, mode: PatternUse) {
+        if let Form::EnumCase {
+            ty,
+            variant,
+            payload,
+        } = self.out.hir.node(n).form
+        {
+            if mode != PatternUse::Branch {
+                self.error(
+                    D::PatternBindings,
+                    self.span(n),
+                    "enum case patterns belong in match arms",
+                );
+            }
+            self.enum_case_type(n, ty, variant, payload, ctx);
+            if let Some(payload) = payload {
+                self.pattern_defaults(payload, ctx, mode);
+            }
+            return;
+        }
+        let fields = mode == PatternUse::Branch && self.kind(n) == HirKind::ObjectPattern;
+        let mut seen = HashSet::new();
         for c in self.children(n) {
+            if fields && let Form::PatternField { key, default, .. } = self.out.hir.node(c).form {
+                if !seen.insert(key.name) {
+                    self.error(
+                        D::PatternBindings,
+                        key.span,
+                        "duplicate field in match pattern",
+                    );
+                }
+                if let Some(default) = default {
+                    self.error(
+                        D::PatternBindings,
+                        self.span(default),
+                        "match patterns do not supply defaults",
+                    );
+                }
+            }
             if is_pattern(self.kind(c)) {
-                self.pattern_defaults(c, ctx);
+                self.pattern_defaults(c, ctx, mode);
             } else if is_type(self.kind(c)) {
                 self.annotation(c, ctx);
             } else {
@@ -1175,7 +1244,7 @@ impl Binder<'_> {
         mode: PatternUse,
         mutable: bool,
     ) {
-        self.pattern_defaults(n, ctx);
+        self.pattern_defaults(n, ctx, mode);
         let names = self.pattern_names(n);
         for name in names {
             let symbol = if matches!(mode, PatternUse::Declaration | PatternUse::Branch) {
@@ -1374,6 +1443,7 @@ fn is_pattern(k: HirKind) -> bool {
             | HirKind::RestPattern
             | HirKind::OrPattern
             | HirKind::TypePattern
+            | HirKind::EnumPattern
     )
 }
 fn is_type(k: HirKind) -> bool {

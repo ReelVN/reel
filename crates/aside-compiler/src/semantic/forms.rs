@@ -46,12 +46,19 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
         | H::Arguments
         | H::Children
         | H::ImportGroup
+        | H::Enum
+        | H::EnumVariant
         | H::TupleType
         | H::RecordType
         | H::UnionType
         | H::TuplePattern
         | H::ArrayPattern
         | H::ObjectPattern => Form::Sequence,
+        H::EnumPattern => Form::EnumCase {
+            ty: annotation()?,
+            variant: name()?,
+            payload: pattern(),
+        },
         H::Block => Form::Block {
             tail: children.last().copied().filter(|&c| {
                 matches!(
@@ -314,6 +321,7 @@ fn is_pattern(k: HirKind) -> bool {
             | HirKind::RestPattern
             | HirKind::OrPattern
             | HirKind::TypePattern
+            | HirKind::EnumPattern
     )
 }
 fn is_type(k: HirKind) -> bool {

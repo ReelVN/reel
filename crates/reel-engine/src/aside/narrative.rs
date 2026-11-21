@@ -20,6 +20,8 @@ aside_host::native_documentation! {
         "reel::character::line";
         /// Present an array of character line values as one dialogue interaction.
         /// All lines share reveal and advance; `wait: false` returns its speech handle.
+        /// For a resumable group composed by script calls, use `wait: false` and
+        /// call `speech.wait()` in a declared flow to save the active group's wait.
         /// Use the observable dialogue lines to construct the visual arrangement.
         "reel::say";
         /// Append plain or rich text to the current single-speaker speech handle.
@@ -1013,7 +1015,6 @@ impl SessionVm {
             }
             "reel::game::clear_read_progress" => {
                 session.clear_read_progress()?;
-                self.activities.set_skipping(session.reading().skipping());
                 if !session.reading().skipping() {
                     self.skip_input = None;
                 }

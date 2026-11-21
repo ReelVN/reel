@@ -237,6 +237,8 @@ profile_phases! {
     FileOpen => "file_open",
     /// Query a newly opened loose file's metadata, nested within ReadOpen.
     FileMetadata => "file_metadata",
+    /// Try to capture a logical history point at an accepted dialogue boundary.
+    HistoryCapture => "history_capture",
 }
 
 /// Record an instantaneous event in the phase's call count without a duration.

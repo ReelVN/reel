@@ -16,6 +16,7 @@ impl Binder<'_> {
             H::Module | H::Block => return self.block_expected(n, ctx, true, expected),
             H::ModifiedDeclaration => children.first().map_or(NULL, |&c| self.visit(c, ctx)),
             H::Function => return self.function(n, ctx, Receiver::None),
+            H::Enum => NULL,
             H::Closure => return self.function_expected(n, ctx, Receiver::None, expected),
             H::Let => {
                 let pattern = children.iter().copied().find(|&c| is_pattern(self.kind(c)));

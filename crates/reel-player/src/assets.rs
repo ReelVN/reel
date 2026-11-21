@@ -1098,9 +1098,8 @@ impl Service {
                 }
                 if probe
                     && self.builtin_image_decoder
-                    && decode::MAX_IMAGE_WORKERS > 1
                     && let Some((size, output, temporary)) =
-                        crate::artwork::simple_webp_shape(load.input.as_ref().unwrap().as_slice())
+                        crate::artwork::webp_shape(load.input.as_ref().unwrap().as_slice())
                     && temporary <= decode_bytes
                 {
                     load.size = size;

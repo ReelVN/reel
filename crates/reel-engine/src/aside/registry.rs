@@ -31,6 +31,7 @@ pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
     ("popup", "reel::types::PopupNode"),
     ("tooltip", "reel::types::TooltipNode"),
     ("camera", "reel::types::CameraNode"),
+    ("camera_plane", "reel::types::CameraPlaneNode"),
 ];
 
 pub(super) fn node_type(symbol: &str) -> Option<&'static str> {
@@ -56,6 +57,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::row" | "reel::column" => super::stage::flow::FlowField::NAMES,
         "reel::grid" => super::stage::flow::GridField::NAMES,
         "reel::camera" => super::stage::camera::CameraField::NAMES,
+        "reel::camera_plane" => super::stage::camera::PlaneField::NAMES,
         "reel::scroll" => super::stage::scroll::ScrollField::NAMES,
         "reel::scrollbar" => super::stage::scrollbar::ScrollBarField::NAMES,
         "reel::popup" => super::stage::popup::PopupField::NAMES,
@@ -293,12 +295,13 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 super::stage::flow::FlowField::PROPERTIES
             };
             parameters.extend(properties.iter().map(|p| p.parameter()));
-        } else if name == "camera" {
-            parameters.extend(
+        } else if matches!(name, "camera" | "camera_plane") {
+            let properties = if name == "camera" {
                 super::stage::camera::CameraField::PROPERTIES
-                    .iter()
-                    .map(|p| p.parameter()),
-            );
+            } else {
+                super::stage::camera::PlaneField::PROPERTIES
+            };
+            parameters.extend(properties.iter().map(|p| p.parameter()));
         } else if name == "particles" {
             parameters.extend(super::particles::parameters());
         } else if name == "scrollbar" {
@@ -413,6 +416,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 | "popup"
                 | "tooltip"
                 | "camera"
+                | "camera_plane"
         ) {
             parameters.push(NativeParameter {
                 name: "children".into(),
@@ -425,7 +429,10 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             read_only_leaf: None,
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if matches!(name, "page_stack" | "tab_bar" | "input" | "slider") {
+            abi_version: if matches!(
+                name,
+                "page_stack" | "tab_bar" | "input" | "slider" | "camera"
+            ) {
                 2
             } else {
                 1
@@ -1067,6 +1074,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("mask_x", Some(bc::Const::Int(0))),
                 parameter("mask_y", Some(bc::Const::Int(0))),
                 parameter("owner", Some(bc::Const::Null)),
+                parameter("skip", Some(bc::Const::Utf8("keep".into()))),
             ],
             true,
         ),
@@ -1092,6 +1100,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("scope", None),
                 parameter("action", None),
                 parameter("paused", Some(bc::Const::Bool(false))),
+                parameter("skip", Some(bc::Const::Utf8("keep".into()))),
             ],
             false,
         ),
@@ -1156,6 +1165,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("action", None),
                 parameter("owner", Some(bc::Const::Null)),
                 parameter("paused", Some(bc::Const::Bool(false))),
+                parameter("skip", Some(bc::Const::Utf8("keep".into()))),
             ],
             false,
         ),
@@ -1244,7 +1254,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             read_only_leaf: None,
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: 1,
+            abi_version: if matches!(name, "run" | "scope::run" | "stage::transition" | "tween") {
+                2
+            } else {
+                1
+            },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(

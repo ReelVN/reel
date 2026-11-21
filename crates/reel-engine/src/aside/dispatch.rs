@@ -92,7 +92,7 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::stage::transition" => {
-                self.dispatch_transition(ticket)?;
+                self.dispatch_transition(session, ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::stage::input" => {
@@ -403,6 +403,7 @@ impl SessionVm {
                 } else {
                     [args[0], args[1], args[2]]
                 };
+                let skip = (symbol != "reel::clock").then(|| (args[3], session.reading_id));
                 let owner = if owner.tag() == aside_vm::ValueTag::Null {
                     self.default_activity_owner(ticket.task)?
                 } else {
@@ -419,7 +420,12 @@ impl SessionVm {
                     &self.stage,
                     self.root_owner,
                     ticket,
-                    [action, owner, paused],
+                    activity::Launch {
+                        action,
+                        owner,
+                        paused,
+                        skip,
+                    },
                     work,
                 )?;
                 if done {
@@ -586,6 +592,7 @@ impl SessionVm {
             | "reel::column"
             | "reel::grid"
             | "reel::camera"
+            | "reel::camera_plane"
             | "reel::scroll"
             | "reel::popup"
             | "reel::tooltip"

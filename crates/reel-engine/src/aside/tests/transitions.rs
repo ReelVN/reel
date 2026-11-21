@@ -101,6 +101,128 @@ fn accept_final(vm: &mut SessionVm) {
 }
 
 #[test]
+fn skipping_a_transition_finishes_once_after_the_final_frame() {
+    let code = r#"fn opening() {
+        let state = {calls: 0};
+        stage.replace(stack());
+        let result = stage.transition(duration: 10, skip: "finish", mask: "mask.png", change: || {
+            state.calls += 1;
+            stage.replace(text("new drawing"));
+            await delay(1).run();
+            41
+        });
+        if result != 41 || state.calls != 1 { throw "transition result"; }
+        stage.replace(text("done"));
+    }"#;
+    let (picture, saved) = retained_picture();
+    for encoded in [false, true] {
+        for skip_at in [
+            None,
+            Some(TransitionPhase::OldPending),
+            Some(TransitionPhase::Changing),
+            Some(TransitionPhase::NewPending),
+            Some(TransitionPhase::Playing),
+        ] {
+            let (mut session, mut vm) = prepared(code, encoded);
+            if skip_at.is_none() {
+                session.set_skip_reading(true, true, false);
+            }
+            drive(&mut vm, &mut session, false);
+            let mut logical_time = 0.;
+            let request = vm.take_transition_request().unwrap();
+            if let Some(phase) = skip_at {
+                if phase != TransitionPhase::OldPending {
+                    let request = request.unwrap();
+                    assert!(
+                        vm.complete_transition_request(
+                            request.id,
+                            Ok((picture.clone(), saved.clone()))
+                        )
+                        .unwrap()
+                    );
+                    drive(&mut vm, &mut session, false);
+                    if phase != TransitionPhase::Changing {
+                        logical_time = 1.;
+                        while vm.advance_time(&session, logical_time, 4).unwrap().pending {}
+                        drive(&mut vm, &mut session, false);
+                    }
+                }
+                if phase == TransitionPhase::Playing {
+                    let view = vm.transition_views().next().unwrap();
+                    assert!(
+                        vm.accept_transition(
+                            view.id,
+                            TransitionPhase::NewPending,
+                            0.,
+                            logical_time
+                        )
+                        .unwrap()
+                    );
+                    logical_time += 0.25;
+                    while vm.advance_time(&session, logical_time, 1).unwrap().pending {}
+                }
+                assert_eq!(vm.transition_views().next().unwrap().phase, phase);
+                session.set_skip_reading(true, true, false);
+                while vm.advance_time(&session, logical_time, 1).unwrap().pending {}
+            } else {
+                assert!(request.is_none());
+            }
+
+            session.set_skip_reading(false, false, false);
+            if let Some(request) = request {
+                assert!(
+                    !vm.complete_transition_request(
+                        request.id,
+                        Ok((picture.clone(), saved.clone()))
+                    )
+                    .unwrap()
+                );
+            }
+            drive(&mut vm, &mut session, false);
+            while vm
+                .advance_time(&session, logical_time.max(1.), 2)
+                .unwrap()
+                .pending
+            {}
+            drive(&mut vm, &mut session, false);
+            let view = vm.transition_views().next().unwrap();
+            assert_eq!(view.phase, TransitionPhase::FinalPending);
+            assert!(view.previous.is_none() && view.mask.is_none());
+            assert!(
+                !vm.accept_transition(view.id, TransitionPhase::NewPending, 0., vm.logical_time())
+                    .unwrap()
+            );
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|node| node.kind == NodeKind::Text("new drawing".into()))
+            );
+            assert!(
+                !vm.stage()
+                    .nodes()
+                    .any(|node| node.kind == NodeKind::Text("done".into()))
+            );
+            accept_final(&mut vm);
+            assert!(
+                !vm.accept_transition(
+                    view.id,
+                    TransitionPhase::FinalPending,
+                    1.,
+                    vm.logical_time()
+                )
+                .unwrap()
+            );
+            drive(&mut vm, &mut session, false);
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|node| node.kind == NodeKind::Text("done".into()))
+            );
+        }
+    }
+}
+
+#[test]
 fn transition_leaf_nodes_keep_identity_and_wait_for_both_presentations() {
     for encoded in [false, true] {
         for (make, change, check) in [

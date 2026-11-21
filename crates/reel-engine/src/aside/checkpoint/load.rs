@@ -321,7 +321,7 @@ impl CheckpointLoad {
                 }
             }
             Phase::Adopt => {
-                if candidate.adopt_checkpoint_resources(work)? {
+                if candidate.adopt_checkpoint_resources(session, work)? {
                     self.restored.take().unwrap().release(&mut candidate.vm)?;
                     self.phase = Phase::Complete;
                 }

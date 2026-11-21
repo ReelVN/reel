@@ -295,6 +295,7 @@ impl CheckpointCapture {
                                 source.flow.active.as_ref().unwrap().task,
                             )?,
                         )
+                        .with_reading(session.reading_id)
                         .with_media(self.media.as_ref().unwrap());
                 self.graph_complete = graph
                     .step(

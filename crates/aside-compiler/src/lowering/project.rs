@@ -206,11 +206,10 @@ pub fn compile_project_with_progress(
                 .as_ref()
                 .expect("unconsumed source module");
             let mut globals = Vec::new();
-            for symbol in module
-                .symbols()
-                .iter()
-                .filter(|s| s.origin == h::BindingOrigin::ModuleGlobal)
-            {
+            for (_, symbol) in module.symbols().iter().enumerate().filter(|(slot, s)| {
+                s.origin == h::BindingOrigin::ModuleGlobal
+                    && !module.type_only_symbol(h::SymbolId(*slot as u32))
+            }) {
                 let symbol_name = name(module.hir().name(symbol.name), &mut b)?;
                 let global = bc::GlobalId(globals.len() as u32);
                 b.push(

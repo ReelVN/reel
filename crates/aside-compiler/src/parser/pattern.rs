@@ -48,12 +48,20 @@ impl Parser<'_> {
     }
 
     pub(super) fn pattern(&mut self) -> PatternShape {
+        self.pattern_with_variants(false)
+    }
+
+    pub(super) fn match_pattern(&mut self) -> PatternShape {
+        self.pattern_with_variants(true)
+    }
+
+    fn pattern_with_variants(&mut self, allow_variants: bool) -> PatternShape {
         let key = (self.significant_cursor(), self.stop_pipe);
         if !self.enter() {
             return PatternShape::default();
         }
         let cp = self.checkpoint();
-        let mut shape = self.pattern_atom();
+        let mut shape = self.pattern_atom(allow_variants);
         if self.eat(K::Is) {
             self.wrap(cp, K::TypePattern);
             self.type_atom(true);
@@ -65,7 +73,7 @@ impl Parser<'_> {
         }
         while self.eat(K::Pipe) && !self.halted {
             self.wrap(cp, K::OrPattern);
-            self.pattern();
+            self.pattern_with_variants(allow_variants);
             self.finish();
             shape = PatternShape {
                 kind: Some(K::OrPattern),
@@ -73,7 +81,8 @@ impl Parser<'_> {
             };
         }
         self.leave();
-        if self.probe
+        if !allow_variants
+            && self.probe
             && !self.halted
             && matches!(
                 self.tokens.get(key.0).map(|t| t.kind),
@@ -87,8 +96,27 @@ impl Parser<'_> {
         }
         shape
     }
-    fn pattern_atom(&mut self) -> PatternShape {
+    fn pattern_atom(&mut self, allow_variants: bool) -> PatternShape {
         match self.peek() {
+            K::Ident if allow_variants && matches!(self.nth(1), K::Dot | K::ColonColon) => {
+                self.start(K::EnumPattern);
+                self.start(K::TypeName);
+                self.bump();
+                while self.eat(K::ColonColon) && !self.halted {
+                    self.expect(K::Ident);
+                }
+                self.finish();
+                self.expect(K::Dot);
+                self.expect(K::Ident);
+                if self.peek() == K::LBrace {
+                    self.pattern_atom(allow_variants);
+                }
+                self.finish();
+                PatternShape {
+                    kind: Some(K::EnumPattern),
+                    destructuring: true,
+                }
+            }
             K::Ident => {
                 let kind = if self.text() == "_" {
                     K::WildcardPattern
@@ -152,7 +180,7 @@ impl Parser<'_> {
                         self.expect(K::Ident);
                         self.finish();
                     } else {
-                        child_shape = self.pattern();
+                        child_shape = self.pattern_with_variants(allow_variants);
                     }
                     count += 1;
                     if !self.eat(K::Comma) {
@@ -195,7 +223,7 @@ impl Parser<'_> {
                         self.start(K::PatternField);
                         self.expect(K::Ident);
                         if self.eat(K::Colon) {
-                            self.pattern();
+                            self.pattern_with_variants(allow_variants);
                         }
                         if self.eat(K::Eq) {
                             self.expr(0, false, true);

@@ -89,6 +89,45 @@ fn statements_children_and_short_expressions() {
 }
 
 #[test]
+fn short_value_conditionals_compact_without_changing_other_blocks() {
+    assert_eq!(
+        checked("fn shade(bright: bool) { let weight=if bright{0.7}else{0.3};weight }"),
+        "fn shade(bright: bool) {\n    let weight = if bright { 0.7 } else { 0.3 };\n    weight\n}\n"
+    );
+    let padded = format!(
+        "let weight = if bright {{{}0.7}} else {{0.3}};",
+        " ".repeat(500)
+    );
+    assert_eq!(
+        checked(&padded),
+        "let weight = if bright { 0.7 } else { 0.3 };\n"
+    );
+    let long = format!(
+        r#"let label=if ready {{"{}"}} else {{"{}"}};"#,
+        "a".repeat(60),
+        "b".repeat(60)
+    );
+    let output = checked(&long);
+    assert!(
+        output.contains("if ready {\n    ") && output.contains("} else {\n    "),
+        "{output}"
+    );
+    assert!(output.lines().all(|line| line.chars().count() <= 100));
+    let output = checked("let label=if ready {/* keep */ high} else {low};");
+    assert!(
+        output.contains("if ready {\n") && output.contains("/* keep */"),
+        "{output}"
+    );
+    let output = checked("let label=if ready {let high=top();high} else {low};");
+    assert!(
+        output.contains("if ready {\n") && output.contains("let high = top();"),
+        "{output}"
+    );
+    let output = checked("fn check() { if ready{go();}else{stop();} }");
+    assert!(output.contains("if ready {\n        go();"), "{output}");
+}
+
+#[test]
 fn calls_fill_short_arguments_and_chains_share_one_continuation_indent() {
     assert_eq!(
         checked(

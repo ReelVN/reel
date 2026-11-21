@@ -93,6 +93,7 @@ fn scene(
                 y: 10240.75,
                 zoom: 1.35,
                 rotation: 23.,
+                ..Default::default()
             }),
             NodeProps {
                 width: Some(640.),
@@ -205,12 +206,14 @@ fn prepared_tiles_match_contiguous_image_through_rotated_camera() {
             y: 10240.75,
             zoom: 1.35,
             rotation: 23.,
+            ..Default::default()
         },
         CameraView {
             x: 10019.5,
             y: 10263.125,
             zoom: 1.1,
             rotation: -17.,
+            ..Default::default()
         },
     ]
     .into_iter()

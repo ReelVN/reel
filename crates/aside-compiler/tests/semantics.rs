@@ -29,6 +29,22 @@ fn rejects(source: &str, code: DiagnosticCode) {
 }
 
 #[test]
+fn enum_cases_report_unknown_missing_and_typed_payloads() {
+    rejects(
+        "enum Menu { Back, Load(slot: int) } fn pick(v: Menu) { match v { Menu.Back => 0, Menu.Load {slot} if slot > 1 => slot } }",
+        DiagnosticCode::NonExhaustiveMatch,
+    );
+    rejects(
+        "enum Menu { Back } fn pick(v: Menu) { match v { Menu.Bcak => 0, _ => 1 } }",
+        DiagnosticCode::UnknownMember,
+    );
+    rejects(
+        "enum Menu { Load(slot: int) } fn pick() { Menu.Load(slot: \"four\") }",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
 fn value_contracts_diagnose_wrong_literals_and_record_fields() {
     for source in [
         r#"fn menu() -> "back" | "title" { "tile" }"#,

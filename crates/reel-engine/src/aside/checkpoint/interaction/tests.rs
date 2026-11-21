@@ -168,6 +168,41 @@ fn dialogue(session: &Session) -> &crate::DialogueInteraction {
 }
 
 #[test]
+fn saved_enum_payload_keeps_named_fields_across_declaration_reorder() {
+    let story = program(
+        r#"
+        state.selection = Menu.Load(slot: 37, hint: "saved");
+        point("captured"); narrator("Before");
+        match state.selection {
+            Menu.Back => narrator("unexpected unit case"),
+            Menu.Load { slot, hint } => narrator(f"{hint} {slot}"),
+        };
+        "#,
+        "",
+    );
+    let before = story.replace(
+        "class World { let mut reward:int=0; }",
+        "enum Menu { Back, Load(slot: int, hint: string) }\nclass World { let mut selection: Menu = Menu.Back; }",
+    );
+    let after = story.replace(
+        "class World { let mut reward:int=0; }",
+        "enum Menu { Load(hint: string, slot: int), Back }\nclass World { let mut selection: Menu = Menu.Back; }",
+    );
+    for encoded in [false, true] {
+        let (session, mut vm) = started(&before, encoded);
+        let record = capture(&mut vm, &session);
+        let (mut session, mut vm) = restore(&after, encoded, record).unwrap();
+        assert_eq!(dialogue(&session).text(), "Before");
+        advance(&mut session);
+        assert!(matches!(
+            settle(&mut vm, &mut session),
+            RunOutcome::Waiting(_)
+        ));
+        assert_eq!(dialogue(&session).text(), "saved 37");
+    }
+}
+
+#[test]
 fn current_root_keeps_old_page_pruned_history_and_partial_reveal_source_asb() {
     let a = program(
         r#"
@@ -249,10 +284,43 @@ fn choice_reuses_current_key_values_and_preserves_saved_options_source_asb() {
     "#,
         "",
     );
+    assert_saved_choice_returns_original_key(&a, &b);
+}
+
+#[test]
+fn loop_built_choice_recovers_at_an_automatic_point_source_asb() {
+    let a = program(
+        r#"
+        state.reward+=3;
+        let options=[];
+        for (key, label) in [("left","A left"),("right","A right")] {
+            options.append({key,label});
+        }
+        let result=choose(options);
+        if result!="right"{throw "wrong saved option";}state.reward
+    "#,
+        "",
+    );
+    let b = program(
+        r#"
+        state.reward+=100;
+        let options=[];
+        for (key, label) in [("right","B right"),("left","B left")] {
+            options.append({key,label});
+        }
+        let result=choose(options);
+        if result!="right"{throw "wrong resumed key";}state.reward+7
+    "#,
+        "",
+    );
+    assert_saved_choice_returns_original_key(&a, &b);
+}
+
+fn assert_saved_choice_returns_original_key(a: &str, b: &str) {
     for encoded in [false, true] {
-        let (session, mut vm) = started(&a, encoded);
+        let (session, mut vm) = started(a, encoded);
         let record = capture(&mut vm, &session);
-        let (mut session, mut vm) = restore(&b, encoded, record).unwrap();
+        let (mut session, mut vm) = restore(b, encoded, record).unwrap();
         let InteractionView::Choice(choice) = session.view().interaction.unwrap() else {
             panic!("choice missing");
         };
@@ -343,6 +411,40 @@ fn inferred_speech_wait_restores_after_script_edits() {
         advance(&mut session);
         let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
             panic!("inferred speech did not finish");
+        };
+        assert_eq!(vm.vm.delivery_value(delivery).unwrap().as_int(), Some(11));
+    }
+}
+
+#[test]
+fn staged_group_restores_both_speakers_at_an_automatic_wait() {
+    let before = program(
+        r#"
+        state.reward += 9;
+        let speech = say([ada.line("First voice"), teo.line("Second voice")], wait:false);
+        speech.wait();
+        state.reward + 1
+    "#,
+        "",
+    ) + r#"
+        let ada = character("Ada", id:"ada");
+        let teo = character("Teo", id:"teo");
+    "#;
+    let after = before
+        .replace("Second voice", "Current wording")
+        .replace("state.reward + 1", "state.reward + 2");
+    for encoded in [false, true] {
+        let (session, mut vm) = started(&before, encoded);
+        let record = capture(&mut vm, &session);
+        let (mut session, mut vm) = restore(&after, encoded, record).unwrap();
+        let lines = dialogue(&session).lines();
+        assert_eq!(lines[0].speaker_id(), Some("ada"));
+        assert_eq!(lines[1].speaker_id(), Some("teo"));
+        assert_eq!(lines[1].content().fallback(), "Second voice");
+        assert_eq!(session.view().history.len(), 1);
+        advance(&mut session);
+        let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
+            panic!("group did not finish");
         };
         assert_eq!(vm.vm.delivery_value(delivery).unwrap().as_int(), Some(11));
     }

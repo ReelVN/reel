@@ -470,6 +470,65 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             42,
         ),
         (
+            r#"fn points(result: {game: string, score: int, outcome: string}) -> int {
+                match result {
+                    {game: _, outcome: "won", score} if score > 0 => score,
+                    _ => 0,
+                }
+            }
+            fn classify(event: any) -> int {
+                match event {
+                    (value, {kind: "selected"}) | {code: 2, value} if value > 0 => value,
+                    _ => 0,
+                }
+            }
+            fn main() {
+                if classify((11, {kind: "other"})) != 0
+                    || classify({code:2, other:13}) != 0
+                    || classify({code:2, value:13, other:null}) != 0
+                    || classify({code:2, value:0}) != 0 {
+                    throw "fall through";
+                }
+                let callbacks=[];
+                for event in [(5, {kind: "selected"}), {value:10, code:2}] {
+                    match event {
+                        (value, _) | {value, code:_} => { callbacks.append(||value); },
+                        _ => { throw "projection"; },
+                    };
+                }
+                callbacks[0]()+callbacks[1]()+points({game:"Pong", score:27, outcome:"won"})
+            }"#,
+            42,
+        ),
+        (
+            r#"enum Menu {
+                Back,
+                Load(hint: string, slot: int),
+                Stay,
+            }
+            fn score(menu: Menu) -> int {
+                match menu {
+                    Menu.Load {slot, hint: "resume"} if slot > 0 => slot,
+                    Menu.Load {hint: _, slot} => slot + 2,
+                    Menu.Back | Menu.Stay => 0,
+                }
+            }
+            fn main() {
+                let mut order = "";
+                fn slot() { order += "s"; 39 }
+                fn hint() { order += "h"; "resume" }
+                let menu = Menu.Load(slot: slot(), hint: hint());
+                if order != "sh" || score(Menu.Back) != 0 || score(Menu.Stay) != 0 {
+                    throw "arguments or scalar case";
+                }
+                if !(menu is Menu) || ("bad" is Menu) { throw "enum type admission"; }
+                let bad: any = ("main::Menu::Load", {slot: "bad", hint: "resume"});
+                if match bad { Menu.Load => true, _ => false } { throw "malformed payload"; }
+                score(menu) + score(Menu.Load("new", 1))
+            }"#,
+            42,
+        ),
+        (
             r#"fn main() {
                 let mut caught=0; let mut cleaned=0;
                 fn classify(value){match value {1=>10, "name"=>20}}
@@ -576,6 +635,30 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             if "emILY中éß🙂".to_ascii_uppercase()!="EMILY中éß🙂" {throw "ASCII upper";}
             let lower="".to_ascii_lowercase;
             if lower()!="" || "".to_ascii_uppercase()!="" {throw "empty case";}
+            42
+        }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+            let voice = "voice/風景/キャラ_014.ogg".split("/");
+            let prefix = voice[voice.len() - 1].split("_")[0];
+            if prefix != "キャラ" { throw "speaker prefix"; }
+            let marked = "雪《ゆき》と星《ほし》".replace("《", "(").replace("》", ")");
+            if marked != "雪(ゆき)と星(ほし)" { throw "ruby delimiters"; }
+            if "雪🙂".replace("", "|") != "|雪|🙂|" { throw "empty pattern"; }
+            let path = "art.png/顔.png";
+            let stem = path.strip_suffix(suffix: ".png");
+            let asset = if stem != null { stem + ".webp" } else { path };
+            if asset != "art.png/顔.webp" { throw "image suffix"; }
+            if "猫🙂猫".strip_prefix(prefix: "猫") != "🙂猫"
+                || "猫🙂猫".strip_suffix("🙂猫") != "猫" { throw "unicode strip"; }
+            if "猫".strip_prefix("🙂") != null || "abc".strip_suffix("ade") != null {
+                throw "absent strip";
+            }
+            if "猫".strip_prefix("") != "猫" || "猫".strip_suffix("猫") != "" {
+                throw "empty strip";
+            }
             42
         }"#,
             42,
@@ -816,6 +899,8 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         let head: String = text.chars().take(padding + 6).collect();
         let tail: String = text.chars().skip(padding + 3).collect();
         let slice: String = text.chars().skip(padding).take(8).collect();
+        let without_head = text.strip_prefix(&head).unwrap();
+        let without_tail = text.strip_suffix(&tail).unwrap();
         format!(r#"fn main() {{
             let s="{text}";
             if match s {{"{text}x"=>0, "{text}"=>42, _=>0}} !=42 {{throw "long match";}}
@@ -823,6 +908,9 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             if s.slice_scalars({padding}..{})!="{slice}" {{throw "long scalar slice";}}
             if s.slice_bytes({padding}..{})!="{slice}" {{throw "long byte slice";}}
             if !s.starts_with("{head}") || !s.ends_with("{tail}") {{throw "long comparison";}}
+            if s.strip_prefix("{head}") != "{without_head}" || s.strip_suffix("{tail}") != "{without_tail}" {{
+                throw "long strip";
+            }}
             if s.ends_with("x{tail}") || s.starts_with("{head}x") {{throw "long mismatch";}}
             let parts=[]; for n in 0..32 {{parts.append(s);}}
             let joined=" · ".join(parts);

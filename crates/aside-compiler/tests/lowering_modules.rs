@@ -66,6 +66,53 @@ fn value(vm: &mut Vm, function: bc::FunctionId) -> Value {
 }
 
 #[test]
+fn enum_namespaces_import_as_types_and_construct_ordinarily() {
+    let compilation = compile(&[
+        (
+            "shared",
+            r#"pub enum Menu { Back, Load(slot: int) }
+            pub fn resume() -> Menu { Menu.Load(40) }"#,
+        ),
+        (
+            "main",
+            r#"use shared::{Menu as Choice, resume};
+            use shared as commands;
+            fn slot(choice: Choice) -> int {
+                match choice {
+                    Choice.Load {slot} => slot,
+                    Choice.Back => 0,
+                }
+            }
+            fn main() { slot(resume()) + slot(commands.Menu.Load(slot: 2)) }"#,
+        ),
+    ]);
+    let p = compilation.program.package();
+    assert!(
+        !p.modules
+            .iter()
+            .flat_map(|module| &module.globals)
+            .any(|global| p.symbols[global.name.index()] == "Menu")
+    );
+    let main = bc::FunctionId(
+        p.functions
+            .iter()
+            .position(|f| p.symbols[f.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let encoded = bc::encode(p, bc::Limits::default()).unwrap();
+    let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
+    let mut vm = Vm::load(
+        program,
+        bc::RuntimeSupport::default(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    value(&mut vm, compilation.initializer);
+    assert_eq!(value(&mut vm, main).as_int(), Some(42));
+}
+
+#[test]
 fn completed_signatures_share_across_modules_without_merging_functions_or_defaults() {
     let compilation = compile(&[
         (

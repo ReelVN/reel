@@ -1,6 +1,7 @@
 //! Current native identities for the shared logical data graph.
 use super::*;
 use crate::aside::data::{LogicalReference, LogicalReferences, TypedDataError};
+use crate::reading::ReadingId;
 use std::cell::RefCell;
 mod connections;
 mod curve;
@@ -45,6 +46,7 @@ pub(in crate::aside) struct SceneCapture<'a> {
     stage: &'a StageBinding,
     activities: &'a crate::aside::activity::Activities,
     default_owner: Value,
+    reading: ReadingId,
     media: Option<&'a crate::aside::media::MediaCapture>,
 }
 impl<'a> SceneCapture<'a> {
@@ -57,11 +59,16 @@ impl<'a> SceneCapture<'a> {
             stage,
             activities,
             default_owner: Value::NULL,
+            reading: ReadingId::default(),
             media: None,
         }
     }
     pub(in crate::aside) fn with_default_owner(mut self, owner: Value) -> Self {
         self.default_owner = owner;
+        self
+    }
+    pub(in crate::aside) fn with_reading(mut self, reading: ReadingId) -> Self {
+        self.reading = reading;
         self
     }
     pub(in crate::aside) fn with_media(
@@ -183,9 +190,14 @@ impl LogicalReferences for SceneCapture<'_> {
             if let Ok(state) = aside_std::random_resource_state(heap, value) {
                 return random::field(state, index);
             }
-            return self
-                .activities
-                .resource_field(heap, stage, value, index, self.default_owner);
+            return self.activities.resource_field(
+                heap,
+                stage,
+                value,
+                index,
+                self.default_owner,
+                self.reading,
+            );
         }
         let id = stage.id(heap, value)?;
         let shape = stage.handles[&id].shape;

@@ -301,7 +301,7 @@ fn checkpoint_restores_current_root_shared_state_and_current_native_callback_cha
         .unwrap(),
         "B current dialogue"
     );
-    while !current.adopt_checkpoint_resources(1).unwrap() {}
+    while !current.adopt_checkpoint_resources(&session, 1).unwrap() {}
     current
         .vm
         .respond(point, HostResponse::Ready(Value::NULL))

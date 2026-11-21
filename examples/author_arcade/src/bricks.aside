@@ -1,5 +1,6 @@
 use game::simulation;
 use reel::types::Node;
+use std::math::clamp;
 
 pub fn play(parent: Node) -> table {
     scope(
@@ -66,7 +67,7 @@ pub fn play(parent: Node) -> table {
             let timer = simulation.start(
                 root,
                 |dt| {
-                    state.paddle = simulation.clamp(
+                    state.paddle = clamp(
                         state.paddle + root.value("move_x") * 500 * dt, 16, 824
                     );
                     if state.serving {

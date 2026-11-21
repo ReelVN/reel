@@ -1,6 +1,7 @@
 //! Conservative semantic analysis. Unknown dynamic behavior remains a runtime obligation.
 mod bind;
 mod builtin_methods;
+mod enumerations;
 pub use builtin_methods::{
     BuiltinCatalog, BuiltinMember, BuiltinTypeMembers, builtin_catalog, builtin_members,
 };

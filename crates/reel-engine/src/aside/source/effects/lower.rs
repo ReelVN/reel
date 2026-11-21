@@ -742,7 +742,17 @@ impl Compiler<'_> {
         value: &Value,
     ) -> Result<(), EffectDiagnostic> {
         let module = &self.modules[site.0];
-        let valid = match &module.types()[ty.0 as usize] {
+        if self.contract_holds(module, ty, value) {
+            Ok(())
+        } else {
+            Err(self.error(
+                site,
+                format!("drawing value does not satisfy {}", module.display_type(ty)),
+            ))
+        }
+    }
+    fn contract_holds(&self, module: &h::AnalyzedModule, ty: h::TypeId, value: &Value) -> bool {
+        match &module.types()[ty.0 as usize] {
             h::Type::Any => true,
             h::Type::Function(_) | h::Type::Callable(..) | h::Type::Closure => {
                 matches!(value, Value::Function(_) | Value::Native { .. })
@@ -757,11 +767,14 @@ impl Compiler<'_> {
                 matches!(value, Value::Float(_))
                     || matches!(value,Value::Node(id) if self.nodes[id.0 as usize].ty==Ty::Float)
             }
+            h::Type::Union(items) => items
+                .iter()
+                .any(|ty| self.contract_holds(module, *ty, value)),
             h::Type::Tuple(items) => match value {
                 Value::Tuple(values) if values.len() == items.len() => items
                     .iter()
                     .zip(values)
-                    .all(|(ty, value)| self.contract(site, *ty, value).is_ok()),
+                    .all(|(ty, value)| self.contract_holds(module, *ty, value)),
                 Value::Node(id) => drawing_type(module, ty) == Some(self.nodes[id.0 as usize].ty),
                 _ => false,
             },
@@ -771,14 +784,6 @@ impl Compiler<'_> {
                 _ => false,
             },
             _ => false,
-        };
-        if valid {
-            Ok(())
-        } else {
-            Err(self.error(
-                site,
-                format!("drawing value does not satisfy {}", module.display_type(ty)),
-            ))
         }
     }
     fn components(&self, site: Site, value: &Value) -> Result<usize, EffectDiagnostic> {
@@ -957,14 +962,20 @@ impl Compiler<'_> {
         for value in &values {
             self.scalar_value(site, value.clone())?;
         }
-        let numbers = values
-            .iter()
-            .map(|v| match v {
-                Value::Int(v) => Some(*v as f32),
-                Value::Float(v) => Some(*v),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>();
+        let number = |value: &Value| match value {
+            Value::Int(value) => Some(*value as f32),
+            Value::Float(value) => Some(*value),
+            _ => None,
+        };
+        let numbers = values.iter().map(number).collect::<Option<Vec<_>>>();
+        if name == "clamp"
+            && !matches!((number(&values[1]), number(&values[2])), (Some(a), Some(b)) if a.is_finite() && b.is_finite() && a <= b)
+        {
+            return Err(self.error(site, "drawing clamp requires ordered constant bounds"));
+        }
+        if name == "modulo" && number(&values[1]) == Some(0.0) {
+            return Err(self.error(site, "drawing modulo requires a nonzero divisor"));
+        }
         if name == "to_int" {
             if let Value::Int(value) = values[0] {
                 return Ok(Value::Int(value));
@@ -1007,6 +1018,23 @@ impl Compiler<'_> {
                 "pow" => Some(v.powf(n[1])),
                 "min" => Some(v.min(n[1])),
                 "max" => Some(v.max(n[1])),
+                "clamp" => {
+                    let selected = if v < n[1] {
+                        1
+                    } else if v > n[2] {
+                        2
+                    } else {
+                        0
+                    };
+                    return Ok(values[selected].clone());
+                }
+                "mix" => Some(v + (n[1] - v) * n[2]),
+                "smoothstep" if v == n[1] => Some(f32::from(n[2] >= v)),
+                "smoothstep" => {
+                    let t = ((n[2] - v) / (n[1] - v)).clamp(0.0, 1.0);
+                    Some(t * t * (3.0 - 2.0 * t))
+                }
+                "modulo" => Some(v - (v / n[1]).floor() * n[1]),
                 "exp" => Some(v.exp()),
                 "ln" => Some(v.ln()),
                 "log2" => Some(v.log2()),
@@ -1044,6 +1072,32 @@ impl Compiler<'_> {
             return self.unary(site, op, first);
         }
         match name {
+            "clamp" | "mix" | "smoothstep" => {
+                let a = self.node(site, first)?;
+                let b = self.node(site, values[1].clone())?;
+                let c = self.node(site, values[2].clone())?;
+                Ok(Value::Node(self.push(
+                    site,
+                    Ty::Float,
+                    Op::Ternary {
+                        op: match name {
+                            "clamp" => Ternary::Clamp,
+                            "mix" => Ternary::Mix,
+                            _ => Ternary::Smoothstep,
+                        },
+                        a,
+                        b,
+                        c,
+                    },
+                )?))
+            }
+            "modulo" => {
+                let divisor = values[1].clone();
+                let quotient = self.binary(site, K::Slash, first.clone(), divisor.clone())?;
+                let whole = self.unary(site, Unary::Floor, quotient)?;
+                let product = self.binary(site, K::Star, whole, divisor)?;
+                self.binary(site, K::Minus, first, product)
+            }
             "pow" | "min" | "max" | "atan2" => {
                 let left = self.node(site, first)?;
                 let right = self.node(site, values[1].clone())?;

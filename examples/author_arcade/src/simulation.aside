@@ -2,16 +2,6 @@ use reel::types::{ Clock, InputNode, Node, Scope };
 
 pub let step = 1.0 / 120;
 
-pub fn clamp(value: int | float, low: int | float, high: int | float) -> int | float {
-    if value < low {
-        low
-    } else if value > high {
-        high
-    } else {
-        value
-    }
-}
-
 // Keep one clock, task and bound callable for the whole component.
 // At most four fixed steps run after a late wake; older intervals are dropped.
 pub fn start(owner: Node, update: fn(float) -> null) -> Clock {

@@ -26,4 +26,4 @@ Reel 用代码组合画面、对白、UI、演出和嵌入的 2D 游戏。
 
 检查命令见 [reel-dev](../crates/reel-dev/README.md)。协作规则见 [AGENTS.md](../AGENTS.md)。借用源码和测试输入的许可证与来源随对应目录保存。
 
-[0.3.11 引擎性能计划](next-release-performance.md) 记录改动和验证场景。
+[引擎性能验证](next-release-performance.md) 说明如何采集与解读发布包的性能数据。

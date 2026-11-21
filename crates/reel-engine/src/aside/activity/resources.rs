@@ -10,6 +10,7 @@ struct Pending {
     handle: HeapHandle,
     saved: State,
     root_scope: bool,
+    finish_in_reading: bool,
     progress: Value,
     node: u32,
     track: u32,
@@ -97,7 +98,7 @@ impl Activities {
                 }
                 .into(),
                 version: 1,
-                fields: (if finished { 1 } else { 5 }) + if clock { 2 } else { 0 },
+                fields: (if finished { 1 } else { 6 }) + if clock { 2 } else { 0 },
             })
         })())
     }
@@ -108,6 +109,7 @@ impl Activities {
         value: Value,
         index: u32,
         default_owner: Value,
+        reading: ReadingId,
     ) -> Result<(Cow<'static, str>, Value), TypedDataError> {
         if progress::source(heap, value) {
             return progress::field(self, heap, stage, value, index);
@@ -116,7 +118,7 @@ impl Activities {
             return descriptions::field(heap, stage, value, index);
         }
         let finished = terminal(state(heap, value)?);
-        let clock_index = if finished { 1 } else { 5 };
+        let clock_index = if finished { 1 } else { 6 };
         Ok(match index {
             0 => ("state".into(), root_get(heap, value, RootSlot::State)?),
             i if i == clock_index => (
@@ -158,6 +160,13 @@ impl Activities {
                         default_owner,
                     )?
                     .1,
+                ),
+            ),
+            5 if !finished => (
+                "finish_in_reading".into(),
+                Value::bool(
+                    root_get(heap, value, RootSlot::SkipReading)?.as_int()
+                        == Some(reading.0 as i64),
                 ),
             ),
             _ => return Err(TypedDataError::Contract("invalid activity resource field")),
@@ -217,7 +226,7 @@ impl Activities {
             .serial
             .checked_add(1)
             .ok_or(AdapterError::Input("activity identity exhausted"))?;
-        let mut slots = [Value::NULL; RootSlot::Forcing as usize + 1];
+        let mut slots = [Value::NULL; RootSlot::SkipReading as usize + 1];
         slots[RootSlot::Tag as usize] = Value::int(ACTIVITY);
         slots[RootSlot::State as usize] = Value::int(State::Paused as i64);
         slots[RootSlot::Graph as usize] = heap.alloc_array(&[])?;
@@ -246,6 +255,7 @@ impl Activities {
                 handle,
                 saved: State::Paused,
                 root_scope: false,
+                finish_in_reading: false,
                 progress: Value::NULL,
                 node: 0,
                 track: 0,
@@ -303,6 +313,9 @@ impl Activities {
                 }
             }
             "root_scope" => pending.root_scope = field.as_bool().ok_or(HeapError::TypeMismatch)?,
+            "finish_in_reading" => {
+                pending.finish_in_reading = field.as_bool().ok_or(HeapError::TypeMismatch)?;
+            }
             "progress" => {
                 heap.sequence_len(field)?;
                 pending.progress = field;
@@ -438,6 +451,7 @@ impl Activities {
     pub(in crate::aside) fn adopt_restored_step(
         &mut self,
         heap: &mut Heap,
+        reading: ReadingId,
         work: u32,
     ) -> Result<bool, AdapterError> {
         use std::ops::Bound::{Excluded, Unbounded};
@@ -497,6 +511,14 @@ impl Activities {
                         self.logical.default_owner.ok_or(AdapterError::Input(
                             "restored Root scope owner is unavailable",
                         ))?,
+                    )?;
+                }
+                if pending.finish_in_reading {
+                    root_set(
+                        heap,
+                        value,
+                        RootSlot::SkipReading,
+                        Value::int(reading.0 as i64),
                     )?;
                 }
                 root_set(heap, value, RootSlot::State, Value::int(saved as i64))?;

@@ -12,6 +12,18 @@ pub(crate) struct ParkedReading {
 }
 
 impl Session {
+    /// The foreground reading can finish eligible effects between its stopping points.
+    pub(crate) fn skipping_effects(&self) -> Option<ReadingId> {
+        if !self.reading_data.control.skipping() {
+            return None;
+        }
+        match &self.reading_data.active {
+            Some(Interaction::Choice(_)) => None,
+            Some(Interaction::Dialogue(line)) if !line.reveal_skippable => None,
+            _ => Some(self.reading_id),
+        }
+    }
+
     pub(crate) fn prepare_reading(&mut self) -> Result<ReadingId, SessionError> {
         self.ensure_running()?;
         if self.reading_data.completion.is_some()

@@ -371,6 +371,9 @@ pub enum NodeKind {
     /// Native scrollbar over borrowed scroll metrics; children are visual wrappers.
     ScrollBar(crate::widgets::ScrollBarView),
     Camera(CameraView),
+    CameraPlane {
+        distance: f64,
+    },
     Popup(PopupView),
     Row(FlowOptions),
     Column(FlowOptions),
@@ -929,6 +932,7 @@ impl Stage {
         if !matches!(
             container.kind,
             NodeKind::Camera(_)
+                | NodeKind::CameraPlane { .. }
                 | NodeKind::Popup(_)
                 | NodeKind::Row(_)
                 | NodeKind::Column(_)
@@ -980,6 +984,7 @@ impl Stage {
         if !matches!(
             container.kind,
             NodeKind::Camera(_)
+                | NodeKind::CameraPlane { .. }
                 | NodeKind::Popup(_)
                 | NodeKind::Row(_)
                 | NodeKind::Column(_)
@@ -1073,6 +1078,7 @@ impl Stage {
         if !matches!(
             node.kind,
             NodeKind::Camera(_)
+                | NodeKind::CameraPlane { .. }
                 | NodeKind::Popup(_)
                 | NodeKind::Row(_)
                 | NodeKind::Column(_)

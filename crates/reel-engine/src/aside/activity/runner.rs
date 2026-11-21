@@ -17,7 +17,11 @@ impl Activities {
         (newest, completions)
     }
 
-    pub fn set_skipping(&mut self, skipping: bool) {
+    pub fn set_skipping(&mut self, skipping: Option<ReadingId>) {
+        if self.skipping != skipping && skipping.is_some() && self.has_active() {
+            self.skip_pending = skipping;
+            self.begin_round(self.time);
+        }
         self.skipping = skipping;
     }
     pub fn has_active(&self) -> bool {
@@ -653,7 +657,7 @@ impl Activities {
         if present(next) {
             root_set(heap, next, RootSlot::Previous, previous)?;
         }
-        if let Some(Round::Reconcile(scan) | Round::Sample(scan)) = &mut self.round
+        if let Some(Round::Reconcile(scan, _) | Round::Sample(scan)) = &mut self.round
             && scan.is_some_and(|scan| scan.activity.same_bits(activity))
         {
             *scan = present(next).then_some(Scan {
@@ -668,6 +672,7 @@ impl Activities {
             RootSlot::Graph,
             RootSlot::Next,
             RootSlot::Previous,
+            RootSlot::SkipReading,
         ] {
             root_set(heap, activity, slot, Value::NULL)?;
         }
@@ -789,52 +794,54 @@ impl Activities {
                 continue;
             }
             if self.control.is_some()
-                && !matches!(self.round, Some(Round::CheckHosts | Round::Reconcile(_)))
+                && !matches!(self.round, Some(Round::CheckHosts | Round::Reconcile(..)))
             {
                 self.control_one(heap)?;
                 continue;
             }
             match self.round.unwrap() {
                 Round::CheckHosts => {
-                    let revisions = (heap.host_retirement_revision(), heap.host_write_revision());
-                    self.round = Some(
-                        if !self.skipping && self.reconciled_hosts == Some(revisions) {
-                            Round::Events
-                        } else {
-                            let first = self.first(heap)?;
-                            // A host change during a budgeted scan still triggers a
-                            // check next round, including work already visited.
-                            self.reconciled_hosts = Some(revisions);
-                            Round::Reconcile(present(first).then_some(Scan {
+                    let skipping = self.skip_pending.take().or(self.skipping);
+                    let revisions = (
+                        heap.host_retirement_revision(),
+                        heap.host_write_revision(),
+                        skipping,
+                    );
+                    self.round = Some(if self.reconciled_hosts == Some(revisions) {
+                        Round::Events
+                    } else {
+                        let first = self.first(heap)?;
+                        // A host change during a budgeted scan still triggers a
+                        // check next round, including work already visited.
+                        self.reconciled_hosts = Some(revisions);
+                        Round::Reconcile(
+                            present(first).then_some(Scan {
                                 activity: first,
                                 index: 0,
-                            }))
-                        },
-                    );
+                            }),
+                            skipping,
+                        )
+                    });
                 }
-                Round::Reconcile(Some(scan)) => {
+                Round::Reconcile(Some(scan), skipping) => {
                     let current = node(heap, scan.activity, i64::from(scan.index))?;
-                    self.round = Some(Round::Reconcile(Self::scan_next(heap, scan)?));
+                    self.round = Some(Round::Reconcile(Self::scan_next(heap, scan)?, skipping));
                     self.reconcile(heap, scan.activity, current)?;
-                    // Reuse the budgeted reconciliation cursor and finish semantics.
-                    // UI-owned, paused and infinite producers retain their own controls.
-                    if self.skipping
+                    if let Some(reading) = skipping
+                        && root_get(heap, scan.activity, RootSlot::SkipReading)?.as_int()
+                            == Some(reading.0 as i64)
                         && state(heap, scan.activity)? == State::Running
-                        && !present(root_get(heap, scan.activity, RootSlot::Owner)?)
-                        && action::duration(
-                            heap,
-                            root_get(heap, scan.activity, RootSlot::Description)?,
-                        )?
-                        .is_finite()
                     {
-                        root_set(heap, scan.activity, RootSlot::Forcing, Value::bool(true))?;
+                        if scan.index == 0 {
+                            root_set(heap, scan.activity, RootSlot::Forcing, Value::bool(true))?;
+                        }
                         if kind(heap, current)?.is_leaf() && phase(heap, current)? == Phase::Active
                         {
                             self.leaf_done(heap, current, self.time)?;
                         }
                     }
                 }
-                Round::Reconcile(None) => self.round = Some(Round::Events),
+                Round::Reconcile(None, _) => self.round = Some(Round::Events),
                 Round::Events => {
                     let head = self.job_head(heap)?;
                     let job_time = if present(head) {
@@ -888,7 +895,7 @@ impl Activities {
                 }
                 Round::Sample(None) => {
                     self.time = self.target_time;
-                    self.round = None;
+                    self.round = self.skip_pending.map(|_| Round::CheckHosts);
                 }
             }
         }

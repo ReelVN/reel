@@ -1,17 +1,23 @@
-fn caption(mode) {
+enum Presence {
+    Online,
+    Typing(name: string),
+    Offline,
+}
+
+fn caption(mode: Presence) -> string {
     match mode {
-        "online" | "typing" => "在线",
-        name is string if name != "" => name,
-        _ => "离线",
+        Presence.Online => "在线",
+        Presence.Typing { name } if name != "" => name,
+        Presence.Typing | Presence.Offline => "离线",
     }
 }
 
 fn main() {
     stage.replace(
         column(gap: 12) {
-            text(caption("typing"));
-            text(caption("稍后回来"));
-            text(caption(null));
+            text(caption(Presence.Online));
+            text(caption(Presence.Typing(name: "稍后回来")));
+            text(caption(Presence.Offline));
         }
     );
     narrator("按值组合画面");

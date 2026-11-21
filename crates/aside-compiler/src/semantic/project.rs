@@ -230,6 +230,8 @@ fn kind(k: K) -> Option<HirKind> {
         K::LetDecl => H::Let,
         K::FnDecl => H::Function,
         K::ClassDecl => H::Class,
+        K::EnumDecl => H::Enum,
+        K::EnumVariant => H::EnumVariant,
         K::UseDecl => H::Import,
         K::UsePath => H::ImportPath,
         K::UseGroup => H::ImportGroup,
@@ -292,6 +294,7 @@ fn kind(k: K) -> Option<HirKind> {
         K::RestPattern => H::RestPattern,
         K::OrPattern => H::OrPattern,
         K::TypePattern => H::TypePattern,
+        K::EnumPattern => H::EnumPattern,
         K::ModifiedDecl => H::ModifiedDeclaration,
         _ => return None,
     })

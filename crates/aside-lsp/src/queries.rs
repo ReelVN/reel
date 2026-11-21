@@ -515,7 +515,13 @@ fn source_member_reference<'a>(
     let class = parts.next()?;
     let mode = parts.next()?;
     let name = parts.next()?;
-    if parts.next().is_some() || !matches!(mode, "instance" | "static") {
+    if parts.next().is_some() {
+        return None;
+    }
+    if mode == "variant" {
+        return enumerations::definition(snapshot, &reference.module, class, name);
+    }
+    if !matches!(mode, "instance" | "static") {
         return None;
     }
     let (module, source, class) =
@@ -961,9 +967,16 @@ fn member_base(snapshot: &Snapshot, module: EditorModule<'_>, offset: usize) -> 
     while token.kind().is_trivia() {
         token = token.prev_token()?;
     }
-    let member = token
-        .parent_ancestors()
-        .find(|node| node.kind() == K::MemberExpr)?;
+    let member = token.parent_ancestors().find(|node| {
+        node.kind() == K::MemberExpr
+            || (node.kind() == K::EnumPattern
+                && node
+                    .children()
+                    .find(|child| child.kind() == K::ObjectPattern)
+                    .is_none_or(|payload| {
+                        u32::from(payload.text_range().start()) as usize > offset
+                    }))
+    })?;
     let base = member.children().next()?;
     module
         .hir()
@@ -999,7 +1012,12 @@ fn local_label(module: EditorModule<'_>, source: &Source, id: SymbolId) -> Strin
     let symbol = &module.symbols()[id.0 as usize];
     let name = module.hir().name(symbol.name);
     if symbol.kind == SymbolKind::Class {
-        return format!("class {name}");
+        let declaration = if matches!(module.types()[symbol.ty.0 as usize], Type::Enum(..)) {
+            "enum"
+        } else {
+            "class"
+        };
+        return format!("{declaration} {name}");
     }
     local_signature(module, source, id).map_or_else(
         || {
@@ -1020,6 +1038,11 @@ fn symbol_kind(kind: SymbolKind) -> CompletionItemKind {
     }
 }
 fn external_kind(symbol: &ExternalSymbol, snapshot: &Snapshot) -> CompletionItemKind {
+    match symbol.intrinsic {
+        Some(Intrinsic::EnumType) => return CompletionItemKind::ENUM,
+        Some(Intrinsic::EnumCase) => return CompletionItemKind::ENUM_MEMBER,
+        _ => (),
+    }
     if symbol.namespace.is_some()
         && symbol.signature.is_none()
         && symbol.class.is_none()
@@ -1049,6 +1072,9 @@ fn external_label(
     host: &HostIndex,
     name: &str,
 ) -> String {
+    if symbol.intrinsic == Some(Intrinsic::EnumType) {
+        return format!("enum {name}");
+    }
     if let Some(namespace) = &symbol.namespace
         && symbol.signature.is_none()
         && symbol.class.is_none()
@@ -1086,7 +1112,9 @@ fn source_completion(
     if let Some(external) = external(module, None, Some(id)) {
         let mut item = completion(external, snapshot, host);
         item.label = name.into();
-        if !matches!(symbol.kind, SymbolKind::Import | SymbolKind::Host) {
+        if !matches!(symbol.kind, SymbolKind::Import | SymbolKind::Host)
+            && external.intrinsic != Some(Intrinsic::EnumType)
+        {
             item.kind = Some(symbol_kind(symbol.kind));
         }
         item.detail = Some(external_label(external, snapshot, host, name));
@@ -1466,6 +1494,7 @@ mod keywords;
 use keywords::keyword_completions;
 
 mod completion;
+mod enumerations;
 mod navigation;
 
 impl Workspace {}

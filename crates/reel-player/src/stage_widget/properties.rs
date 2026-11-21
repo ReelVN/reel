@@ -810,7 +810,9 @@ impl SceneWidget {
                     this.ctx.request_layout();
                 }
                 if *node != next.node {
-                    if transform_changed(&node.props, &next.node.props) {
+                    let plane_moved = matches!((&view.node.kind, &node.kind, &next.node.kind),
+                        (NodeKind::Camera(_), NodeKind::CameraPlane { distance: old }, NodeKind::CameraPlane { distance: new }) if old != new);
+                    if plane_moved || transform_changed(&node.props, &next.node.props) {
                         this.ctx.request_compose();
                     }
                     *node = next.node.clone();
@@ -822,7 +824,10 @@ impl SceneWidget {
                     false
                 };
                 if registered {
-                    this.ctx.set_stashed(pod, !next.node.props.visible);
+                    let clipped = matches!((&view.node.kind, &next.node.kind),
+                        (NodeKind::Camera(camera), NodeKind::CameraPlane { distance }) if camera.clips(*distance));
+                    this.ctx
+                        .set_stashed(pod, !next.node.props.visible || clipped);
                 }
             }
         }

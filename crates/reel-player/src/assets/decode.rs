@@ -156,6 +156,9 @@ fn decode_artwork(
     if !probe && let Some(decoded) = crate::artwork::decode_qoi(input, output) {
         return decoded;
     }
+    if let Some(decoded) = jpeg(input, probe, temporary, output) {
+        return decoded;
+    }
     let (decoder, workspace) =
         crate::artwork::decoder(Cursor::new(input), input.len() as u64, temporary)?;
     let (width, height) = decoder.dimensions();
@@ -165,12 +168,7 @@ fn decode_artwork(
         .ok_or("image size overflow")?;
     let decoded = decoder.total_bytes() + workspace;
     if probe {
-        let mut data = Vec::with_capacity(24);
-        data.extend_from_slice(&width.to_le_bytes());
-        data.extend_from_slice(&height.to_le_bytes());
-        data.extend_from_slice(&rgba.to_le_bytes());
-        data.extend_from_slice(&decoded.to_le_bytes());
-        return Ok(data);
+        return Ok(image_shape([width, height], rgba, decoded));
     }
     let full_image_fits = decoded
         .checked_add(rgba)
@@ -185,6 +183,54 @@ fn decode_artwork(
         .map_err(|e| e.to_string())?
         .into_rgba8()
         .into_raw())
+}
+
+fn image_shape([width, height]: [u32; 2], rgba: u64, decoded: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(24);
+    data.extend_from_slice(&width.to_le_bytes());
+    data.extend_from_slice(&height.to_le_bytes());
+    data.extend_from_slice(&rgba.to_le_bytes());
+    data.extend_from_slice(&decoded.to_le_bytes());
+    data
+}
+
+fn jpeg(input: &[u8], probe: bool, temporary: u64, output: u64) -> Option<Result<Vec<u8>, String>> {
+    use zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
+    if !input.starts_with(&[0xff, 0xd8, 0xff]) {
+        return None;
+    }
+    let options = DecoderOptions::default()
+        .set_strict_mode(false)
+        .set_max_width(usize::MAX)
+        .set_max_height(usize::MAX)
+        .jpeg_set_out_colorspace(ColorSpace::RGBA);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(input), options);
+    if let Err(error) = decoder.decode_headers() {
+        return Some(Err(error.to_string()));
+    }
+    // zune-jpeg can directly expand YCbCr to RGBA. JPEGs that store RGB
+    // components still need image's RGB decoder and channel expansion.
+    if decoder.input_colorspace()? != ColorSpace::YCbCr {
+        return None;
+    }
+    let (width, height) = decoder.dimensions()?;
+    let size = [width as u32, height as u32];
+    let pixels = u64::from(size[0]) * u64::from(size[1]);
+    let rgba = pixels * 4;
+    let decoded = pixels * 3;
+    if probe {
+        return Some(Ok(image_shape(size, rgba, decoded)));
+    }
+    Some((|| {
+        if rgba > output || decoded + rgba > temporary {
+            return Err("image decode reservation too small".into());
+        }
+        let mut data = vec![0; usize::try_from(rgba).map_err(|_| "image size overflow")?];
+        decoder
+            .decode_into(&mut data)
+            .map_err(|error| error.to_string())?;
+        Ok(data)
+    })())
 }
 
 #[allow(

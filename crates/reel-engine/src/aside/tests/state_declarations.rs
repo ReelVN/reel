@@ -175,8 +175,8 @@ fn state_root_build_contracts_reject_invalid_declarations_and_keep_empty_project
             "default value",
         ),
         (
-            "class S{let x:int=1;}root(boot,\"game\");fn boot(value:S=S()){value}",
-            "no state declaration",
+            "class S{}class Other{}state(Other,\"game.state\");root(boot,\"game\");fn boot(value:S=S()){value}",
+            "is already in use",
         ),
         (
             "class S{let x:int=1;}state(S,\"s\");root(boot,\"game\");root(boot,\"other\");fn boot(value:S=S()){value}",

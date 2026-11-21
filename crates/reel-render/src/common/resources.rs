@@ -488,6 +488,24 @@ impl Rgba8LinearF16 {
         // table occupies 128 KiB of shared desktop storage and preserves the
         // scalar color contract's exact half-float rounding.
         fn table(encoding: ColorEncoding, alpha_type: ImageAlphaType) -> [[u16; 256]; 256] {
+            if alpha_type == ImageAlphaType::Alpha {
+                let normalized = std::array::from_fn(|i| i as f32 / 255.);
+                let channels = match encoding {
+                    ColorEncoding::Srgb => &*SRGB_TO_LINEAR,
+                    ColorEncoding::Linear => &normalized,
+                };
+                return std::array::from_fn(|alpha| {
+                    channels
+                        .map(|channel| half::f16::from_f32(channel * normalized[alpha]).to_bits())
+                });
+            }
+            if encoding == ColorEncoding::Linear {
+                let mut colors = [*NORMALIZED_F16; 256];
+                colors[0] = [0; 256];
+                return colors;
+            }
+            // Encoded premultiplied sRGB has to unpremultiply before the
+            // nonlinear transfer, so retain the scalar conversion here.
             std::array::from_fn(|alpha| {
                 std::array::from_fn(|channel| {
                     let channel = channel as u8;
@@ -771,6 +789,7 @@ mod tests {
     fn unorm_upload_preserves_color_and_hidden_alpha() {
         for encoding in [ColorEncoding::Srgb, ColorEncoding::Linear] {
             for alpha_type in [ImageAlphaType::Alpha, ImageAlphaType::AlphaPremultiplied] {
+                let desktop = Rgba8LinearF16::new(encoding, alpha_type);
                 for alpha in 0..=255u8 {
                     for value in 0..=255u8 {
                         let mut rgba = [value, 255 - value, value.rotate_left(3), alpha];
@@ -779,9 +798,11 @@ mod tests {
                                 *channel = (u16::from(*channel) * u16::from(alpha) / 255) as u8;
                             }
                         }
+                        let scalar = rgba8_linear_f16(&rgba, encoding, alpha_type);
+                        assert_eq!(desktop.convert(&rgba), scalar);
                         assert_eq!(
                             rgba8_linear_u8(&rgba, encoding, alpha_type),
-                            rgba8_linear_f16(&rgba, encoding, alpha_type).map(linear_f16_u8),
+                            scalar.map(linear_f16_u8),
                             "encoding={encoding:?} alpha={alpha_type:?} rgba={rgba:?}",
                         );
                     }

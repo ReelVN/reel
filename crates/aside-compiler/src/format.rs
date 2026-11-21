@@ -106,9 +106,52 @@ impl Part {
 }
 
 enum Work {
-    Node(SyntaxNode),
+    Node(SyntaxNode, bool),
     Token(crate::SyntaxToken),
-    Finish(K, usize),
+    Finish(K, usize, bool),
+}
+
+fn compact_value_if(node: &SyntaxNode) -> bool {
+    if node.kind() != K::IfExpr
+        || node
+            .parent()
+            .is_some_and(|parent| matches!(parent.kind(), K::ExprStmt | K::IfExpr))
+    {
+        return false;
+    }
+    let mut branches = node.children().filter(|part| part.kind() == K::Block);
+    if !(0..2).all(|_| {
+        branches.next().is_some_and(|branch| {
+            let mut statements = branch.children();
+            statements
+                .next()
+                .is_some_and(|statement| statement.kind() == K::ExprStmt)
+                && statements.next().is_none()
+        })
+    }) {
+        return false;
+    }
+    let mut blocks = 0;
+    let mut tokens = 0;
+    for part in node.descendants_with_tokens() {
+        match part.kind() {
+            K::Semi | K::LineComment | K::BlockComment => return false,
+            K::Block => {
+                blocks += 1;
+                if blocks > 2 {
+                    return false;
+                }
+            }
+            kind if part.as_token().is_some() && !kind.is_trivia() => {
+                tokens += 1;
+                if tokens > WIDTH {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 struct Builder<'a> {
@@ -215,11 +258,11 @@ impl<'a> Builder<'a> {
     }
 
     fn build(&mut self, root: SyntaxNode) -> Id {
-        let mut work = vec![Work::Node(root)];
+        let mut work = vec![Work::Node(root, false)];
         let mut results = Vec::new();
         while let Some(task) = work.pop() {
             match task {
-                Work::Node(node) => {
+                Work::Node(node, compact_branch) => {
                     if node.kind() == K::StringExpr {
                         let mut leading = Vec::new();
                         let mut token = node.first_token();
@@ -242,22 +285,30 @@ impl<'a> Builder<'a> {
                             leading.push(self.token(current.clone()));
                             token = current.next_token();
                         }
-                        results.push(self.sequence(K::StringExpr, leading, false));
+                        results.push(self.sequence(K::StringExpr, leading, false, false));
                     } else {
+                        let compact_if = compact_value_if(&node);
                         let children: Vec<_> = node.children_with_tokens().collect();
-                        work.push(Work::Finish(node.kind(), children.len()));
+                        work.push(Work::Finish(
+                            node.kind(),
+                            children.len(),
+                            compact_if || compact_branch,
+                        ));
                         for child in children.into_iter().rev() {
                             work.push(match child {
-                                SyntaxElement::Node(node) => Work::Node(node),
+                                SyntaxElement::Node(node) => {
+                                    let compact_branch = compact_if && node.kind() == K::Block;
+                                    Work::Node(node, compact_branch)
+                                }
                                 SyntaxElement::Token(token) => Work::Token(token),
                             });
                         }
                     }
                 }
                 Work::Token(token) => results.push(self.token(token)),
-                Work::Finish(kind, count) => {
+                Work::Finish(kind, count, compact) => {
                     let parts = results.split_off(results.len() - count);
-                    results.push(self.node(kind, parts));
+                    results.push(self.node(kind, parts, compact));
                 }
             }
         }
@@ -308,7 +359,7 @@ impl<'a> Builder<'a> {
         clean
     }
 
-    fn node(&mut self, kind: K, parts: Vec<Part>) -> Part {
+    fn node(&mut self, kind: K, parts: Vec<Part>, compact: bool) -> Part {
         if kind == K::ArgList {
             let parts = self.clean(parts);
             let mut result = Part::empty(kind, 0);
@@ -337,7 +388,7 @@ impl<'a> Builder<'a> {
             let split = kind == K::MemberExpr
                 && base.last != Some(K::RBrace)
                 && !matches!(first_tail.first, Some(K::LineComment | K::BlockComment));
-            let tail = self.sequence(kind, iter.collect(), false);
+            let tail = self.sequence(kind, iter.collect(), false, false);
             let tail_doc = if base.last == Some(K::LineComment) {
                 let line = self.add(Doc::HardLine);
                 self.concat(vec![line, tail.doc])
@@ -375,7 +426,7 @@ impl<'a> Builder<'a> {
         if matches!(kind, K::BinaryExpr | K::RangeExpr | K::UnionType) && parts.len() > 1 {
             let mut iter = parts.into_iter();
             let base = iter.next().unwrap();
-            let tail = self.sequence(kind, iter.collect(), false);
+            let tail = self.sequence(kind, iter.collect(), false, false);
             let doc = self.add(Doc::Flow {
                 base: base.doc,
                 tail: tail.doc,
@@ -391,10 +442,25 @@ impl<'a> Builder<'a> {
                 arguments: None,
             };
         }
-        self.sequence(kind, parts, matches!(kind, K::Root | K::Block))
+        let mut result = self.sequence(
+            kind,
+            parts,
+            matches!(kind, K::Root | K::Block),
+            compact && kind == K::Block,
+        );
+        if compact && kind == K::IfExpr {
+            result.doc = self.add(Doc::Group(result.doc));
+        }
+        result
     }
 
-    fn sequence(&mut self, kind: K, parts: Vec<Part>, statements: bool) -> Part {
+    fn sequence(
+        &mut self,
+        kind: K,
+        parts: Vec<Part>,
+        statements: bool,
+        compact_branch: bool,
+    ) -> Part {
         let parts = self.clean(parts);
         let Some(first) = parts.first() else {
             return Part::empty(kind, 0);
@@ -414,13 +480,19 @@ impl<'a> Builder<'a> {
             };
             if let Some(end) = parts.iter().rposition(|part| part.kind == close) {
                 let block = parts[open].kind == K::LBrace
-                    && matches!(kind, K::Block | K::ClassDecl | K::MatchExpr);
+                    && matches!(kind, K::Block | K::ClassDecl | K::EnumDecl | K::MatchExpr);
                 let mut parts = parts;
                 let after = parts.split_off(end + 1);
                 let closing = parts.pop().unwrap();
                 let inside = parts.split_off(open + 1);
                 let opening = parts.pop().unwrap();
-                let enclosed = self.enclosed(opening, inside, closing, block);
+                let enclosed = self.enclosed(
+                    opening,
+                    inside,
+                    closing,
+                    block && !compact_branch,
+                    !compact_branch,
+                );
                 parts.push(enclosed);
                 parts.extend(after);
                 self.join(&parts, statements, kind)
@@ -441,7 +513,14 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn enclosed(&mut self, opening: Part, inside: Vec<Part>, closing: Part, block: bool) -> Part {
+    fn enclosed(
+        &mut self,
+        opening: Part,
+        inside: Vec<Part>,
+        closing: Part,
+        block: bool,
+        group: bool,
+    ) -> Part {
         let doc = if inside.is_empty() {
             self.concat(vec![opening.doc, closing.doc])
         } else if block {
@@ -459,7 +538,11 @@ impl<'a> Builder<'a> {
             let content = self.add(Doc::Indent(content));
             let end = self.add(Doc::Line(padded));
             let all = self.concat(vec![opening.doc, content, end, closing.doc]);
-            self.add(Doc::Group(all))
+            if group {
+                self.add(Doc::Group(all))
+            } else {
+                all
+            }
         };
         Part {
             doc,

@@ -9,7 +9,10 @@ fn input_hints_are_typed_observable_and_refresh_after_restore() {
     let code = r#"use reel::types::InputInfo;
         fn opening() {
             let info: InputInfo = stage.input();
-            stage.replace(text(value: derive(|| info.source + ":" + info.layout + ":" + info.buttons.South)));
+            stage.replace(text(value: derive(|| {
+                let labels = info.buttons;
+                f"{info.source}:{info.layout}:{labels.South}/{labels.East}/{labels.LeftShoulder}"
+            })));
             narrator("save");
         }"#;
     let shown = |vm: &SessionVm| {
@@ -22,22 +25,40 @@ fn input_hints_are_typed_observable_and_refresh_after_restore() {
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(code, encoded);
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "unknown:generic:South");
+        assert_eq!(shown(&vm), "unknown:generic:South/East/LeftShoulder");
+        for (layout, label) in [
+            (GamepadLayout::Xbox, "gamepad:xbox:A/B/LB"),
+            (GamepadLayout::Nintendo, "gamepad:nintendo:B/A/L"),
+            (
+                GamepadLayout::Generic,
+                "gamepad:generic:South/East/LeftShoulder",
+            ),
+        ] {
+            assert!(
+                vm.set_input_hints(InputHints {
+                    source: InputSource::Gamepad,
+                    layout,
+                })
+                .unwrap()
+            );
+            models::drive(&mut vm, &mut session, false);
+            assert_eq!(shown(&vm), label);
+        }
         let hints = InputHints {
             source: InputSource::Gamepad,
             layout: GamepadLayout::PlayStation,
         };
         assert!(vm.set_input_hints(hints).unwrap());
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "gamepad:playstation:Cross");
+        assert_eq!(shown(&vm), "gamepad:playstation:Cross/Circle/L1");
         assert!(!vm.set_input_hints(hints).unwrap());
         assert!(!vm.has_runnable_tasks());
         (session, vm) = restore_session(&session, &vm);
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "unknown:generic:South");
+        assert_eq!(shown(&vm), "unknown:generic:South/East/LeftShoulder");
         vm.set_input_hints(hints).unwrap();
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(shown(&vm), "gamepad:playstation:Cross");
+        assert_eq!(shown(&vm), "gamepad:playstation:Cross/Circle/L1");
     }
 }
 

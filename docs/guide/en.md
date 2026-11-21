@@ -272,6 +272,22 @@ let caption = match mode {
 };
 ```
 
+The menu can return `MenuResult.Back` or `MenuResult.Load(slot: 3)`. Use an enum when a result has a set of named cases. The compiler checks that a match on the enum has handled all its cases.
+
+```aside
+enum MenuResult {
+    Back,
+    Load(slot: int),
+}
+
+fn selected(result: MenuResult) -> string {
+    match result {
+        MenuResult.Back => "返回",
+        MenuResult.Load { slot } => f"读取第 {slot} 槽",
+    }
+}
+```
+
 Container methods express insertion, removal, slicing and reversal directly. Table `entries()` returns `(key, value)` pairs. See [collections](../../examples/collections/src/main.aside) and [collection_editing](../../examples/collection_editing/src/main.aside).
 
 ```aside
@@ -547,6 +563,17 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
                 camera_rotation: 8, duration: 1.2, easing: "in_out"));
 ```
 
+Put `camera_plane` directly inside a `camera` to move a flat layer toward or away from the viewpoint. A greater `distance` places the plane farther away. Animating `camera_z` moves the viewpoint toward all planes. Place fixed interface elements outside the camera. The order of children determines which layer draws in front.
+
+```aside
+let room = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
+    camera_plane(distance: 900) { image("assets/room.png", width: 960, height: 540); };
+    camera_plane(distance: 600) { image("assets/mio.png", x: 370, y: 85); };
+};
+stage.replace(room);
+await run(tween(room, camera_z: 120, duration: 0.8));
+```
+
 A scene can return its root and the parts controlled by the story. Put this component in `src/ui/room.aside`, then let story functions control its portrait, CG and dialogue area.
 
 ```aside
@@ -601,6 +628,8 @@ mio(rich("Listen.[pause=0.5]"), reveal_skippable: false);
 narrator("The light is moving.", reveal_skippable: false);
 say([mio.line("One."), eri.line("Two.")], reveal_skippable: false);
 ```
+
+For a resumable group composed by script calls, create `speech` with `say(lines, wait: false)` and call `speech.wait()` in the declared flow. The saved wait keeps the group and its history. Use `game.dialogue().current_line_ids` to locate the active group within the retained display rows.
 
 Each line can choose its history text. `history: false` omits the line; a string or rich text supplies separate history content.
 
@@ -1206,7 +1235,7 @@ scope(body: |s| {
 });
 ```
 
-A transition retains the current presented view and builds its destination in `change`. It advances after destination resources are ready and returns when complete.
+A transition retains the current presented view and builds its destination in `change`. Call `stage.transition` directly. It returns after the destination is shown. A helper that only performs a transition can declare `-> null` so an extra `await` is diagnosed at the caller. Use `await` with the activity returned by `run(tween(...))`.
 
 ```aside
 stage.transition(target: scene, duration: 0.6, change: || {
@@ -1214,6 +1243,8 @@ stage.transition(target: scene, duration: 0.6, change: || {
     scene.add(image("assets/room-evening.png"));
 });
 ```
+
+Pass `skip: "finish"` to a transition or an animation run that can go straight to its final state during story fast-forward. A skipped transition runs `change` once and waits for the destination frame. The default `"keep"` preserves the authored timing. Use `owner` to choose which node or scope the animation ends with.
 
 An image mask controls reveal through progress and softness, which ordinary animation can drive.
 
@@ -1259,6 +1290,8 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 Use `sampling: "nearest"` on an image to preserve pixel edges; the default `"linear"` smooths scaling. Switching filtering shares the same image resource. Atlas crops and tiled images retain their source windows.
 
 Use `effect` to apply a drawing function to a node and its children. `Fragment.sample()` reads their composed color; return a color to replace it or a float to control coverage. Bind parameters to ordinary state so controls and animation can change the effect.
+
+Drawing functions can import `clamp`, `mix`, `smoothstep`, and `modulo` from `std::math`. For example, `mix(r, g, weight)` blends two channels and `clamp(weight, 0.0, 1.0)` limits the weight to ordered constant bounds.
 
 The node property `effect_resolution_scale` controls its effect output resolution and defaults to `1.0`. For example, `effect_resolution_scale: if build.target == "vita" { 0.5 } else { 1.0 }` halves both axes on Vita and bilinearly enlarges the result to the original region. The input subtree retains its resolution; keep text and buttons in separate nodes when reducing a background effect.
 
@@ -1446,15 +1479,14 @@ narrator("A new chapter begins.");
 game.reading().clear_history(keep_last: 37);
 ```
 
-`saves` captures business state, story positions, the current dialogue and history. Declare persistent data with State and build the current interface in Root. `run_flow` enters the story, and `flow` names that part of the story.
+`saves` captures business state, story positions, the current dialogue and history. Build the current interface in Root and declare its data class as the type of its parameter. `run_flow` enters the story, and `flow` names that part of the story.
 
 ```aside
-use std::resume::{state, root, flow};
+use std::resume::{root, flow};
 
 class GameState {
     let mut score: int = 0;
 }
-state(GameState, "game.state");
 root(start_story, "game");
 
 fn start_story(state: GameState = model(GameState())) {
@@ -1475,7 +1507,7 @@ fn chapter_one(state: GameState) {
 }
 ```
 
-A new game evaluates Root's ordinary default argument. Loading supplies the restored State to the current Root, rebuilds its interface and reconnects the saved point. Defaulted State fields may be added, functions moved and story suffixes changed while existing saves resolve stable keys against current code. Preserve a renamed field's original key through the `fields` argument of `state`. Keep published flow, point and Root keys stable.
+A new game evaluates Root's ordinary default argument. Loading supplies the restored State to the current Root, rebuilds its interface and reconnects the saved point. With Root key `"game"`, the parameter's class has State key `"game.state"` by default. To preserve a renamed field, declare that key explicitly with `state(GameState, "game.state", fields: {points: "score"})`, using the current name on the left. Declare additional persistent classes with `state`. Defaulted State fields may be added, functions moved and story suffixes changed while existing saves resolve stable keys against current code. Keep published State, flow, point and Root keys stable.
 
 The compiler generates continuation positions for proven dialogue waits, choices and flow calls. Declaring `flow` enables type inference for dialogue waits, including waits on `Speech` values held in local variables. Automatic identities depend on the proven wait and call structure. Discovering an additional continuation can change the automatic identities in that flow. Use explicit `point` names for milestones that need an independently stable identity after release.
 
@@ -1483,7 +1515,7 @@ To offer jumps from history, call `saves.track_history(true)` in Root. Use `save
 
 Root loads current preferences and builds Reading and the interface. Story advancement, counters and branches belong in flows. Keep business data and native resources that must continue in State or live business bindings; the current Root creates view factories and callbacks.
 
-When a flow needs a scene object, use `run_flow(chapter_one, state, context: scene)` with the ordinary two-argument entry `chapter_one(state, scene)`. Loading connects `scene` and its local aliases to the object built by the current Root. Name several services with `context: {scene: scene, selection: selection}`. Loading connects those objects by field name. Keep backgrounds, actor positions, and minigame progress in State so Root can build the interface and its wait results.
+When a flow needs a scene object, use `run_flow(chapter_one, state, context: scene)` with the ordinary two-argument entry `chapter_one(state, scene)`. Loading connects `scene` and its local aliases to the object built by the current Root. Name several services with `context: {scene, selection}`. Declare their types in the entry's record parameter and unpack them with `let {scene, selection} = context;`. Loading connects those objects by field name. Keep backgrounds, actor positions, and minigame progress in State so Root can build the interface and its wait results.
 
 Call `saves.can_capture()` when opening a save menu to enable the button at a verified position. Obtain an optional thumbnail with `stage.capture` before supplying it to a save request. The save list provides data for an authored slot UI. Input that changes the session during capture fails the save with `CaptureBusy` and preserves the previous slot.
 

@@ -16,7 +16,7 @@ pub(super) fn keyword_completions(source: &Source, offset: usize) -> Vec<Complet
         .into_iter()
         .flat_map(|token| token.parent_ancestors())
         .filter(|node| match node.kind() {
-            K::Block | K::ClassDecl => !closed_block(node),
+            K::Block | K::ClassDecl | K::EnumDecl => !closed_block(node),
             K::FnDecl | K::ClosureExpr => !node
                 .children()
                 .filter(|node| node.kind() == K::Block)
@@ -46,6 +46,9 @@ pub(super) fn keyword_completions(source: &Source, offset: usize) -> Vec<Complet
                 })
         });
     let type_position = type_completion_context(source, offset);
+    let module_scope = !ancestors
+        .iter()
+        .any(|node| matches!(node.kind(), K::Block | K::ClassDecl | K::EnumDecl));
     let function_boundary = ancestors
         .iter()
         .position(|node| matches!(node.kind(), K::FnDecl | K::ClosureExpr));
@@ -104,10 +107,11 @@ pub(super) fn keyword_completions(source: &Source, offset: usize) -> Vec<Complet
         .iter()
         .filter(|(kind, _)| match previous {
             _ if *kind == K::Async => false,
+            _ if *kind == K::Enum && !module_scope => false,
             _ if *kind == K::Yield && (!generator || synchronous_region) => false,
             _ if *kind == K::Await && (generator || synchronous_region) => false,
             Some(K::Let) => *kind == K::Mut,
-            Some(K::Fn | K::Class | K::As | K::Mut) => false,
+            Some(K::Fn | K::Class | K::Enum | K::As | K::Mut) => false,
             _ if *kind == K::Else && !expression && !type_position => followup == Some(K::IfExpr),
             _ if *kind == K::Catch && !expression && !type_position => followup == Some(K::TryStmt),
             _ if *kind == K::Finally && !expression && !type_position => {
@@ -116,7 +120,10 @@ pub(super) fn keyword_completions(source: &Source, offset: usize) -> Vec<Complet
             _ if for_pattern => *kind == K::In,
             Some(K::Async | K::Gen) => *kind == K::Fn,
             Some(K::Static) => matches!(kind, K::Let | K::Fn | K::Async | K::Gen),
-            Some(K::Pub) => matches!(kind, K::Let | K::Fn | K::Class | K::Use | K::Async | K::Gen),
+            Some(K::Pub) => matches!(
+                kind,
+                K::Let | K::Fn | K::Class | K::Enum | K::Use | K::Async | K::Gen
+            ),
             _ if type_position => matches!(kind, K::Fn | K::Null),
             _ if class_body => matches!(kind, K::Let | K::Fn | K::Static | K::Async | K::Gen),
             _ if expression => matches!(

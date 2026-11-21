@@ -641,7 +641,7 @@ impl SessionVm {
         self.activities.observe_time(seconds)?;
         let sample = self.reactive_settled();
         let media_woke = sample && self.sample_media_positions()?;
-        self.activities.set_skipping(session.reading().skipping());
+        self.sync_effect_reading(session);
         if sample {
             self.particles.begin(seconds)?;
         }
@@ -658,9 +658,7 @@ impl SessionVm {
         progress.work += particle_work;
         progress.woke |= media_woke | self.particles.take_wake();
         if !self.activities.pending() {
-            let transition = self
-                .transitions
-                .advance(self.activities.time(), work - progress.work);
+            let transition = self.advance_transitions(work - progress.work)?;
             progress.work += transition.work;
             progress.woke |= transition.woke;
             progress.pending |= transition.pending;

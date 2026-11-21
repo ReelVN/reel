@@ -22,6 +22,10 @@ pub enum TypeHint {
     Named(String),
     StringLiteral(String),
     Record(Vec<(String, TypeHint)>),
+    Enum {
+        name: String,
+        cases: Arc<Vec<TypeHint>>,
+    },
 }
 impl std::fmt::Display for TypeHint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -39,6 +43,7 @@ impl std::fmt::Display for TypeHint {
             Self::Generator => f.write_str("generator"),
             Self::Named(name) => f.write_str(name),
             Self::StringLiteral(text) => write!(f, "{text:?}"),
+            Self::Enum { name, .. } => f.write_str(name),
             Self::Record(fields) => {
                 f.write_str("{")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
@@ -172,6 +177,10 @@ pub enum Intrinsic {
     ResumeState,
     /// Declare the current bootstrap and its persistent State input.
     ResumeRoot,
+    /// A compile-time namespace and a tagged value contract.
+    EnumType,
+    /// A scalar tag or a known payload constructor within an enum namespace.
+    EnumCase,
 }
 #[derive(Debug, Clone)]
 pub struct NamespaceRef {
@@ -422,6 +431,10 @@ impl std::fmt::Display for ResolveError {
 }
 impl std::error::Error for ResolveError {}
 pub trait ModuleResolver {
+    /// A declared source enum's structural value contract.
+    fn enum_type(&self, _canonical_name: &str) -> Option<TypeHint> {
+        None
+    }
     /// Whether this type has a complete, fixed member contract. A failed
     /// member lookup is a source error only when this returns true.
     fn has_closed_members(&self, _type_name: &str) -> bool {
@@ -551,6 +564,16 @@ pub fn canonical_import<'a>(
     }
 }
 impl ModuleResolver for MemoryResolver {
+    fn enum_type(&self, canonical_name: &str) -> Option<TypeHint> {
+        let (module, name) = canonical_name.rsplit_once("::")?;
+        let symbol = self
+            .modules
+            .get(module)?
+            .exports
+            .iter()
+            .find(|symbol| symbol.name == name)?;
+        matches!(symbol.ty, TypeHint::Enum { .. }).then(|| symbol.ty.clone())
+    }
     fn canonical_request<'a>(
         &self,
         request: &'a ImportRequest,

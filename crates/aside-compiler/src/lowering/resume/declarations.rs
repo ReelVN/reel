@@ -4,6 +4,7 @@ use crate::lowering::{
     GlobalIdentity,
     project::{GlobalTarget, ProjectLinks},
 };
+use aside_vm::typed_data::TypeKey;
 use std::mem::size_of;
 
 #[derive(Debug)]
@@ -218,6 +219,68 @@ pub(crate) fn collect(
     }
     Ok((states, root))
 }
+fn root_state(
+    program: &bc::VerifiedProgram,
+    ty: bc::TypeId,
+    root_key: &str,
+    states: &mut Vec<r::StateDecl>,
+    b: &mut Budget,
+) -> Result<TypeKey, Box<Error>> {
+    if let Some(state) = states.iter().find(|state| state.class.nominal == ty) {
+        return Ok(state.key.clone());
+    }
+    let p = program.package();
+    let bc::TypeDef::Named { module, name, .. } = p.types[ty.index()] else {
+        return Err(b.error(
+            ErrorKind::Unsupported,
+            "Root parameter must use one direct State type",
+        ));
+    };
+    let globals = &p.modules[module.index()].globals;
+    b.work(globals.len() as u64)?;
+    let global = globals
+        .iter()
+        .position(|global| global.name == name)
+        .ok_or_else(|| b.error(ErrorKind::Unsupported, "Root State requires a module class"))?;
+    let class = r::class_locator(program, module, bc::GlobalId(global as u32))
+        .map_err(|e| b.error(ErrorKind::Unsupported, format!("Root State: {e}")))?;
+
+    let suffix = ".state";
+    let length = root_key.len() + suffix.len();
+    b.work(length as u64)?;
+    b.capacity(length)?;
+    let mut name = String::new();
+    name.try_reserve_exact(length)
+        .map_err(|_| b.error(ErrorKind::Allocation, "Root State key reservation failed"))?;
+    b.capacity(name.capacity() - length)?;
+    name.push_str(root_key);
+    name.push_str(suffix);
+    for state in states.iter() {
+        if b.compare(&state.key.name, &name)?.is_eq() {
+            return Err(b.error(
+                ErrorKind::Unsupported,
+                format!("inferred Root State key {name:?} is already in use. Declare the Root class with state(Class, key)."),
+            ));
+        }
+    }
+    let key = TypeKey {
+        module: String::new(),
+        name: b.string(&name)?,
+    };
+    b.push(
+        states,
+        r::StateDecl {
+            class,
+            key: TypeKey {
+                module: String::new(),
+                name,
+            },
+            fields: Vec::new(),
+        },
+    )?;
+    Ok(key)
+}
+
 pub(super) fn build(
     program: &bc::VerifiedProgram,
     modules: &[&Metadata],
@@ -257,7 +320,7 @@ pub(super) fn build(
         }
         drop(names);
         b.release_bytes(scratch);
-        let key = aside_vm::typed_data::TypeKey {
+        let key = TypeKey {
             module: String::new(),
             name: b.string(&source.key)?,
         };
@@ -286,20 +349,11 @@ pub(super) fn build(
                 "Root requires one State parameter with a default value",
             ));
         };
-        let state = table
-            .states
-            .iter()
-            .find(|state| state.class.nominal == parameter.ty)
-            .ok_or_else(|| {
-                b.error(
-                    ErrorKind::Unsupported,
-                    "Root parameter type has no state declaration; use one direct State type",
-                )
-            })?;
+        let state = root_state(program, parameter.ty, &source.key, &mut table.states, b)?;
         table.root = Some(r::RootDecl {
             key: r::RootKey(b.string(&source.key)?),
             function,
-            state: state.key.clone(),
+            state,
         });
     }
     Ok(())

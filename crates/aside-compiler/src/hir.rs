@@ -22,6 +22,8 @@ pub enum HirKind {
     Let,
     Function,
     Class,
+    Enum,
+    EnumVariant,
     Import,
     ImportPath,
     ImportGroup,
@@ -84,6 +86,7 @@ pub enum HirKind {
     RestPattern,
     OrPattern,
     TypePattern,
+    EnumPattern,
     ModifiedDeclaration,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +191,7 @@ pub enum Type {
     Named(NameId),
     StringLiteral(String),
     Record(Vec<(NameId, TypeId)>),
+    Enum(NameId, Vec<TypeId>),
 }
 /// A record, optionally wrapped in a nullable annotation, has one closed field set.
 pub fn record_fields(types: &[Type], ty: TypeId) -> Option<&[(NameId, TypeId)]> {
@@ -492,6 +496,10 @@ impl AnalyzedModule {
     pub fn external_bindings(&self) -> &[ExternalBinding] {
         &self.external
     }
+    pub(crate) fn type_only_symbol(&self, symbol: SymbolId) -> bool {
+        self.external_binding(Some(symbol), None)
+            .is_some_and(|binding| binding.descriptor.type_only)
+    }
     /// Look up the exact owner in the binder's sorted external entries.
     /// Node entries precede symbol entries and each owner occurs once.
     pub(crate) fn external_binding(
@@ -561,6 +569,7 @@ impl std::fmt::Display for TypeDisplay<'_> {
                 }
                 f.write_str("}")
             }
+            Type::Enum(name, _) => f.write_str(self.module.hir().name(*name)),
             Type::Tuple(types) => {
                 f.write_str("(")?;
                 for (i, &ty) in types.iter().enumerate() {
@@ -695,6 +704,11 @@ pub enum Form {
     Class {
         name: Option<HirToken>,
         base: Option<NodeId>,
+    },
+    EnumCase {
+        ty: NodeId,
+        variant: HirToken,
+        payload: Option<NodeId>,
     },
     Parameter {
         name: HirToken,

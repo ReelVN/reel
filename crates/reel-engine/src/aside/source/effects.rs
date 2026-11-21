@@ -5,8 +5,8 @@ use aside_compiler::{
 };
 use reel_ui::stage::effect::{
     EffectBinary as Binary, EffectInput, EffectNode, EffectNodeId as Id, EffectOp as Op,
-    EffectParameter, EffectProgram, EffectTextureChannel, EffectTextureParameter, EffectType as Ty,
-    EffectUnary as Unary, EffectValue as Constant,
+    EffectParameter, EffectProgram, EffectTernary as Ternary, EffectTextureChannel,
+    EffectTextureParameter, EffectType as Ty, EffectUnary as Unary, EffectValue as Constant,
 };
 use std::{collections::HashMap, sync::Arc};
 

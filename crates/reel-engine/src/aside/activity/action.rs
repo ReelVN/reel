@@ -244,6 +244,7 @@ pub(in crate::aside) fn tween(
             if !matches!(
                 (kind, node),
                 ("camera", NodeKind::Camera(_))
+                    | ("camera_plane", NodeKind::CameraPlane { .. })
                     | ("scroll", NodeKind::Scroll { .. })
                     | ("popup", NodeKind::Popup(_))
                     | ("flow", NodeKind::Row(_) | NodeKind::Column(_))

@@ -272,6 +272,22 @@ let caption = match mode {
 };
 ```
 
+菜单可以返回 `MenuResult.Back` 或 `MenuResult.Load(slot: 3)`。结果有几种明确选项时，用枚举给每种结果起个名字。有的数据跟着变体传回，例如这里的存档槽。编译器会检查 `match` 是否处理了所有变体。
+
+```aside
+enum MenuResult {
+    Back,
+    Load(slot: int),
+}
+
+fn selected(result: MenuResult) -> string {
+    match result {
+        MenuResult.Back => "返回",
+        MenuResult.Load { slot } => f"读取第 {slot} 槽",
+    }
+}
+```
+
 容器的方法直接表达插入、删除、切片和反转。表的 `entries()` 返回 `(key, value)` 对。完整示例见 [collections](../../examples/collections/src/main.aside) 和 [collection_editing](../../examples/collection_editing/src/main.aside)。
 
 ```aside
@@ -547,6 +563,17 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
                 camera_rotation: 8, duration: 1.2, easing: "in_out"));
 ```
 
+把 `camera_plane` 直接放在 `camera` 内，就能让平面图层沿视线移动。`distance` 越大，图层越远。增大 `camera_z` 则让镜头靠近所有平面。固定界面放在镜头外，镜头内仍按子节点顺序绘制。
+
+```aside
+let room = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
+    camera_plane(distance: 900) { image("assets/room.png", width: 960, height: 540); };
+    camera_plane(distance: 600) { image("assets/mio.png", x: 370, y: 85); };
+};
+stage.replace(room);
+await run(tween(room, camera_z: 120, duration: 0.8));
+```
+
 一个场景可以返回根节点以及剧情需要操作的部分。将下面的组件放在 `src/ui/room.aside`，由剧情函数控制人物、CG 和对白区域。
 
 ```aside
@@ -601,6 +628,8 @@ mio(rich("Listen.[pause=0.5]"), reveal_skippable: false);
 narrator("The light is moving.", reveal_skippable: false);
 say([mio.line("One."), eri.line("Two.")], reveal_skippable: false);
 ```
+
+需要续接一组由脚本组成的多角色对白时，用 `say(lines, wait: false)` 取得 `speech`，再在声明的 flow 中调用 `speech.wait()`。存档保留整组对白及其历史。用 `game.dialogue().current_line_ids` 在保留的显示行中找到当前组。
 
 每句对白可决定进入历史的文字。`history: false` 省略这一行，字符串或富文本提供单独的历史内容。
 
@@ -1206,7 +1235,7 @@ scope(body: |s| {
 });
 ```
 
-转场保留当前已显示画面，在 `change` 中构建目标。目标资源就绪后推进转场；函数返回时转场完成。
+转场保留当前已显示画面，在 `change` 中构建目标。直接调用 `stage.transition`，目标画面显示后函数返回。只执行转场的辅助函数可以声明 `-> null`，调用者多写 `await` 时能收到编译诊断。等待 `run(tween(...))` 返回的活动时使用 `await`。
 
 ```aside
 stage.transition(target: scene, duration: 0.6, change: || {
@@ -1214,6 +1243,8 @@ stage.transition(target: scene, duration: 0.6, change: || {
     scene.add(image("assets/room-evening.png"));
 });
 ```
+
+允许剧情快进直接到达终态的转场或动画，启动时传入 `skip: "finish"`。跳过转场仍执行一次 `change`，并等目标画面显示。默认 `"keep"` 按原本节奏播放。用 `owner` 选择动画跟随哪个节点或作用域结束。
 
 图片遮罩通过进度和柔和度控制显现，普通动画可以驱动这些属性。
 
@@ -1259,6 +1290,8 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 图像的 `sampling: "nearest"` 保留像素边缘，默认 `"linear"` 平滑缩放。切换采样方式复用同一图片资源；图集裁切和分块图片沿用各自的源窗口。
 
 用 `effect` 将绘制函数应用到节点及其子树。`Fragment.sample()` 读取子树合成后的颜色；返回颜色替换结果，或返回浮点数控制覆盖率。参数绑定普通状态后，控件和动画都可以改变效果。
+
+绘制函数可从 `std::math` 导入 `clamp`、`mix`、`smoothstep` 和 `modulo`。例如 `mix(r, g, weight)` 混合两个通道，`clamp(weight, 0.0, 1.0)` 把权重限制在有序的常量范围内。
 
 节点的 `effect_resolution_scale` 控制该效果输出的计算分辨率，默认 `1.0`。例如 `effect_resolution_scale: if build.target == "vita" { 0.5 } else { 1.0 }` 在 Vita 上让两个轴各减半，再线性放大到原区域。子树保持原分辨率；缩小背景效果时，将文字和按钮放在独立节点上。
 
@@ -1447,15 +1480,14 @@ narrator("A new chapter begins.");
 game.reading().clear_history(keep_last: 37);
 ```
 
-`saves` 保存业务状态、剧情位置、当前对白及历史。用 State 声明持久数据，用 Root 建立当前界面；`run_flow` 进入正文，`flow` 为该段剧情命名。
+`saves` 保存业务状态、剧情位置、当前对白及历史。用 Root 建立当前界面，形参的类型指定持久数据类。`run_flow` 进入正文，`flow` 为该段剧情命名。
 
 ```aside
-use std::resume::{state, root, flow};
+use std::resume::{root, flow};
 
 class GameState {
     let mut score: int = 0;
 }
-state(GameState, "game.state");
 root(start_story, "game");
 
 fn start_story(state: GameState = model(GameState())) {
@@ -1476,7 +1508,7 @@ fn chapter_one(state: GameState) {
 }
 ```
 
-新游戏求值 Root 的普通默认参数；读档将恢复的 State 传给当前 Root，重建界面，再接回保存的 point。增加有默认值的 State 字段、调整函数位置或修改 point 后续剧情时，已有存档沿稳定名称连接当前代码。字段改名可以在 `state` 的 `fields` 参数中保留原 key；flow、point 和 Root 的 key 在作品发布后保持稳定。
+新游戏求值 Root 的普通默认参数，读档将恢复的 State 传给当前 Root，重建界面，再接回保存的 point。Root key 为 `"game"` 时，形参类型的 State key 默认为 `"game.state"`。字段改名时可显式写 `state(GameState, "game.state", fields: {points: "score"})`，左边用当前字段名。其他持久数据类用 `state` 声明。增加有默认值的 State 字段、调整函数位置或修改 point 后续剧情时，已有存档沿稳定名称连接当前代码。作品发布后保持已用的 State、flow、point 和 Root key 稳定。
 
 编译器为能验证的对白等待、选项和 flow 调用生成续接位置。声明 `flow` 即启用对白等待的类型推断，包括通过局部变量取得的 `Speech`。自动位置的身份取决于经验证的等待与调用结构。编译器在流程中发现新的续接位置时，该流程的自动身份可能变化。发布后需要独立保留的关键位置用显式 `point` 命名。
 
@@ -1484,7 +1516,7 @@ fn chapter_one(state: GameState) {
 
 Root 加载当前设置、建立 Reading 和界面，正文的推进、计数和分支放在 flow 内。业务数据及需要续接的原生资源放入 State 或业务局部绑定；界面工厂和回调由当前 Root 建立。
 
-正文需要场景对象时，用 `run_flow(chapter_one, state, context: scene)` 调用普通双参数入口 `chapter_one(state, scene)`。读档将 `scene` 及它的局部别名连接到当前 Root 新建的对象。多个服务可以用 `context: {scene: scene, selection: selection}` 命名，读档按同名字段连接这些对象。State 保存背景、角色位置和小游戏进度，Root 据此建立界面和等待结果。
+正文需要场景对象时，用 `run_flow(chapter_one, state, context: scene)` 调用普通双参数入口 `chapter_one(state, scene)`。读档将 `scene` 及它的局部别名连接到当前 Root 新建的对象。多个服务可以用 `context: {scene, selection}` 命名，在入口的记录形参中注明字段类型，再用 `let {scene, selection} = context;` 解构。读档按同名字段连接这些对象。State 保存背景、角色位置和小游戏进度，Root 据此建立界面和等待结果。
 
 打开存档页时可以调用 `saves.can_capture()`，根据当前正文是否可续接启用按钮。需要缩略图时，用 `stage.capture` 取得图片并传给保存请求。存档列表提供数据，作者组合槽位界面。捕获期间改变会话的输入会使本次保存以 `CaptureBusy` 失败，旧槽位保留。
 

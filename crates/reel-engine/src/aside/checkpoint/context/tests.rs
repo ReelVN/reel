@@ -89,7 +89,7 @@ fn settle(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
 }
 
 fn save(encoded: bool) -> Vec<u8> {
-    let (mut session, mut vm) = fresh(
+    capture(
         &fixture(
             "A",
             r#""诗歌":null,seed:poem,"#,
@@ -97,9 +97,13 @@ fn save(encoded: bool) -> Vec<u8> {
             7,
             10,
         ),
-        1,
+        &["scene", "诗歌", "page", "selection"],
         encoded,
-    );
+    )
+}
+
+fn capture(code: &str, members: &[&str], encoded: bool) -> Vec<u8> {
+    let (mut session, mut vm) = fresh(code, 1, encoded);
     assert!(matches!(
         settle(&mut vm, &mut session),
         RunOutcome::Returned(_)
@@ -129,7 +133,7 @@ fn save(encoded: bool) -> Vec<u8> {
             .iter()
             .any(|binding| matches!(binding, CheckpointBinding::CurrentContext(_)))
     );
-    for name in ["scene", "诗歌", "page", "selection"] {
+    for &name in members {
         assert!(bindings.iter().any(|binding| matches!(binding, CheckpointBinding::CurrentContextMember { member, .. } if member == name)), "missing recorded member {name}");
     }
     let mut bytes = Vec::new();
@@ -161,6 +165,64 @@ fn restore(
         }
     }
     panic!("context load exceeded its work budget")
+}
+
+#[test]
+fn typed_context_unpacking_keeps_automatic_wait_and_current_actor_aliases() {
+    let published = r#"
+        use std::resume::{root, flow};
+        class World { let mut score: int = 0; }
+        root(main, "game");
+        fn main(world: World = model(World())) {
+            let selection = completion();
+            let title = text("A actor");
+            let actor = button("select", on_click: || { selection.resolve(world.score + 35); });
+            stage.replace(column { title; actor; });
+            let services = {selection, title, actor};
+            run_flow(outer, world, context: services)
+        }
+        fn outer(world: World, context: {selection: Completion, title: TextNode, actor: Node}) {
+            flow("story");
+            let reward = chapter(world, context);
+            reward
+        }
+        fn chapter(world: World, context: {selection: Completion, title: TextNode, actor: Node}) {
+            flow("chapter");
+            let {selection, title: caption, actor} = context;
+            world.score += 7;
+            let reward = await selection;
+            if selection != context.selection || caption != context.title || actor != context.actor {
+                throw "current stage aliases lost";
+            }
+            if caption.value != "CURRENT" { throw "old caption restored"; }
+            reward
+        }
+    "#;
+    let edited = published
+        .replace("A actor", "B actor")
+        .replace("CURRENT", "B actor")
+        .replace("world.score += 7", "world.score += 700")
+        .replace(
+            "let services = {selection, title, actor};",
+            "let rebuilt = {actor, title, selection};",
+        )
+        .replace("context: services", "context: rebuilt");
+    for encoded in [false, true] {
+        let bytes = capture(published, &["selection", "title", "actor"], encoded);
+        let (mut session, mut vm) = restore(&edited, &bytes, encoded).unwrap();
+        assert!(vm.main_wait.is_some());
+        let actor = vm
+            .stage()
+            .nodes()
+            .find(|node| matches!(&node.kind, NodeKind::Button { .. }))
+            .unwrap()
+            .id;
+        assert!(vm.click(&mut session, actor).unwrap());
+        let RunOutcome::Returned(delivery) = settle(&mut vm, &mut session) else {
+            panic!("automatic wait did not resume through the current context");
+        };
+        assert_eq!(vm.vm.delivery_value(delivery).unwrap().as_int(), Some(42));
+    }
 }
 
 #[test]

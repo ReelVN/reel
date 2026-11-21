@@ -74,6 +74,7 @@ fn accepts(schema: &Schema, shape: Shape) -> bool {
         "reel::types::PopupNode" => shape == Shape::Popup,
         "reel::types::TooltipNode" => shape == Shape::Tooltip,
         "reel::types::CameraNode" => shape == Shape::Camera,
+        "reel::types::CameraPlaneNode" => shape == Shape::CameraPlane,
         _ => false,
     }
 }

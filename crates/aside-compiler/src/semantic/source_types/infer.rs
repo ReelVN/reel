@@ -362,7 +362,9 @@ impl Inference<'_> {
             Type::Future => TypeHint::Future,
             Type::Generator => TypeHint::Generator,
             Type::Closure | Type::Function(_) | Type::BoundMethod(_) => TypeHint::Closure,
-            Type::Named(name) => TypeHint::Named(module.hir.name(*name).into()),
+            Type::Named(name) | Type::Enum(name, _) => {
+                TypeHint::Named(module.hir.name(*name).into())
+            }
             Type::Record(fields) => {
                 if !self.charge(fields.len()) {
                     return TypeHint::Any;

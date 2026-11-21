@@ -67,6 +67,14 @@ impl FunctionBuilder<'_, '_> {
         let depth = self.expression_depth(n, depth)?;
         let kind = self.l.m.hir().node(n).kind;
         let form = self.l.m.hir().node(n).form;
+        if let Form::Call {
+            callee, arguments, ..
+        } = form
+            && self.l.m.facts()[n.0 as usize].intrinsic
+                == Some(crate::semantic::Intrinsic::EnumCase)
+        {
+            return self.enum_value(n, callee, arguments, depth);
+        }
         if kind == H::Call
             && matches!(
                 self.l.m.facts()[n.0 as usize].intrinsic,
@@ -102,6 +110,7 @@ impl FunctionBuilder<'_, '_> {
             return self.global_reference(global, n).map(Some);
         }
         match (kind, form) {
+            (H::Enum, _) => Ok(None),
             (
                 H::Member | H::Index | H::Call,
                 Form::Member { chain: true, .. }

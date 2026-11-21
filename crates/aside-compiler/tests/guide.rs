@@ -120,6 +120,7 @@ mod semantic_guides {
         "texture",
         "rich",
         "camera",
+        "camera_plane",
         "clock",
         "cursor",
         "view",
@@ -207,6 +208,7 @@ mod semantic_guides {
                     | "page_stack"
                     | "tab_bar"
                     | "camera"
+                    | "camera_plane"
                     | "list"
                     | "view"
                     | "layered_image"

@@ -93,7 +93,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
             p.expr(0, false, true);
         }
         EntryPoint::Pattern => {
-            p.pattern();
+            p.match_pattern();
         }
         EntryPoint::Type => p.ty(),
     }
@@ -391,7 +391,7 @@ impl Parser<'_> {
     fn statement(&mut self, end: K, tail: bool) {
         match self.peek() {
             K::Semi => self.bump(),
-            K::Use | K::Pub | K::Fn | K::Async | K::Gen => self.declaration(false),
+            K::Use | K::Pub | K::Fn | K::Async | K::Gen | K::Enum => self.declaration(false),
             K::Class if self.nth(1) == K::Ident => self.declaration(false),
             K::Let => self.let_decl(false),
             K::Ellipsis => {
@@ -942,6 +942,7 @@ impl Parser<'_> {
         match self.peek() {
             K::Fn | K::Async | K::Gen => self.fn_decl(),
             K::Class if !member => self.class_decl(true),
+            K::Enum if !member => self.enum_decl(),
             K::Use if !member => self.use_decl(),
             K::Let => self.let_decl(member),
             _ => {
@@ -1038,10 +1039,39 @@ impl Parser<'_> {
             self.parameters(K::Pipe, false);
         }
         if self.peek() == K::LBrace {
-            self.block();
+            if self.nth(1) == K::Ident && self.object_statement_ahead() {
+                self.error(
+                    D::MissingSemicolon,
+                    "closure braces delimit a block. Parenthesize the record, for example `|| ({ field: value })`",
+                );
+                self.object();
+            } else {
+                self.block();
+            }
         } else {
             self.expr(0, false, true);
         }
+        self.finish();
+    }
+    fn enum_decl(&mut self) {
+        self.start(K::EnumDecl);
+        self.expect(K::Enum);
+        self.expect(K::Ident);
+        self.expect(K::LBrace);
+        while !matches!(self.peek(), K::RBrace | K::Eof) && !self.halted {
+            let before = self.cursor;
+            self.start(K::EnumVariant);
+            self.expect(K::Ident);
+            if self.peek() == K::LParen {
+                self.record_type(K::RParen);
+            }
+            self.finish();
+            if !self.eat(K::Comma) {
+                break;
+            }
+            self.progress(before);
+        }
+        self.expect(K::RBrace);
         self.finish();
     }
     fn class_decl(&mut self, named: bool) {
@@ -1194,7 +1224,7 @@ impl Parser<'_> {
         while !matches!(self.peek(), K::RBrace | K::Eof) && !self.halted {
             let before = self.cursor;
             self.start(K::MatchArm);
-            self.pattern();
+            self.match_pattern();
             if self.eat(K::If) {
                 self.expr(0, true, true);
             }
@@ -1267,6 +1297,24 @@ impl Parser<'_> {
         }
         self.leave();
     }
+    fn record_type(&mut self, end: K) {
+        self.start(K::RecordType);
+        self.bump();
+        while !matches!(self.peek(), K::Eof) && self.peek() != end && !self.halted {
+            let before = self.cursor;
+            self.start(K::RecordFieldType);
+            self.expect(K::Ident);
+            self.expect(K::Colon);
+            self.ty();
+            self.finish();
+            if !self.eat(K::Comma) {
+                break;
+            }
+            self.progress(before);
+        }
+        self.expect(end);
+        self.finish();
+    }
     fn type_atom(&mut self, stop_union: bool) {
         match self.peek() {
             K::StringStart => {
@@ -1274,24 +1322,7 @@ impl Parser<'_> {
                 self.string_expr();
                 self.finish();
             }
-            K::LBrace => {
-                self.start(K::RecordType);
-                self.bump();
-                while !matches!(self.peek(), K::RBrace | K::Eof) && !self.halted {
-                    let before = self.cursor;
-                    self.start(K::RecordFieldType);
-                    self.expect(K::Ident);
-                    self.expect(K::Colon);
-                    self.ty();
-                    self.finish();
-                    if !self.eat(K::Comma) {
-                        break;
-                    }
-                    self.progress(before);
-                }
-                self.expect(K::RBrace);
-                self.finish();
-            }
+            K::LBrace => self.record_type(K::RBrace),
             K::Ident | K::Null | K::Class => {
                 self.start(K::TypeName);
                 self.bump();

@@ -16,6 +16,55 @@ mod module_navigation;
 mod source_inference;
 
 #[test]
+fn enum_declarations_complete_cases_and_preserve_payload_binding_types() {
+    let source = r#"enum Menu { Back, Load(slot: int) }
+fn main(selection: Menu) {
+    let next = Menu.Load(slot: 3);
+    match selection { Menu.Back => 0, Menu.Load { slot } => slot + 1 }
+}"#;
+    let mut workspace = Workspace::new(ServerOptions::default());
+    workspace.open(uri(), 1, source.into()).unwrap();
+    for access in ["next = Menu.", "selection { Menu."] {
+        let cases = workspace
+            .complete(&uri(), position(source, access, true), Encoding::Utf16)
+            .unwrap();
+        assert!(
+            ["Back", "Load"].into_iter().all(|case| cases.iter().any(
+                |item| item.label == case && item.kind == Some(CompletionItemKind::ENUM_MEMBER)
+            )),
+            "{cases:?}"
+        );
+    }
+    let declaration = workspace
+        .definition(
+            &uri(),
+            position(source, "Load(slot: 3)", false),
+            Encoding::Utf16,
+        )
+        .unwrap();
+    assert!(declaration.is_some());
+    let help = workspace
+        .signature(
+            &uri(),
+            position(source, "Menu.Load(", true),
+            Encoding::Utf16,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        help.signatures
+            .iter()
+            .any(|signature| signature.label.contains("slot: int")),
+        "{help:?}"
+    );
+    let binding = workspace
+        .hover(&uri(), position(source, "slot + 1", false), Encoding::Utf16)
+        .unwrap()
+        .unwrap();
+    assert!(hover_text(binding).contains("slot: int"));
+}
+
+#[test]
 fn value_contracts_complete_record_fields_and_finite_arguments() {
     let source = r#"fn view() -> {node:int, caption:string} {{node:1, caption:"Back"}}
 fn close(result: "back" | "title", fade: bool = true) {}

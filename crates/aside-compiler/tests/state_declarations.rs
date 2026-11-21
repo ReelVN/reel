@@ -314,8 +314,8 @@ fn declaration_contracts_reject_forged_locators_and_source_errors() {
             "default value",
         ),
         (
-            "class S{let x:int=1;}fn boot(value:S=S()){value}root(boot,\"game\");",
-            "no state declaration",
+            "class S{}class Other{}state(Other,\"game.state\");fn boot(value:S=S()){value}root(boot,\"game\");",
+            "inferred Root State key \"game.state\" is already in use",
         ),
         (
             "class S{}state(S,\"s\");fn boot(value:S|null=null){value}root(boot,\"game\");",
@@ -339,6 +339,42 @@ fn declaration_contracts_reject_forged_locators_and_source_errors() {
         assert!(error.contains(expected), "expected {expected}: {error}");
     }
     assert!(compile("fn ordinary(){1}").unwrap().resume.is_empty());
+}
+
+#[test]
+fn root_infers_an_imported_class_with_the_same_schema_as_explicit_state() {
+    let mut inputs = [
+        SourceModule {
+            canonical_path: "data".into(),
+            source_path: None,
+            version: "1".into(),
+            source: "pub class Settings { let volume: int = 5; }".into(),
+        },
+        SourceModule {
+            canonical_path: "game".into(),
+            source_path: None,
+            version: "1".into(),
+            source: r#"use data::Settings as State;
+                use std::resume::{state, root};
+                fn start(value: State = State()) { value }
+                root(start, "game");"#
+                .into(),
+        },
+    ];
+    let inferred = compile_modules(&inputs, 1).unwrap();
+    assert_eq!(inferred.resume.version, 1);
+    assert_eq!(inferred.resume.states.len(), 1);
+    let root = inferred.resume.root.as_ref().unwrap();
+    assert_eq!(root.state.name, "game.state");
+    inferred
+        .program
+        .verify_resume(inferred.resume.clone(), &[], ResumeLimits::default())
+        .unwrap();
+
+    inputs[1].source = format!(r#"{}state(State, "game.state");"#, inputs[1].source).into();
+    let explicit = compile_modules(&inputs, 1).unwrap();
+    assert_eq!(inferred.resume.states, explicit.resume.states);
+    assert_eq!(inferred.resume.root, explicit.resume.root);
 }
 
 #[test]

@@ -660,6 +660,76 @@ fn static_webp_decodes_by_content_with_reserved_workspace() {
     }
 }
 
+#[test]
+fn lossless_and_extended_webp_submit_the_decode_directly() {
+    let mut lossless = Vec::new();
+    let pixels = [120, 30, 180, 210].repeat(19 * 5);
+    image::codecs::webp::WebPEncoder::new_lossless(&mut lossless)
+        .encode(&pixels, 19, 5, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    let mut extended = lossless[..12].to_vec();
+    extended.extend_from_slice(b"VP8X\x0a\0\0\0\x10\0\0\0\x12\0\0\x04\0\0");
+    extended.extend_from_slice(&lossless[12..]);
+    let riff_size = (extended.len() as u32 - 8).to_le_bytes();
+    extended[4..8].copy_from_slice(&riff_size);
+
+    let assets = Assets::directory(AssetOptions {
+        decode_bytes: 32 << 20,
+        ..Default::default()
+    });
+    for (key, bytes) in [("lossless", lossless), ("extended", extended)] {
+        let id = assets.request_encoded(key.into(), &bytes).unwrap();
+        assets.maintain();
+        assert!(matches!(
+            assets.0.borrow().loads[&id].phase,
+            Phase::Decoding(_)
+        ));
+        let lease = load_until_done(&assets, id).unwrap();
+        assert_eq!(lease.read_pixels().unwrap().bytes(), pixels);
+    }
+    assert_eq!(assets.temporary_pool().usage().bytes, 0);
+}
+
+#[test]
+fn jpeg_paths_use_the_same_pixels_as_artwork_tools() {
+    let mut grayscale = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut grayscale, 95)
+        .encode(&[0, 48, 94, 238], 2, 2, image::ExtendedColorType::L8)
+        .unwrap();
+    let mut rgb = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut rgb, 95)
+        .encode(
+            &[20, 40, 90].repeat(4),
+            2,
+            2,
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+    // Explicit component identifiers distinguish RGB from YCbCr in JPEG.
+    let frame = rgb
+        .windows(2)
+        .position(|bytes| bytes == [0xff, 0xc0])
+        .unwrap();
+    let scan = rgb
+        .windows(2)
+        .position(|bytes| bytes == [0xff, 0xda])
+        .unwrap();
+    for (index, component) in b"RGB".iter().copied().enumerate() {
+        rgb[frame + 10 + 3 * index] = component;
+        rgb[scan + 5 + 2 * index] = component;
+    }
+    let assets = Assets::directory(AssetOptions::default());
+    for (key, jpeg) in [("color", JPEG), ("grayscale", &grayscale), ("rgb", &rgb)] {
+        let expected = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)
+            .unwrap()
+            .into_rgba8();
+        let id = assets.request_encoded(key.into(), jpeg).unwrap();
+        let lease = load_until_done(&assets, id).unwrap();
+        assert_eq!(lease.read_pixels().unwrap().bytes(), expected.as_raw());
+    }
+    assert_eq!(assets.temporary_pool().usage().bytes, 0);
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[test]
 fn simple_webp_shares_bounded_decode_lanes_without_a_probe() {

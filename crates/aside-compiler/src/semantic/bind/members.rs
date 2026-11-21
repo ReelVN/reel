@@ -53,22 +53,35 @@ impl Binder<'_> {
             if let Some(class) = self
                 .external_nodes
                 .get(&base)
-                .and_then(|symbol| symbol.class.clone())
+                .filter(|symbol| symbol.class.is_some())
+                .cloned()
             {
-                if let Some(member) = class
+                let members = class.class.as_ref().expect("class metadata");
+                if let Some(member) = members
                     .static_members
                     .iter()
                     .find(|member| member.symbol.name == key)
                     .cloned()
                 {
-                    let ty = self.hint(&member.symbol.ty);
+                    let mut symbol = member.symbol;
+                    if class.intrinsic == Some(Intrinsic::EnumType) {
+                        if symbol.signature.is_some() && !self.direct_enum_call(n) {
+                            self.error(
+                                D::InvalidCall,
+                                self.span(n),
+                                "call the enum case with its payload fields",
+                            );
+                        }
+                        symbol.ty = class.ty.clone();
+                    }
+                    let ty = self.hint(&symbol.ty);
                     let write = member.write_type.as_ref().map(|ty| self.hint(ty));
                     self.member_write_types.insert(n, write);
                     self.external_nodes
-                        .insert(n, ExternalDescriptor::metadata(member.symbol));
+                        .insert(n, ExternalDescriptor::metadata(symbol));
                     return ty;
                 }
-                if class.bases.is_empty() {
+                if members.bases.is_empty() {
                     self.unknown_member(n, &key);
                 }
                 self.check(n, RuntimeChecks::TYPE);
@@ -121,7 +134,10 @@ impl Binder<'_> {
                 match self.resolve(&request) {
                     Ok(mut result) if result.version == namespace.version => {
                         if let Some(symbol) = result.bindings.pop() {
-                            if symbol.type_only {
+                            if symbol.type_only
+                                && !(symbol.intrinsic == Some(Intrinsic::EnumType)
+                                    && self.enum_namespace_access(n))
+                            {
                                 self.error(
                                     D::InvalidType,
                                     self.span(n),
@@ -296,6 +312,16 @@ impl Binder<'_> {
             _ => constructor,
         };
         let external = descriptor.clone();
+        if let Some(external) = &external
+            && external.intrinsic == Some(Intrinsic::EnumCase)
+            && external.signature.is_none()
+        {
+            self.error(
+                D::InvalidCall,
+                self.span(n),
+                "this enum case is a value without a payload",
+            );
+        }
         let effect = external
             .as_ref()
             .and_then(|e| e.signature.as_ref())
@@ -314,6 +340,7 @@ impl Binder<'_> {
             bound,
             effect,
             no_wait: ctx.no_wait,
+            derived: ctx.derived,
             named_callee,
         };
         let mut actual_ctx = ctx.clone();
@@ -394,6 +421,23 @@ impl Binder<'_> {
         if let Some(external) = external
             && let Some(signature) = &external.signature
         {
+            if external.intrinsic == Some(Intrinsic::EnumCase) {
+                if trailing.is_some()
+                    || arguments.is_some_and(|args| {
+                        self.out
+                            .hir
+                            .children(args)
+                            .any(|arg| self.kind(arg) == HirKind::Spread)
+                    })
+                {
+                    self.error(
+                        D::InvalidCall,
+                        self.span(n),
+                        "enum cases take explicit arguments without a children block",
+                    );
+                }
+                return self.hint(&external.ty);
+            }
             if (!signature.result_cases.is_empty() || signature.result_parameter.is_some())
                 && let Some(result) =
                     self.specialized_call_result(&call, target, arguments, trailing, signature)

@@ -2,7 +2,7 @@
 //! are retained, with initialized-state runtime checks on imported value reads.
 use super::types::type_hint;
 use super::*;
-use crate::hir::{Form, Hir, HirElement, HirKind as H, NodeId};
+use crate::hir::{Form, Hir, HirElement, HirKind as H, NameId, NodeId};
 use crate::{DiagnosticCode as D, SyntaxKind as K, TextRange, TextSize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -110,6 +110,11 @@ struct Overlay<'a> {
     fallback: &'a mut dyn ModuleResolver,
 }
 impl ModuleResolver for Overlay<'_> {
+    fn enum_type(&self, canonical_name: &str) -> Option<TypeHint> {
+        self.memory
+            .enum_type(canonical_name)
+            .or_else(|| self.fallback.enum_type(canonical_name))
+    }
     fn has_closed_members(&self, type_name: &str) -> bool {
         let mut pending = VecDeque::from([type_name]);
         let mut visited = BTreeSet::new();
@@ -473,10 +478,13 @@ fn analyze_project_inner<'a>(
                 Form::Modified { declaration, .. } => declaration,
                 _ => node,
             };
-            if let Form::Class {
-                name: Some(name), ..
-            } = hir.node(declaration).form
-            {
+            if let Some(name) = match hir.node(declaration).form {
+                Form::Class { name, .. } => name,
+                _ if hir.node(declaration).kind == H::Enum => {
+                    hir.tokens(declaration).find(|token| token.name.is_some())
+                }
+                _ => None,
+            } {
                 names.insert(
                     hir.text(name.span).to_owned(),
                     format!("{path}::{}", hir.text(name.span)),
@@ -505,7 +513,7 @@ fn analyze_project_inner<'a>(
                         let name = alias.clone().unwrap_or_else(|| symbol.name.clone());
                         if let Some(namespace) = symbol.namespace {
                             names.insert(name, namespace.module);
-                        } else if matches!(symbol.ty, TypeHint::Named(_))
+                        } else if matches!(symbol.ty, TypeHint::Named(_) | TypeHint::Enum { .. })
                             && let Some(reference) = symbol.reference
                             && let Some(export) = &reference.export
                         {
@@ -526,13 +534,13 @@ fn analyze_project_inner<'a>(
                     reference.module.as_str()
                 });
             if let Some(names) = type_names.get(origin) {
-                canonical_symbol(
-                    symbol,
-                    &TypeNames {
+                canonical_symbol(symbol, &|name| {
+                    TypeNames {
                         module: names,
                         prelude: &prelude_types,
-                    },
-                );
+                    }
+                    .canonical(name)
+                });
             }
         }
     }
@@ -753,6 +761,9 @@ pub(super) fn declarations(hir: &Hir, module: &str, version: &str) -> Vec<Extern
             continue;
         };
         match hir.node(d).kind {
+            H::Enum => {
+                result.extend(super::enumerations::descriptor(hir, d, module, version));
+            }
             H::Function => {
                 if let Form::Function {
                     name: Some(name), ..
@@ -948,9 +959,14 @@ impl TypeNames<'_> {
     }
 }
 
-fn canonical_hint(hint: &mut TypeHint, names: &TypeNames<'_>) {
+fn canonical_hint(hint: &mut TypeHint, names: &impl Fn(&str) -> String) {
     match hint {
-        TypeHint::Named(name) => *name = names.canonical(name),
+        TypeHint::Named(name) => *name = names(name),
+        TypeHint::Enum { cases, .. } => {
+            for hint in Arc::make_mut(cases) {
+                canonical_hint(hint, names);
+            }
+        }
         TypeHint::Tuple(types) | TypeHint::Union(types) => {
             for hint in types {
                 canonical_hint(hint, names);
@@ -970,7 +986,7 @@ fn canonical_hint(hint: &mut TypeHint, names: &TypeNames<'_>) {
         _ => {}
     }
 }
-fn canonical_symbol(symbol: &mut ExternalSymbol, names: &TypeNames<'_>) {
+pub(super) fn canonical_symbol(symbol: &mut ExternalSymbol, names: &impl Fn(&str) -> String) {
     canonical_hint(&mut symbol.ty, names);
     if let Some(signature) = &mut symbol.signature {
         canonical_hint(&mut signature.result, names);
@@ -984,7 +1000,7 @@ fn canonical_symbol(symbol: &mut ExternalSymbol, names: &TypeNames<'_>) {
     if let Some(class) = &mut symbol.class {
         let class = Arc::make_mut(class);
         for base in &mut class.bases {
-            *base = names.canonical(base);
+            *base = names(base);
         }
         for member in class.members.iter_mut().chain(&mut class.static_members) {
             canonical_symbol(&mut member.symbol, names);
@@ -1049,6 +1065,15 @@ impl super::patterns::PatternTypes for ExportPatternTypes<'_> {
     }
     fn table(&self) -> TypeHint {
         TypeHint::Table
+    }
+    fn field(&self, ty: &TypeHint, name: NameId) -> TypeHint {
+        if let TypeHint::Record(fields) = ty {
+            let name = self.0.name(name);
+            if let Some((_, field)) = fields.iter().find(|(key, _)| key == name) {
+                return field.clone();
+            }
+        }
+        TypeHint::Any
     }
     fn annotation(&mut self, node: NodeId) -> TypeHint {
         type_hint(self.0, node)

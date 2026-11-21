@@ -118,6 +118,7 @@ impl AsideSessionUi {
     pub(crate) fn capture_history(
         &mut self,
     ) -> Option<reel_engine::aside::checkpoint::CapturedCheckpoint> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::HistoryCapture);
         const SLICE_WORK: u32 = 256;
         const MAX_WORK: u32 = 2048;
         let deadline = std::time::Instant::now() + std::time::Duration::from_micros(750);
@@ -890,6 +891,7 @@ impl AsideSessionUi {
                     reel_engine::aside::NativeBudget::RetryMinimum(host_work),
                 ) {
                     Ok(NativeDispatch::Published { interaction, .. }) => {
+                        self.ui.reveal_published_skip(interaction)?;
                         Ok(StoryProgress::Interaction(interaction))
                     }
                     Ok(NativeDispatch::Decoding { work }) => Ok(StoryProgress::Decoding { work }),

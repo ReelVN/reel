@@ -166,6 +166,10 @@ pub enum SyntaxKind {
     TypePattern,
     ModifiedDecl,
     GroupType,
+    Enum,
+    EnumDecl,
+    EnumVariant,
+    EnumPattern,
 }
 macro_rules! keywords {
     ($($kind:ident => $text:literal),+ $(,)?) => {
@@ -190,7 +194,7 @@ keywords! {
     Loop => "loop", Match => "match", Is => "is", Await => "await", Return => "return",
     Break => "break", Continue => "continue", Throw => "throw", Yield => "yield",
     Try => "try", Catch => "catch", Finally => "finally", True => "true",
-    False => "false", Null => "null",
+    False => "false", Null => "null", Enum => "enum",
 }
 
 impl SyntaxKind {
@@ -388,6 +392,10 @@ impl Language for AsideLanguage {
             SyntaxKind::TypePattern,
             SyntaxKind::ModifiedDecl,
             SyntaxKind::GroupType,
+            SyntaxKind::Enum,
+            SyntaxKind::EnumDecl,
+            SyntaxKind::EnumVariant,
+            SyntaxKind::EnumPattern,
         ];
         KINDS
             .get(raw.0 as usize)

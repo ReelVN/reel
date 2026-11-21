@@ -4,6 +4,21 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+## 0.4.2 — 2026-11-22
+
+- Diagnose forbidden task starts and derived host calls through named helpers that forward those calls. Editors can display the helper call and the native operation together.
+- Add enums with named variants and optional payloads, exhaustive matches and editor support. `match` also accepts fixed tuple and record patterns.
+- Infer a persistent class and its default key from the declared Root, and preserve wait types when unpacking typed context records.
+- Let story activities and transitions opt into finishing on fast-forward with `skip: "finish"`. Re-export projects for the updated native signatures.
+- Complete skippable waiting dialogue before publishing its first projection, while keeping the accepted-frame requirement for advancing.
+- Decode common JPEG artwork directly into its final RGBA8 buffer.
+- Initialize desktop color conversion tables with fewer scalar conversions while preserving the same half-float values.
+- Admit static lossless and extended WebP directly to the bounded decoder when their headers provide the required allocation sizes.
+- Report the cost of capturing a jumpable history point in the performance tool.
+- Add camera depth for parallel planes, with the same projected transform for drawing and input geometry.
+- Add UTF-8 string `strip_prefix` and `strip_suffix` methods with chunked execution and editor signatures.
+- Share `clamp`, `mix`, `smoothstep`, and `modulo` between Aside and drawing functions. Keep short value-producing conditionals compact when formatting.
+
 ## 0.4.1 — 2026-11-21
 
 - Infer automatic dialogue checkpoints in declared flows without requiring an explicit `point` elsewhere in the project. Newly discovered waits can change generated point keys in affected flows. Explicit point keys retain their names.

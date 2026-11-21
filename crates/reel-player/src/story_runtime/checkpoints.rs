@@ -231,14 +231,17 @@ fn disk_checkpoint_rebuilds_current_root_and_resumes_saved_page_into_new_suffix(
     let folder = folder();
     let storage = Arc::new(DirectorySaves::new(&folder, 64 << 20));
     let automatic = |code: String| {
-        code.replace("point(\"line\");", "")
+        code.replace("state(World,\"world\");", "")
+            .replace("point(\"line\");", "")
             .replace("point(\"chapter\");", "")
             .replace("point(\"suffix\");", "")
     };
     let before = saved_with(&automatic(source(false)), storage.clone());
-    let code = automatic(source(true)).replace(
-        "stage.replace(page);run_flow",
-        r#"
+    let code = automatic(source(true))
+        .replace("World", "CurrentWorld")
+        .replace(
+            "stage.replace(page);run_flow",
+            r#"
         let preference = await persistent.read("candidate-write", default: "current preference");
         page.add(text(preference, y: 200));
         try { await persistent.write("candidate-write", true); }
@@ -247,7 +250,7 @@ fn disk_checkpoint_rebuilds_current_root_and_resumes_saved_page_into_new_suffix(
         catch error { page.add(text("window change rejected", y: 260)); }
         stage.replace(page);run_flow
         "#,
-    );
+        );
     let mut current = runtime(&code, 27, storage.clone());
     drain(&mut current);
     current

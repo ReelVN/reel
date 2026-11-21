@@ -304,6 +304,14 @@ impl Workspace {
                     name: Some(name), ..
                 } => name.span,
                 Form::Binding { pattern, .. } => module.hir().node(pattern).span,
+                _ if module.hir().node(node).kind == HirKind::EnumVariant => {
+                    module
+                        .hir()
+                        .tokens(node)
+                        .find(|token| token.name.is_some())
+                        .expect("declared enum case")
+                        .span
+                }
                 _ => unreachable!(),
             };
             return Ok(Some(Location {

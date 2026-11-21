@@ -1223,6 +1223,7 @@ fn decoration_changed(old: &SceneProperties, new: &SceneProperties) -> bool {
         | NodeKind::Input { .. }
         | NodeKind::Scroll { .. }
         | NodeKind::Camera(_)
+        | NodeKind::CameraPlane { .. }
         | NodeKind::Popup(_)
         | NodeKind::Row(_)
         | NodeKind::Column(_)

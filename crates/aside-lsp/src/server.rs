@@ -43,6 +43,10 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
             .and_then(|general| general.position_encodings.as_deref()),
     );
     let text_document = params.capabilities.text_document.as_ref();
+    let diagnostic_related_information = text_document
+        .and_then(|client| client.publish_diagnostics.as_ref())
+        .and_then(|diagnostics| diagnostics.related_information)
+        .unwrap_or_default();
     let hierarchical_symbols = text_document
         .and_then(|client| client.document_symbol.as_ref())
         .and_then(|symbols| symbols.hierarchical_document_symbol_support)
@@ -100,7 +104,13 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
                     Err(_) => {
                         if warmup.step() {
                             diagnostic_warmup = None;
-                            publish(&connection, &mut workspace, encoding, &mut published)?;
+                            publish(
+                                &connection,
+                                &mut workspace,
+                                encoding,
+                                diagnostic_related_information,
+                                &mut published,
+                            )?;
                         }
                         continue;
                     }
@@ -343,6 +353,7 @@ fn publish(
     connection: &Connection,
     workspace: &mut Workspace,
     encoding: Encoding,
+    related_information: bool,
     published: &mut BTreeSet<String>,
 ) -> Result<()> {
     let mut current = BTreeMap::new();
@@ -372,7 +383,12 @@ fn publish(
         )?;
     }
     *published = current.keys().cloned().collect();
-    for diagnostic in current.into_values() {
+    for mut diagnostic in current.into_values() {
+        if !related_information {
+            for diagnostic in &mut diagnostic.diagnostics {
+                diagnostic.related_information = None;
+            }
+        }
         connection
             .sender
             .send(Notification::new("textDocument/publishDiagnostics".into(), diagnostic).into())?;

@@ -63,7 +63,7 @@ pub(super) fn describe(api: &mut Api) {
             "root",
             Intrinsic::ResumeRoot,
             None,
-            "Declare the current bootstrap at module scope. Its single parameter directly names a declared State class and has an ordinary default value. New games evaluate that default normally; loading passes the restored State and skips the default. Build current configuration, preferences and views here, and enter business code through run_flow. The compiler infers the State class and removes this declaration.",
+            "Declare the current bootstrap at module scope. Its single parameter directly names a module class and has an ordinary default value. The compiler declares the class with the Root key followed by .state by default. Use an explicit state declaration to choose its stable key or map renamed fields. New games evaluate the default normally. Loading supplies the restored State. Build current configuration, preferences and views here, and enter business code through run_flow. The compiler removes this declaration.",
         ),
     ] {
         let mut declaration = Declaration::namespace("std::resume", "1", documentation);
