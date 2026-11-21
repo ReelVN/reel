@@ -144,6 +144,14 @@ export async function mountPreview(canvas, options = {}) {
         }
     }
 
+    function cancelCanvasInput() {
+        if (keys.size) {
+            keys.clear();
+            player.cancelInput();
+        }
+        if (heldButtons) cancelPointer();
+    }
+
     function focus(focused) {
         if (!running) return;
         player.focus(focused);
@@ -199,11 +207,8 @@ export async function mountPreview(canvas, options = {}) {
         listen(canvas, "wheel", wheel, { passive: false });
         listen(canvas, "keydown", key);
         listen(canvas, "keyup", key);
-        listen(canvas, "focus", () => focus(true));
-        listen(canvas, "blur", () => focus(false));
-        listen(view, "focus", () => {
-            if (canvas.ownerDocument.activeElement === canvas) focus(true);
-        });
+        listen(canvas, "blur", cancelCanvasInput);
+        listen(view, "focus", () => focus(true));
         listen(view, "blur", () => focus(false));
         if (signal) listen(signal, "abort", dispose);
     } catch (error) {
@@ -219,7 +224,7 @@ export async function mountPreview(canvas, options = {}) {
             heldButtons = 0;
             const result = JSON.parse(player.run(source));
             if (result.status === "running") {
-                player.focus(canvas.ownerDocument.activeElement === canvas);
+                player.focus(canvas.ownerDocument.hasFocus());
                 running = true;
                 animation = view.requestAnimationFrame(frame);
             }

@@ -16,6 +16,7 @@ use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, WgpuBackend};
 use reel_ui::{
     core::{PointerButton, ScrollDelta, TextEvent, keyboard},
     dpi::PhysicalPosition,
+    input::InputEvent,
 };
 use std::{collections::BTreeMap, sync::Arc};
 use wasm_bindgen::prelude::*;
@@ -195,6 +196,18 @@ impl WebPreview {
         Ok(())
     }
 
+    /// Clear held controls when keyboard focus leaves the canvas.
+    #[wasm_bindgen(js_name = cancelInput)]
+    pub fn cancel_input(&mut self) -> Result<(), JsValue> {
+        if let Some(player) = &mut self.player {
+            player
+                .text_event(TextEvent::Input(InputEvent::Cancel))
+                .map_err(js_error)?;
+        }
+        Ok(())
+    }
+
+    /// Reflect the browser window's focus in the preview's reading controls.
     pub fn focus(&mut self, focused: bool) -> Result<(), JsValue> {
         if let Some(player) = &mut self.player {
             player

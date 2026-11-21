@@ -18,7 +18,7 @@ On documentation pages, mount the preview when the reader chooses to run a snipp
 
 ## Embed
 
-Give the canvas its display size in CSS. It will receive pointer and keyboard input when focused.
+Give the canvas its display size in CSS. The preview runs while its page has focus. The canvas receives keyboard input while it has focus.
 
 ```js
 import { mountPreview } from "./reel/preview.js";
