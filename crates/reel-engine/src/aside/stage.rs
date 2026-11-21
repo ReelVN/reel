@@ -1005,6 +1005,13 @@ impl StageBinding {
                     heap.disconnect_derived(view)?;
                 }
                 overrides::retire(heap, value)?;
+                // Subscribers keep the final value when a host is retired.
+                interaction::publish(
+                    heap,
+                    value,
+                    binding.interaction_offset,
+                    reel_ui::stage::InteractionState::default(),
+                )?;
                 heap.retire_host(value)?;
             }
         }

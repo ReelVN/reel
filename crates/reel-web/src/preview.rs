@@ -171,10 +171,11 @@ impl WebPreview {
         self.send_pointer(PointerKind::Cancel)
     }
 
+    /// Forward DOM wheel deltas, which increase towards the right and bottom.
     pub fn scroll(&mut self, x: f64, y: f64) -> Result<(), JsValue> {
         let scale = self.host.metrics.scale_factor;
         self.send_pointer(PointerKind::Scroll(ScrollDelta::PixelDelta(
-            PhysicalPosition::new(-x * scale, -y * scale),
+            PhysicalPosition::new(x * scale, y * scale),
         )))
     }
 

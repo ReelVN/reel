@@ -82,7 +82,12 @@ fn builds_fixed_project_entry_and_library_private_entry_reproducibly() {
         private.bytes
     );
     let before = case.bytes();
-    assert!(case.run(&["--overwrite"]).status.success());
+    let output = case.run(&["--overwrite"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     assert_eq!(case.bytes(), before);
     case.assert_no_staging();
 }

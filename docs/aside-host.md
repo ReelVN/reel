@@ -48,7 +48,7 @@ fn main() {
 
 `Vm::host_provided_arguments` borrows the explicitly supplied arguments in source evaluation order, paired with their resolved parameter indices. Omitted defaults and a bound receiver are absent; an explicit null remains present. `with_host_provided_arguments` supplies the same borrowed view alongside mutable heap access, so configuration handlers can process supplied properties without constructing another argument table. The native frame retains these values across continuation, GC and restoration.
 
-The existing VM binder performs argument binding once. The generated wrapper reads the bound values and calls Rust. The complete runnable host, including module initialization, bytecode encoding/decoding, admission and dispatch, is [extension.rs](../crates/aside-host/tests/extension.rs):
+The existing VM binder performs argument binding once. The generated wrapper reads the bound values and calls Rust. The complete runnable host, including module initialization, bytecode encoding/decoding, admission and dispatch, is in the [extension tests](../crates/aside-host/tests/extension/main.rs):
 
 ```sh
 cargo test --locked -p aside-host --test extension
@@ -155,7 +155,7 @@ For bounded preparation, `begin_host_publication()` creates the same rooted `Pro
 
 ## Runnable host checks
 
-The [extension host](../crates/aside-host/tests/extension.rs) demonstrates registration, value conversion, properties and callbacks, including GC and bytecode restoration.
+The [extension host](../crates/aside-host/tests/extension/main.rs) demonstrates registration, value conversion, properties and callbacks, including GC and bytecode restoration.
 
 ```sh
 cargo test --locked -p aside-host -p aside-host-macros

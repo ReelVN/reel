@@ -393,8 +393,11 @@ fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
             repeated();
             if visit==0 {game.reading().set_auto(false);}
             if visit==1 {
-                if await sequence(tween(moving, x: 20, duration: 100), tween(moving, x: 40, duration: 100)).run() != "Completed"
-                   || moving.x != 40 { throw "fast-forward finite scene"; }
+                let motion = sequence(
+                    tween(moving, x: 20, duration: 100),
+                    tween(moving, x: 40, duration: 100),
+                ).run(skip: "finish");
+                if await motion != "Completed" || moving.x != 40 { throw "fast-forward finite scene"; }
             }
         }
         narrator("unread");
