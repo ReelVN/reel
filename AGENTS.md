@@ -2,7 +2,7 @@
 
 ## Source of truth
 
-Read `docs/engine-architecture.md`, `docs/aside-language.md`, and the relevant section of `docs/guide/zh-CN.md` or `docs/guide/en.md` before editing code. These documents define one shared design. Propose and resolve interface changes in the documents before implementing a different behavior.
+Read `docs/engine-architecture.md` and `docs/aside-language.md` before editing code. These documents define the shared engine and language contracts (creator tutorials now live on the official website at `https://reelvn.com`, while the preserved compiler scene corpus lives under `crates/aside-compiler/tests/fixtures/author_scenes.md`). Propose and resolve interface changes in the documents before implementing a different behavior.
 
 ## Scope
 
@@ -38,7 +38,7 @@ Maintain the English `CHANGELOG.md` for user-visible changes under `Unreleased`.
 
 Public interfaces carry English source documentation beside their declarations. Native macros and property schemas expose the same documentation to editor tooling; executable Aside examples in these comments are checked against the registered interfaces. Update these declarations with API, default and behavior changes.
 
-The project lead maintains architecture and language contracts and the bilingual creator tutorials. Tutorials explain workflows and refer to the source API documentation. Keep matching tutorial snippets identical in both editions, and preserve useful behavior assertions when moving examples out of Markdown. Verification logs and maintenance reports belong under ignored artifacts; completed work is described in its PR.
+The project lead maintains architecture and language contracts in `docs/` and creator tutorials on `https://reelvn.com`. Keep compiler regression assertions in `crates/aside-compiler/tests/fixtures/author_scenes.md` current when syntax or prelude behavior changes. Verification logs and maintenance reports belong under ignored artifacts; completed work is described in its PR.
 
 ## Review and delivery
 

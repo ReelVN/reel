@@ -1,5 +1,10 @@
 # Extending Aside from Rust
 
+[Docs Index](README.md) · [Engine Architecture](engine-architecture.md) · [Aside Language Spec](aside-language.md)
+
+> **Overview for Rust contributors**
+> Use `aside-host` whenever you expose a Rust function, nominal host type, node property schema, or bound method to Aside. One declaration drives compile-time type checking, bytecode lowering, VM admission/dispatch, and VS Code hover/completion docs.
+
 `aside-host` provides native declarations, Rust value conversions and property schemas for embedding Aside. It depends on Aside's compiler and VM. The re-exported `native` and `Properties` macros use [Moxy](https://github.com/aacebo/moxy), pinned to 0.5.4 as a compile-time dependency.
 
 ## Export a Rust function

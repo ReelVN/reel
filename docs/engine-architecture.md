@@ -1,6 +1,10 @@
 # Reel 引擎架构
 
-本文定义模块职责和跨模块行为。语言语义见 [Aside 规范](aside-language.md)，创作流程见[作者指南](guide/zh-CN.md)，接口参数与默认值由声明旁的英文文档提供。
+[文档目录](README.md) · [Aside 语言与 VM 规范](aside-language.md) · [Rust 宿主接口](aside-host.md) · [创作者教程（reelvn.com）](https://reelvn.com/zh/docs/quickstart)
+
+> **导读（给引擎贡献者）**
+> 本文是 Reel 引擎内部的架构与行为契约，涵盖 Crate 边界、桌面 WGPU 与 PS Vita GXM 渲染管线、内存与帧预算、任务调度、输入所有权、呈现与媒体系统。
+> 如果你是来用 Reel 写视觉小说的，直接看官网创作指南 [reelvn.com](https://reelvn.com/zh/docs/quickstart) 即可，无需关心本文的底层细节；各公开 API 的参数与默认值则由 Rust 声明旁的英文 `///` 文档直接生成给编辑器。
 
 ## 创作模型
 

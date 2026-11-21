@@ -710,7 +710,12 @@ impl Api {
                     let Some(reference) = &export.reference else {
                         continue;
                     };
-                    if reference.module == module && export.signature.is_some() {
+                    if reference.module == module
+                        && (export.signature.is_some()
+                            || declarations
+                                .iter()
+                                .any(|d| d.symbol.reference.as_deref() == Some(reference.as_ref())))
+                    {
                         continue;
                     }
                     text.push_str("pub use ");
@@ -830,12 +835,34 @@ fn range(start: usize, len: usize) -> TextRange {
         TextSize::try_from(start + len).unwrap(),
     )
 }
+/// Strip the single leading space Rust preserves on `///` doc lines and trim outer blank lines.
+pub fn normalize_documentation(docs: &str) -> String {
+    let lines = docs
+        .lines()
+        .map(|line| line.strip_prefix(' ').unwrap_or(line).trim_end())
+        .collect::<Vec<_>>();
+    let start = lines.iter().position(|line| !line.is_empty()).unwrap_or(lines.len());
+    let end = lines
+        .iter()
+        .rposition(|line| !line.is_empty())
+        .map_or(start, |index| index + 1);
+    lines[start..end].join("\n")
+}
+
 fn append_docs(text: &mut String, indent: &str, docs: &str) {
-    for line in docs.trim().lines() {
+    let normalized = normalize_documentation(docs);
+    if normalized.is_empty() {
+        return;
+    }
+    for line in normalized.lines() {
         text.push_str(indent);
-        text.push_str("/// ");
-        text.push_str(line);
-        text.push('\n');
+        if line.is_empty() {
+            text.push_str("///\n");
+        } else {
+            text.push_str("/// ");
+            text.push_str(line);
+            text.push('\n');
+        }
     }
 }
 fn append_declaration(

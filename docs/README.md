@@ -1,29 +1,24 @@
-# Reel 文档
+# Reel Engine Developer Documentation
 
-Reel 用代码组合画面、对白、UI、演出和嵌入的 2D 游戏。
+This directory holds **engine-internal documentation** for contributors working on Reel’s runtime, renderer, Aside compiler/VM, and Rust host SDK.
 
-- [中文作者指南](guide/zh-CN.md) / [English creator guide](guide/en.md)：项目、组件、剧情、资源与发布。
-- [引擎架构](engine-architecture.md)：模块职责、执行、所有权、输入、呈现和媒体。
-- [Aside 语言规范](aside-language.md)：语法、求值、类型、执行与恢复。
-- [Rust 宿主接口](aside-host.md)：注册函数、属性、类型和编辑器文档。
+> [!NOTE]
+> **Looking to build a game with Reel?**
+> Creator tutorials, Aside syntax guides, `resources.toml` recipes, and the searchable API reference have moved to **[reelvn.com](https://reelvn.com)** ([简体中文](https://reelvn.com/zh/docs/quickstart) · [English](https://reelvn.com/en/docs/quickstart) · [`llms.txt`](https://reelvn.com/llms.txt)).
+> Editor hover docs, parameter hints, and Go-to-Definition are generated directly from the English `///` doc comments next to Rust declarations.
 
-编辑器中的悬停、参数提示与 F12 使用声明旁的英文 API 文档。
+## Core Specifications
 
-## 示例
+| Document | Scope |
+| :--- | :--- |
+| [Engine Architecture](engine-architecture.md) | Crate responsibilities, rendering (WGPU / GXM), scheduling, memory budgets, ownership, input, presentation, and media |
+| [Aside Language & VM Spec](aside-language.md) | Syntax, evaluation order, gradual types, collections, bytecode, VM execution budgets, GC, and snapshots |
+| [Extending Aside from Rust](aside-host.md) | `#[native]` / `Properties` macros, value conversions, bound receivers, and LSP declaration generation |
+| [Visual Resource Prediction](visual-resource-prediction.md) | Compile-time image/portrait prefetch planning, memory budgets, and fast-forward cancellation |
+| [Performance Verification](next-release-performance.md) | Reproducible desktop/device frame-time profiling and budget validation workflow |
 
-| 内容 | 项目 |
-| --- | --- |
-| 项目组织与基本画面 | [author_project](../examples/author_project/src/main.aside)、[author_stage](../examples/author_stage/src/main.aside) |
-| 对白与阅读 | [author_narrative](../examples/author_narrative/src/main.aside)、[author_rich_text](../examples/author_rich_text/src/main.aside) |
-| 交互与布局 | [author_buttons](../examples/author_buttons/src/main.aside)、[author_popup](../examples/author_popup/src/main.aside)、[author_list_gallery](../examples/author_list_gallery/src/main.aside) |
-| 演出与生命周期 | [author_activities](../examples/author_activities/src/main.aside)、[author_scope](../examples/author_scope/src/main.aside)、[author_transition](../examples/author_transition/src/main.aside) |
-| 剧情与玩法 | [author_arcade](../examples/author_arcade/src/main.aside)、[author_embedded_puzzle](../examples/author_embedded_puzzle/src/main.aside) |
-| 保存与翻译 | [author_saves](../examples/author_saves/src/main.aside)、[localization](../examples/localization/src/main.aside) |
+## Examples & Tooling
 
-准备示例引用的字体和素材，在其项目目录运行 `reel check` 与 `reel dev`。共享素材位于 `examples/assets/`。
-
-## 引擎开发
-
-检查命令见 [reel-dev](../crates/reel-dev/README.md)。协作规则见 [AGENTS.md](../AGENTS.md)。借用源码和测试输入的许可证与来源随对应目录保存。
-
-[引擎性能验证](next-release-performance.md) 说明如何采集与解读发布包的性能数据。
+- Runnable Aside example projects live under [`examples/`](../examples/) (shared sample assets in [`examples/assets/`](../examples/assets/)). Run `reel check` or `reel dev` inside any example directory.
+- Development checks, profiling sessions (`reel-dev debug`), and release verification (`reel-dev perf verify`) are documented in [`crates/reel-dev/README.md`](../crates/reel-dev/README.md).
+- Contribution and repository hygiene rules live in [`AGENTS.md`](../AGENTS.md).

@@ -394,7 +394,12 @@ impl Workspace {
         Ok(Some(SignatureHelp {
             signatures: vec![SignatureInformation {
                 label: signature.label,
-                documentation: signature.markdown.map(Documentation::String),
+                documentation: signature.markdown.map(|value| {
+                    Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value,
+                    })
+                }),
                 parameters: Some(parameters),
                 active_parameter: Some(active),
             }],

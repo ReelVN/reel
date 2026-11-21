@@ -111,7 +111,7 @@ pub fn host_context(api: &Api) -> HostContext {
             HostDeclaration {
                 reference: (*reference).clone(),
                 signature: declaration.symbol.signature,
-                markdown: declaration.documentation,
+                markdown: aside_host::source::normalize_documentation(&declaration.documentation),
                 definition: Some(HostLocation {
                     uri: location.uri.parse().expect("generated declaration URI"),
                     range: location.range,
@@ -135,7 +135,16 @@ pub fn host_context(api: &Api) -> HostContext {
                     .collect(),
                 property_default: declaration.property_default.as_ref().map(constant),
                 property_parameters: declaration.property_parameters,
-                parameter_documentation: declaration.parameter_documentation,
+                parameter_documentation: declaration
+                    .parameter_documentation
+                    .into_iter()
+                    .map(|(name, doc)| {
+                        (
+                            name,
+                            Arc::from(aside_host::source::normalize_documentation(&doc)),
+                        )
+                    })
+                    .collect(),
                 property_groups: declaration
                     .property_groups
                     .into_iter()

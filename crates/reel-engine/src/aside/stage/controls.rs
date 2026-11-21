@@ -47,14 +47,19 @@ pub(super) fn validate_progress(heap: &Heap, index: u32, value: Value) -> Result
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum SliderField {
+    /// Current numeric value, clamped between `min` and `max`.
     #[aside(name = "value", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number)]
     Value,
+    /// Lower bound of the slider range.
     #[aside(name = "min", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number)]
     Min,
+    /// Upper bound of the slider range.
     #[aside(name = "max", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_number)]
     Max,
+    /// Optional positive snap increment for pointer and keyboard adjustments; `null` allows continuous values.
     #[aside(name = "step", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, validate = validate_step)]
     Step,
+    /// Callback invoked with `{ target, value }` when user interaction changes the slider value.
     #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
     /// Optional stage node filling the track. It replaces the built-in track drawing.
@@ -69,21 +74,28 @@ pub(in crate::aside) enum SliderField {
 }
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ToggleField {
+    /// Optional label text displayed beside the control.
     #[aside(name = "label", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_label)]
     Label,
+    /// Current boolean checked state of the control.
     #[aside(name = "value", ty = Bool, default = false)]
     Value,
+    /// Callback invoked with `{ target, value }` when user interaction toggles the value.
     #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
 }
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum RadioField {
+    /// Option value represented by this radio button; selected when equal to `value`.
     #[aside(name = "option", ty = Any)]
     Option,
+    /// Optional label text displayed beside the radio button.
     #[aside(name = "label", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_label)]
     Label,
+    /// Shared selected value for the radio group (commonly bound via `bind(...)`).
     #[aside(name = "value", ty = Any, default = null)]
     Value,
+    /// Callback invoked with `{ target, value }` when this option becomes selected.
     #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
 }

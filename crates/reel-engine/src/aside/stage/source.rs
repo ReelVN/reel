@@ -215,6 +215,8 @@ pub(in crate::aside) fn describe(api: &mut Api) {
                 .find(|member| member.declaration.symbol.name == "source")
                 .unwrap();
             source.declaration.symbol.ty = TypeHint::String;
+            source.declaration.documentation =
+                "Read-only video asset path relative to the project's resources directory.".into();
             source.write_type = None;
             api.refine(
                 "reel::video::play",

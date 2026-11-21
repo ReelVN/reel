@@ -78,8 +78,8 @@ aside_host::native_documentation! {
         /// Entries retain their speaker, text and content identity independently of layout.
         /// Capture the array in a component and refresh from that same array.
         "reel::game::history";
-        /// Append a history entry without presenting dialogue. `speaker` optionally
-        /// provides its display name; text accepts plain or rich content.
+        /// Append an entry directly to dialogue history without showing dialogue.
+        /// `speaker` accepts a `Character` or `null`; `text` accepts plain or rich text.
         "reel::game::record";
         /// Return the active reading context's observable controls: auto, paused,
         /// delay, skipping and auto_ready. Direct getters inside derive follow
@@ -164,25 +164,25 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ],
     );
     let mut dialogue = Vec::new();
-    for (name, ty) in [
-        ("lines", TypeHint::Array),
-        ("current_line_ids", TypeHint::Array),
-        ("speaker_name", TypeHint::String),
-        ("text", text),
-        ("reveal", TypeHint::Int),
-        ("active", TypeHint::Bool),
-        ("read", TypeHint::Bool),
-        ("speaker_id", nullable(TypeHint::String)),
-        ("content_id", nullable(TypeHint::String)),
-        ("ready", TypeHint::Bool),
-        ("advance_requested", TypeHint::Bool),
+    for (name, ty, doc) in [
+        ("lines", TypeHint::Array, "Visible dialogue line models in the current reading context (used by NVL views)."),
+        ("current_line_ids", TypeHint::Array, "Line IDs belonging to the most recently presented dialogue or say() group."),
+        ("speaker_name", TypeHint::String, "Display name of the active speaker, or empty string for narration."),
+        ("text", text, "Current dialogue text (plain string or RichText)."),
+        ("reveal", TypeHint::Int, "Number of graphemes currently revealed in the active line."),
+        ("active", TypeHint::Bool, "Whether the reading context currently has an active dialogue line."),
+        ("read", TypeHint::Bool, "Whether the player has already read the current dialogue line."),
+        ("speaker_id", nullable(TypeHint::String), "Stable speaker identifier, or null for narration."),
+        ("content_id", nullable(TypeHint::String), "Stable content identity of the active line, or null when inactive."),
+        ("ready", TypeHint::Bool, "Whether reveal and inline pauses have finished and the line is waiting for advance."),
+        ("advance_requested", TypeHint::Bool, "Whether player advance input has been requested for the active line."),
     ] {
         dialogue.push(Member::field(
             "reel::types::Dialogue",
             name,
             ty,
             None,
-            "The current observable dialogue state.",
+            doc,
             None,
         ));
     }
@@ -221,28 +221,17 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         choice,
     ));
     let mut reading: Vec<Member> = [
-        "auto",
-        "paused",
-        "delay",
-        "skipping",
-        "skip_unread",
-        "skip_after_choices",
-        "auto_ready",
+        ("auto", TypeHint::Bool, "Whether automatic dialogue advancement is enabled."),
+        ("paused", TypeHint::Bool, "Whether dialogue reveal and auto-advance are paused."),
+        ("delay", TypeHint::Float, "Wait duration in seconds after a line finishes before auto-advance triggers."),
+        ("skipping", TypeHint::Bool, "Whether fast-forward skipping is currently active."),
+        ("skip_unread", TypeHint::Bool, "Whether fast-forward is allowed to skip unread dialogue lines."),
+        ("skip_after_choices", TypeHint::Bool, "Whether fast-forward continues automatically after a choice."),
+        ("auto_ready", TypeHint::Bool, "Current resolved value of the auto-advance readiness condition."),
     ]
     .into_iter()
-    .map(|name| {
-        Member::field(
-            "reel::types::Reading",
-            name,
-            if name == "delay" {
-                TypeHint::Float
-            } else {
-                TypeHint::Bool
-            },
-            None,
-            "This reading context's observable control state.",
-            None,
-        )
+    .map(|(name, ty, doc)| {
+        Member::field("reel::types::Reading", name, ty, None, doc, None)
     })
     .collect();
     for method in ["set_auto", "set_skip", "pause", "clear_history"] {

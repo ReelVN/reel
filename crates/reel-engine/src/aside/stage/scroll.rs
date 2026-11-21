@@ -10,6 +10,7 @@ pub(in crate::aside) use reveal::documentation;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ScrollField {
+    /// Scrollable axes: `"vertical"`, `"horizontal"`, or `"both"`.
     #[aside(name = "axis", ty = String, default = "vertical", validate = validate_axis)]
     Axis,
     /// Boundary behavior: `clamp` keeps direct touch panning bounded; `bounce`
@@ -17,8 +18,10 @@ pub(in crate::aside) enum ScrollField {
     /// bounded in both modes. Wheel and programmatic positioning remain clamped.
     #[aside(name = "overscroll", ty = String, default = "clamp", validate = validate_overscroll)]
     Overscroll,
+    /// Automatically keep the scroll position pinned to the trailing edge as content grows.
     #[aside(name = "follow_end", ty = Bool, default = false)]
     FollowEnd,
+    /// Alignment of content smaller than the viewport: `"start"`, `"center"`, or `"end"`.
     #[aside(name = "content_align", ty = String, default = "start", validate = validate_align)]
     ContentAlign,
     /// Logical horizontal offset. Layout feedback preserves an owning activity;

@@ -108,10 +108,13 @@ pub(super) fn publish(
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum TextInputField {
+    /// Current UTF-8 text content of the editor (writable and bindable).
     #[aside(name = "value", ty = String, default = "", validate = validate_value)]
     Value,
+    /// Callback invoked with `{ target, value }` after user edits update the text.
     #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
+    /// Callback invoked with `{ target, value }` when the user submits the input.
     #[aside(name = "on_submit", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnSubmit,
     /// Empty-value hint; hidden during IME composition and never written to value.

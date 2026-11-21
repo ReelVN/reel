@@ -424,13 +424,26 @@ impl Workspace {
                     .filter(|(name, label)| {
                         !name.is_empty() && !supplied.contains(name) && !label.starts_with("...")
                     })
-                    .map(|(name, label)| CompletionItem {
-                        label: format!("{name}:"),
-                        kind: Some(CompletionItemKind::FIELD),
-                        detail: Some(label),
-                        insert_text: Some(format!("{name}: ")),
-                        sort_text: Some(format!("0{name}")),
-                        ..Default::default()
+                    .map(|(name, label)| {
+                        let documentation = signature
+                            .parameter_documentation
+                            .get(&name)
+                            .filter(|doc| !doc.trim().is_empty())
+                            .map(|value| {
+                                Documentation::MarkupContent(MarkupContent {
+                                    kind: MarkupKind::Markdown,
+                                    value: value.to_string(),
+                                })
+                            });
+                        CompletionItem {
+                            label: format!("{name}:"),
+                            kind: Some(CompletionItemKind::FIELD),
+                            detail: Some(label),
+                            documentation,
+                            insert_text: Some(format!("{name}: ")),
+                            sort_text: Some(format!("0{name}")),
+                            ..Default::default()
+                        }
                     }),
             );
         }

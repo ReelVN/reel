@@ -651,7 +651,7 @@ fn cross_module_inheritance_reuses_constructor_and_completion_declarations() {
     assert!(!signature.signatures[0].label.contains("self"));
     let docs = signature.signatures[0].documentation.as_ref().unwrap();
     assert!(
-        matches!(docs,Documentation::String(text) if text.contains("Creates the base scene.")&&text.contains("A derived scene.")),
+        matches!(docs, Documentation::MarkupContent(MarkupContent { kind: MarkupKind::Markdown, value }) if value.contains("Creates the base scene.") && value.contains("A derived scene.")),
         "{docs:?}"
     );
     let items = workspace
@@ -736,7 +736,7 @@ fn cross_module_inheritance_reuses_constructor_and_completion_declarations() {
             .contains("label: string = \"Edited\"")
     );
     assert!(
-        matches!(&edited.signatures[0].documentation,Some(Documentation::String(docs)) if docs.contains("Updated parent constructor."))
+        matches!(&edited.signatures[0].documentation, Some(Documentation::MarkupContent(MarkupContent { kind: MarkupKind::Markdown, value })) if value.contains("Updated parent constructor."))
     );
     workspace.close(&base_uri);
     let restored = workspace

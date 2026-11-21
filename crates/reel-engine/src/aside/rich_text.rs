@@ -39,13 +39,13 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
-        /// Parse immutable rich text. Tags control spans, ruby, links and reveal cues.
-        /// Font spans select configured families, including blank-line metrics and ruby.
-        /// `[weight=400]` accepts finite weights in 1..=1000; `[b]` selects 700.
-        /// `[line_height=46]` sets a finite nonnegative absolute logical line height.
-        /// Closing nested tags restores the enclosing style.
-        /// Use rich_escape for dynamic plain text inside markup. Parse errors report their
-        /// UTF-8 byte offset; plain and parsed text use the same dialogue/layout pipeline.
+        /// Parse rich text markup into an immutable `RichText` value.
+        /// Supported tags: `[b]`, `[i]`, `[u]`, `[s]`, `[em]`, `[size=N]`, `[font=family]`,
+        /// `[color=#rrggbb]` / `[color=#rrggbbaa]`, `[weight=1..1000]`, `[line_height=N]`,
+        /// `[ruby=reading]base[/ruby]`, `[link=id]label[/link]`, `[pause=sec]`,
+        /// `[speed=N]` / `[speed=Nx]`, `[next]`, and `[[` for a literal `[`.
+        /// Closing nested tags restores the enclosing style. Use `rich_escape` when
+        /// interpolating untrusted plain text. Parse errors report their UTF-8 byte offset.
         "reel::rich";
         /// Escape plain text for literal insertion into rich markup.
         "reel::rich_escape";

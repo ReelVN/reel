@@ -15,7 +15,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                     parameter.name.as_str(),
                     match parameter.name.as_str() {
                         "source" | "repeat" | "name" => TypeHint::String,
-                        "power" => number(),
+                        "power" | "min" | "max" => number(),
                         _ => scalar.clone(),
                     },
                 )

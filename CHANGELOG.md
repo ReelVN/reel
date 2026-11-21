@@ -4,6 +4,11 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 
 ## Unreleased
 
+- Move creator tutorials to the official website (`https://reelvn.com`), keeping repository `docs/` focused on engine contributors while preserving all 111 compiler author-scene tests under `crates/aside-compiler/tests/fixtures/author_scenes.md`.
+- Rewrite `README.md` with open-source orientation and an explicit LLM-assisted development disclosure.
+- Normalize Rust `///` doc lines in generated `aside-native://` declarations and editor hover Markdown, render LSP `SignatureHelp` docs as Markdown, include parameter docs in named-argument completions, and omit duplicate same-module constant reexports.
+- Document previously undocumented camera, slider, toggle, radio, scroll, input, and text-input schema fields, complete `reel::rich` tag docs, replace placeholder docs on `Dialogue` and `Reading` fields, and fix inaccurate docs/types on `VideoNode.source`, `reel::mask::clamp`, and `reel::game::record`.
+
 ## 0.4.3 — 2026-11-22
 
 - Name types with module-level `type` aliases. Imports and editor navigation use the same declarations.
