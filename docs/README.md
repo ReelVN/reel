@@ -2,6 +2,8 @@
 
 游戏开发教程与 API 参考发布在官网。 [中文创作指南](https://reelvn.com/zh/docs/quickstart) · [English creator guide](https://reelvn.com/en/docs/quickstart) · [API reference](https://reelvn.com/en/reference)
 
+教程中的创作示例可以在官网游乐场运行。仓库的 `examples/` 保留引擎验证使用的项目和素材，以及可独立运行的 `author_arcade`。 [官网游乐场](https://reelvn.com/playground)
+
 | 文档 | 内容 |
 | --- | --- |
 | [引擎架构](engine-architecture.md) | 模块职责、执行、所有权、输入、呈现和媒体 |

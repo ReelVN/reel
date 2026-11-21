@@ -287,14 +287,11 @@ fn corpus(root: &std::path::Path) -> usize {
 }
 
 #[test]
-fn public_examples_preserve_tokens_cst_and_are_idempotent() {
+fn engine_examples_preserve_tokens_cst_and_are_idempotent() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let count = corpus(&root);
-    assert!(
-        count > 50,
-        "public example corpus unexpectedly empty: {count}"
-    );
-    eprintln!("formatted {count} public example files without changing their source");
+    assert!(count > 0, "no engine example sources found");
+    eprintln!("formatted {count} engine example files without changing their source");
 }
 
 #[test]
