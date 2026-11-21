@@ -1,6 +1,6 @@
 # Aside 语言与 VM 规范
 
-[文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
+[文档目录](README.md) · [引擎架构](engine-architecture.md) · [Rust 宿主接口](aside-host.md) · [Aside 创作教程](https://reelvn.com/zh/docs/aside-basics)
 
 ## 一 定位与实现范围
 
@@ -639,7 +639,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 宿主通过注册的普通函数、可观察属性和 Awaitable 接入。函数参数、效果、等待权限、属性验证与恢复使用本文的共同协议；平台资源由宿主保存逻辑身份并在恢复时重新建立。
 
-Rust 声明、类型、参数和英文文档通过 [host SDK](aside-host.md) 供编译器、VM 和编辑器共用。Reel 的舞台、对白、媒体和交互合同集中在[引擎架构](engine-architecture.md)，组合用法见[作者指南](guide/zh-CN.md)。
+Rust 声明、类型、参数和英文文档通过 [host SDK](aside-host.md) 供编译器、VM 和编辑器共用。Reel 的舞台、对白、媒体和交互合同集中在[引擎架构](engine-architecture.md)。 [创作指南](https://reelvn.com/zh/docs/quickstart)
 
 ## 参考来源
 

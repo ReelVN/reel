@@ -710,7 +710,14 @@ impl Api {
                     let Some(reference) = &export.reference else {
                         continue;
                     };
-                    if reference.module == module && export.signature.is_some() {
+                    if reference.module == module
+                        && (export.signature.is_some()
+                            || declarations.iter().any(|declaration| {
+                                declaration.symbol.name == export.name
+                                    && declaration.symbol.reference.as_deref()
+                                        == Some(reference.as_ref())
+                            }))
+                    {
                         continue;
                     }
                     text.push_str("pub use ");

@@ -7,6 +7,7 @@ Changes to Reel are recorded here in English, starting with the 0.3.0 baseline.
 ## 0.4.5 — 2026-11-22
 
 - Embed an Aside source preview on WebGPU pages with `reel-web`. It compiles snippets with the Reel compiler, reports editor diagnostic ranges, and runs the shared player on a browser canvas.
+- Read the creator guides on the Reel website. The engine repository keeps implementation documentation and executable compiler fixtures.
 - Use a player built from source with `reel export --release --runtime <player>`. Runtime directories remain supported for platforms that ship companion files.
 - Export each Vita game as its own VPK and data directory. Choose the LiveArea title in `distribution.toml` and keep assets, saves, and game settings under `ux0:/data/reel/games/<TITLE_ID>/`. Start the game directly from LiveArea. Remove the shared Vita launcher.
 - Set a desktop title, application ID, and optional PNG icon in `distribution.toml`. Embed Windows executable icons, produce macOS application bundles, and register Linux application menu entries. Branded releases store saves and settings in the user's application data directory.

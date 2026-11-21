@@ -1,6 +1,6 @@
 # Reel 引擎架构
 
-本文定义模块职责和跨模块行为。语言语义见 [Aside 规范](aside-language.md)，创作流程见[作者指南](guide/zh-CN.md)，接口参数与默认值由声明旁的英文文档提供。
+本文定义模块职责和跨模块行为。接口参数与默认值由声明旁的英文文档提供。 [文档目录](README.md) · [Aside 语言规范](aside-language.md) · [创作指南](https://reelvn.com/zh/docs/quickstart)
 
 ## 创作模型
 

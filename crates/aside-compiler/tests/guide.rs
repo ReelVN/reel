@@ -1,78 +1,70 @@
 use aside_compiler::{ParseOptions, SyntaxKind as K, parse_with_options};
-const ZH: &str = include_str!("../../../docs/guide/zh-CN.md");
-const EN: &str = include_str!("../../../docs/guide/en.md");
+const CORPUS: &str = include_str!("fixtures/author_scenes.md");
 // One entry per author scene, rather than treating story continuations as module initialization.
 #[path = "support/guide_scenes.rs"]
 mod scenes;
 use scenes::{SCENES, snippets};
 #[test]
-fn every_bilingual_author_scene_parses_in_its_actual_context() {
-    let zh = snippets(ZH);
-    let en = snippets(EN);
-    assert_eq!(zh.len(), SCENES.len());
-    assert_eq!(en.len(), SCENES.len());
-    for (i, ((zh_line, source), (en_line, english))) in zh.iter().zip(&en).enumerate() {
-        assert_eq!(
-            source, english,
-            "guide editions diverged in scene {}",
-            SCENES[i].0
-        );
+fn every_author_scene_parses_in_its_actual_context() {
+    let entries = snippets(CORPUS);
+    assert_eq!(entries.len(), SCENES.len());
+    for (i, (line, source)) in entries.iter().enumerate() {
         let (name, entry) = SCENES[i];
-        for (edition, line, code) in [("zh-CN", zh_line, source), ("en", en_line, english)] {
-            let parsed = parse_with_options(
-                code,
-                ParseOptions {
-                    entry,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        let parsed = parse_with_options(
+            source,
+            ParseOptions {
+                entry,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            parsed.is_ok(),
+            "scene {i} {name}, fixtures/author_scenes.md:{line}: {:?}",
+            parsed.diagnostics()
+        );
+        let root = parsed.syntax();
+        assert_eq!(root.text().to_string(), *source);
+        if source.contains("on_click:") {
+            let mut callbacks = root
+                .descendants()
+                .filter(|n| {
+                    n.kind() == K::NamedArg
+                        && n.text().to_string().trim_start().starts_with("on_click:")
+                })
+                .peekable();
             assert!(
-                parsed.is_ok(),
-                "scene {i} {name}, docs/guide/{edition}.md:{line}: {:?}",
-                parsed.diagnostics()
+                callbacks.peek().is_some(),
+                "on_click argument missing in {name}"
             );
-            let root = parsed.syntax();
-            assert_eq!(root.text().to_string(), *code);
-            if source.contains("on_click:") {
-                let mut callbacks = root
-                    .descendants()
-                    .filter(|n| {
-                        n.kind() == K::NamedArg
-                            && n.text().to_string().trim_start().starts_with("on_click:")
-                    })
-                    .peekable();
-                assert!(
-                    callbacks.peek().is_some(),
-                    "on_click argument missing in {name}"
-                );
-                assert!(
-                    callbacks.all(|arg| arg
-                        .children()
-                        .any(|n| matches!(n.kind(), K::NameExpr | K::ClosureExpr))),
-                    "callback missing in {name}"
-                );
-            }
-            if source.contains("await ") {
-                assert!(
-                    root.descendants().any(|n| n.kind() == K::PrefixExpr),
-                    "await missing in {name}"
-                );
-            }
-            if source.contains("() {") || source.contains("gap: 12) {") {
-                assert!(
-                    root.descendants()
-                        .any(|n| matches!(n.kind(), K::Children | K::FnDecl | K::ForStmt)),
-                    "body missing in {name}"
-                );
-            }
+            assert!(
+                callbacks.all(|arg| arg
+                    .children()
+                    .any(|n| matches!(n.kind(), K::NameExpr | K::ClosureExpr))),
+                "callback missing in {name}"
+            );
+        }
+        if source.contains("await ") {
+            assert!(
+                root.descendants().any(|n| n.kind() == K::PrefixExpr),
+                "await missing in {name}"
+            );
+        }
+        if source.contains("() {") || source.contains("gap: 12) {") {
+            assert!(
+                root.descendants()
+                    .any(|n| matches!(n.kind(), K::Children | K::FnDecl | K::ForStmt)),
+                "body missing in {name}"
+            );
         }
     }
 }
 
 #[test]
-fn every_guide_prefix_recovers_without_losing_utf8_bytes() {
-    for (i, (line, source)) in snippets(ZH).iter().enumerate() {
+fn every_author_scene_prefix_recovers_without_losing_utf8_bytes() {
+    let entries = snippets(CORPUS);
+    assert_eq!(entries.len(), SCENES.len());
+    for (i, (line, source)) in entries.iter().enumerate() {
         for end in 0..=source.len() {
             if !source.is_char_boundary(end) {
                 continue;
@@ -104,11 +96,8 @@ fn every_guide_prefix_recovers_without_losing_utf8_bytes() {
 }
 
 mod semantic_guides {
+    use super::{CORPUS, SCENES, scenes, snippets};
     use aside_compiler::{semantic::*, *};
-    const ZH: &str = include_str!("../../../docs/guide/zh-CN.md");
-    const EN: &str = include_str!("../../../docs/guide/en.md");
-    use super::scenes;
-    use scenes::{SCENES, snippets};
     // These names are the documented Reel globals. Their dynamic members remain runtime contracts.
     const PRELUDE: &[&str] = &[
         "build",
@@ -212,14 +201,9 @@ mod semantic_guides {
         }
     }
     #[test]
-    fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
-        let zh = snippets(ZH);
-        let en = snippets(EN);
-        assert_eq!(zh.len(), SCENES.len());
-        assert_eq!(
-            zh.iter().map(|(_, code)| code).collect::<Vec<_>>(),
-            en.iter().map(|(_, code)| code).collect::<Vec<_>>()
-        );
+    fn all_author_scenes_analyze_with_explicit_host_and_lexical_context() {
+        let entries = snippets(CORPUS);
+        assert_eq!(entries.len(), SCENES.len());
         let mut resolver = MemoryResolver::default();
         resolver.aliases.extend([
             ("ui".into(), "game::ui".into()),
@@ -273,68 +257,61 @@ mod semantic_guides {
                 .collect(),
         });
         let mut errors = Vec::new();
-        for (i, ((_, chinese), (_, english))) in zh.iter().zip(&en).enumerate() {
+        for (i, (line, source)) in entries.iter().enumerate() {
             let (name, entry) = SCENES[i];
-            for (edition, source) in [("zh-CN", chinese), ("en", english)] {
-                let block = entry == EntryPoint::Block;
-                let options = AnalysisOptions {
-                    module: format!("guide::{edition}::{i}"),
-                    version: "guide-v1".into(),
-                    context: if block {
-                        AnalysisContext::Function
-                    } else {
-                        AnalysisContext::Module
-                    },
-                    // Only implemented Reel prelude names are admitted.
-                    // Proposed interfaces live in parser-only fixtures, not a fake host environment.
-                    hosts: PRELUDE.iter().map(|&name| prelude_symbol(name)).collect(),
-                    enclosing: scenes::enclosing(name)
-                        .iter()
-                        .map(|&binding| EnclosingBinding {
-                            symbol: ExternalSymbol::dynamic(binding),
-                            mutable: scenes::mutable(name, binding),
-                        })
-                        .collect(),
+            let options = AnalysisOptions {
+                module: format!("guide::{i}"),
+                version: "guide-v1".into(),
+                context: if entry == EntryPoint::Block {
+                    AnalysisContext::Function
+                } else {
+                    AnalysisContext::Module
+                },
+                // Only implemented Reel prelude names are admitted.
+                // Proposed interfaces live in parser-only fixtures, not a fake host environment.
+                hosts: PRELUDE.iter().map(|&name| prelude_symbol(name)).collect(),
+                enclosing: scenes::enclosing(name)
+                    .iter()
+                    .map(|&binding| EnclosingBinding {
+                        symbol: ExternalSymbol::dynamic(binding),
+                        mutable: scenes::mutable(name, binding),
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let parsed = parse_with_options(
+                source,
+                ParseOptions {
+                    entry,
                     ..Default::default()
-                };
-                let parsed = parse_with_options(
-                    source,
-                    ParseOptions {
-                        entry: if block {
-                            EntryPoint::Block
-                        } else {
-                            EntryPoint::Module
-                        },
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
+                },
+            )
+            .unwrap();
+            assert!(
+                parsed.is_ok(),
+                "scene {i} {name}, fixtures/author_scenes.md:{line}: {:?}",
+                parsed.diagnostics()
+            );
+            let result = analyze(&parsed, &options, &mut resolver);
+            if !result.is_ok() {
+                errors.push(format!(
+                    "scene {i} {name}, fixtures/author_scenes.md:{line}: {:?}",
+                    result.diagnostics
+                ));
+                continue;
+            }
+            if name == "scoped choreography in story" {
+                let module = result.module().unwrap();
                 assert!(
-                    parsed.is_ok(),
-                    "scene {i} parse: {:?}",
-                    parsed.diagnostics()
+                    module
+                        .functions()
+                        .iter()
+                        .flat_map(|f| &f.captures)
+                        .any(|c| module
+                            .hir()
+                            .name(module.symbols()[c.symbol.0 as usize].name)
+                            == "view")
                 );
-                let result = analyze(&parsed, &options, &mut resolver);
-                if !result.is_ok() {
-                    errors.push(format!(
-                        "{edition} scene {i} {name}: {:?}",
-                        result.diagnostics
-                    ));
-                    continue;
-                }
-                if name == "scoped choreography in story" {
-                    let module = result.module().unwrap();
-                    assert!(
-                        module
-                            .functions()
-                            .iter()
-                            .flat_map(|f| &f.captures)
-                            .any(|c| module
-                                .hir()
-                                .name(module.symbols()[c.symbol.0 as usize].name)
-                                == "view")
-                    );
-                }
             }
         }
         assert!(errors.is_empty(), "{}", errors.join("\n"));

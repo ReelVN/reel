@@ -1,23 +1,20 @@
 # Reel
 
-Reel 是面向视觉小说的跨平台游戏引擎，使用 Rust 实现的 Aside 语言创作。作者用普通函数串联剧情，用节点和有状态组件组合画面、交互与演出。
+Reel 是面向视觉小说和 2D 叙事游戏的跨平台引擎。Aside 是用 Rust 实现的嵌入式语言，用于组织剧情、画面、交互和演出。
 
-Reel is a cross-platform visual novel engine with Aside, an embedded language implemented in Rust. Authors compose story flow with functions and build scenes with nodes and stateful components.
+Reel is a cross-platform engine for visual novels and 2D narrative games. Its embedded Aside language is implemented in Rust and used for story flow, presentation, interaction, and choreography.
 
-- [文档 / Documentation](docs/README.md)
-- [Changelog](CHANGELOG.md)
-- [中文创作指南](docs/guide/zh-CN.md) · [English creator guide](docs/guide/en.md)
-- [架构](docs/engine-architecture.md) · [语言规范](docs/aside-language.md)
-- [作者舞台示例](examples/author_stage/src/main.aside)
+- [官网](https://reelvn.com) · [中文创作指南](https://reelvn.com/zh/docs/quickstart) · [English creator guide](https://reelvn.com/en/docs/quickstart) · [API reference](https://reelvn.com/en/reference)
+- [引擎文档 / Engine documentation](docs/README.md) · [Changelog](CHANGELOG.md)
 
-安装工具包并将其 `bin` 加入 PATH 后，在项目目录运行：
+## Build from source
+
+From the repository root, build the desktop CLI, language server, and player with the pinned Rust toolchain.
 
 ```sh
-reel check
-reel dev
-reel build
+cargo build --locked -p reel-cli --features window
 ```
 
-从源码构建工具：`cargo build --locked -p reel-cli --features window`。将 `target/debug` 加入 PATH；项目资源和字体配置见创作指南。
+See [Reel developer tools](crates/reel-dev/README.md) for repository checks, diagnostics, and performance verification. See [browser preview](crates/reel-web/README.md) for building and embedding the WebGPU player.
 
-仓库检查工具见 [reel-dev](crates/reel-dev/README.md)。借用实现的许可和来源保存在对应 crate，生成输出放在忽略的 `target/reel-artifacts/`。
+Borrowed implementations and test inputs carry their licenses and provenance alongside the source. Generated reports belong under `target/reel-artifacts/`. [Contribution rules](AGENTS.md)

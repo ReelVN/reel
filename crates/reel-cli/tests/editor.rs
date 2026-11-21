@@ -1328,12 +1328,9 @@ mod editor_services {
         id += 1;
         let document = client.request(id, "aside/nativeDocument", json!({"uri":definition["uri"]}));
         id += 1;
-        assert!(
-            document["text"]
-                .as_str()
-                .unwrap()
-                .contains("pub let target: string =")
-        );
+        let generated = document["text"].as_str().unwrap();
+        assert!(generated.contains("pub let target: string ="));
+        assert!(!generated.contains("pub use reel::build::target;"));
         let text = reel_engine::aside::source::api().native("reel::text");
         let signature = text.symbol.signature.as_ref().unwrap();
         let hidden_properties = signature

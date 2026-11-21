@@ -18,6 +18,9 @@ pub(in crate::aside) enum InputField {
     /// update held values without creating callback tasks or event objects.
     #[aside(name = "actions", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Table), default = null, validate = validate_actions)]
     Actions,
+    /// Receive `target`, physical `code`, logical `key`, and modifier flags
+    /// `shift`, `ctrl`, `alt`, `meta`. The `phase` is `pressed`, `repeated`,
+    /// `released` or `cancelled`.
     #[aside(name = "on_key", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnKey,
     /// Receive `target`, local `x`/`y`, and `phase` (`pressed`, `moved`,
@@ -28,6 +31,7 @@ pub(in crate::aside) enum InputField {
     /// including `pressed`, and false for hover, release, and cancellation.
     #[aside(name = "on_pointer", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnPointer,
+    /// Receive wheel input with `target`, local `x` and `y`, and `delta_x` and `delta_y`.
     #[aside(name = "on_wheel", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnWheel,
     /// Handle the release of Escape, PointerSecondary or controller East.

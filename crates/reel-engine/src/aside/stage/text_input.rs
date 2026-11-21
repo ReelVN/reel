@@ -108,10 +108,13 @@ pub(super) fn publish(
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum TextInputField {
+    /// Committed text. Bind a writable string to share it with other controls.
     #[aside(name = "value", ty = String, default = "", validate = validate_value)]
     Value,
+    /// Receive `{ target, value }` after a user edit commits.
     #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
+    /// Receive `{ target, value }` when the user submits the input.
     #[aside(name = "on_submit", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnSubmit,
     /// Empty-value hint; hidden during IME composition and never written to value.

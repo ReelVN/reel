@@ -4,12 +4,16 @@ use reel_ui::stage::CameraView;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum CameraField {
+    /// World-space horizontal coordinate centered in the viewport.
     #[aside(name = "camera_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     X,
+    /// World-space vertical coordinate centered in the viewport.
     #[aside(name = "camera_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Y,
+    /// Positive magnification centered in the viewport.
     #[aside(name = "zoom", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_zoom, animatable)]
     Zoom,
+    /// Clockwise camera rotation in degrees. The scene rotates the opposite way.
     #[aside(name = "camera_rotation", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Rotation,
     /// Move the camera toward positive plane distances.
