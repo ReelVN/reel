@@ -132,7 +132,7 @@ pub(super) fn record_device(
     };
     #[cfg(not(feature = "thread-profiling"))]
     let runtime = [0, 0, 0, 0, 0, 0, 0, u64::MAX];
-    recording.record_device([
+    let sample = [
         renderer.resources,
         renderer.targets,
         renderer.transient,
@@ -256,7 +256,8 @@ pub(super) fn record_device(
         runtime[5],
         runtime[6],
         runtime[7],
-    ]);
+    ];
+    recording.record_device(sample, main.committed_bytes, memory.cdram.committed_bytes);
 }
 
 /// Read existing accounting without polling or adding a GPU synchronization.

@@ -1,5 +1,4 @@
 //! Native counters published to the existing live sampler without file IO.
-#[cfg(test)]
 use std::io::{self, Write};
 use std::{
     collections::VecDeque,
@@ -178,11 +177,23 @@ pub(super) fn append_live(line: &mut String) -> bool {
 #[derive(Default)]
 pub(super) struct DeviceSamples {
     rows: VecDeque<(u64, DeviceSample)>,
+    samples: u64,
+    main_peak_bytes: u64,
+    cdram_peak_bytes: u64,
 }
 
 impl DeviceSamples {
     #[cfg(any(target_os = "vita", test))]
-    pub(super) fn record(&mut self, elapsed_us: u64, values: DeviceSample) {
+    pub(super) fn record(
+        &mut self,
+        elapsed_us: u64,
+        values: DeviceSample,
+        main_bytes: u64,
+        cdram_bytes: u64,
+    ) {
+        self.samples += 1;
+        self.main_peak_bytes = self.main_peak_bytes.max(main_bytes);
+        self.cdram_peak_bytes = self.cdram_peak_bytes.max(cdram_bytes);
         #[cfg(target_os = "vita")]
         {
             publish(elapsed_us, values);
@@ -201,6 +212,17 @@ impl DeviceSamples {
 
     pub(super) fn bytes(&self) -> usize {
         self.rows.capacity() * std::mem::size_of::<(u64, DeviceSample)>()
+    }
+
+    pub(super) fn write_memory_peaks(&self, out: &mut impl Write) -> io::Result<()> {
+        if self.samples != 0 {
+            writeln!(
+                out,
+                "vita_memory_peaks\t{}\t{}\t{}",
+                self.samples, self.main_peak_bytes, self.cdram_peak_bytes
+            )?;
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -237,11 +259,19 @@ mod tests {
         let mut samples = DeviceSamples::default();
         assert_eq!(samples.bytes(), 0);
         for index in 0..=CAPACITY {
-            samples.record(index as u64, [index as u64; NAMES.len()]);
+            samples.record(
+                index as u64,
+                [index as u64; NAMES.len()],
+                (CAPACITY - index) as u64,
+                index as u64,
+            );
         }
         assert_eq!(samples.rows.len(), CAPACITY);
         assert_eq!(samples.rows.front().unwrap().0, 1);
         assert_eq!(samples.rows.back().unwrap().1[0], CAPACITY as u64);
         assert_eq!(samples.rows.capacity(), CAPACITY);
+        let mut report = Vec::new();
+        samples.write_memory_peaks(&mut report).unwrap();
+        assert_eq!(report, b"vita_memory_peaks\t257\t256\t256\n");
     }
 }

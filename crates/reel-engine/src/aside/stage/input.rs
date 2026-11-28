@@ -34,7 +34,7 @@ pub(in crate::aside) enum InputField {
     /// Receive wheel input with `target`, local `x` and `y`, and `delta_x` and `delta_y`.
     #[aside(name = "on_wheel", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnWheel,
-    /// Handle the release of Escape, PointerSecondary or controller East.
+    /// Handle the release of Escape, PointerSecondary or GamepadBack.
     /// An explicit `actions.back` supplies its own bindings and handlers.
     #[aside(name = "on_back", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnBack,
@@ -77,7 +77,7 @@ const NODE_SLOT: u32 = 3;
 const CURRENT: u32 = 0;
 const RETIRING: u32 = 1;
 type Row = [Value; 7];
-const BACK_CONTROLS: [&str; 3] = ["Escape", "PointerSecondary", "East"];
+const BACK_CONTROLS: [&str; 3] = ["Escape", "PointerSecondary", "GamepadBack"];
 
 #[derive(Clone, Copy)]
 struct Source {

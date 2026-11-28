@@ -27,6 +27,20 @@ impl bc::VerifiedProgram {
                 return Err(ResumeError::new("duplicate or empty resume flow identity"));
             }
         }
+        let point_count = table
+            .flows
+            .iter()
+            .try_fold(0usize, |count, flow| count.checked_add(flow.points.len()))
+            .ok_or_else(|| ResumeError::new("resume point count"))?;
+        let mut point_targets = Vec::new();
+        b.bytes(
+            point_count
+                .checked_mul(std::mem::size_of::<FunctionId>())
+                .ok_or_else(|| ResumeError::new("resume point target size"))?,
+        )?;
+        point_targets
+            .try_reserve_exact(point_count)
+            .map_err(|_| ResumeError::new("resume point target allocation"))?;
         for flow in &table.flows {
             let f = self
                 .package()
@@ -68,9 +82,9 @@ impl bc::VerifiedProgram {
                     &mut checked_layouts,
                 )?;
                 let target = analysis.target_in(point.call, host_types, &mut b)?;
-                let target = &self.package().functions[target.index()];
-                if !matches!(target.kind, bc::FunctionKind::Native(_))
-                    || self.package().signatures[target.signature.index()]
+                let function = &self.package().functions[target.index()];
+                if !matches!(function.kind, bc::FunctionKind::Native(_))
+                    || self.package().signatures[function.signature.index()]
                         .effects
                         .0
                         & bc::Effects::WAIT
@@ -81,6 +95,7 @@ impl bc::VerifiedProgram {
                     )
                     .at(flow.function, point.call));
                 }
+                point_targets.push(target);
             }
             for ret in &flow.returns {
                 if ret.key.0.is_empty() || !sites.insert(ret.key.0.as_str()) {
@@ -106,7 +121,7 @@ impl bc::VerifiedProgram {
             }
             b.bytes -= analysis.capacity_bytes + flow.layouts.len();
         }
-        VerifiedResumeTable::new(self.clone(), table, host_types, &mut b)
+        VerifiedResumeTable::new(self.clone(), table, &point_targets, &mut b)
     }
 }
 fn check_site(

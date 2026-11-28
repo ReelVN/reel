@@ -4,6 +4,7 @@ use super::{
 };
 use aside_vm::bytecode as bc;
 use aside_vm::resume::{ResumeLimits, ResumeTable, VerifiedResumeTable};
+use std::borrow::Cow;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 pub const MAGIC: &[u8; 8] = b"REELASB\0";
@@ -162,47 +163,88 @@ pub fn decode(
     budget.charge(input.len())?;
     let index = parse_header(input, input.len(), limits)?;
     let sections = parse_index(input, &input[index.clone()], index, input.len(), limits)?;
-    for section in &sections {
-        check_digest(&input[section.range.clone()], &section.digest)?;
+    decode_sections(&sections, host_types, limits, &mut budget, |section| {
+        Ok(Cow::Borrowed(&input[section.range.clone()]))
+    })
+}
+
+/// Decode a file-backed package with one encoded section resident at a time.
+/// This applies the same limits and verification as decoding a byte slice.
+pub fn decode_reader(
+    reader: &mut (impl Read + Seek),
+    host_types: &[bc::HostTypeSupport],
+    limits: Limits,
+) -> io::Result<CodePackage> {
+    let mut budget = Budget::new(limits);
+    let (total, sections) = read_index(reader, limits, &mut budget)?;
+    budget
+        .charge(total - HEADER_LEN - sections.len() * INDEX_ENTRY_LEN)
+        .map_err(io::Error::other)?;
+    decode_sections(&sections, host_types, limits, &mut budget, |section| {
+        read_range(reader, section.range.clone())
+            .map(Cow::Owned)
+            .map_err(|error| Error::new(ErrorKind::Encoding, error.to_string()))
+    })
+    .map_err(io::Error::other)
+}
+
+fn decode_sections<'a>(
+    sections: &[Section],
+    host_types: &[bc::HostTypeSupport],
+    limits: Limits,
+    budget: &mut Budget,
+    mut read: impl FnMut(&Section) -> Result<Cow<'a, [u8]>, Error>,
+) -> Result<CodePackage, Error> {
+    let mut program = None;
+    let mut metadata = None;
+    let mut distribution = None;
+    let mut effects = EffectProducts::default();
+    let mut resume = ResumeTable::default();
+    let mut visual_plan = Vec::new().into_boxed_slice();
+    // The index is sorted by file offset. Verified code and metadata can be
+    // decoded independently and linked after all the encoded buffers are gone.
+    for section in sections {
+        let bytes = read(section)?;
+        check_digest(&bytes, &section.digest)?;
+        match section.kind {
+            B01 => {
+                let decoded = bc::VerifiedProgram::decode(&bytes, limits.bytecode)
+                    .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
+                budget.charge(bytes.len())?;
+                program = Some((decoded, section.digest));
+            }
+            METADATA => metadata = Some(decode_json::<Metadata>(&bytes, limits, budget)?),
+            DISTRIBUTION => distribution = Some(decode_distribution(&bytes, limits, budget)?),
+            EFFECTS => effects = EffectProducts::decode(&bytes, limits, budget)?,
+            RESUME => resume = decode_json(&bytes, limits, budget)?,
+            VISUAL_PLAN => {
+                budget.charge(bytes.len())?;
+                visual_plan = match bytes {
+                    Cow::Owned(bytes) => bytes.into_boxed_slice(),
+                    Cow::Borrowed(bytes) => {
+                        let mut owned = Vec::new();
+                        owned
+                            .try_reserve_exact(bytes.len())
+                            .map_err(|e| Error::new(ErrorKind::Limit, e.to_string()))?;
+                        owned.extend_from_slice(bytes);
+                        owned.into_boxed_slice()
+                    }
+                };
+            }
+            _ => (),
+        }
     }
-    let code = sections
-        .iter()
-        .find(|section| section.kind == B01)
-        .expect("required B01");
-    let b01 = &input[code.range.clone()];
-    let json = payload(input, &sections, METADATA).expect("required metadata");
-    let metadata: Metadata = decode_json(json, limits, &mut budget)?;
-    let distribution = payload(input, &sections, DISTRIBUTION)
-        .map(|json| decode_distribution(json, limits, &mut budget))
-        .transpose()?;
-    let program = bc::VerifiedProgram::decode(b01, limits.bytecode)
-        .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
-    budget.charge(b01.len())?;
-    metadata.validate(&program, code.digest.into(), limits, &mut budget)?;
-    let effects = payload(input, &sections, EFFECTS)
-        .map(|bytes| EffectProducts::decode(bytes, limits, &mut budget))
-        .transpose()?
-        .unwrap_or_default();
-    effects.validate(&program, limits, &mut budget)?;
-    let resume = payload(input, &sections, RESUME)
-        .map(|json| decode_json(json, limits, &mut budget))
-        .transpose()?
-        .unwrap_or_default();
+    let (program, digest) = program.expect("required B01");
+    let metadata = metadata.expect("required metadata");
+    metadata.validate(&program, digest.into(), limits, budget)?;
+    effects.validate(&program, limits, budget)?;
     let resume = verify_resume(&program, resume, host_types, limits)?;
-    let mut visual_plan = Vec::new();
-    if let Some(bytes) = payload(input, &sections, VISUAL_PLAN) {
-        budget.charge(bytes.len())?;
-        visual_plan
-            .try_reserve_exact(bytes.len())
-            .map_err(|e| Error::new(ErrorKind::Limit, e.to_string()))?;
-        visual_plan.extend_from_slice(bytes);
-    }
     Ok(CodePackage {
         metadata,
         distribution,
         effects,
         resume,
-        visual_plan: visual_plan.into_boxed_slice(),
+        visual_plan,
     })
 }
 
@@ -244,39 +286,52 @@ pub fn read_distribution(
     reader: &mut (impl Read + Seek),
     limits: Limits,
 ) -> io::Result<Option<Distribution>> {
-    let total = usize::try_from(reader.seek(SeekFrom::End(0))?).map_err(io::Error::other)?;
-    reader.seek(SeekFrom::Start(0))?;
-    let mut header = [0; HEADER_LEN];
-    reader.read_exact(&mut header)?;
-    let index_range = parse_header(&header, total, limits).map_err(io::Error::other)?;
     let mut budget = Budget::new(limits);
-    budget.charge(HEADER_LEN).map_err(io::Error::other)?;
-    let index = read_range(reader, index_range.clone(), &mut budget)?;
-    let sections =
-        parse_index(&header, &index, index_range, total, limits).map_err(io::Error::other)?;
+    let (_, sections) = read_index(reader, limits, &mut budget)?;
     let Some(section) = sections.iter().find(|section| section.kind == DISTRIBUTION) else {
         return Ok(None);
     };
-    let json = read_range(reader, section.range.clone(), &mut budget)?;
+    budget
+        .charge(section.range.len())
+        .map_err(io::Error::other)?;
+    let json = read_range(reader, section.range.clone())?;
     check_digest(&json, &section.digest).map_err(io::Error::other)?;
     decode_distribution(&json, limits, &mut budget)
         .map(Some)
         .map_err(io::Error::other)
 }
 
+fn read_index(
+    reader: &mut (impl Read + Seek),
+    limits: Limits,
+    budget: &mut Budget,
+) -> io::Result<(usize, Vec<Section>)> {
+    let total = usize::try_from(reader.seek(SeekFrom::End(0))?).map_err(io::Error::other)?;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut header = [0; HEADER_LEN];
+    budget.charge(HEADER_LEN).map_err(io::Error::other)?;
+    reader.read_exact(&mut header)?;
+    let index_range = parse_header(&header, total, limits).map_err(io::Error::other)?;
+    budget.charge(index_range.len()).map_err(io::Error::other)?;
+    let index = read_range(reader, index_range.clone())?;
+    parse_index(&header, &index, index_range, total, limits)
+        .map(|sections| (total, sections))
+        .map_err(io::Error::other)
+}
+
 fn read_range(
     reader: &mut (impl Read + Seek),
     range: std::ops::Range<usize>,
-    budget: &mut Budget,
 ) -> io::Result<Vec<u8>> {
-    budget.charge(range.len()).map_err(io::Error::other)?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(range.len())
         .map_err(io::Error::other)?;
-    bytes.resize(range.len(), 0);
     reader.seek(SeekFrom::Start(range.start as u64))?;
-    reader.read_exact(&mut bytes)?;
+    reader.take(range.len() as u64).read_to_end(&mut bytes)?;
+    if bytes.len() != range.len() {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
     Ok(bytes)
 }
 
@@ -406,13 +461,6 @@ fn require_visual_plan_size(length: usize, limits: Limits) -> Result<(), Error> 
         ErrorKind::Limit,
         "visual plan byte budget exceeded",
     )
-}
-
-fn payload<'a>(input: &'a [u8], sections: &[Section], kind: u32) -> Option<&'a [u8]> {
-    sections
-        .iter()
-        .find(|section| section.kind == kind)
-        .map(|section| &input[section.range.clone()])
 }
 
 fn check_digest(bytes: &[u8], digest: &[u8; 32]) -> Result<(), Error> {

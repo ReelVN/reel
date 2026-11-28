@@ -61,6 +61,8 @@ struct VerifiedData {
     limits: Limits,
     /// Sorted (signature, parameter) pairs; only Cell parameters are retained.
     native_parameter_cells: Vec<(u32, u32)>,
+    /// First bytecode function for each linked native declaration.
+    native_functions: Vec<Option<FunctionId>>,
     /// Sorted (function, parameter) pairs; Value slots need no retained record.
     script_parameter_cells: Vec<(u32, u32)>,
     module_bindings: ModuleBindings,
@@ -98,6 +100,7 @@ struct InstructionUses {
 }
 struct DerivedLayouts {
     native_parameters: Vec<(u32, u32)>,
+    native_functions: Vec<Option<FunctionId>>,
     script_parameters: Vec<(u32, u32)>,
     modules: ModuleBindings,
     opcode_uses: Vec<OpcodeUse>,
@@ -134,6 +137,17 @@ impl VerifiedProgram {
     }
     pub fn package(&self) -> &RuntimePackage {
         &self.0.package
+    }
+    pub(crate) fn native_function(&self, native: NativeId) -> Option<FunctionId> {
+        self.0
+            .native_functions
+            .get(native.index())
+            .copied()
+            .flatten()
+    }
+    #[cfg(test)]
+    pub(crate) fn native_function_capacity_bytes(&self) -> usize {
+        self.0.native_functions.capacity() * size_of::<Option<FunctionId>>()
     }
     /// Every statically named member, including operands in unreachable code.
     /// VM loading interns these names without decoding execution pages again.
@@ -588,6 +602,7 @@ fn publish(
             stats,
             limits,
             native_parameter_cells: layouts.native_parameters,
+            native_functions: layouts.native_functions,
             script_parameter_cells: layouts.script_parameters,
             module_bindings: layouts.modules,
             opcode_uses: layouts.opcode_uses,
@@ -920,7 +935,18 @@ fn unique_slice<T, K: Ord>(
     b: &mut Budget,
     label: &str,
 ) -> Result<(), Error> {
-    if items.len() < 2 {
+    if items.len() <= 8 {
+        for (index, item) in items.iter().enumerate().skip(1) {
+            b.work(index as u64)?;
+            let current = key(item);
+            check(
+                items[..index]
+                    .iter()
+                    .all(|previous| key(previous) != current),
+                ErrorKind::Signature,
+                label,
+            )?;
+        }
         return Ok(());
     }
     let sorted = sorted_keys(items.iter().map(key), 1, b)?;

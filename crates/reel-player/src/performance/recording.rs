@@ -441,9 +441,18 @@ impl Recording {
     }
 
     #[cfg(any(target_os = "vita", test))]
-    pub(crate) fn record_device(&mut self, sample: DeviceSample) {
-        self.device
-            .record(self.started.elapsed().as_micros() as u64, sample);
+    pub(crate) fn record_device(
+        &mut self,
+        sample: DeviceSample,
+        main_bytes: u64,
+        cdram_bytes: u64,
+    ) {
+        self.device.record(
+            self.started.elapsed().as_micros() as u64,
+            sample,
+            main_bytes,
+            cdram_bytes,
+        );
     }
 
     pub(crate) fn record(
@@ -646,6 +655,7 @@ impl Recording {
         writeln!(out, "[reel-probe-report] end")?;
         self.timeline.report(&mut out)?;
         self.frames.report(&mut out)?;
+        self.device.write_memory_peaks(&mut out)?;
         #[cfg(all(feature = "performance", feature = "window"))]
         if let Some(trace) = &self.desktop_trace {
             trace.report(&mut out)?;

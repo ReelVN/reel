@@ -8,6 +8,7 @@ fn datetime(timestamp: i64, timezone: Option<String>) -> Result<Zoned, NativeErr
     let timestamp = Timestamp::from_second(timestamp)
         .map_err(|error| NativeError::Message(error.to_string()))?;
     let timezone = match timezone {
+        Some(name) if name.eq_ignore_ascii_case("UTC") => TimeZone::UTC,
         Some(name) => {
             TimeZone::get(&name).map_err(|error| NativeError::Message(error.to_string()))?
         }
@@ -25,7 +26,8 @@ pub(super) fn now(
 }
 
 /// Split a Unix timestamp into civil time fields. `timezone` is an IANA name
-/// such as `Asia/Shanghai`; `null` selects the system timezone. Return an ordinary
+/// such as `Asia/Shanghai` when the host has a time zone database. `"UTC"`
+/// works on all platforms and `null` selects the system timezone. Return an ordinary
 /// mutable table with integer fields `year`, `month`, `day`, `hour`, `minute`,
 /// `second`, `weekday` (Monday = 1), and `offset_seconds` east of UTC.
 ///

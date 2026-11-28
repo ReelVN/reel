@@ -75,6 +75,20 @@ impl Metadata {
         budget.charge(p.functions.len() + p.modules.len())?;
         for (index, function) in p.functions.iter().enumerate() {
             functions[function.module.index()].push(index);
+            // An instruction can write a linked global only if the function
+            // has a descriptor for that binding.
+            let can_write_linked = function.descriptors.iter().any(|descriptor| {
+                let bc::Descriptor::Global { module, global } = descriptor else {
+                    return false;
+                };
+                p.modules[module.index()]
+                    .globals
+                    .get(global.index())
+                    .is_some_and(|definition| definition.linked_function.is_some())
+            });
+            if !can_write_linked {
+                continue;
+            }
             budget.charge(function.code.len())?;
             for instruction in function.code.iter() {
                 let instruction = instruction?;

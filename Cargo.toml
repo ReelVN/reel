@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.4.5"
+version = "0.4.6"
 edition = "2024"
 rust-version = "1.98.1"
 
@@ -12,7 +12,7 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 reel-ui = { path = "crates/reel-ui", default-features = false }
-vita-native = { git = "https://github.com/jhq223/vita-native.git", rev = "cb491bdd378d76aea9c7aac02f280203cdac9eb0", default-features = false }
+vita-native = { git = "https://github.com/jhq223/vita-native.git", rev = "55135c577559e667a305d3db8688abb4881f4fef", default-features = false }
 
 anymore = "=1.0.0"
 imaging = "=0.0.1"

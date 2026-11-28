@@ -66,6 +66,7 @@ fn parameter_layout_bytes(program: &VerifiedProgram) -> usize {
         instructions.min(INSTRUCTION_SPECS.len()) * size_of::<(u16, FunctionId, Pc)>();
     program.stats().derived_capacity_bytes
         - opcode_capacity
+        - program.native_function_capacity_bytes()
         - program.native_call_capacity_bytes()
         - program.compact_derived_capacity_bytes()
         - program.scalar_suffix_capacity_bytes()

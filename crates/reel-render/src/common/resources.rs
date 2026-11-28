@@ -117,6 +117,13 @@ impl<T> ResidentImage<T> {
             .as_ref()
             .is_some_and(|source| source.is_retired())
     }
+
+    #[cfg(all(feature = "gxm", target_os = "vita"))]
+    pub(crate) fn owns_unused_source(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|source| source.is_only_owner())
+    }
 }
 
 /// Recently retired storage candidates. A slot may still have external readers;

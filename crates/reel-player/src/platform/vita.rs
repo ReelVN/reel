@@ -215,6 +215,12 @@ impl Runtime {
         #[cfg(feature = "performance")]
         self.native.start_performance()?;
         let result = run_package_on(package, save_directory, &mut self.native, &mut self.backend);
+        if let Err(error) = &result {
+            let _ = std::fs::write(
+                package.with_file_name("last-error.log"),
+                format!("{error:#}\n"),
+            );
+        }
         let result = reset_after_session(&mut self.backend, &result).and(result);
         #[cfg(feature = "performance")]
         self.native.complete_performance(&result);
@@ -306,23 +312,16 @@ fn run_story_on(
             )) as Box<dyn reel_engine::media::MediaBackend>
         }
     };
-    // Code must leave at least 24 MiB for mutable state. The ledger admits
-    // actual allocations up to the shared 80 MiB VM allowance; it does not
-    // preallocate the allowance or cap a larger live UI at that minimum.
+    // Keep the normal VM allowance and leave room for mutable state when a
+    // larger game's already loaded code needs more. The native MAIN ledger
+    // governs actual allocation independently of this logical allowance.
     let visual_plan_bytes = story
         .visual_plan
         .as_ref()
         .map_or(0, |plan| plan.as_bytes().len() as u64);
-    let bytes = story.program.execution_capacity_bytes() as u64 + visual_plan_bytes + (24 << 20);
-    if bytes > 80 << 20 {
-        return Err(format!(
-            "VM needs {} MiB for code and working memory; Vita allows 80 MiB",
-            bytes.div_ceil(1 << 20)
-        )
-        .into());
-    }
+    let code_bytes = story.program.execution_capacity_bytes() as u64;
     let mut limits = VmLimits::default();
-    limits.heap.max_bytes = (80 << 20) - visual_plan_bytes;
+    limits.heap.max_bytes = ((80 << 20) - visual_plan_bytes).max(code_bytes + (24 << 20));
     limits.slots.initial_capacity = 4096;
     limits.slots.max_capacity = 65_536;
     limits.max_tasks = 256;

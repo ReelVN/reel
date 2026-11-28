@@ -217,6 +217,7 @@ impl Images {
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
         for (_, entry) in self.entries.extract_if(|_, entry| {
             entry.source_retired()
+                || (Rc::strong_count(&entry.image) == 1 && entry.owns_unused_source())
                 || !entry
                     .image
                     .source

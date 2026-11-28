@@ -246,6 +246,11 @@ impl UploadedImageSource {
     pub fn is_retired(&self) -> bool {
         self.lease.is_retired()
     }
+
+    /// Whether this cache entry holds the last lease on the source.
+    pub fn is_only_owner(&self) -> bool {
+        Arc::strong_count(&self.lease.0) == 1
+    }
 }
 
 /// An owned reader for immutable image pixels. Clones share the producer's

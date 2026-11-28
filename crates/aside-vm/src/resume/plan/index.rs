@@ -34,9 +34,8 @@ fn reserve<T>(v: &mut Vec<T>, count: usize, b: &mut Budget) -> Result<(), Resume
 }
 impl ResumeIndex {
     pub fn new(
-        program: &VerifiedProgram,
         table: &ResumeTable,
-        host_types: &[crate::HostTypeSupport],
+        point_targets: &[FunctionId],
         b: &mut Budget,
     ) -> Result<Self, ResumeError> {
         b.bytes(size_of::<Self>() + 2 * size_of::<usize>())?;
@@ -65,6 +64,7 @@ impl ResumeIndex {
         flows.sort_unstable_by(|&a, &b| table.flows[a].key.cmp(&table.flows[b].key));
         let mut lookup_work = 0;
         let mut key_bytes = 0;
+        let mut point_targets = point_targets.iter().copied();
         for flow in &table.flows {
             let count = flow
                 .points
@@ -82,14 +82,11 @@ impl ResumeIndex {
                 current.push(Call {
                     pc: site.call,
                     site: PlannedSite::Point(index),
-                    callee: Some(super::super::verify::current_target(
-                        program,
-                        flow.function,
-                        site.call,
-                        host_types,
-                        b,
-                        None,
-                    )?),
+                    callee: Some(
+                        point_targets
+                            .next()
+                            .expect("each point has a verified target"),
+                    ),
                 });
                 stable.push(PlannedSite::Point(index));
             }

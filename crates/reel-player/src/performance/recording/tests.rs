@@ -106,7 +106,7 @@ fn recording_keeps_bounded_history_and_writes_complete_totals() {
     assert_eq!(recording.total.loops, 600);
     assert_eq!(recording.segments[0].1.loops, 300);
     assert_eq!(recording.segment.1.loops, 300);
-    recording.record_device([77; device::NAMES.len()]);
+    recording.record_device([77; device::NAMES.len()], 512, 256);
     assert_eq!(recording.total.phases.calls[draw], startup_calls + 600);
     let mut output = Vec::new();
     recording

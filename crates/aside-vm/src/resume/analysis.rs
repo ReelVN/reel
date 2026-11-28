@@ -1,6 +1,7 @@
 //! One control-flow analysis shared by compiler metadata production and verification.
 use super::*;
 use crate::bytecode::{self as bc, InstructionSequence};
+use std::ops::{Index, IndexMut};
 
 /// Derived current-code continuation layout. Numeric slots never enter saved descriptors.
 #[derive(Clone, Debug)]
@@ -17,9 +18,15 @@ struct Op {
     pc: usize,
     end: usize,
     instruction: bc::Instruction,
-    next: Vec<usize>,
+    next: [usize; 2],
+    next_count: usize,
     incoming: Option<(usize, usize)>,
     block_entry: usize,
+}
+impl Op {
+    fn successors(&self) -> &[usize] {
+        &self.next[..self.next_count]
+    }
 }
 
 /// Shared control-flow and binding facts for every continuation site in one function.
@@ -27,9 +34,10 @@ pub struct FlowAnalysis<'a> {
     program: &'a bc::VerifiedProgram,
     function: FunctionId,
     ops: Vec<Op>,
-    live: Vec<Vec<bool>>,
-    initialized: Vec<Option<Vec<bool>>>,
-    cells: Vec<Option<Vec<bool>>>,
+    live: Matrix,
+    reachable: Vec<bool>,
+    initialized: Matrix,
+    cells: Matrix,
     /// Work and temporary storage charged once for this function.
     pub work_units: u64,
     pub capacity_bytes: usize,
@@ -81,7 +89,8 @@ pub(crate) fn prepare_flow<'a>(
             pc: range.start,
             end: range.end,
             instruction,
-            next: Vec::new(),
+            next: [0; 2],
+            next_count: 0,
             incoming: None,
             block_entry: 0,
         });
@@ -117,31 +126,29 @@ pub(crate) fn prepare_flow<'a>(
         b.work(1 + 2 * u64::from(ops.len().checked_ilog2().unwrap_or(0) + 1))?;
         let instruction = ops[i].instruction;
         let spec = bc::instruction_spec(instruction.opcode).unwrap();
-        let mut targets = Vec::new();
-        reserve(&mut targets, 2)?;
-        match spec.flow {
-            bc::Flow::Next => {
-                if i + 1 < ops.len() {
-                    targets.push(i + 1);
-                }
+        let mut targets = [0; 2];
+        let next_count = match spec.flow {
+            bc::Flow::Next if i + 1 < ops.len() => {
+                targets[0] = i + 1;
+                1
             }
-            bc::Flow::Jump | bc::Flow::Leave => targets.push(
-                starts
+            bc::Flow::Jump | bc::Flow::Leave => {
+                targets[0] = starts
                     .binary_search(&(instruction.operands[0] as usize))
-                    .map_err(|_| ResumeError::new("resume control-flow target"))?,
-            ),
-            bc::Flow::Branch => {
-                for slot in [1, 2] {
-                    targets.push(
-                        starts
-                            .binary_search(&(instruction.operands[slot] as usize))
-                            .map_err(|_| ResumeError::new("resume branch target"))?,
-                    );
-                }
+                    .map_err(|_| ResumeError::new("resume control-flow target"))?;
+                1
             }
-            _ => {}
-        }
-        for &to in &targets {
+            bc::Flow::Branch => {
+                for (target, slot) in targets.iter_mut().zip([1, 2]) {
+                    *target = starts
+                        .binary_search(&(instruction.operands[slot] as usize))
+                        .map_err(|_| ResumeError::new("resume branch target"))?;
+                }
+                2
+            }
+            _ => 0,
+        };
+        for &to in &targets[..next_count] {
             let (low, high) = ops[to].incoming.unwrap_or((i, i));
             ops[to].incoming = Some((low.min(i), high.max(i)));
             if spec.flow != bc::Flow::Next {
@@ -149,6 +156,7 @@ pub(crate) fn prepare_flow<'a>(
             }
         }
         ops[i].next = targets;
+        ops[i].next_count = next_count;
     }
     b.work(ops.len() as u64)?;
     let mut entry = 0;
@@ -156,8 +164,9 @@ pub(crate) fn prepare_flow<'a>(
         entry = entry.max(op.block_entry);
         op.block_entry = entry;
     }
-    let mut uses = matrix(ops.len(), registers)?;
-    let mut defs = matrix(ops.len(), registers)?;
+    let register_words = registers.div_ceil(usize::BITS as usize);
+    let mut uses = Matrix::new(ops.len(), register_words)?;
+    let mut defs = Matrix::new(ops.len(), register_words)?;
     for (i, op) in ops.iter().enumerate() {
         let spec = bc::instruction_spec(op.instruction.opcode).unwrap();
         spec.visit_registers_budgeted(
@@ -168,63 +177,68 @@ pub(crate) fn prepare_flow<'a>(
                     .map_err(|e| bc::Error::new(bc::ErrorKind::Limit, e.detail))
             },
             |reg, access| match access {
-                bc::Access::Read => uses[i][reg.index()] = true,
-                bc::Access::Write => defs[i][reg.index()] = true,
+                bc::Access::Read => set_bit(&mut uses[i], reg.index()),
+                bc::Access::Write => set_bit(&mut defs[i], reg.index()),
                 bc::Access::ReadWrite => {
-                    uses[i][reg.index()] = true;
-                    defs[i][reg.index()] = true;
+                    set_bit(&mut uses[i], reg.index());
+                    set_bit(&mut defs[i], reg.index());
                 }
                 bc::Access::ConditionalWrite => {}
             },
         )
         .map_err(|e| ResumeError::new(e.to_string()))?;
     }
-    let mut live = matrix(ops.len(), registers)?;
+    let mut live = Matrix::new(ops.len(), register_words)?;
     loop {
         let mut changed = false;
         for i in (0..ops.len()).rev() {
-            b.work(registers as u64 * (1 + ops[i].next.len() as u64))?;
-            for r in 0..registers {
-                let value =
-                    uses[i][r] || (!defs[i][r] && ops[i].next.iter().any(|&to| live[to][r]));
-                if value != live[i][r] {
-                    live[i][r] = value;
-                    changed = true;
-                }
+            let successors = ops[i].successors();
+            let mut updated = false;
+            b.work(registers as u64 * (1 + successors.len() as u64))?;
+            for (word, (&used, &defined)) in uses[i].iter().zip(&defs[i]).enumerate() {
+                let live_out = successors.iter().fold(0, |bits, &to| bits | live[to][word]);
+                let live_in = used | (live_out & !defined);
+                updated |= live[i][word] != live_in;
+                live[i][word] = live_in;
             }
+            // Earlier predecessors will see these facts later in this sweep.
+            changed |= updated && ops[i].incoming.is_some_and(|(_, last)| last >= i);
         }
         if !changed {
             break;
         }
     }
-    let mut initialized = filled(ops.len(), None::<Vec<bool>>)?;
-    let mut cells = filled(ops.len(), None::<Vec<bool>>)?;
-    let mut parameter_init = filled(count, false)?;
-    let mut parameter_cells = filled(count, false)?;
+    let binding_words = count.div_ceil(usize::BITS as usize);
+    let mut initialized = Matrix::new(ops.len(), binding_words)?;
+    let mut cells = Matrix::new(ops.len(), binding_words)?;
+    let mut reachable = filled(ops.len(), false)?;
     for (index, def) in f.bindings.iter().enumerate() {
-        parameter_init[index] =
-            matches!(def.initialization, bc::BindingInitialization::Parameter(_));
-        parameter_cells[index] =
-            parameter_init[index] && matches!(def.storage, bc::BindingStorage::Cell(_));
+        if matches!(def.initialization, bc::BindingInitialization::Parameter(_)) {
+            set_bit(&mut initialized[0], index);
+            if matches!(def.storage, bc::BindingStorage::Cell(_)) {
+                set_bit(&mut cells[0], index);
+            }
+        }
     }
-    initialized[0] = Some(parameter_init);
-    cells[0] = Some(parameter_cells);
+    reachable[0] = true;
+    let mut init = filled(binding_words, 0usize)?;
+    let mut allocated = filled(binding_words, 0usize)?;
     loop {
         let mut changed = false;
         for (i, op) in ops.iter().enumerate() {
-            let Some(current) = &initialized[i] else {
+            if !reachable[i] {
                 continue;
-            };
+            }
             b.work(count as u64 * 2)?;
-            let mut init = copy_bits(current)?;
-            let mut allocated = copy_bits(cells[i].as_ref().unwrap())?;
+            init.copy_from_slice(&initialized[i]);
+            allocated.copy_from_slice(&cells[i]);
             let instruction = op.instruction;
             match bc::instruction_spec(instruction.opcode).unwrap().opcode {
-                bc::Opcode::BindInit => init[instruction.operands[0] as usize] = true,
+                bc::Opcode::BindInit => set_bit(&mut init, instruction.operands[0] as usize),
                 bc::Opcode::CellNew => {
                     let at = instruction.operands[0] as usize;
-                    allocated[at] = true;
-                    init[at] = false;
+                    set_bit(&mut allocated, at);
+                    clear_bit(&mut init, at);
                 }
                 bc::Opcode::Clear | bc::Opcode::Clear2 | bc::Opcode::Clear3 => {
                     let n = if instruction.opcode == bc::Opcode::Clear as u16 {
@@ -236,32 +250,29 @@ pub(crate) fn prepare_flow<'a>(
                     };
                     for d in 0..count {
                         if instruction.operands[..n].contains(&f.bindings[d].storage.reg().0) {
-                            init[d] = false;
-                            allocated[d] = false;
+                            clear_bit(&mut init, d);
+                            clear_bit(&mut allocated, d);
                         }
                     }
                 }
                 _ => {}
             }
-            for &to in &op.next {
+            for &to in op.successors() {
                 b.work(count as u64 * 2)?;
-                match &mut initialized[to] {
-                    None => {
-                        initialized[to] = Some(copy_bits(&init)?);
-                        cells[to] = Some(copy_bits(&allocated)?);
-                        changed = true;
-                    }
-                    Some(previous) => {
-                        for d in 0..count {
-                            let ci = cells[to].as_mut().unwrap();
-                            let a = previous[d] && init[d];
-                            let c = ci[d] && allocated[d];
-                            if a != previous[d] || c != ci[d] {
-                                previous[d] = a;
-                                ci[d] = c;
-                                changed = true;
-                            }
-                        }
+                if !reachable[to] {
+                    reachable[to] = true;
+                    initialized[to].copy_from_slice(&init);
+                    cells[to].copy_from_slice(&allocated);
+                    changed |= to <= i;
+                } else {
+                    let previous = &mut initialized[to];
+                    let ci = &mut cells[to];
+                    for word in 0..binding_words {
+                        let a = previous[word] & init[word];
+                        let c = ci[word] & allocated[word];
+                        changed |= to <= i && (a != previous[word] || c != ci[word]);
+                        previous[word] = a;
+                        ci[word] = c;
                     }
                 }
             }
@@ -275,6 +286,7 @@ pub(crate) fn prepare_flow<'a>(
         function,
         ops,
         live,
+        reachable,
         initialized,
         cells,
         work_units: b.work - start_work,
@@ -417,7 +429,7 @@ impl<'a> FlowAnalysis<'a> {
         }
         if prepare.is_some() {
             for (offset, op) in ops[entry..call_index].iter().enumerate() {
-                b.work(1 + op.next.len() as u64)?;
+                b.work(1 + op.successors().len() as u64)?;
                 readonly(self.program, f, op, host_types, b)?;
                 if offset != 0
                     && op
@@ -428,7 +440,11 @@ impl<'a> FlowAnalysis<'a> {
                         "point argument preparation has an interior control-flow entry",
                     ));
                 }
-                if op.next.iter().any(|to| !(entry..=call_index).contains(to)) {
+                if op
+                    .successors()
+                    .iter()
+                    .any(|to| !(entry..=call_index).contains(to))
+                {
                     return Err(ResumeError::new(
                         "point argument preparation leaves its call",
                     ));
@@ -436,16 +452,17 @@ impl<'a> FlowAnalysis<'a> {
             }
         }
         let live = &self.live[entry];
-        let init = self.initialized[entry]
-            .as_ref()
-            .ok_or_else(|| ResumeError::new("unreachable resume entry"))?;
-        let allocated = self.cells[entry].as_ref().unwrap();
+        if !self.reachable[entry] {
+            return Err(ResumeError::new("unreachable resume entry"));
+        }
+        let init = &self.initialized[entry];
+        let allocated = &self.cells[entry];
         let result = Reg(call_op.operands[0]);
         let mut bindings = Vec::new();
         reserve(&mut bindings, count)?;
         b.work(registers as u64)?;
-        for (r, &needed) in live.iter().enumerate() {
-            if !needed || (prepare.is_none() && r == result.index()) {
+        for r in 0..registers {
+            if !has_bit(live, r) || (prepare.is_none() && r == result.index()) {
                 continue;
             }
             b.work(count as u64)?;
@@ -459,7 +476,7 @@ impl<'a> FlowAnalysis<'a> {
                     "a temporary value survives the resume entry; use a named business binding",
                 ));
             };
-            if !init[id] {
+            if !has_bit(init, id) {
                 return Err(ResumeError::new(
                     "a live resume binding is not definitely initialized",
                 ));
@@ -469,17 +486,17 @@ impl<'a> FlowAnalysis<'a> {
         let mut allocated_cells = Vec::new();
         reserve(&mut allocated_cells, count)?;
         b.work(count as u64 * 3)?;
-        for (index, &yes) in allocated.iter().enumerate() {
-            if yes {
+        for index in 0..count {
+            if has_bit(allocated, index) {
                 allocated_cells.push(BindingId(index as u32));
             }
         }
         let dead = f.bindings.iter().enumerate().filter(|(index, binding)| {
             let reg = binding.storage.reg();
-            init[*index]
+            has_bit(init, *index)
                 && binding.mutable
                 && matches!(binding.storage, bc::BindingStorage::Value(_))
-                && !live[reg.index()]
+                && !has_bit(live, reg.index())
                 && (prepare.is_some() || reg != result)
         });
         let mut initialized_dead = Vec::new();
@@ -505,14 +522,14 @@ fn admit_scratch(
 ) -> Result<(), ResumeError> {
     use std::mem::size_of;
     let overflow = || ResumeError::new("resume analysis scratch size overflow");
+    let binding_words = bindings.div_ceil(usize::BITS as usize);
+    let binding_row_bytes = binding_words * size_of::<usize>();
     let rows = registers
-        .checked_mul(3)
-        .and_then(|n| bindings.checked_mul(4).and_then(|m| n.checked_add(m)))
+        .div_ceil(usize::BITS as usize)
+        .checked_mul(3 * size_of::<usize>())
+        .and_then(|n| n.checked_add(2 * binding_row_bytes))
         .ok_or_else(overflow)?;
-    let headers = size_of::<Op>()
-        + 3 * size_of::<usize>()
-        + 3 * size_of::<Vec<bool>>()
-        + 2 * size_of::<Option<Vec<bool>>>();
+    let headers = size_of::<Op>() + size_of::<usize>() + size_of::<bool>();
     let bytes = rows
         .checked_add(headers)
         .and_then(|n| n.checked_mul(instructions))
@@ -521,10 +538,9 @@ fn admit_scratch(
                 .checked_mul(3 * size_of::<BindingId>())
                 .and_then(|m| n.checked_add(m))
         })
-        .and_then(|n| n.checked_add(3 * size_of::<usize>()))
+        .and_then(|n| n.checked_add(2 * binding_row_bytes + 3 * size_of::<usize>()))
         .ok_or_else(overflow)?;
-    // Include all boolean rows and their temporary initialization clones, plus
-    // instruction tables, row headers, CFG edges and the returned binding vectors.
+    // Include all fact rows, two reusable scratch rows, and the returned bindings.
     b.bytes(bytes)?;
     let init = registers
         .checked_mul(3)
@@ -545,20 +561,44 @@ fn filled<T: Clone>(count: usize, value: T) -> Result<Vec<T>, ResumeError> {
     values.resize(count, value);
     Ok(values)
 }
-fn matrix(rows: usize, columns: usize) -> Result<Vec<Vec<bool>>, ResumeError> {
-    let mut values = Vec::new();
-    reserve(&mut values, rows)?;
-    for _ in 0..rows {
-        values.push(filled(columns, false)?);
-    }
-    Ok(values)
+struct Matrix {
+    columns: usize,
+    values: Vec<usize>,
 }
-fn copy_bits(values: &[bool]) -> Result<Vec<bool>, ResumeError> {
-    let mut copy = filled(values.len(), false)?;
-    for (index, value) in values.iter().enumerate() {
-        copy[index] = *value;
+impl Matrix {
+    fn new(rows: usize, columns: usize) -> Result<Self, ResumeError> {
+        Ok(Self {
+            columns,
+            values: filled(rows * columns, 0)?,
+        })
     }
-    Ok(copy)
+}
+impl Index<usize> for Matrix {
+    type Output = [usize];
+    fn index(&self, row: usize) -> &Self::Output {
+        let start = row * self.columns;
+        &self.values[start..start + self.columns]
+    }
+}
+impl IndexMut<usize> for Matrix {
+    fn index_mut(&mut self, row: usize) -> &mut Self::Output {
+        let start = row * self.columns;
+        &mut self.values[start..start + self.columns]
+    }
+}
+fn set_bit(row: &mut [usize], bit: usize) {
+    let width = usize::BITS as usize;
+    row[bit / width] |= 1 << (bit % width);
+}
+
+fn clear_bit(row: &mut [usize], bit: usize) {
+    let width = usize::BITS as usize;
+    row[bit / width] &= !(1 << (bit % width));
+}
+
+fn has_bit(row: &[usize], bit: usize) -> bool {
+    let width = usize::BITS as usize;
+    row[bit / width] & (1 << (bit % width)) != 0
 }
 
 fn readonly(

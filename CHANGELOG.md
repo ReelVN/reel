@@ -6,6 +6,20 @@ This is the canonical release history for Reel, starting with the 0.3.0 baseline
 
 ## Unreleased
 
+## 0.4.6 — 2026-11-28
+
+- Read file-backed ASB packages one section at a time to reduce startup memory use.
+- Reuse continuation checks and skip unrelated instruction scans when loading large scripts.
+- Give large games Vita VM working space in addition to their loaded code, within the process memory ledger.
+- Let Vita automatic texture, tile and atlas conversion select a larger format when the compact candidate exceeds the visual error threshold.
+- Use Circle to confirm and Cross to go back on Vita. Custom actions can use `GamepadConfirm` and `GamepadBack` to follow platform navigation.
+- Record Vita runtime errors in `last-error.log` inside the game's data directory.
+- Let active Vita assets use spare archive metadata capacity, and report logical and physical usage when resident admission fails.
+- Report sampled Vita MAIN and CDRAM memory peaks and let release verification check them against a project's limits.
+- Reclaim unused Vita textures during scene changes to leave MAIN memory available for new assets during long play sessions.
+- Display saved timestamps in the Vita system time zone while keeping stored Unix timestamps in UTC.
+- Update the Vita native dependency to the main branch revision that includes RGB8 and P8 texture support.
+
 ## 0.4.5 — 2026-11-22
 
 - Prepare and load custom WGSL effects in browser previews.

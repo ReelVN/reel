@@ -12,8 +12,8 @@
 //! Texture rules with `format = "rgba8"` may select `dither = "ordered"` to spread
 //! linear RGB rounding across a fixed 8x8 pattern; the default is `"none"`.
 //! Texture rules may opt into `mipmaps = true`; the default is a single level.
-//! Texture rules may keep the original bytes when BC fitting exceeds the display
-//! error threshold by setting `fallback = "rgba8"`.
+//! Vita `auto` rules choose a higher-fidelity texture if BC exceeds the display
+//! error threshold. Other rules can opt in with `fallback = "rgba8"`.
 //! Mips filter the padded linear-premultiplied storage and retain author coordinates.
 //! Tiles own their separate level pyramid and do not accept this option.
 //! Alpha remains undithered. Ordered dithering does not apply to block formats or tiles.
@@ -182,7 +182,7 @@ struct Rule {
 }
 
 impl RuleInput {
-    fn compile(self, root: &Path) -> io::Result<Rule> {
+    fn compile(self, root: &Path, target: &ResourceTarget) -> io::Result<Rule> {
         if self.pattern.is_empty() || self.pattern.contains('\\') || self.pattern.starts_with('/') {
             return Err(invalid(
                 "match must be a nonempty relative glob using '/' separators",
@@ -230,6 +230,11 @@ impl RuleInput {
         if self.page_size.is_some() && !matches!(self.convert, Convert::Atlas) {
             return Err(invalid("page_size belongs to atlas rules"));
         }
+        let format = self.format.unwrap_or_default();
+        let fallback = self.fallback.or_else(|| {
+            (target.as_str() == "vita" && matches!(format, prepare_texture::Format::Auto))
+                .then_some(prepare_texture::Fallback::Rgba8)
+        });
         let recipe = match self.convert {
             Convert::Font => {
                 if self.scale.is_some()
@@ -286,9 +291,9 @@ impl RuleInput {
                 Recipe::Tiles {
                     tile_size,
                     first_level,
-                    format: self.format.unwrap_or_default(),
+                    format,
                     power_of_two: self.power_of_two.unwrap_or(false),
-                    fallback: self.fallback,
+                    fallback,
                 }
             }
             Convert::Copy | Convert::Webp | Convert::Qoi | Convert::Raster => {
@@ -330,7 +335,6 @@ impl RuleInput {
                         "atlas page dimensions must be multiples of four from 8 to 4096",
                     ));
                 }
-                let format = self.format.unwrap_or_default();
                 let dither = self.dither.unwrap_or_default();
                 prepare_texture::Options {
                     format,
@@ -344,11 +348,10 @@ impl RuleInput {
                     format,
                     dither,
                     page_size,
-                    fallback: self.fallback,
+                    fallback,
                 }
             }
             Convert::Texture => {
-                let format = self.format.unwrap_or_default();
                 let dither = self.dither.unwrap_or_default();
                 prepare_texture::Options {
                     format,
@@ -378,7 +381,7 @@ impl RuleInput {
                     format,
                     dither,
                     mipmaps: self.mipmaps.unwrap_or(false),
-                    fallback: self.fallback,
+                    fallback,
                     power_of_two: self.power_of_two.unwrap_or(false),
                 }
             }
@@ -509,7 +512,7 @@ fn rules(root: &Path, target: &ResourceTarget) -> io::Result<Vec<Rule>> {
     for name in std::iter::once(target.as_str()).chain(target.fallback()) {
         let inputs = config.targets.remove(name).unwrap_or_default();
         for (index, input) in inputs.into_iter().enumerate() {
-            let rule = input.compile(root).map_err(|error| {
+            let rule = input.compile(root, target).map_err(|error| {
                 invalid(format!(
                     "{}: targets.{name}[{}]: {error}",
                     path.display(),

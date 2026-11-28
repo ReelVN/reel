@@ -42,8 +42,8 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct AssetOptions {
     pub root: PathBuf,
-    /// Decoded source payload admission ceiling: 512 MiB on desktop hosts and
-    /// 256 MiB elsewhere. Platform players can select a smaller quota.
+    /// Decoded source payload budget: 512 MiB on desktop hosts and 256 MiB
+    /// elsewhere by default. Vita shares this allowance with archive metadata.
     pub resident_bytes: u64,
     /// Independent archive metadata admission ceiling, including parsing peak.
     /// The default 32 MiB is a limit; mounts reserve their actual capacities.
@@ -81,6 +81,25 @@ impl AssetOptions {
     /// Maximum encoded length of an individual non-streamed asset.
     pub fn ordinary_input_bytes(&self) -> u64 {
         self.input_bytes - self.stream_input_bytes()
+    }
+    fn resident_pools(&self, share_metadata: bool) -> (BudgetPool, BudgetPool) {
+        let limits = |max_bytes| QueueLimits {
+            max_requests: u32::MAX,
+            max_bytes,
+        };
+        if share_metadata {
+            let combined = self.resident_bytes.saturating_add(self.metadata_bytes);
+            let group = BudgetGroup::new(combined);
+            (
+                group.pool(BudgetCategory::Metadata, limits(self.metadata_bytes)),
+                group.pool(BudgetCategory::CpuOutput, limits(combined)),
+            )
+        } else {
+            (
+                BudgetPool::new(BudgetCategory::Metadata, limits(self.metadata_bytes)),
+                BudgetPool::new(BudgetCategory::CpuOutput, limits(self.resident_bytes)),
+            )
+        }
     }
     fn queue_limits(&self) -> QueueLimits {
         QueueLimits {
@@ -352,23 +371,8 @@ impl Assets {
                 max_bytes: options.decode_bytes,
             },
         );
-        let metadata = BudgetPool::new(
-            BudgetCategory::Metadata,
-            QueueLimits {
-                max_requests: u32::MAX,
-                max_bytes: options.metadata_bytes,
-            },
-        );
+        let (metadata, output) = options.resident_pools(cfg!(target_os = "vita"));
         let (io, executor) = create(wake.clone(), &temporary, &metadata)?;
-        let pool = |category, bytes| {
-            BudgetPool::new(
-                category,
-                QueueLimits {
-                    max_requests: u32::MAX,
-                    max_bytes: bytes,
-                },
-            )
-        };
         let input_group = BudgetGroup::new(options.input_bytes);
         let input_pool = |bytes| {
             input_group.pool(
@@ -386,14 +390,20 @@ impl Assets {
             notify,
             input: input_pool(options.ordinary_input_bytes()),
             stream_input: input_pool(options.stream_input_bytes()),
-            output: pool(BudgetCategory::CpuOutput, options.resident_bytes),
+            output,
             origins: origins::Origins::new(metadata.clone()),
             recent_images: Default::default(),
             atlas_pages: atlas::Pages::default(),
             metadata,
             io_workspace_bytes: temporary.usage().bytes,
             temporary,
-            completion: pool(BudgetCategory::Completion, 1 << 20),
+            completion: BudgetPool::new(
+                BudgetCategory::Completion,
+                QueueLimits {
+                    max_requests: u32::MAX,
+                    max_bytes: 1 << 20,
+                },
+            ),
             options,
             next: 0,
             loads: BTreeMap::new(),
@@ -761,11 +771,7 @@ impl Assets {
             .saturating_sub(hidden_bytes)
     }
     pub(crate) fn resident_available(&self) -> u64 {
-        let service = self.0.borrow();
-        service
-            .options
-            .resident_bytes
-            .saturating_sub(service.output.usage().bytes)
+        self.0.borrow().output.available_bytes()
     }
     pub fn temporary_pool(&self) -> BudgetPool {
         self.0.borrow().temporary.clone()
@@ -951,6 +957,35 @@ impl Service {
             self.recent_images.make_room(&self.output, bytes);
         }
     }
+    fn resident_error(&self, kind: &str, requested: u64, message: &str) -> String {
+        let output = self.output.snapshot();
+        let mut detail = format!(
+            "{kind} resident budget: {message}; requested {requested} bytes, resident {} / {} bytes",
+            output.usage.bytes, output.limits.max_bytes
+        );
+        if let Some((limit, usage)) = output.group {
+            use std::fmt::Write;
+            let _ = write!(
+                detail,
+                ", resident and metadata {} / {limit} bytes",
+                usage.bytes
+            );
+        }
+        #[cfg(target_os = "vita")]
+        {
+            use std::fmt::Write;
+            let main = vita_native::allocator::main_usage();
+            let _ = write!(
+                detail,
+                ", physical MAIN {} / {} bytes",
+                main.committed_bytes, main.capacity_bytes
+            );
+            if let Ok(free) = vita_native::app::memory::free_memory() {
+                let _ = write!(detail, ", kernel MAIN free {} bytes", free.main_bytes);
+            }
+        }
+        detail
+    }
     fn advance(&mut self, load_id: LoadId, load: &mut Load) -> Result<(), String> {
         let completion = |pool: &BudgetPool| pool.reserve(512).map_err(|e| e.message);
         if matches!(load.phase, Phase::Describe)
@@ -1028,10 +1063,11 @@ impl Service {
                 let input = load.input.take().unwrap();
                 let mut bytes =
                     Arc::try_unwrap(input).expect("undecoded resource input has one owner");
-                self.reclaim_decoded_for(load.priority, bytes.ticket().bytes());
+                let requested = bytes.ticket().bytes();
+                self.reclaim_decoded_for(load.priority, requested);
                 bytes
                     .transfer_to(&self.output)
-                    .map_err(|e| format!("asset resident budget: {}", e.message))?;
+                    .map_err(|error| self.resident_error("asset", requested, &error.message))?;
                 let result = register(load, bytes);
                 if load.reloadable
                     && let Ok(lease) = &result
@@ -1206,7 +1242,9 @@ impl Service {
                 let output = match self.output.reserve(output_bytes) {
                     Ok(ticket) => ticket,
                     Err(_) if !self.pending_bounded_decodes.is_empty() => return Ok(()),
-                    Err(error) => return Err(format!("image resident budget: {}", error.message)),
+                    Err(error) => {
+                        return Err(self.resident_error("image", output_bytes, &error.message));
+                    }
                 };
                 let temporary = self
                     .temporary
@@ -1261,12 +1299,20 @@ impl Service {
 
 impl Service {
     fn admit_prefetch(&self, load: &Load) -> Result<(), String> {
+        if load.priority != Priority::Prefetch {
+            return Ok(());
+        }
         let header = load
             .prepared
             .map_or(0, |prepared| prepared.header_len() as u64);
-        if load.priority == Priority::Prefetch
-            && load.output.saturating_add(header) > load.prefetch_limit
-        {
+        let limit = load.prefetch_limit;
+        #[cfg(target_os = "vita")]
+        let limit = limit.min(
+            self.options
+                .resident_bytes
+                .saturating_sub(self.output.usage().bytes),
+        );
+        if load.output.saturating_add(header) > limit {
             return Err("prefetch resident capacity exhausted".into());
         }
         Ok(())

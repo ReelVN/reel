@@ -155,19 +155,12 @@ pub fn load(path: &Path, project_resources: Option<&Path>) -> io::Result<LoadedD
         .unwrap_or(Path::new("."))
         .canonicalize()?;
     let mut file = File::open(path)?;
-    let length = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(length).map_err(io::Error::other)?;
-    file.read_to_end(&mut bytes)?;
-    drop(file);
-    let mut package = reel_package::decode(
-        &bytes,
+    let mut package = reel_package::decode_reader(
+        &mut file,
         reel_engine::aside::source::types(),
         Default::default(),
-    )
-    .map_err(io::Error::other)?;
-    // The decoded package owns its fields; release the ASB before loading text.
-    drop(bytes);
+    )?;
+    drop(file);
     let manifest = package
         .distribution()
         .cloned()

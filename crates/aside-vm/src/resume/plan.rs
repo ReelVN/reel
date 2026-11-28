@@ -38,10 +38,10 @@ impl VerifiedResumeTable {
     pub(crate) fn new(
         program: VerifiedProgram,
         table: ResumeTable,
-        host_types: &[crate::HostTypeSupport],
+        point_targets: &[FunctionId],
         budget: &mut Budget,
     ) -> Result<Self, ResumeError> {
-        let index = Arc::new(ResumeIndex::new(&program, &table, host_types, budget)?);
+        let index = Arc::new(ResumeIndex::new(&table, point_targets, budget)?);
         Ok(Self {
             program,
             table: Arc::new(table),

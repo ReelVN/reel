@@ -869,7 +869,7 @@ fn native_readonly_prefix_uses_the_first_thunk_and_rejects_later_disagreement() 
 #[test]
 fn shared_native_signatures_do_not_duplicate_retained_parameter_layouts() {
     let mut p = fixtures::native_parameter_defaults();
-    let single = verify(p.clone(), limits()).unwrap().stats();
+    let single = verify(p.clone(), limits()).unwrap();
     for i in 1..100 {
         p.symbols.push(format!("host::defaults_{i}"));
         let mut native = p.natives[0].clone();
@@ -878,8 +878,8 @@ fn shared_native_signatures_do_not_duplicate_retained_parameter_layouts() {
     }
     let program = verify(p, limits()).unwrap();
     assert_eq!(
-        program.stats().derived_capacity_bytes,
-        single.derived_capacity_bytes
+        parameter_layout_bytes(&program),
+        parameter_layout_bytes(&single)
     );
     for i in 0..100 {
         assert!(program.native_parameters_need_cells(NativeId(i)).unwrap());

@@ -20,12 +20,37 @@ pub(super) fn report(
     if render.is_none() {
         summary["playback_segments"] = playback_segments(raw)?;
     }
+    if let Some(memory) = vita_memory_peaks(raw)? {
+        summary["vita_memory"] = memory;
+    }
     fs::write(
         directory.join("summary.json"),
         serde_json::to_vec_pretty(&summary)?,
     )?;
     print(&summary);
     Ok(summary)
+}
+
+pub(super) fn vita_memory_peaks(raw: &str) -> Result<Option<Value>> {
+    let Some(row) = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("vita_memory_peaks\t"))
+    else {
+        return Ok(None);
+    };
+    let fields = row
+        .split('\t')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let [samples, main, cdram] = fields.as_slice() else {
+        anyhow::bail!("incomplete Vita memory peaks");
+    };
+    ensure!(*samples != 0, "Vita memory peaks report has no samples");
+    Ok(Some(json!({
+        "samples": samples,
+        "main_peak_bytes": main,
+        "cdram_peak_bytes": cdram,
+    })))
 }
 
 fn playback_segments(raw: &str) -> Result<Value> {

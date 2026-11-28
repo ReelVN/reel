@@ -17,6 +17,24 @@ mod packed;
 mod streaming;
 use memory_reader::MemoryReader;
 
+#[test]
+fn resident_assets_borrow_unused_metadata_capacity() {
+    let options = AssetOptions {
+        resident_bytes: 64,
+        metadata_bytes: 32,
+        ..AssetOptions::default()
+    };
+    let (metadata, resident) = options.resident_pools(true);
+    let index = metadata.reserve(12).unwrap();
+    let images = resident.reserve(74).unwrap();
+    assert_eq!(resident.available_bytes(), 10);
+    assert!(resident.reserve(11).is_err());
+    assert!(metadata.reserve(11).is_err());
+    drop(images);
+    assert!(metadata.reserve(21).is_err());
+    assert_eq!(resident.available_bytes(), 96 - index.bytes());
+}
+
 /// Supply compiled source/ASB definitions through the ordinary asset IO and
 /// shader-envelope admission path used by the exported player.
 pub(crate) fn prepared_effect_assets(

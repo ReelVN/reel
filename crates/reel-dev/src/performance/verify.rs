@@ -11,6 +11,8 @@ struct Policy {
     version: u32,
     target: String,
     environment: String,
+    max_main_bytes: Option<u64>,
+    max_cdram_bytes: Option<u64>,
     scenes: Vec<Scene>,
 }
 
@@ -39,6 +41,11 @@ impl Policy {
         ensure!(
             environment_matches,
             "release environment must match its target"
+        );
+        ensure!(
+            policy.target == "vita"
+                || (policy.max_main_bytes.is_none() && policy.max_cdram_bytes.is_none()),
+            "native memory limits require a Vita target"
         );
         ensure!(
             !policy.scenes.is_empty(),
@@ -170,11 +177,46 @@ fn verify(
         .collect();
     let failure = failed.join(", ");
     report["scenes"] = json!(checks);
+    let memory = &summary["vita_memory"];
+    let memory_issues = check_vita_memory(policy, memory);
+    if !memory.is_null() || !memory_issues.is_empty() {
+        report["vita_memory"] = json!({"observed": memory, "issues": memory_issues});
+    }
     ensure!(
         failure.is_empty(),
         "scene verification failed for {failure}"
     );
+    ensure!(
+        memory_issues.is_empty(),
+        "Vita memory verification failed; see observed peaks and limits"
+    );
     run
+}
+
+fn check_vita_memory(policy: &Policy, memory: &Value) -> Vec<Value> {
+    [
+        (
+            "max_main_bytes",
+            &memory["main_peak_bytes"],
+            policy.max_main_bytes,
+        ),
+        (
+            "max_cdram_bytes",
+            &memory["cdram_peak_bytes"],
+            policy.max_cdram_bytes,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(check, value, limit)| limit_issue(check, value, limit))
+    .collect()
+}
+
+fn limit_issue(check: &str, value: &Value, limit: Option<u64>) -> Option<Value> {
+    let limit = limit?;
+    value
+        .as_u64()
+        .is_none_or(|observed| observed > limit)
+        .then(|| json!({"check":check,"observed":value,"limit":limit}))
 }
 
 fn check_scene(policy: &Scene, scenes: &[Value], playback: &[Value]) -> Value {
@@ -226,10 +268,8 @@ fn check_scene(policy: &Scene, scenes: &[Value], playback: &[Value]) -> Value {
         ),
     ];
     for (check, value, limit) in metrics {
-        if let Some(limit) = limit
-            && value.as_u64().is_none_or(|observed| observed > limit)
-        {
-            issues.push(json!({"check":check,"observed":value,"limit":limit}));
+        if let Some(issue) = limit_issue(check, value, limit) {
+            issues.push(issue);
         }
     }
     let hotspots = &scene["main_thread_wall"]["top_phases"];
@@ -282,6 +322,24 @@ mod tests {
             "label":"Gallery scroll","min_intervals":2,"max_p95_submit_us":17000,"max_vm_bytes":1024,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn vita_memory_limits_require_samples_and_check_each_ledger() {
+        let policy: Policy = serde_json::from_value(json!({
+            "version":1,"target":"vita","environment":"emulator",
+            "max_main_bytes":800,"max_cdram_bytes":250,"scenes":[]
+        }))
+        .unwrap();
+        let memory = super::super::summary::vita_memory_peaks("vita_memory_peaks\t3\t800\t251\n")
+            .unwrap()
+            .unwrap();
+        let issues = check_vita_memory(&policy, &memory);
+        assert_eq!(
+            issues,
+            vec![json!({"check":"max_cdram_bytes","observed":251,"limit":250})]
+        );
+        assert_eq!(check_vita_memory(&policy, &Value::Null).len(), 2);
     }
 
     #[test]

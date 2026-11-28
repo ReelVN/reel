@@ -497,11 +497,8 @@ fn native_target(
     native: bc::NativeId,
     b: &mut Budget,
 ) -> Result<FunctionId, ResumeError> {
-    for (i, function) in program.package().functions.iter().enumerate() {
-        b.work(1)?;
-        if function.kind == bc::FunctionKind::Native(native) {
-            return Ok(FunctionId(i as u32));
-        }
-    }
-    Err(ResumeError::new("resume native function"))
+    b.work(1)?;
+    program
+        .native_function(native)
+        .ok_or_else(|| ResumeError::new("resume native function"))
 }

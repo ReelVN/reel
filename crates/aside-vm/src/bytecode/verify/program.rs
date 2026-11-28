@@ -378,6 +378,8 @@ pub(super) fn validate_program(
     };
     uses.members.resize(p.symbols.len().div_ceil(32), 0);
     let mut match_functions = text_matches::MatchFunctions::new();
+    let mut native_functions = b.vec(p.natives.len())?;
+    native_functions.resize(p.natives.len(), None);
     for (fi, f) in p.functions.iter().enumerate() {
         let function = FunctionId(fi as u32);
         let literal_checks = validate_function(p, fi, f, &parameter_layouts, &mut uses, &mut b)
@@ -385,6 +387,9 @@ pub(super) fn validate_program(
                 e.function = Some(function);
                 e
             })?;
+        if let FunctionKind::Native(native) = f.kind {
+            native_functions[native.index()].get_or_insert(function);
+        }
         match_functions.note(function, literal_checks);
         instruction_bytes = instruction_bytes
             .checked_add(f.code.capacity_bytes())
@@ -429,6 +434,7 @@ pub(super) fn validate_program(
         + scalar_entries.capacity_bytes()
         + native_calls.capacity_bytes()
         + native_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>()
+        + native_functions.capacity() * std::mem::size_of::<Option<FunctionId>>()
         + script_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>()
         + module_bindings.offsets.capacity() * std::mem::size_of::<u32>()
         + module_bindings.values.capacity() * std::mem::size_of::<GlobalBinding>()
@@ -451,6 +457,7 @@ pub(super) fn validate_program(
         },
         DerivedLayouts {
             native_parameters: native_parameter_cells,
+            native_functions,
             script_parameters: script_parameter_cells,
             modules: module_bindings,
             opcode_uses,

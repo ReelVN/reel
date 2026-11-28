@@ -370,7 +370,14 @@ fn reloadable_pixels_release_only_after_readers_and_restore_identity() {
         !image.discard_uploaded_pixels(),
         "generated content remains resident"
     );
-    image.permit_pixel_reload(None);
+    let cache_metadata = BudgetPool::new(
+        BudgetCategory::Metadata,
+        QueueLimits {
+            max_requests: 8,
+            max_bytes: 1 << 20,
+        },
+    );
+    image.permit_pixel_reload(Some(&cache_metadata));
     let reader = image.read_pixels().unwrap();
     let id = reader.blob().id();
     assert!(
@@ -426,6 +433,19 @@ fn reloadable_pixels_release_only_after_readers_and_restore_identity() {
         !image.discard_uploaded_pixels(),
         "restored reader remains live"
     );
+    drop(restored);
+    drop(replacement);
+    assert!(second.release(replacement_handle));
+    assert!(image.discard_uploaded_pixels());
+
+    let cached = image.retain_uploaded_image().unwrap();
+    let weak = image.downgrade();
+    assert!(first.release(handle));
+    assert!(!cached.is_only_owner());
+    drop(image);
+    assert!(cached.is_only_owner());
+    drop(cached);
+    assert!(weak.is_released());
 }
 
 #[test]

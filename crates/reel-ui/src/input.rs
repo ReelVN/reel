@@ -270,6 +270,8 @@ impl std::str::FromStr for Control {
         use GamepadAxis as A;
         use GamepadButton as B;
         Ok(match name {
+            "GamepadConfirm" => DEFAULT_CONFIRM_CONTROL,
+            "GamepadBack" => DEFAULT_BACK_CONTROL,
             "South" => Self::Button(B::South),
             "East" => Self::Button(B::East),
             "North" => Self::Button(B::North),

@@ -4,7 +4,16 @@
 use super::*;
 use std::time::Duration;
 
-pub(crate) const DEFAULT_CONFIRM_CONTROL: Control = Control::Button(GamepadButton::South);
+pub(crate) const DEFAULT_CONFIRM_CONTROL: Control = Control::Button(if cfg!(target_os = "vita") {
+    GamepadButton::East
+} else {
+    GamepadButton::South
+});
+pub(crate) const DEFAULT_BACK_CONTROL: Control = Control::Button(if cfg!(target_os = "vita") {
+    GamepadButton::South
+} else {
+    GamepadButton::East
+});
 
 /// Indicator policy applied when an explicit focus handoff succeeds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +106,7 @@ impl Default for NavigationInput {
                 ],
             ),
             (Confirm, vec![Binding::new(DEFAULT_CONFIRM_CONTROL)]),
-            (Back, vec![button(GamepadButton::East)]),
+            (Back, vec![Binding::new(DEFAULT_BACK_CONTROL)]),
         ])
         .expect("default navigation bindings");
         Self::new(map, NavigationConfig::default()).expect("default navigation thresholds")
