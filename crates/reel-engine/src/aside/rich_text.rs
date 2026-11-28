@@ -60,6 +60,7 @@ aside_host::native_documentation! {
 use aside_vm::{Heap, ObjectKind, Value};
 use reel_core::text::Text;
 const TAG: i64 = -1100;
+pub(in crate::aside) const RESOURCE_KIND: &str = "reel.rich_text";
 pub(super) fn source(heap: &Heap, value: Value) -> Result<(Value, bool), AdapterError> {
     if heap.info(value)?.kind == ObjectKind::String {
         return Ok((value, false));
@@ -153,6 +154,79 @@ pub(in crate::aside) fn assemble(
     let ty = heap.host_type("reel::types::RichText")?;
     heap.set_host_type(value, ty)?;
     Ok(value)
+}
+
+pub(in crate::aside) fn resource_header(
+    heap: &Heap,
+    value: Value,
+) -> Option<super::data::LogicalReference> {
+    (heap.host_payload_len(value).ok()? == 3
+        && heap.host_payload(value, 0).ok()?.as_int() == Some(TAG))
+    .then(|| super::data::LogicalReference {
+        kind: RESOURCE_KIND.into(),
+        version: 1,
+        fields: 2,
+        payload: Vec::new(),
+    })
+}
+
+pub(in crate::aside) fn resource_field(
+    heap: &Heap,
+    value: Value,
+    index: u32,
+) -> Result<(std::borrow::Cow<'static, str>, Value), super::data::TypedDataError> {
+    let (name, payload) = match index {
+        0 => ("plain", 2),
+        1 => ("markup", 1),
+        _ => {
+            return Err(super::data::TypedDataError::Contract(
+                "invalid RichText field",
+            ));
+        }
+    };
+    Ok((name.into(), heap.host_payload(value, payload)?))
+}
+
+pub(in crate::aside) fn allocate_resource(
+    heap: &mut Heap,
+) -> Result<Value, super::data::TypedDataError> {
+    Ok(assemble(heap, Value::NULL, Value::NULL)?)
+}
+
+pub(in crate::aside) fn connect_resource(
+    heap: &mut Heap,
+    value: Value,
+    name: &str,
+    field: Value,
+) -> Result<(), super::data::TypedDataError> {
+    let (index, payload) = match name {
+        "plain" => (0, 2),
+        "markup" => (1, 1),
+        _ => {
+            return Err(super::data::TypedDataError::Contract(
+                "unknown RichText field",
+            ));
+        }
+    };
+    let fields = heap.host_fields(value)?;
+    let key = heap.table_entry(fields, index)?.0;
+    heap.table_store(fields, index, key, field)?;
+    heap.set_host_payload(value, payload, field)?;
+    Ok(())
+}
+
+pub(in crate::aside) fn finish_resource(
+    heap: &Heap,
+    value: Value,
+) -> Result<(), super::data::TypedDataError> {
+    for index in 1..=2 {
+        if heap.info(heap.host_payload(value, index)?)?.kind != ObjectKind::String {
+            return Err(super::data::TypedDataError::Contract(
+                "RichText requires string fields",
+            ));
+        }
+    }
+    Ok(())
 }
 pub(super) fn alloc(heap: &mut Heap, value: &Text, chunk: usize) -> Result<Value, AdapterError> {
     if let Some(markup) = value.markup() {

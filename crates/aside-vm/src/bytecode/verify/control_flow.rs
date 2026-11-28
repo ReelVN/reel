@@ -7,7 +7,7 @@ pub(super) fn ranges(r: &ExceptionRegion) -> impl Iterator<Item = PcRange> + '_ 
         .chain(r.finally)
 }
 pub(super) fn validate_regions(
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     b: &mut Budget,
 ) -> Result<(), Error> {
     for (index, r) in f.regions.iter().enumerate() {
@@ -111,8 +111,8 @@ pub(super) fn validate_regions(
     Ok(())
 }
 pub(super) fn validate_instruction(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     range: std::ops::Range<usize>,
     i: &Instruction,
     b: &mut Budget,
@@ -164,7 +164,11 @@ pub(super) fn validate_instruction(
                 get(&f.regions, value, "instruction region")?;
             }
             Descriptor(kind) => check(
-                get(&f.descriptors, value, "instruction descriptor")?.kind() == *kind,
+                f.descriptors
+                    .get(value as usize)
+                    .ok_or_else(|| Error::new(ErrorKind::Index, "instruction descriptor"))?
+                    .kind()
+                    == *kind,
                 ErrorKind::Index,
                 "descriptor kind mismatch",
             )?,
@@ -271,7 +275,7 @@ pub(super) fn validate_instruction(
     Ok(())
 }
 pub(super) fn edge(
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     from: usize,
     to: usize,
     leave: bool,
@@ -331,14 +335,14 @@ pub(super) fn edge(
     Ok(())
 }
 pub(super) fn exception_target(
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     pc: Pc,
     skip: Option<RegionId>,
 ) -> Option<HandlerTarget> {
     unwind_target(f, pc, skip, None)
 }
 pub(super) fn strict_region_ancestor(
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     parent: RegionId,
     child: RegionId,
 ) -> bool {
@@ -359,7 +363,7 @@ pub(super) fn protected_or_catch_block(r: &ExceptionRegion, pc: Pc) -> Option<Pc
     }
 }
 pub(super) fn unwind_target(
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     pc: Pc,
     skip: Option<RegionId>,
     destination: Option<CleanupDestination>,

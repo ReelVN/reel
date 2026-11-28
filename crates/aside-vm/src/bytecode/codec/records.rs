@@ -425,7 +425,8 @@ impl Wire for TypeDef {
                     let mut field = RecordFieldType::get(r)?;
                     field.optional = bool::get(r)?;
                     Ok(field)
-                })?.0,
+                })?
+                .0,
             )),
             _ => Err(r.error(ErrorKind::Encoding, "type tag")),
         }

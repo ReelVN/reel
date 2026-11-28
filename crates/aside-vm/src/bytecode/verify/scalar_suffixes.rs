@@ -188,7 +188,7 @@ fn scan(code: &impl InstructionSequence, mut emit: impl FnMut(ScalarSuffix)) -> 
     Ok(())
 }
 pub(super) fn build(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     b: &mut Budget,
 ) -> Result<ScalarSuffixes, Error> {
     let mut offsets = b.vec(p.functions.len() + 1)?;

@@ -30,6 +30,7 @@ fn retained_history(rows: usize) {
             .unwrap();
     }
     let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    let retained = session.view().history.len();
     let mut history = History::new(&mut heap).unwrap();
     let roots = heap.alloc_array(&[history.value]).unwrap();
     heap.add_root(RootOwner(1), RootKind::Host, roots).unwrap();
@@ -56,7 +57,7 @@ fn retained_history(rows: usize) {
         .unwrap();
     // Handles do not keep the deleted graph alive.
     let removed = [group, lines, line, text].map(|value| heap.handle(value).unwrap());
-    let tail: Vec<_> = (rows - 37..rows)
+    let tail: Vec<_> = (retained - 37..retained)
         .map(|i| heap.sequence_get(original, i as u32).unwrap())
         .collect();
     let version = heap.info(original).unwrap().content_version;
@@ -117,6 +118,99 @@ fn retained_history(rows: usize) {
 #[test]
 fn retaining_history_releases_prefix_edges_with_one_array_commit() {
     retained_history(200);
+}
+
+#[test]
+fn coalesced_partial_group_retention_keeps_line_ids_and_new_tail_metadata() {
+    let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+    let inputs = (0..200)
+        .map(|_| crate::DialogueLineInput {
+            speaker_id: None,
+            speaker_name: "original",
+            content_id: "original",
+            text: "original row".into(),
+            history: Default::default(),
+        })
+        .collect::<Vec<_>>();
+    session.record_history(&inputs, "en").unwrap();
+    let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    let mut history = History::new(&mut heap).unwrap();
+    let roots = heap.alloc_array(&[history.value]).unwrap();
+    heap.add_root(RootOwner(1), RootKind::Host, roots).unwrap();
+    history
+        .sync(&mut heap, &session, None, Value::NULL, roots, 4096)
+        .unwrap();
+    let group = heap.sequence_get(history.value, 0).unwrap();
+    let lines = heap
+        .host_property(PropertyId {
+            host: group,
+            field: HistoryGroupField::Lines as u32,
+        })
+        .unwrap();
+    let keep = heap.sequence_get(lines, 52).unwrap();
+    for (start, end) in [(200, 200), (201, 226)] {
+        session.reading_data.history.edit(0, |group| {
+            let template = group.lines.last().unwrap().clone();
+            for index in start..=end {
+                let mut line = template.clone();
+                line.id.index = index;
+                line.speaker_name = format!("speaker {index}");
+                line.content.id = format!("content:{index}");
+                line.content.fallback = format!("line {index}").into();
+                line.voice = Some(std::sync::Arc::from(format!("voice/{index}.opus")));
+                group.lines.push(line);
+            }
+        });
+        session
+            .reading_data
+            .history
+            .enforce_limits(crate::HistoryLimits::default());
+        history
+            .sync(&mut heap, &session, None, Value::NULL, roots, 4096)
+            .unwrap();
+        assert!(
+            heap.sequence_get(history.value, 0)
+                .unwrap()
+                .same_bits(group)
+        );
+        let length = heap.sequence_len(lines).unwrap();
+        assert_eq!(length, session.view().history[0].lines().len() as u32);
+        for index in 0..length {
+            let row = heap.sequence_get(lines, index).unwrap();
+            let value = heap
+                .host_property(PropertyId {
+                    host: row,
+                    field: HistoryLineField::Id as u32,
+                })
+                .unwrap();
+            let expected = session.view().history[0].lines()[index as usize].id();
+            assert!(
+                text::matches_string(
+                    &heap,
+                    value,
+                    &format!(
+                        "{}:{}",
+                        expected.interaction_id().generation(),
+                        expected.index()
+                    ),
+                    4096
+                )
+                .unwrap()
+            );
+        }
+        let last = heap.sequence_get(lines, length - 1).unwrap();
+        for (field, expected) in [
+            (2, format!("speaker {end}")),
+            (3, format!("content:{end}")),
+            (5, format!("voice/{end}.opus")),
+        ] {
+            let value = heap
+                .host_property(PropertyId { host: last, field })
+                .unwrap();
+            assert!(text::matches_string(&heap, value, &expected, 4096).unwrap());
+        }
+    }
+    assert!(heap.sequence_get(lines, 0).unwrap().same_bits(keep));
 }
 
 #[test]

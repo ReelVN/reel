@@ -22,7 +22,7 @@ impl VerifiedProgram {
     }
 }
 pub(super) fn build(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     b: &mut Budget,
 ) -> Result<Vec<u32>, Error> {
     let mut eligible = b.vec::<u32>(p.functions.len().div_ceil(32))?;

@@ -77,7 +77,11 @@ impl VerifiedProgram {
     }
 }
 fn candidate<'a>(
-    p: &'a BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &'a BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     d: &'a Descriptor,
     cells: &[(u32, u32)],
 ) -> Option<(&'a CallDesc, RegWindow, &'a Signature)> {
@@ -109,14 +113,14 @@ fn candidate<'a>(
     Some((call, window, sig))
 }
 pub(super) fn build(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     cells: &[(u32, u32)],
     b: &mut Budget,
 ) -> Result<NativeCallPlans, Error> {
     let mut sites = 0usize;
     let mut slots = 0usize;
     for f in &p.functions {
-        for d in &f.descriptors {
+        for d in f.descriptors.iter() {
             b.work(2 + cells.len().checked_ilog2().unwrap_or(0) as u64)?;
             if let Some((_, w, _)) = candidate(p, d, cells) {
                 sites += 1;

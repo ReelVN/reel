@@ -10,11 +10,17 @@ use aside_vm::executor::{
 use aside_vm::{Heap, HeapError, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag};
 mod resources;
 mod voice;
-pub(super) use voice::voice_input;
 pub(in crate::aside) use resources::{
     allocate_character_resource, character_resource_field, character_resource_header,
     connect_character_resource, finish_character_resource,
 };
+pub(super) use voice::voice_input;
+
+pub(super) struct SayOptions {
+    pub reveal_skippable: bool,
+    pub wait: bool,
+    pub voice: Option<crate::audio::AudioRequest>,
+}
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
     use aside_compiler::semantic::TypeHint;
@@ -481,7 +487,7 @@ impl SessionVm {
             ))
         };
         let locale = self.locale().unwrap_or_else(|| locale.into());
-        let record = session.prepare_history_record(
+        session.record_history(
             &[DialogueLineInput {
                 speaker_id: speaker.as_ref().map(|s| s.0.as_str()),
                 speaker_name: speaker.as_ref().map_or("", |s| s.1.as_str()),
@@ -491,7 +497,6 @@ impl SessionVm {
             }],
             &locale,
         )?;
-        session.commit_history_record(record);
         // A script can already hold game.history() and read it immediately
         // after record returns, before yielding to a frame or another service.
         self.sync_narrative(session)?;
@@ -601,9 +606,11 @@ impl SessionVm {
                 text: (&text).into(),
             }],
             locale,
-            reveal_skippable,
-            wait,
-            voice,
+            SayOptions {
+                reveal_skippable,
+                wait,
+                voice,
+            },
         )?;
         Ok(NativeDispatch::Published { interaction, work })
     }
@@ -667,8 +674,17 @@ impl SessionVm {
                         content_id: id,
                     })
                     .collect();
-                let result =
-                    self.publish_say(session, ticket, &inputs, locale, reveal_skippable, wait, None);
+                let result = self.publish_say(
+                    session,
+                    ticket,
+                    &inputs,
+                    locale,
+                    SayOptions {
+                        reveal_skippable,
+                        wait,
+                        voice: None,
+                    },
+                );
                 reader.release(self.vm.heap_mut())?;
                 result.map(|interaction| NativeDispatch::Published {
                     interaction,

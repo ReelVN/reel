@@ -71,7 +71,11 @@ impl TextPool {
 /// Moves all UTF-8 constants into one external backing. Symbols and debug
 /// source records are unchanged; the authoring host selects its build profile.
 pub fn externalize_text(
-    package: &mut BytecodePackage<impl super::InstructionSequence, impl super::SourceMapSequence>,
+    package: &mut BytecodePackage<
+        impl super::InstructionSequence,
+        impl super::SourceMapSequence,
+        impl super::DescriptorSequence,
+    >,
 ) -> Result<TextPool, Error> {
     if package.text_pool.is_some()
         || package

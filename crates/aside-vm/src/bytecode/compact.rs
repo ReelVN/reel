@@ -815,7 +815,7 @@ impl super::RuntimePackage {
                 captures: f.captures.clone(),
                 register_count: f.register_count,
                 bindings: f.bindings.clone(),
-                descriptors: f.descriptors.clone(),
+                descriptors: f.descriptors.to_vec(),
                 code,
                 regions,
                 source_map,

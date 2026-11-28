@@ -30,7 +30,7 @@ pub const LANGUAGE_VERSION: u32 = 1;
 pub const HOST_ABI_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BytecodePackage<C = Vec<Instruction>, S = Vec<SourceMapEntry>> {
+pub struct BytecodePackage<C = Vec<Instruction>, S = Vec<SourceMapEntry>, D = Vec<Descriptor>> {
     pub format_version: u32,
     pub language_version: u32,
     pub host_abi_version: u32,
@@ -42,11 +42,11 @@ pub struct BytecodePackage<C = Vec<Instruction>, S = Vec<SourceMapEntry>> {
     pub signatures: Vec<Signature>,
     pub natives: Vec<NativeDef>,
     pub modules: Vec<ModuleDef>,
-    pub functions: Vec<FunctionDef<C, S>>,
+    pub functions: Vec<FunctionDef<C, S, D>>,
     pub capabilities: Vec<SymbolId>,
     pub sources: Vec<SourceFile>,
 }
-impl<C, S> Default for BytecodePackage<C, S> {
+impl<C, S, D> Default for BytecodePackage<C, S, D> {
     fn default() -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -275,7 +275,7 @@ pub struct BindingDef {
     pub initialization: BindingInitialization,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionDef<C = Vec<Instruction>, S = Vec<SourceMapEntry>> {
+pub struct FunctionDef<C = Vec<Instruction>, S = Vec<SourceMapEntry>, D = Vec<Descriptor>> {
     pub module: ModuleId,
     pub name: SymbolId,
     pub kind: FunctionKind,
@@ -284,7 +284,7 @@ pub struct FunctionDef<C = Vec<Instruction>, S = Vec<SourceMapEntry>> {
     pub captures: Vec<CaptureKind>,
     pub register_count: u32,
     pub bindings: Vec<BindingDef>,
-    pub descriptors: Vec<Descriptor>,
+    pub descriptors: D,
     pub code: C,
     pub regions: Vec<ExceptionRegion>,
     pub source_map: S,
@@ -313,7 +313,7 @@ pub struct RegWindow {
     pub start: Reg,
     pub len: u32,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CaptureSource {
     Binding(BindingId),
     Capture(CaptureId),
@@ -342,7 +342,7 @@ pub struct CallDesc {
     /// Checks positional arguments; CheckType validates the result at the caller.
     pub contract: Option<TypeId>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ClassField {
     pub name: SymbolId,
     pub ty: TypeId,
@@ -351,14 +351,14 @@ pub struct ClassField {
     pub initializer: Option<FunctionId>,
     pub captures: Vec<CaptureSource>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ClassMethod {
     pub name: SymbolId,
     pub function: FunctionId,
     pub is_static: bool,
     pub captures: Vec<CaptureSource>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ClassDesc {
     pub nominal: Option<TypeId>,
     pub base: Option<Reg>,
@@ -366,7 +366,7 @@ pub struct ClassDesc {
     pub methods: Vec<ClassMethod>,
 }
 /// Pattern nodes form a backwards-referenced DAG; matching uses explicit VM stages.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PatternNode {
     Wildcard,
     Bind {
@@ -395,14 +395,14 @@ pub enum PatternNode {
         right: u32,
     },
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PatternField {
     pub name: SymbolId,
     pub node: u32,
     pub default: Option<FunctionId>,
     pub captures: Vec<CaptureSource>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PatternDesc {
     pub nodes: Vec<PatternNode>,
     pub root: u32,
@@ -412,7 +412,7 @@ pub enum TableSource {
     Pair([Reg; 2]),
     Spread(Reg),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Descriptor {
     Global {
         module: ModuleId,

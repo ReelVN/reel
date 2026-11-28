@@ -263,7 +263,10 @@ fn repeated_value_constants_share_slots_without_merging_object_constants() {
         2
     );
 }
-fn function<'a, C, S>(p: &'a bc::BytecodePackage<C, S>, name: &str) -> &'a bc::FunctionDef<C, S> {
+fn function<'a, C, S, D>(
+    p: &'a bc::BytecodePackage<C, S, D>,
+    name: &str,
+) -> &'a bc::FunctionDef<C, S, D> {
     p.functions
         .iter()
         .find(|f| p.symbols[f.name.index()] == name)

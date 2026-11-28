@@ -606,6 +606,10 @@ impl ReadingInstall {
             c.owner = session.root_owner();
         }
         self.saved.data.control = session.reading_data.control;
+        self.saved
+            .data
+            .history
+            .enforce_limits(session.history_limits());
         session.reading_data = self.saved.data;
         Ok(self.saved.display)
     }

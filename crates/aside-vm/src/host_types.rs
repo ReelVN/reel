@@ -72,6 +72,7 @@ impl HostTypes {
         package: &BytecodePackage<
             impl crate::bytecode::InstructionSequence,
             impl crate::bytecode::SourceMapSequence,
+            impl crate::bytecode::DescriptorSequence,
         >,
         registrations: &[HostTypeSupport],
         usage: &HeapBudgetUsage,

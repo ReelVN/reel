@@ -333,7 +333,7 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work })
             }
             "reel::game::configure" => {
-                self.configure_game(ticket)?;
+                self.configure_game(session, ticket)?;
                 Ok(NativeDispatch::Ready { work: 4 })
             }
             "reel::sequence" | "reel::parallel" => {

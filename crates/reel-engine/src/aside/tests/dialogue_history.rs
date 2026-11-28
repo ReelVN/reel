@@ -1,4 +1,5 @@
 use super::*;
+use crate::{HistoryInput, InteractionView};
 use aside_vm::snapshot::SnapshotBudget;
 use reel_ui::stage::NodeKind;
 
@@ -11,6 +12,104 @@ fn advance(vm: &mut SessionVm, session: &mut Session) {
     }
     models::drive(vm, session, true);
     collect(vm);
+}
+
+#[test]
+fn native_dialogue_publication_bounds_history_without_losing_new_groups() {
+    let code = r#"
+    fn opening() {
+        let history = game.history();
+        for index in 0..260 {
+            narrator(f"ordinary line {index}");
+            if history != game.history() || history.len() > 200 {
+                throw "history window changed identity or grew past its bound";
+            }
+            game.dialogue().clear();
+        }
+        narrator("finished", history: false);
+    }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        for index in 0..260 {
+            let Some(InteractionView::Dialogue(dialogue)) = session.view().interaction else {
+                panic!("ordinary dialogue");
+            };
+            assert_eq!(dialogue.text(), format!("ordinary line {index}"));
+            let newest = session.view().history.last().unwrap();
+            assert_eq!(newest.interaction_id(), dialogue.id());
+            assert!(session.view().history.len() <= 200);
+            advance(&mut vm, &mut session);
+        }
+        assert!(session.view().history.len() >= 175);
+    }
+}
+
+#[test]
+fn history_configuration_controls_live_readings_and_validates_before_changes() {
+    let code = r#"
+    fn opening() {
+        game.configure(history_limit: 500, history_bytes: 2097152);
+        let history = game.history();
+        for index in 0..500 { game.record(f"recorded {index}"); }
+        if history.len() != 500 { throw "configured larger history was trimmed"; }
+        let mut errors = 0;
+        try { game.configure(history_limit: -1); } catch error { errors += 1; }
+        try { game.configure(history_limit: 40, history_bytes: 0); } catch error { errors += 1; }
+        if errors != 2 || history.len() != 500 { throw "invalid policy changed retention"; }
+        reading(|| {
+            game.record("nested");
+            game.configure(history_limit: 40);
+            if history.len() > 40 { throw "parked history mirror retained old rows"; }
+        });
+        if history.len() > 40 || history[history.len() - 1].text != "recorded 499" {
+            throw "suspended reading did not follow current policy";
+        }
+        game.configure(history_limit: 0);
+        game.record("unretained");
+        if history.len() != 0 { throw "disabled history retained rows"; }
+        let speech = narrator("finished", wait: false);
+        speech.append(" appended", history: "unretained append", wait: false);
+        if history.len() != 0 { throw "open dialogue rebuilt disabled history"; }
+        speech.wait();
+    }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        assert_eq!(session.history_limits().max_lines, 0);
+        assert_eq!(session.history_limits().max_bytes, 2097152);
+        assert!(session.view().history.is_empty());
+        assert_eq!(session.storage_usage().reserved_history_slots, 0);
+        let Some(InteractionView::Dialogue(dialogue)) = session.view().interaction else {
+            panic!("open dialogue remains available with history disabled");
+        };
+        assert_eq!(dialogue.text(), "finished appended");
+        assert!(dialogue.open);
+        let active = dialogue.id();
+        let next = session.next_interaction;
+        let mut line = DialogueLineInput {
+            speaker_id: None,
+            speaker_name: "",
+            content_id: "disabled-history-record",
+            text: "unretained record".into(),
+            history: HistoryInput::Omit,
+        };
+        session.record_history(&[line], "en").unwrap();
+        assert_eq!(session.next_interaction, next);
+        line.history = HistoryInput::Display;
+        session.record_history(&[line], "en").unwrap();
+        assert_eq!(session.next_interaction, next.map(|next| next + 1));
+        line.content_id = "";
+        assert_eq!(
+            session.record_history(&[line], "en"),
+            Err(SessionError::EmptyContentId)
+        );
+        assert_eq!(session.next_interaction, next.map(|next| next + 1));
+        assert_eq!(session.view().interaction.unwrap().id(), active);
+        assert_eq!(session.storage_usage().reserved_history_slots, 0);
+    }
 }
 
 #[test]

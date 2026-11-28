@@ -64,11 +64,12 @@ impl StoryRuntime {
         let live = self.driver.as_ref().unwrap();
         let identity = live.ui().session().identity();
         saves.next_epoch = saves.next_epoch.max(identity.epoch.0) + 1;
-        let session = reel_engine::Session::new_with_read_progress(
+        let mut session = reel_engine::Session::new_with_read_progress(
             identity.session_id,
             reel_engine::Epoch(saves.next_epoch),
             live.ui().session().read_progress().clone(),
         )?;
+        session.set_history_limits(live.ui().session().history_limits());
         let story = reel_engine::aside::source::CompiledStory {
             program: live.adapter().vm().program().clone(),
             resume: live.adapter().resume_table().clone(),
@@ -424,15 +425,13 @@ impl StoryRuntime {
             {
                 return Ok(false);
             }
-            let driver = self.driver.take().unwrap();
-            match Capture::new(driver) {
+            match Capture::new(&mut self.driver) {
                 Ok(capture) => {
                     self.capture = Some(capture);
                     self.capture_started = Some(now_ns);
                     return Ok(true);
                 }
-                Err((driver, error)) => {
-                    self.driver = Some(driver);
+                Err(error) => {
                     self.driver
                         .as_mut()
                         .unwrap()

@@ -228,6 +228,108 @@ fn saved_with(code: &str, storage: Arc<DirectorySaves>) -> (String, usize, Strin
 }
 
 #[test]
+fn starting_a_new_session_inherits_history_policy_and_allows_entry_override() {
+    for override_limit in [None, Some(5)] {
+        let folder = folder();
+        let storage = Arc::new(DirectorySaves::new(&folder, 64 << 20));
+        let configure = override_limit.map_or(String::new(), |limit| {
+            format!("game.configure(history_limit:{limit},history_bytes:32768);")
+        });
+        let code = format!(
+            r#"
+            fn main() {{
+                game.configure(history_limit:3,history_bytes:65536);
+                game.start(next);
+            }}
+            fn next() {{
+                {configure}
+                for i in 0..12 {{ game.record(f"Recorded {{i}}"); }}
+                stage.replace(text("Replacement ready"));
+            }}
+        "#
+        );
+        let mut current = runtime(&code, 1, storage);
+        drain(&mut current);
+        assert_eq!(current.driver().ui().session().identity().epoch, Epoch(2));
+        let session = current.driver().ui().session();
+        let expected = reel_engine::HistoryLimits {
+            max_lines: override_limit.unwrap_or(3),
+            max_bytes: if override_limit.is_some() {
+                32768
+            } else {
+                65536
+            },
+        };
+        assert_eq!(session.history_limits(), expected);
+        assert_eq!(session.view().history.len(), expected.max_lines);
+        assert_eq!(session.view().history.last().unwrap().text(), "Recorded 11");
+        close(&mut current);
+    }
+}
+
+#[test]
+fn loading_a_checkpoint_uses_current_history_policy_and_allows_root_override() {
+    let folder = folder();
+    let storage = Arc::new(DirectorySaves::new(&folder, 64 << 20));
+    let old_code = source(false).replace(
+        "flow(\"chapter\");",
+        r#"flow("chapter"); for i in 0..8 { game.record(f"Earlier {i}"); }"#,
+    );
+    let mut old = runtime(&old_code, 1, storage.clone());
+    drain(&mut old);
+    let mut screen = Screen::new(&old);
+    assert!(screen.present(&mut old));
+    drain(&mut old);
+    reveal_some(&mut old, 8);
+    assert!(screen.present(&mut old));
+    screen.click(&mut old, 40.);
+    drain(&mut old);
+    has_text(&old, "saved");
+    assert_eq!(old.driver().ui().session().view().history.len(), 9);
+    close(&mut old);
+
+    for root_override in [false, true] {
+        let code = if root_override {
+            source(true).replace(
+                "game.configure(width:800,height:600,text_speed:30);",
+                "game.configure(width:800,height:600,text_speed:30,history_limit:5,history_bytes:32768);",
+            )
+        } else {
+            source(true)
+        };
+        let mut current = runtime(&code, 2, storage.clone());
+        drain(&mut current);
+        current
+            .driver_mut()
+            .unwrap()
+            .ui_mut()
+            .session_mut()
+            .set_history_limits(reel_engine::HistoryLimits {
+                max_lines: 3,
+                max_bytes: 65536,
+            });
+        let identity = current.driver().ui().session().identity();
+        let mut screen = Screen::new(&current);
+        assert!(screen.present(&mut current));
+        screen.click(&mut current, 140.);
+        drain(&mut current);
+        assert_ne!(current.driver().ui().session().identity(), identity);
+        let session = current.driver().ui().session();
+        let expected = reel_engine::HistoryLimits {
+            max_lines: if root_override { 5 } else { 3 },
+            max_bytes: if root_override { 32768 } else { 65536 },
+        };
+        assert_eq!(session.history_limits(), expected);
+        assert_eq!(session.view().history.len(), expected.max_lines);
+        assert_eq!(session.view().history.last().unwrap().text(), OLD_LINE);
+        assert_eq!(dialogue(&current).1, 8);
+        close(&mut current);
+    }
+    storage.delete("slot").unwrap();
+    std::fs::remove_dir(folder).unwrap();
+}
+
+#[test]
 fn disk_checkpoint_rebuilds_current_root_and_resumes_saved_page_into_new_suffix() {
     let folder = folder();
     let storage = Arc::new(DirectorySaves::new(&folder, 64 << 20));

@@ -24,17 +24,14 @@ pub(crate) struct Capture {
     pub bytes: u64,
 }
 impl Capture {
-    pub fn new(
-        mut driver: Box<AsideSessionUi>,
-    ) -> Result<Self, (Box<AsideSessionUi>, CheckpointError)> {
-        match driver.checkpoint_begin() {
-            Ok(cursor) => Ok(Self {
-                driver: Some(driver),
-                cursor: Some(Box::new(cursor)),
-                bytes: 0,
-            }),
-            Err(error) => Err((driver, error)),
-        }
+    pub fn new(driver: &mut Option<Box<AsideSessionUi>>) -> Result<Self, CheckpointError> {
+        // Leave the live session with its owner until capture admission succeeds.
+        let cursor = driver.as_mut().unwrap().checkpoint_begin()?;
+        Ok(Self {
+            driver: driver.take(),
+            cursor: Some(Box::new(cursor)),
+            bytes: 0,
+        })
     }
     pub fn owner(&self) -> &AsideSessionUi {
         self.driver.as_ref().unwrap()

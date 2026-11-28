@@ -168,6 +168,28 @@ fn dialogue(session: &Session) -> &crate::DialogueInteraction {
 }
 
 #[test]
+fn checkpoint_keeps_rich_text_in_live_dialogue_bindings() {
+    let code = program(
+        r#"
+        let content = rich("[i]styled[/i]");
+        narrator(content);
+        narrator(content.plain + ": " + content.markup);
+        "#,
+        "",
+    );
+    let (session, mut vm) = started(&code, true);
+    let record = capture(&mut vm, &session);
+    let (mut session, mut vm) = restore(&code, true, record).unwrap();
+    assert_eq!(dialogue(&session).text(), "styled");
+    advance(&mut session);
+    assert!(matches!(
+        settle(&mut vm, &mut session),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(dialogue(&session).text(), "styled: [i]styled[/i]");
+}
+
+#[test]
 fn saved_enum_payload_keeps_named_fields_across_declaration_reorder() {
     let story = program(
         r#"

@@ -81,7 +81,9 @@ impl DataType {
             }
             Self::State(k) => k.module.capacity() + k.name.capacity(),
             Self::LogicalRef(s) | Self::StringLiteral(s) => s.capacity(),
-            Self::Array(item) | Self::OptionalField(item) => size_of::<Self>() + item.retained_bytes(),
+            Self::Array(item) | Self::OptionalField(item) => {
+                size_of::<Self>() + item.retained_bytes()
+            }
             Self::Record(fields) => {
                 fields.capacity() * size_of::<(String, Self)>()
                     + fields
@@ -184,9 +186,12 @@ impl std::error::Error for SchemaError {}
 
 /// Normalize a verified package type without retaining package-local IDs.
 /// Named types receive their default module/name identity; a Registry applies overrides.
-pub fn data_type<C, S>(p: &BytecodePackage<C, S>, id: TypeId) -> Result<DataType, SchemaError> {
-    fn convert<C, S>(
-        p: &BytecodePackage<C, S>,
+pub fn data_type<C, S, D>(
+    p: &BytecodePackage<C, S, D>,
+    id: TypeId,
+) -> Result<DataType, SchemaError> {
+    fn convert<C, S, D>(
+        p: &BytecodePackage<C, S, D>,
         id: TypeId,
         depth: u32,
     ) -> Result<DataType, SchemaError> {
@@ -219,7 +224,11 @@ pub fn data_type<C, S>(p: &BytecodePackage<C, S>, id: TypeId) -> Result<DataType
                     .iter()
                     .map(|field| {
                         let ty = convert(p, field.ty, depth + 1)?;
-                        let ty = if field.optional { DataType::OptionalField(Box::new(ty)) } else { ty };
+                        let ty = if field.optional {
+                            DataType::OptionalField(Box::new(ty))
+                        } else {
+                            ty
+                        };
                         Ok((p.symbols[field.name.index()].clone(), ty))
                     })
                     .collect::<Result<Vec<_>, SchemaError>>()?;
@@ -319,9 +328,9 @@ impl Registry {
             charge,
         })
     }
-    pub fn data_type<C, S>(
+    pub fn data_type<C, S, D>(
         &self,
-        p: &BytecodePackage<C, S>,
+        p: &BytecodePackage<C, S, D>,
         id: TypeId,
     ) -> Result<DataType, SchemaError> {
         fn named(registry: &Registry, ty: &DataType) -> Result<(), SchemaError> {

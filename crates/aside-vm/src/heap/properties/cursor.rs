@@ -791,12 +791,8 @@ impl Heap {
                                 }
                             }
                             let direct = self.property_ref(input)?.0;
-                            binding_work +=
-                                u64::from(self.object(self.key(target.host)?)?.observable_fields)
-                                    * 4;
-                            binding_work +=
-                                u64::from(self.object(self.key(direct.host)?)?.observable_fields)
-                                    * 4;
+                            binding_work += u64::from(self.property_storage_len(target.host)?) * 4;
+                            binding_work += u64::from(self.property_storage_len(direct.host)?) * 4;
                             self.cursor_set(
                                 plan,
                                 State::CommitWork,

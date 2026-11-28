@@ -1,7 +1,7 @@
 mod array;
-mod portable_array;
 mod changes;
 mod model;
+mod portable_array;
 pub use changes::ChangeCursor;
 mod properties;
 mod reactive;
@@ -994,7 +994,7 @@ impl Heap {
             self.set_property_versions(host, versions)?;
         }
         let count = if self.is_model_table(host)? {
-            self.object(self.key(host)?)?.observable_fields
+            self.table_len(host)?
         } else if self.is_model_cell(host)? {
             1
         } else {
@@ -1009,19 +1009,21 @@ impl Heap {
     }
     pub fn host_write_version(&self, host: Value, field: u32) -> Result<u64, HeapError> {
         self.property_fields(host)?;
+        let position = self.model_position(PropertyId { host, field })?;
         Ok(self
-            .sequence_get(self.property_versions(host)?, field)?
+            .sequence_get(self.property_versions(host)?, position)?
             .as_int()
             .ok_or(HeapError::WrongKind)? as u64)
     }
     pub(crate) fn record_host_write(&mut self, host: Value, field: u32) -> Result<(), HeapError> {
         let versions = self.property_versions(host)?;
         if !versions.same_bits(Value::NULL) {
-            while self.sequence_len(versions)? <= field {
+            let position = self.model_position(PropertyId { host, field })?;
+            while self.sequence_len(versions)? <= position {
                 self.array_push(versions, Value::int(0))?;
             }
-            let version = self.sequence_get(versions, field)?.as_int().unwrap();
-            self.set_field(versions, field, Value::int(version.wrapping_add(1)))?;
+            let version = self.sequence_get(versions, position)?.as_int().unwrap();
+            self.set_field(versions, position, Value::int(version.wrapping_add(1)))?;
             self.host_write_revision = self.host_write_revision.wrapping_add(1);
         }
         Ok(())
@@ -1142,7 +1144,9 @@ impl Heap {
         self.push_array_value::<true>(target, value)
     }
     fn push_array_value<const CHECK_CONTRACT: bool>(
-        &mut self, target: Value, value: Value
+        &mut self,
+        target: Value,
+        value: Value,
     ) -> Result<(), HeapError> {
         let key = self.key(target)?;
         let obj = self.object(key)?;
@@ -1177,7 +1181,8 @@ impl Heap {
     /// every use: bytecode verification does not prove a private ArgsNew origin.
     pub(crate) fn packed_array_len(&self, target: Value) -> Result<u32, HeapError> {
         let obj = self.object(self.key(target)?)?;
-        if !matches!(&obj.payload, Payload::Values(values) if obj.kind == ObjectKind::Array && values.array_item().is_none()) {
+        if !matches!(&obj.payload, Payload::Values(values) if obj.kind == ObjectKind::Array && values.array_item().is_none())
+        {
             return Err(HeapError::WrongKind);
         }
         let len = obj.payload.len();

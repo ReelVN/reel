@@ -2,9 +2,9 @@
 use super::*;
 
 pub(super) fn validate_function(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     fi: usize,
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     parameter_layouts: &ParameterLayouts,
     uses: &mut InstructionUses,
     b: &mut Budget,
@@ -62,7 +62,7 @@ pub(super) fn validate_function(
         "parameter register slots",
     )?;
     check(!f.code.is_empty(), ErrorKind::ControlFlow, "empty function")?;
-    for descriptor in &f.descriptors {
+    for descriptor in f.descriptors.iter() {
         validate_descriptor(p, f, descriptor, b)?;
     }
     validate_source_map(p, f, false)?;
@@ -92,8 +92,8 @@ pub(super) fn validate_function(
     Ok(literal_checks)
 }
 pub(super) fn validate_source_map(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     native: bool,
 ) -> Result<(), Error> {
     let mut prev = None;
@@ -121,8 +121,8 @@ pub(super) fn validate_source_map(
     Ok(())
 }
 pub(super) fn validate_call(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     c: &CallDesc,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -226,8 +226,8 @@ pub(super) fn validate_call(
     Ok(())
 }
 pub(super) fn validate_descriptor(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     d: &Descriptor,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -349,8 +349,8 @@ pub(super) fn validate_descriptor(
     Ok(())
 }
 pub(super) fn validate_captures(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     function: FunctionId,
     captures: &[CaptureSource],
     b: &mut Budget,
@@ -389,8 +389,8 @@ pub(super) fn validate_captures(
     Ok(())
 }
 pub(super) fn validate_pattern(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     pattern: &PatternDesc,
     b: &mut Budget,
 ) -> Result<(), Error> {

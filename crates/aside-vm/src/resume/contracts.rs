@@ -131,7 +131,7 @@ pub(super) fn normalize(
     let mut declarations = BTreeMap::new();
     let mut scripted = BTreeSet::new();
     for function in &p.functions {
-        for descriptor in &function.descriptors {
+        for descriptor in function.descriptors.iter() {
             b.work(1)?;
             if let bc::Descriptor::Class(class) = descriptor
                 && let Some(nominal) = class.nominal

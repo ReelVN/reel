@@ -20,14 +20,24 @@ impl Heap {
         if !self.is_model_table(property.host)? {
             return Ok(property.field);
         }
-        let positions = self.model_slot(property.host, ModelSlot::Positions)?;
-        if positions.same_bits(Value::NULL) {
+        let fields = self.model_slot(property.host, ModelSlot::Fields)?;
+        if fields.same_bits(Value::NULL) {
             return Ok(property.field);
         }
-        self.sequence_get(positions, property.field)?
-            .as_int()
-            .map(|position| position as u32)
-            .ok_or(HeapError::RetiredHost)
+        // New identities are appended in increasing order and never reused.
+        // Searching only live fields avoids retaining an entry for every past ID.
+        let mut begin = 0;
+        let mut end = self.sequence_len(fields)?;
+        while begin < end {
+            let position = begin + (end - begin) / 2;
+            let field = self.sequence_get(fields, position)?.as_int().unwrap() as u32;
+            match field.cmp(&property.field) {
+                std::cmp::Ordering::Less => begin = position + 1,
+                std::cmp::Ordering::Equal => return Ok(position),
+                std::cmp::Ordering::Greater => end = position,
+            }
+        }
+        Err(HeapError::RetiredHost)
     }
 
     pub(crate) fn prepare_model_table_remove(
@@ -39,24 +49,79 @@ impl Heap {
             return Ok(0);
         }
         let metadata = self.model_metadata(prepared)?;
-        for slot in [ModelSlot::Fields, ModelSlot::Positions] {
-            let array = self.alloc_array(&[])?;
-            self.set_field(metadata, slot as u32, array)?;
-        }
-        Ok(self.object(self.key(table)?)?.observable_fields)
+        let fields = self.alloc_array(&[])?;
+        self.set_field(metadata, ModelSlot::Fields as u32, fields)?;
+        Ok(self.table_len(table)? - 1)
     }
 
     pub(in crate::heap) fn finish_model_table_remove(
         &mut self,
         table: Value,
         prepared: Value,
+        removed: u32,
     ) -> Result<(), HeapError> {
         // Binding and activity metadata may be added between copy slices without
         // changing table contents. Transfer it after the removed field retires.
         let metadata = self.object(self.key(prepared)?)?.model_metadata;
         for slot in [ModelSlot::Properties, ModelSlot::Versions] {
-            self.set_field(metadata, slot as u32, self.model_slot(table, slot)?)?;
+            let array = self.model_slot(table, slot)?;
+            if !array.same_bits(Value::NULL) {
+                self.remove_model_metadata_position(array, removed)?;
+            }
+            self.set_field(metadata, slot as u32, array)?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn model_table_remove_work(
+        &self,
+        table: Value,
+        removed: u32,
+    ) -> Result<u64, HeapError> {
+        if !self.is_model_table(table)? {
+            return Ok(0);
+        }
+        let mut work = 0;
+        for slot in [ModelSlot::Properties, ModelSlot::Versions] {
+            let array = self.model_slot(table, slot)?;
+            if !array.same_bits(Value::NULL) {
+                let len = self.sequence_len(array)?;
+                if removed < len {
+                    work += u64::from(len - removed - 1) * 2 + 1;
+                }
+            }
+        }
+        Ok(work)
+    }
+
+    fn remove_model_metadata_position(
+        &mut self,
+        array: Value,
+        removed: u32,
+    ) -> Result<(), HeapError> {
+        let len = self.sequence_len(array)?;
+        if removed >= len {
+            return Ok(());
+        }
+        // These arrays are private. Shade moved edges before shifting them behind
+        // an incremental GC cursor; no allocation or creator callback can intervene.
+        for position in removed + 1..len {
+            self.barrier(self.sequence_get(array, position)?)?;
+        }
+        let key = self.key(array)?;
+        let object = self.objects.get_mut(key).unwrap();
+        let Payload::Values(values) = &mut object.payload else {
+            unreachable!()
+        };
+        for position in removed..len - 1 {
+            values.set(position, values.get(position + 1).unwrap());
+        }
+        let (_, freed) = values.pop().unwrap();
+        object.charged -= freed;
+        object.content_version = object.content_version.wrapping_add(1);
+        object.structure_version = object.structure_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
+        self.freed(freed);
         Ok(())
     }
 
@@ -78,19 +143,7 @@ impl Heap {
                 Value::int(i64::from(field)),
             )?;
         }
-        let old = self.model_slot(table, ModelSlot::Positions)?;
-        let position = if old.same_bits(Value::NULL) {
-            Some(index)
-        } else {
-            self.sequence_get(old, index)?.as_int().map(|n| n as u32)
-        };
-        let next = match position {
-            Some(position) if position != removed => {
-                Value::int(i64::from(position - u32::from(position > removed)))
-            }
-            _ => Value::NULL,
-        };
-        self.array_push(self.model_slot(prepared, ModelSlot::Positions)?, next)
+        Ok(())
     }
 
     pub(crate) fn model_append_bytes(&self, table: Value) -> Result<u64, HeapError> {
@@ -101,9 +154,7 @@ impl Heap {
         if fields.same_bits(Value::NULL) {
             return Ok(0);
         }
-        let positions = self.model_slot(table, ModelSlot::Positions)?;
-        Ok(Values::growth_bytes(self.sequence_len(fields)?.into(), 1)
-            + Values::growth_bytes(self.sequence_len(positions)?.into(), 1))
+        Ok(Values::growth_bytes(self.sequence_len(fields)?.into(), 1))
     }
 
     pub(in crate::heap) fn append_model_position(&mut self, table: Value) -> Result<(), HeapError> {
@@ -115,12 +166,7 @@ impl Heap {
             return Ok(());
         }
         let field = self.object(self.key(table)?)?.observable_fields;
-        let position = self.table_len(table)?;
-        self.array_push(fields, Value::int(i64::from(field)))?;
-        self.array_push(
-            self.model_slot(table, ModelSlot::Positions)?,
-            Value::int(i64::from(position)),
-        )
+        self.array_push(fields, Value::int(i64::from(field)))
     }
 
     pub(in crate::heap) fn rollback_model_position(
@@ -130,7 +176,6 @@ impl Heap {
         let fields = self.model_slot(table, ModelSlot::Fields)?;
         if !fields.same_bits(Value::NULL) {
             self.array_pop(fields)?;
-            self.array_pop(self.model_slot(table, ModelSlot::Positions)?)?;
         }
         Ok(())
     }
@@ -237,6 +282,81 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    #[test]
+    fn model_table_metadata_stays_bounded_when_fields_are_replaced() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let table = model(&mut heap, &[0; 64]);
+        heap.add_root(RootOwner(0), RootKind::Host, table).unwrap();
+        heap.track_host_writes(table).unwrap();
+        let mut early = None;
+        for iteration in 0..2048 {
+            remove(&mut heap, table, 0);
+            let next = 64 + iteration;
+            heap.table_store(table, 63, Value::int(next), Value::int(next))
+                .unwrap();
+            let property = PropertyId {
+                host: table,
+                field: heap.model_field(table, 63).unwrap(),
+            };
+            heap.set_property_claim(property, Value::int(next)).unwrap();
+            heap.record_host_write(table, property.field).unwrap();
+            if iteration % 64 == 63 {
+                collect(&mut heap);
+                if early.is_none() {
+                    early = Some(heap.stats());
+                }
+            }
+        }
+        let early = early.unwrap();
+        let after = heap.stats();
+        eprintln!("model churn: early={early:?}; after={after:?}");
+        assert_eq!(after.live_objects, early.live_objects);
+        assert_eq!(after.payload_bytes, early.payload_bytes);
+        assert_eq!(heap.table_len(table).unwrap(), 64);
+        assert_eq!(heap.model_field(table, 63).unwrap(), 2111);
+        assert_eq!(heap.host_write_version(table, 2111).unwrap(), 1);
+    }
+
+    #[test]
+    fn model_table_remove_preserves_metadata_moved_behind_the_gc_cursor() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let table = model(&mut heap, &[10, 20, 30]);
+        heap.add_root(RootOwner(0), RootKind::Host, table).unwrap();
+        let retained = PropertyId {
+            host: table,
+            field: 2,
+        };
+        let claim = heap.alloc_array(&[Value::int(42)]).unwrap();
+        heap.set_property_claim(retained, claim).unwrap();
+        let metadata = heap.property_metadata_array(table).unwrap();
+        let entry = heap.sequence_get(metadata, 2).unwrap();
+        let key = heap.key(metadata).unwrap();
+        heap.begin_collection().unwrap();
+        while heap.object(key).unwrap().scan < 2 {
+            assert_eq!(heap.phase(), GcPhase::Mark);
+            heap.gc_step(crate::GcBudget {
+                units: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        assert_ne!(
+            heap.object(heap.key(entry).unwrap()).unwrap().mark,
+            heap.gc.cycle
+        );
+        remove(&mut heap, table, 0);
+        while heap.phase() != GcPhase::Idle {
+            heap.gc_step(crate::GcBudget {
+                units: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        assert!(heap.property_claim(retained).unwrap().same_bits(claim));
+        assert_eq!(heap.sequence_get(claim, 0).unwrap().as_int(), Some(42));
+        assert_eq!(heap.model_field(table, 1).unwrap(), 2);
     }
 
     #[test]

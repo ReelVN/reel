@@ -130,6 +130,9 @@ impl LogicalReferences for SceneCapture<'_> {
             if let Some(header) = super::super::dialogue::character_resource_header(heap, value) {
                 return Some(Ok(header));
             }
+            if let Some(header) = super::super::rich_text::resource_header(heap, value) {
+                return Some(Ok(header));
+            }
             if let Some(header) = self
                 .media
                 .and_then(|media| media.resource_header(heap, value))
@@ -172,6 +175,9 @@ impl LogicalReferences for SceneCapture<'_> {
         if stage.id(heap, value).is_err() {
             if super::super::dialogue::character_resource_header(heap, value).is_some() {
                 return super::super::dialogue::character_resource_field(heap, value, index);
+            }
+            if super::super::rich_text::resource_header(heap, value).is_some() {
+                return super::super::rich_text::resource_field(heap, value, index);
             }
             if super::super::media::is_media(heap, value)
                 || super::super::media::is_cue(heap, value)
@@ -321,6 +327,9 @@ impl LogicalReferences for SceneRestore<'_> {
         if reference.kind == "reel.character" {
             return Ok(super::super::dialogue::allocate_character_resource(heap)?);
         }
+        if reference.kind == super::super::rich_text::RESOURCE_KIND {
+            return super::super::rich_text::allocate_resource(heap);
+        }
         if reference.kind.starts_with("reel.media.") {
             return self
                 .media
@@ -359,6 +368,9 @@ impl LogicalReferences for SceneRestore<'_> {
             return Ok(super::super::dialogue::connect_character_resource(
                 heap, value, name, field,
             )?);
+        }
+        if super::super::rich_text::resource_header(heap, value).is_some() {
+            return super::super::rich_text::connect_resource(heap, value, name, field);
         }
         if super::super::media::is_media(heap, value) || super::super::media::is_cue(heap, value) {
             return self
@@ -421,6 +433,10 @@ impl LogicalReferences for SceneRestore<'_> {
         }
         if super::super::dialogue::character_resource_header(heap, value).is_some() {
             super::super::dialogue::finish_character_resource(heap, value)?;
+            return Ok(true);
+        }
+        if super::super::rich_text::resource_header(heap, value).is_some() {
+            super::super::rich_text::finish_resource(heap, value)?;
             return Ok(true);
         }
         if super::super::media::is_media(heap, value) || super::super::media::is_cue(heap, value) {

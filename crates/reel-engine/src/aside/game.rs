@@ -1,5 +1,6 @@
 //! Script-owned presentation settings, consumed by the embedding host.
 use super::{AdapterError, HostTicket, SessionVm, text};
+use crate::Session;
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
@@ -15,6 +16,12 @@ aside_host::native_documentation! {
         /// `"uncapped"` samples continuous animation whenever the player can produce a frame.
         /// It controls tweens, particles and transitions; explicit clock intervals,
         /// text reveal speed and window vsync retain their own settings.
+        /// `history_limit` sets the maximum recent lines retained by each reading,
+        /// default 200. Zero disables retained history. `history_bytes` sets its
+        /// positive logical storage allowance, default 1048576 bytes (1 MiB).
+        /// Old entries release in batches. A newest line exceeding the byte
+        /// allowance remains readable until replaced. Current Root configuration
+        /// controls retention after loading a save; omitted values stay unchanged.
         "reel::game::configure";
         /// Replace the current session with a fresh invocation of entry. Persistent
         /// storage remains available; tasks and transient stage state belong to the new session.
@@ -46,6 +53,8 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                     TypeHint::Null,
                 ]),
             ),
+            ("history_limit", nullable(TypeHint::Int)),
+            ("history_bytes", nullable(TypeHint::Int)),
         ],
     );
     api.refine(
@@ -107,7 +116,11 @@ impl SessionVm {
         self.game = settings;
     }
 
-    pub(super) fn configure_game(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+    pub(super) fn configure_game(
+        &mut self,
+        session: &mut Session,
+        ticket: HostTicket,
+    ) -> Result<(), AdapterError> {
         let args = self.vm.host_arguments(ticket)?;
         let mut next = (*self.game).clone();
         let read = |value| text::read_string(self.vm.heap(), value, self.read_limit);
@@ -167,6 +180,29 @@ impl SessionVm {
                     ));
                 }
             };
+        }
+        let mut history = session.history_limits();
+        if args[6].tag() != ValueTag::Null {
+            history.max_lines = args[6]
+                .as_int()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or(AdapterError::Input(
+                    "history_limit requires a nonnegative integer",
+                ))?;
+        }
+        if args[7].tag() != ValueTag::Null {
+            history.max_bytes = args[7]
+                .as_int()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|&value| value != 0)
+                .ok_or(AdapterError::Input(
+                    "history_bytes requires a positive integer",
+                ))?;
+        }
+        if history != session.history_limits() {
+            session.set_history_limits(history);
+            self.sync_narrative(session)?;
+            self.sync_parked_narratives(session)?;
         }
         if next != *self.game {
             if next.fonts != self.game.fonts {

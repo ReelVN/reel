@@ -82,6 +82,10 @@ aside_host::native_documentation! {
         /// Return the active reading context's observable dialogue history collection.
         /// Entries retain their speaker, text and content identity independently of layout.
         /// Each line also exposes its original `voice` asset path or null for manual replay.
+        /// Each reading defaults to 200 recent lines and 1 MiB of logical history
+        /// storage, releasing older rows in batches. The newest line remains readable
+        /// when its own payload exceeds that allowance. Retained row IDs stay fixed.
+        /// Configure this policy through the history_limit and history_bytes fields of game.configure.
         /// Capture the array in a component and refresh from that same array.
         "reel::game::history";
         /// Append plain or rich text to history without presenting dialogue.
@@ -114,7 +118,8 @@ aside_host::native_documentation! {
         "reel::reading::set_skip";
         /// Clear the session's accumulated read-content identities.
         "reel::game::clear_read_progress";
-        /// Discard older history entries and retain the last `keep_last` entries.
+        /// Discard older history entries and retain up to the last `keep_last` lines
+        /// within the reading's automatic history window. Retained IDs stay fixed.
         /// The default zero clears this context's history. Return the same Reading.
         "reel::reading::clear_history";
     }
@@ -1078,13 +1083,7 @@ impl SessionVm {
         self.put_narrative(session, id, model);
         result?;
         if symbol == "reel::game::clear_read_progress" {
-            for frame in &mut self.narrative_contexts.frames {
-                if let Some(model) = &mut frame.model {
-                    session.with_reading(frame.parent, |session| {
-                        model.sync(self.vm.heap_mut(), session, self.read_limit)
-                    })??;
-                }
-            }
+            self.sync_parked_narratives(session)?;
         }
         if sync {
             self.sync_all_reading_controls(session)?;

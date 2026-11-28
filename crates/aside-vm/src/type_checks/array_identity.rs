@@ -3,7 +3,7 @@ use super::*;
 use std::collections::HashMap;
 
 pub(super) fn build(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     usage: &HeapBudgetUsage,
 ) -> Result<ChargedVec<TypeId>, VmError> {
     if !p.types.iter().any(|ty| matches!(ty, TypeDef::Array(_))) {

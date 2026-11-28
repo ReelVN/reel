@@ -19,11 +19,12 @@ impl StoryRuntime {
         if let Some(saves) = &mut self.saves {
             saves.next_epoch = epoch;
         }
-        let session = Session::new_with_read_progress(
+        let mut session = Session::new_with_read_progress(
             identity.session_id,
             Epoch(epoch),
             old.ui().session().read_progress().clone(),
         )?;
+        session.set_history_limits(old.ui().session().history_limits());
         let story = CompiledStory {
             program: old.adapter().vm().program().clone(),
             resume: old.adapter().resume_table().clone(),

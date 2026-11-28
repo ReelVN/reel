@@ -685,7 +685,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         read_only_leaf: None,
         rest: None,
         symbol: "reel::game::configure".into(),
-        abi_version: 2,
+        abi_version: 3,
         parameters: [
             "title",
             "width",
@@ -693,6 +693,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             "fonts",
             "text_speed",
             "frame_rate",
+            "history_limit",
+            "history_bytes",
         ]
         .into_iter()
         .map(|name| NativeParameter {

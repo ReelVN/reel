@@ -20,6 +20,61 @@ fn source() -> Session {
     session
 }
 
+#[test]
+fn restored_history_uses_current_configuration_before_projecting_rows() {
+    let mut source = Session::new(SessionId(1), Epoch(1)).unwrap();
+    source.set_history_limits(crate::HistoryLimits {
+        max_lines: 500,
+        max_bytes: 1024 * 1024,
+    });
+    for _ in 0..500 {
+        source
+            .record_history(
+                &[DialogueLineInput {
+                    speaker_id: None,
+                    speaker_name: "",
+                    content_id: "recorded",
+                    text: "history".into(),
+                    history: Default::default(),
+                }],
+                "en",
+            )
+            .unwrap();
+    }
+    let mut capture = ReadingCapture::new(&source, None);
+    while !capture.step(&source, None, 256, 4096).unwrap() {}
+    let archived = capture.finish().unwrap();
+    let encoded = postcard::to_allocvec(&archived).unwrap();
+    for limit in [500, 40, 0] {
+        let mut candidate = Session::new(SessionId(1), Epoch(2)).unwrap();
+        candidate.set_history_limits(crate::HistoryLimits {
+            max_lines: limit,
+            max_bytes: 1024 * 1024,
+        });
+        let restored: SavedReading = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(restored.data.history.len(), 500);
+        let mut install = restored.install_begin(candidate.identity());
+        while !install.step(256).unwrap() {}
+        install.finish(&mut candidate).unwrap();
+        assert!(candidate.view().history.len() <= limit);
+        if limit == 500 {
+            assert_eq!(candidate.view().history.len(), 500);
+        }
+        if limit != 0 {
+            assert_eq!(
+                candidate
+                    .view()
+                    .history
+                    .last()
+                    .unwrap()
+                    .interaction_id()
+                    .generation(),
+                500
+            );
+        }
+    }
+}
+
 fn saved(session: &Session, page: Option<&DisplayPage>) -> SavedReading {
     let mut cursor = ReadingCapture::new(session, page);
     let mut previous = cursor.retained_bytes();

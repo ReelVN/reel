@@ -19,7 +19,7 @@ mod reading;
 mod reveal;
 mod snapshot;
 pub mod video;
-pub use reading::{ReadProgress, ReadingState};
+pub use reading::{HistoryLimits, ReadProgress, ReadingState};
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
 
@@ -739,6 +739,8 @@ pub struct Session {
     auto_delay: std::time::Duration,
     #[serde(skip)]
     read_progress: ReadProgress,
+    #[serde(skip)]
+    history_limits: HistoryLimits,
 }
 
 impl Session {
@@ -779,6 +781,7 @@ impl Session {
             parked_readings: Vec::new(),
             auto_delay: std::time::Duration::from_secs(2),
             read_progress,
+            history_limits: HistoryLimits::default(),
         })
     }
 
@@ -798,43 +801,6 @@ impl Session {
 
     pub fn read_progress(&self) -> &ReadProgress {
         &self.read_progress
-    }
-
-    /// Retain at most the final `keep_last` recorded lines, preserving original
-    /// group/line IDs even when the boundary cuts a group. Zero clears all.
-    /// Display, input, read progress and previously saved snapshots are independent.
-    /// This explicit operation synchronously releases discarded storage.
-    pub fn clear_history(&mut self, keep_last: usize) {
-        if keep_last == 0 {
-            self.reading_data.history = reading::HistoryLog::default();
-            return;
-        }
-        let count: usize = self
-            .reading_data
-            .history
-            .iter()
-            .map(|group| group.lines.len())
-            .sum();
-        if keep_last >= count {
-            return;
-        }
-        let mut remaining = keep_last;
-        let mut first = self.reading_data.history.len();
-        while first != 0 {
-            first -= 1;
-            let count = self.reading_data.history[first].lines.len();
-            if count >= remaining {
-                if count > remaining {
-                    self.reading_data.history.edit(first, |group| {
-                        group.lines.drain(..count - remaining);
-                        group.lines.shrink_to_fit();
-                    });
-                }
-                break;
-            }
-            remaining -= count;
-        }
-        self.reading_data.history.retain_from(first);
     }
 
     /// Forget content-read records while preserving the currently displayed text.
@@ -1003,9 +969,7 @@ impl Session {
         }
     }
 
-    /// Submit one ADV group and append history once, in the same transaction.
-    /// The locale tag and full plain text remain fixed for this interaction.
-    pub fn begin_say(
+    fn prepare_say(
         &mut self,
         owner: OwnerHandle,
         lines: &[DialogueLineInput<'_>],
@@ -1024,7 +988,8 @@ impl Session {
 
         let mut owned_lines = reserved_vec(lines.len())?;
         let mut current_line_ids = reserved_vec(lines.len())?;
-        let mut history_lines = reserved_vec(lines.len())?;
+        let retain_history = self.history_limits.max_lines != 0;
+        let mut history_lines = reserved_vec(if retain_history { lines.len() } else { 0 })?;
         for (index, line) in lines.iter().enumerate() {
             let line_id = DialogueLineId {
                 interaction_id: id,
@@ -1044,21 +1009,23 @@ impl Session {
                 timing: Default::default(),
             });
             current_line_ids.push(line_id);
-            let history_content = match line.history {
-                HistoryInput::Display => Some(content),
-                HistoryInput::Omit => None,
-                HistoryInput::Text(text) => {
-                    Some(copy_content(&DialogueLineInput { text, ..*line })?)
+            if retain_history {
+                let history_content = match line.history {
+                    HistoryInput::Display => Some(content),
+                    HistoryInput::Omit => None,
+                    HistoryInput::Text(text) => {
+                        Some(copy_content(&DialogueLineInput { text, ..*line })?)
+                    }
+                };
+                if let Some(content) = history_content {
+                    history_lines.push(HistoryLine {
+                        id: line_id,
+                        speaker_id: copy_optional_text(line.speaker_id)?,
+                        speaker_name: copy_text(line.speaker_name)?,
+                        content,
+                        voice: None,
+                    });
                 }
-            };
-            if let Some(content) = history_content {
-                history_lines.push(HistoryLine {
-                    id: line_id,
-                    speaker_id: copy_optional_text(line.speaker_id)?,
-                    speaker_name: copy_text(line.speaker_name)?,
-                    content,
-                    voice: None,
-                });
             }
         }
         self.read_progress
@@ -1080,22 +1047,27 @@ impl Session {
             text_revision: 0,
             pending_read_ids: Vec::new(),
         };
-        let history = HistoryGroup {
-            group_id: HistoryGroupId(id),
-            interaction_id: id,
-            lines: history_lines,
-            page_locale: copy_text(page_locale)?,
+        // Preserve the Rust empty-group operation, but omit groups whose authored
+        // lines opted out of history or whose session disabled retention.
+        let history = if retain_history && (!history_lines.is_empty() || lines.is_empty()) {
+            let group = HistoryGroup {
+                group_id: HistoryGroupId(id),
+                interaction_id: id,
+                lines: history_lines,
+                page_locale: copy_text(page_locale)?,
+            };
+            self.reading_data
+                .history
+                .reserve_append()
+                .map_err(|_| SessionError::AllocationFailed)?;
+            Some(group)
+        } else {
+            None
         };
-        self.reading_data
-            .history
-            .reserve_append()
-            .map_err(|_| SessionError::AllocationFailed)?;
         // Everything fallible is complete. Both publications use reserved storage.
         self.reading_data.active = Some(Interaction::Dialogue(dialogue));
         self.check_skip_boundary();
-        // Preserve the Rust empty-group operation, but omit groups whose authored
-        // lines explicitly opted out of history.
-        if !history.lines.is_empty() || lines.is_empty() {
+        if let Some(history) = history {
             self.reading_data.history.push(history);
         }
         self.next_interaction = id.generation.checked_add(1);
@@ -1108,16 +1080,6 @@ impl Session {
         lines: &[DialogueLineInput<'_>],
         locale: &str,
     ) -> Result<(), SessionError> {
-        let group = self.prepare_history_record(lines, locale)?;
-        self.commit_history_record(group);
-        Ok(())
-    }
-
-    fn prepare_history_record(
-        &mut self,
-        lines: &[DialogueLineInput<'_>],
-        locale: &str,
-    ) -> Result<HistoryGroup, SessionError> {
         self.ensure_running()?;
         if locale.is_empty() {
             return Err(SessionError::EmptyLocale);
@@ -1128,11 +1090,23 @@ impl Session {
                 .next_interaction
                 .ok_or(SessionError::IdentityExhausted)?,
         };
-        let mut records = reserved_vec(lines.len())?;
-        for (index, line) in lines.iter().enumerate() {
+        for line in lines {
             if line.content_id.is_empty() {
                 return Err(SessionError::EmptyContentId);
             }
+        }
+        if lines
+            .iter()
+            .all(|line| matches!(line.history, HistoryInput::Omit))
+        {
+            return Ok(());
+        }
+        if self.history_limits.max_lines == 0 {
+            self.next_interaction = id.generation.checked_add(1);
+            return Ok(());
+        }
+        let mut records = reserved_vec(lines.len())?;
+        for (index, line) in lines.iter().enumerate() {
             let text = match line.history {
                 HistoryInput::Display => line.text,
                 HistoryInput::Omit => continue,
@@ -1159,14 +1133,12 @@ impl Session {
             .history
             .reserve_append()
             .map_err(|_| SessionError::AllocationFailed)?;
-        Ok(group)
-    }
-
-    fn commit_history_record(&mut self, group: HistoryGroup) {
-        if !group.lines.is_empty() {
-            self.next_interaction = group.interaction_id.generation.checked_add(1);
-            self.reading_data.history.push(group);
-        }
+        self.next_interaction = id.generation.checked_add(1);
+        self.reading_data.history.push(group);
+        self.reading_data
+            .history
+            .enforce_limits(self.history_limits);
+        Ok(())
     }
 
     /// Copy option rows, preserving order and returning their original business keys.

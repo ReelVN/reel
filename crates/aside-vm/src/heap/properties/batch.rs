@@ -1074,8 +1074,8 @@ impl Heap {
             if self.is_property_ref(input) {
                 let direct = self.property_ref(input)?.0;
                 publication += 128
-                    + u64::from(self.object(self.key(target.host)?)?.observable_fields) * 4
-                    + u64::from(self.object(self.key(direct.host)?)?.observable_fields) * 4;
+                    + u64::from(self.property_storage_len(target.host)?) * 4
+                    + u64::from(self.property_storage_len(direct.host)?) * 4;
                 let old = self.property_binding(target)?;
                 if !old.same_bits(Value::NULL) {
                     let list = self.subscribers(self.property_ref(old)?.0)?;
@@ -1290,7 +1290,7 @@ impl Heap {
             return Ok(0);
         }
         let fields = if self.is_model_table(property.host)? {
-            self.object(self.key(property.host)?)?.observable_fields
+            self.table_len(property.host)?
         } else if self.is_model_cell(property.host)? {
             1
         } else {

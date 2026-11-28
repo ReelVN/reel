@@ -7,6 +7,79 @@ mod history;
 pub(crate) use context::{ParkedReading, ReadingId};
 pub use history::HistoryLog;
 
+/// Live history retention for every reading context in a session. Zero lines
+/// disables history retention. The displayed dialogue remains independent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryLimits {
+    /// Maximum retained dialogue lines; the default is 200.
+    pub max_lines: usize,
+    /// Maximum logical history storage; the default is 1 MiB. A single newest
+    /// line larger than this allowance remains readable until replaced.
+    pub max_bytes: usize,
+}
+impl Default for HistoryLimits {
+    fn default() -> Self {
+        Self {
+            max_lines: 200,
+            max_bytes: 1024 * 1024,
+        }
+    }
+}
+
+impl crate::Session {
+    /// Retain at most the final `keep_last` recorded lines, preserving original
+    /// group/line IDs even when the boundary cuts a group. Zero clears all.
+    /// Display, input, read progress and previously saved snapshots are independent.
+    /// This explicit operation synchronously releases discarded storage.
+    pub fn clear_history(&mut self, keep_last: usize) {
+        if keep_last == 0 {
+            self.reading_data.history = HistoryLog::default();
+            return;
+        }
+        let count: usize = self
+            .reading_data
+            .history
+            .iter()
+            .map(|group| group.lines.len())
+            .sum();
+        if keep_last >= count {
+            return;
+        }
+        let mut remaining = keep_last;
+        let mut first = self.reading_data.history.len();
+        while first != 0 {
+            first -= 1;
+            let count = self.reading_data.history[first].lines.len();
+            if count >= remaining {
+                if count > remaining {
+                    self.reading_data.history.edit(first, |group| {
+                        group.lines.drain(..count - remaining);
+                        group.lines.shrink_to_fit();
+                    });
+                }
+                break;
+            }
+            remaining -= count;
+        }
+        self.reading_data.history.retain_from(first);
+    }
+
+    /// Current retention policy, shared by foreground and suspended readings.
+    pub fn history_limits(&self) -> HistoryLimits {
+        self.history_limits
+    }
+
+    /// Apply the current application's history policy and trim existing readings.
+    /// Checkpoints restore within this policy after current Root configuration.
+    pub fn set_history_limits(&mut self, limits: HistoryLimits) {
+        self.history_limits = limits;
+        self.reading_data.history.enforce_limits(limits);
+        for reading in &mut self.parked_readings {
+            reading.data.history.enforce_limits(limits);
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReadingData {
     pub active: Option<Interaction>,

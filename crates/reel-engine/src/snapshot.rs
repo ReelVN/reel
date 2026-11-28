@@ -111,6 +111,7 @@ impl Session {
                 parked_readings: Vec::new(),
                 auto_delay: self.auto_delay,
                 read_progress: ReadProgress::default(),
+                history_limits: self.history_limits,
             },
             owner: 0,
             context: 0,

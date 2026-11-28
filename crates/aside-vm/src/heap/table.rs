@@ -111,7 +111,9 @@ impl Heap {
         if target == prepared {
             return Ok(());
         }
-        if kind == ObjectKind::Array && self.array_item(target_value)? != self.array_item(prepared_value)? {
+        if kind == ObjectKind::Array
+            && self.array_item(target_value)? != self.array_item(prepared_value)?
+        {
             return Err(HeapError::TypeMismatch);
         }
         // Removal only retains already adopted values; the prepared table's
@@ -125,7 +127,7 @@ impl Heap {
                     host: target_value,
                     field: self.model_field(target_value, position)?,
                 })?;
-                self.finish_model_table_remove(target_value, prepared_value)?;
+                self.finish_model_table_remove(target_value, prepared_value, position)?;
                 let old = self.object(target)?.model_metadata;
                 let new = self.object(prepared)?.model_metadata;
                 self.barrier(old)?;

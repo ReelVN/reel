@@ -6,6 +6,14 @@ This is the canonical release history for Reel, starting with the 0.3.0 baseline
 
 ## Unreleased
 
+## 0.4.7 — 2026-11-29
+
+- Share repeated immutable bytecode descriptors across functions to reduce large games' startup and runtime memory use.
+- Reclaim deleted model-table field metadata so repeatedly adding and removing history attachments keeps bounded storage and deletion work.
+- Configure history retention with `game.configure(history_limit: ..., history_bytes: ...)`, defaulting to 200 recent lines and 1 MiB per reading context. Release older observable entries and apply current settings when restoring saves.
+- Advance the `game.configure` native ABI for its history options. Rebuild game ASB files for this runtime. File format versions remain at 1.
+- Preserve rich text in story saves so dialogue with style spans can resume with its formatting.
+
 ## 0.4.6 — 2026-11-28
 
 - Read file-backed ASB packages one section at a time to reduce startup memory use.

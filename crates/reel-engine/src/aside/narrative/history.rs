@@ -5,6 +5,7 @@ mod tests;
 
 #[repr(u32)]
 enum HistoryLineField {
+    Id = 0,
     SpeakerName = 2,
     Text = 4,
 }
@@ -50,6 +51,8 @@ pub(super) struct History {
     groups: usize,
     first_group: Option<u64>,
     #[serde(skip)]
+    first_line: Option<usize>,
+    #[serde(skip)]
     keys: super::super::observable::SchemaKeys,
 }
 
@@ -67,6 +70,7 @@ impl History {
         heap.commit_collection(self.value, empty)?;
         self.groups = 0;
         self.first_group = None;
+        self.first_line = None;
         Ok(())
     }
     pub(super) fn project_group(
@@ -166,8 +170,69 @@ impl History {
             value: array(heap)?,
             groups: 0,
             first_group: None,
+            first_line: None,
             keys: Default::default(),
         })
+    }
+
+    fn project_line(
+        &mut self,
+        heap: &mut Heap,
+        session: &Session,
+        line: &crate::HistoryLine,
+        active: Option<Value>,
+        chunk: usize,
+    ) -> Result<Value, AdapterError> {
+        let (id, name, text, speaker, content) = if let Some(active) = active {
+            let row = heap.sequence_get(active, line.id().index() as u32)?;
+            let get = |field: LineField| {
+                heap.host_property(PropertyId {
+                    host: row,
+                    field: field as u32,
+                })
+            };
+            let values = (
+                get(LineField::Id)?,
+                get(LineField::SpeakerName)?,
+                get(LineField::Text)?,
+                get(LineField::SpeakerId)?,
+                get(LineField::ContentId)?,
+            );
+            let Some(InteractionView::Dialogue(display)) = session.view().interaction else {
+                unreachable!("active history group belongs to the displayed dialogue")
+            };
+            let text = if display.lines()[line.id().index()].content() == line.content() {
+                values.2
+            } else {
+                super::super::rich_text::alloc(heap, line.content().styled(), chunk)?
+            };
+            (values.0, values.1, text, values.3, values.4)
+        } else {
+            (
+                line_id(heap, line.id())?,
+                text::alloc_string(heap, line.speaker_name(), chunk)?,
+                super::super::rich_text::alloc(heap, line.content().styled(), chunk)?,
+                line.speaker_id().map_or(Ok(Value::NULL), |name| {
+                    text::alloc_string(heap, name, chunk)
+                })?,
+                text::alloc_string(heap, line.content().id(), chunk)?,
+            )
+        };
+        let voice = line.voice().map_or(Ok(Value::NULL), |path| {
+            text::alloc_string(heap, path, chunk)
+        })?;
+        self.keys.record(
+            heap,
+            &[
+                ("id", id),
+                ("speaker_id", speaker),
+                ("speaker_name", name),
+                ("content_id", content),
+                ("text", text),
+                ("voice", voice),
+            ],
+            &[],
+        )
     }
 
     pub fn sync(
@@ -205,17 +270,51 @@ impl History {
             retain_tail(heap, self.value, removed as u32, roots)?;
             self.groups -= removed;
         }
+        let group_changed = self.first_group != first_group;
         self.first_group = first_group;
+        let first_line = session
+            .view()
+            .history
+            .first()
+            .and_then(|group| group.lines().first())
+            .map(|line| line.id().index());
         if self.groups != 0 {
+            let group = &session.view().history[0];
             let row = heap.sequence_get(self.value, 0)?;
             let lines = heap.host_property(PropertyId {
                 host: row,
                 field: HistoryGroupField::Lines as u32,
             })?;
-            let keep = session.view().history[0].lines().len() as u32;
-            let previous = heap.sequence_len(lines)?;
-            if previous > keep {
-                retain_tail(heap, lines, previous - keep, roots)?;
+            if group_changed || self.first_line != first_line {
+                let previous = heap.sequence_len(lines)?;
+                let expected = first_line.map(|index| format!("{}:{index}", first_group.unwrap()));
+                let mut removed = 0;
+                while removed < previous {
+                    let line = heap.sequence_get(lines, removed)?;
+                    let id = heap.host_property(PropertyId {
+                        host: line,
+                        field: HistoryLineField::Id as u32,
+                    })?;
+                    if let Some(expected) = &expected
+                        && text::matches_string(heap, id, expected, chunk)?
+                    {
+                        break;
+                    }
+                    removed += 1;
+                }
+                retain_tail(heap, lines, removed, roots)?;
+            }
+            let previous = heap.sequence_len(lines)? as usize;
+            let active = if current == Some(group.interaction_id()) {
+                Some(heap.host_payload(dialogue, 0)?)
+            } else {
+                None
+            };
+            for line in &group.lines()[previous..] {
+                let value = self.project_line(heap, session, line, active, chunk)?;
+                heap.array_push(lines, value)?;
+            }
+            if (group_changed || self.first_line != first_line) && heap.sequence_len(lines)? != 0 {
                 let first = heap.sequence_get(lines, 0)?;
                 for (group_field, line_field) in [
                     (
@@ -232,6 +331,7 @@ impl History {
                 }
             }
         }
+        self.first_line = first_line;
         let history = session.view().history;
         for index in self.groups..history.len() {
             let group = &history[index];
@@ -242,57 +342,7 @@ impl History {
                 None
             };
             for line in group.lines() {
-                let (id, name, text, speaker, content) = if let Some(active) = active {
-                    let row = heap.sequence_get(active, line.id().index() as u32)?;
-                    let get = |field: LineField| {
-                        heap.host_property(PropertyId {
-                            host: row,
-                            field: field as u32,
-                        })
-                    };
-                    let values = (
-                        get(LineField::Id)?,
-                        get(LineField::SpeakerName)?,
-                        get(LineField::Text)?,
-                        get(LineField::SpeakerId)?,
-                        get(LineField::ContentId)?,
-                    );
-                    let Some(InteractionView::Dialogue(display)) = session.view().interaction
-                    else {
-                        unreachable!("active history group belongs to the displayed dialogue")
-                    };
-                    let text = if display.lines()[line.id().index()].content() == line.content() {
-                        values.2
-                    } else {
-                        super::super::rich_text::alloc(heap, line.content().styled(), chunk)?
-                    };
-                    (values.0, values.1, text, values.3, values.4)
-                } else {
-                    (
-                        line_id(heap, line.id())?,
-                        text::alloc_string(heap, line.speaker_name(), chunk)?,
-                        super::super::rich_text::alloc(heap, line.content().styled(), chunk)?,
-                        line.speaker_id().map_or(Ok(Value::NULL), |name| {
-                            text::alloc_string(heap, name, chunk)
-                        })?,
-                        text::alloc_string(heap, line.content().id(), chunk)?,
-                    )
-                };
-                let voice = line
-                    .voice()
-                    .map_or(Ok(Value::NULL), |path| text::alloc_string(heap, path, chunk))?;
-                let row = self.keys.record(
-                    heap,
-                    &[
-                        ("id", id),
-                        ("speaker_id", speaker),
-                        ("speaker_name", name),
-                        ("content_id", content),
-                        ("text", text),
-                        ("voice", voice),
-                    ],
-                    &[],
-                )?;
+                let row = self.project_line(heap, session, line, active, chunk)?;
                 heap.array_push(lines, row)?;
             }
             let (name, text) = if heap.sequence_len(lines)? == 0 {

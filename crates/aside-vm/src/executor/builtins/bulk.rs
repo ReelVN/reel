@@ -165,7 +165,7 @@ impl Vm {
             } else {
                 0
             }) + if work.model_fields != 0 {
-                Values::growth_bytes(work.index.into(), 1) * (1 + u64::from(copying))
+                Values::growth_bytes(work.index.into(), 1)
             } else {
                 0
             }
@@ -179,7 +179,15 @@ impl Vm {
         } else {
             0
         };
-        let validation = if !changed && work.index < work.len { item_work } else { 0 };
+        let validation = if !changed && work.index < work.len {
+            item_work
+        } else if !changed && removing_table {
+            // Compact the private connection/version arrays at publication, after
+            // bindings added during the sliced table copy have been accounted for.
+            self.heap.model_table_remove_work(receiver, work.offset)?
+        } else {
+            0
+        };
         if !meter.take(0, 6 + validation, extra) {
             return Ok(false);
         }

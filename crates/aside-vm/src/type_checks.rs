@@ -28,6 +28,7 @@ impl TypeChecks {
         p: &BytecodePackage<
             impl crate::bytecode::InstructionSequence,
             impl crate::bytecode::SourceMapSequence,
+            impl crate::bytecode::DescriptorSequence,
         >,
         usage: &HeapBudgetUsage,
         registrations: &[crate::HostTypeSupport],
@@ -107,9 +108,11 @@ impl TypeChecks {
     }
     pub(crate) fn same_type(&self, left: TypeId, right: TypeId) -> bool {
         left == right
-            || self.array_identities.data.get(left.index()).is_some_and(|left| {
-                Some(left) == self.array_identities.data.get(right.index())
-            })
+            || self
+                .array_identities
+                .data
+                .get(left.index())
+                .is_some_and(|left| Some(left) == self.array_identities.data.get(right.index()))
     }
     pub(super) fn argument_extra(&self, sig: SignatureId) -> u64 {
         self.signature_work.data[sig.index()]
@@ -124,6 +127,7 @@ impl TypeChecks {
         p: &BytecodePackage<
             impl crate::bytecode::InstructionSequence,
             impl crate::bytecode::SourceMapSequence,
+            impl crate::bytecode::DescriptorSequence,
         >,
         name: &str,
     ) -> Option<SymbolId> {
@@ -140,6 +144,7 @@ impl TypeChecks {
         p: &BytecodePackage<
             impl crate::bytecode::InstructionSequence,
             impl crate::bytecode::SourceMapSequence,
+            impl crate::bytecode::DescriptorSequence,
         >,
         heap: &Heap,
         key: Value,
@@ -185,6 +190,7 @@ impl TypeChecks {
         p: &BytecodePackage<
             impl crate::bytecode::InstructionSequence,
             impl crate::bytecode::SourceMapSequence,
+            impl crate::bytecode::DescriptorSequence,
         >,
         heap: &Heap,
         ty: TypeId,
@@ -202,9 +208,9 @@ impl TypeChecks {
                     match &p.types[ty.index()] {
                         TypeDef::Builtin(kind) => accepted = heap.accepts_builtin(*kind, value)?,
                         TypeDef::Array(item) => {
-                            accepted = heap.array_item(value)?.is_some_and(|actual| {
-                                self.same_type(actual, *item)
-                            });
+                            accepted = heap
+                                .array_item(value)?
+                                .is_some_and(|actual| self.same_type(actual, *item));
                         }
                         TypeDef::Function { .. } => {
                             accepted = heap.accepts_builtin(BuiltinType::Closure, value)?
@@ -242,7 +248,12 @@ impl TypeChecks {
                             } else if items.is_empty() {
                                 accepted = true;
                             } else {
-                                stack.data.push(Cursor { ty, value, next: 1, remaining_fields: 0 });
+                                stack.data.push(Cursor {
+                                    ty,
+                                    value,
+                                    next: 1,
+                                    remaining_fields: 0,
+                                });
                                 current = Some((items[0], heap.sequence_get(value, 0)?));
                                 continue;
                             }
@@ -251,7 +262,12 @@ impl TypeChecks {
                             if items.is_empty() {
                                 accepted = false;
                             } else {
-                                stack.data.push(Cursor { ty, value, next: 1, remaining_fields: 0 });
+                                stack.data.push(Cursor {
+                                    ty,
+                                    value,
+                                    next: 1,
+                                    remaining_fields: 0,
+                                });
                                 current = Some((items[0], value));
                                 continue;
                             }
@@ -359,7 +375,9 @@ pub(super) fn record_field(
     let table = heap.table_read(table)?;
     let preferred = preferred as u32;
     let first = (preferred < table.len()).then_some(preferred);
-    for index in first.into_iter().chain((0..table.len()).filter(|&index| index != preferred))
+    for index in first
+        .into_iter()
+        .chain((0..table.len()).filter(|&index| index != preferred))
     {
         let (key, value) = table.entry(index)?;
         if string_equal(heap, key, name)? {

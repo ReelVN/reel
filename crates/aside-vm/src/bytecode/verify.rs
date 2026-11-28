@@ -4,6 +4,7 @@ pub(crate) use scalar_entry::ValueEntry;
 use std::collections::{BinaryHeap, hash_map::RandomState};
 use std::fmt::Write;
 use std::hash::BuildHasher;
+mod descriptors;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackageStats {
@@ -176,6 +177,9 @@ impl VerifiedProgram {
         retained = retained
             .checked_add(p.functions.len() * size_of::<FunctionDef>())
             .ok_or_else(overflow)?;
+        retained = retained
+            .checked_sub(super::codec::shared_descriptor_capacity(p, |_| Ok(()))?)
+            .ok_or_else(overflow)?;
         let mut scratch = 0;
         let mut work = self
             .0
@@ -184,6 +188,22 @@ impl VerifiedProgram {
             .checked_add(self.0.stats.encoded_bytes as u64)
             .ok_or_else(overflow)?;
         for f in &p.functions {
+            retained = retained
+                .checked_sub(f.descriptors.capacity_bytes())
+                .and_then(|n| n.checked_add(f.descriptors.len() * size_of::<Descriptor>()))
+                .and_then(|n| {
+                    n.checked_add(
+                        f.descriptors
+                            .iter()
+                            .map(|d| {
+                                super::descriptors::descriptor_bytes(d)
+                                    - size_of::<Descriptor>()
+                                    - 2 * size_of::<usize>()
+                            })
+                            .sum::<usize>(),
+                    )
+                })
+                .ok_or_else(overflow)?;
             retained = retained
                 .checked_sub(f.code.capacity_bytes())
                 .and_then(|n| n.checked_add(f.code.len().checked_mul(size_of::<Instruction>())?))
@@ -439,7 +459,10 @@ impl VerifiedProgram {
         function: FunctionId,
         pc: Pc,
         skip: Option<RegionId>,
-    ) -> Result<&FunctionDef<impl InstructionSequence, impl SourceMapSequence>, Error> {
+    ) -> Result<
+        &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
+        Error,
+    > {
         let f = get(&self.0.package.functions, function.0, "exception function")?;
         check(
             pc.index() < f.code.end_pc() && f.code.is_boundary(pc.index()),
@@ -650,6 +673,7 @@ fn compact_package(
     let mut functions = budget.vec::<RuntimeFunction>(p.functions.len())?;
     let mut retained = stats.owned_capacity_bytes;
     let mut builder = CodeStoreBuilder::new();
+    let mut descriptors = DescriptorInterner::default();
     let mut ranges = budget.vec::<(u32, u32, u32)>(p.functions.len())?;
     let mut instruction_bytes = 0usize;
     let total_words = p.functions.iter().try_fold(0usize, |n, f| {
@@ -700,19 +724,10 @@ fn compact_package(
         let map_bytes = (f.code.len() + 1)
             .checked_mul(4)
             .ok_or_else(|| Error::new(ErrorKind::Limit, "PC map size"))?;
-        check(
-            retained
-                .checked_add(budget.scratch)
-                .and_then(|n| n.checked_add(bytes))
-                .and_then(|n| n.checked_add(map_bytes))
-                .and_then(|n| n.checked_add(source_bound))
-                .is_some_and(|n| n <= limits.max_allocation_bytes),
-            ErrorKind::Limit,
-            "compact allocation limit",
+        budget.admit_capacity(
+            retained,
+            build_bound + descriptors.scratch_bytes() + bytes + map_bytes + source_bound,
         )?;
-        budget.peak = budget
-            .peak
-            .max(budget.scratch + bytes + map_bytes + source_bound);
         let (code, pcs) = CompactCode::from_ordinal(&f.code)?;
         #[cfg(any(test, feature = "vm-validation-oracle"))]
         scalar_suffixes.rebase(fi, &pcs);
@@ -740,6 +755,10 @@ fn compact_package(
             .max(budget.scratch + builder.capacity_bytes() + bytes + map_bytes);
         retained -= f.code.capacity_bytes();
         retained = retained - f.source_map.capacity_bytes() + source_map.capacity_bytes();
+        drop(f.code);
+        drop(f.source_map);
+        drop(code);
+        drop(pcs);
         functions.push(FunctionDef {
             module: f.module,
             name: f.name,
@@ -749,13 +768,20 @@ fn compact_package(
             captures: f.captures,
             register_count: f.register_count,
             bindings: f.bindings,
-            descriptors: f.descriptors,
+            descriptors: descriptors::compact_descriptors(
+                f.descriptors,
+                &mut descriptors,
+                &mut budget,
+                &mut retained,
+                builder.capacity_bytes(),
+            )?,
             code: CompactCode::default(),
             regions: f.regions,
             source_map,
         });
     }
     let store = builder.finish()?;
+    drop(descriptors);
     for (f, &(start, words, count)) in functions.iter_mut().zip(&ranges) {
         f.code = CompactCode::from_store(store.clone(), start, words, count)?;
     }
@@ -788,7 +814,7 @@ fn compact_package(
     stats.validation_work = budget.work;
     stats.validation_scratch_peak = stats
         .validation_scratch_peak
-        .max(budget.peak)
+        .max((original_capacity + budget.peak).saturating_sub(stats.owned_capacity_bytes))
         .max(original_peak.saturating_sub(stats.owned_capacity_bytes))
         .max(if package.sources.is_empty() {
             0
@@ -828,6 +854,15 @@ impl Budget {
     fn text_equal(&mut self, a: &str, b: &str) -> Result<bool, Error> {
         self.work(a.len().max(b.len()) as u64 + 1)?;
         Ok(a == b)
+    }
+    fn admit_capacity(&mut self, owned: usize, temporary: usize) -> Result<(), Error> {
+        let total = owned
+            .checked_add(self.scratch)
+            .and_then(|bytes| bytes.checked_add(temporary))
+            .filter(|bytes| *bytes <= self.limits.max_allocation_bytes)
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "compact allocation limit"))?;
+        self.peak = self.peak.max(total.saturating_sub(self.owned));
+        Ok(())
     }
     fn vec<T>(&mut self, n: usize) -> Result<Vec<T>, Error> {
         self.work(n as u64)?;
@@ -872,7 +907,7 @@ fn contains_text(items: &[String], text: &str, b: &mut Budget) -> Result<bool, E
     Ok(false)
 }
 fn contains_symbol_text(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     items: &[SymbolId],
     text: &str,
     b: &mut Budget,
@@ -898,26 +933,26 @@ fn get<'a, T>(table: &'a [T], id: u32, label: &str) -> Result<&'a T, Error> {
         .ok_or_else(|| Error::new(ErrorKind::Index, label))
 }
 fn symbol(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     id: SymbolId,
 ) -> Result<&str, Error> {
     Ok(get(&p.symbols, id.0, "symbol")?.as_str())
 }
 fn ty(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     id: TypeId,
 ) -> Result<(), Error> {
     get(&p.types, id.0, "type")?;
     Ok(())
 }
 fn reg(
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     r: Reg,
 ) -> Result<(), Error> {
     check(r.0 < f.register_count, ErrorKind::Index, "register")
 }
 fn window(
-    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     w: RegWindow,
 ) -> Result<(), Error> {
     check(
@@ -983,7 +1018,7 @@ fn sorted_keys<K: Ord>(
 }
 
 fn validate_symbols(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     b: &mut Budget,
 ) -> Result<(), Error> {
     let hashes = RandomState::new();
@@ -991,7 +1026,7 @@ fn validate_symbols(
 }
 
 fn validate_symbols_with_hash(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     b: &mut Budget,
     hash: impl Fn(&str) -> u64,
 ) -> Result<(), Error> {
@@ -1052,7 +1087,7 @@ fn validate_symbols_with_hash(
     Ok(())
 }
 fn version(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
 ) -> Result<(), Error> {
     check(
         (p.format_version, p.language_version, p.host_abi_version)
@@ -1069,7 +1104,7 @@ use program::validate_program;
 /// Resolve binding aliases iteratively before execution. No runtime object is
 /// copied for an import, and malformed alias cycles cannot hang module loading.
 fn module_bindings(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     b: &mut Budget,
 ) -> Result<ModuleBindings, Error> {
     let mut offsets = b.vec::<u32>(p.modules.len() + 1)?;
@@ -1154,7 +1189,7 @@ fn module_bindings(
 
 /// Derive once per native signature, retaining only canonical Cell slots.
 fn native_parameter_cells(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     layouts: &ParameterLayouts,
     b: &mut Budget,
 ) -> Result<Vec<(u32, u32)>, Error> {
@@ -1249,7 +1284,11 @@ struct ParameterLayouts {
 }
 impl ParameterLayouts {
     fn build(
-        p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+        p: &BytecodePackage<
+            impl InstructionSequence,
+            impl SourceMapSequence,
+            impl DescriptorSequence,
+        >,
         b: &mut Budget,
     ) -> Result<Self, Error> {
         b.work(p.functions.len() as u64)?;
@@ -1402,7 +1441,7 @@ use control_flow::{
     exception_target, ranges, unwind_target, validate_instruction, validate_regions,
 };
 fn located(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     fi: usize,
     pc: usize,
     mut e: Error,

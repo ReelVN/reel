@@ -323,4 +323,18 @@ impl SessionVm {
         }
         Ok(())
     }
+
+    pub(in crate::aside) fn sync_parked_narratives(
+        &mut self,
+        session: &mut Session,
+    ) -> Result<(), AdapterError> {
+        for frame in &mut self.narrative_contexts.frames {
+            if let Some(model) = &mut frame.model {
+                session.with_reading(frame.parent, |session| {
+                    model.sync(self.vm.heap_mut(), session, self.read_limit)
+                })??;
+            }
+        }
+        Ok(())
+    }
 }

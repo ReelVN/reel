@@ -198,7 +198,7 @@ fn named_bytecode_records_and_script_classes_do_not_establish_native_trust() {
         error.detail.contains("resource") && error.detail.contains("trusted native"),
         "{error}"
     );
-    let mut package = story.program.package().clone();
+    let mut package = story.program.to_unpacked().unwrap();
     let field = &mut package.functions[story.resume.table().states[0].class.function.index()]
         .descriptors[story.resume.table().states[0].class.descriptor.index()];
     let bc::Descriptor::Class(class) = field else {

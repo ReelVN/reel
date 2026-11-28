@@ -18,6 +18,7 @@ struct Writer {
     len: usize,
     max: usize,
     capacity: usize,
+    shared_descriptor: bool,
     retained: usize,
     #[cfg(test)]
     unverified_fixture: bool,
@@ -55,6 +56,7 @@ impl Writer {
         }
     }
     fn capacity(&mut self, records: usize, bytes: usize) -> Result<(), Error> {
+        let bytes = if self.shared_descriptor { 0 } else { bytes };
         self.capacity = self
             .capacity
             .checked_add(bytes)
@@ -119,6 +121,7 @@ struct Reader<'a> {
     global_bound: u32,
     code_store: Option<Arc<CodeStore>>,
     function_word: u32,
+    descriptor_interner: DescriptorInterner,
 }
 impl<'a> Reader<'a> {
     fn new(input: &'a [u8], limits: Limits) -> Self {
@@ -141,6 +144,7 @@ impl<'a> Reader<'a> {
             global_bound: 0,
             code_store: None,
             function_word: 0,
+            descriptor_interner: DescriptorInterner::default(),
         }
     }
 
@@ -231,7 +235,7 @@ impl<'a> Reader<'a> {
         if u32::from_le_bytes(bytes.try_into().expect("count field")) != count {
             return Err(self.error(ErrorKind::Encoding, "header/body count mismatch"));
         }
-        Vec::get(self)
+        <Vec<T> as Wire>::get(self)
     }
 }
 
@@ -294,7 +298,8 @@ fn put_vec_with<T: Wire>(
 ) -> Result<(), Error> {
     w.capacity(
         values.len(),
-        values.capacity()
+        values
+            .capacity()
             .checked_mul(size_of::<T>())
             .ok_or_else(|| Error::new(ErrorKind::Limit, "vector capacity"))?,
     )?;
@@ -462,7 +467,7 @@ fn get_source_map(r: &mut Reader<'_>, expected: u32) -> Result<CompactSourceMap,
     }
 }
 fn put_function(
-    code: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    code: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     w: &mut Writer,
 ) -> Result<(), Error> {
     for len in [
@@ -483,7 +488,7 @@ fn put_function(
     code.context.put(w)?;
     code.captures.put(w)?;
     code.bindings.put(w)?;
-    code.descriptors.put(w)?;
+    put_descriptors(&code.descriptors, w)?;
     let words = if code.code.runtime_words().is_some() {
         code.code.end_pc()
     } else {
@@ -531,6 +536,58 @@ fn put_function(
     }
     Ok(())
 }
+
+fn put_descriptors(values: &impl DescriptorSequence, w: &mut Writer) -> Result<(), Error> {
+    w.capacity(values.len(), values.capacity_bytes())?;
+    (values.len() as u32).put(w)?;
+    w.shared_descriptor = values.shared();
+    for value in values.iter() {
+        value.put(w)?;
+    }
+    w.shared_descriptor = false;
+    Ok(())
+}
+
+fn get_descriptors(r: &mut Reader<'_>, expected: u32) -> Result<SharedDescriptors, Error> {
+    let count = u32::get(r)?;
+    if count != expected {
+        return Err(r.error(ErrorKind::Encoding, "descriptor count mismatch"));
+    }
+    let slots = (count as usize)
+        .checked_mul(size_of::<Arc<Descriptor>>())
+        .ok_or_else(|| r.error(ErrorKind::Limit, "descriptor slot capacity"))?;
+    r.charge(count, slots)?;
+    let mut out = SharedDescriptors::default();
+    if r.materialize {
+        out.entries
+            .try_reserve_exact(count as usize)
+            .map_err(|_| r.error(ErrorKind::Allocation, "descriptor slots"))?;
+    }
+    for _ in 0..count {
+        let before = r.allocation;
+        let value = Descriptor::get(r)?;
+        if !r.materialize {
+            // Payloads are scanned without allocation. Materialization admits each
+            // unique object and its interner scratch before retaining it.
+            r.allocation = before;
+            continue;
+        }
+        if let Some(shared) = r.descriptor_interner.get(&value) {
+            r.allocation = before;
+            out.entries.push(shared);
+        } else {
+            r.charge(0, size_of::<Descriptor>() + 2 * size_of::<usize>())?;
+            let scratch_before = r.descriptor_interner.scratch_bytes();
+            let scratch_peak = r.descriptor_interner.insertion_scratch();
+            r.charge(0, scratch_peak)?;
+            let shared = r.descriptor_interner.insert(value)?;
+            let scratch_after = r.descriptor_interner.scratch_bytes();
+            r.allocation -= scratch_peak + scratch_before - scratch_after;
+            out.entries.push(shared);
+        }
+    }
+    Ok(out)
+}
 fn encode_pc(pcs: &[u32], target: Pc, unverified: bool) -> Result<Pc, Error> {
     if let Some(&pc) = pcs.get(target.index()) {
         return Ok(Pc(pc));
@@ -547,7 +604,7 @@ fn encode_pc(pcs: &[u32], target: Pc, unverified: bool) -> Result<Pc, Error> {
     Err(Error::new(ErrorKind::Index, "encoding PC"))
 }
 fn put_pc_metadata(
-    code: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    code: &FunctionDef<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     w: &mut Writer,
     map: impl Fn(Pc) -> Result<Pc, Error>,
 ) -> Result<(), Error> {
@@ -620,7 +677,7 @@ impl Wire for RuntimeFunction {
             context: Wire::get(r)?,
             captures: r.expected(lens[0])?,
             bindings: r.expected(lens[1])?,
-            descriptors: r.expected(lens[2])?,
+            descriptors: get_descriptors(r, lens[2])?,
             code: CompactCode::get(r)?,
             regions: r.expected(lens[4])?,
             source_map: get_source_map(r, lens[5])?,
@@ -704,7 +761,11 @@ fn check_instruction_indices(instruction: &Instruction, r: &Reader<'_>) -> Resul
     Ok(())
 }
 fn prepare_code_store(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     limits: Limits,
     owned: usize,
     #[cfg(test)] unverified: bool,
@@ -816,7 +877,11 @@ fn append_fixture_words(builder: &mut CodeStoreBuilder, raw: &[Instruction]) -> 
     Ok(())
 }
 fn put_code_store(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     w: &mut Writer,
 ) -> Result<(), Error> {
     let store = w.code_store.clone().or_else(|| {
@@ -937,8 +1002,47 @@ impl Wire for CodeBlock {
         })
     }
 }
-fn put_package<C: InstructionSequence, S: SourceMapSequence>(
-    code: &BytecodePackage<C, S>,
+pub(super) fn shared_descriptor_capacity(
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
+    mut scratch: impl FnMut(usize) -> Result<(), Error>,
+) -> Result<usize, Error> {
+    let mut seen = std::collections::HashSet::new();
+    let mut retained = 0usize;
+    for function in &package.functions {
+        if !function.descriptors.shared() {
+            continue;
+        }
+        for descriptor in function.descriptors.iter() {
+            let identity = std::ptr::from_ref(descriptor) as usize;
+            if seen.contains(&identity) {
+                continue;
+            }
+            if seen.len() == seen.capacity() {
+                let old_buckets = if seen.capacity() == 0 {
+                    0
+                } else {
+                    (seen.capacity() + 1).next_power_of_two()
+                };
+                let new_buckets = (old_buckets * 2).max(4);
+                scratch((old_buckets + new_buckets) * (size_of::<usize>() + 1) + 32)?;
+                seen.try_reserve(1)
+                    .map_err(|_| Error::new(ErrorKind::Allocation, "descriptor ownership index"))?;
+            }
+            seen.insert(identity);
+            retained = retained
+                .checked_add(super::descriptors::descriptor_bytes(descriptor))
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "shared descriptor capacity"))?;
+        }
+    }
+    Ok(retained)
+}
+
+fn put_package<C: InstructionSequence, S: SourceMapSequence, D: DescriptorSequence>(
+    code: &BytecodePackage<C, S, D>,
     w: &mut Writer,
 ) -> Result<(), Error> {
     code.text_pool.put(w)?;
@@ -950,8 +1054,12 @@ fn put_package<C: InstructionSequence, S: SourceMapSequence>(
     code.modules.put(w)?;
     put_code_store(code, w)?;
     w.capacity(
+        0,
+        shared_descriptor_capacity(code, |bytes| w.scratch(bytes))?,
+    )?;
+    w.capacity(
         code.functions.len(),
-        code.functions.capacity() * size_of::<FunctionDef<C, S>>(),
+        code.functions.capacity() * size_of::<FunctionDef<C, S, D>>(),
     )?;
     u32::try_from(code.functions.len())
         .map_err(|_| Error::new(ErrorKind::Limit, "function count"))?
@@ -1011,7 +1119,7 @@ impl Wire for RuntimePackage {
 }
 
 fn counts(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
 ) -> Result<[u32; 9], Error> {
     let lens = [
         p.symbols.len(),
@@ -1032,7 +1140,11 @@ fn counts(
 }
 /// Encodes validated fields; does not serialize Rust layout or runtime values.
 pub fn encode(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
     let stats = super::verify::validate(package, limits)?;
@@ -1067,7 +1179,11 @@ pub(super) fn encode_verified(program: &VerifiedProgram, limits: Limits) -> Resu
     encode_fields(package, limits, stats.owned_capacity_bytes, measured)
 }
 fn encode_fields(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     limits: Limits,
     owned: usize,
     measured: Option<(usize, u64)>,
@@ -1082,7 +1198,11 @@ fn encode_fields(
     )
 }
 fn encode_fields_impl(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     limits: Limits,
     owned: usize,
     measured: Option<(usize, u64)>,
@@ -1118,6 +1238,7 @@ fn encode_fields_impl(
             len: HEADER_BYTES,
             max: limits.max_bytes,
             capacity: 0,
+            shared_descriptor: false,
             retained: owned,
             #[cfg(test)]
             unverified_fixture,
@@ -1159,6 +1280,7 @@ fn encode_fields_impl(
         len: 0,
         max: limits.max_bytes,
         capacity: 0,
+        shared_descriptor: false,
         retained: owned,
         #[cfg(test)]
         unverified_fixture,
@@ -1230,7 +1352,7 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<RuntimePackage, Error> {
     if r.pos != input.len() {
         return Err(r.error(ErrorKind::Encoding, "trailing bytes"));
     }
-    // The count directory is reused; payload capacity was bounded in the scan.
+    // Reuse the count directory; materialization admits each unique payload.
     let scanned_work = r.work;
     r.pos = HEADER_BYTES;
     r.materialize = true;
@@ -1251,7 +1373,11 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<RuntimePackage, Error> {
 }
 
 pub(crate) fn measure(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     limits: Limits,
 ) -> Result<(usize, usize, u64), Error> {
     let mut w = Writer {
@@ -1268,6 +1394,7 @@ pub(crate) fn measure(
             isize::MAX as usize
         },
         capacity: size_of::<BytecodePackage>(),
+        shared_descriptor: false,
         retained: 0,
         #[cfg(test)]
         unverified_fixture: false,
@@ -1281,7 +1408,11 @@ pub(crate) fn measure(
 }
 #[cfg(test)]
 pub(super) fn encode_unverified(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
 ) -> Vec<u8> {
     encode_fields_impl(package, Limits::default(), 0, None, true)
         .expect("bounded malformed test fixture")
@@ -1289,7 +1420,11 @@ pub(super) fn encode_unverified(
 
 // Hash canonical fields without materializing another copy of the code package.
 pub(crate) fn identity(
-    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    package: &BytecodePackage<
+        impl InstructionSequence,
+        impl SourceMapSequence,
+        impl DescriptorSequence,
+    >,
     limits: Limits,
 ) -> Result<[u8; 32], Error> {
     let mut writer = Writer {
@@ -1298,6 +1433,7 @@ pub(crate) fn identity(
         len: 0,
         max: limits.max_bytes,
         capacity: 0,
+        shared_descriptor: false,
         retained: 0,
         #[cfg(test)]
         unverified_fixture: false,
@@ -1331,6 +1467,7 @@ pub(super) fn decoded_identity(input: &[u8], limits: Limits) -> Result<[u8; 32],
         len: 0,
         max: limits.max_bytes,
         capacity: 0,
+        shared_descriptor: false,
         retained: 0,
         #[cfg(test)]
         unverified_fixture: false,

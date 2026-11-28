@@ -185,33 +185,39 @@ impl Heap {
         if metadata.same_bits(Value::NULL) {
             return Ok(Value::NULL);
         }
-        if property.field >= self.sequence_len(metadata)? {
+        let position = match self.model_position(property) {
+            Ok(position) => position,
+            Err(HeapError::RetiredHost) => return Ok(Value::NULL),
+            Err(error) => return Err(error),
+        };
+        if position >= self.sequence_len(metadata)? {
             return Ok(Value::NULL);
         }
-        self.sequence_get(metadata, property.field)
+        self.sequence_get(metadata, position)
     }
 
     fn ensure_property_metadata(&mut self, property: PropertyId) -> Result<Value, HeapError> {
         self.property_access(property)?;
+        let position = self.model_position(property)?;
         let mut metadata = self.property_metadata_array(property.host)?;
         if metadata.same_bits(Value::NULL) {
             metadata = self.alloc_array(&[])?;
-            for _ in 0..self.object(self.key(property.host)?)?.observable_fields {
+            for _ in 0..self.property_storage_len(property.host)? {
                 self.property_traversal_work
                     .set(self.property_traversal_work.get() + 4);
                 self.array_push(metadata, Value::NULL)?;
             }
             self.set_property_metadata_array(property.host, metadata)?;
         }
-        while self.sequence_len(metadata)? <= property.field {
+        while self.sequence_len(metadata)? <= position {
             self.property_traversal_work
                 .set(self.property_traversal_work.get() + 4);
             self.array_push(metadata, Value::NULL)?;
         }
-        let mut entry = self.sequence_get(metadata, property.field)?;
+        let mut entry = self.sequence_get(metadata, position)?;
         if entry.same_bits(Value::NULL) {
             entry = self.alloc_array(&[Value::NULL; 5])?;
-            self.set_field(metadata, property.field, entry)?;
+            self.set_field(metadata, position, entry)?;
         }
         Ok(entry)
     }
@@ -601,7 +607,7 @@ impl Heap {
     }
 
     pub(super) fn disconnect_host_properties(&mut self, host: Value) -> Result<(), HeapError> {
-        let count = self.object(self.key(host)?)?.observable_fields;
+        let count = self.property_storage_len(host)?;
         if count == 0 {
             return Ok(());
         }
@@ -611,8 +617,12 @@ impl Heap {
             return Ok(());
         }
         let count = count.min(self.sequence_len(metadata)?);
-        for field in 0..count {
-            if !self.sequence_get(metadata, field)?.same_bits(Value::NULL) {
+        for position in 0..count {
+            if !self
+                .sequence_get(metadata, position)?
+                .same_bits(Value::NULL)
+            {
+                let field = self.model_field(host, position)?;
                 self.disconnect_property(PropertyId { host, field })?;
             }
         }
@@ -639,7 +649,7 @@ impl Heap {
         }
         if !self.property_metadata(source)?.same_bits(Value::NULL) {
             let metadata = self.property_metadata_array(source.host)?;
-            self.set_field(metadata, source.field, Value::NULL)?;
+            self.set_field(metadata, self.model_position(source)?, Value::NULL)?;
         }
         Ok(())
     }

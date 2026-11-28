@@ -37,7 +37,7 @@ pub(crate) struct ValueEntry {
 }
 
 pub(super) fn build(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     b: &mut Budget,
 ) -> Result<ScalarEntries, Error> {
     let mut values = {

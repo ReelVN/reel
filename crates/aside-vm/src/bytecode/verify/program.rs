@@ -2,13 +2,13 @@
 use super::*;
 
 pub(crate) fn validate(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     limits: Limits,
 ) -> Result<PackageStats, Error> {
     validate_program(p, limits).map(|(stats, _)| stats)
 }
 pub(super) fn validate_program(
-    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence, impl DescriptorSequence>,
     limits: Limits,
 ) -> Result<(PackageStats, DerivedLayouts), Error> {
     version(p)?;
@@ -95,7 +95,11 @@ pub(super) fn validate_program(
             TypeDef::Builtin(_) | TypeDef::StringLiteral(_) => {}
             TypeDef::Array(item) => {
                 b.work(1)?;
-                check(item.index() < i, ErrorKind::Index, "array element type must refer backwards")?;
+                check(
+                    item.index() < i,
+                    ErrorKind::Index,
+                    "array element type must refer backwards",
+                )?;
             }
             TypeDef::Record(fields) => {
                 unique_slice(

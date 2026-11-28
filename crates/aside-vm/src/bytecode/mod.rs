@@ -5,6 +5,7 @@
 mod code_residency;
 mod codec;
 mod compact;
+mod descriptors;
 mod encoded;
 pub mod fixtures;
 mod model;
@@ -22,6 +23,8 @@ pub(crate) use code_residency::PAGE_WORDS;
 pub use code_residency::{CodeCacheStats, CodeStore};
 pub use codec::{decode, encode};
 pub use compact::{CompactCode, CompactIter, InstructionSequence, ResidentCodeReader};
+use descriptors::DescriptorInterner;
+pub use descriptors::{DescriptorSequence, SharedDescriptors};
 pub use encoded::EncodedProgram;
 pub use model::*;
 pub use source_map::{CompactSourceMap, SourceMapIter, SourceMapSequence};
@@ -34,8 +37,8 @@ pub use verify::{
 };
 
 /// Verified metadata and compact instructions share the editable package model.
-pub type RuntimePackage = BytecodePackage<CompactCode, CompactSourceMap>;
-pub type RuntimeFunction = FunctionDef<CompactCode, CompactSourceMap>;
+pub type RuntimePackage = BytecodePackage<CompactCode, CompactSourceMap, SharedDescriptors>;
+pub type RuntimeFunction = FunctionDef<CompactCode, CompactSourceMap, SharedDescriptors>;
 
 /// All limits apply to the whole package, including nested descriptor records.
 /// Work is bounded independently for decoding, verification and runtime admission;

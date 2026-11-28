@@ -31,6 +31,22 @@ pub(crate) fn boundaries(text: &str, previous: &[usize]) -> Result<Vec<usize>, S
 }
 
 impl Session {
+    /// Submit one ADV group and append its recent history in the same transaction.
+    /// The locale and displayed text remain fixed for this interaction.
+    pub fn begin_say(
+        &mut self,
+        owner: OwnerHandle,
+        lines: &[DialogueLineInput<'_>],
+        page_locale: &str,
+        reveal_skippable: bool,
+    ) -> Result<InteractionId, SessionError> {
+        let id = self.prepare_say(owner, lines, page_locale, reveal_skippable)?;
+        self.reading_data
+            .history
+            .enforce_limits(self.history_limits);
+        Ok(id)
+    }
+
     pub(crate) fn clear_dialogue_advance_request(&mut self) {
         if let Some(Interaction::Dialogue(dialogue)) = &mut self.reading_data.active {
             for line in &mut dialogue.lines {
@@ -46,11 +62,25 @@ impl Session {
         locale: &str,
         reveal_skippable: bool,
     ) -> Result<InteractionId, SessionError> {
+        let id = self.prepare_open_say(owner, lines, locale, reveal_skippable)?;
+        self.reading_data
+            .history
+            .enforce_limits(self.history_limits);
+        Ok(id)
+    }
+
+    pub(crate) fn prepare_open_say(
+        &mut self,
+        owner: OwnerHandle,
+        lines: &[DialogueLineInput<'_>],
+        locale: &str,
+        reveal_skippable: bool,
+    ) -> Result<InteractionId, SessionError> {
         let mut pending = reserved_vec(lines.len())?;
         for line in lines {
             pending.push(copy_text(line.content_id)?);
         }
-        let id = self.begin_say(owner, lines, locale, reveal_skippable)?;
+        let id = self.prepare_say(owner, lines, locale, reveal_skippable)?;
         let Some(Interaction::Dialogue(dialogue)) = &mut self.reading_data.active else {
             unreachable!()
         };
@@ -175,6 +205,9 @@ impl Session {
             });
         }
         d.text_revision = d.text_revision.wrapping_add(1);
+        self.reading_data
+            .history
+            .enforce_limits(self.history_limits);
         self.check_skip_boundary();
         Ok(())
     }

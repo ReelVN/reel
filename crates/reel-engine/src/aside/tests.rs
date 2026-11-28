@@ -60,8 +60,7 @@ mod video;
 mod virtual_lists;
 mod window;
 
-const STORY: &str =
-    "use reel::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";
+const STORY: &str = "use reel::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";
 fn session() -> Session {
     Session::new(SessionId(41), Epoch(9)).unwrap()
 }
@@ -733,6 +732,10 @@ fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
         rows.join(",")
     );
     let (mut session, mut vm) = setup(&code, Context::Ordinary);
+    session.set_history_limits(crate::HistoryLimits {
+        max_lines: 500,
+        ..Default::default()
+    });
     let mut original = None;
     let mut choice_roots = None;
     let mut finished = false;

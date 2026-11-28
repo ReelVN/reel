@@ -1,5 +1,5 @@
 //! The active transcript shares completed pages with detached checkpoints.
-use crate::{HistoryGroup, HistoryLine};
+use crate::{HistoryGroup, HistoryLimits, HistoryLine};
 use serde::de::{SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -11,20 +11,26 @@ const PAGE_ROWS: usize = 32;
 struct Page {
     rows: Vec<HistoryGroup>,
     payload_bytes: usize,
+    line_count: usize,
 }
 
 impl Clone for Page {
     fn clone(&self) -> Self {
         let rows = self.rows.clone();
         let payload_bytes = rows.iter().map(group_bytes).sum();
+        let line_count = rows.iter().map(|group| group.lines.len().max(1)).sum();
         Self {
             rows,
             payload_bytes,
+            line_count,
         }
     }
 }
 
-/// History groups in reading order. Checkpoints can retain pages by reference.
+/// Recent history groups in reading order. Sessions default to 200 lines and
+/// 1 MiB of logical storage, trimming older rows in batches according to their
+/// current policy. A newest line larger than that allowance remains readable.
+/// Checkpoints share retained pages.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryLog {
     pages: VecDeque<Arc<Page>>,
@@ -32,6 +38,64 @@ pub struct HistoryLog {
 }
 
 impl HistoryLog {
+    /// Bound each reading timeline, retaining original identities and the newest
+    /// line even when that line alone exceeds the ordinary history allowance.
+    /// Leave space for another batch before rebuilding the observable prefix.
+    pub(crate) fn enforce_limits(&mut self, limits: HistoryLimits) {
+        if limits.max_lines == 0 {
+            *self = Self::default();
+            return;
+        }
+        let count: usize = self.pages.iter().map(|page| page.line_count).sum();
+        let bytes = self.retained_bytes();
+        if count <= limits.max_lines && bytes <= limits.max_bytes {
+            return;
+        }
+        let keep = if count > limits.max_lines {
+            limits.max_lines - limits.max_lines / 8
+        } else {
+            count
+        };
+        let byte_limit = if bytes > limits.max_bytes {
+            limits.max_bytes - limits.max_bytes / 8
+        } else {
+            bytes
+        };
+        let mut retained_lines = 0;
+        let mut retained_bytes = 0;
+        let mut first_group = self.len;
+        let mut first_line = 0;
+        'groups: for index in (0..self.len).rev() {
+            let group = &self[index];
+            let overhead = size_of::<HistoryGroup>() + group.page_locale.capacity();
+            let mut first = true;
+            for line in (0..group.lines.len().max(1)).rev() {
+                let added = if group.lines.is_empty() {
+                    0
+                } else {
+                    size_of::<HistoryLine>() + line_bytes(&group.lines[line])
+                } + if first { overhead } else { 0 };
+                if retained_lines != 0
+                    && (retained_lines == keep || retained_bytes + added > byte_limit)
+                {
+                    break 'groups;
+                }
+                retained_lines += 1;
+                retained_bytes += added;
+                first_group = index;
+                first_line = line;
+                first = false;
+            }
+        }
+        if first_line != 0 {
+            self.edit(first_group, |group| {
+                group.lines.drain(..first_line);
+                group.lines.shrink_to_fit();
+            });
+        }
+        self.retain_from(first_group);
+    }
+
     /// Number of groups in the transcript.
     pub fn len(&self) -> usize {
         self.len
@@ -115,8 +179,10 @@ impl HistoryLog {
         let (page, row) = self.locate(index).unwrap();
         let page = Arc::make_mut(&mut self.pages[page]);
         page.payload_bytes -= group_bytes(&page.rows[row]);
+        page.line_count -= page.rows[row].lines.len().max(1);
         edit(&mut page.rows[row]);
         page.payload_bytes += group_bytes(&page.rows[row]);
+        page.line_count += page.rows[row].lines.len().max(1);
     }
 
     pub(crate) fn find_interaction(&self, generation: u64) -> Option<usize> {
@@ -151,6 +217,7 @@ impl HistoryLog {
     pub(crate) fn push(&mut self, group: HistoryGroup) {
         let tail = Arc::make_mut(self.pages.back_mut().unwrap());
         tail.payload_bytes += group_bytes(&group);
+        tail.line_count += group.lines.len().max(1);
         tail.rows.push(group);
         self.len += 1;
     }
@@ -162,6 +229,7 @@ impl HistoryLog {
         let tail = Arc::make_mut(self.pages.back_mut()?);
         let group = tail.rows.pop()?;
         tail.payload_bytes -= group_bytes(&group);
+        tail.line_count -= group.lines.len().max(1);
         self.len -= 1;
         Some(group)
     }
@@ -175,6 +243,10 @@ impl HistoryLog {
         if row > 0 {
             let first = Arc::make_mut(self.pages.front_mut().unwrap());
             first.payload_bytes -= first.rows[..row].iter().map(group_bytes).sum::<usize>();
+            first.line_count -= first.rows[..row]
+                .iter()
+                .map(|group| group.lines.len().max(1))
+                .sum::<usize>();
             first.rows.drain(..row);
             first.rows.shrink_to_fit();
         }
@@ -213,6 +285,10 @@ impl HistoryLog {
         if row + 1 < tail.rows.len() {
             let tail = Arc::make_mut(tail);
             tail.payload_bytes -= tail.rows[row + 1..].iter().map(group_bytes).sum::<usize>();
+            tail.line_count -= tail.rows[row + 1..]
+                .iter()
+                .map(|group| group.lines.len().max(1))
+                .sum::<usize>();
             tail.rows.truncate(row + 1);
         }
         Some(prefix)
@@ -230,20 +306,18 @@ impl Index<usize> for HistoryLog {
 fn group_bytes(group: &HistoryGroup) -> usize {
     group.page_locale.capacity()
         + group.lines.capacity() * size_of::<HistoryLine>()
-        + group
-            .lines
-            .iter()
-            .map(|line| {
-                line.speaker_id.as_ref().map_or(0, String::capacity)
-                    + line.speaker_name.capacity()
-                    + line.content.id.capacity()
-                    + line.content.fallback.storage_bytes()
-                    + line
-                        .voice
-                        .as_ref()
-                        .map_or(0, |path| path.len() + 2 * size_of::<usize>())
-            })
-            .sum::<usize>()
+        + group.lines.iter().map(line_bytes).sum::<usize>()
+}
+
+fn line_bytes(line: &HistoryLine) -> usize {
+    line.speaker_id.as_ref().map_or(0, String::capacity)
+        + line.speaker_name.capacity()
+        + line.content.id.capacity()
+        + line.content.fallback.storage_bytes()
+        + line
+            .voice
+            .as_ref()
+            .map_or(0, |path| path.len() + 2 * size_of::<usize>())
 }
 
 fn page_bytes(page: &Page) -> usize {
@@ -290,7 +364,29 @@ impl<'de> Deserialize<'de> for HistoryLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Epoch, HistoryGroupId, InteractionId, SessionId, SessionIdentity};
+    const MAX_LINES: usize = 200;
+    const MAX_BYTES: usize = 1024 * 1024;
+    const TRIM_LINES: usize = MAX_LINES / 8;
+    use crate::{
+        DialogueLineId, Epoch, HistoryGroupId, InteractionId, Session, SessionId, SessionIdentity,
+        TextContent,
+    };
+
+    fn line(group: &HistoryGroup, index: usize, text: &str) -> HistoryLine {
+        HistoryLine {
+            id: DialogueLineId {
+                interaction_id: group.interaction_id,
+                index,
+            },
+            speaker_id: None,
+            speaker_name: String::new(),
+            content: TextContent {
+                id: format!("{}:{index}", group.interaction_id.generation),
+                fallback: text.into(),
+            },
+            voice: Some(Arc::from("voice/retained.opus")),
+        }
+    }
 
     fn group(generation: u64) -> HistoryGroup {
         let interaction_id = InteractionId {
@@ -325,5 +421,117 @@ mod tests {
         );
         assert_eq!(live[50].page_locale, "zh-CN");
         assert_eq!(live.last().unwrap().interaction_id.generation, 73);
+    }
+
+    #[test]
+    fn growing_history_has_a_bounded_live_tail_and_keeps_snapshot_pages() {
+        let mut live = HistoryLog::default();
+        let mut captured = None;
+        for generation in 1..=10_000 {
+            let mut row = group(generation);
+            row.lines.push(line(
+                &row,
+                0,
+                "Recorded history with a retained voice path.",
+            ));
+            live.reserve_append().unwrap();
+            live.push(row);
+            live.enforce_limits(HistoryLimits::default());
+            assert!(live.len() <= MAX_LINES);
+            assert!(live.retained_bytes() <= MAX_BYTES);
+            if generation == 180 {
+                captured = live.prefix_through(180);
+            }
+        }
+        assert!(live.len() >= MAX_LINES - TRIM_LINES);
+        assert_eq!(live.last().unwrap().interaction_id.generation, 10_000);
+        assert!(live.first().unwrap().interaction_id.generation >= 9_801);
+        let captured = captured.unwrap();
+        assert_eq!(captured.len(), 180);
+        assert_eq!(captured[0].interaction_id.generation, 1);
+        assert_eq!(captured.last().unwrap().interaction_id.generation, 180);
+        let encoded = postcard::to_allocvec(&live).unwrap();
+        let mut restored: HistoryLog = postcard::from_bytes(&encoded).unwrap();
+        for (group, index, path) in live.voice_paths() {
+            assert!(restored.restore_voice(group, index, path));
+        }
+        assert_eq!(
+            restored.iter().collect::<Vec<_>>(),
+            live.iter().collect::<Vec<_>>()
+        );
+        let full: Vec<_> = (1..=1000)
+            .map(|generation| {
+                let mut row = group(generation);
+                row.lines.push(line(&row, 0, "original archive"));
+                row.lines[0].voice = None;
+                row
+            })
+            .collect();
+        let old_archive = postcard::to_allocvec(&full).unwrap();
+        let mut restored: HistoryLog = postcard::from_bytes(&old_archive).unwrap();
+        for generation in 1..=1000 {
+            assert!(restored.restore_voice(generation, 0, "voice/original.opus"));
+        }
+        assert!(!restored.restore_voice(1000, 0, "duplicate.opus"));
+        assert!(!restored.restore_voice(1001, 0, "future.opus"));
+        restored.enforce_limits(HistoryLimits::default());
+        assert!(restored.len() <= MAX_LINES);
+    }
+
+    #[test]
+    fn large_groups_trim_actual_lines_without_changing_display_or_ids() {
+        let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+        let inputs = (0..240)
+            .map(|_| crate::DialogueLineInput {
+                speaker_id: None,
+                speaker_name: "",
+                content_id: "same-content",
+                text: "A retained NVL row".into(),
+                history: Default::default(),
+            })
+            .collect::<Vec<_>>();
+        let id = session
+            .begin_say(session.root_owner(), &inputs, "en", true)
+            .unwrap();
+        let history = session.view().history;
+        assert_eq!(history.len(), 1);
+        let lines = &history[0].lines;
+        assert_eq!(lines.len(), MAX_LINES - TRIM_LINES);
+        assert_eq!(lines[0].id.index(), 240 - lines.len());
+        assert_eq!(lines[0].id.interaction_id(), id);
+        let Some(crate::InteractionView::Dialogue(display)) = session.view().interaction else {
+            panic!("dialogue");
+        };
+        assert_eq!(display.lines().len(), 240);
+        session.clear_history(37);
+        assert_eq!(session.view().history[0].lines.len(), 37);
+        assert_eq!(session.view().history[0].lines[0].id.index(), 203);
+    }
+
+    #[test]
+    fn byte_limit_releases_large_rows_and_retains_one_oversized_latest_line() {
+        let paragraph = "x".repeat(MAX_BYTES / 3);
+        let mut groups = Vec::new();
+        for generation in 1..=6 {
+            let mut row = group(generation);
+            row.lines.push(line(&row, 0, &paragraph));
+            groups.push(row);
+        }
+        let encoded = postcard::to_allocvec(&groups).unwrap();
+        let mut restored: HistoryLog = postcard::from_bytes(&encoded).unwrap();
+        restored.enforce_limits(HistoryLimits::default());
+        assert!(restored.len() < groups.len());
+        assert!(restored.retained_bytes() <= MAX_BYTES);
+        assert_eq!(restored.last().unwrap().interaction_id.generation, 6);
+        let mut oversized = group(7);
+        oversized
+            .lines
+            .push(line(&oversized, 0, &"y".repeat(2 * MAX_BYTES)));
+        restored.reserve_append().unwrap();
+        restored.push(oversized);
+        restored.enforce_limits(HistoryLimits::default());
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].lines[0].content.fallback.len(), 2 * MAX_BYTES);
+        assert!(restored.retained_bytes() > MAX_BYTES);
     }
 }

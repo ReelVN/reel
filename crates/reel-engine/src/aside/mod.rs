@@ -882,9 +882,11 @@ impl SessionVm {
                 text: (&text).into(),
             }],
             locale,
-            reveal_skippable,
-            wait,
-            voice,
+            dialogue::SayOptions {
+                reveal_skippable,
+                wait,
+                voice,
+            },
         )?;
         Ok(NativeDispatch::Published { interaction, work })
     }
@@ -897,10 +899,13 @@ impl SessionVm {
         ticket: HostTicket,
         lines: &[DialogueLineInput<'_>],
         locale: &str,
-        reveal_skippable: bool,
-        wait: bool,
-        voice: Option<crate::audio::AudioRequest>,
+        options: dialogue::SayOptions,
     ) -> Result<InteractionId, AdapterError> {
+        let dialogue::SayOptions {
+            reveal_skippable,
+            wait,
+            voice,
+        } = options;
         self.check_story_wait(session, ticket)?;
         let selected_locale = self.locale();
         let locale = selected_locale.as_deref().unwrap_or(locale);
@@ -913,9 +918,9 @@ impl SessionVm {
         };
         let mut publication = publication::Publication::stage(session, |s| {
             if wait {
-                s.begin_say(self.owner, lines, locale, reveal_skippable)
+                s.prepare_say(self.owner, lines, locale, reveal_skippable)
             } else {
-                s.begin_open_say(self.owner, lines, locale, reveal_skippable)
+                s.prepare_open_say(self.owner, lines, locale, reveal_skippable)
             }
         })?;
         if let Some(request) = &voice {

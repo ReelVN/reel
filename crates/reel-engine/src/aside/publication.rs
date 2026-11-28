@@ -45,7 +45,11 @@ impl Publication {
         self.interaction.id()
     }
     pub fn attach_voice(&mut self, path: &str) {
-        if let Some(line) = self.history.as_mut().and_then(|group| group.lines.first_mut()) {
+        if let Some(line) = self
+            .history
+            .as_mut()
+            .and_then(|group| group.lines.first_mut())
+        {
             line.voice = Some(std::sync::Arc::from(path));
         }
     }
@@ -53,6 +57,10 @@ impl Publication {
         session.reading_data.active = Some(self.interaction);
         if let Some(history) = self.history {
             session.reading_data.history.push(history);
+            session
+                .reading_data
+                .history
+                .enforce_limits(session.history_limits());
         }
         session.next_interaction = self.next;
     }

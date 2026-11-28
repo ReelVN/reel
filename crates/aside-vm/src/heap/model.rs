@@ -10,7 +10,6 @@ enum ModelSlot {
     Properties,
     Versions,
     Fields,
-    Positions,
 }
 
 impl Heap {
@@ -41,7 +40,7 @@ impl Heap {
         let key = self.key(value)?;
         let mut metadata = self.object(key)?.model_metadata;
         if metadata.same_bits(Value::NULL) {
-            metadata = self.alloc_array(&[Value::NULL; 4])?;
+            metadata = self.alloc_array(&[Value::NULL; 3])?;
             self.barrier(metadata)?;
             self.objects.get_mut(key).unwrap().model_metadata = metadata;
         }
@@ -54,6 +53,14 @@ impl Heap {
             Ok(Value::NULL)
         } else {
             self.sequence_get(metadata, slot as u32)
+        }
+    }
+
+    pub(in crate::heap) fn property_storage_len(&self, host: Value) -> Result<u32, HeapError> {
+        if self.is_model_table(host)? {
+            self.table_len(host)
+        } else {
+            Ok(self.object(self.key(host)?)?.observable_fields)
         }
     }
 
